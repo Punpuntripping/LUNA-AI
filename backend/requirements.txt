@@ -1,0 +1,31 @@
+# Luna Legal AI — Backend dependencies
+# Install: pip install -r backend/requirements.txt
+
+# Web framework
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
+
+# Pydantic + settings
+pydantic[email]>=2.10.0,<3.0.0
+pydantic-settings>=2.6.0,<3.0.0
+
+# Supabase client (v2+)
+supabase>=2.11.0,<3.0.0
+
+# JWT verification (NOT python-jose)
+PyJWT>=2.9.0,<3.0.0
+
+# Redis (async + hiredis C parser)
+redis[hiredis]>=5.2.0,<6.0.0
+
+# SSE streaming
+sse-starlette>=2.0.0,<3.0.0
+
+# File uploads
+python-multipart>=0.0.18
+
+# Environment variables
+python-dotenv>=1.0.0,<2.0.0
+
+# HTTP client (used by supabase + general)
+httpx>=0.28.0,<1.0.0
