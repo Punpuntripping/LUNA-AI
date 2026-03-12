@@ -1,8 +1,14 @@
 import { LoginForm } from "@/components/auth/LoginForm";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export default function LoginPage() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="relative flex min-h-screen items-center justify-center bg-background px-4">
+      {/* Theme toggle — top-start corner (top-right in RTL) */}
+      <div className="absolute top-4 start-4">
+        <ThemeToggle />
+      </div>
+
       <div className="w-full max-w-md space-y-8">
         {/* Header */}
         <div className="text-center space-y-2">

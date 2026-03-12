@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # ========================================
     APP_NAME: str = "Legal AI RAG"
     APP_ENV: str = "development"     # development | staging | production
-    DEBUG: bool = True
+    DEBUG: bool = False
     LOG_LEVEL: str = "INFO"          # DEBUG | INFO | WARNING | ERROR
     PORT: int = 8000
 
@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     OPENAI_EMBEDDING_DIMENSIONS: int = 1536
 
     # ========================================
+    # AGENT FRAMEWORK
+    # ========================================
+    AGENT_AUTO_ROUTE_MODEL: str = "anthropic/claude-haiku-4-5-20251001"
+    AGENT_DEFAULT_MODEL: str = "anthropic/claude-sonnet-4"
+
+    # ========================================
     # FEATURE FLAGS
     # ========================================
     FEATURE_MEMORY_EXTRACTION: bool = True
@@ -101,7 +107,7 @@ class Settings(BaseSettings):
     # STORAGE
     # ========================================
     MAX_UPLOAD_SIZE_MB: int = 50
-    STORAGE_BUCKET_DOCUMENTS: str = "case-documents"
+    STORAGE_BUCKET_DOCUMENTS: str = "documents"
 
     # ========================================
     # ENVIRONMENT

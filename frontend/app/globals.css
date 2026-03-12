@@ -2,27 +2,98 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ============================================================
+ * Luna Brand Colors (OKLCH channels — L C H)
+ * ------------------------------------------------------------
+ * Change these two values to re-theme the entire app.
+ * Store only the L C H channels; the oklch() wrapper is added
+ * by Tailwind config so opacity modifiers (e.g. bg-primary/90)
+ * work correctly.
+ *
+ *   Brand Primary (dark blue):  44.6% 0.043 257.281
+ *   Brand Light:                87.1% 0.006 286.286
+ *
+ * Full OKLCH notation:
+ *   oklch(44.6% 0.043 257.281)
+ *   oklch(87.1% 0.006 286.286)
+ *
+ * ============================================================
+ */
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    --background: 100% 0 0;
+    --foreground: 14.1% 0.03 264;
+
+    --card: 100% 0 0;
+    --card-foreground: 14.1% 0.03 264;
+
+    --popover: 100% 0 0;
+    --popover-foreground: 14.1% 0.03 264;
+
+    /* Brand Primary: 44.6% 0.043 257.281 */
+    --primary: 44.6% 0.043 257.281;
+    --primary-foreground: 97% 0.005 265;
+
+    /* Brand Light: 87.1% 0.006 286.286 */
+    --secondary: 87.1% 0.006 286.286;
+    --secondary-foreground: 22% 0.02 264;
+
+    --muted: 95.5% 0.005 265;
+    --muted-foreground: 55.6% 0.015 264;
+
+    --accent: 95.5% 0.005 265;
+    --accent-foreground: 22% 0.02 264;
+
+    --destructive: 57.7% 0.215 27;
+    --destructive-foreground: 97% 0.005 265;
+
+    --border: 91.4% 0.008 265;
+    --input: 91.4% 0.008 265;
+    --ring: 44.6% 0.043 257.281;
+
     --radius: 0.5rem;
-    --sidebar-background: 0 0% 98%;
-    --sidebar-foreground: 222.2 84% 4.9%;
-    --sidebar-border: 214.3 31.8% 91.4%;
+
+    --sidebar-background: 98% 0.003 265;
+    --sidebar-foreground: 14.1% 0.03 264;
+    --sidebar-border: 91.4% 0.008 265;
+  }
+
+  .dark {
+    --background: 15% 0.02 260;
+    --foreground: 93% 0.006 265;
+
+    --card: 19% 0.02 260;
+    --card-foreground: 93% 0.006 265;
+
+    --popover: 19% 0.02 260;
+    --popover-foreground: 93% 0.006 265;
+
+    /* Lighter brand primary for dark backgrounds */
+    --primary: 58% 0.06 257.281;
+    --primary-foreground: 12% 0.02 260;
+
+    /* Dark surface; brand light used as secondary text */
+    --secondary: 22% 0.02 260;
+    --secondary-foreground: 87.1% 0.006 286.286;
+
+    --muted: 22% 0.02 260;
+    --muted-foreground: 65% 0.012 265;
+
+    --accent: 25% 0.025 260;
+    --accent-foreground: 93% 0.006 265;
+
+    --destructive: 55% 0.2 27;
+    --destructive-foreground: 97% 0.005 265;
+
+    --border: 28% 0.02 260;
+    --input: 28% 0.02 260;
+    --ring: 58% 0.06 257.281;
+
+    --sidebar-background: 17% 0.02 260;
+    --sidebar-foreground: 93% 0.006 265;
+    --sidebar-border: 28% 0.02 260;
   }
 
   /* RTL-aware global styles */
@@ -57,7 +128,7 @@
     background: transparent;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--muted-foreground) / 0.3);
+    background-color: oklch(var(--muted-foreground) / 0.3);
     border-radius: 2px;
   }
 }

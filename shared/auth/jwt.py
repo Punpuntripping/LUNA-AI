@@ -4,7 +4,7 @@ Decode, verify, and extract user information.
 Used by backend auth middleware.
 
 Uses PyJWT (import jwt), NOT python-jose.
-Algorithm: HS256, audience: "authenticated".
+Supports both HS256 (JWT secret) and ES256 (JWKS) depending on token header.
 """
 from __future__ import annotations
 
@@ -14,10 +14,24 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import jwt  # PyJWT library
+from jwt import PyJWKClient
 
 from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# JWKS client — singleton, caches keys automatically
+_jwks_client: Optional[PyJWKClient] = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Get or create a cached JWKS client for the Supabase project."""
+    global _jwks_client
+    if _jwks_client is None:
+        settings = get_settings()
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+        _jwks_client = PyJWKClient(jwks_url, cache_keys=True)
+    return _jwks_client
 
 
 # ============================================
@@ -30,12 +44,18 @@ class AuthUser:
     auth_id: str       # Supabase auth.users.id (UUID as string)
     email: str
     role: str          # 'authenticated', 'anon', 'service_role'
-    exp: datetime      # Token expiration
-    iat: datetime      # Token issued at
-    user_metadata: dict  # Custom claims from Supabase Auth
+    exp: Optional[datetime] = None  # Token expiration (None when verified via get_user)
+    iat: Optional[datetime] = None  # Token issued at (None when verified via get_user)
+    user_metadata: dict = None      # Custom claims from Supabase Auth
+
+    def __post_init__(self):
+        if self.user_metadata is None:
+            self.user_metadata = {}
 
     @property
     def is_expired(self) -> bool:
+        if self.exp is None:
+            return False
         return datetime.now(timezone.utc) > self.exp
 
     @property
@@ -82,12 +102,26 @@ def decode_token(token: str) -> dict:
         TokenInvalidError: If token is malformed or signature fails.
     """
     settings = get_settings()
+    _ALLOWED_ALGORITHMS = {"HS256", "ES256"}
+
+    header = jwt.get_unverified_header(token)
+    alg = header.get("alg", "HS256")
+
+    if alg not in _ALLOWED_ALGORITHMS:
+        raise TokenInvalidError(f"Unsupported algorithm: {alg}")
 
     try:
+        if alg == "HS256":
+            signing_key = settings.SUPABASE_JWT_SECRET
+        else:
+            # ES256 — fetch public key from Supabase JWKS
+            jwks_client = _get_jwks_client()
+            signing_key = jwks_client.get_signing_key_from_jwt(token).key
+
         payload = jwt.decode(
             token,
-            settings.SUPABASE_JWT_SECRET,
-            algorithms=["HS256"],
+            signing_key,
+            algorithms=["HS256", "ES256"],
             audience="authenticated",
             options={
                 "verify_exp": True,

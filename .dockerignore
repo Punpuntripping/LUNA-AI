@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.venv/
+__pycache__/
+*.pyc
+.git/
+.claude/
+.playwright-mcp/
+screenshots_temp/
+agents_reports/
+login-page-final.png
+*.md
+.mcp.json

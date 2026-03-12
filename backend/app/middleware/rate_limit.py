@@ -24,6 +24,10 @@ DEFAULT_WINDOW_SECONDS = 60      # per minute
 AUTH_RATE_LIMIT = 10             # requests
 AUTH_WINDOW_SECONDS = 60         # per minute
 
+# Stricter limits for message send (resource-intensive: DB writes + AI pipeline)
+MESSAGE_SEND_RATE_LIMIT = 20     # requests
+MESSAGE_SEND_WINDOW_SECONDS = 60 # per minute
+
 # Paths that are exempt from rate limiting
 EXEMPT_PATHS = {"/api/v1/health", "/docs", "/redoc", "/openapi.json"}
 
@@ -50,6 +54,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path.startswith("/api/v1/auth/"):
             max_requests = AUTH_RATE_LIMIT
             window = AUTH_WINDOW_SECONDS
+        elif (
+            "/messages" in request.url.path
+            and request.method == "POST"
+        ):
+            max_requests = MESSAGE_SEND_RATE_LIMIT
+            window = MESSAGE_SEND_WINDOW_SECONDS
         else:
             max_requests = DEFAULT_RATE_LIMIT
             window = DEFAULT_WINDOW_SECONDS

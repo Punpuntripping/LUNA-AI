@@ -42,6 +42,14 @@ class CasePriority(str, Enum):
     LOW = "low"
 
 
+class DocumentType(str, Enum):
+    """Document file type — mirrors document_type_enum in 002_enums.sql."""
+    PDF = "pdf"
+    IMAGE = "image"
+    DOCX = "docx"
+    OTHER = "other"
+
+
 class MemoryType(str, Enum):
     """Type of case memory/fact."""
     FACT = "fact"
@@ -115,6 +123,25 @@ class AuditAction(str, Enum):
     DOWNLOAD = "download"
 
 
+class AgentFamily(str, Enum):
+    """Agent family — mirrors agent_family_enum in 018_enums_agent.sql."""
+    DEEP_SEARCH = "deep_search"
+    SIMPLE_SEARCH = "simple_search"
+    END_SERVICES = "end_services"
+    EXTRACTION = "extraction"
+    MEMORY = "memory"
+
+
+class ArtifactType(str, Enum):
+    """Artifact type — mirrors artifact_type_enum in 018_enums_agent.sql."""
+    REPORT = "report"
+    CONTRACT = "contract"
+    MEMO = "memo"
+    SUMMARY = "summary"
+    MEMORY_FILE = "memory_file"
+    LEGAL_OPINION = "legal_opinion"
+
+
 # ============================================
 # TYPE ALIASES
 # ============================================
@@ -162,3 +189,19 @@ class LLMUsage:
     cost_usd: float
     latency_ms: int
     finish_reason: FinishReason = FinishReason.STOP
+
+
+@dataclass
+class AgentContext:
+    """Context passed to agent families for processing a user request."""
+    question: str
+    conversation_id: str
+    user_id: str
+    case_id: Optional[str] = None
+    memory_md: Optional[str] = None
+    conversation_history: list[ChatMessage] = field(default_factory=list)
+    case_metadata: Optional[dict] = None
+    user_preferences: Optional[dict] = None
+    user_templates: Optional[list[dict]] = None
+    document_summaries: Optional[list[dict]] = None
+    modifiers: list[str] = field(default_factory=list)

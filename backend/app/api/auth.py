@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase, get_redis
+from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
 from backend.app.models.requests import LoginRequest, RegisterRequest, RefreshRequest
 from backend.app.models.responses import (
     LoginResponse,
@@ -40,7 +40,7 @@ _SESSION_TTL = 86400
 async def login(
     body: LoginRequest,
     request: Request,
-    supabase: SupabaseClient = Depends(get_supabase),
+    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """
@@ -48,7 +48,7 @@ async def login(
     Returns access_token, refresh_token, and user profile.
     """
     try:
-        response = supabase.auth.sign_in_with_password(
+        response = supabase_auth.auth.sign_in_with_password(
             {"email": body.email, "password": body.password}
         )
     except Exception as e:
@@ -101,14 +101,14 @@ async def login(
 @router.post("/register", response_model=RegisterResponse, status_code=201)
 async def register(
     body: RegisterRequest,
-    supabase: SupabaseClient = Depends(get_supabase),
+    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
 ):
     """
     Register a new user with email, password, and Arabic full name.
     Profile row is created automatically by DB trigger.
     """
     try:
-        response = supabase.auth.sign_up(
+        response = supabase_auth.auth.sign_up(
             {
                 "email": body.email,
                 "password": body.password,
@@ -125,6 +125,11 @@ async def register(
             raise HTTPException(
                 status_code=409,
                 detail="البريد الإلكتروني مسجل مسبقاً",
+            )
+        if "rate limit" in error_msg or "429" in error_msg:
+            raise HTTPException(
+                status_code=429,
+                detail="تم تجاوز الحد المسموح من الطلبات",
             )
         logger.exception("Registration error: %s", e)
         raise HTTPException(status_code=400, detail="فشل إنشاء الحساب")
@@ -161,13 +166,13 @@ async def register(
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
     body: RefreshRequest,
-    supabase: SupabaseClient = Depends(get_supabase),
+    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
 ):
     """
     Exchange a refresh token for a new access + refresh token pair.
     """
     try:
-        response = supabase.auth.refresh_session(body.refresh_token)
+        response = supabase_auth.auth.refresh_session(body.refresh_token)
         session = response.session
         if session is None:
             raise HTTPException(status_code=401, detail="الرمز منتهي الصلاحية")
@@ -190,7 +195,7 @@ async def refresh(
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(
     current_user: AuthUser = Depends(get_current_user),
-    supabase: SupabaseClient = Depends(get_supabase),
+    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """
@@ -198,7 +203,7 @@ async def logout(
     """
     # Sign out from Supabase (invalidates tokens)
     try:
-        supabase.auth.sign_out()
+        supabase_auth.auth.sign_out()
     except Exception as e:
         logger.warning("Supabase sign_out failed: %s", e)
 
@@ -236,7 +241,7 @@ async def me(
         logger.exception("Error querying user profile: %s", e)
         raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
 
-    if result.data is None:
+    if result is None or result.data is None:
         raise HTTPException(status_code=404, detail="الملف الشخصي غير موجود")
 
     profile = result.data

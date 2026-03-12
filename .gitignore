@@ -1,6 +1,14 @@
 .venv/
 .env
+.env.local
+.env*.local
+frontend/.env.local
 node_modules/
 __pycache__/
 *.pyc
 .next/
+.playwright-mcp/
+screenshots_temp/
+login-page-final.png
+agents_reports/
+tests/

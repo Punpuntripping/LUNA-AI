@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from shared.config import get_settings
-from shared.db.client import get_supabase_client
+from shared.db.client import get_supabase_client, get_supabase_anon_client
 from shared.cache.redis import get_async_redis_client
 
 logger = logging.getLogger(__name__)
@@ -31,9 +31,13 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
 
     # --- STARTUP ---
-    # 1. Supabase client (sync, singleton via lru_cache)
+    # 1. Supabase clients (sync, singleton via lru_cache)
+    #    - service_role client: for data operations (bypasses RLS)
+    #    - anon client: for GoTrue auth operations (sign_in, sign_up, etc.)
+    #    Separate clients prevent sign_in from polluting the service_role session.
     app.state.supabase = get_supabase_client()
-    logger.info("Supabase client ready")
+    app.state.supabase_auth = get_supabase_anon_client()
+    logger.info("Supabase clients ready")
 
     # 2. Redis async client (singleton via lru_cache)
     try:
@@ -96,7 +100,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
         expose_headers=["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
     )
@@ -133,6 +137,69 @@ def create_app() -> FastAPI:
         auth_router,
         prefix="/api/v1/auth",
         tags=["auth"],
+    )
+
+    # Cases router
+    from backend.app.api.cases import router as cases_router
+
+    application.include_router(
+        cases_router,
+        prefix="/api/v1/cases",
+        tags=["cases"],
+    )
+
+    # Conversations router
+    from backend.app.api.conversations import router as conversations_router
+
+    application.include_router(
+        conversations_router,
+        prefix="/api/v1/conversations",
+        tags=["conversations"],
+    )
+
+    # Messages router
+    from backend.app.api.messages import router as messages_router
+
+    application.include_router(
+        messages_router,
+        prefix="/api/v1",
+        tags=["messages"],
+    )
+
+    # Documents router
+    from backend.app.api.documents import router as documents_router
+
+    application.include_router(
+        documents_router,
+        prefix="/api/v1",
+        tags=["documents"],
+    )
+
+    # Memories router
+    from backend.app.api.memories import router as memories_router
+
+    application.include_router(
+        memories_router,
+        prefix="/api/v1",
+        tags=["memories"],
+    )
+
+    # Artifacts router
+    from backend.app.api.artifacts import router as artifacts_router
+
+    application.include_router(
+        artifacts_router,
+        prefix="/api/v1",
+        tags=["artifacts"],
+    )
+
+    # Preferences + Templates router
+    from backend.app.api.preferences import router as preferences_router
+
+    application.include_router(
+        preferences_router,
+        prefix="/api/v1",
+        tags=["preferences"],
     )
 
     return application

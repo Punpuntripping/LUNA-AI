@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "npx",
+      "args": ["-y", "shadcn@latest", "mcp"]
+    },
+    "eslint": {
+      "command": "npx",
+      "args": ["-y", "@eslint/mcp@latest"],
+      "cwd": "C:\\Programming\\LUNA_AI\\frontend",
+      "env": {
+        "ESLINT_USE_FLAT_CONFIG": "false"
+      }
+    }
+  }
+}

@@ -1,5 +1,16 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Helper: creates an oklch color value from a CSS variable,
+ * with support for Tailwind's opacity modifier syntax (e.g. bg-primary/90).
+ *
+ * The CSS variable stores raw OKLCH channels: "L C H"
+ * This function produces: oklch(L C H / <alpha>)
+ */
+function oklchVar(variable: string) {
+  return `oklch(var(--${variable}) / <alpha-value>)`;
+}
+
 const config: Config = {
   darkMode: ["class"],
   content: [
@@ -13,41 +24,63 @@ const config: Config = {
         sans: ["var(--font-ibm-plex-arabic)", "system-ui", "sans-serif"],
       },
       colors: {
-        border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
+        border: oklchVar("border"),
+        input: oklchVar("input"),
+        ring: oklchVar("ring"),
+        background: oklchVar("background"),
+        foreground: oklchVar("foreground"),
         primary: {
-          DEFAULT: "hsl(var(--primary))",
-          foreground: "hsl(var(--primary-foreground))",
+          DEFAULT: oklchVar("primary"),
+          foreground: oklchVar("primary-foreground"),
         },
         secondary: {
-          DEFAULT: "hsl(var(--secondary))",
-          foreground: "hsl(var(--secondary-foreground))",
+          DEFAULT: oklchVar("secondary"),
+          foreground: oklchVar("secondary-foreground"),
         },
         muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+          DEFAULT: oklchVar("muted"),
+          foreground: oklchVar("muted-foreground"),
         },
         accent: {
-          DEFAULT: "hsl(var(--accent))",
-          foreground: "hsl(var(--accent-foreground))",
+          DEFAULT: oklchVar("accent"),
+          foreground: oklchVar("accent-foreground"),
         },
         destructive: {
-          DEFAULT: "hsl(var(--destructive))",
-          foreground: "hsl(var(--destructive-foreground))",
+          DEFAULT: oklchVar("destructive"),
+          foreground: oklchVar("destructive-foreground"),
+        },
+        card: {
+          DEFAULT: oklchVar("card"),
+          foreground: oklchVar("card-foreground"),
+        },
+        popover: {
+          DEFAULT: oklchVar("popover"),
+          foreground: oklchVar("popover-foreground"),
         },
         sidebar: {
-          DEFAULT: "hsl(var(--sidebar-background))",
-          foreground: "hsl(var(--sidebar-foreground))",
-          border: "hsl(var(--sidebar-border))",
+          DEFAULT: oklchVar("sidebar-background"),
+          foreground: oklchVar("sidebar-foreground"),
+          border: oklchVar("sidebar-border"),
         },
       },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
         sm: "calc(var(--radius) - 4px)",
+      },
+      keyframes: {
+        blink: {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0" },
+        },
+        "bounce-dot": {
+          "0%, 80%, 100%": { transform: "translateY(0)" },
+          "40%": { transform: "translateY(-4px)" },
+        },
+      },
+      animation: {
+        blink: "blink 1s step-end infinite",
+        "bounce-dot": "bounce-dot 1.2s ease-in-out infinite",
       },
     },
   },
