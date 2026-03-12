@@ -3,7 +3,27 @@ import type {
   AuthTokens,
   User,
   RegisterResponse,
+  CaseListResponse,
+  CaseDetailResponse,
+  CreateCaseRequest,
+  CreateCaseResponse,
+  CaseDetail,
+  ConversationListResponse,
+  ConversationDetail,
+  CreateConversationRequest,
+  MessageListResponse,
+  Document,
+  DocumentListResponse,
+  DownloadResponse,
+  Memory,
+  MemoryListResponse,
+  Artifact,
+  ArtifactListResponse,
+  UserPreferences,
+  UserTemplate,
+  TemplateListResponse,
 } from "@/types";
+import { supabase } from "@/lib/supabase";
 
 interface ApiError {
   detail: string;
@@ -15,14 +35,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const API_PREFIX = "/api/v1";
 
 // -----------------------------------------------
-// Token management (stored in memory + localStorage)
+// Token management (access token in MEMORY only)
+// Refresh token is managed by Supabase via HttpOnly
+// cookie through @supabase/ssr — never in localStorage.
 // -----------------------------------------------
 
 let accessToken: string | null = null;
 
 export function setTokens(tokens: AuthTokens): void {
   accessToken = tokens.access_token;
-  localStorage.setItem("refresh_token", tokens.refresh_token);
+  // Refresh token is NOT stored here — Supabase SSR handles it
+  // via cookie-based session management automatically.
 }
 
 export function getAccessToken(): string | null {
@@ -31,11 +54,10 @@ export function getAccessToken(): string | null {
 
 export function clearTokens(): void {
   accessToken = null;
-  localStorage.removeItem("refresh_token");
 }
 
 // -----------------------------------------------
-// Refresh logic
+// Refresh logic (via Supabase SSR session refresh)
 // -----------------------------------------------
 
 let refreshPromise: Promise<string> | null = null;
@@ -45,24 +67,19 @@ async function refreshAccessToken(): Promise<string> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = (async () => {
-    const refreshToken = localStorage.getItem("refresh_token");
-    if (!refreshToken) throw new Error("No refresh token");
+    // Use Supabase client to refresh the session.
+    // @supabase/ssr manages the refresh token in an HttpOnly cookie,
+    // so we don't need to pass it manually.
+    const { data, error } = await supabase.auth.refreshSession();
 
-    const res = await fetch(`${API_BASE}${API_PREFIX}/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-
-    if (!res.ok) {
+    if (error || !data.session) {
       clearTokens();
       window.location.href = "/login";
       throw new Error("Token refresh failed");
     }
 
-    const data: AuthTokens = await res.json();
-    setTokens(data);
-    return data.access_token;
+    accessToken = data.session.access_token;
+    return data.session.access_token;
   })();
 
   try {
@@ -108,8 +125,8 @@ async function apiFetch<T>(
 
   const res = await fetch(url, { ...options, headers });
 
-  // Handle 401: attempt token refresh once
-  if (res.status === 401 && retry) {
+  // Handle 401: attempt token refresh once (only if we had a token — skip for login/register)
+  if (res.status === 401 && retry && accessToken) {
     try {
       await refreshAccessToken();
       return apiFetch<T>(path, options, false);
@@ -187,10 +204,230 @@ export const authApi = {
     full_name_ar: string;
   }) => api.post<RegisterResponse>("/auth/register", data),
 
-  refresh: (refreshToken: string) =>
-    api.post<AuthTokens>("/auth/refresh", { refresh_token: refreshToken }),
+  refresh: () =>
+    refreshAccessToken().then((token) => ({
+      access_token: token,
+      refresh_token: "", // Managed by Supabase SSR cookie
+    })),
 
   logout: () => api.post<{ success: boolean }>("/auth/logout"),
 
   me: () => api.get<User>("/auth/me"),
+};
+
+// -----------------------------------------------
+// Cases API
+// -----------------------------------------------
+
+export const casesApi = {
+  list: (params?: { status?: string; page?: number; per_page?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set("status", params.status);
+    if (params?.page) searchParams.set("page", String(params.page));
+    if (params?.per_page) searchParams.set("per_page", String(params.per_page));
+    const qs = searchParams.toString();
+    return api.get<CaseListResponse>(`/cases${qs ? `?${qs}` : ""}`);
+  },
+
+  get: (caseId: string) =>
+    api.get<CaseDetailResponse>(`/cases/${caseId}`),
+
+  create: (data: CreateCaseRequest) =>
+    api.post<CreateCaseResponse>("/cases", data),
+
+  update: (caseId: string, data: Partial<CreateCaseRequest>) =>
+    api.patch<{ case: CaseDetail }>(`/cases/${caseId}`, data),
+
+  updateStatus: (caseId: string, status: string) =>
+    api.patch<{ case: CaseDetail }>(`/cases/${caseId}/status`, { status }),
+
+  delete: (caseId: string) =>
+    api.delete<{ success: boolean }>(`/cases/${caseId}`),
+};
+
+// -----------------------------------------------
+// Conversations API
+// -----------------------------------------------
+
+export const conversationsApi = {
+  list: (params?: { case_id?: string | null; limit?: number; offset?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.case_id) searchParams.set("case_id", params.case_id);
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    if (params?.offset) searchParams.set("offset", String(params.offset));
+    const qs = searchParams.toString();
+    return api.get<ConversationListResponse>(`/conversations${qs ? `?${qs}` : ""}`);
+  },
+
+  get: (conversationId: string) =>
+    api.get<{ conversation: ConversationDetail }>(`/conversations/${conversationId}`),
+
+  create: (data: CreateConversationRequest) =>
+    api.post<{ conversation: ConversationDetail }>("/conversations", data),
+
+  update: (conversationId: string, title_ar: string) =>
+    api.patch<{ conversation: ConversationDetail }>(`/conversations/${conversationId}`, { title_ar }),
+
+  delete: (conversationId: string) =>
+    api.delete<{ success: boolean }>(`/conversations/${conversationId}`),
+
+  endSession: (conversationId: string) =>
+    api.post<{ conversation: ConversationDetail }>(`/conversations/${conversationId}/end-session`),
+};
+
+// -----------------------------------------------
+// Messages API
+// -----------------------------------------------
+
+export const messagesApi = {
+  list: (conversationId: string, params?: { limit?: number; before?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    if (params?.before) searchParams.set("before", params.before);
+    const qs = searchParams.toString();
+    return api.get<MessageListResponse>(`/conversations/${conversationId}/messages${qs ? `?${qs}` : ""}`);
+  },
+
+  /** Returns raw Response for SSE stream reading — do NOT use apiFetch.
+   *  Includes 401 retry logic: if token expired, refresh and retry once. */
+  send: async (
+    conversationId: string,
+    content: string,
+    signal?: AbortSignal,
+    options?: { agent_family?: string; modifiers?: string[] }
+  ): Promise<Response> => {
+    const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
+    const doFetch = () => {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (accessToken) {
+        headers["Authorization"] = `Bearer ${accessToken}`;
+      }
+      const body: Record<string, unknown> = { content };
+      if (options?.agent_family) body.agent_family = options.agent_family;
+      if (options?.modifiers?.length) body.modifiers = options.modifiers;
+      return fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      });
+    };
+
+    const res = await doFetch();
+    if (res.status === 401 && accessToken) {
+      try {
+        await refreshAccessToken();
+        return doFetch();
+      } catch {
+        clearTokens();
+        window.location.href = "/login";
+        throw new ApiClientError(401, "unauthorized", "Session expired");
+      }
+    }
+    return res;
+  },
+};
+
+// -----------------------------------------------
+// Documents API
+// -----------------------------------------------
+
+export const documentsApi = {
+  list: (caseId: string, params?: { page?: number; limit?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.set("page", String(params.page));
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    const qs = searchParams.toString();
+    return api.get<DocumentListResponse>(`/cases/${caseId}/documents${qs ? `?${qs}` : ""}`);
+  },
+
+  upload: (caseId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.upload<Document>(`/cases/${caseId}/documents`, formData);
+  },
+
+  get: (documentId: string) =>
+    api.get<Document>(`/documents/${documentId}`),
+
+  download: (documentId: string) =>
+    api.get<DownloadResponse>(`/documents/${documentId}/download`),
+
+  delete: (documentId: string) =>
+    api.delete<{ success: boolean }>(`/documents/${documentId}`),
+};
+
+// -----------------------------------------------
+// Memories API
+// -----------------------------------------------
+
+export const memoriesApi = {
+  list: (caseId: string, params?: { type?: string; page?: number; limit?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.type) searchParams.set("type", params.type);
+    if (params?.page) searchParams.set("page", String(params.page));
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    const qs = searchParams.toString();
+    return api.get<MemoryListResponse>(`/cases/${caseId}/memories${qs ? `?${qs}` : ""}`);
+  },
+
+  create: (caseId: string, body: { memory_type: string; content_ar: string }) =>
+    api.post<Memory>(`/cases/${caseId}/memories`, body),
+
+  update: (memoryId: string, body: { content_ar?: string; memory_type?: string }) =>
+    api.patch<Memory>(`/memories/${memoryId}`, body),
+
+  delete: (memoryId: string) =>
+    api.delete<{ success: boolean }>(`/memories/${memoryId}`),
+};
+
+// -----------------------------------------------
+// Artifacts API
+// -----------------------------------------------
+
+export const artifactsApi = {
+  listByConversation: (conversationId: string) =>
+    api.get<ArtifactListResponse>(`/conversations/${conversationId}/artifacts`),
+
+  listByCase: (caseId: string) =>
+    api.get<ArtifactListResponse>(`/cases/${caseId}/artifacts`),
+
+  get: (artifactId: string) =>
+    api.get<Artifact>(`/artifacts/${artifactId}`),
+
+  update: (artifactId: string, data: { title?: string; content_md?: string }) =>
+    api.patch<Artifact>(`/artifacts/${artifactId}`, data),
+
+  delete: (artifactId: string) =>
+    api.delete<{ success: boolean }>(`/artifacts/${artifactId}`),
+};
+
+// -----------------------------------------------
+// Preferences API
+// -----------------------------------------------
+
+export const preferencesApi = {
+  get: () => api.get<UserPreferences>("/preferences"),
+
+  update: (preferences: Record<string, unknown>) =>
+    api.patch<UserPreferences>("/preferences", { preferences }),
+};
+
+// -----------------------------------------------
+// Templates API
+// -----------------------------------------------
+
+export const templatesApi = {
+  list: () => api.get<TemplateListResponse>("/templates"),
+
+  create: (data: { title: string; description?: string; prompt_template: string; agent_family?: string }) =>
+    api.post<UserTemplate>("/templates", data),
+
+  update: (templateId: string, data: Record<string, unknown>) =>
+    api.patch<UserTemplate>(`/templates/${templateId}`, data),
+
+  delete: (templateId: string) =>
+    api.delete<{ success: boolean }>(`/templates/${templateId}`),
 };
