@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase
+from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.models.requests import CreateMemoryRequest, UpdateMemoryRequest
 from backend.app.models.responses import (
     MemoryListResponse,
@@ -35,6 +35,7 @@ async def list_memories(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List memories for a case, optionally filtered by type."""
+    validate_uuid(case_id, "معرف القضية")
     return memory_service.list_memories(
         supabase, user.auth_id, case_id,
         memory_type=type, page=page, limit=limit,
@@ -53,6 +54,7 @@ async def create_memory(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Create a new memory for a case."""
+    validate_uuid(case_id, "معرف القضية")
     return memory_service.create_memory(
         supabase, user.auth_id, case_id,
         memory_type=body.memory_type,
@@ -71,6 +73,7 @@ async def update_memory(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Update a memory's content or type."""
+    validate_uuid(memory_id, "معرف الذاكرة")
     return memory_service.update_memory(
         supabase, user.auth_id, memory_id,
         content_ar=body.content_ar,
@@ -88,5 +91,6 @@ async def delete_memory(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Soft-delete a memory."""
+    validate_uuid(memory_id, "معرف الذاكرة")
     memory_service.delete_memory(supabase, user.auth_id, memory_id)
     return {"success": True}

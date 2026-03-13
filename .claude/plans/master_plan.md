@@ -21,11 +21,15 @@ Two modes: **General Q&A** (broad legal questions) and **Case-specific** (docume
 | Wave 3 | Sidebar + Cases CRUD + Conversations CRUD | DONE | `wave_3_sidebar_crud.md` |
 | Wave 4 | Messages + SSE streaming + Documents + Memories + Mock RAG | DONE | `wave_4_messages_streaming.md` |
 | Wave 5 | Polish + Testing + Deployment verification (68/70 pass) | DONE | `wave_5_polish_deploy.md` |
-| **Wave 6** | **Integration — Agent framework + Artifacts + @ Parser + Artifact Panel** | **IN PROGRESS** | `wave_6_integration_overview.md` |
-| Wave 6A | DB migrations (018-020) + shared types | NOT STARTED | `wave_6a_database_shared.md` |
-| Wave 6B | Artifact + preferences backend APIs | NOT STARTED | `wave_6b_backend_services.md` |
-| Wave 6C | Agent framework (5 families) + router wiring | NOT STARTED | `wave_6c_agent_framework.md` |
-| Wave 6D | Frontend: types, hooks, @ parser, artifact panel | NOT STARTED | `wave_6d_frontend_integration.md` |
+| Wave 6 | Integration — Agent framework + Artifacts + @ Parser + Artifact Panel | DONE | `wave_6_integration_overview.md` |
+| Wave 6A | DB migrations (018-020) + shared types | DONE | `wave_6a_database_shared.md` |
+| Wave 6B | Artifact + preferences backend APIs | DONE | `wave_6b_backend_services.md` |
+| Wave 6C | Agent framework (5 families) + router wiring | DONE | `wave_6c_agent_framework.md` |
+| Wave 6D | Frontend: types, hooks, @ parser, artifact panel | DONE | `wave_6d_frontend_integration.md` |
+| Wave 7 | Production Hardening (best practices audit) | DONE | See 7A/7B/7C below |
+| Wave 7A | SSE hardening: heartbeat, disconnect detection, CancelledError | DONE | `wave_7a_sse_hardening.md` |
+| Wave 7B | Security & deployment: headers, Docker, healthcheck, rate limiting, error boundary | DONE | `wave_7b_security_deployment.md` |
+| Wave 7C | Operational maturity: error codes, audit logging, CI, reconnect, optimistic updates | DONE | `wave_7c_operational_maturity.md` |
 
 ---
 
@@ -223,15 +227,73 @@ Wave 6A (parallel):
 
 ---
 
-## Future Waves (Post Wave 6)
+## Wave 7: Production Hardening
+
+Source: 5 best-practice audit reports (`agents_reports/best_practices/`) consolidated into `EXECUTION_PLAN.md`.
+Scoped for MVP (~100 users). Items not needed at this scale are deferred with specific triggers.
+
+```
+Wave 7A + 7B can run in PARALLEL (zero shared files):
+
+  Wave 7A: @sse-streaming + @fastapi-backend + @nextjs-frontend
+    ├── Heartbeat (15s keep-alive pings)
+    ├── Disconnect detection (request.is_disconnected)
+    └── CancelledError handling
+
+  Wave 7B: @fastapi-backend + @nextjs-frontend
+    ├── Security headers (CSP, HSTS, X-Frame-Options)
+    ├── Non-root Docker + multi-stage build
+    ├── Railway healthcheck
+    ├── Per-user rate limiting + X-Forwarded-For
+    └── Error boundary + smart query retry
+
+Wave 7C runs AFTER 7A (reconnect depends on heartbeat):
+
+  Wave 7C: @fastapi-backend + @nextjs-frontend + @sse-streaming
+    ├── SSE auto-reconnect with exponential backoff
+    ├── Structured error codes (~111 HTTPExceptions → LunaHTTPException)
+    ├── Audit logging (wire existing audit_logs table)
+    ├── GitHub Actions CI pipeline
+    └── Optimistic updates for conversations
+```
+
+### Wave 7 Validation Chain
+```
+7A + 7B build (parallel) → @integration-lead + @validate + @security-reviewer + @deploy-checker
+  ├─ PASS → proceed to 7C
+  └─ FAIL → fix sub-wave → re-validate
+7C build → @integration-lead + @validate (Supabase MCP for audit logs, Playwright MCP for optimistic UI)
+  ├─ PASS → Wave 7 complete
+  └─ FAIL → fix sub-wave → re-validate
+```
+
+---
+
+## Future Waves (Post Wave 7)
 
 | Wave | Scope | What Changes |
 |------|-------|--------------|
-| 7 | LLM-based intent classification | Mock classifier → Claude Haiku |
-| 8 | Legal DB vector search | Simple Search mock → pgvector RAG |
-| 9 | Full RAG pipeline | Deep Search mock → multi-step retrieval |
-| 10 | Document processing | Extraction mock → Mistral AI OCR |
-| 11 | Document generation | End Services mock → template engine |
-| 12 | Memory extraction | Memory mock → auto-extraction |
+| 8 | LLM-based intent classification | Mock classifier → Claude Haiku |
+| 9 | Legal DB vector search | Simple Search mock → pgvector RAG + hybrid search |
+| 10 | Full RAG pipeline | Deep Search mock → multi-step retrieval |
+| 11 | Document processing | Extraction mock → Mistral AI OCR |
+| 12 | Document generation | End Services mock → template engine |
+| 13 | Memory extraction | Memory mock → auto-extraction |
 
 Each wave swaps ONE mock agent. Interfaces don't change — only internals.
+
+### Deferred Items (Scale Later — with triggers)
+
+| Item | Trigger | Source Report |
+|------|---------|---------------|
+| Gunicorn + Uvicorn workers | Request queuing, Railway 2+ vCPU | Infrastructure |
+| Active Redis caching | Supabase latency >200ms | Architecture |
+| Semantic LLM caching | Real LLM + repeated queries >$50/mo | AI Chat SaaS |
+| Celery background tasks | Doc processing >10s blocking HTTP | Infrastructure |
+| Separate Supabase envs | Before real user data in production | Next.js/Supabase |
+| Real SMTP (Resend/SendGrid) | Supabase email rate limits hit | Next.js/Supabase |
+| MFA for lawyers | Saudi legal compliance requirement | Next.js/Supabase |
+| Vitest frontend tests | Frontend regression bugs appearing | Architecture |
+| Playwright E2E tests | Before launch with paying users | Architecture |
+| Sentry error tracking | Production launch (5-min setup) | Infrastructure |
+| k6 load testing | Before launch or first perf complaint | Architecture |

@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { messagesApi } from "@/lib/api";
+import { messagesApi, documentsApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
@@ -10,6 +10,7 @@ import type { Message, MessageListResponse, SSEMessageStart, SSEToken, SSECitati
 interface SendMessageParams {
   conversationId: string;
   content: string;
+  caseId?: string | null;
 }
 
 interface UseSendMessageReturn {
@@ -32,15 +33,47 @@ export function useSendMessage(): UseSendMessageReturn {
   } = useChatStore.getState();
 
   const sendMessage = useCallback(
-    async ({ conversationId, content }: SendMessageParams) => {
+    async ({ conversationId, content, caseId }: SendMessageParams) => {
+      // 0. Upload pending files (if any and conversation has a case)
+      const { pendingFiles, clearPendingFiles } = useChatStore.getState();
+      const attachmentIds: string[] = [];
+
+      // Build optimistic attachment list from pending files (for UI display)
+      const optimisticAttachments = pendingFiles.map((pf) => ({
+        id: pf.id,
+        document_id: pf.id,
+        attachment_type: (pf.mimeType === "application/pdf" ? "pdf" : pf.mimeType.startsWith("image/") ? "image" : "file") as "pdf" | "image" | "file",
+        filename: pf.name,
+        file_size: pf.size,
+      }));
+
+      if (pendingFiles.length > 0 && caseId) {
+        for (const pf of pendingFiles) {
+          try {
+            const doc = await documentsApi.upload(caseId, pf.file);
+            if (doc?.document_id) attachmentIds.push(doc.document_id);
+          } catch (err) {
+            console.error("File upload failed:", pf.name, err);
+          }
+        }
+        clearPendingFiles();
+      } else if (pendingFiles.length > 0) {
+        // General conversation — no case to upload to, clear files
+        clearPendingFiles();
+      }
+
+      // If no text but files are pending, use a default (backend requires min_length=1)
+      const messageContent = content || (optimisticAttachments.length > 0 ? "مرفق" : "");
+      if (!messageContent) return;
+
       // 1. Create optimistic user message
       const optimisticId = `optimistic-${Date.now()}`;
       const optimisticMessage: Message = {
         message_id: optimisticId,
         conversation_id: conversationId,
         role: "user",
-        content,
-        attachments: [],
+        content: messageContent,
+        attachments: optimisticAttachments,
         created_at: new Date().toISOString(),
         isOptimistic: true,
       };
@@ -68,107 +101,169 @@ export function useSendMessage(): UseSendMessageReturn {
         }
       );
 
-      // 2. Set up AbortController
-      const controller = new AbortController();
-      setAbortController(controller);
-
       let assistantMessageId: string | null = null;
       let citations: Citation[] = [];
 
-      try {
-        // 3. Send message via SSE (with agent selection + modifiers from chat store)
-        const { selectedAgentFamily, modifiers } = useChatStore.getState();
-        const response = await messagesApi.send(
-          conversationId, content, controller.signal,
-          {
-            agent_family: selectedAgentFamily ?? undefined,
-            modifiers: modifiers.length ? modifiers : undefined,
-          }
-        );
-        // Clear agent selection after send
-        useChatStore.getState().resetAgentSelection();
+      // 3. Capture agent selection before the first attempt (cleared after first send)
+      const { selectedAgentFamily, modifiers } = useChatStore.getState();
+      const sendOptions = {
+        agent_family: selectedAgentFamily ?? undefined,
+        modifiers: modifiers.length ? modifiers : undefined,
+        attachment_ids: attachmentIds.length ? attachmentIds : undefined,
+      };
 
-        if (!response.ok) {
-          let errorDetail = "حدث خطأ أثناء إرسال الرسالة";
-          try {
-            const errorBody = await response.json();
-            if (errorBody.detail) errorDetail = errorBody.detail;
-          } catch {
-            // Use default Arabic error
-          }
-          // Mark optimistic message as failed
-          markOptimisticFailed(qc, conversationId, optimisticId);
-          setError(errorDetail);
-          return;
-        }
+      // Retry loop: attempt SSE connection up to (1 + maxReconnectAttempts) times.
+      // The user message is already saved in the DB before this loop, so on retry we
+      // only re-establish the SSE stream — we never re-send the user message.
+      let attemptSucceeded = false;
 
-        if (!response.body) {
-          markOptimisticFailed(qc, conversationId, optimisticId);
-          setError("لم يتم استلام استجابة من الخادم");
-          return;
-        }
-
-        // 4. Parse SSE stream
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-        let currentEvent = "";
+      while (!attemptSucceeded) {
+        // Create a fresh AbortController for each attempt so a previous abort signal
+        // (from stopStreaming) does not immediately cancel a retry attempt.
+        const attemptController = new AbortController();
+        setAbortController(attemptController);
 
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+          const response = await messagesApi.send(
+            conversationId,
+            messageContent,
+            attemptController.signal,
+            sendOptions,
+          );
 
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            // Keep the last incomplete line in the buffer
-            buffer = lines.pop() ?? "";
+          // Clear agent selection after the first successful HTTP response
+          useChatStore.getState().resetAgentSelection();
 
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                currentEvent = line.slice(7).trim();
-              } else if (line.startsWith("data: ")) {
-                const jsonStr = line.slice(6);
-                handleSSEEvent(currentEvent, jsonStr);
-                currentEvent = "";
-              }
-              // Empty lines are event delimiters — we already handle per-line
+          if (!response.ok) {
+            // HTTP error — only 5xx errors are retryable
+            const isServerError = response.status >= 500;
+            if (isServerError) {
+              // Let the outer catch handle retry logic via a thrown error
+              const err = Object.assign(new Error("Server error"), { status: response.status });
+              throw err;
             }
+            // 4xx and other non-retryable HTTP errors: fail immediately
+            let errorDetail = "حدث خطأ أثناء إرسال الرسالة";
+            try {
+              const errorBody = await response.json();
+              if (typeof errorBody.detail === "string") {
+                errorDetail = errorBody.detail;
+              }
+            } catch {
+              // Use default Arabic error
+            }
+            markOptimisticFailed(qc, conversationId, optimisticId);
+            setError(errorDetail);
+            useChatStore.getState().resetReconnect();
+            return;
           }
 
-          // Process any remaining buffer
-          if (buffer.trim()) {
-            const lines = buffer.split("\n");
-            for (const line of lines) {
-              if (line.startsWith("event: ")) {
-                currentEvent = line.slice(7).trim();
-              } else if (line.startsWith("data: ")) {
-                const jsonStr = line.slice(6);
-                handleSSEEvent(currentEvent, jsonStr);
-                currentEvent = "";
+          if (!response.body) {
+            markOptimisticFailed(qc, conversationId, optimisticId);
+            setError("لم يتم استلام استجابة من الخادم");
+            useChatStore.getState().resetReconnect();
+            return;
+          }
+
+          // 4. Parse SSE stream
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let buffer = "";
+          let currentEvent = "";
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              // Keep the last incomplete line in the buffer
+              buffer = lines.pop() ?? "";
+
+              for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                  currentEvent = line.slice(7).trim();
+                } else if (line.startsWith("data: ")) {
+                  const jsonStr = line.slice(6);
+                  handleSSEEvent(currentEvent, jsonStr);
+                  currentEvent = "";
+                }
+                // Empty lines are event delimiters — we already handle per-line
               }
             }
-          }
-        } catch (err) {
-          // AbortError is expected when user stops streaming
-          if (err instanceof DOMException && err.name === "AbortError") {
-            // Streaming was intentionally stopped
-          } else {
-            throw err;
-          }
-        }
 
-        // 5. On completion, invalidate to refetch from server
-        void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
-        void qc.invalidateQueries({ queryKey: conversationKeys.lists() });
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") {
-          // User intentionally stopped — invalidate to get server state
+            // Process any remaining buffer
+            if (buffer.trim()) {
+              const lines = buffer.split("\n");
+              for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                  currentEvent = line.slice(7).trim();
+                } else if (line.startsWith("data: ")) {
+                  const jsonStr = line.slice(6);
+                  handleSSEEvent(currentEvent, jsonStr);
+                  currentEvent = "";
+                }
+              }
+            }
+          } catch (streamErr) {
+            // AbortError is expected when the user presses stop — do not retry
+            if (streamErr instanceof DOMException && streamErr.name === "AbortError") {
+              void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
+              useChatStore.getState().resetReconnect();
+              return;
+            }
+            // Any other mid-stream read error propagates to the retry logic below
+            throw streamErr;
+          }
+
+          // 5. Stream completed successfully
+          attemptSucceeded = true;
           void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
-          return;
+          void qc.invalidateQueries({ queryKey: conversationKeys.lists() });
+
+        } catch (err) {
+          // User intentionally aborted — never retry
+          if (err instanceof DOMException && err.name === "AbortError") {
+            void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
+            useChatStore.getState().resetReconnect();
+            return;
+          }
+
+          // Determine if the error is retryable:
+          //   - TypeError means fetch itself failed (network unreachable, DNS, etc.)
+          //   - An object with a status >= 500 is a server error
+          const isNetworkError = err instanceof TypeError;
+          const isServerError =
+            err !== null &&
+            typeof err === "object" &&
+            "status" in err &&
+            typeof (err as { status: unknown }).status === "number" &&
+            (err as { status: number }).status >= 500;
+          const isRetryable = isNetworkError || isServerError;
+
+          const { reconnectAttempts, maxReconnectAttempts, startReconnect, resetReconnect } =
+            useChatStore.getState();
+
+          if (isRetryable && reconnectAttempts < maxReconnectAttempts) {
+            // Exponential backoff: 1 s, 2 s, 4 s, 8 s, 16 s — capped at 30 s
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            startReconnect();
+            await new Promise<void>((resolve) => setTimeout(resolve, delay));
+            // Loop continues — re-establishes the SSE stream without touching the
+            // optimistic user message or re-submitting to the DB
+          } else {
+            // Non-retryable error or max retries exceeded
+            resetReconnect();
+            markOptimisticFailed(qc, conversationId, optimisticId);
+            if (reconnectAttempts >= maxReconnectAttempts) {
+              setError("فشل الاتصال بعد عدة محاولات. يرجى المحاولة مرة أخرى.");
+            } else {
+              setError("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.");
+            }
+            return;
+          }
         }
-        markOptimisticFailed(qc, conversationId, optimisticId);
-        setError("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.");
       }
 
       function handleSSEEvent(eventType: string, jsonStr: string): void {
@@ -239,6 +334,9 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().setSelectedAgentFamily(payload.agent_family);
               break;
             }
+            case "heartbeat":
+              // Keep-alive ping from server — ignore silently
+              break;
             case "error": {
               const errorMsg = (data as { detail?: string }).detail ?? "حدث خطأ أثناء المعالجة";
               useChatStore.getState().setError(errorMsg);

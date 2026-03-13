@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services.audit_service import write_audit_log
 from shared.types import CaseType, CaseStatus, CasePriority
 
 logger = logging.getLogger(__name__)
@@ -43,10 +45,10 @@ def get_user_id(supabase: SupabaseClient, auth_id: str) -> str:
         )
     except Exception as e:
         logger.exception("Error looking up user_id for auth_id=%s: %s", auth_id, e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=401, detail="الملف الشخصي غير موجود")
+        raise LunaHTTPException(status_code=401, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود")
 
     return result.data["user_id"]
 
@@ -54,8 +56,9 @@ def get_user_id(supabase: SupabaseClient, auth_id: str) -> str:
 def _validate_case_type(case_type: str) -> str:
     """Validate case_type against allowed enum values."""
     if case_type not in _VALID_CASE_TYPES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.CASE_INVALID_TYPE,
             detail=f"نوع القضية غير صالح. الأنواع المسموحة: {', '.join(_VALID_CASE_TYPES)}",
         )
     return case_type
@@ -64,8 +67,9 @@ def _validate_case_type(case_type: str) -> str:
 def _validate_priority(priority: str) -> str:
     """Validate priority against allowed enum values."""
     if priority not in _VALID_PRIORITIES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.CASE_INVALID_PRIORITY,
             detail=f"الأولوية غير صالحة. القيم المسموحة: {', '.join(_VALID_PRIORITIES)}",
         )
     return priority
@@ -74,8 +78,9 @@ def _validate_priority(priority: str) -> str:
 def _validate_status(status: str) -> str:
     """Validate status against allowed enum values."""
     if status not in _VALID_CASE_STATUSES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.CASE_INVALID_STATUS,
             detail=f"حالة القضية غير صالحة. القيم المسموحة: {', '.join(_VALID_CASE_STATUSES)}",
         )
     return status
@@ -121,11 +126,11 @@ def list_cases(
 
         result = query.execute()
 
-    except HTTPException:
+    except LunaHTTPException:
         raise
     except Exception as e:
         logger.exception("Error listing cases: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب القضايا")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب القضايا")
 
     total = result.count or 0
     cases = result.data or []
@@ -194,10 +199,10 @@ def create_case(
         )
     except Exception as e:
         logger.exception("Error creating case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القضية")
 
     if not case_result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القضية")
 
     case = case_result.data[0]
 
@@ -214,9 +219,17 @@ def create_case(
         )
     except Exception as e:
         logger.exception("Error creating initial conversation for case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء المحادثة الأولى")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المحادثة الأولى")
 
     first_conversation_id = conv_result.data[0]["conversation_id"] if conv_result.data else None
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="create",
+        resource_type="case",
+        resource_id=case["case_id"],
+    )
 
     return {
         "case": {
@@ -251,10 +264,10 @@ def get_case_detail(
         )
     except Exception as e:
         logger.exception("Error fetching case detail: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب تفاصيل القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب تفاصيل القضية")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
     case = result.data
 
@@ -342,7 +355,7 @@ def update_case(
         update_data["priority"] = priority
 
     if not update_data:
-        raise HTTPException(status_code=400, detail="لم يتم تقديم أي بيانات للتحديث")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.NO_UPDATE_DATA, detail="لم يتم تقديم أي بيانات للتحديث")
 
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -356,10 +369,10 @@ def update_case(
         )
     except Exception as e:
         logger.exception("Error updating case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث القضية")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
     case = result.data[0]
 
@@ -400,10 +413,10 @@ def update_case_status(
         )
     except Exception as e:
         logger.exception("Error updating case status: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث حالة القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث حالة القضية")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
     case = result.data[0]
 
@@ -446,7 +459,15 @@ def delete_case(
 
     except Exception as e:
         logger.exception("Error deleting case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف القضية")
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="delete",
+        resource_type="case",
+        resource_id=case_id,
+    )
 
 
 # ============================================
@@ -470,10 +491,10 @@ def _verify_case_ownership(supabase: SupabaseClient, case_id: str, user_id: str)
         )
     except Exception as e:
         logger.exception("Error verifying case ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
     return result.data
 

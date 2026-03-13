@@ -95,7 +95,18 @@ def create_app() -> FastAPI:
         response.headers["X-Request-ID"] = request_id
         return response
 
-    # 2. CORS
+    # 2. Security headers middleware
+    @application.middleware("http")
+    async def security_headers_middleware(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+    # 3. CORS middleware
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -105,7 +116,7 @@ def create_app() -> FastAPI:
         expose_headers=["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
     )
 
-    # 3. Rate limiting middleware
+    # 4. Rate limiting middleware
     from backend.app.middleware.rate_limit import RateLimitMiddleware
     application.add_middleware(RateLimitMiddleware)
 
@@ -113,12 +124,19 @@ def create_app() -> FastAPI:
     # Exception handlers
     # ------------------------------------------
 
+    from backend.app.errors import LunaHTTPException, luna_exception_handler
+    application.add_exception_handler(LunaHTTPException, luna_exception_handler)
+
     @application.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         logger.exception("Unhandled exception: %s", exc)
+        detail_msg = "حدث خطأ داخلي في الخادم"
         return JSONResponse(
             status_code=500,
-            content={"detail": "حدث خطأ داخلي في الخادم"},
+            content={
+                "error": {"code": "INTERNAL_ERROR", "message": detail_msg, "status": 500},
+                "detail": detail_msg,
+            },
         )
 
     # ------------------------------------------

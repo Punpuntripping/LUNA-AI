@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.artifact_service import create_artifact
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def get_or_create_memory_md(
         )
     except Exception as e:
         logger.exception("Error fetching memory.md: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب ذاكرة القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب ذاكرة القضية")
 
     if result is not None and result.data is not None:
         return result.data
@@ -70,9 +71,9 @@ def update_memory_md(
         )
     except Exception as e:
         logger.exception("Error updating memory.md: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث ذاكرة القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث ذاكرة القضية")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث ذاكرة القضية")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث ذاكرة القضية")
 
     return result.data[0]

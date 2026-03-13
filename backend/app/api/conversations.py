@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase
+from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.models.requests import (
     CreateConversationRequest,
     UpdateConversationRequest,
@@ -89,6 +89,7 @@ async def get_conversation(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Get a single conversation by ID."""
+    validate_uuid(conversation_id, "معرف المحادثة")
     data = conversation_service.get_conversation(
         supabase,
         current_user.auth_id,
@@ -110,6 +111,7 @@ async def update_conversation(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Update conversation title."""
+    validate_uuid(conversation_id, "معرف المحادثة")
     data = conversation_service.update_conversation(
         supabase,
         current_user.auth_id,
@@ -131,6 +133,7 @@ async def delete_conversation(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Soft-delete a conversation."""
+    validate_uuid(conversation_id, "معرف المحادثة")
     conversation_service.delete_conversation(
         supabase,
         current_user.auth_id,
@@ -151,6 +154,7 @@ async def end_session(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """End a conversation session (sets ended_at timestamp)."""
+    validate_uuid(conversation_id, "معرف المحادثة")
     data = conversation_service.end_session(
         supabase,
         current_user.auth_id,

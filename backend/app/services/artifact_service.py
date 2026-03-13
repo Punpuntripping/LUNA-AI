@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.case_service import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -52,10 +53,10 @@ def create_artifact(
         result = supabase.table("artifacts").insert(payload).execute()
     except Exception as e:
         logger.exception("Error creating artifact: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المستند")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المستند")
 
     return result.data[0]
 
@@ -80,7 +81,7 @@ def list_artifacts_by_conversation(
         )
     except Exception as e:
         logger.exception("Error listing artifacts by conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المستندات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المستندات")
 
     return result.data or []
 
@@ -105,7 +106,7 @@ def list_artifacts_by_case(
         )
     except Exception as e:
         logger.exception("Error listing artifacts by case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المستندات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المستندات")
 
     return result.data or []
 
@@ -130,10 +131,10 @@ def get_artifact(
         )
     except Exception as e:
         logger.exception("Error fetching artifact: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المستند")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.ARTIFACT_NOT_FOUND, detail="المستند غير موجود")
 
     return result.data
 
@@ -152,7 +153,7 @@ def update_artifact(
     # Fetch artifact to check editability
     existing = get_artifact(supabase, auth_id, artifact_id)
     if not existing.get("is_editable"):
-        raise HTTPException(status_code=403, detail="لا يمكن تعديل هذا المستند")
+        raise LunaHTTPException(status_code=403, code=ErrorCode.ARTIFACT_NOT_EDITABLE, detail="لا يمكن تعديل هذا المستند")
 
     update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
     if content_md is not None:
@@ -161,7 +162,7 @@ def update_artifact(
         update_data["title"] = title
 
     if len(update_data) == 1:
-        raise HTTPException(status_code=400, detail="لم يتم تقديم أي بيانات للتحديث")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.NO_UPDATE_DATA, detail="لم يتم تقديم أي بيانات للتحديث")
 
     try:
         result = (
@@ -173,10 +174,10 @@ def update_artifact(
         )
     except Exception as e:
         logger.exception("Error updating artifact: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث المستند")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.ARTIFACT_NOT_FOUND, detail="المستند غير موجود")
 
     return result.data[0]
 
@@ -201,7 +202,7 @@ def delete_artifact(
         )
     except Exception as e:
         logger.exception("Error deleting artifact: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف المستند")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.ARTIFACT_NOT_FOUND, detail="المستند غير موجود")

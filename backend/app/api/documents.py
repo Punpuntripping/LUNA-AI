@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase
+from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.models.responses import (
     DocumentListResponse,
     DocumentResponse,
@@ -32,6 +32,7 @@ async def list_documents(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List documents for a case."""
+    validate_uuid(case_id, "معرف القضية")
     return document_service.list_documents(
         supabase, user.auth_id, case_id, page=page, limit=limit
     )
@@ -48,6 +49,7 @@ async def upload_document(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Upload a document to a case."""
+    validate_uuid(case_id, "معرف القضية")
     doc = document_service.upload_document(
         supabase, user.auth_id, case_id, file=file
     )
@@ -64,6 +66,7 @@ async def get_document(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Get document details."""
+    validate_uuid(document_id, "معرف المستند")
     return document_service.get_document(supabase, user.auth_id, document_id)
 
 
@@ -77,6 +80,7 @@ async def download_document(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Get a signed download URL for a document."""
+    validate_uuid(document_id, "معرف المستند")
     return document_service.get_download_url(supabase, user.auth_id, document_id)
 
 
@@ -90,5 +94,6 @@ async def delete_document(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Soft-delete a document."""
+    validate_uuid(document_id, "معرف المستند")
     document_service.delete_document(supabase, user.auth_id, document_id)
     return {"success": True}

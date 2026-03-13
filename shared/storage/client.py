@@ -8,6 +8,8 @@ import logging
 import re
 import uuid
 
+from supabase import Client as SupabaseClient
+
 from shared.config import get_settings
 from shared.db.client import get_supabase_client
 
@@ -30,6 +32,7 @@ def upload_file(
     path: str,
     file_bytes: bytes,
     content_type: str,
+    supabase: SupabaseClient | None = None,
 ) -> str:
     """
     Upload a file to Supabase Storage.
@@ -39,11 +42,12 @@ def upload_file(
         path: Full storage path (e.g. "cases/{case_id}/convos/{convo_id}/{uuid}_{filename}")
         file_bytes: Raw file bytes
         content_type: MIME type (e.g. "application/pdf")
+        supabase: Optional Supabase client to reuse (falls back to get_supabase_client())
 
     Returns:
         The storage path of the uploaded file.
     """
-    client = get_supabase_client()
+    client = supabase or get_supabase_client()
 
     try:
         client.storage.from_(bucket).upload(
@@ -62,6 +66,7 @@ def get_signed_url(
     bucket: str,
     path: str,
     expires_in: int = 3600,
+    supabase: SupabaseClient | None = None,
 ) -> str:
     """
     Generate a signed download URL for a storage object.
@@ -70,11 +75,12 @@ def get_signed_url(
         bucket: Storage bucket name
         path: Storage path
         expires_in: URL expiry in seconds (default 1 hour)
+        supabase: Optional Supabase client to reuse (falls back to get_supabase_client())
 
     Returns:
         Signed URL string.
     """
-    client = get_supabase_client()
+    client = supabase or get_supabase_client()
 
     try:
         result = client.storage.from_(bucket).create_signed_url(path, expires_in)
@@ -87,9 +93,10 @@ def get_signed_url(
 def delete_file(
     bucket: str,
     path: str,
+    supabase: SupabaseClient | None = None,
 ) -> bool:
     """Delete a single file from storage."""
-    client = get_supabase_client()
+    client = supabase or get_supabase_client()
 
     try:
         client.storage.from_(bucket).remove([path])
@@ -103,9 +110,10 @@ def delete_file(
 def delete_folder(
     bucket: str,
     folder_path: str,
+    supabase: SupabaseClient | None = None,
 ) -> int:
     """Delete all files under a folder prefix."""
-    client = get_supabase_client()
+    client = supabase or get_supabase_client()
 
     try:
         files = client.storage.from_(bucket).list(folder_path)

@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import HTTPException, UploadFile
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from shared.config import get_settings
 from shared.storage.client import (
@@ -47,10 +49,10 @@ def _verify_case_ownership(supabase: SupabaseClient, case_id: str, user_id: str)
         )
     except Exception as e:
         logger.exception("Error verifying case ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
 
 def _verify_document_ownership(supabase: SupabaseClient, document_id: str, user_id: str) -> dict:
@@ -66,13 +68,13 @@ def _verify_document_ownership(supabase: SupabaseClient, document_id: str, user_
         )
     except Exception as e:
         logger.exception("Error verifying document ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.DOC_NOT_FOUND, detail="المستند غير موجود")
 
     if result.data.get("lawyer_cases", {}).get("lawyer_user_id") != user_id:
-        raise HTTPException(status_code=404, detail="المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.DOC_NOT_FOUND, detail="المستند غير موجود")
 
     return result.data
 
@@ -105,7 +107,7 @@ def list_documents(
         )
     except Exception as e:
         logger.exception("Error listing documents: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المستندات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المستندات")
 
     return {
         "documents": result.data or [],
@@ -128,15 +130,17 @@ def upload_document(
     # Validate MIME type from header
     content_type = file.content_type or "application/octet-stream"
     if content_type not in _ALLOWED_MIME_TYPES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.DOC_INVALID_TYPE,
             detail="نوع الملف غير مسموح. الأنواع المسموحة: PDF, PNG, JPG",
         )
 
     # Check file size before reading full content (if available)
     if hasattr(file, "size") and file.size and file.size > _MAX_FILE_SIZE:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.DOC_TOO_LARGE,
             detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
         )
 
@@ -150,8 +154,9 @@ def upload_document(
             break
         total += len(chunk)
         if total > _MAX_FILE_SIZE:
-            raise HTTPException(
+            raise LunaHTTPException(
                 status_code=400,
+                code=ErrorCode.DOC_TOO_LARGE,
                 detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
             )
         chunks.append(chunk)
@@ -159,13 +164,14 @@ def upload_document(
     file_size = total
 
     if file_size == 0:
-        raise HTTPException(status_code=400, detail="الملف فارغ")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.DOC_EMPTY, detail="الملف فارغ")
 
     # Server-side magic-byte validation
     expected_magic = _MAGIC_BYTES.get(content_type)
     if expected_magic and not file_bytes[:len(expected_magic)].startswith(expected_magic):
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.DOC_MAGIC_MISMATCH,
             detail="محتوى الملف لا يتطابق مع نوعه المعلن",
         )
 
@@ -176,10 +182,12 @@ def upload_document(
     storage_path = build_storage_path(case_id, user_id, conversation_id, filename)
 
     try:
-        upload_file(bucket, storage_path, file_bytes, content_type)
+        upload_file(bucket, storage_path, file_bytes, content_type, supabase=supabase)
+    except (HTTPException, LunaHTTPException):
+        raise
     except Exception as e:
         logger.exception("Storage upload failed: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء رفع الملف")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء رفع الملف")
 
     # Create DB record
     doc_data = {
@@ -199,14 +207,24 @@ def upload_document(
             .insert(doc_data)
             .execute()
         )
+    except (HTTPException, LunaHTTPException):
+        raise
     except Exception as e:
         logger.exception("Error creating document record: %s", e)
         # Try to clean up the uploaded file
-        delete_file(bucket, storage_path)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ بيانات المستند")
+        delete_file(bucket, storage_path, supabase=supabase)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء حفظ بيانات المستند")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حفظ بيانات المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء حفظ بيانات المستند")
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="upload",
+        resource_type="document",
+        resource_id=result.data[0]["document_id"],
+    )
 
     return result.data[0]
 
@@ -235,16 +253,16 @@ def get_download_url(
 
     storage_path = doc.get("storage_path")
     if not storage_path:
-        raise HTTPException(status_code=404, detail="ملف المستند غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.DOC_NOT_FOUND, detail="ملف المستند غير موجود")
 
     settings = get_settings()
     bucket = settings.STORAGE_BUCKET_DOCUMENTS
 
     try:
-        url = get_signed_url(bucket, storage_path, expires_in=3600)
+        url = get_signed_url(bucket, storage_path, expires_in=3600, supabase=supabase)
     except Exception as e:
         logger.exception("Error generating download URL: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء رابط التحميل")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء رابط التحميل")
 
     expires_at = datetime.now(timezone.utc).replace(
         second=0, microsecond=0
@@ -277,10 +295,18 @@ def delete_document(
         }).eq("document_id", document_id).execute()
     except Exception as e:
         logger.exception("Error deleting document: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف المستند")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف المستند")
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="delete",
+        resource_type="document",
+        resource_id=document_id,
+    )
 
     # Delete from storage (best effort)
     storage_path = doc.get("storage_path")
     if storage_path:
         settings = get_settings()
-        delete_file(settings.STORAGE_BUCKET_DOCUMENTS, storage_path)
+        delete_file(settings.STORAGE_BUCKET_DOCUMENTS, storage_path, supabase=supabase)

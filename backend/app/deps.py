@@ -14,14 +14,17 @@ from shared.auth.jwt import AuthUser, AuthError, extract_user, TokenExpiredError
 from supabase import Client as SupabaseClient
 from redis.asyncio import Redis as AsyncRedis
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+
 logger = logging.getLogger(__name__)
 
 # HTTPBearer extracts the Authorization header automatically.
 # auto_error=False so we can return Arabic error messages.
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-_AUTH_401 = HTTPException(
+_AUTH_401 = LunaHTTPException(
     status_code=401,
+    code=ErrorCode.AUTH_INVALID,
     detail="بيانات الدخول غير صحيحة",
     headers={"WWW-Authenticate": "Bearer"},
 )
@@ -47,8 +50,9 @@ async def get_current_user(
         user = extract_user(token)
     except TokenExpiredError:
         logger.warning("JWT expired")
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=401,
+            code=ErrorCode.AUTH_EXPIRED,
             detail="انتهت صلاحية الجلسة",
             headers={"WWW-Authenticate": "Bearer"},
         )
@@ -79,3 +83,19 @@ def get_redis(request: Request) -> Optional[AsyncRedis]:
     May be None if Redis was unavailable at startup.
     """
     return getattr(request.app.state, "redis", None)
+
+
+# ============================================
+# UUID validation helper
+# ============================================
+
+import uuid as uuid_module
+
+
+def validate_uuid(value: str, field_name: str = "المعرف") -> str:
+    """Validate that a string is a valid UUID format. Returns the string if valid."""
+    try:
+        uuid_module.UUID(value)
+        return value
+    except (ValueError, AttributeError):
+        raise LunaHTTPException(status_code=404, code=ErrorCode.INVALID_UUID, detail=f"{field_name} غير صالح")

@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { useSendMessage } from "@/hooks/use-chat";
 import { useChatStore } from "@/stores/chat-store";
 import { useMessages } from "@/hooks/use-messages";
+import { useConversationDetail } from "@/hooks/use-conversations";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { TemplateCards } from "@/components/chat/TemplateCards";
@@ -23,6 +24,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   const isArtifactPanelOpen = useChatStore((s) => s.isArtifactPanelOpen);
   const toggleArtifactPanel = useChatStore((s) => s.toggleArtifactPanel);
 
+  // Fetch conversation detail to get case_id for file uploads
+  const { data: convData } = useConversationDetail(conversationId);
+  const caseId = convData?.conversation?.case_id ?? null;
+
   // Check if the conversation has messages (for empty state)
   const { data: messagesData } = useMessages(conversationId);
   const hasMessages =
@@ -30,13 +35,14 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
 
   // Local state for populating input from template selection
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   const handleSend = useCallback(
     (content: string) => {
       setPendingPrompt(null);
-      void sendMessage({ conversationId, content });
+      void sendMessage({ conversationId, content, caseId });
     },
-    [sendMessage, conversationId]
+    [sendMessage, conversationId, caseId]
   );
 
   const handleTemplateSelect = useCallback((prompt: string) => {
@@ -104,13 +110,29 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
       {/* Message list - grows to fill available space */}
       <MessageList conversationId={conversationId} className="flex-1 min-h-0" />
 
-      {/* Template cards (shown only when conversation has no messages) */}
-      {!hasMessages && (
+      {/* Template cards (shown when no messages OR user clicks "قوالبي" from + menu) */}
+      {(!hasMessages || showTemplates) && (
         <div dir="rtl" lang="ar" className="px-4 pb-2">
-          <p className="text-sm text-muted-foreground mb-3">
-            ابدأ محادثة جديدة أو اختر من القوالب:
-          </p>
-          <TemplateCards onSelect={handleTemplateSelect} />
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-muted-foreground">
+              {!hasMessages ? "ابدأ محادثة جديدة أو اختر من القوالب:" : "اختر من القوالب:"}
+            </p>
+            {showTemplates && hasMessages && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6"
+                onClick={() => setShowTemplates(false)}
+                aria-label="إغلاق"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+          <TemplateCards onSelect={(prompt) => {
+            handleTemplateSelect(prompt);
+            setShowTemplates(false);
+          }} />
         </div>
       )}
 
@@ -120,6 +142,8 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         onStop={stopStreaming}
         pendingPrompt={pendingPrompt}
         onPromptConsumed={() => setPendingPrompt(null)}
+        caseId={caseId}
+        onOpenTemplates={() => setShowTemplates((v) => !v)}
       />
     </div>
   );
@@ -134,6 +158,8 @@ interface ChatInputWithTemplateProps {
   onStop: () => void;
   pendingPrompt: string | null;
   onPromptConsumed: () => void;
+  caseId?: string | null;
+  onOpenTemplates?: () => void;
 }
 
 /**
@@ -146,6 +172,8 @@ function ChatInputWithTemplate({
   onStop,
   pendingPrompt,
   onPromptConsumed,
+  caseId,
+  onOpenTemplates,
 }: ChatInputWithTemplateProps) {
   // If there's a pending prompt from template selection, send it immediately
   const handleSend = useCallback(
@@ -171,7 +199,7 @@ function ChatInputWithTemplate({
 
   return (
     <div ref={handleRef}>
-      <ChatInput onSend={handleSend} onStop={onStop} />
+      <ChatInput onSend={handleSend} onStop={onStop} caseId={caseId} onOpenTemplates={onOpenTemplates} />
     </div>
   );
 }

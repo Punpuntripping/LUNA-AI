@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.case_service import get_user_id
 from shared.types import AgentFamily
 
@@ -39,7 +40,7 @@ def get_preferences(
         )
     except Exception as e:
         logger.exception("Error fetching preferences: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب الإعدادات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء جلب الإعدادات")
 
     if result is None or result.data is None:
         return {"user_id": user_id, "preferences": {}}
@@ -66,7 +67,7 @@ def update_preferences(
         )
     except Exception as e:
         logger.exception("Error checking existing preferences: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الإعدادات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
 
     if existing is not None and existing.data is not None:
         # Merge with existing preferences
@@ -80,7 +81,7 @@ def update_preferences(
             )
         except Exception as e:
             logger.exception("Error updating preferences: %s", e)
-            raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الإعدادات")
+            raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
     else:
         # Insert new preferences row
         try:
@@ -91,10 +92,10 @@ def update_preferences(
             )
         except Exception as e:
             logger.exception("Error inserting preferences: %s", e)
-            raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الإعدادات")
+            raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الإعدادات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
 
     return result.data[0]
 
@@ -121,7 +122,7 @@ def list_templates(
         )
     except Exception as e:
         logger.exception("Error listing templates: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب القوالب")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب القوالب")
 
     return result.data or []
 
@@ -139,8 +140,9 @@ def create_template(
     user_id = get_user_id(supabase, auth_id)
 
     if agent_family not in _VALID_AGENT_FAMILIES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.TEMPLATE_INVALID_AGENT,
             detail=f"عائلة الوكيل غير صالحة. القيم المسموحة: {', '.join(_VALID_AGENT_FAMILIES)}",
         )
 
@@ -158,10 +160,10 @@ def create_template(
         )
     except Exception as e:
         logger.exception("Error creating template: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء القالب")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القالب")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء القالب")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القالب")
 
     return result.data[0]
 
@@ -189,8 +191,9 @@ def update_template(
         update_data["prompt_template"] = prompt_template
     if agent_family is not None:
         if agent_family not in _VALID_AGENT_FAMILIES:
-            raise HTTPException(
+            raise LunaHTTPException(
                 status_code=400,
+                code=ErrorCode.TEMPLATE_INVALID_AGENT,
                 detail=f"عائلة الوكيل غير صالحة. القيم المسموحة: {', '.join(_VALID_AGENT_FAMILIES)}",
             )
         update_data["agent_family"] = agent_family
@@ -198,7 +201,7 @@ def update_template(
         update_data["is_active"] = is_active
 
     if len(update_data) == 1:
-        raise HTTPException(status_code=400, detail="لم يتم تقديم أي بيانات للتحديث")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.NO_UPDATE_DATA, detail="لم يتم تقديم أي بيانات للتحديث")
 
     try:
         result = (
@@ -211,10 +214,10 @@ def update_template(
         )
     except Exception as e:
         logger.exception("Error updating template: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث القالب")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث القالب")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="القالب غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.TEMPLATE_NOT_FOUND, detail="القالب غير موجود")
 
     return result.data[0]
 
@@ -239,7 +242,7 @@ def delete_template(
         )
     except Exception as e:
         logger.exception("Error deleting template: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف القالب")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف القالب")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="القالب غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.TEMPLATE_NOT_FOUND, detail="القالب غير موجود")

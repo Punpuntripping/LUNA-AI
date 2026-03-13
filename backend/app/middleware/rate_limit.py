@@ -9,6 +9,8 @@ import logging
 import time
 from typing import Optional
 
+import jwt as pyjwt
+
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -64,9 +66,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             max_requests = DEFAULT_RATE_LIMIT
             window = DEFAULT_WINDOW_SECONDS
 
-        # Build identifier (IP-based)
-        client_ip = request.client.host if request.client else "unknown"
-        key = f"ratelimit:{client_ip}:{request.url.path}:{window}"
+        # Build identifier — use X-Forwarded-For behind Railway proxy
+        forwarded = request.headers.get("x-forwarded-for", "")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+
+        rate_key_id = client_ip  # default: IP-based
+
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer ") and not request.url.path.startswith("/api/v1/auth/"):
+            try:
+                # Decode WITHOUT verification — just extract 'sub' for rate limiting.
+                # Full verification happens in deps.get_current_user().
+                token = auth_header[7:]
+                payload = pyjwt.decode(token, options={"verify_signature": False}, algorithms=["HS256", "ES256"])
+                user_sub = payload.get("sub")
+                if user_sub:
+                    rate_key_id = f"user:{user_sub}"
+            except Exception:
+                pass  # Fall back to IP-based
+
+        key = f"ratelimit:{rate_key_id}:{request.url.path}:{window}"
 
         try:
             now = time.time()
@@ -88,9 +107,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             reset_at = int(now + window)
 
             if current_count > max_requests:
+                detail_msg = "تم تجاوز الحد المسموح من الطلبات"
                 return JSONResponse(
                     status_code=429,
-                    content={"detail": "تم تجاوز الحد المسموح من الطلبات"},
+                    content={
+                        "error": {"code": "RATE_LIMITED", "message": detail_msg, "status": 429},
+                        "detail": detail_msg,
+                    },
                     headers={
                         "X-RateLimit-Remaining": "0",
                         "X-RateLimit-Reset": str(reset_at),

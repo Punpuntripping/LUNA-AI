@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase
+from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.models.requests import (
     CreateCaseRequest,
     UpdateCaseRequest,
@@ -103,6 +103,7 @@ async def get_case_detail(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Get full case detail with conversations and stats."""
+    validate_uuid(case_id, "معرف القضية")
     data = case_service.get_case_detail(
         supabase,
         current_user.auth_id,
@@ -128,6 +129,7 @@ async def update_case(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Update case fields (only provided fields are changed)."""
+    validate_uuid(case_id, "معرف القضية")
     data = case_service.update_case(
         supabase,
         current_user.auth_id,
@@ -155,6 +157,7 @@ async def update_case_status(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Update case status (active, closed, archived)."""
+    validate_uuid(case_id, "معرف القضية")
     data = case_service.update_case_status(
         supabase,
         current_user.auth_id,
@@ -176,6 +179,7 @@ async def delete_case(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Soft-delete a case and all its conversations."""
+    validate_uuid(case_id, "معرف القضية")
     case_service.delete_case(
         supabase,
         current_user.auth_id,

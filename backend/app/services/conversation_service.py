@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -55,7 +57,7 @@ def list_conversations(
 
     except Exception as e:
         logger.exception("Error listing conversations: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المحادثات")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المحادثات")
 
     total = result.count or 0
     conversations = result.data or []
@@ -107,13 +109,21 @@ def create_conversation(
         )
     except Exception as e:
         logger.exception("Error creating conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء المحادثة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المحادثة")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء المحادثة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المحادثة")
 
     conv = result.data[0]
     conv["is_active"] = conv.get("ended_at") is None
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="create",
+        resource_type="conversation",
+        resource_id=conv["conversation_id"],
+    )
 
     return conv
 
@@ -141,10 +151,10 @@ def get_conversation(
         )
     except Exception as e:
         logger.exception("Error fetching conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب المحادثة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المحادثة")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
 
     conv = result.data
     conv["is_active"] = conv.get("ended_at") is None
@@ -179,10 +189,10 @@ def update_conversation(
         )
     except Exception as e:
         logger.exception("Error updating conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث المحادثة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث المحادثة")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
 
     conv = result.data[0]
     conv["is_active"] = conv.get("ended_at") is None
@@ -210,7 +220,7 @@ def delete_conversation(
         }).eq("conversation_id", conversation_id).eq("user_id", user_id).execute()
     except Exception as e:
         logger.exception("Error deleting conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف المحادثة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف المحادثة")
 
 
 def end_session(
@@ -240,10 +250,10 @@ def end_session(
         )
     except Exception as e:
         logger.exception("Error ending session: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنهاء الجلسة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنهاء الجلسة")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
 
     conv = result.data[0]
     conv["is_active"] = False  # We just set ended_at, so it's no longer active
@@ -272,10 +282,10 @@ def _verify_case_exists(supabase: SupabaseClient, case_id: str, user_id: str) ->
         )
     except Exception as e:
         logger.exception("Error verifying case: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
 
 def _verify_conversation_ownership(
@@ -299,9 +309,9 @@ def _verify_conversation_ownership(
         )
     except Exception as e:
         logger.exception("Error verifying conversation ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
 
     return result.data

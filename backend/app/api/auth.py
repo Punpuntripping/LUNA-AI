@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
 from backend.app.models.requests import LoginRequest, RegisterRequest, RefreshRequest
 from backend.app.models.responses import (
@@ -54,15 +55,15 @@ async def login(
     except Exception as e:
         error_msg = str(e).lower()
         if "invalid" in error_msg or "credentials" in error_msg or "400" in error_msg:
-            raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+            raise LunaHTTPException(status_code=401, code=ErrorCode.AUTH_INVALID, detail="بيانات الدخول غير صحيحة")
         logger.exception("Login error: %s", e)
-        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+        raise LunaHTTPException(status_code=401, code=ErrorCode.AUTH_INVALID, detail="بيانات الدخول غير صحيحة")
 
     session = response.session
     user = response.user
 
     if session is None or user is None:
-        raise HTTPException(status_code=401, detail="بيانات الدخول غير صحيحة")
+        raise LunaHTTPException(status_code=401, code=ErrorCode.AUTH_INVALID, detail="بيانات الدخول غير صحيحة")
 
     # Create Redis session (fail silently if Redis unavailable)
     if redis is not None:
@@ -122,26 +123,29 @@ async def register(
     except Exception as e:
         error_msg = str(e).lower()
         if "already" in error_msg or "exists" in error_msg or "duplicate" in error_msg or "422" in error_msg:
-            raise HTTPException(
+            raise LunaHTTPException(
                 status_code=409,
+                code=ErrorCode.VALIDATION_ERROR,
                 detail="البريد الإلكتروني مسجل مسبقاً",
             )
         if "rate limit" in error_msg or "429" in error_msg:
-            raise HTTPException(
+            raise LunaHTTPException(
                 status_code=429,
+                code=ErrorCode.RATE_LIMITED,
                 detail="تم تجاوز الحد المسموح من الطلبات",
             )
         logger.exception("Registration error: %s", e)
-        raise HTTPException(status_code=400, detail="فشل إنشاء الحساب")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.VALIDATION_ERROR, detail="فشل إنشاء الحساب")
 
     user = response.user
     if user is None:
-        raise HTTPException(status_code=400, detail="فشل إنشاء الحساب")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.VALIDATION_ERROR, detail="فشل إنشاء الحساب")
 
     # Check if user already existed (Supabase returns user but identities is empty)
     if hasattr(user, "identities") and user.identities is not None and len(user.identities) == 0:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=409,
+            code=ErrorCode.VALIDATION_ERROR,
             detail="البريد الإلكتروني مسجل مسبقاً",
         )
 
@@ -175,17 +179,17 @@ async def refresh(
         response = supabase_auth.auth.refresh_session(body.refresh_token)
         session = response.session
         if session is None:
-            raise HTTPException(status_code=401, detail="الرمز منتهي الصلاحية")
+            raise LunaHTTPException(status_code=401, code=ErrorCode.AUTH_EXPIRED, detail="الرمز منتهي الصلاحية")
 
         return TokenResponse(
             access_token=session.access_token,
             refresh_token=session.refresh_token,
         )
-    except HTTPException:
+    except LunaHTTPException:
         raise
     except Exception as e:
         logger.exception("Token refresh error: %s", e)
-        raise HTTPException(status_code=401, detail="الرمز منتهي الصلاحية")
+        raise LunaHTTPException(status_code=401, code=ErrorCode.AUTH_EXPIRED, detail="الرمز منتهي الصلاحية")
 
 
 # ============================================
@@ -239,10 +243,10 @@ async def me(
         )
     except Exception as e:
         logger.exception("Error querying user profile: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="الملف الشخصي غير موجود")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود")
 
     profile = result.data
     return UserProfileResponse(

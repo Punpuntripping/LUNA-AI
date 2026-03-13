@@ -107,16 +107,20 @@ Agents MUST read existing reports before starting work to stay aligned on known 
 | Wave 3 | Sidebar + Cases CRUD + Conversations CRUD | DONE |
 | Wave 4 | Messages + SSE streaming + Documents + Memories + Mock RAG | DONE |
 | Wave 5 | Polish + Testing + Deployment verification (68/70 pass) | DONE |
-| **Wave 6** | **Integration — Agent framework + Artifacts + @ Parser** | **IN PROGRESS** |
-| Wave 6A | DB migrations (018-020) + shared types | NOT STARTED |
-| Wave 6B | Artifact + preferences backend APIs | NOT STARTED |
-| Wave 6C | Agent framework (5 families) + router wiring | NOT STARTED |
-| Wave 6D | Frontend: types, hooks, @ parser, artifact panel | NOT STARTED |
+| Wave 6A | DB migrations (018-020) + shared types | DONE |
+| Wave 6B | Artifact + preferences backend APIs | DONE |
+| Wave 6C | Agent framework (5 families) + router wiring | DONE |
+| Wave 6D | Frontend: types, hooks, @ parser, artifact panel | DONE |
+| Wave 7A | SSE hardening: heartbeat, disconnect detection, CancelledError | DONE |
+| Wave 7B | Security & deployment: headers, Docker, healthcheck, rate limiting | DONE |
+| Wave 7C | Operational maturity: error codes, audit logging, CI, reconnect | DONE |
+| **Wave 8+** | **Real AI — swap mock agents for LLM, vector search, RAG, OCR** | **NOT STARTED** |
 
 ### Known Issues
 - `frontend/.env.local` not present — dev env needs explicit env vars or symlink
 - Supabase uses **ES256** JWTs (not HS256) — `shared/auth/jwt.py` handles both via JWKS
 - Wave 5 validation: 68/70 pass (2 known limitations: stateless JWT logout, document upload test)
+- All 5 agents are **mock** — return hardcoded Arabic text, no real LLM/RAG calls yet
 
 ## Plans (Source of Truth)
 
@@ -124,6 +128,9 @@ Agents MUST read existing reports before starting work to stay aligned on known 
 - `master_plan.md` — Wave index, what's built vs missing, dependency chain
 - `wave_4_messages_streaming.md` — 29 new files, 7 modified files, SSE protocol, success criteria
 - `wave_5_polish_deploy.md` — Testing, security, deployment verification
+- `wave_7a_sse_hardening.md` — Heartbeat + disconnect + CancelledError (3 files modified)
+- `wave_7b_security_deployment.md` — Security headers, Docker, healthcheck, rate limiting (7 files)
+- `wave_7c_operational_maturity.md` — Error codes, audit, CI, reconnect, optimistic updates (16 files)
 
 **Grand plans** (Obsidian): Only `@plan-reviewer` reads them directly for detailed specs.
 All other agents work exclusively within `C:\Programming\LUNA_AI\`.

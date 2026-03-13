@@ -2,8 +2,14 @@
 
 import { useState, useCallback, useRef, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Send, Square, Paperclip } from "lucide-react";
+import { Send, Square, Plus, Paperclip, LayoutGrid, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { FilePreview } from "@/components/chat/FilePreview";
@@ -17,6 +23,10 @@ interface ChatInputProps {
   onStop?: () => void;
   disabled?: boolean;
   className?: string;
+  /** When set, file uploads are enabled (uploaded to this case). */
+  caseId?: string | null;
+  /** Callback when user selects "My Templates" from the + menu */
+  onOpenTemplates?: () => void;
 }
 
 const MAX_CHARS = 10_000;
@@ -24,7 +34,7 @@ const MAX_FILES = 5;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 
-export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenTemplates }: ChatInputProps) {
   const [content, setContent] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [atQuery, setAtQuery] = useState("");
@@ -40,7 +50,7 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
   const setModifiers = useChatStore((s) => s.setModifiers);
 
   const isDisabled = disabled || (isStreaming && !onStop);
-  const canSend = content.trim().length > 0 && !isStreaming && !disabled;
+  const canSend = (content.trim().length > 0 || pendingFiles.length > 0) && !isStreaming && !disabled;
 
   // ------------------------------------------
   // @ palette detection
@@ -111,7 +121,7 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
 
   const handleSend = useCallback(() => {
     const trimmed = content.trim();
-    if (!trimmed) return;
+    if (!trimmed && pendingFiles.length === 0) return;
 
     if (trimmed.length > MAX_CHARS) {
       setValidationError(`الحد الأقصى ${MAX_CHARS.toLocaleString("ar-SA")} حرف`);
@@ -120,20 +130,21 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
 
     setValidationError(null);
 
-    // Parse @ commands from the message
-    const parsed = parseAtCommands(trimmed);
-
-    if (parsed.agent_family) {
-      setSelectedAgentFamily(parsed.agent_family);
+    // Parse @ commands from the message (only if there's text)
+    if (trimmed) {
+      const parsed = parseAtCommands(trimmed);
+      if (parsed.agent_family) {
+        setSelectedAgentFamily(parsed.agent_family);
+      }
+      if (parsed.modifiers.length > 0) {
+        setModifiers(parsed.modifiers);
+      }
     }
-    if (parsed.modifiers.length > 0) {
-      setModifiers(parsed.modifiers);
-    }
 
-    onSend(parsed.content);
+    onSend(trimmed);
     setContent("");
     setIsAtPaletteOpen(false);
-  }, [content, onSend, setSelectedAgentFamily, setModifiers]);
+  }, [content, onSend, setSelectedAgentFamily, setModifiers, pendingFiles.length]);
 
   // ------------------------------------------
   // Keyboard handler
@@ -213,6 +224,24 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
     [pendingFiles.length, addPendingFile]
   );
 
+  // ------------------------------------------
+  // + menu actions
+  // ------------------------------------------
+
+  const handleAddFile = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleOpenCommands = useCallback(() => {
+    // Insert @ to trigger the command palette
+    setContent((prev) => prev + "@");
+    setIsAtPaletteOpen(true);
+    setAtQuery("");
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+  }, []);
+
   const handleStopClick = useCallback(() => {
     onStop?.();
   }, [onStop]);
@@ -243,18 +272,7 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
           onClose={handleAtPaletteClose}
         />
 
-        {/* File attachment button */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 shrink-0"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isStreaming}
-          aria-label="إرفاق ملف"
-        >
-          <Paperclip className="h-5 w-5" />
-        </Button>
-
+        {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -285,6 +303,45 @@ export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProp
             isStreaming && "cursor-not-allowed opacity-70"
           )}
         />
+
+        {/* + Menu button */}
+        <DropdownMenu dir="rtl">
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 shrink-0"
+              disabled={isStreaming}
+              aria-label="خيارات إضافية"
+            >
+              <Plus className="h-5 w-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent side="top" align="end" className="min-w-[180px]">
+            <DropdownMenuItem
+              onClick={handleAddFile}
+              disabled={!caseId}
+              className="gap-2 cursor-pointer"
+            >
+              <Paperclip className="h-4 w-4" />
+              <span>إضافة مرفق</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={onOpenTemplates}
+              className="gap-2 cursor-pointer"
+            >
+              <LayoutGrid className="h-4 w-4" />
+              <span>قوالبي</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={handleOpenCommands}
+              className="gap-2 cursor-pointer"
+            >
+              <Terminal className="h-4 w-4" />
+              <span>الأوامر</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {/* Send / Stop button */}
         {isStreaming ? (

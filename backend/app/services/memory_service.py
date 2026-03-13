@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 
 logger = logging.getLogger(__name__)
@@ -32,10 +34,10 @@ def _verify_case_ownership(supabase: SupabaseClient, case_id: str, user_id: str)
         )
     except Exception as e:
         logger.exception("Error verifying case ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="القضية غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
 
 def _verify_memory_ownership(supabase: SupabaseClient, memory_id: str, user_id: str) -> dict:
@@ -51,13 +53,13 @@ def _verify_memory_ownership(supabase: SupabaseClient, memory_id: str, user_id: 
         )
     except Exception as e:
         logger.exception("Error verifying memory ownership: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="الذاكرة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.MEMORY_NOT_FOUND, detail="الذاكرة غير موجودة")
 
     if result.data.get("lawyer_cases", {}).get("lawyer_user_id") != user_id:
-        raise HTTPException(status_code=404, detail="الذاكرة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.MEMORY_NOT_FOUND, detail="الذاكرة غير موجودة")
 
     return result.data
 
@@ -91,18 +93,19 @@ def list_memories(
 
         if memory_type and memory_type != "all":
             if memory_type not in _VALID_MEMORY_TYPES:
-                raise HTTPException(
+                raise LunaHTTPException(
                     status_code=400,
+                    code=ErrorCode.MEMORY_INVALID_TYPE,
                     detail=f"نوع الذاكرة غير صالح. الأنواع المسموحة: {', '.join(_VALID_MEMORY_TYPES)}",
                 )
             query = query.eq("memory_type", memory_type)
 
         result = query.execute()
-    except HTTPException:
+    except LunaHTTPException:
         raise
     except Exception as e:
         logger.exception("Error listing memories: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب الذاكرة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب الذاكرة")
 
     return {
         "memories": result.data or [],
@@ -123,8 +126,9 @@ def create_memory(
     _verify_case_ownership(supabase, case_id, user_id)
 
     if memory_type not in _VALID_MEMORY_TYPES:
-        raise HTTPException(
+        raise LunaHTTPException(
             status_code=400,
+            code=ErrorCode.MEMORY_INVALID_TYPE,
             detail=f"نوع الذاكرة غير صالح. الأنواع المسموحة: {', '.join(_VALID_MEMORY_TYPES)}",
         )
 
@@ -140,10 +144,18 @@ def create_memory(
         )
     except Exception as e:
         logger.exception("Error creating memory: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء الذاكرة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء الذاكرة")
 
     if not result.data:
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إنشاء الذاكرة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء الذاكرة")
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="create",
+        resource_type="memory",
+        resource_id=result.data[0]["memory_id"],
+    )
 
     return result.data[0]
 
@@ -165,14 +177,15 @@ def update_memory(
         update_data["content_ar"] = content_ar
     if memory_type is not None:
         if memory_type not in _VALID_MEMORY_TYPES:
-            raise HTTPException(
+            raise LunaHTTPException(
                 status_code=400,
+                code=ErrorCode.MEMORY_INVALID_TYPE,
                 detail=f"نوع الذاكرة غير صالح. الأنواع المسموحة: {', '.join(_VALID_MEMORY_TYPES)}",
             )
         update_data["memory_type"] = memory_type
 
     if not update_data:
-        raise HTTPException(status_code=400, detail="لم يتم تقديم أي بيانات للتحديث")
+        raise LunaHTTPException(status_code=400, code=ErrorCode.NO_UPDATE_DATA, detail="لم يتم تقديم أي بيانات للتحديث")
 
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -185,10 +198,10 @@ def update_memory(
         )
     except Exception as e:
         logger.exception("Error updating memory: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الذاكرة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء تحديث الذاكرة")
 
     if not result.data:
-        raise HTTPException(status_code=404, detail="الذاكرة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.MEMORY_NOT_FOUND, detail="الذاكرة غير موجودة")
 
     return result.data[0]
 
@@ -211,4 +224,12 @@ def delete_memory(
         }).eq("memory_id", memory_id).execute()
     except Exception as e:
         logger.exception("Error deleting memory: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء حذف الذاكرة")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف الذاكرة")
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="delete",
+        resource_type="memory",
+        resource_id=memory_id,
+    )

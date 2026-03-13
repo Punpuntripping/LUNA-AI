@@ -1,7 +1,6 @@
 "use client";
 
 import { FileText, X, ImageIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { PendingFile } from "@/types";
 
@@ -11,10 +10,9 @@ interface FilePreviewProps {
   className?: string;
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+function getFileExtension(name: string): string {
+  const ext = name.split(".").pop()?.toUpperCase();
+  return ext || "FILE";
 }
 
 function isImageType(mimeType: string): boolean {
@@ -28,29 +26,28 @@ export function FilePreview({ files, onRemove, className }: FilePreviewProps) {
     <div
       dir="rtl"
       className={cn(
-        "flex gap-2 overflow-x-auto py-2 px-1 scrollbar-thin",
+        "flex gap-3 overflow-x-auto py-2 px-1 scrollbar-thin",
         className
       )}
     >
       {files.map((file) => (
         <div
           key={file.id}
-          className="relative flex-shrink-0 group rounded-lg border bg-muted/50 overflow-hidden"
+          className="relative flex-shrink-0 w-36 rounded-xl border bg-muted/30 overflow-hidden group"
         >
-          {/* Remove button */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute top-0.5 end-0.5 z-10 h-5 w-5 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity"
+          {/* Remove button — top-start corner */}
+          <button
+            type="button"
             onClick={() => onRemove(file.id)}
+            className="absolute top-1.5 start-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-foreground/80 text-background hover:bg-foreground transition-colors"
             aria-label="حذف الملف"
           >
             <X className="h-3 w-3" />
-          </Button>
+          </button>
 
           {isImageType(file.mimeType) ? (
             /* Image thumbnail */
-            <div className="w-20 h-20">
+            <div className="h-20 w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={file.previewUrl}
@@ -59,21 +56,21 @@ export function FilePreview({ files, onRemove, className }: FilePreviewProps) {
               />
             </div>
           ) : (
-            /* PDF / other file icon */
-            <div className="w-20 h-20 flex flex-col items-center justify-center gap-1 p-2">
-              <FileText className="h-6 w-6 text-muted-foreground" />
+            /* Document preview area */
+            <div className="h-20 w-full flex items-center justify-center">
+              <FileText className="h-8 w-8 text-muted-foreground/50" />
               <ImageIcon className="hidden" />
             </div>
           )}
 
           {/* File info strip */}
-          <div className="px-2 py-1 bg-background/80 border-t">
-            <p className="text-[10px] text-foreground truncate max-w-[72px]">
+          <div className="px-2.5 py-1.5 border-t bg-background/50">
+            <p className="text-xs text-foreground truncate font-medium">
               {file.name}
             </p>
-            <p className="text-[9px] text-muted-foreground">
-              {formatFileSize(file.size)}
-            </p>
+            <span className="inline-block mt-0.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {getFileExtension(file.name)}
+            </span>
           </div>
         </div>
       ))}

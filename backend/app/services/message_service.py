@@ -4,15 +4,18 @@ Orchestrates the full message pipeline: save → context → stream → update.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from backend.app.services.context_service import build_context
 from agents.router.router import route_and_execute
@@ -20,7 +23,7 @@ from agents.router.router import route_and_execute
 logger = logging.getLogger(__name__)
 
 
-def _verify_conversation_ownership(
+def verify_conversation_ownership(
     supabase: SupabaseClient,
     conversation_id: str,
     user_id: str,
@@ -38,10 +41,10 @@ def _verify_conversation_ownership(
         )
     except Exception as e:
         logger.exception("Error verifying conversation: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ داخلي")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
 
     if result is None or result.data is None:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
 
     return result.data
 
@@ -56,7 +59,7 @@ def list_messages(
 ) -> dict:
     """Paginated message list with ownership check. Newest first."""
     user_id = get_user_id(supabase, auth_id)
-    _verify_conversation_ownership(supabase, conversation_id, user_id)
+    verify_conversation_ownership(supabase, conversation_id, user_id)
 
     limit = max(1, min(limit, 100))
 
@@ -84,7 +87,7 @@ def list_messages(
         result = query.execute()
     except Exception as e:
         logger.exception("Error listing messages: %s", e)
-        raise HTTPException(status_code=500, detail="حدث خطأ أثناء جلب الرسائل")
+        raise LunaHTTPException(status_code=500, code=ErrorCode.MSG_LIST_FAILED, detail="حدث خطأ أثناء جلب الرسائل")
 
     messages = result.data or []
     has_more = len(messages) > limit
@@ -135,30 +138,32 @@ def list_messages(
     }
 
 
-async def send_message(
+async def send_message_stream(
     supabase: SupabaseClient,
-    auth_id: str,
-    conversation_id: str,
     *,
+    user_id: str,
+    conversation_id: str,
+    conv: dict,
     content: str,
+    request: Request,
     agent_family: str | None = None,
     modifiers: list[str] | None = None,
+    attachment_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Main message pipeline. Yields SSE-formatted strings.
 
-    1. Verify conversation ownership
-    2. Save user message to DB (BEFORE AI call — crash-safe)
-    3. Create assistant message placeholder
-    4. Yield message_start event
-    5. Call RAG pipeline → yield token events
-    6. Yield citations event
-    7. Update assistant message with full content
-    8. Update conversation metadata
-    9. Yield done event
+    Ownership is verified by the caller BEFORE this generator runs.
+
+    1. Save user message to DB (BEFORE AI call — crash-safe)
+    2. Create assistant message placeholder
+    3. Yield message_start event
+    4. Call RAG pipeline → yield token events
+    5. Yield citations event
+    6. Update assistant message with full content
+    7. Update conversation metadata
+    8. Yield done event
     """
-    user_id = get_user_id(supabase, auth_id)
-    conv = _verify_conversation_ownership(supabase, conversation_id, user_id)
 
     # 1. Save user message BEFORE AI call (Absolute Rule #7)
     user_msg_id = str(uuid.uuid4())
@@ -173,6 +178,25 @@ async def send_message(
         logger.exception("Error saving user message: %s", e)
         yield _sse_event("error", {"detail": "حدث خطأ أثناء حفظ الرسالة"})
         return
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="create",
+        resource_type="message",
+        resource_id=user_msg_id,
+    )
+
+    # 1b. Link attachments to user message (if any)
+    if attachment_ids:
+        try:
+            rows = [
+                {"message_id": user_msg_id, "document_id": doc_id}
+                for doc_id in attachment_ids
+            ]
+            supabase.table("message_attachments").insert(rows).execute()
+        except Exception as e:
+            logger.warning("Error linking attachments: %s", e)
 
     # 2. Create assistant message placeholder
     assistant_msg_id = str(uuid.uuid4())
@@ -196,98 +220,140 @@ async def send_message(
         "conversation_id": conversation_id,
     })
 
-    # 4. Build context and stream from agent router
+    # 4. Build context and stream from agent router (with heartbeat + disconnect detection)
     context = build_context(supabase, conversation_id, user_id)
     full_content = ""
     citations = []
 
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def heartbeat_producer() -> None:
+        """Send heartbeat every 15s to keep Railway proxy alive."""
+        try:
+            while True:
+                await asyncio.sleep(15)
+                await queue.put(_sse_event("heartbeat", {}))
+        except asyncio.CancelledError:
+            pass
+
+    async def pipeline_producer() -> None:
+        """Run agent pipeline and put SSE events on the queue."""
+        nonlocal full_content, citations
+        try:
+            async for event in route_and_execute(
+                question=content,
+                context=context,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                supabase=supabase,
+                case_id=conv.get("case_id"),
+                explicit_agent=agent_family,
+                modifiers=modifiers,
+            ):
+                event_type = event.get("type")
+
+                if event_type == "token":
+                    text = event.get("text", "")
+                    full_content += text
+                    await queue.put(_sse_event("token", {"text": text}))
+
+                elif event_type == "citations":
+                    citations = event.get("articles", [])
+                    await queue.put(_sse_event("citations", {"articles": citations}))
+
+                elif event_type == "artifact_created":
+                    await queue.put(_sse_event("artifact_created", {
+                        "artifact_id": event["artifact_id"],
+                        "artifact_type": event["artifact_type"],
+                        "title": event["title"],
+                    }))
+
+                elif event_type == "agent_selected":
+                    await queue.put(_sse_event("agent_selected", {
+                        "agent_family": event["agent_family"],
+                    }))
+
+                elif event_type == "done":
+                    usage = event.get("usage", {})
+
+                    # 5. Update assistant message with full content
+                    try:
+                        update_data: dict = {"content": full_content}
+                        if usage:
+                            update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
+                            update_data["completion_tokens"] = usage.get("completion_tokens", 0)
+                        if citations:
+                            update_data["metadata"] = {"citations": citations}
+
+                        supabase.table("messages").update(
+                            update_data
+                        ).eq("message_id", assistant_msg_id).execute()
+                    except Exception as e:
+                        logger.exception("Error updating assistant message: %s", e)
+
+                    # 6. Update conversation metadata
+                    try:
+                        now = datetime.now(timezone.utc).isoformat()
+
+                        conv_update: dict = {
+                            "updated_at": now,
+                        }
+                        current_count = conv.get("message_count", 0)
+                        conv_update["message_count"] = current_count + 2  # user + assistant
+
+                        # Auto-title from first message
+                        if current_count == 0:
+                            title = content[:60].strip()
+                            if len(content) > 60:
+                                title += "..."
+                            conv_update["title_ar"] = title
+
+                        supabase.table("conversations").update(
+                            conv_update
+                        ).eq("conversation_id", conversation_id).execute()
+                    except Exception as e:
+                        logger.exception("Error updating conversation: %s", e)
+
+                    # 7. Yield done event
+                    await queue.put(_sse_event("done", {
+                        "message_id": assistant_msg_id,
+                        "usage": {
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                        },
+                    }))
+
+        except Exception as e:
+            logger.exception("Error in agent pipeline: %s", e)
+            await queue.put(_sse_event("error", {"detail": "حدث خطأ أثناء معالجة الرسالة"}))
+        finally:
+            await queue.put(None)  # Sentinel: pipeline complete
+
+    heartbeat_task = asyncio.create_task(heartbeat_producer())
+    pipeline_task = asyncio.create_task(pipeline_producer())
+
     try:
-        async for event in route_and_execute(
-            question=content,
-            context=context,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            supabase=supabase,
-            case_id=conv.get("case_id"),
-            explicit_agent=agent_family,
-            modifiers=modifiers,
-        ):
-            event_type = event.get("type")
-
-            if event_type == "token":
-                text = event.get("text", "")
-                full_content += text
-                yield _sse_event("token", {"text": text})
-
-            elif event_type == "citations":
-                citations = event.get("articles", [])
-                yield _sse_event("citations", {"articles": citations})
-
-            elif event_type == "artifact_created":
-                yield _sse_event("artifact_created", {
-                    "artifact_id": event["artifact_id"],
-                    "artifact_type": event["artifact_type"],
-                    "title": event["title"],
-                })
-
-            elif event_type == "agent_selected":
-                yield _sse_event("agent_selected", {
-                    "agent_family": event["agent_family"],
-                })
-
-            elif event_type == "done":
-                usage = event.get("usage", {})
-
-                # 5. Update assistant message with full content
-                try:
-                    update_data: dict = {"content": full_content}
-                    if usage:
-                        update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
-                        update_data["completion_tokens"] = usage.get("completion_tokens", 0)
-                    if citations:
-                        update_data["metadata"] = {"citations": citations}
-
-                    supabase.table("messages").update(
-                        update_data
-                    ).eq("message_id", assistant_msg_id).execute()
-                except Exception as e:
-                    logger.exception("Error updating assistant message: %s", e)
-
-                # 6. Update conversation metadata
-                try:
-                    now = datetime.now(timezone.utc).isoformat()
-
-                    conv_update: dict = {
-                        "updated_at": now,
-                    }
-                    current_count = conv.get("message_count", 0)
-                    conv_update["message_count"] = current_count + 2  # user + assistant
-
-                    # Auto-title from first message
-                    if current_count == 0:
-                        title = content[:60].strip()
-                        if len(content) > 60:
-                            title += "..."
-                        conv_update["title_ar"] = title
-
-                    supabase.table("conversations").update(
-                        conv_update
-                    ).eq("conversation_id", conversation_id).execute()
-                except Exception as e:
-                    logger.exception("Error updating conversation: %s", e)
-
-                # 7. Yield done event
-                yield _sse_event("done", {
-                    "message_id": assistant_msg_id,
-                    "usage": {
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                    },
-                })
-
+        while True:
+            if await request.is_disconnected():
+                logger.info("Client disconnected during streaming for conversation %s", conversation_id)
+                break
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue  # Re-check disconnect
+            if item is None:
+                break
+            yield item
+    except asyncio.CancelledError:
+        logger.info("SSE stream cancelled for conversation %s (client disconnect)", conversation_id)
+        raise  # MUST re-raise per asyncio contract
     except Exception as e:
         logger.exception("Error in agent pipeline: %s", e)
         yield _sse_event("error", {"detail": "حدث خطأ أثناء معالجة الرسالة"})
+    finally:
+        heartbeat_task.cancel()
+        if not pipeline_task.done():
+            pipeline_task.cancel()
 
 
 def _sse_event(event_type: str, data: dict) -> str:

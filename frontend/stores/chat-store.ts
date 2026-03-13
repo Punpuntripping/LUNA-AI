@@ -13,6 +13,9 @@ interface ChatState {
   modifiers: string[];
   isArtifactPanelOpen: boolean;
   activeArtifactId: string | null;
+  reconnectAttempts: number;
+  maxReconnectAttempts: number;
+  isReconnecting: boolean;
 
   startStreaming: (messageId: string) => void;
   appendToken: (text: string) => void;
@@ -31,6 +34,8 @@ interface ChatState {
   closeArtifactPanel: () => void;
   toggleArtifactPanel: () => void;
   resetAgentSelection: () => void;
+  startReconnect: () => void;
+  resetReconnect: () => void;
   reset: () => void;
 }
 
@@ -46,6 +51,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   modifiers: [],
   isArtifactPanelOpen: false,
   activeArtifactId: null,
+  reconnectAttempts: 0,
+  maxReconnectAttempts: 5,
+  isReconnecting: false,
 
   startStreaming: (messageId) =>
     set({ isStreaming: true, streamingMessageId: messageId, streamingContent: "", error: null }),
@@ -62,7 +70,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   finishStreaming: () => {
     // Called when stream completes naturally (done event).
     // Does NOT abort — just clears streaming state.
-    set({ isStreaming: false, streamingMessageId: null, streamingContent: "", abortController: null });
+    // Also resets reconnect counters because the stream completed successfully.
+    set({
+      isStreaming: false,
+      streamingMessageId: null,
+      streamingContent: "",
+      abortController: null,
+      reconnectAttempts: 0,
+      isReconnecting: false,
+    });
   },
 
   setError: (error) => set({ error, isStreaming: false }),
@@ -108,6 +124,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   resetAgentSelection: () =>
     set({ selectedAgentFamily: null, modifiers: [] }),
 
+  startReconnect: () =>
+    set((state) => ({
+      isReconnecting: true,
+      reconnectAttempts: state.reconnectAttempts + 1,
+    })),
+
+  resetReconnect: () =>
+    set({ reconnectAttempts: 0, isReconnecting: false }),
+
   reset: () =>
     set({
       isStreaming: false,
@@ -121,5 +146,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       modifiers: [],
       isArtifactPanelOpen: false,
       activeArtifactId: null,
+      reconnectAttempts: 0,
+      maxReconnectAttempts: 5,
+      isReconnecting: false,
     }),
 }));

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from supabase import Client as SupabaseClient
 
@@ -16,6 +16,7 @@ from backend.app.models.requests import SendMessageRequest
 from backend.app.models.responses import MessageListResponse
 from shared.auth.jwt import AuthUser
 from backend.app.services import message_service
+from backend.app.services.case_service import get_user_id
 
 router = APIRouter()
 
@@ -45,18 +46,26 @@ async def list_messages(
 async def send_message(
     conversation_id: str,
     body: SendMessageRequest,
+    request: Request,
     user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Send a message and receive SSE stream response."""
+    # Pre-flight ownership check — BEFORE StreamingResponse (security fix)
+    user_id = get_user_id(supabase, user.auth_id)
+    conv = message_service.verify_conversation_ownership(supabase, conversation_id, user_id)
+
     return StreamingResponse(
-        message_service.send_message(
+        message_service.send_message_stream(
             supabase,
-            user.auth_id,
-            conversation_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            conv=conv,
             content=body.content,
+            request=request,
             agent_family=body.agent_family,
             modifiers=body.modifiers,
+            attachment_ids=body.attachment_ids,
         ),
         media_type="text/event-stream",
         headers={

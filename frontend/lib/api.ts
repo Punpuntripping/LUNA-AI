@@ -25,10 +25,17 @@ import type {
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
-interface ApiError {
-  detail: string;
+interface ApiErrorNested {
   code: string;
+  message: string;
   status: number;
+}
+
+interface ApiErrorBody {
+  error?: ApiErrorNested;
+  detail?: string;
+  code?: string;
+  status?: number;
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -138,7 +145,7 @@ async function apiFetch<T>(
   }
 
   if (!res.ok) {
-    let errorBody: ApiError;
+    let errorBody: ApiErrorBody;
     try {
       errorBody = await res.json();
     } catch {
@@ -148,10 +155,12 @@ async function apiFetch<T>(
         status: res.status,
       };
     }
+    // Support nested format: {"error": {"code": "...", "message": "...", "status": N}, "detail": "..."}
+    // Fall back to flat format: {"code": "...", "detail": "..."}
     throw new ApiClientError(
       res.status,
-      errorBody.code || "unknown",
-      errorBody.detail || "Request failed"
+      errorBody.error?.code || errorBody.code || "unknown",
+      errorBody.error?.message || errorBody.detail || "Request failed"
     );
   }
 
@@ -294,7 +303,7 @@ export const messagesApi = {
     conversationId: string,
     content: string,
     signal?: AbortSignal,
-    options?: { agent_family?: string; modifiers?: string[] }
+    options?: { agent_family?: string; modifiers?: string[]; attachment_ids?: string[] }
   ): Promise<Response> => {
     const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
     const doFetch = () => {
@@ -307,6 +316,7 @@ export const messagesApi = {
       const body: Record<string, unknown> = { content };
       if (options?.agent_family) body.agent_family = options.agent_family;
       if (options?.modifiers?.length) body.modifiers = options.modifiers;
+      if (options?.attachment_ids?.length) body.attachment_ids = options.attachment_ids;
       return fetch(url, {
         method: "POST",
         headers,
