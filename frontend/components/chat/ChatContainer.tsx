@@ -70,11 +70,9 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         lang="ar"
         className="flex items-center justify-between border-b px-4 py-2 shrink-0"
       >
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            المحادثة
-          </h2>
-        </div>
+        <h2 className="text-sm font-medium text-muted-foreground">
+          المحادثة
+        </h2>
         <Button
           variant={isArtifactPanelOpen ? "secondary" : "ghost"}
           size="sm"

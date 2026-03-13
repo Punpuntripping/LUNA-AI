@@ -31,7 +31,7 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-3 end-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground"
+            className="absolute top-3 start-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground"
             onClick={() => setSidebarOpen(true)}
             aria-label="فتح الشريط الجانبي"
           >

@@ -137,7 +137,7 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
             {/* Top row: icon + title + actions */}
             <div className="flex items-center gap-2">
               <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-              <p className="flex-1 min-w-0 truncate text-sm font-medium">{title}</p>
+              <p className="flex-1 min-w-0 text-sm font-medium line-clamp-2">{title}</p>
 
               {/* Actions dropdown — visible on hover */}
               <div

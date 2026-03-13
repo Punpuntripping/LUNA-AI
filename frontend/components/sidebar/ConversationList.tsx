@@ -1,11 +1,14 @@
 "use client";
 
 import { useMemo } from "react";
-import { MessageSquareOff } from "lucide-react";
-import { useConversations } from "@/hooks/use-conversations";
+import { MessageSquareOff, Plus } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useConversations, useCreateConversation } from "@/hooks/use-conversations";
 import { getDateGroupAr } from "@/lib/utils";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { useSidebarStore } from "@/stores/sidebar-store";
 import type { ConversationSummary } from "@/types";
 
 // Group conversations by Arabic date labels
@@ -55,7 +58,23 @@ function ConversationSkeleton() {
 }
 
 export function ConversationList() {
+  const router = useRouter();
   const { data, isLoading, isError } = useConversations(null);
+  const createConversation = useCreateConversation();
+
+  const handleNewConversation = () => {
+    createConversation.mutate(
+      { case_id: null },
+      {
+        onSuccess: (resp) => {
+          useSidebarStore
+            .getState()
+            .setSelectedConversation(resp.conversation.conversation_id);
+          router.push(`/chat/${resp.conversation.conversation_id}`);
+        },
+      }
+    );
+  };
 
   const grouped = useMemo(() => {
     if (!data?.conversations) return new Map<string, ConversationSummary[]>();
@@ -93,7 +112,19 @@ export function ConversationList() {
   }
 
   return (
-    <ScrollArea className="flex-1">
+    <>
+      <div className="p-2">
+        <Button
+          variant="outline"
+          className="w-full gap-1.5 text-xs"
+          onClick={handleNewConversation}
+          disabled={createConversation.isPending}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          محادثة جديدة
+        </Button>
+      </div>
+      <ScrollArea className="flex-1">
       <div className="p-2 space-y-3">
         {Array.from(grouped.entries()).map(([groupLabel, conversations]) => (
           <div key={groupLabel}>
@@ -112,5 +143,6 @@ export function ConversationList() {
         ))}
       </div>
     </ScrollArea>
+    </>
   );
 }
