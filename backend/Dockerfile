@@ -1,4 +1,5 @@
 # Luna Legal AI — Backend (multi-stage, non-root)
+# Build context: repo root (needs shared/ and agents/ siblings)
 
 FROM python:3.11-slim AS builder
 ENV PYTHONDONTWRITEBYTECODE=1

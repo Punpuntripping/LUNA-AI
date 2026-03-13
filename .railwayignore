@@ -1,0 +1,15 @@
+node_modules/
+.next/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.local
+.env*.local
+test_pdfs/
+research_resources/
+screenshots_temp/
+agents_reports/
+.claude/
+.playwright-mcp/
+.git/

@@ -7,8 +7,7 @@ RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
-# Build context is project root, so prefix with frontend/
-COPY frontend/package.json frontend/package-lock.json ./
+COPY package.json package-lock.json ./
 
 RUN npm ci
 
@@ -20,7 +19,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
-COPY frontend/ .
+COPY . .
 
 # Build-time env vars that get baked into the client bundle.
 # These can be overridden at build time with --build-arg.
