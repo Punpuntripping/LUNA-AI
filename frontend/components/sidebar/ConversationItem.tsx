@@ -101,15 +101,17 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
     <>
       <div
         className={cn(
-          "group rounded-md border px-3 py-2.5 text-sm cursor-pointer transition-colors",
+          "group flex items-center gap-2 rounded-md px-2 py-2 text-sm cursor-pointer transition-colors",
           isActive
-            ? "border-primary/30 bg-accent text-accent-foreground"
-            : "border-border/50 bg-background/50 text-sidebar-foreground hover:bg-accent/50"
+            ? "bg-accent text-accent-foreground"
+            : "text-sidebar-foreground hover:bg-accent/50"
         )}
         onClick={handleClick}
       >
+        <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
+
         {isRenaming ? (
-          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <div className="flex flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
             <input
               ref={inputRef}
               type="text"
@@ -134,43 +136,39 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
           </div>
         ) : (
           <>
-            {/* Top row: icon + title + actions */}
-            <div className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-              <p className="flex-1 min-w-0 truncate text-sm font-medium">{title}</p>
-
-              {/* Actions dropdown — visible on hover */}
-              <div
-                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-6 w-6">
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-40">
-                    <DropdownMenuItem onClick={handleStartRename}>
-                      <Pencil className="h-3.5 w-3.5 me-2" />
-                      إعادة تسمية
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => setShowDeleteDialog(true)}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5 me-2" />
-                      حذف
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+            <div className="flex-1 min-w-0">
+              <p className="truncate text-sm">{title}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {getRelativeTimeAr(conversation.updated_at)}
+              </p>
             </div>
 
-            {/* Bottom row: timestamp */}
-            <p className="text-xs text-muted-foreground mt-1">
-              {getRelativeTimeAr(conversation.updated_at)}
-            </p>
+            {/* Actions dropdown — visible on hover */}
+            <div
+              className="opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-6 w-6">
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-40">
+                  <DropdownMenuItem onClick={handleStartRename}>
+                    <Pencil className="h-3.5 w-3.5 me-2" />
+                    إعادة تسمية
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setShowDeleteDialog(true)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 me-2" />
+                    حذف
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </>
         )}
       </div>

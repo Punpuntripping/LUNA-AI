@@ -100,7 +100,7 @@ export function ConversationList() {
             <p className="px-2 py-1 text-xs font-medium text-muted-foreground">
               {groupLabel}
             </p>
-            <div className="space-y-2">
+            <div className="space-y-0.5">
               {conversations.map((conv) => (
                 <ConversationItem
                   key={conv.conversation_id}

@@ -320,6 +320,7 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
           <DropdownMenuContent side="top" align="end" className="min-w-[180px]">
             <DropdownMenuItem
               onClick={handleAddFile}
+              disabled={!caseId}
               className="gap-2 cursor-pointer"
             >
               <Paperclip className="h-4 w-4" />
