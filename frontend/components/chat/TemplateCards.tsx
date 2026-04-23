@@ -25,18 +25,18 @@ interface TemplateCardsProps {
 
 const FAMILY_COLORS: Record<AgentFamily, string> = {
   deep_search: "bg-blue-500/10 text-blue-500",
-  simple_search: "bg-green-500/10 text-green-500",
   end_services: "bg-purple-500/10 text-purple-500",
   extraction: "bg-orange-500/10 text-orange-500",
   memory: "bg-yellow-500/10 text-yellow-600",
+  router: "bg-gray-500/10 text-gray-500",
 };
 
 const FAMILY_LABELS: Record<AgentFamily, string> = {
   deep_search: "بحث معمق",
-  simple_search: "بحث بسيط",
   end_services: "خدمات نهائية",
   extraction: "استخراج",
   memory: "ذاكرة",
+  router: "عام",
 };
 
 // ==========================================
@@ -72,7 +72,7 @@ const BUILT_IN_TEMPLATES: BuiltInTemplate[] = [
   {
     title: "حقوق العامل",
     description: "استشارة سريعة حول حقوق العمال",
-    agent_family: "simple_search",
+    agent_family: "deep_search",
     prompt: "ما هي حقوق العامل في نظام العمل السعودي؟",
   },
 ];

@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
-import { MessageSquareOff, Plus } from "lucide-react";
+import { useMemo, useState, useCallback } from "react";
+import { MessageSquareOff, Plus, SearchX } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useConversations, useCreateConversation } from "@/hooks/use-conversations";
+import { useDebounce } from "@/hooks/use-debounce";
 import { getDateGroupAr } from "@/lib/utils";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
+import { ConversationSearch } from "@/components/sidebar/ConversationSearch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { useSidebarStore } from "@/stores/sidebar-store";
@@ -41,6 +43,20 @@ function groupByDate(conversations: ConversationSummary[]): Map<string, Conversa
   return groups;
 }
 
+// Filter conversations by title match (case-insensitive)
+function filterConversations(
+  conversations: ConversationSummary[],
+  query: string
+): ConversationSummary[] {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return conversations;
+
+  return conversations.filter((conv) => {
+    const title = (conv.title_ar || "محادثة جديدة").toLowerCase();
+    return title.includes(trimmed);
+  });
+}
+
 function ConversationSkeleton() {
   return (
     <div className="space-y-2 p-2">
@@ -62,6 +78,14 @@ export function ConversationList() {
   const { data, isLoading, isError } = useConversations(null);
   const createConversation = useCreateConversation();
 
+  // Search state — lives locally, resets naturally when component unmounts (tab switch)
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedQuery = useDebounce(searchInput, 300);
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value);
+  }, []);
+
   const handleNewConversation = () => {
     createConversation.mutate(
       { case_id: null },
@@ -76,10 +100,19 @@ export function ConversationList() {
     );
   };
 
+  // Filter conversations based on debounced search query, then group by date
+  const filtered = useMemo(() => {
+    if (!data?.conversations) return [];
+    return filterConversations(data.conversations, debouncedQuery);
+  }, [data?.conversations, debouncedQuery]);
+
   const grouped = useMemo(() => {
-    if (!data?.conversations) return new Map<string, ConversationSummary[]>();
-    return groupByDate(data.conversations);
-  }, [data?.conversations]);
+    return groupByDate(filtered);
+  }, [filtered]);
+
+  const hasConversations = data?.conversations && data.conversations.length > 0;
+  const isSearchActive = debouncedQuery.trim().length > 0;
+  const hasNoResults = isSearchActive && filtered.length === 0;
 
   if (isLoading) {
     return <ConversationSkeleton />;
@@ -95,7 +128,7 @@ export function ConversationList() {
     );
   }
 
-  if (!data?.conversations || data.conversations.length === 0) {
+  if (!hasConversations) {
     return (
       <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
         <MessageSquareOff className="h-10 w-10 text-muted-foreground/50" />
@@ -112,8 +145,9 @@ export function ConversationList() {
   }
 
   return (
-    <>
-      <div className="p-2">
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* New conversation button */}
+      <div className="p-2 shrink-0">
         <Button
           variant="outline"
           className="w-full gap-1.5 text-xs"
@@ -124,25 +158,45 @@ export function ConversationList() {
           محادثة جديدة
         </Button>
       </div>
-      <ScrollArea className="flex-1">
-      <div className="p-2 space-y-3">
-        {Array.from(grouped.entries()).map(([groupLabel, conversations]) => (
-          <div key={groupLabel}>
-            <p className="px-2 py-1 text-xs font-medium text-muted-foreground">
-              {groupLabel}
-            </p>
-            <div className="space-y-2">
-              {conversations.map((conv) => (
-                <ConversationItem
-                  key={conv.conversation_id}
-                  conversation={conv}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
+
+      {/* Search input */}
+      <div className="px-2 pb-1 shrink-0">
+        <ConversationSearch
+          value={searchInput}
+          onChange={handleSearchChange}
+        />
       </div>
-    </ScrollArea>
-    </>
+
+      {/* Conversation list or no-results state */}
+      <ScrollArea className="flex-1 min-h-0">
+        {hasNoResults ? (
+          <div className="flex flex-col items-center justify-center py-10 px-4 text-center gap-2">
+            <SearchX className="h-8 w-8 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">
+              لا توجد نتائج لـ &laquo;{debouncedQuery.trim()}&raquo;
+            </p>
+          </div>
+        ) : (
+          <div className="p-2 space-y-3">
+            {Array.from(grouped.entries()).map(([groupLabel, conversations]) => (
+              <div key={groupLabel}>
+                <p className="px-2 py-1 text-xs font-medium text-muted-foreground">
+                  {groupLabel}
+                </p>
+                <div className="space-y-2">
+                  {conversations.map((conv) => (
+                    <ConversationItem
+                      key={conv.conversation_id}
+                      conversation={conv}
+                      searchQuery={isSearchActive ? debouncedQuery.trim() : undefined}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </ScrollArea>
+    </div>
   );
 }

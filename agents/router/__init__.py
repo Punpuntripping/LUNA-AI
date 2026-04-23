@@ -1,5 +1,5 @@
-"""Agent router — classifies intent and dispatches to agent families."""
-from agents.router.router import route_and_execute
-from agents.router.classifier import classify
+"""Router agent — classifies intent, answers directly or dispatches tasks."""
 
-__all__ = ["route_and_execute", "classify"]
+from agents.router.router import RouterDeps, router_agent, run_router
+
+__all__ = ["RouterDeps", "router_agent", "run_router"]

@@ -23,7 +23,8 @@ frontend/       Next.js app — pages, components, hooks, stores, types
 backend/        FastAPI app — routes, services, models, middleware
 shared/         Python shared layer — config, db client, auth/JWT, cache, types
 agents/         Mock RAG pipeline (agents/rag/)
-.claude/agents/ Claude Code sub-agents (12 agents)
+.claude/agents/ Claude Code sub-agents (build, deploy, review)
+agents/.claude/agents/ Pydantic AI agent builder pipeline (6 agents)
 .claude/plans/  Wave-by-wave build plans (primary reference for @plan-reviewer)
 agents_reports/ Agent output reports (validation, security, integration)
 ```
@@ -63,9 +64,22 @@ agents_reports/ Agent output reports (validation, security, integration)
 | @security-reviewer | Security audit — RLS, JWT, XSS, CORS, credentials (read-only) |
 | @rls-auditor | Dedicated RLS policy verification via live SQL |
 | @plan-reviewer | Grand plan alignment check (only agent with Obsidian access) |
-| @deploy-checker | Railway service status, env vars, health endpoints |
+| @deploy-checker | Railway deploy + verify — triggers deploys, watches builds, verifies services/env/health/CORS, post-deploy Playwright screenshots |
 | @integration-lead | Frontend/backend contract matching — types, URLs, SSE events |
 | @execution-planner | Conductor — reads plan-reviewer reports, invokes build/quality agents |
+| @frontend-planner | Frontend sprint conductor — drives build-evaluate loop via @nextjs-frontend + @frontend-dev-loop, deploys, iterates |
+| @frontend-dev-loop | Frontend evaluator (read-only) — state discovery, benchmark vs Claude.ai/ChatGPT, Playwright grading |
+
+### Pydantic AI Agent Builder Pipeline (`agents/.claude/agents/`)
+
+| Agent | Purpose |
+|-------|---------|
+| @pydantic-ai-planner | Autonomous requirements analysis → produces INITIAL.md |
+| @pydantic-ai-prompt-engineer | System prompt design → produces prompts.md |
+| @pydantic-ai-tool-integrator | Tool implementation → writes tools.py |
+| @pydantic-ai-dependency-manager | Deps + agent assembly + runner → writes deps.py, agent.py, runner.py, __init__.py |
+| @pydantic-ai-validator | Test creation → writes tests/ with TestModel + FunctionModel |
+| @luna-wiring | Wires finished agent into orchestrator.py, agent_models.py, router |
 
 ## Real Infrastructure
 

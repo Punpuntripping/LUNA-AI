@@ -69,34 +69,29 @@ export function Sidebar() {
         {/* Header */}
         <SidebarHeader />
 
-        {/* Tab navigation */}
-        <div className="px-2 pt-2">
-          <Tabs
-            value={activeTab}
-            onValueChange={(v) => setActiveTab(v as "conversations" | "cases")}
-            className="w-full"
-          >
-            <TabsList className="w-full grid grid-cols-2">
-              <TabsTrigger value="conversations" className="text-xs">
-                المحادثات
-              </TabsTrigger>
-              <TabsTrigger value="cases" className="text-xs">
-                القضايا
-              </TabsTrigger>
-            </TabsList>
+        {/* Tab navigation — flex-1 + min-h-0 so the list scrolls instead of overflowing */}
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as "conversations" | "cases")}
+          className="flex-1 flex flex-col min-h-0 px-2 pt-2"
+        >
+          <TabsList className="w-full grid grid-cols-2 shrink-0">
+            <TabsTrigger value="conversations" className="text-xs">
+              المحادثات
+            </TabsTrigger>
+            <TabsTrigger value="cases" className="text-xs">
+              القضايا
+            </TabsTrigger>
+          </TabsList>
 
-            <TabsContent value="conversations" className="flex-1 min-h-0 mt-0">
-              <ConversationList />
-            </TabsContent>
+          <TabsContent value="conversations" className="flex-1 flex flex-col min-h-0 mt-0 data-[state=inactive]:hidden">
+            <ConversationList />
+          </TabsContent>
 
-            <TabsContent value="cases" className="flex-1 min-h-0 mt-0">
-              <CaseList />
-            </TabsContent>
-          </Tabs>
-        </div>
-
-        {/* Spacer to push footer down */}
-        <div className="flex-1" />
+          <TabsContent value="cases" className="flex-1 flex flex-col min-h-0 mt-0 data-[state=inactive]:hidden">
+            <CaseList />
+          </TabsContent>
+        </Tabs>
 
         {/* Footer */}
         <SidebarFooter />

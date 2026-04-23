@@ -89,8 +89,10 @@ class UpdateConversationRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     """POST /api/v1/conversations/{conversation_id}/messages"""
     content: str = Field(..., min_length=1, max_length=10_000)
-    agent_family: Optional[str] = None    # Explicit agent selection (skip classifier)
-    modifiers: Optional[list[str]] = None  # ["plan", "reflect"]
+    task_type: Optional[str] = Field(
+        default=None,
+        description="Explicit task type: deep_search, end_services, extraction"
+    )
     attachment_ids: Optional[list[str]] = None  # document_ids to attach to the message
 
     @field_validator("content", mode="before")

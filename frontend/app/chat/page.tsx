@@ -6,6 +6,8 @@ import { useCreateConversation } from "@/hooks/use-conversations";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useChatStore } from "@/stores/chat-store";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { TemplateCards } from "@/components/chat/TemplateCards";
+import { AgentSelector } from "@/components/chat/AgentSelector";
 
 // Next.js App Router requires default export for page files
 // eslint-disable-next-line import/no-default-export
@@ -57,9 +59,17 @@ export default function ChatEmptyPage() {
           المساعد القانوني الذكي المتخصص في الأنظمة السعودية. اطرح أسئلتك
           القانونية واحصل على إجابات دقيقة مدعومة بالمصادر.
         </p>
+
+        {/* Template cards */}
+        <div className="max-w-2xl mx-auto w-full px-4 mb-6">
+          <TemplateCards onSelect={handleSend} />
+        </div>
       </div>
 
-      {/* Chat input - sticky at bottom */}
+      {/* Agent selector + Chat input - sticky at bottom */}
+      <div className="max-w-3xl mx-auto w-full px-4 pt-2">
+        <AgentSelector />
+      </div>
       <ChatInput onSend={handleSend} disabled={isCreating} />
     </div>
   );

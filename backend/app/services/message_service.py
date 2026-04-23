@@ -17,8 +17,7 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
-from backend.app.services.context_service import build_context
-from agents.router.router import route_and_execute
+from agents.orchestrator import handle_message
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +145,7 @@ async def send_message_stream(
     conv: dict,
     content: str,
     request: Request,
-    agent_family: str | None = None,
-    modifiers: list[str] | None = None,
+    task_type: str | None = None,
     attachment_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
@@ -220,8 +218,7 @@ async def send_message_stream(
         "conversation_id": conversation_id,
     })
 
-    # 4. Build context and stream from agent router (with heartbeat + disconnect detection)
-    context = build_context(supabase, conversation_id, user_id)
+    # 4. Stream from orchestrator (with heartbeat + disconnect detection)
     full_content = ""
     citations = []
 
@@ -240,15 +237,13 @@ async def send_message_stream(
         """Run agent pipeline and put SSE events on the queue."""
         nonlocal full_content, citations
         try:
-            async for event in route_and_execute(
+            async for event in handle_message(
                 question=content,
-                context=context,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 supabase=supabase,
                 case_id=conv.get("case_id"),
-                explicit_agent=agent_family,
-                modifiers=modifiers,
+                explicit_task_type=task_type,
             ):
                 event_type = event.get("type")
 
@@ -271,6 +266,33 @@ async def send_message_stream(
                 elif event_type == "agent_selected":
                     await queue.put(_sse_event("agent_selected", {
                         "agent_family": event["agent_family"],
+                    }))
+
+                elif event_type == "task_started":
+                    await queue.put(_sse_event("task_started", {
+                        "task_id": event["task_id"],
+                        "task_type": event["task_type"],
+                    }))
+
+                elif event_type == "task_ended":
+                    await queue.put(_sse_event("task_ended", {
+                        "task_id": event["task_id"],
+                        "summary": event.get("summary", ""),
+                    }))
+
+                elif event_type == "artifact_updated":
+                    await queue.put(_sse_event("artifact_updated", {
+                        "artifact_id": event["artifact_id"],
+                    }))
+
+                elif event_type == "status":
+                    await queue.put(_sse_event("status", {
+                        "text": event.get("text", ""),
+                    }))
+
+                elif event_type == "ask_user":
+                    await queue.put(_sse_event("ask_user", {
+                        "question": event.get("question", ""),
                     }))
 
                 elif event_type == "done":

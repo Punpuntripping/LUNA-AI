@@ -126,7 +126,6 @@ class AuditAction(str, Enum):
 class AgentFamily(str, Enum):
     """Agent family — mirrors agent_family_enum in 018_enums_agent.sql."""
     DEEP_SEARCH = "deep_search"
-    SIMPLE_SEARCH = "simple_search"
     END_SERVICES = "end_services"
     EXTRACTION = "extraction"
     MEMORY = "memory"

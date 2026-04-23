@@ -303,7 +303,7 @@ export const messagesApi = {
     conversationId: string,
     content: string,
     signal?: AbortSignal,
-    options?: { agent_family?: string; modifiers?: string[]; attachment_ids?: string[] }
+    options?: { task_type?: string; attachment_ids?: string[] }
   ): Promise<Response> => {
     const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
     const doFetch = () => {
@@ -314,8 +314,7 @@ export const messagesApi = {
         headers["Authorization"] = `Bearer ${accessToken}`;
       }
       const body: Record<string, unknown> = { content };
-      if (options?.agent_family) body.agent_family = options.agent_family;
-      if (options?.modifiers?.length) body.modifiers = options.modifiers;
+      if (options?.task_type) body.task_type = options.task_type;
       if (options?.attachment_ids?.length) body.attachment_ids = options.attachment_ids;
       return fetch(url, {
         method: "POST",

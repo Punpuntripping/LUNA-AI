@@ -5,7 +5,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { artifactKeys } from "@/hooks/use-artifacts";
-import type { Message, MessageListResponse, SSEMessageStart, SSEToken, SSECitations, SSEDone, SSEArtifactCreated, SSEAgentSelected, Citation } from "@/types";
+import type { Message, MessageListResponse, SSEMessageStart, SSEToken, SSECitations, SSEDone, SSEArtifactCreated, SSEAgentSelected, SSETaskStarted, SSETaskEnded, SSEArtifactUpdated, Citation } from "@/types";
 
 interface SendMessageParams {
   conversationId: string;
@@ -13,9 +13,34 @@ interface SendMessageParams {
   caseId?: string | null;
 }
 
+interface RegenerateParams {
+  conversationId: string;
+  messageId: string;
+  caseId?: string | null;
+}
+
+interface EditAndResendParams {
+  conversationId: string;
+  messageId: string;
+  newContent: string;
+  caseId?: string | null;
+}
+
+interface RetryParams {
+  conversationId: string;
+  messageId: string;
+  caseId?: string | null;
+}
+
 interface UseSendMessageReturn {
   sendMessage: (params: SendMessageParams) => Promise<void>;
   stopStreaming: () => void;
+  /** Re-sends the user message that preceded the given assistant message */
+  regenerateMessage: (params: RegenerateParams) => Promise<void>;
+  /** Sends edited content as a new message in the conversation */
+  editAndResend: (params: EditAndResendParams) => Promise<void>;
+  /** Re-sends a failed message using its original content */
+  retryMessage: (params: RetryParams) => Promise<void>;
 }
 
 /**
@@ -104,11 +129,10 @@ export function useSendMessage(): UseSendMessageReturn {
       let assistantMessageId: string | null = null;
       let citations: Citation[] = [];
 
-      // 3. Capture agent selection before the first attempt (cleared after first send)
-      const { selectedAgentFamily, modifiers } = useChatStore.getState();
+      // 3. Capture task type before the first attempt (cleared after first send)
+      const { selectedAgentFamily } = useChatStore.getState();
       const sendOptions = {
-        agent_family: selectedAgentFamily ?? undefined,
-        modifiers: modifiers.length ? modifiers : undefined,
+        task_type: selectedAgentFamily ?? undefined,
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
       };
 
@@ -334,6 +358,22 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().setSelectedAgentFamily(payload.agent_family);
               break;
             }
+            case "task_started": {
+              const payload = data as SSETaskStarted;
+              useChatStore.getState().setActiveTask(payload.task_id, payload.task_type);
+              break;
+            }
+            case "task_ended": {
+              const _payload = data as SSETaskEnded;
+              useChatStore.getState().clearActiveTask();
+              break;
+            }
+            case "artifact_updated": {
+              const payload = data as SSEArtifactUpdated;
+              void qc.invalidateQueries({ queryKey: artifactKeys.byConversation(conversationId) });
+              useChatStore.getState().openArtifactPanel(payload.artifact_id);
+              break;
+            }
             case "heartbeat":
               // Keep-alive ping from server — ignore silently
               break;
@@ -355,7 +395,97 @@ export function useSendMessage(): UseSendMessageReturn {
     useChatStore.getState().stopStreaming();
   }, []);
 
-  return { sendMessage, stopStreaming };
+  /**
+   * Find all messages in the query cache for a conversation, flattened
+   * in chronological order (oldest first).
+   */
+  const getMessagesFromCache = useCallback(
+    (conversationId: string): Message[] => {
+      const cached = qc.getQueryData<{
+        pages: MessageListResponse[];
+        pageParams: (string | undefined)[];
+      }>(messageKeys.list(conversationId));
+      if (!cached?.pages) return [];
+
+      const all: Message[] = [];
+      // Pages are [newest, older, oldest...], messages within each are newest-first
+      for (let i = cached.pages.length - 1; i >= 0; i--) {
+        const page = cached.pages[i];
+        all.push(...[...page.messages].reverse());
+      }
+      return all;
+    },
+    [qc]
+  );
+
+  /**
+   * Regenerate: find the user message that preceded the given assistant message
+   * and re-send it through the normal sendMessage flow.
+   */
+  const regenerateMessage = useCallback(
+    async ({ conversationId, messageId, caseId }: RegenerateParams) => {
+      const messages = getMessagesFromCache(conversationId);
+      const assistantIdx = messages.findIndex((m) => m.message_id === messageId);
+      if (assistantIdx < 0) return;
+
+      // Walk backwards from the assistant message to find the preceding user message
+      let userContent: string | null = null;
+      for (let i = assistantIdx - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          userContent = messages[i].content;
+          break;
+        }
+      }
+
+      if (!userContent) return;
+
+      await sendMessage({ conversationId, content: userContent, caseId });
+    },
+    [sendMessage, getMessagesFromCache]
+  );
+
+  /**
+   * Edit and resend: send the new (edited) content as a fresh message.
+   * The original message stays in history.
+   */
+  const editAndResend = useCallback(
+    async ({ conversationId, newContent, caseId }: EditAndResendParams) => {
+      if (!newContent.trim()) return;
+      await sendMessage({ conversationId, content: newContent, caseId });
+    },
+    [sendMessage]
+  );
+
+  /**
+   * Retry: re-send a failed message using its original content.
+   */
+  const retryMessage = useCallback(
+    async ({ conversationId, messageId, caseId }: RetryParams) => {
+      const messages = getMessagesFromCache(conversationId);
+      const failedMsg = messages.find((m) => m.message_id === messageId);
+      if (!failedMsg) return;
+
+      // Remove the failed message from cache before re-sending
+      qc.setQueryData<{
+        pages: MessageListResponse[];
+        pageParams: (string | undefined)[];
+      }>(messageKeys.list(conversationId), (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            messages: page.messages.filter((m) => m.message_id !== messageId),
+          })),
+        };
+      });
+
+      await sendMessage({ conversationId, content: failedMsg.content, caseId });
+    },
+    [sendMessage, getMessagesFromCache, qc]
+  );
+
+  return { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage };
 }
 
 // -----------------------------------------------

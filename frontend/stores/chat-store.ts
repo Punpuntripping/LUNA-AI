@@ -9,10 +9,15 @@ interface ChatState {
   pendingFiles: PendingFile[];
   pendingMessage: string | null;
   error: string | null;
+  /** Per-message agent family override (set from @ commands or selector, sent with the message) */
   selectedAgentFamily: AgentFamily | null;
+  /** Persistent UI agent selector state (null = auto/router). Drives the pill display. */
+  selectedAgent: AgentFamily | null;
   modifiers: string[];
   isArtifactPanelOpen: boolean;
   activeArtifactId: string | null;
+  activeTaskId: string | null;
+  activeTaskType: string | null;
   reconnectAttempts: number;
   maxReconnectAttempts: number;
   isReconnecting: boolean;
@@ -29,11 +34,15 @@ interface ChatState {
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
   setSelectedAgentFamily: (family: AgentFamily | null) => void;
+  /** Set the persistent UI agent selector (null = auto/router) */
+  setSelectedAgent: (agent: AgentFamily | null) => void;
   setModifiers: (mods: string[]) => void;
   openArtifactPanel: (artifactId: string) => void;
   closeArtifactPanel: () => void;
   toggleArtifactPanel: () => void;
   resetAgentSelection: () => void;
+  setActiveTask: (taskId: string, taskType: string) => void;
+  clearActiveTask: () => void;
   startReconnect: () => void;
   resetReconnect: () => void;
   reset: () => void;
@@ -48,9 +57,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingMessage: null,
   error: null,
   selectedAgentFamily: null,
+  selectedAgent: null,
   modifiers: [],
   isArtifactPanelOpen: false,
   activeArtifactId: null,
+  activeTaskId: null,
+  activeTaskType: null,
   reconnectAttempts: 0,
   maxReconnectAttempts: 5,
   isReconnecting: false,
@@ -107,6 +119,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setSelectedAgentFamily: (family) => set({ selectedAgentFamily: family }),
 
+  setSelectedAgent: (agent) =>
+    set({ selectedAgent: agent, selectedAgentFamily: agent }),
+
   setModifiers: (mods) => set({ modifiers: mods }),
 
   openArtifactPanel: (artifactId) =>
@@ -123,6 +138,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   resetAgentSelection: () =>
     set({ selectedAgentFamily: null, modifiers: [] }),
+
+  setActiveTask: (taskId, taskType) =>
+    set({ activeTaskId: taskId, activeTaskType: taskType }),
+
+  clearActiveTask: () =>
+    set({ activeTaskId: null, activeTaskType: null }),
+  // Note: resetAgentSelection does NOT clear selectedAgent — that's the persistent
+  // UI selector. Only reset() clears the UI selector (e.g., on conversation switch).
 
   startReconnect: () =>
     set((state) => ({
@@ -143,9 +166,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingMessage: null,
       error: null,
       selectedAgentFamily: null,
+      selectedAgent: null,
       modifiers: [],
       isArtifactPanelOpen: false,
       activeArtifactId: null,
+      activeTaskId: null,
+      activeTaskType: null,
       reconnectAttempts: 0,
       maxReconnectAttempts: 5,
       isReconnecting: false,

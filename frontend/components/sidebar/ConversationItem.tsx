@@ -24,13 +24,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { HighlightedText } from "@/components/sidebar/HighlightedText";
 import type { ConversationSummary } from "@/types";
 
 interface ConversationItemProps {
   conversation: ConversationSummary;
+  searchQuery?: string;
 }
 
-export function ConversationItem({ conversation }: ConversationItemProps) {
+export function ConversationItem({ conversation, searchQuery = "" }: ConversationItemProps) {
   const router = useRouter();
   const { selectedConversationId, setSelectedConversation } = useSidebarStore();
   const deleteConversation = useDeleteConversation();
@@ -137,7 +139,13 @@ export function ConversationItem({ conversation }: ConversationItemProps) {
             {/* Top row: icon + title + actions */}
             <div className="flex items-center gap-2">
               <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-              <p className="flex-1 min-w-0 text-sm font-medium line-clamp-2">{title}</p>
+              <p className="flex-1 min-w-0 text-sm font-medium line-clamp-2">
+                {searchQuery ? (
+                  <HighlightedText text={title} highlight={searchQuery} />
+                ) : (
+                  title
+                )}
+              </p>
 
               {/* Actions dropdown — visible on hover */}
               <div

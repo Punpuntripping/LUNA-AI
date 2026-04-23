@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -69,7 +69,10 @@ class Settings(BaseSettings):
     # ========================================
 
     # OpenRouter (primary LLM gateway)
-    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_API_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias="OPEN_ROUTER",
+    )
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_DEFAULT_MODEL: str = "anthropic/claude-sonnet-4"
 
@@ -77,10 +80,34 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: Optional[str] = None
     MISTRAL_MODEL: str = "pixtral-large-latest"
 
-    # OpenAI (embeddings only)
+    # OpenAI (embeddings + agents)
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_EMBEDDING_DIMENSIONS: int = 1536
+
+    # Anthropic
+    ANTHROPIC_API_KEY: Optional[str] = None
+
+    # Google (Gemini)
+    GOOGLE_API_KEY: Optional[str] = None
+
+    # Jina Reranker
+    JINA_RERANKER_API_KEY: Optional[str] = Field(
+        default=None,
+        validation_alias="JINA_RERANKER_API",
+    )
+
+    # DeepSeek
+    DEEPSEEK_API_KEY: Optional[str] = None
+
+    # MiniMax
+    MINIMAX_API_KEY: Optional[str] = None
+
+    # Alibaba DashScope (Qwen models + embeddings)
+    ALIBABA_API_KEY: Optional[str] = None
+    ALIBABA_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    ALIBABA_EMBEDDING_MODEL: str = "text-embedding-v4"
+    ALIBABA_EMBEDDING_DIMENSIONS: int = 1024
 
     # ========================================
     # AGENT FRAMEWORK

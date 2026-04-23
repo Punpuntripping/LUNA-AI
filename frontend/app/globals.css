@@ -132,3 +132,52 @@
     border-radius: 2px;
   }
 }
+
+/*
+ * ============================================================
+ * Markdown content styles for chat bubbles
+ * ============================================================
+ */
+
+@layer components {
+  /* Markdown content container — prevent overly large spacing in chat context */
+  .markdown-content > :first-child {
+    margin-top: 0;
+  }
+  .markdown-content > :last-child {
+    margin-bottom: 0;
+  }
+
+  /* Ensure markdown content doesn't escape bubble width */
+  .markdown-content {
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  /* Override highlight.js background to be transparent inside our code blocks */
+  .markdown-content pre code.hljs {
+    background: transparent !important;
+    padding: 0 !important;
+  }
+
+  /* Streaming cursor: position at the end of the last rendered element */
+  .streaming-text .markdown-content > :last-child {
+    display: inline;
+  }
+  .streaming-text .markdown-content > :last-child > :last-child {
+    display: inline;
+  }
+
+  /* Task list checkboxes (GFM) */
+  .markdown-content input[type="checkbox"] {
+    margin-inline-end: 0.5rem;
+    margin-inline-start: 0;
+    pointer-events: none;
+  }
+
+  /* Ensure lists show their markers in RTL context */
+  .markdown-content ul,
+  .markdown-content ol {
+    list-style-position: inside;
+  }
+}

@@ -12,3 +12,13 @@ screenshots_temp/
 login-page-final.png
 agents_reports/
 tests/
+.claude/worktrees/
+test_pdfs/
+**/scheduled_tasks.lock
+**/settings.local.json
+agents/.md
+# Agent run logs/reports — too noisy to commit
+agents/deep_search_v3/*/reports/
+agents/deep_search_v3/*/logs/
+agents/archive/*/logs/
+agents/archive/*/comparison/

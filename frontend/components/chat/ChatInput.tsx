@@ -47,6 +47,7 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
   const addPendingFile = useChatStore((s) => s.addPendingFile);
   const removePendingFile = useChatStore((s) => s.removePendingFile);
   const setSelectedAgentFamily = useChatStore((s) => s.setSelectedAgentFamily);
+  const setSelectedAgent = useChatStore((s) => s.setSelectedAgent);
   const setModifiers = useChatStore((s) => s.setModifiers);
 
   const isDisabled = disabled || (isStreaming && !onStop);
@@ -103,12 +104,17 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
       setContent(newContent);
       setIsAtPaletteOpen(false);
 
+      // Sync the agent selector pill when a non-modifier @ command is selected
+      if (cmd.agent_family && !cmd.is_modifier) {
+        setSelectedAgent(cmd.agent_family);
+      }
+
       // Refocus the textarea after selection
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
       });
     },
-    [content]
+    [content, setSelectedAgent]
   );
 
   const handleAtPaletteClose = useCallback(() => {
@@ -131,13 +137,23 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
     setValidationError(null);
 
     // Parse @ commands from the message (only if there's text)
+    let hasAtAgent = false;
     if (trimmed) {
       const parsed = parseAtCommands(trimmed);
       if (parsed.agent_family) {
         setSelectedAgentFamily(parsed.agent_family);
+        hasAtAgent = true;
       }
       if (parsed.modifiers.length > 0) {
         setModifiers(parsed.modifiers);
+      }
+    }
+
+    // If no @ command specified an agent, use the persistent selector value
+    if (!hasAtAgent) {
+      const selectorAgent = useChatStore.getState().selectedAgent;
+      if (selectorAgent) {
+        setSelectedAgentFamily(selectorAgent);
       }
     }
 

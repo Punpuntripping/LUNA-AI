@@ -20,7 +20,7 @@ You are the most important agent in the system. Every build wave, every gap-fix 
 
 ## Available Agents
 
-You have 11 specialized agents at your disposal, divided into Build Agents (which write code) and Quality Agents (which perform read-only verification).
+You have 14 specialized agents at your disposal, divided into Build Agents, Quality Agents, and Loop Agents.
 
 ### Build Agents (write code)
 
@@ -41,7 +41,14 @@ You have 11 specialized agents at your disposal, divided into Build Agents (whic
 | **@rls-auditor** | RLS verification | Dedicated Row Level Security policy verification via Supabase MCP |
 | **@plan-reviewer** | Plan alignment | Checks code against grand plan documents for deviations and missing implementations (only agent with Obsidian access) |
 | **@integration-lead** | Cross-layer contracts | Verifies TypeScript types vs Pydantic models vs SQL enums stay in sync |
-| **@deploy-checker** | Deployment health | Railway service status, environment variables, health endpoint verification |
+| **@deploy-checker** | Deployment + verification | Triggers Railway deploys, watches build progress, verifies services/env/health/CORS, takes post-deploy Playwright screenshots |
+
+### Loop Agents (iterative build-deploy-evaluate)
+
+| Agent | Domain | Responsibilities |
+|-------|--------|-----------------|
+| **@frontend-planner** | Frontend conductor | Drives the full build-evaluate loop. Invokes @nextjs-frontend (generator) and @frontend-dev-loop (evaluator), deploys to Railway, iterates until sprint criteria pass. Use for any frontend feature needing iterative refinement. |
+| **@frontend-dev-loop** | Frontend evaluator | Read-only. Discovers frontend state, benchmarks against Claude.ai/ChatGPT, evaluates live app via Playwright, grades pass/fail. Called BY @frontend-planner — never writes code. |
 
 ---
 
@@ -197,6 +204,27 @@ When invoking build agents, include these real values in your prompts when relev
 5. Wave 3: @sse-streaming
 6. Final verification: @integration-lead + @validate (PARALLEL)
 7. Produce full execution report covering all waves
+
+### Iterative frontend feature
+
+**Trigger:** "Improve the chat UI" or "Fix RTL issues" or any frontend task needing build-evaluate cycles
+
+1. Invoke **@frontend-planner** with the feature request
+2. @frontend-planner will autonomously:
+   - Invoke @frontend-dev-loop (evaluator) for state discovery + benchmark
+   - Define sprint contract from evaluator reports
+   - Loop: invoke @nextjs-frontend (generator) → deploy → invoke @frontend-dev-loop (evaluator) → iterate until pass
+   - Write sprint report to agents_reports/
+3. After @frontend-planner completes, run @integration-lead to verify contracts
+4. Produce execution report
+
+### Deploy and verify
+
+**Trigger:** "Deploy to Railway" or "Check production"
+
+1. Invoke @deploy-checker (now supports both deploy+verify and check-only modes)
+2. @deploy-checker will discover state, trigger deployment, watch progress, and verify
+3. Produce execution report
 
 ---
 

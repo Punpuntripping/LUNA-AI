@@ -26,9 +26,9 @@ export const AT_COMMANDS: AtCommand[] = [
   },
   {
     trigger: "بحث",
-    label: "بحث بسيط",
+    label: "بحث",
     description: "بحث سريع في الأنظمة",
-    agent_family: "simple_search",
+    agent_family: "deep_search",
   },
   {
     trigger: "عقد",

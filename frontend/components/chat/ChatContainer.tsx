@@ -11,6 +11,7 @@ import { useConversationDetail } from "@/hooks/use-conversations";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { TemplateCards } from "@/components/chat/TemplateCards";
+import { AgentSelector } from "@/components/chat/AgentSelector";
 
 interface ChatContainerProps {
   conversationId: string;
@@ -18,7 +19,7 @@ interface ChatContainerProps {
 }
 
 export function ChatContainer({ conversationId, className }: ChatContainerProps) {
-  const { sendMessage, stopStreaming } = useSendMessage();
+  const { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage } = useSendMessage();
   const error = useChatStore((s) => s.error);
   const setError = useChatStore((s) => s.setError);
   const isArtifactPanelOpen = useChatStore((s) => s.isArtifactPanelOpen);
@@ -60,6 +61,31 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
       handleSend(content);
     },
     [handleSend]
+  );
+
+  // -----------------------------------------------
+  // Message action callbacks
+  // -----------------------------------------------
+
+  const handleRegenerate = useCallback(
+    (messageId: string) => {
+      void regenerateMessage({ conversationId, messageId, caseId });
+    },
+    [regenerateMessage, conversationId, caseId]
+  );
+
+  const handleEditResend = useCallback(
+    (messageId: string, newContent: string) => {
+      void editAndResend({ conversationId, messageId, newContent, caseId });
+    },
+    [editAndResend, conversationId, caseId]
+  );
+
+  const handleRetry = useCallback(
+    (messageId: string) => {
+      void retryMessage({ conversationId, messageId, caseId });
+    },
+    [retryMessage, conversationId, caseId]
   );
 
   return (
@@ -106,7 +132,13 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
       )}
 
       {/* Message list - grows to fill available space */}
-      <MessageList conversationId={conversationId} className="flex-1 min-h-0" />
+      <MessageList
+        conversationId={conversationId}
+        className="flex-1 min-h-0"
+        onRegenerate={handleRegenerate}
+        onEditResend={handleEditResend}
+        onRetry={handleRetry}
+      />
 
       {/* Template cards (shown when no messages OR user clicks "قوالبي" from + menu) */}
       {(!hasMessages || showTemplates) && (
@@ -134,7 +166,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         </div>
       )}
 
-      {/* Chat input - sticky at bottom */}
+      {/* Agent selector + Chat input - sticky at bottom */}
+      <div className="max-w-3xl mx-auto w-full px-4 pt-2">
+        <AgentSelector />
+      </div>
       <ChatInputWithTemplate
         onSend={handleSendWithTemplate}
         onStop={stopStreaming}

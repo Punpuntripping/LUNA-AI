@@ -237,7 +237,9 @@ export interface SSEDone {
 // AGENTS & ARTIFACTS
 // ==========================================
 
-export type AgentFamily = 'deep_search' | 'simple_search' | 'end_services' | 'extraction' | 'memory';
+export type AgentFamily = 'deep_search' | 'end_services' | 'extraction' | 'memory' | 'router';
+
+export type TaskType = 'deep_search' | 'end_services' | 'extraction';
 
 export type ArtifactType = 'report' | 'contract' | 'memo' | 'summary' | 'memory_file' | 'legal_opinion';
 
@@ -300,12 +302,26 @@ export interface SSEAgentSelected {
   agent_family: AgentFamily;
 }
 
+export interface SSETaskStarted {
+  task_id: string;
+  task_type: TaskType;
+}
+
+export interface SSETaskEnded {
+  task_id: string;
+  summary: string;
+}
+
+export interface SSEArtifactUpdated {
+  artifact_id: string;
+}
+
 // ==========================================
 // SEND MESSAGE PAYLOAD
 // ==========================================
 
 export interface SendMessagePayload {
   content: string;
-  agent_family?: AgentFamily | null;
-  modifiers?: string[] | null;
+  task_type?: TaskType | null;
+  attachment_ids?: string[] | null;
 }
