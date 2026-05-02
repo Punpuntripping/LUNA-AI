@@ -1,6 +1,8 @@
 """
 FastAPI application factory.
 Entry point: uvicorn backend.app.main:app
+
+Build marker: Wave 8A snapshot 2026-05-01.
 """
 from __future__ import annotations
 
@@ -17,8 +19,14 @@ from fastapi.responses import JSONResponse
 from shared.config import get_settings
 from shared.db.client import get_supabase_client, get_supabase_anon_client
 from shared.cache.redis import get_async_redis_client
+from shared.observability import configure_logfire, instrument_fastapi_app
 
 logger = logging.getLogger(__name__)
+
+# Configure Pydantic Logfire as early as possible so HTTPX / Pydantic AI
+# instrumentations attach before any client is constructed at import time.
+# No-ops gracefully when LOGFIRE_TOKEN is unset.
+configure_logfire(service_version="0.1.0")
 
 
 # ============================================
@@ -120,6 +128,9 @@ def create_app() -> FastAPI:
     from backend.app.middleware.rate_limit import RateLimitMiddleware
     application.add_middleware(RateLimitMiddleware)
 
+    # 5. Logfire FastAPI instrumentation — adds request spans + tags
+    instrument_fastapi_app(application)
+
     # ------------------------------------------
     # Exception handlers
     # ------------------------------------------
@@ -202,13 +213,13 @@ def create_app() -> FastAPI:
         tags=["memories"],
     )
 
-    # Artifacts router
-    from backend.app.api.artifacts import router as artifacts_router
+    # Workspace router (post-026 schema -- /workspace paths)
+    from backend.app.api.workspace import router as workspace_router
 
     application.include_router(
-        artifacts_router,
+        workspace_router,
         prefix="/api/v1",
-        tags=["artifacts"],
+        tags=["workspace"],
     )
 
     # Preferences + Templates router

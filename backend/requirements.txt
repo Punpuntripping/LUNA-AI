@@ -29,3 +29,19 @@ python-dotenv>=1.0.0,<2.0.0
 
 # HTTP client (used by supabase + general)
 httpx>=0.28.0,<1.0.0
+
+# Pydantic AI (agent framework) — deep_search + router + all agent graphs
+# pydantic-ai pulls pydantic-ai-slim + pydantic-graph transitively.
+pydantic-ai>=1.39.0,<2.0.0
+
+# Observability — Pydantic Logfire (no-ops gracefully when LOGFIRE_TOKEN is absent)
+# [fastapi] extra pulls opentelemetry-instrumentation-fastapi for request spans.
+logfire[fastapi]>=3.0.0,<4.0.0
+
+# LLM provider SDKs — pydantic_ai.models.<provider> imports these at runtime
+#   - openai: OpenAIChatModel (also used by DeepSeek, OpenRouter, Alibaba via OpenAI-compat)
+#   - anthropic: AnthropicModel
+#   - google-genai: GoogleModel
+openai>=2.0.0,<3.0.0
+anthropic>=0.75.0,<1.0.0
+google-genai>=1.0.0,<2.0.0
