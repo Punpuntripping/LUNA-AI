@@ -11,7 +11,7 @@ import {
   Pencil,
   ThumbsUp,
   ThumbsDown,
-  X,
+  HelpCircle,
 } from "lucide-react";
 import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
@@ -58,15 +58,17 @@ export function MessageBubble({
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isUser = message.role === "user";
-  const isAssistant = message.role === "assistant";
   const isCurrentlyStreaming = message.isStreaming && streamingContent !== undefined;
   const isCompleted = !isCurrentlyStreaming && !message.isOptimistic;
+  const metadataKind = message.metadata?.kind;
+  const isAgentQuestion = metadataKind === "agent_question";
+  const isAgentAnswer = metadataKind === "agent_answer";
+  const agentSuggestions = isAgentQuestion ? message.metadata?.suggestions : undefined;
 
   // Focus the textarea when entering edit mode
   useEffect(() => {
     if (isEditing && editTextareaRef.current) {
       editTextareaRef.current.focus();
-      // Move cursor to end of text
       const len = editTextareaRef.current.value.length;
       editTextareaRef.current.setSelectionRange(len, len);
     }
@@ -133,38 +135,45 @@ export function MessageBubble({
 
   const displayContent = isCurrentlyStreaming ? streamingContent : message.content;
 
-  return (
-    <TooltipProvider delayDuration={300}>
-      <div
-        dir="rtl"
-        lang="ar"
-        className={cn(
-          "flex w-full mb-4 group/bubble",
-          isUser ? "justify-start" : "justify-end"
-        )}
-      >
+  // ==========================================================================
+  // USER MESSAGE — prose style, no bubble
+  // ==========================================================================
+  if (isUser) {
+    // TODO: wire actual user display name when available
+    const userName = "أنت";
+    const avatarLetter = userName.charAt(0) || "أ";
+
+    return (
+      <TooltipProvider delayDuration={300}>
         <div
+          dir="rtl"
+          lang="ar"
           className={cn(
-            "relative max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3",
-            isUser && "bg-primary/10 text-foreground",
-            isAssistant && "bg-card border shadow-sm text-foreground",
-            message.isFailed && "border-destructive border-2",
+            "flex flex-col gap-1.5 mb-5 group/bubble",
             message.isOptimistic && !message.isFailed && "opacity-70"
           )}
         >
-          {/* Assistant model badge */}
-          {isAssistant && !isCurrentlyStreaming && message.model && (
-            <div className="flex items-center gap-1 mb-1.5">
-              <Bot className="h-3 w-3 text-muted-foreground" />
-              <span className="text-[10px] text-muted-foreground">
-                {message.model}
-              </span>
+          {/* Header row: avatar + name + timestamp */}
+          <div className="flex items-center gap-2.5">
+            <div className="h-7 w-7 bg-muted text-muted-foreground rounded-full flex items-center justify-center text-xs font-semibold shrink-0">
+              {avatarLetter}
             </div>
-          )}
+            <span className="text-[13px] font-semibold text-foreground">
+              {userName}
+            </span>
+            {isAgentAnswer && (
+              <span className="text-[10px] font-medium text-muted-foreground bg-muted/60 rounded px-1.5 py-0.5 select-none">
+                (جواب)
+              </span>
+            )}
+            <span className="text-[11px] text-muted-foreground ms-auto">
+              {getRelativeTimeAr(message.created_at)}
+            </span>
+          </div>
 
-          {/* Message content (or edit mode for user messages) */}
-          {isEditing && isUser ? (
-            <div className="space-y-2">
+          {/* Body / edit mode — indented to align under the name */}
+          {isEditing ? (
+            <div className="ps-[38px] space-y-2">
               <TextareaAutosize
                 ref={editTextareaRef}
                 dir="rtl"
@@ -200,16 +209,168 @@ export function MessageBubble({
               </div>
             </div>
           ) : isCurrentlyStreaming ? (
-            <StreamingText content={streamingContent ?? ""} />
-          ) : isAssistant ? (
-            <MarkdownRenderer content={displayContent ?? ""} />
+            <div className="ps-[38px] text-sm leading-[1.75] text-foreground">
+              <StreamingText content={streamingContent ?? ""} />
+            </div>
           ) : (
-            <div className="whitespace-pre-wrap text-sm leading-relaxed">
+            <div className="ps-[38px] text-sm leading-[1.75] text-foreground whitespace-pre-wrap">
               {displayContent}
             </div>
           )}
 
-          {/* Failed message indicator + retry button */}
+          {/* Failed indicator + retry */}
+          {message.isFailed && (
+            <div className="ps-[38px] flex items-center gap-2">
+              <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
+              <span className="text-xs text-destructive">فشل إرسال الرسالة</span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-xs px-2 gap-1 border-destructive/50 text-destructive hover:text-destructive hover:bg-destructive/10 ms-auto"
+                onClick={handleRetry}
+              >
+                <RefreshCw className="h-3 w-3" />
+                إعادة المحاولة
+              </Button>
+            </div>
+          )}
+
+          {/* Attachments */}
+          {message.attachments.length > 0 && (
+            <div className="ps-[38px] flex flex-wrap gap-2">
+              {message.attachments.map((att) => (
+                <div
+                  key={att.id}
+                  className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1"
+                >
+                  {att.attachment_type === "image" ? (
+                    <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                  )}
+                  <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
+                    {att.filename}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Action bar */}
+          {isCompleted && !message.isFailed && !isEditing && (
+            <div
+              className={cn(
+                "ps-[38px] flex items-center gap-0.5",
+                "opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-200",
+                "max-sm:opacity-100"
+              )}
+            >
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    onClick={handleCopy}
+                    aria-label="نسخ"
+                  >
+                    {copied ? (
+                      <Check className="h-3.5 w-3.5 text-green-600" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
+                </TooltipContent>
+              </Tooltip>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    onClick={handleStartEdit}
+                    aria-label="تعديل"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  <p className="text-xs">تعديل</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+      </TooltipProvider>
+    );
+  }
+
+  // ==========================================================================
+  // ASSISTANT MESSAGE — bubble, RTL start-aligned (right edge)
+  // ==========================================================================
+  return (
+    <TooltipProvider delayDuration={300}>
+      <div
+        dir="rtl"
+        lang="ar"
+        className="flex w-full mb-3.5 justify-start group/bubble"
+      >
+        <div
+          className={cn(
+            "relative max-w-[85%] rounded-2xl border bg-card px-4 py-3 shadow-sm text-foreground text-sm leading-[1.75]",
+            message.isFailed && "border-destructive border-2",
+            isAgentQuestion &&
+              "border-primary/40 bg-primary/[0.04] border-r-4 border-r-primary/70",
+            message.isOptimistic && !message.isFailed && "opacity-70"
+          )}
+        >
+          {/* Agent question header */}
+          {isAgentQuestion && (
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <HelpCircle className="h-3.5 w-3.5 text-primary" />
+              <span className="text-[11px] font-semibold text-primary">
+                السؤال
+              </span>
+            </div>
+          )}
+
+          {/* Model badge */}
+          {!isCurrentlyStreaming && !isAgentQuestion && message.model && (
+            <div className="flex items-center gap-1 mb-1.5">
+              <Bot className="h-3 w-3 text-muted-foreground" />
+              <span className="text-[10px] text-muted-foreground">
+                {message.model}
+              </span>
+            </div>
+          )}
+
+          {/* Content */}
+          {isCurrentlyStreaming ? (
+            <StreamingText content={streamingContent ?? ""} />
+          ) : (
+            <MarkdownRenderer content={displayContent ?? ""} />
+          )}
+
+          {/* Agent question suggestions (read-only chips — the user types their reply
+              into the normal chat input; clicking a chip is a future enhancement) */}
+          {isAgentQuestion && agentSuggestions && agentSuggestions.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2.5">
+              {agentSuggestions.map((s, i) => (
+                <span
+                  key={i}
+                  className="text-[11px] text-muted-foreground bg-muted/60 rounded-full px-2.5 py-1"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Failed indicator + retry */}
           {message.isFailed && (
             <div className="flex items-center gap-2 mt-2">
               <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
@@ -247,18 +408,17 @@ export function MessageBubble({
             </div>
           )}
 
-          {/* Citations (assistant only) */}
-          {isAssistant && !isCurrentlyStreaming && citations && citations.length > 0 && (
+          {/* Citations */}
+          {!isCurrentlyStreaming && citations && citations.length > 0 && (
             <CitationPills citations={citations} />
           )}
 
-          {/* Action bar: assistant messages */}
-          {isAssistant && isCompleted && !message.isFailed && !isEditing && (
+          {/* Action bar */}
+          {isCompleted && !message.isFailed && (
             <div
               className={cn(
                 "flex items-center gap-0.5 mt-2",
                 "opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-200",
-                // Always visible on touch/mobile via media query
                 "max-sm:opacity-100"
               )}
             >
@@ -356,57 +516,8 @@ export function MessageBubble({
             </div>
           )}
 
-          {/* Action bar: user messages */}
-          {isUser && isCompleted && !message.isFailed && !isEditing && (
-            <div
-              className={cn(
-                "flex items-center gap-0.5 mt-2",
-                "opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-200",
-                "max-sm:opacity-100"
-              )}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    onClick={handleCopy}
-                    aria-label="نسخ"
-                  >
-                    {copied ? (
-                      <Check className="h-3.5 w-3.5 text-green-600" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    onClick={handleStartEdit}
-                    aria-label="تعديل"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">تعديل</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
-
-          {/* Timestamp row — shown when action bars are not visible or during streaming */}
-          {(isCurrentlyStreaming || isEditing || message.isFailed) && (
+          {/* Timestamp row */}
+          {(isCurrentlyStreaming || message.isFailed) && (
             <div className="flex items-center mt-2">
               <span className="text-[10px] text-muted-foreground select-none">
                 {getRelativeTimeAr(message.created_at)}
@@ -414,8 +525,7 @@ export function MessageBubble({
             </div>
           )}
 
-          {/* Timestamp integrated into action bars for completed non-failed messages */}
-          {isCompleted && !message.isFailed && !isEditing && (
+          {isCompleted && !message.isFailed && (
             <div className="flex items-center mt-1">
               <span className="text-[10px] text-muted-foreground select-none">
                 {getRelativeTimeAr(message.created_at)}

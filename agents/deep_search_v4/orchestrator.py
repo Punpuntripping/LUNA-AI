@@ -128,11 +128,11 @@ class FullLoopDeps:
     sectors_override: list[str] | None = None
     reg_rrf_min_score: float | None = None
     case_score_threshold: float | None = None
-    # Phase 6 clarification hook — designed-in but unwired in cut-1. The CLI
-    # path will eventually pass an ``input()``-backed callable; HTTP keeps it
-    # ``None`` so the orchestrator falls through without asking. See
-    # V4_PLANNER_DESIGN.md §7 Phase 6 — cut-2 wires the real duplex channels.
-    ask_user: Callable[[str], Awaitable[str]] | None = None
+    # Phase 6 clarification hook — superseded by the deferred-tool path in
+    # cut-2 (Task 13.7).  ask_user is now a @agent.tool_plain on the planner
+    # that raises CallDeferred; the orchestrator receives a DeferredToolRequests
+    # output and handles the resume cycle directly.  The callable field has been
+    # removed; callers that previously set ask_user= should be updated.
     # Per-run keep caps for each domain's reranker (applied per sub-query
     # for reg/case, and to the total kept pool for compliance).
     reg_max_high: int = 8

@@ -118,6 +118,22 @@ export interface CreateConversationRequest {
 // MESSAGES
 // ==========================================
 
+/** Discriminator for messages tied to an agent ask_user pause/resume cycle. */
+export type MessageMetadataKind = 'agent_question' | 'agent_answer';
+
+export interface MessageMetadata {
+  citations?: Citation[];
+  /** When set, this message is part of an agent ask_user turn. */
+  kind?: MessageMetadataKind;
+  /** The agent_run that originated the question / is being answered. */
+  run_id?: string;
+  /** The agent family that paused for input. */
+  agent_family?: AgentFamily;
+  /** Optional suggested replies surfaced with an agent_question. */
+  suggestions?: string[];
+  [key: string]: unknown;
+}
+
 export interface Message {
   message_id: string;
   conversation_id: string;
@@ -126,10 +142,7 @@ export interface Message {
   model?: string;
   attachments: Attachment[];
   created_at: string;
-  metadata?: {
-    citations?: Citation[];
-    [key: string]: unknown;
-  };
+  metadata?: MessageMetadata;
   isOptimistic?: boolean;
   isFailed?: boolean;
   isStreaming?: boolean;
@@ -363,12 +376,27 @@ export interface SSEAgentSelected {
 }
 
 export interface SSEAgentRunStarted {
-  agent_family: string;
+  agent_family: AgentFamily;
   subtype?: string | null;
 }
 
 export interface SSEAgentRunFinished {
-  agent_family: string;
+  agent_family: AgentFamily;
+}
+
+/** Emitted when an agent pauses to ask the user a question (ask_user tool). */
+export interface SSEAgentQuestion {
+  type: 'agent_question';
+  run_id: string;
+  question: string;
+  suggestions?: string[];
+}
+
+/** Emitted when a paused agent_run resumes after the user replied. */
+export interface SSEAgentResumed {
+  type: 'agent_resumed';
+  run_id: string;
+  agent_family: AgentFamily;
 }
 
 export interface SSEWorkspaceItemCreated {

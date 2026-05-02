@@ -8,11 +8,21 @@ Wave 9 rewrite (Task 7):
 - Dispatch records an agent_runs row in the finally block (fire-and-forget).
 - Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
 - Logfire span wraps _dispatch; trace_id / span_id populated on AgentRunRecord.
+
+Wave 9 Task 13.4/13.5 additions:
+- Pre-route pause check: _find_awaiting_user / _expired / _resume_major_agent.
+- _dispatch handles DeferredToolRequests output from the planner: records an
+  'awaiting_user' agent_runs row, inserts an agent_question message, yields
+  agent_question + done events (stream closes; run stays alive).
+- _run_deep_search accepts an optional plan_override so the resume path can
+  skip the planner and jump straight to the search/aggregate/publish phases.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import AsyncGenerator
 
@@ -27,7 +37,7 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
-from agents.runs import AgentRunRecord, record_agent_run
+from agents.runs import AgentRunRecord, record_agent_run, update_run_status
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -150,6 +160,458 @@ def _extract_logfire_ids() -> tuple[str | None, str | None]:
 
 
 # ---------------------------------------------------------------------------
+# Pause / resume helpers (Task 13.4 / 13.5)
+# ---------------------------------------------------------------------------
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _find_awaiting_user(
+    supabase: SupabaseClient,
+    conversation_id: str,
+    user_id: str,
+) -> dict | None:
+    """Return the most-recent awaiting_user agent_run for this conversation, or None."""
+    try:
+        result = (
+            supabase.table("agent_runs")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
+            .eq("status", "awaiting_user")
+            .order("asked_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(result, "data", None) or []
+        return data[0] if data else None
+    except Exception as e:
+        logger.warning("_find_awaiting_user failed: %s", e)
+        return None
+
+
+def _expired(pending: dict) -> bool:
+    """Return True when the pause window has passed."""
+    expires_raw = pending.get("expires_at")
+    if not expires_raw:
+        return False
+    try:
+        if isinstance(expires_raw, str):
+            # ISO-8601; ensure tz-aware
+            expires = datetime.fromisoformat(expires_raw)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        elif isinstance(expires_raw, datetime):
+            expires = expires_raw
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        else:
+            return False
+        return expires < _now_utc()
+    except Exception as e:
+        logger.warning("_expired: could not parse expires_at=%r: %s", expires_raw, e)
+        return False
+
+
+async def _resume_major_agent(
+    pending: dict,
+    user_reply: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+) -> AsyncGenerator[dict, None]:
+    """Resume a paused agent run after the user has replied to an ask_user question.
+
+    Only ``deep_search`` supports pause/resume in this release.  Any other
+    agent_family is abandoned and re-routed fresh via the normal router path.
+    """
+    import base64
+
+    from pydantic_ai import DeferredToolResults
+    from pydantic_ai.messages import ModelMessagesTypeAdapter
+
+    run_id: str = str(pending.get("run_id", ""))
+    agent_family: str = str(pending.get("agent_family", ""))
+
+    # ── Tag the user-reply message with the run_id so history readers can
+    #    correlate it. The user message was already inserted by message_service
+    #    BEFORE handle_message is called; we PATCH its metadata here rather
+    #    than double-inserting.
+    if user_message_id:
+        try:
+            supabase.table("messages").update(
+                {"metadata": {"kind": "agent_answer", "run_id": run_id}}
+            ).eq("message_id", user_message_id).execute()
+        except Exception as e:
+            logger.warning("_resume_major_agent: could not patch user message metadata: %s", e)
+
+    yield {"type": "agent_resumed", "run_id": run_id, "agent_family": agent_family}
+
+    # ── Only deep_search supports resume; abandon everything else. ──────────
+    if agent_family != "deep_search":
+        logger.info(
+            "_resume_major_agent: agent_family=%s does not support resume; abandoning run_id=%s",
+            agent_family, run_id,
+        )
+        update_run_status(supabase, run_id, "abandoned")
+        # Re-route the user reply through the normal router.
+        async for ev in _route(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    # ── Rehydrate message history + build DeferredToolResults ───────────────
+    try:
+        raw_history = pending.get("message_history")
+        if isinstance(raw_history, str):
+            # PostgREST returns BYTEA as base64 string
+            history_bytes = base64.b64decode(raw_history)
+        elif isinstance(raw_history, bytes):
+            history_bytes = raw_history
+        else:
+            raise ValueError(f"unexpected message_history type: {type(raw_history)}")
+
+        history = ModelMessagesTypeAdapter.validate_json(history_bytes)
+
+        deferred_payload = pending.get("deferred_payload") or {}
+        tool_call_id = deferred_payload.get("tool_call_id")
+        if not tool_call_id:
+            raise ValueError("deferred_payload missing tool_call_id")
+
+        results = DeferredToolResults(calls={tool_call_id: user_reply})
+    except Exception as exc:
+        logger.error(
+            "_resume_major_agent: failed to rehydrate state for run_id=%s: %s",
+            run_id, exc, exc_info=True,
+        )
+        update_run_status(supabase, run_id, "error")
+        async for ev in _route(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    # ── Resume the planner with the user's answer ────────────────────────────
+    try:
+        from agents.deep_search_v4.planner import PlannerDeps, PlannerOutput
+        from agents.deep_search_v4.planner.agent import create_planner_agent, PLANNER_LIMITS
+        from pydantic_ai import DeferredToolRequests
+
+        planner_agent = create_planner_agent()
+        planner_result = await planner_agent.run(
+            "",  # user_prompt unused on resume — history provides full context
+            message_history=history,
+            deferred_tool_results=results,
+            usage_limits=PLANNER_LIMITS,
+        )
+        planner_output = planner_result.output
+    except Exception as exc:
+        logger.error(
+            "_resume_major_agent: planner resume failed for run_id=%s: %s",
+            run_id, exc, exc_info=True,
+        )
+        update_run_status(supabase, run_id, "error")
+        async for ev in _route(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    # ── Another pause? (chained ask_user) ───────────────────────────────────
+    if isinstance(planner_output, DeferredToolRequests):
+        new_question, new_run_id = _record_deferred(
+            supabase=supabase,
+            planner_result=planner_result,
+            planner_output=planner_output,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            agent_family="deep_search",
+            briefing=user_reply,
+        )
+        # Close out the previous run row (it's superseded by the new one).
+        update_run_status(supabase, run_id, "abandoned")
+        yield {"type": "agent_question", "run_id": new_run_id or "", "question": new_question}
+        yield {"type": "done", "usage": _zero_usage("paused")}
+        return
+
+    # ── PlannerOutput.aborted — give up on deep_search, re-route fresh ──────
+    if isinstance(planner_output, PlannerOutput) and planner_output.aborted:
+        logger.info(
+            "_resume_major_agent: planner aborted run_id=%s; re-routing via router",
+            run_id,
+        )
+        update_run_status(supabase, run_id, "abandoned")
+        async for ev in _route(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    # ── Normal PlannerOutput — continue the deep_search pipeline ────────────
+    if not isinstance(planner_output, PlannerOutput):
+        logger.error(
+            "_resume_major_agent: unexpected planner output type=%s for run_id=%s",
+            type(planner_output), run_id,
+        )
+        update_run_status(supabase, run_id, "error")
+        yield {"type": "token", "text": "حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى."}
+        yield {"type": "done", "usage": _zero_usage("error")}
+        return
+
+    t0 = perf_counter()
+    run_result: SpecialistResult | None = None
+    status = "ok"
+    err_payload: dict | None = None
+
+    try:
+        attached_items = _load_attached_items(supabase, [])
+        recent_messages = _load_recent_messages(supabase, conversation_id)
+        major_input = MajorAgentInput(
+            briefing=user_reply,
+            attached_items=attached_items,
+            recent_messages=recent_messages,
+            target_item_id=None,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+        )
+
+        run_result = await _run_deep_search(major_input, supabase, plan_override=planner_output)
+
+        for ev in run_result.sse_events:
+            yield ev
+
+        if run_result.chat_summary:
+            yield {"type": "token", "text": run_result.chat_summary}
+
+        if run_result.key_findings:
+            bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
+            yield {"type": "token", "text": bullets}
+
+        yield {
+            "type": "done",
+            "usage": {
+                "prompt_tokens": run_result.tokens_in or 0,
+                "completion_tokens": run_result.tokens_out or 0,
+                "model": run_result.model_used or "deep_search_v4",
+            },
+        }
+
+    except Exception as exc:
+        logger.error(
+            "_resume_major_agent: deep_search run failed for run_id=%s: %s",
+            run_id, exc, exc_info=True,
+        )
+        status = "error"
+        err_payload = {"type": type(exc).__name__, "message": str(exc)[:500]}
+        yield {
+            "type": "token",
+            "text": "عذراً، حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى.",
+        }
+        yield {"type": "done", "usage": _zero_usage("error")}
+
+    finally:
+        duration_ms = int((perf_counter() - t0) * 1000)
+        update_run_status(
+            supabase,
+            run_id,
+            status,
+            duration_ms=duration_ms,
+            tokens_in=getattr(run_result, "tokens_in", None),
+            tokens_out=getattr(run_result, "tokens_out", None),
+            model_used=getattr(run_result, "model_used", None),
+            output_item_id=getattr(run_result, "output_item_id", None),
+            per_phase_stats=getattr(run_result, "per_phase_stats", {}) or {},
+            error=err_payload,
+        )
+
+    yield {"type": "agent_run_finished", "agent_family": "deep_search"}
+
+
+def _record_deferred(
+    *,
+    supabase: SupabaseClient,
+    planner_result: Any,
+    planner_output: Any,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+    agent_family: str,
+    briefing: str,
+) -> tuple[str, str | None]:
+    """Persist pause state for a DeferredToolRequests planner output.
+
+    Inserts the agent_runs row and the agent_question message row.
+    Returns (question_text, run_id).  Both are best-effort; run_id may be None
+    on DB failure.
+    """
+    from typing import Any as _Any
+
+    pending_call = planner_output.calls[0]
+    question = pending_call.args.get("question", "")
+    now = _now_utc()
+
+    run_id = record_agent_run(
+        supabase,
+        AgentRunRecord(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            agent_family=agent_family,
+            message_id=user_message_id,
+            input_summary=briefing[:500],
+            status="awaiting_user",
+            message_history=planner_result.all_messages_json(),
+            deferred_payload={
+                "tool_call_id": pending_call.tool_call_id,
+                "tool_name": pending_call.tool_name,
+                "args": dict(pending_call.args),
+                "partial_output": None,
+            },
+            question_text=question,
+            asked_at=now,
+            expires_at=now + timedelta(hours=24),
+        ),
+    )
+
+    # Insert the question as an assistant message so it appears in chat history.
+    try:
+        supabase.table("messages").insert({
+            "message_id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "role": "assistant",
+            "content": question,
+            "metadata": {
+                "kind": "agent_question",
+                "run_id": run_id,
+                "agent_family": agent_family,
+            },
+        }).execute()
+    except Exception as e:
+        logger.warning("_record_deferred: failed to insert agent_question message: %s", e)
+
+    return question, run_id
+
+
+# Needed for _record_deferred type annotation
+from typing import Any  # noqa: E402 — after class definitions
+
+
+# ---------------------------------------------------------------------------
+# Planner pre-flight for _dispatch (Task 13.4)
+# ---------------------------------------------------------------------------
+
+# Sentinel: returned by _try_run_planner_for_dispatch when the planner issued a
+# DeferredToolRequests — the deferred events have already been yielded by the
+# caller-side generator and _dispatch must stop without recording a completed row.
+_DEFERRED_EMITTED = object()
+
+
+class _SkipRunRecord(Exception):
+    """Raised inside _dispatch's try block to skip the agent_runs INSERT.
+
+    Used when the run transitions to 'awaiting_user' and is persisted by
+    _record_deferred instead of by the normal finally block.
+    """
+
+
+async def _try_run_planner_for_dispatch(
+    briefing: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+    agent_family: str,
+) -> "PlannerOutput | None | object":
+    """Run the planner once before the deep_search pipeline.
+
+    Returns:
+    - ``PlannerOutput``   — planner succeeded; pass as plan_override to _run_deep_search.
+    - ``None``            — planner disabled or degraded fallback; _run_deep_search handles it.
+    - ``_DEFERRED_EMITTED`` — planner paused; the caller (a generator) has already
+      yielded the agent_question + done events and must return immediately.
+
+    Note: this function is NOT a generator; it cannot yield.  The generator
+    contract is handled one level up in _dispatch by checking the return value.
+    """
+    # Import lazily so the module stays importable without pydantic_ai.
+    try:
+        from agents.deep_search_v4.planner import PlannerDeps
+        from agents.deep_search_v4.planner.agent import create_planner_agent, PLANNER_LIMITS
+        from agents.deep_search_v4.planner.prompts import build_planner_user_message
+        from pydantic_ai import DeferredToolRequests
+    except ImportError:
+        return None
+
+    try:
+        planner_deps = PlannerDeps(model_override=None, emit_sse=None)
+        user_message = build_planner_user_message(briefing)
+        planner_agent = create_planner_agent()
+        planner_result = await planner_agent.run(user_message, usage_limits=PLANNER_LIMITS)
+        planner_output = planner_result.output
+    except Exception as exc:
+        logger.warning(
+            "_try_run_planner_for_dispatch: planner failed, skipping plan: %s", exc, exc_info=True,
+        )
+        return None
+
+    if isinstance(planner_output, DeferredToolRequests):
+        # Persist the pause state and the question message.
+        _record_deferred(
+            supabase=supabase,
+            planner_result=planner_result,
+            planner_output=planner_output,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            agent_family=agent_family,
+            briefing=briefing,
+        )
+        return _DEFERRED_EMITTED
+
+    # Normal PlannerOutput (including aborted=True — let _run_deep_search handle it).
+    from agents.deep_search_v4.planner import PlannerOutput
+    if isinstance(planner_output, PlannerOutput):
+        return planner_output
+
+    # Unknown type — degrade gracefully.
+    logger.warning(
+        "_try_run_planner_for_dispatch: unexpected planner output type=%s", type(planner_output),
+    )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -173,7 +635,30 @@ async def handle_message(
     before the AI call, per CLAUDE.md rule #7). Thread-through to
     agent_runs.message_id so the audit row links to the triggering message.
     """
-    # Pre-router memory hook — best-effort, never aborts the turn.
+    # 0. Pre-route pause check — resume a pending major agent if one exists.
+    pending = _find_awaiting_user(supabase, conversation_id, user_id)
+    if pending:
+        if _expired(pending):
+            logger.info(
+                "handle_message: run_id=%s expired; marking timeout and proceeding normally",
+                pending.get("run_id"),
+            )
+            update_run_status(supabase, str(pending.get("run_id", "")), "timeout")
+            # fall through to normal flow
+        else:
+            async for ev in _resume_major_agent(
+                pending=pending,
+                user_reply=question,
+                supabase=supabase,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+                user_message_id=user_message_id,
+            ):
+                yield ev
+            return
+
+    # 1. Pre-router memory hook — best-effort, never aborts the turn.
     try:
         await memory.resummarize_dirty_items(supabase, conversation_id)
         await memory.compact_conversation(supabase, conversation_id, user_id)
@@ -349,7 +834,30 @@ async def _dispatch(
             )
 
             if agent_family == "deep_search":
-                run_result = await _run_deep_search(major_input, supabase)
+                # Planner pre-flight: run the planner here (outside run_full_loop)
+                # so DeferredToolRequests can be caught before any search phase runs.
+                planner_plan_override = await _try_run_planner_for_dispatch(
+                    briefing=briefing,
+                    supabase=supabase,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    user_message_id=user_message_id,
+                    agent_family=agent_family,
+                )
+                # _try_run_planner_for_dispatch returns either:
+                #   - a PlannerOutput  → continue with deep_search pipeline
+                #   - None             → planner disabled / degraded fallback
+                #   - the sentinel _DEFERRED_EMITTED → planner paused; caller must stop
+                if planner_plan_override is _DEFERRED_EMITTED:
+                    # The deferred event + done were yielded inside _try_run_planner_for_dispatch.
+                    # We must NOT record a completed agent_runs row — the run is still alive
+                    # (status='awaiting_user').  Return without falling through to the finally block
+                    # by raising a dedicated sentinel that the outer try/except/finally handles.
+                    raise _SkipRunRecord()
+                run_result = await _run_deep_search(
+                    major_input, supabase, plan_override=planner_plan_override
+                )
             elif agent_family == "writing":
                 run_result = await _run_writer(major_input, subtype, supabase)
             elif agent_family == "memory":
@@ -386,6 +894,30 @@ async def _dispatch(
                     "model": run_result.model_used or agent_family,
                 },
             }
+
+        except _SkipRunRecord:
+            # Planner issued DeferredToolRequests — the run is alive as 'awaiting_user'.
+            # No completed agent_runs row should be written; no error SSE either.
+            # The deferred events (agent_question + done) have already been yielded
+            # by _try_run_planner_for_dispatch via _record_deferred.
+            # We simply yield the agent_question + done that _record_deferred stored
+            # and return without hitting the finally record_agent_run call.
+            question_text = getattr(_SkipRunRecord, "_question", None)
+            run_id_deferred = getattr(_SkipRunRecord, "_run_id", None)
+            # Note: the events were already persisted to messages; we just need
+            # to emit SSE events for the client.  _try_run_planner_for_dispatch
+            # stored them on the _SkipRunRecord class for retrieval here.
+            # Actually: _record_deferred returns (question, run_id) but we raised
+            # before capturing those values here.  Instead we re-query the fresh row.
+            deferred_row = _find_awaiting_user(supabase, conversation_id, user_id)
+            if deferred_row:
+                yield {
+                    "type": "agent_question",
+                    "run_id": str(deferred_row.get("run_id", "")),
+                    "question": deferred_row.get("question_text", ""),
+                }
+            yield {"type": "done", "usage": _zero_usage("paused")}
+            return  # skip finally record_agent_run
 
         except Exception as exc:
             logger.error("specialist %s failed: %s", agent_family, exc, exc_info=True)
@@ -434,6 +966,7 @@ async def _dispatch(
 async def _run_deep_search(
     input: MajorAgentInput,
     supabase: SupabaseClient,
+    plan_override: "PlannerOutput | None" = None,
 ) -> SpecialistResult:
     """Run the deep_search_v4 URA pipeline and return a SpecialistResult.
 
@@ -444,6 +977,11 @@ async def _run_deep_search(
     - SSE events from deps._events and publish_result.sse_events are collected into
       SpecialistResult.sse_events.
     - Token counts mapped from AggregatorOutput (currently zero — placeholders).
+    - plan_override: when provided (Task 13.4/13.5), the planner step inside
+      run_full_loop is skipped and this plan is applied directly to FullLoopDeps
+      via apply_plan_to_deps.  This supports both the initial dispatch path (after
+      DeferredToolRequests is ruled out) and the resume path (planner already ran
+      on the prior turn).
     """
     import httpx
 
@@ -474,8 +1012,22 @@ async def _run_deep_search(
             jina_api_key=settings.JINA_RERANKER_API_KEY or "",
             http_client=http_client,
             detail_level=detail_level,
+            # When we have a pre-computed plan (from initial dispatch or resume),
+            # set enable_planner=False so run_full_loop doesn't run it again.
+            # apply_plan_to_deps below will overlay the plan onto deps directly.
             enable_planner=False,
         )
+
+        # Apply the pre-computed plan (if any) before handing deps to run_full_loop.
+        if plan_override is not None:
+            try:
+                from agents.deep_search_v4.planner import apply_plan_to_deps, derive_aggregator_prompt_key
+                deps = apply_plan_to_deps(deps, plan_override)
+                deps._plan = plan_override
+            except Exception as exc:
+                logger.warning(
+                    "_run_deep_search: apply_plan_to_deps failed, proceeding without plan: %s", exc,
+                )
 
         agg_output = await run_full_loop(
             query=input.briefing,

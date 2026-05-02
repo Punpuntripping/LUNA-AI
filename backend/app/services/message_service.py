@@ -247,6 +247,10 @@ async def send_message_stream(
     # 4. Stream from orchestrator (with heartbeat + disconnect detection)
     full_content = ""
     citations = []
+    # Set to True when the orchestrator ends the stream with an agent_question
+    # event (run is paused, not finished).  In this case we skip inserting the
+    # empty assistant placeholder row that would otherwise be written on 'done'.
+    paused = False
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -261,7 +265,7 @@ async def send_message_stream(
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
-        nonlocal full_content, citations
+        nonlocal full_content, citations, paused
         try:
             async for event in handle_message(
                 question=content,
@@ -337,23 +341,54 @@ async def send_message_stream(
                         "question": event.get("question", ""),
                     }))
 
+                elif event_type == "agent_question":
+                    # Planner paused — the question was already inserted as an
+                    # assistant message by the orchestrator via _record_deferred.
+                    # Mark the stream as paused so we skip writing an empty
+                    # assistant placeholder on the subsequent 'done' event.
+                    paused = True
+                    await queue.put(_sse_event("agent_question", {
+                        "run_id": event.get("run_id", ""),
+                        "question": event.get("question", ""),
+                        "suggestions": event.get("suggestions", []),
+                    }))
+
+                elif event_type == "agent_resumed":
+                    await queue.put(_sse_event("agent_resumed", {
+                        "run_id": event.get("run_id", ""),
+                        "agent_family": event.get("agent_family", ""),
+                    }))
+
                 elif event_type == "done":
                     usage = event.get("usage", {})
 
-                    # 5. Update assistant message with full content
-                    try:
-                        update_data: dict = {"content": full_content}
-                        if usage:
-                            update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
-                            update_data["completion_tokens"] = usage.get("completion_tokens", 0)
-                        if citations:
-                            update_data["metadata"] = {"citations": citations}
+                    # 5. Update assistant message with full content.
+                    # Skip when the stream ended as a pause (agent_question event
+                    # was emitted): the question row was already inserted by the
+                    # orchestrator and the placeholder we created here is empty.
+                    if paused:
+                        # Delete the empty placeholder we created above — the real
+                        # question message was inserted by _record_deferred.
+                        try:
+                            supabase.table("messages").delete().eq(
+                                "message_id", assistant_msg_id
+                            ).execute()
+                        except Exception as e:
+                            logger.warning("Could not delete paused assistant placeholder: %s", e)
+                    else:
+                        try:
+                            update_data: dict = {"content": full_content}
+                            if usage:
+                                update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
+                                update_data["completion_tokens"] = usage.get("completion_tokens", 0)
+                            if citations:
+                                update_data["metadata"] = {"citations": citations}
 
-                        supabase.table("messages").update(
-                            update_data
-                        ).eq("message_id", assistant_msg_id).execute()
-                    except Exception as e:
-                        logger.exception("Error updating assistant message: %s", e)
+                            supabase.table("messages").update(
+                                update_data
+                            ).eq("message_id", assistant_msg_id).execute()
+                        except Exception as e:
+                            logger.exception("Error updating assistant message: %s", e)
 
                     # 6. Update conversation metadata
                     try:
@@ -363,7 +398,10 @@ async def send_message_stream(
                             "updated_at": now,
                         }
                         current_count = conv.get("message_count", 0)
-                        conv_update["message_count"] = current_count + 2  # user + assistant
+                        # On pause: only the user message was saved (the question
+                        # row is inserted by _record_deferred separately).
+                        msg_delta = 1 if paused else 2  # user + assistant
+                        conv_update["message_count"] = current_count + msg_delta
 
                         # Auto-title from first message
                         if current_count == 0:

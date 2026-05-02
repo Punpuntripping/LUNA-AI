@@ -15,6 +15,8 @@ import type {
   SSEAgentSelected,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
+  SSEAgentQuestion,
+  SSEAgentResumed,
   SSEWorkspaceItemCreated,
   SSEWorkspaceItemUpdated,
   SSEWorkspaceItemLocked,
@@ -388,6 +390,27 @@ export function useSendMessage(): UseSendMessageReturn {
             case "agent_run_finished": {
               const _payload = data as SSEAgentRunFinished;
               useChatStore.getState().finishAgentRun();
+              break;
+            }
+            case "agent_question": {
+              // Agent paused via ask_user. The orchestrator already persisted the
+              // question as a 'assistant' message with metadata.kind='agent_question'
+              // and will emit `done` immediately after, which triggers the messages
+              // refetch — so we only need to clear the running-spinner here. The
+              // question bubble will appear once the cache invalidation in the
+              // post-stream block lands.
+              const _payload = data as SSEAgentQuestion;
+              useChatStore.getState().finishAgentRun();
+              // Also clear any in-progress streaming bubble — the assistant
+              // message that arrives via refetch is the canonical question.
+              useChatStore.getState().finishStreaming();
+              break;
+            }
+            case "agent_resumed": {
+              // Server resumed a paused agent_run after the user replied.
+              // Surface the spinner again so the UI shows the agent is working.
+              const payload = data as SSEAgentResumed;
+              useChatStore.getState().startAgentRun(payload.agent_family, null);
               break;
             }
             case "workspace_item_updated": {
