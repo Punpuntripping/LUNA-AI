@@ -476,7 +476,10 @@ def _record_deferred(
     from typing import Any as _Any
 
     pending_call = planner_output.calls[0]
-    question = pending_call.args.get("question", "")
+    # ToolCallPart.args is `str | dict | None` (JSON string when from streaming
+    # providers, dict when synthesized locally); args_as_dict() normalizes both.
+    pending_args = pending_call.args_as_dict()
+    question = pending_args.get("question", "")
     now = _now_utc()
 
     run_id = record_agent_run(
@@ -493,7 +496,7 @@ def _record_deferred(
             deferred_payload={
                 "tool_call_id": pending_call.tool_call_id,
                 "tool_name": pending_call.tool_name,
-                "args": dict(pending_call.args),
+                "args": pending_args,
                 "partial_output": None,
             },
             question_text=question,
