@@ -36,7 +36,7 @@ pydantic-ai>=1.39.0,<2.0.0
 
 # Observability — Pydantic Logfire (no-ops gracefully when LOGFIRE_TOKEN is absent)
 # [fastapi] extra pulls opentelemetry-instrumentation-fastapi for request spans.
-logfire[fastapi]>=3.0.0,<4.0.0
+logfire[fastapi]>=3.0.0,<5.0.0
 
 # LLM provider SDKs — pydantic_ai.models.<provider> imports these at runtime
 #   - openai: OpenAIChatModel (also used by DeepSeek, OpenRouter, Alibaba via OpenAI-compat)
