@@ -980,7 +980,11 @@ if isinstance(result.output, DeferredToolRequests):
     # One row per pending tool call. We expect exactly one ask_user.
     pending = result.output.calls[0]
     assert pending.tool_name == "ask_user"
-    question = pending.args["question"]
+    # IMPORTANT: ToolCallPart.args is typed `str | dict[str, Any] | None`
+    # in pydantic-ai 1.39+ — JSON string when streamed, dict when local.
+    # ALWAYS go through args_as_dict() to normalize.
+    pending_args = pending.args_as_dict()
+    question = pending_args["question"]
 
     record_agent_run(supabase, AgentRunRecord(
         ..., status="awaiting_user",
