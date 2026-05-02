@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from agents.model_registry import create_model
@@ -60,13 +60,9 @@ def create_aggregator_agent(
         value: AggregatorLLMOutput,
     ) -> AggregatorLLMOutput:
         if len(value.chat_summary) > 500:
-            raise ModelRetry(
-                f"chat_summary is {len(value.chat_summary)} chars; shorten to ≤ 500."
-            )
+            value.chat_summary = value.chat_summary[:500].rstrip()
         if len(value.key_findings) > 5:
-            raise ModelRetry(
-                f"key_findings has {len(value.key_findings)} items; reduce to ≤ 5."
-            )
+            value.key_findings = value.key_findings[:5]
         return value
 
     return agent
@@ -102,13 +98,9 @@ def create_dcr_agents(
             value: AggregatorLLMOutput,
         ) -> AggregatorLLMOutput:
             if len(value.chat_summary) > 500:
-                raise ModelRetry(
-                    f"chat_summary is {len(value.chat_summary)} chars; shorten to ≤ 500."
-                )
+                value.chat_summary = value.chat_summary[:500].rstrip()
             if len(value.key_findings) > 5:
-                raise ModelRetry(
-                    f"key_findings has {len(value.key_findings)} items; reduce to ≤ 5."
-                )
+                value.key_findings = value.key_findings[:5]
             return value
         return a
 

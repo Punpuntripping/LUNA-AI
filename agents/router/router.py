@@ -57,9 +57,9 @@ class RouterDeps:
 
 
 ROUTER_LIMITS = UsageLimits(
-    response_tokens_limit=2000,
+    output_tokens_limit=6000,
     request_limit=5,
-    tool_calls_limit=5,
+    tool_calls_limit=8,
 )
 
 
