@@ -63,7 +63,7 @@ async def send_message(
             conv=conv,
             content=body.content,
             request=request,
-            task_type=body.task_type,
+            agent_family=body.agent_family,
             attachment_ids=body.attachment_ids,
         ),
         media_type="text/event-stream",

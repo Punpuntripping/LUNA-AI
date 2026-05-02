@@ -17,9 +17,16 @@ import type {
   DownloadResponse,
   Memory,
   MemoryListResponse,
-  Artifact,
-  ArtifactListResponse,
+  WorkspaceItem,
+  WorkspaceItemListResponse,
+  CreateNoteRequest,
+  CreateReferenceRequest,
+  AttachFromDocumentRequest,
+  UpdateVisibilityRequest,
+  UpdateWorkspaceItemRequest,
+  WorkspaceFileUrlResponse,
   UserPreferences,
+  UserPreferencesData,
   UserTemplate,
   TemplateListResponse,
 } from "@/types";
@@ -303,7 +310,7 @@ export const messagesApi = {
     conversationId: string,
     content: string,
     signal?: AbortSignal,
-    options?: { task_type?: string; attachment_ids?: string[] }
+    options?: { agent_family?: string; attachment_ids?: string[] }
   ): Promise<Response> => {
     const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
     const doFetch = () => {
@@ -314,7 +321,7 @@ export const messagesApi = {
         headers["Authorization"] = `Bearer ${accessToken}`;
       }
       const body: Record<string, unknown> = { content };
-      if (options?.task_type) body.task_type = options.task_type;
+      if (options?.agent_family) body.agent_family = options.agent_family;
       if (options?.attachment_ids?.length) body.attachment_ids = options.attachment_ids;
       return fetch(url, {
         method: "POST",
@@ -393,24 +400,60 @@ export const memoriesApi = {
 };
 
 // -----------------------------------------------
-// Artifacts API
+// Workspace API
 // -----------------------------------------------
 
-export const artifactsApi = {
+export const workspaceApi = {
   listByConversation: (conversationId: string) =>
-    api.get<ArtifactListResponse>(`/conversations/${conversationId}/artifacts`),
+    api.get<WorkspaceItemListResponse>(`/conversations/${conversationId}/workspace`),
 
   listByCase: (caseId: string) =>
-    api.get<ArtifactListResponse>(`/cases/${caseId}/artifacts`),
+    api.get<WorkspaceItemListResponse>(`/cases/${caseId}/workspace`),
 
-  get: (artifactId: string) =>
-    api.get<Artifact>(`/artifacts/${artifactId}`),
+  get: (itemId: string) =>
+    api.get<WorkspaceItem>(`/workspace/${itemId}`),
 
-  update: (artifactId: string, data: { title?: string; content_md?: string }) =>
-    api.patch<Artifact>(`/artifacts/${artifactId}`, data),
+  update: (itemId: string, data: UpdateWorkspaceItemRequest) =>
+    api.patch<WorkspaceItem>(`/workspace/${itemId}`, data),
 
-  delete: (artifactId: string) =>
-    api.delete<{ success: boolean }>(`/artifacts/${artifactId}`),
+  delete: (itemId: string) =>
+    api.delete<{ success: boolean }>(`/workspace/${itemId}`),
+
+  setVisibility: (itemId: string, body: UpdateVisibilityRequest) =>
+    api.patch<WorkspaceItem>(`/workspace/${itemId}/visibility`, body),
+
+  fileUrl: (itemId: string) =>
+    api.get<WorkspaceFileUrlResponse>(`/workspace/${itemId}/file`),
+
+  createNote: (conversationId: string, body: CreateNoteRequest) =>
+    api.post<WorkspaceItem>(
+      `/conversations/${conversationId}/workspace/notes`,
+      body,
+    ),
+
+  createReference: (conversationId: string, body: CreateReferenceRequest) =>
+    api.post<WorkspaceItem>(
+      `/conversations/${conversationId}/workspace/references`,
+      body,
+    ),
+
+  uploadAttachment: (conversationId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.upload<WorkspaceItem>(
+      `/conversations/${conversationId}/workspace/attachments/upload`,
+      formData,
+    );
+  },
+
+  attachFromDocument: (
+    conversationId: string,
+    body: AttachFromDocumentRequest,
+  ) =>
+    api.post<WorkspaceItem>(
+      `/conversations/${conversationId}/workspace/attachments/from-document`,
+      body,
+    ),
 };
 
 // -----------------------------------------------
@@ -420,7 +463,7 @@ export const artifactsApi = {
 export const preferencesApi = {
   get: () => api.get<UserPreferences>("/preferences"),
 
-  update: (preferences: Record<string, unknown>) =>
+  update: (preferences: UserPreferencesData) =>
     api.patch<UserPreferences>("/preferences", { preferences }),
 };
 

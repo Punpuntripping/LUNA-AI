@@ -126,6 +126,10 @@ export interface Message {
   model?: string;
   attachments: Attachment[];
   created_at: string;
+  metadata?: {
+    citations?: Citation[];
+    [key: string]: unknown;
+  };
   isOptimistic?: boolean;
   isFailed?: boolean;
   isStreaming?: boolean;
@@ -234,42 +238,104 @@ export interface SSEDone {
 }
 
 // ==========================================
-// AGENTS & ARTIFACTS
+// AGENTS & WORKSPACE ITEMS
 // ==========================================
 
 export type AgentFamily = 'deep_search' | 'end_services' | 'extraction' | 'memory' | 'router';
 
 export type TaskType = 'deep_search' | 'end_services' | 'extraction';
 
-export type ArtifactType = 'report' | 'contract' | 'memo' | 'summary' | 'memory_file' | 'legal_opinion';
+export type WorkspaceItemKind =
+  | 'attachment'
+  | 'note'
+  | 'agent_search'
+  | 'agent_writing'
+  | 'convo_context'
+  | 'references';
 
-export interface Artifact {
-  artifact_id: string;
+export type WorkspaceCreator = 'user' | 'agent';
+
+/** Free-form subtype string carried in metadata.subtype — drives chip color/icon. */
+export type WorkspaceItemSubtype =
+  | 'report'
+  | 'contract'
+  | 'memo'
+  | 'summary'
+  | 'memory_file'
+  | 'legal_opinion'
+  | 'legal_synthesis'
+  | (string & {});
+
+export interface WorkspaceItem {
+  item_id: string;
   user_id: string;
   conversation_id: string | null;
   case_id: string | null;
-  agent_family: AgentFamily;
-  artifact_type: ArtifactType;
+  message_id?: string | null;
+  agent_family: AgentFamily | null;
+  kind: WorkspaceItemKind;
+  created_by: WorkspaceCreator;
   title: string;
-  content_md: string;
-  is_editable: boolean;
+  content_md: string | null;
+  storage_path: string | null;
+  document_id: string | null;
+  is_visible: boolean;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
 
-export interface ArtifactListResponse {
-  artifacts: Artifact[];
+export interface WorkspaceItemListResponse {
+  items: WorkspaceItem[];
   total: number;
+}
+
+export interface CreateNoteRequest {
+  title: string;
+  content_md?: string;
+}
+
+export interface CreateReferenceRequest {
+  title: string;
+  content_md?: string;
+}
+
+export interface AttachFromDocumentRequest {
+  document_id: string;
+}
+
+export interface UpdateVisibilityRequest {
+  is_visible: boolean;
+}
+
+export interface UpdateWorkspaceItemRequest {
+  title?: string;
+  content_md?: string;
+}
+
+export interface WorkspaceFileUrlResponse {
+  url: string;
+  expires_at: string;
 }
 
 // ==========================================
 // PREFERENCES & TEMPLATES
 // ==========================================
 
+export type DetailLevel = "low" | "medium" | "high";
+
+export interface UserPreferencesData {
+  detail_level?: DetailLevel;
+  [key: string]: unknown;
+}
+
 export interface UserPreferences {
   user_id: string;
-  preferences: Record<string, unknown>;
+  preferences: UserPreferencesData;
+}
+
+export interface UpdatePreferencesRequest {
+  preferences: UserPreferencesData;
 }
 
 export interface UserTemplate {
@@ -292,28 +358,38 @@ export interface TemplateListResponse {
 // SSE EVENTS (Agent)
 // ==========================================
 
-export interface SSEArtifactCreated {
-  artifact_id: string;
-  artifact_type: ArtifactType;
-  title: string;
-}
-
 export interface SSEAgentSelected {
   agent_family: AgentFamily;
 }
 
-export interface SSETaskStarted {
-  task_id: string;
-  task_type: TaskType;
+export interface SSEAgentRunStarted {
+  agent_family: string;
+  subtype?: string | null;
 }
 
-export interface SSETaskEnded {
-  task_id: string;
-  summary: string;
+export interface SSEAgentRunFinished {
+  agent_family: string;
 }
 
-export interface SSEArtifactUpdated {
-  artifact_id: string;
+export interface SSEWorkspaceItemCreated {
+  item_id: string;
+  kind: WorkspaceItemKind;
+  title: string;
+  created_by: WorkspaceCreator;
+  subtype?: string;
+}
+
+export interface SSEWorkspaceItemUpdated {
+  item_id: string;
+}
+
+export interface SSEWorkspaceItemLocked {
+  item_id: string;
+  locked_until: string;
+}
+
+export interface SSEWorkspaceItemUnlocked {
+  item_id: string;
 }
 
 // ==========================================
@@ -322,6 +398,6 @@ export interface SSEArtifactUpdated {
 
 export interface SendMessagePayload {
   content: string;
-  task_type?: TaskType | null;
+  agent_family?: AgentFamily | null;
   attachment_ids?: string[] | null;
 }

@@ -22,6 +22,31 @@ from agents.orchestrator import handle_message
 logger = logging.getLogger(__name__)
 
 
+def _reference_to_citation(ref: dict) -> dict:
+    """Map a deep_search_v4 ``Reference`` dict to the frontend ``Citation`` shape.
+
+    The frontend Citation contract is locked: ``{ article_id, law_name,
+    article_number, relevance_score }``. v4 emits richer ``Reference`` dicts;
+    we project them onto the legacy shape so existing UI keeps rendering.
+    """
+    article_num_raw = ref.get("article_num")
+    if isinstance(article_num_raw, str) and article_num_raw.isdigit():
+        article_number = int(article_num_raw)
+    elif isinstance(article_num_raw, int):
+        article_number = article_num_raw
+    else:
+        article_number = 0
+
+    relevance_score = 0.9 if ref.get("relevance") == "high" else 0.6
+
+    return {
+        "article_id": ref.get("ref_id", ""),
+        "law_name": ref.get("regulation_title", ""),
+        "article_number": article_number,
+        "relevance_score": relevance_score,
+    }
+
+
 def verify_conversation_ownership(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -128,6 +153,7 @@ def list_messages(
             "content": m.get("content", ""),
             "model": m.get("model"),
             "attachments": attachments_map.get(m["message_id"], []),
+            "metadata": m.get("metadata") or {},
             "created_at": m["created_at"],
         })
 
@@ -145,7 +171,7 @@ async def send_message_stream(
     conv: dict,
     content: str,
     request: Request,
-    task_type: str | None = None,
+    agent_family: str | None = None,
     attachment_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
@@ -243,7 +269,8 @@ async def send_message_stream(
                 conversation_id=conversation_id,
                 supabase=supabase,
                 case_id=conv.get("case_id"),
-                explicit_task_type=task_type,
+                explicit_agent_family=agent_family,
+                user_message_id=user_msg_id,
             ):
                 event_type = event.get("type")
 
@@ -253,36 +280,51 @@ async def send_message_stream(
                     await queue.put(_sse_event("token", {"text": text}))
 
                 elif event_type == "citations":
-                    citations = event.get("articles", [])
+                    raw_articles = event.get("articles", []) or []
+                    citations = [_reference_to_citation(r) for r in raw_articles]
                     await queue.put(_sse_event("citations", {"articles": citations}))
-
-                elif event_type == "artifact_created":
-                    await queue.put(_sse_event("artifact_created", {
-                        "artifact_id": event["artifact_id"],
-                        "artifact_type": event["artifact_type"],
-                        "title": event["title"],
-                    }))
 
                 elif event_type == "agent_selected":
                     await queue.put(_sse_event("agent_selected", {
                         "agent_family": event["agent_family"],
                     }))
 
-                elif event_type == "task_started":
-                    await queue.put(_sse_event("task_started", {
-                        "task_id": event["task_id"],
-                        "task_type": event["task_type"],
+                elif event_type == "agent_run_started":
+                    await queue.put(_sse_event("agent_run_started", {
+                        "agent_family": event["agent_family"],
+                        "subtype": event.get("subtype"),
                     }))
 
-                elif event_type == "task_ended":
-                    await queue.put(_sse_event("task_ended", {
-                        "task_id": event["task_id"],
-                        "summary": event.get("summary", ""),
+                elif event_type == "agent_run_finished":
+                    await queue.put(_sse_event("agent_run_finished", {
+                        "agent_family": event["agent_family"],
                     }))
 
-                elif event_type == "artifact_updated":
-                    await queue.put(_sse_event("artifact_updated", {
-                        "artifact_id": event["artifact_id"],
+                elif event_type == "workspace_item_created":
+                    payload = {
+                        "item_id": event.get("item_id"),
+                        "kind": event.get("kind"),
+                        "title": event.get("title", ""),
+                        "created_by": event.get("created_by"),
+                    }
+                    if event.get("subtype") is not None:
+                        payload["subtype"] = event["subtype"]
+                    await queue.put(_sse_event("workspace_item_created", payload))
+
+                elif event_type == "workspace_item_updated":
+                    await queue.put(_sse_event("workspace_item_updated", {
+                        "item_id": event.get("item_id"),
+                    }))
+
+                elif event_type == "workspace_item_locked":
+                    await queue.put(_sse_event("workspace_item_locked", {
+                        "item_id": event.get("item_id"),
+                        "locked_until": event.get("locked_until"),
+                    }))
+
+                elif event_type == "workspace_item_unlocked":
+                    await queue.put(_sse_event("workspace_item_unlocked", {
+                        "item_id": event.get("item_id"),
                     }))
 
                 elif event_type == "status":

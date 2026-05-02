@@ -4,8 +4,24 @@ import { messagesApi, documentsApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
-import { artifactKeys } from "@/hooks/use-artifacts";
-import type { Message, MessageListResponse, SSEMessageStart, SSEToken, SSECitations, SSEDone, SSEArtifactCreated, SSEAgentSelected, SSETaskStarted, SSETaskEnded, SSEArtifactUpdated, Citation } from "@/types";
+import { workspaceKeys } from "@/hooks/use-workspace";
+import type {
+  Message,
+  MessageListResponse,
+  SSEMessageStart,
+  SSEToken,
+  SSECitations,
+  SSEDone,
+  SSEAgentSelected,
+  SSEAgentRunStarted,
+  SSEAgentRunFinished,
+  SSEWorkspaceItemCreated,
+  SSEWorkspaceItemUpdated,
+  SSEWorkspaceItemLocked,
+  SSEWorkspaceItemUnlocked,
+  WorkspaceItem,
+  WorkspaceItemListResponse,
+} from "@/types";
 
 interface SendMessageParams {
   conversationId: string;
@@ -127,12 +143,11 @@ export function useSendMessage(): UseSendMessageReturn {
       );
 
       let assistantMessageId: string | null = null;
-      let citations: Citation[] = [];
 
       // 3. Capture task type before the first attempt (cleared after first send)
       const { selectedAgentFamily } = useChatStore.getState();
       const sendOptions = {
-        task_type: selectedAgentFamily ?? undefined,
+        agent_family: selectedAgentFamily ?? undefined,
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
       };
 
@@ -311,7 +326,7 @@ export function useSendMessage(): UseSendMessageReturn {
             }
             case "citations": {
               const payload = data as SSECitations;
-              citations = payload.articles;
+              useChatStore.getState().setStreamingCitations(payload.articles);
               break;
             }
             case "done": {
@@ -319,6 +334,7 @@ export function useSendMessage(): UseSendMessageReturn {
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
               const finalContent = useChatStore.getState().streamingContent;
+              const finalCitations = useChatStore.getState().streamingCitations;
               if (assistantMessageId && finalContent) {
                 qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
                   messageKeys.list(conversationId),
@@ -335,6 +351,10 @@ export function useSendMessage(): UseSendMessageReturn {
                           content: finalContent,
                           attachments: [],
                           created_at: new Date().toISOString(),
+                          metadata:
+                            finalCitations.length > 0
+                              ? { citations: finalCitations }
+                              : undefined,
                         },
                         ...newPages[0].messages,
                       ],
@@ -347,10 +367,12 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().finishStreaming();
               break;
             }
-            case "artifact_created": {
-              const payload = data as SSEArtifactCreated;
-              void qc.invalidateQueries({ queryKey: artifactKeys.byConversation(conversationId) });
-              useChatStore.getState().openArtifactPanel(payload.artifact_id);
+            case "workspace_item_created": {
+              const payload = data as SSEWorkspaceItemCreated;
+              void qc.invalidateQueries({
+                queryKey: workspaceKeys.byConversation(conversationId),
+              });
+              useChatStore.getState().openWorkspaceItem(payload.item_id);
               break;
             }
             case "agent_selected": {
@@ -358,20 +380,34 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().setSelectedAgentFamily(payload.agent_family);
               break;
             }
-            case "task_started": {
-              const payload = data as SSETaskStarted;
-              useChatStore.getState().setActiveTask(payload.task_id, payload.task_type);
+            case "agent_run_started": {
+              const payload = data as SSEAgentRunStarted;
+              useChatStore.getState().startAgentRun(payload.agent_family, payload.subtype ?? null);
               break;
             }
-            case "task_ended": {
-              const _payload = data as SSETaskEnded;
-              useChatStore.getState().clearActiveTask();
+            case "agent_run_finished": {
+              const _payload = data as SSEAgentRunFinished;
+              useChatStore.getState().finishAgentRun();
               break;
             }
-            case "artifact_updated": {
-              const payload = data as SSEArtifactUpdated;
-              void qc.invalidateQueries({ queryKey: artifactKeys.byConversation(conversationId) });
-              useChatStore.getState().openArtifactPanel(payload.artifact_id);
+            case "workspace_item_updated": {
+              const payload = data as SSEWorkspaceItemUpdated;
+              void qc.invalidateQueries({
+                queryKey: workspaceKeys.byConversation(conversationId),
+              });
+              void qc.invalidateQueries({
+                queryKey: workspaceKeys.detail(payload.item_id),
+              });
+              break;
+            }
+            case "workspace_item_locked": {
+              const payload = data as SSEWorkspaceItemLocked;
+              patchWorkspaceItemLock(qc, conversationId, payload.item_id, payload.locked_until);
+              break;
+            }
+            case "workspace_item_unlocked": {
+              const payload = data as SSEWorkspaceItemUnlocked;
+              patchWorkspaceItemLock(qc, conversationId, payload.item_id, null);
               break;
             }
             case "heartbeat":
@@ -519,6 +555,44 @@ function markOptimisticFailed(
 // -----------------------------------------------
 // Helper: replace optimistic ID with real server ID
 // -----------------------------------------------
+
+/**
+ * Patch the lock state of a workspace_item across both the detail cache and
+ * the conversation list cache so the NoteEditor's lock UI flips immediately
+ * without a network refetch. ``locked_until = null`` clears the lock.
+ */
+function patchWorkspaceItemLock(
+  qc: ReturnType<typeof useQueryClient>,
+  conversationId: string,
+  itemId: string,
+  lockedUntil: string | null,
+): void {
+  const apply = <T extends Pick<WorkspaceItem, "item_id" | "metadata">>(
+    item: T,
+  ): T => ({
+    ...item,
+    metadata: {
+      ...(item.metadata ?? {}),
+      locked_until: lockedUntil,
+    },
+    locked_by_agent_until: lockedUntil,
+  } as T);
+
+  qc.setQueryData<WorkspaceItem>(workspaceKeys.detail(itemId), (old) =>
+    old && old.item_id === itemId ? apply(old) : old,
+  );
+
+  qc.setQueryData<WorkspaceItemListResponse>(
+    workspaceKeys.byConversation(conversationId),
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        items: old.items.map((it) => (it.item_id === itemId ? apply(it) : it)),
+      };
+    },
+  );
+}
 
 function replaceOptimisticId(
   qc: ReturnType<typeof useQueryClient>,

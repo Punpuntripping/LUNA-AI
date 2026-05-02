@@ -1,66 +1,157 @@
-"""Task orchestrator — routes messages to router or pinned task agent."""
+"""Agent orchestrator — routes messages, dispatches specialists, records runs.
+
+Wave 9 rewrite (Task 7):
+- OpenTask / TaskContinue / TaskEnd → gone (no task_state table dependency).
+- agents.state imports → gone.
+- Full specialist body NEVER streamed to chat; only chat_summary + key_findings.
+- Pre-router memory hook: resummarize_dirty_items + compact_conversation.
+- Dispatch records an agent_runs row in the finally block (fire-and-forget).
+- Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
+- Logfire span wraps _dispatch; trace_id / span_id populated on AgentRunRecord.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
+from time import perf_counter
 from typing import AsyncGenerator
 
 from supabase import Client as SupabaseClient
 
-from agents.models import ChatResponse, OpenTask, TaskContinue, TaskEnd
-from agents.state import (
-    TaskInfo, get_active_task, create_task,
-    update_task_history, update_task_artifact, complete_task,
+import agents.memory.agent as memory
+from agents.models import (
+    ChatResponse,
+    DispatchAgent,
+    MajorAgentInput,
+    ChatMessageSnapshot,
+    WorkspaceItemSnapshot,
+    SpecialistResult,
 )
-from agents.base.artifact import create_agent_artifact
+from agents.runs import AgentRunRecord, record_agent_run
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
 
-# Map task_type → mock agent function (for non-pydantic-ai agents)
-_MOCK_AGENTS = {
-    "end_services": None,
-    "extraction": None,
-}
+# Workspace item kinds counted toward the per-conversation cap.
+_CAP_KINDS = ("agent_search", "agent_writing", "note")
+_WORKSPACE_CAP = 15
 
-# Map task_type → artifact type
-_ARTIFACT_TYPES = {
-    "deep_search": "report",
-    "end_services": "contract",
-    "extraction": "summary",
-    "writing": "memo",
-}
-
-# Task types that use real Pydantic AI agents (not mock functions)
-_PYDANTIC_AI_AGENTS = {"deep_search", "writing"}
+# Number of recent messages to load for MajorAgentInput.
+_RECENT_MESSAGES_N = 3
 
 
-def _inject_task_summary(
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _zero_usage(model: str) -> dict:
+    return {"prompt_tokens": 0, "completion_tokens": 0, "model": model}
+
+
+def _count_artifact_kinds(supabase: SupabaseClient, conversation_id: str) -> int:
+    """Count non-deleted workspace_items in the capped kinds for this conversation."""
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .select("item_id", count="exact")
+            .eq("conversation_id", conversation_id)
+            .in_("kind", list(_CAP_KINDS))
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        return getattr(result, "count", None) or len(result.data or [])
+    except Exception as e:
+        logger.warning("_count_artifact_kinds failed: %s", e)
+        return 0
+
+
+def _load_attached_items(
+    supabase: SupabaseClient,
+    item_ids: list[str],
+) -> list[WorkspaceItemSnapshot]:
+    """Hydrate workspace item UUIDs into full WorkspaceItemSnapshot objects."""
+    if not item_ids:
+        return []
+    snapshots: list[WorkspaceItemSnapshot] = []
+    for item_id in item_ids:
+        try:
+            row = (
+                supabase.table("workspace_items")
+                .select("item_id, kind, title, content_md, metadata")
+                .eq("item_id", item_id)
+                .is_("deleted_at", "null")
+                .maybe_single()
+                .execute()
+            )
+            if row and getattr(row, "data", None):
+                d = row.data
+                snapshots.append(
+                    WorkspaceItemSnapshot(
+                        item_id=d.get("item_id", item_id),
+                        kind=d.get("kind") or "unknown",
+                        title=d.get("title") or "",
+                        content_md=d.get("content_md") or "",
+                        metadata=d.get("metadata") or {},
+                    )
+                )
+        except Exception as e:
+            logger.warning("_load_attached_items: could not load %s: %s", item_id, e)
+    return snapshots
+
+
+def _load_recent_messages(
     supabase: SupabaseClient,
     conversation_id: str,
-    user_id: str,
-    task: TaskInfo,
-    summary: str,
-) -> None:
-    """Persist task summary as an assistant message so the router sees it in history."""
-    summary_text = f"[TASK COMPLETED — {task.task_type}]\n{summary}"
-    if task.artifact_id:
-        summary_text += f"\nArtifact: {task.artifact_id}"
+    n: int = _RECENT_MESSAGES_N,
+) -> list[ChatMessageSnapshot]:
+    """Load the last N messages for the conversation as ChatMessageSnapshot objects."""
     try:
-        supabase.table("messages").insert({
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "role": "assistant",
-            "content": summary_text,
-        }).execute()
+        result = (
+            supabase.table("messages")
+            .select("role, content, created_at")
+            .eq("conversation_id", conversation_id)
+            .order("created_at", desc=True)
+            .limit(n)
+            .execute()
+        )
+        rows = list(reversed(result.data or []))
+        snapshots = []
+        for row in rows:
+            role = row.get("role") or "user"
+            if role not in ("user", "assistant"):
+                role = "user"
+            snapshots.append(
+                ChatMessageSnapshot(
+                    role=role,
+                    content=row.get("content") or "",
+                    created_at=row.get("created_at") or "",
+                )
+            )
+        return snapshots
     except Exception as e:
-        logger.warning("Error injecting task summary: %s", e)
+        logger.warning("_load_recent_messages failed: %s", e)
+        return []
 
 
-def _get_mock_agent(task_type: str):
-    """Return mock agent function for a task type, or None if not implemented."""
-    return _MOCK_AGENTS.get(task_type)
+def _extract_logfire_ids() -> tuple[str | None, str | None]:
+    """Best-effort extraction of trace_id and span_id from the active Logfire span."""
+    try:
+        span = _logfire.current_span()  # type: ignore[attr-defined]
+        ctx = getattr(span, "context", None)
+        if ctx is None:
+            return None, None
+        trace_id = format(ctx.trace_id, "032x") if ctx.trace_id else None
+        span_id = format(ctx.span_id, "016x") if ctx.span_id else None
+        return trace_id, span_id
+    except Exception:
+        return None, None
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 
 async def handle_message(
@@ -69,32 +160,56 @@ async def handle_message(
     conversation_id: str,
     supabase: SupabaseClient,
     case_id: str | None = None,
-    explicit_task_type: str | None = None,
+    explicit_agent_family: str | None = None,
+    user_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """
-    Main entry point — replaces route_and_execute().
+    """Main entry point for all chat turns.
 
-    1. Check for active task on this conversation
-    2. If active task → send message to pinned task agent
-    3. If no active task → send message to router
-       a. ChatResponse → yield response tokens
-       b. OpenTask → create task, pin agent, run first turn
-    """
-    # Check for active task
-    active_task = get_active_task(supabase, conversation_id)
+    1. Pre-router memory hook (best-effort).
+    2. If explicit_agent_family: skip router, call _dispatch directly.
+    3. Else: call _route which runs the router LLM and fans out.
 
-    if active_task:
-        # Pinned task agent handles the message
-        async for event in _run_task(question, active_task, supabase, user_id, conversation_id, case_id):
-            yield event
-    elif explicit_task_type:
-        # User explicitly chose a task type — skip router
-        async for event in _open_task_explicit(question, explicit_task_type, supabase, user_id, conversation_id, case_id):
-            yield event
-    else:
-        # No active task — route through router
-        async for event in _route(question, supabase, user_id, conversation_id, case_id):
-            yield event
+    ``user_message_id`` is the FK of the persisted user message (inserted
+    before the AI call, per CLAUDE.md rule #7). Thread-through to
+    agent_runs.message_id so the audit row links to the triggering message.
+    """
+    # Pre-router memory hook — best-effort, never aborts the turn.
+    try:
+        await memory.resummarize_dirty_items(supabase, conversation_id)
+        await memory.compact_conversation(supabase, conversation_id, user_id)
+    except Exception:
+        logger.warning("memory pre-hook failed", exc_info=True)
+
+    if explicit_agent_family:
+        async for ev in _dispatch(
+            agent_family=explicit_agent_family,
+            briefing=question,
+            target_item_id=None,
+            attached_item_ids=[],
+            subtype=None,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    async for ev in _route(
+        question=question,
+        supabase=supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_id=case_id,
+        user_message_id=user_message_id,
+    ):
+        yield ev
+
+
+# ---------------------------------------------------------------------------
+# Router
+# ---------------------------------------------------------------------------
 
 
 async def _route(
@@ -103,80 +218,30 @@ async def _route(
     user_id: str,
     conversation_id: str,
     case_id: str | None,
+    user_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """Run router agent, handle ChatResponse or OpenTask."""
+    """Run the router LLM; on ChatResponse stream tokens; on DispatchAgent call _dispatch."""
+    from agents.router.context import load_router_context
     from agents.router.router import run_router
-    from agents.utils.history import messages_to_history
 
-    # 1. Load conversation messages → Pydantic AI history
-    msg_rows = (
-        supabase.table("messages")
-        .select("role, content")
-        .eq("conversation_id", conversation_id)
-        .order("created_at", desc=False)
-        .execute()
-    ).data or []
-    message_history = messages_to_history(msg_rows)
+    ctx = load_router_context(supabase, user_id, conversation_id, case_id)
 
-    # 2. Load case context if case_id present
-    case_memory_md = None
-    case_metadata = None
-    if case_id:
-        case_row = (
-            supabase.table("lawyer_cases")
-            .select("case_name, case_type, status, parties, description")
-            .eq("case_id", case_id)
-            .is_("deleted_at", "null")
-            .maybe_single()
-            .execute()
-        )
-        if case_row and case_row.data:
-            case_metadata = case_row.data
-
-        memories = (
-            supabase.table("case_memories")
-            .select("content")
-            .eq("case_id", case_id)
-            .is_("deleted_at", "null")
-            .order("created_at", desc=False)
-            .execute()
-        ).data or []
-
-        if case_metadata or memories:
-            parts = []
-            if case_metadata:
-                parts.append(f"### معلومات القضية\n\n**اسم القضية:** {case_metadata.get('case_name', '')}\n**نوع القضية:** {case_metadata.get('case_type', '')}")
-            if memories:
-                parts.append("### الوقائع والمعلومات المحفوظة\n\n" + "\n".join(f"- {m['content']}" for m in memories))
-            case_memory_md = "\n\n".join(parts)
-
-    # 3. Load user preferences
-    prefs_row = (
-        supabase.table("user_preferences")
-        .select("preferences")
-        .eq("user_id", user_id)
-        .maybe_single()
-        .execute()
-    )
-    user_preferences = prefs_row.data.get("preferences") if prefs_row and prefs_row.data else None
-
-    # 4. Call real router
     result = await run_router(
         question=question,
         supabase=supabase,
         user_id=user_id,
         conversation_id=conversation_id,
         case_id=case_id,
-        case_memory_md=case_memory_md,
-        case_metadata=case_metadata,
-        user_preferences=user_preferences,
-        message_history=message_history,
+        case_memory_md=ctx.case_memory_md,
+        case_metadata=ctx.case_metadata,
+        user_preferences=ctx.user_preferences,
+        message_history=ctx.message_history,
+        workspace_item_summaries=ctx.workspace_item_summaries,
+        compaction_summary_md=ctx.compaction_summary_md,
     )
 
     if isinstance(result, ChatResponse):
-        yield {"type": "agent_selected", "agent_family": "router"}
-
-        # Fake-stream word-by-word
+        # Fake-stream word-by-word — no agent_runs row for direct chat responses.
         words = result.message.split(" ")
         for i, word in enumerate(words):
             token = word if i == 0 else f" {word}"
@@ -185,467 +250,408 @@ async def _route(
 
         yield {
             "type": "done",
-            "usage": {"prompt_tokens": 0, "completion_tokens": len(result.message), "model": "gemini-3-flash"},
+            "usage": _zero_usage("router"),
         }
+        return
 
-    elif isinstance(result, OpenTask):
-        async for event in _open_task(
-            result.task_type, result.briefing, result.artifact_id,
-            supabase, user_id, conversation_id, case_id,
+    if isinstance(result, DispatchAgent):
+        yield {"type": "agent_selected", "agent_family": result.agent_family}
+        async for ev in _dispatch(
+            agent_family=result.agent_family,
+            briefing=result.briefing,
+            target_item_id=result.target_item_id,
+            attached_item_ids=list(result.attached_item_ids),
             subtype=result.subtype,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
         ):
-            yield event
+            yield ev
+        return
+
+    # Defensive fallback — should never reach here.
+    logger.error("run_router returned unexpected type: %s", type(result))
+    yield {"type": "token", "text": "حدث خطأ في توجيه الطلب. يرجى المحاولة مرة أخرى."}
+    yield {"type": "done", "usage": _zero_usage("error")}
 
 
-async def _open_task(
-    task_type: str,
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _dispatch(
+    agent_family: str,
     briefing: str,
-    artifact_id: str | None,
+    target_item_id: str | None,
+    attached_item_ids: list[str],
+    subtype: str | None,
     supabase: SupabaseClient,
     user_id: str,
     conversation_id: str,
     case_id: str | None,
-    subtype: str | None = None,
+    user_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
-    """Create task, pin agent, run first turn.
+    """Invoke the appropriate specialist agent and stream results.
 
-    ``subtype`` is forwarded to the task runner only; not persisted on
-    task_state (no column for it pre-Wave 8A). For ``writing`` tasks the
-    runner uses it to drive WriterInput.subtype.
+    Cap pre-flight: families deep_search and writing refuse when workspace_items
+    would exceed _WORKSPACE_CAP, UNLESS target_item_id is set (editing
+    an existing item does not create a new one). Memory family bypasses cap.
     """
-    # Create task_state row
-    task = create_task(
-        supabase,
-        conversation_id=conversation_id,
-        user_id=user_id,
-        agent_family=task_type,
-        briefing=briefing,
-        artifact_id=artifact_id,
-    )
+    # ── Cap pre-flight ──────────────────────────────────────────────────
+    if agent_family in ("deep_search", "writing") and target_item_id is None:
+        count = _count_artifact_kinds(supabase, conversation_id)
+        if count >= _WORKSPACE_CAP:
+            yield {
+                "type": "token",
+                "text": (
+                    "وصلت إلى الحد الأقصى من المستندات في هذه المحادثة (15). "
+                    "يرجى حذف مستند قبل إنشاء جديد."
+                ),
+            }
+            yield {"type": "done", "usage": _zero_usage("cap_rejected")}
+            return  # NO agent_runs row on cap rejection.
 
-    # Yield agent_selected + task_started
-    yield {"type": "agent_selected", "agent_family": task_type}
-    yield {"type": "task_started", "task_id": task.task_id, "task_type": task_type}
+    t0 = perf_counter()
+    # agent_selected is emitted by _route; re-emit here only on explicit dispatch
+    # (explicit_agent_family path has no prior agent_selected).
+    yield {"type": "agent_run_started", "agent_family": agent_family, "subtype": subtype}
 
-    # Run first turn
-    async for event in _run_task(
-        briefing, task, supabase, user_id, conversation_id, case_id,
-        subtype=subtype,
-    ):
-        yield event
+    run_result: SpecialistResult | None = None
+    err_payload: dict | None = None
+    status = "ok"
 
-
-async def _open_task_explicit(
-    question: str,
-    task_type: str,
-    supabase: SupabaseClient,
-    user_id: str,
-    conversation_id: str,
-    case_id: str | None,
-) -> AsyncGenerator[dict, None]:
-    """User explicitly chose a task type — generate briefing from question, then open."""
-    briefing = f"User request: {question}"
-    async for event in _open_task(
-        task_type, briefing, None, supabase, user_id, conversation_id, case_id,
-        subtype=None,
-    ):
-        yield event
-
-
-async def _run_task(
-    question: str,
-    task: TaskInfo,
-    supabase: SupabaseClient,
-    user_id: str,
-    conversation_id: str,
-    case_id: str | None,
-    subtype: str | None = None,
-) -> AsyncGenerator[dict, None]:
-    """Send message to pinned task agent — dispatches to Pydantic AI or mock."""
     with _logfire.span(
-        "task.run",
-        task_id=task.task_id,
-        task_type=task.task_type,
-        agent_family=task.agent_family,
+        "dispatch.specialist",
+        agent_family=agent_family,
+        subtype=subtype,
         user_id=user_id,
         conversation_id=conversation_id,
         case_id=case_id,
-        is_first_turn=len(task.history) == 0,
-        artifact_id=task.artifact_id,
-        subtype=subtype,
+        target_item_id=target_item_id,
+        attached_count=len(attached_item_ids),
     ):
-        if task.task_type in _PYDANTIC_AI_AGENTS:
-            async for event in _run_pydantic_ai_task(
-                question, task, supabase, user_id, conversation_id, case_id,
-                subtype=subtype,
-            ):
-                yield event
-            return
-
-        # ── Mock path for end_services, extraction ──
-        agent_fn = _get_mock_agent(task.task_type)
-        if agent_fn is None:
-            logger.error("No agent for task type: %s", task.task_type)
-            yield {"type": "token", "text": "حدث خطأ: نوع المهمة غير معروف"}
-            yield {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "model": "error"}}
-            return
-
-        is_first_turn = len(task.history) == 0
-        result = agent_fn(question, task.current_artifact, is_first_turn)
-
-        if isinstance(result, TaskContinue):
-            # Stream response tokens
-            words = result.response.split(" ")
-            for i, word in enumerate(words):
-                token = word if i == 0 else f" {word}"
-                yield {"type": "token", "text": token}
-                await asyncio.sleep(0.03)
-
-            # Update artifact
-            task.current_artifact = result.artifact
-
-            # Create or update artifact in DB
-            if not task.artifact_id:
-                # Create new artifact
-                artifact_type = _ARTIFACT_TYPES.get(task.task_type, "report")
-                title = f"مهمة {task.task_type}: {question[:40]}"
-                try:
-                    artifact = await create_agent_artifact(
-                        supabase,
-                        user_id,
-                        conversation_id,
-                        case_id,
-                        agent_family=task.agent_family,
-                        artifact_type=artifact_type,
-                        title=title,
-                        content_md=result.artifact,
-                        is_editable=True,
-                    )
-                    task.artifact_id = artifact["artifact_id"]
-                    update_task_artifact(supabase, task.task_id, task.artifact_id)
-                    yield {
-                        "type": "workspace_item_created",
-                        "item_id": task.artifact_id,
-                        "kind": "agent_writing",
-                        "subtype": artifact_type,
-                        "title": title,
-                        "created_by": "agent",
-                    }
-                except Exception as e:
-                    logger.warning("Error creating artifact for task %s: %s", task.task_id, e)
-            else:
-                # Update existing workspace item
-                try:
-                    supabase.table("workspace_items").update(
-                        {"content_md": result.artifact}
-                    ).eq("item_id", task.artifact_id).execute()
-                    yield {
-                        "type": "workspace_item_updated",
-                        "item_id": task.artifact_id,
-                    }
-                except Exception as e:
-                    logger.warning("Error updating artifact for task %s: %s", task.task_id, e)
-
-            # Update task history
-            task.history.append({"role": "user", "content": question})
-            task.history.append({"role": "assistant", "content": result.response})
-            update_task_history(supabase, task.task_id, task.history)
-
-            yield {
-                "type": "done",
-                "usage": {"prompt_tokens": 500, "completion_tokens": len(result.response), "model": f"mock-{task.task_type}"},
-            }
-
-        elif isinstance(result, TaskEnd):
-            # Stream final response
-            words = result.last_response.split(" ")
-            for i, word in enumerate(words):
-                token = word if i == 0 else f" {word}"
-                yield {"type": "token", "text": token}
-                await asyncio.sleep(0.03)
-
-            # Persist final artifact
-            if task.artifact_id:
-                try:
-                    supabase.table("workspace_items").update(
-                        {"content_md": result.artifact}
-                    ).eq("item_id", task.artifact_id).execute()
-                except Exception as e:
-                    logger.warning("Error persisting final artifact for task %s: %s", task.task_id, e)
-
-            # Mark task completed
-            complete_task(supabase, task.task_id, result.summary, status="completed")
-
-            # Inject task summary into conversation history
-            _inject_task_summary(supabase, conversation_id, user_id, task, result.summary)
-
-            _logfire.info(
-                "task.ended",
-                task_id=task.task_id,
-                task_type=task.task_type,
-                end_reason=getattr(result, "reason", None),
-                artifact_id=task.artifact_id,
-            )
-
-            yield {"type": "task_ended", "task_id": task.task_id, "summary": result.summary}
-
-            yield {
-                "type": "done",
-                "usage": {"prompt_tokens": 500, "completion_tokens": len(result.last_response), "model": f"mock-{task.task_type}"},
-            }
-
-            # If out-of-scope, re-route the original question through the router
-            if result.reason == "out_of_scope":
-                async for event in _route(question, supabase, user_id, conversation_id, case_id):
-                    yield event
-
-
-async def _run_pydantic_ai_task(
-    question: str,
-    task: TaskInfo,
-    supabase: SupabaseClient,
-    user_id: str,
-    conversation_id: str,
-    case_id: str | None,
-    subtype: str | None = None,
-) -> AsyncGenerator[dict, None]:
-    """Run a Pydantic AI task agent (deep_search, writing). Yields SSE events.
-
-    For ``deep_search``:
-      - loads the user's ``detail_level`` preference (default ``"medium"``)
-      - runs the URA 2.0 pipeline via ``agents.deep_search_v4.orchestrator.run_full_loop``
-      - persists the aggregator output to the ``artifacts`` table as
-        ``artifact_type='legal_synthesis'``
-      - emits an ``artifact_created`` SSE event before streaming the body
-
-    For ``writing``:
-      - loads the user's ``detail_level`` preference (default ``"medium"``)
-      - assembles a workspace context stopgap from current artifacts rows
-        (Wave 8A will replace this with workspace_context.load_workspace_context)
-      - runs the agent_writer pipeline; persistence + lock + SSE events
-        come out of agent_writer.publish_writer_result
-    """
-    if task.task_type == "deep_search":
-        import httpx
-
-        from agents.agent_search import (
-            SearchPublishDeps,
-            SearchPublishInput,
-            publish_search_result,
-        )
-        from agents.deep_search_v4.orchestrator import FullLoopDeps, run_full_loop
-        from agents.utils.embeddings import embed_regulation_query_alibaba
-        from backend.app.services.preferences_service import get_detail_level
-        from shared.config import get_settings
-
-        # Read detail_level from user_preferences; swallow errors and default.
         try:
-            detail_level = get_detail_level(supabase, user_id)
-        except Exception:
-            logger.warning("get_detail_level failed; defaulting to 'medium'", exc_info=True)
-            detail_level = "medium"
+            # Build MajorAgentInput — hydrate attached items + recent messages.
+            attached_items = _load_attached_items(supabase, attached_item_ids)
+            recent_messages = _load_recent_messages(supabase, conversation_id)
 
-        # Look up the triggering user message's id for foreign-key wire-up on
-        # both artifacts and retrieval_artifacts. The user message is always
-        # persisted BEFORE the agent runs (CLAUDE.md rule #7), so the most
-        # recent user row on this conversation IS this turn's user message.
-        # TODO cleanup: thread message_id through send_message_stream →
-        # handle_message → _run_pydantic_ai_task so we can drop this query.
-        user_message_id: str | None = None
-        try:
-            row = (
-                supabase.table("messages")
-                .select("message_id")
-                .eq("conversation_id", conversation_id)
-                .eq("role", "user")
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if row and row.data:
-                user_message_id = row.data[0].get("message_id")
-        except Exception:
-            logger.warning("deep_search: could not resolve user_message_id", exc_info=True)
-
-        settings = get_settings()
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            deps = FullLoopDeps(
-                supabase=supabase,
-                embedding_fn=embed_regulation_query_alibaba,
-                jina_api_key=settings.JINA_RERANKER_API_KEY or "",
-                http_client=http_client,
-                detail_level=detail_level,
-                enable_planner=False,
-            )
-
-            agg_output = await run_full_loop(
-                query=question,
-                query_id=0,
-                deps=deps,
-            )
-
-            # Forward any accumulated SSE events first
-            for event in deps._events:
-                yield event
-
-            # Persist the aggregator output via the agent_search publishing
-            # adapter. Wraps create_artifact + retrieval_artifacts +
-            # reranker_runs writes in one place; emits BOTH the new
-            # workspace_item_created event and the legacy artifact_created
-            # alias (Wave 8B drops the alias once the frontend rename lands).
-            try:
-                publish_input = SearchPublishInput(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    message_id=user_message_id,
-                    agg_output=agg_output,
-                    original_query=question,
-                    detail_level=detail_level,
-                    ura=getattr(deps, "_ura", None),
-                    reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
-                    comp_rqrs=list(getattr(deps, "_comp_rqrs", []) or []),
-                    case_rqrs=list(getattr(deps, "_case_rqrs", []) or []),
-                    per_executor_stats=dict(
-                        getattr(deps, "_per_executor_stats", {}) or {}
-                    ),
-                )
-                publish_result = await publish_search_result(
-                    publish_input,
-                    SearchPublishDeps(supabase=supabase, logger=logger),
-                )
-                for event in publish_result.sse_events:
-                    yield event
-            except Exception as exc:
-                logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
-
-            yield {"type": "token", "text": agg_output.synthesis_md}
-            yield {
-                "type": "done",
-                "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "model": agg_output.model_used or "deep_search_v3",
-                },
-            }
-    elif task.task_type == "writing":
-        import httpx
-
-        from agents.agent_writer import (
-            WorkspaceContextBlock,
-            WriterInput,
-            build_writer_deps,
-            handle_writer_turn,
-        )
-        from backend.app.services.preferences_service import get_detail_level
-        from backend.app.services.workspace_context import load_workspace_context
-
-        # 1. Detail level (same pattern as deep_search).
-        try:
-            detail_level = get_detail_level(supabase, user_id)
-        except Exception:
-            logger.warning("get_detail_level failed; defaulting to 'medium'", exc_info=True)
-            detail_level = "medium"
-
-        # 2. Workspace context. Wave 8A: load all visible workspace_items
-        # for this conversation via the dedicated helper. The helper falls
-        # back to the pre-migration ``artifacts`` table automatically, so
-        # this code path works both before and after migration 026.
-        # research_items get the search-like agent_outputs (the writer
-        # uses them to ground its draft on prior research). Note/
-        # attachment/convo_context flow into WorkspaceContextBlock.
-        ws_ctx = await load_workspace_context(supabase, conversation_id)
-        # Partition agent_outputs: search-like outputs (agent_search and
-        # subtype='legal_synthesis') become research_items the writer
-        # cites; agent_writing outputs are NOT fed back as research --
-        # the user uses revising_item_id explicitly to revise a draft.
-        research_items: list[dict] = []
-        for item in ws_ctx.get("agent_outputs", []) or []:
-            subtype = (item.get("subtype") or "").lower()
-            if subtype in {"legal_synthesis", "agent_search", "report"}:
-                research_items.append({
-                    "item_id": item.get("item_id"),
-                    "title": item.get("title", ""),
-                    "content_md": item.get("content_md", ""),
-                    "metadata": {"subtype": item.get("subtype")},
-                })
-
-        # 3. Resolve the user message id for foreign-key wire-up (same trick
-        # used by deep_search above).
-        user_message_id: str | None = None
-        try:
-            row = (
-                supabase.table("messages")
-                .select("message_id")
-                .eq("conversation_id", conversation_id)
-                .eq("role", "user")
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if row and row.data:
-                user_message_id = row.data[0].get("message_id")
-        except Exception:
-            logger.warning("writing: could not resolve user_message_id", exc_info=True)
-
-        # 4. Build WriterInput. Subtype defaults to "memo" if router didn't
-        # supply one; this matches WriterInput.subtype's default but we keep
-        # the assignment explicit so the orchestrator's intent is obvious.
-        chosen_subtype = subtype or "memo"
-        try:
-            writer_input = WriterInput(
+            major_input = MajorAgentInput(
+                briefing=briefing,
+                attached_items=attached_items,
+                recent_messages=recent_messages,
+                target_item_id=target_item_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 case_id=case_id,
-                message_id=user_message_id,
-                user_request=question,
-                subtype=chosen_subtype,  # type: ignore[arg-type]
-                research_items=research_items,
-                workspace_context=WorkspaceContextBlock(
-                    notes=list(ws_ctx.get("notes", []) or []),
-                    attachments=list(ws_ctx.get("attachments", []) or []),
-                    convo_context=ws_ctx.get("convo_context"),
-                ),
-                revising_item_id=task.artifact_id,
-                detail_level=detail_level,
-                tone="formal",
             )
 
-            async with httpx.AsyncClient(timeout=60.0) as http_client:
-                writer_deps = build_writer_deps(
+            if agent_family == "deep_search":
+                run_result = await _run_deep_search(major_input, supabase)
+            elif agent_family == "writing":
+                run_result = await _run_writer(major_input, subtype, supabase)
+            elif agent_family == "memory":
+                run_result = await _run_memory(
+                    briefing=briefing,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
                     supabase=supabase,
-                    http_client=http_client,
                 )
+            else:
+                logger.error("_dispatch: unknown agent_family=%s", agent_family)
+                yield {"type": "token", "text": "حدث خطأ: نوع المهمة غير معروف."}
+                yield {"type": "done", "usage": _zero_usage("error")}
+                return
 
-                writer_output = await handle_writer_turn(writer_input, writer_deps)
+            # Forward queued SSE events (workspace_item_created / workspace_item_updated / etc.)
+            for ev in run_result.sse_events:
+                yield ev
 
-            # 5. Forward SSE events accumulated by the publisher
-            # (workspace_item_created / locked / unlocked + legacy
-            # artifact_created alias).
-            for event in writer_output.sse_events:
-                yield event
+            # Stream chat_summary to chat — full body stays in workspace item only.
+            if run_result.chat_summary:
+                yield {"type": "token", "text": run_result.chat_summary}
 
-            # 6. Stream the body so the chat shows the assistant text.
-            yield {"type": "token", "text": writer_output.content_md}
+            # Stream key_findings as a single token block after chat_summary.
+            if run_result.key_findings:
+                bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
+                yield {"type": "token", "text": bullets}
+
             yield {
                 "type": "done",
                 "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": len(writer_output.content_md or ""),
-                    "model": writer_output.metadata.get("model_used", "agent_writer"),
+                    "prompt_tokens": run_result.tokens_in or 0,
+                    "completion_tokens": run_result.tokens_out or 0,
+                    "model": run_result.model_used or agent_family,
                 },
             }
+
         except Exception as exc:
-            logger.error("writing task failed: %s", exc, exc_info=True)
+            logger.error("specialist %s failed: %s", agent_family, exc, exc_info=True)
+            status = "error"
+            err_payload = {"type": type(exc).__name__, "message": str(exc)[:500]}
             yield {
                 "type": "token",
-                "text": "عذراً، تعذّر إنشاء المسوّدة. يرجى المحاولة مرة أخرى.",
+                "text": "عذراً، حدث خطأ أثناء تنفيذ المهمة. يرجى المحاولة مرة أخرى.",
             }
-            yield {
-                "type": "done",
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "model": "error"},
-            }
-    else:
-        logger.error("Unknown Pydantic AI task type: %s", task.task_type)
-        yield {"type": "token", "text": "حدث خطأ: نوع المهمة غير معروف"}
-        yield {"type": "done", "usage": {"prompt_tokens": 0, "completion_tokens": 0, "model": "error"}}
+            yield {"type": "done", "usage": _zero_usage("error")}
+
+        finally:
+            duration_ms = int((perf_counter() - t0) * 1000)
+            trace_id, span_id = _extract_logfire_ids()
+            record_agent_run(
+                supabase,
+                AgentRunRecord(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    agent_family=agent_family,
+                    subtype=subtype,
+                    message_id=user_message_id,
+                    input_summary=briefing[:500],
+                    output_item_id=getattr(run_result, "output_item_id", None),
+                    duration_ms=duration_ms,
+                    tokens_in=getattr(run_result, "tokens_in", None),
+                    tokens_out=getattr(run_result, "tokens_out", None),
+                    model_used=getattr(run_result, "model_used", None),
+                    per_phase_stats=getattr(run_result, "per_phase_stats", {}) or {},
+                    status=status,
+                    error=err_payload,
+                    trace_id=trace_id,
+                    span_id=span_id,
+                ),
+            )
+
+    yield {"type": "agent_run_finished", "agent_family": agent_family}
+
+
+# ---------------------------------------------------------------------------
+# Specialist runners
+# ---------------------------------------------------------------------------
+
+
+async def _run_deep_search(
+    input: MajorAgentInput,
+    supabase: SupabaseClient,
+) -> SpecialistResult:
+    """Run the deep_search_v4 URA pipeline and return a SpecialistResult.
+
+    Extracted from the former _run_pydantic_ai_task deep_search branch.
+    Key changes:
+    - supabase passed explicitly (MajorAgentInput is DB-free by contract).
+    - Full synthesis_md NOT yielded to chat; chat_summary + key_findings used instead.
+    - SSE events from deps._events and publish_result.sse_events are collected into
+      SpecialistResult.sse_events.
+    - Token counts mapped from AggregatorOutput (currently zero — placeholders).
+    """
+    import httpx
+
+    from agents.agent_search import (
+        SearchPublishDeps,
+        SearchPublishInput,
+        publish_search_result,
+    )
+    from agents.deep_search_v4.orchestrator import FullLoopDeps, run_full_loop
+    from agents.utils.embeddings import embed_regulation_query_alibaba
+    from backend.app.services.preferences_service import get_detail_level
+    from shared.config import get_settings
+
+    # Read detail_level from user_preferences; swallow errors and default.
+    try:
+        detail_level = get_detail_level(supabase, input.user_id)
+    except Exception:
+        logger.warning("get_detail_level failed; defaulting to 'medium'", exc_info=True)
+        detail_level = "medium"
+
+    settings = get_settings()
+    sse_events: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        deps = FullLoopDeps(
+            supabase=supabase,
+            embedding_fn=embed_regulation_query_alibaba,
+            jina_api_key=settings.JINA_RERANKER_API_KEY or "",
+            http_client=http_client,
+            detail_level=detail_level,
+            enable_planner=False,
+        )
+
+        agg_output = await run_full_loop(
+            query=input.briefing,
+            query_id=0,
+            deps=deps,
+        )
+
+        # Collect pipeline-accumulated SSE events (progress events etc.).
+        sse_events.extend(deps._events)
+
+        # Persist via agent_search publisher.
+        output_item_id: str | None = None
+        try:
+            publish_input = SearchPublishInput(
+                user_id=input.user_id,
+                conversation_id=input.conversation_id,
+                case_id=input.case_id,
+                message_id=None,  # user_message_id threaded through Task 10 via MajorAgentInput
+                agg_output=agg_output,
+                original_query=input.briefing,
+                detail_level=detail_level,
+                ura=getattr(deps, "_ura", None),
+                reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
+                comp_rqrs=list(getattr(deps, "_comp_rqrs", []) or []),
+                case_rqrs=list(getattr(deps, "_case_rqrs", []) or []),
+                per_executor_stats=dict(
+                    getattr(deps, "_per_executor_stats", {}) or {}
+                ),
+            )
+            publish_result = await publish_search_result(
+                publish_input,
+                SearchPublishDeps(supabase=supabase, logger=logger),
+            )
+            sse_events.extend(publish_result.sse_events)
+            output_item_id = publish_result.item_id
+        except Exception as exc:
+            logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
+
+    return SpecialistResult(
+        output_item_id=output_item_id,
+        chat_summary=agg_output.chat_summary or "",
+        key_findings=list(agg_output.key_findings or []),
+        sse_events=sse_events,
+        model_used=agg_output.model_used or "deep_search_v4",
+        tokens_in=0,
+        tokens_out=0,
+        per_phase_stats={},
+    )
+
+
+async def _run_writer(
+    input: MajorAgentInput,
+    subtype: str | None,
+    supabase: SupabaseClient,
+) -> SpecialistResult:
+    """Run the agent_writer pipeline and return a SpecialistResult.
+
+    Extracted from the former _run_pydantic_ai_task writing branch.
+    Key changes:
+    - supabase passed explicitly (MajorAgentInput is DB-free by contract).
+    - Workspace context loading replaced by attached_items from MajorAgentInput.
+    - Full content_md NOT streamed to chat; chat_summary + key_findings used instead.
+    - WriterDeps built with briefing + attached_items + revising_item_id already set,
+      so _populate_deps_from_input in the runner fills any remaining gaps.
+    """
+    import httpx
+
+    from agents.agent_writer import (
+        WorkspaceContextBlock,
+        WriterInput,
+        build_writer_deps,
+        handle_writer_turn,
+    )
+    from backend.app.services.preferences_service import get_detail_level
+
+    try:
+        detail_level = get_detail_level(supabase, input.user_id)
+    except Exception:
+        logger.warning("get_detail_level failed; defaulting to 'medium'", exc_info=True)
+        detail_level = "medium"
+
+    # Build research_items from attached_items: search-like kinds only.
+    research_items: list[dict] = []
+    for snap in input.attached_items:
+        kind_lower = (snap.kind or "").lower()
+        subtype_hint = (snap.metadata.get("subtype") or "").lower()
+        if kind_lower in {"agent_search"} or subtype_hint in {"legal_synthesis", "agent_search", "report"}:
+            research_items.append({
+                "item_id": snap.item_id,
+                "title": snap.title,
+                "content_md": snap.content_md,
+                "metadata": snap.metadata,
+            })
+
+    chosen_subtype = subtype or "memo"
+
+    writer_input = WriterInput(
+        user_id=input.user_id,
+        conversation_id=input.conversation_id,
+        case_id=input.case_id,
+        message_id=None,  # task 10 will pass user_message_id through MajorAgentInput
+        user_request=input.briefing,
+        subtype=chosen_subtype,  # type: ignore[arg-type]
+        research_items=research_items,
+        workspace_context=WorkspaceContextBlock(
+            notes=[],
+            attachments=[],
+            convo_context=None,
+        ),
+        revising_item_id=input.target_item_id,
+        detail_level=detail_level,  # type: ignore[arg-type]
+        tone="formal",
+    )
+
+    async with httpx.AsyncClient(timeout=60.0) as http_client:
+        writer_deps = build_writer_deps(
+            supabase=supabase,
+            http_client=http_client,
+            briefing=input.briefing,
+            attached_items=list(input.attached_items),
+            revising_item_id=input.target_item_id,
+            detail_level=detail_level,
+            tone="formal",
+        )
+
+        writer_output = await handle_writer_turn(writer_input, writer_deps)
+
+    return SpecialistResult(
+        output_item_id=writer_output.item_id,
+        chat_summary=writer_output.chat_summary or "",
+        key_findings=list(writer_output.key_findings or []),
+        sse_events=list(writer_output.sse_events or []),
+        model_used=writer_output.metadata.get("model_used", "agent_writer"),
+        tokens_in=0,
+        tokens_out=0,
+        per_phase_stats={},
+    )
+
+
+async def _run_memory(
+    briefing: str,
+    conversation_id: str,
+    user_id: str,
+    supabase: SupabaseClient,
+) -> SpecialistResult:
+    """Run the memory family (explicit dispatch path).
+
+    Wave 9: delegates to compact_conversation as a best-effort fallback.
+    The router does not normally dispatch to memory; this path is only hit
+    when the caller sets explicit_agent_family='memory'.
+    """
+    new_item_id: str | None = None
+    try:
+        new_item_id = await memory.compact_conversation(
+            supabase=supabase,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        logger.warning("_run_memory compact_conversation failed: %s", exc, exc_info=True)
+
+    summary = (
+        "تمت معالجة الذاكرة: ضغط المحادثة اكتمل."
+        if new_item_id
+        else "لا حاجة لضغط المحادثة في الوقت الحالي."
+    )
+
+    return SpecialistResult(
+        output_item_id=new_item_id,
+        chat_summary=summary,
+        key_findings=[],
+        sse_events=[],
+        model_used="memory",
+        tokens_in=0,
+        tokens_out=0,
+        per_phase_stats={},
+    )
+
+

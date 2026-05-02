@@ -89,9 +89,9 @@ class UpdateConversationRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     """POST /api/v1/conversations/{conversation_id}/messages"""
     content: str = Field(..., min_length=1, max_length=10_000)
-    task_type: Optional[str] = Field(
+    agent_family: Optional[str] = Field(
         default=None,
-        description="Explicit task type: deep_search, end_services, extraction"
+        description="Force a specialist family, bypassing the router."
     )
     attachment_ids: Optional[list[str]] = None  # document_ids to attach to the message
 
@@ -125,10 +125,13 @@ class UpdateMemoryRequest(BaseModel):
         return _reject_null_bytes(v) if isinstance(v, str) else v
 
 
-# ── Artifacts ──────────────────────────────────────────
+# ── Workspace items (post-026) ─────────────────────────
 
-class UpdateArtifactRequest(BaseModel):
-    """PATCH /api/v1/artifacts/{artifact_id}"""
+class UpdateWorkspaceItemRequest(BaseModel):
+    """PATCH /api/v1/workspace/{item_id}
+
+    Same shape as the legacy artifact update -- only title and content_md.
+    """
     title: Optional[str] = None
     content_md: Optional[str] = None
 

@@ -45,3 +45,6 @@ logfire[fastapi]>=3.0.0,<5.0.0
 openai>=2.0.0,<3.0.0
 anthropic>=0.75.0,<1.0.0
 google-genai>=1.0.0,<2.0.0
+
+# Token counting (memory compaction uses cl100k_base; len//4 fallback if absent)
+tiktoken>=0.7.0,<1.0.0
