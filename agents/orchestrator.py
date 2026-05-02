@@ -273,11 +273,15 @@ async def _resume_major_agent(
     # ── Rehydrate message history + build DeferredToolResults ───────────────
     try:
         raw_history = pending.get("message_history")
-        if isinstance(raw_history, str):
-            # PostgREST returns BYTEA as base64 string
-            history_bytes = base64.b64decode(raw_history)
-        elif isinstance(raw_history, bytes):
+        if isinstance(raw_history, bytes):
             history_bytes = raw_history
+        elif isinstance(raw_history, str):
+            # PostgREST returns BYTEA as Postgres-native '\x'-prefixed hex
+            # by default. Some serializers also produce base64 — handle both.
+            if raw_history.startswith("\\x"):
+                history_bytes = bytes.fromhex(raw_history[2:])
+            else:
+                history_bytes = base64.b64decode(raw_history)
         else:
             raise ValueError(f"unexpected message_history type: {type(raw_history)}")
 
