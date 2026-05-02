@@ -12,7 +12,6 @@ Wave 9 Task 13.4/13.5 additions:
 """
 from __future__ import annotations
 
-import base64
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -92,8 +91,11 @@ def record_agent_run(supabase: SupabaseClient, rec: AgentRunRecord) -> str | Non
             payload["span_id"] = rec.span_id
         # Pause-state columns: present only when the run is paused.
         if rec.message_history is not None:
-            # Supabase PostgREST represents BYTEA as base64 on the wire.
-            payload["message_history"] = base64.b64encode(rec.message_history).decode()
+            # Send BYTEA as Postgres-native '\x'-prefixed hex so the read path
+            # (PostgREST also returns BYTEA as '\x'-hex) round-trips without a
+            # double-encoding layer. Base64 round-trip would require b64decode
+            # AFTER hex-decode on read.
+            payload["message_history"] = "\\x" + rec.message_history.hex()
         if rec.deferred_payload is not None:
             payload["deferred_payload"] = rec.deferred_payload
         if rec.question_text is not None:
@@ -128,7 +130,7 @@ def update_run_status(
 
     Additional keyword arguments are included in the UPDATE payload verbatim.
     Special handling mirrors record_agent_run:
-    - ``message_history`` (bytes) → base64-encoded string for BYTEA column.
+    - ``message_history`` (bytes) → '\\x'-prefixed hex string for BYTEA column.
     - ``asked_at`` / ``expires_at`` (datetime) → ISO-8601 string.
 
     Returns True on success, False on failure (never raises).
@@ -139,7 +141,7 @@ def update_run_status(
             if val is None:
                 continue
             if key == "message_history" and isinstance(val, bytes):
-                payload[key] = base64.b64encode(val).decode()
+                payload[key] = "\\x" + val.hex()
             elif key in ("asked_at", "expires_at") and isinstance(val, datetime):
                 payload[key] = val.isoformat()
             else:
