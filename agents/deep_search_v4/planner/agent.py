@@ -58,6 +58,7 @@ def create_planner_agent(
         output_type=[PlannerOutput, DeferredToolRequests],
         instructions=PLANNER_SYSTEM_PROMPT,
         retries=2,
+        output_retries=4,
     )
 
     @agent.tool_plain
