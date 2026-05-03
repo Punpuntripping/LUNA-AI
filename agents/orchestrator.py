@@ -443,6 +443,11 @@ async def _resume_major_agent(
 
     finally:
         duration_ms = int((perf_counter() - t0) * 1000)
+        # Embed the user's reply into deferred_payload so the agent_runs row
+        # carries both the question_text AND the answer side-by-side without a
+        # join through the messages table.
+        merged_payload = dict(pending.get("deferred_payload") or {})
+        merged_payload["user_reply"] = user_reply
         update_run_status(
             supabase,
             run_id,
@@ -453,6 +458,7 @@ async def _resume_major_agent(
             model_used=getattr(run_result, "model_used", None),
             output_item_id=getattr(run_result, "output_item_id", None),
             per_phase_stats=getattr(run_result, "per_phase_stats", {}) or {},
+            deferred_payload=merged_payload,
             error=err_payload,
         )
 
@@ -1073,15 +1079,33 @@ async def _run_deep_search(
         except Exception as exc:
             logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
 
+    # Aggregate token usage from per-executor stats. run_full_loop populates
+    # deps._per_executor_stats with total_tokens_in/out per executor (see
+    # agents/deep_search_v4/orchestrator.py:206/452/588). Planner + aggregator
+    # tokens are not currently captured into this dict — they will show up in
+    # Logfire spans (gen_ai.usage.*) but not on the agent_runs row. Tracked
+    # as a follow-up.
+    stats: dict = dict(getattr(deps, "_per_executor_stats", {}) or {})
+    tokens_in = sum(
+        int(v.get("total_tokens_in", 0) or 0)
+        for v in stats.values()
+        if isinstance(v, dict)
+    )
+    tokens_out = sum(
+        int(v.get("total_tokens_out", 0) or 0)
+        for v in stats.values()
+        if isinstance(v, dict)
+    )
+
     return SpecialistResult(
         output_item_id=output_item_id,
         chat_summary=agg_output.chat_summary or "",
         key_findings=list(agg_output.key_findings or []),
         sse_events=sse_events,
         model_used=agg_output.model_used or "deep_search_v4",
-        tokens_in=0,
-        tokens_out=0,
-        per_phase_stats={},
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        per_phase_stats=stats,
     )
 
 
