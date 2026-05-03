@@ -29,7 +29,11 @@ PLANNER_DEFAULT_MODEL = "qwen3-flash"
 
 PLANNER_LIMITS = UsageLimits(
     response_tokens_limit=4_000,
-    request_limit=4,  # +2 to allow one ask_user round-trip within the limit
+    # request_limit counts CUMULATIVE requests across pause/resume because the
+    # rehydrated message_history carries forward the prior request count.
+    # 4 was tight (initial model call + ask_user + resume ≈ borderline);
+    # 8 leaves headroom for chained pauses + output_retries on resume.
+    request_limit=8,
 )
 
 
