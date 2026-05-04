@@ -2,129 +2,204 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * ============================================================
- * Luna Brand Colors (OKLCH channels — L C H)
- * ------------------------------------------------------------
- * Change these two values to re-theme the entire app.
- * Store only the L C H channels; the oklch() wrapper is added
- * by Tailwind config so opacity modifiers (e.g. bg-primary/90)
- * work correctly.
- *
- *   Brand Primary (dark blue):  44.6% 0.043 257.281
- *   Brand Light:                87.1% 0.006 286.286
- *
- * Full OKLCH notation:
- *   oklch(44.6% 0.043 257.281)
- *   oklch(87.1% 0.006 286.286)
- *
- * ============================================================
- */
+/* ============================================================
+ * Luna Color System v2 — Committed
+ * Light L1 (Herbarium Paper) — primary light  (default)
+ * Dark  D1 (Aubergine + Sage Voice) — primary dark  (.dark)
+ * Dark  D4 (Twilight Garden) — alt dark  ([data-theme="dark-twilight"])
+ * ============================================================ */
 
 @layer base {
   :root {
-    --background: 100% 0 0;
-    --foreground: 14.1% 0.03 264;
+    /* ---------- Anchor colors (the 6 chosen) ---------- */
+    --aubergine-black: #18141A;
+    --plum-shadow:     #373541;
+    --royal-aubergine: #4C4158;
+    --dusty-mauve:     #6A6581;
+    --sage-mist:       #9BA9A5;
+    --forest-shadow:   #242E29;
 
-    --card: 100% 0 0;
-    --card-foreground: 14.1% 0.03 264;
+    /* ---------- L1 — Herbarium Paper (light primary) ---------- */
+    --canvas:          #F7F2EC;
+    --surface-1:       #FCF8F2;
+    --surface-2:       #EFE9E1;
+    --surface-3:       #E5DED2;
+    --surface-sidebar: #EFE9E1;
 
-    --popover: 100% 0 0;
-    --popover-foreground: 14.1% 0.03 264;
+    --border:          #E0D6CA;
+    --border-strong:   #C9BDAB;
 
-    /* Brand Primary — Luna deep teal */
-    --primary: 42% 0.07 195;
-    --primary-foreground: 98% 0.01 195;
+    --text-primary:    #18141A;
+    --text-secondary:  #373541;
+    --text-muted:      #6A6581;
+    --text-subtle:     #9A93A0;
 
-    /* Brand Light — airy teal (used as hover surface / secondary) */
-    --secondary: 88% 0.02 195;
-    --secondary-foreground: 22% 0.02 264;
+    --primary:         #4A6B5F;
+    --primary-fg:      #FCF8F2;
+    --primary-hover:   #3D5A4D;
 
-    --muted: 95.5% 0.005 265;
-    --muted-foreground: 55.6% 0.015 264;
+    --brand-soft-bg:   #DDE5E0;
+    --brand-soft-fg:   #2A4438;
 
-    --accent: 95.5% 0.005 265;
-    --accent-foreground: 22% 0.02 264;
+    --accent:          #4A6B5F;
+    --accent-soft:     rgba(74, 107, 95, 0.08);
+    --accent-line:     #9BA9A5;
 
-    --destructive: 57.7% 0.215 27;
-    --destructive-foreground: 97% 0.005 265;
+    --bubble-user-bg:  #4C4158;
+    --bubble-user-fg:  #FCF8F2;
 
-    --border: 91.4% 0.008 265;
-    --input: 91.4% 0.008 265;
-    --ring: 42% 0.07 195;
+    --ring:            #4A6B5F;
 
-    --radius: 0.5rem;
+    /* ---------- Semantic (light) ---------- */
+    --success-bg: #DDE5E0; --success-fg: #2A4438;
+    --warning-bg: #F4E8D2; --warning-fg: #6B5219;
+    --error-bg:   #EFD8D5; --error-fg:   #6E2F2A;
+    --info-bg:    #DDE0EA; --info-fg:    #2E3A55;
 
-    --sidebar-background: 98% 0.003 265;
-    --sidebar-foreground: 14.1% 0.03 264;
-    --sidebar-border: 91.4% 0.008 265;
+    /* ---------- Case-type pills (light) ---------- */
+    --case-realestate-bg: #DDE0EA; --case-realestate-fg: #2E3A55;
+    --case-commercial-bg: #E8E0EA; --case-commercial-fg: #3D2D45;
+    --case-labor-bg:      #F4E8D2; --case-labor-fg:      #6B5219;
+    --case-criminal-bg:   #EFD8D5; --case-criminal-fg:   #6E2F2A;
+    --case-personal-bg:   #EFD8E5; --case-personal-fg:   #6E2A4E;
+    --case-admin-bg:      #D5E0E5; --case-admin-fg:      #264652;
+    --case-execution-bg:  #DDE5E0; --case-execution-fg:  #2A4438;
 
-    /* Status pill channels (bg / fg) — used for priority + destructive-tier signals */
-    --status-success-bg: 93% 0.06 145;
-    --status-success-fg: 45% 0.14 145;
-    --status-warning-bg: 95% 0.08 90;
-    --status-warning-fg: 48% 0.14 70;
-    --status-info-bg: 94% 0.04 250;
-    --status-info-fg: 45% 0.14 250;
-    --status-danger-bg: 94% 0.05 25;
-    --status-danger-fg: 48% 0.18 25;
+    /* ---------- Shape ---------- */
+    --radius-sm:   4px;
+    --radius-md:   6px;
+    --radius:      8px;
+    --radius-xl:   12px;
+    --radius-2xl:  16px;
+    --radius-full: 9999px;
+
+    /* ---------- Elevation ---------- */
+    --shadow-xs: 0 1px 1px rgba(24, 20, 26, 0.04);
+    --shadow-sm: 0 1px 2px rgba(24, 20, 26, 0.06);
+    --shadow-md: 0 4px 8px rgba(24, 20, 26, 0.06), 0 1px 2px rgba(24, 20, 26, 0.04);
+    --shadow-lg: 0 12px 24px rgba(24, 20, 26, 0.08), 0 2px 6px rgba(24, 20, 26, 0.04);
+    --ring-focus: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--ring);
+
+    /* ---------- Spacing (Tailwind 4px base) ---------- */
+    --space-1: 4px;   --space-2: 8px;   --space-3: 12px;
+    --space-4: 16px;  --space-5: 20px;  --space-6: 24px;
+    --space-8: 32px;  --space-10: 40px; --space-12: 48px;
+
+    /* ---------- Type ---------- */
+    --font-sans: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system,
+                 'Segoe UI', Tahoma, sans-serif;
+    --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
+
+    --text-display: 56px;
+    --text-h1:      32px;
+    --text-h2:      22px;
+    --text-h3:      18px;
+    --text-body-lg: 16px;
+    --text-body:    14px;
+    --text-label:   13px;
+    --text-caption: 12px;
+    --text-meta:    11px;
+    --text-code:    13px;
+
+    /* ---------- Motion ---------- */
+    --duration-fast: 150ms;
+    --duration-base: 200ms;
+    --duration-slow: 300ms;
+    --ease-standard:    cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-emphasized:  cubic-bezier(0.2, 0, 0, 1);
   }
 
-  .dark {
-    /* "Ivory on Obsidian" — pure-neutral charcoal, paper-white text.
-       Elevation: sidebar 11% → canvas 16% → card 20% → popover 23%. */
-    --background: 16% 0 0;
-    --foreground: 98.5% 0 0;
+  /* ============================================================
+   * D1 — Aubergine + Sage Voice (dark primary)
+   * ============================================================ */
+  .dark,
+  [data-theme="dark"] {
+    --canvas:          #18141A;
+    --surface-1:       #1F1B22;
+    --surface-2:       #373541;
+    --surface-3:       #4C4158;
+    --surface-sidebar: #242E29;
 
-    --card: 20% 0 0;
-    --card-foreground: 98.5% 0 0;
+    --border:          #2D2935;
+    --border-strong:   #4C4158;
 
-    --popover: 23% 0 0;
-    --popover-foreground: 98.5% 0 0;
+    --text-primary:    #E8E4EC;
+    --text-secondary:  #B8B0C2;
+    --text-muted:      #6A6581;
+    --text-subtle:     #5A5567;
 
-    /* Teal brightens on dark */
-    --primary: 74% 0.13 195;
-    --primary-foreground: 14% 0.03 210;
+    --primary:         #9BA9A5;
+    --primary-fg:      #18141A;
+    --primary-hover:   #B0BDB9;
 
-    --secondary: 30% 0.04 195;
-    --secondary-foreground: 98.5% 0 0;
+    --brand-soft-bg:   rgba(155, 169, 165, 0.14);
+    --brand-soft-fg:   #B8C7C2;
 
-    --muted: 22% 0 0;
-    --muted-foreground: 71.5% 0 0;
+    --accent:          #9BA9A5;
+    --accent-soft:     rgba(155, 169, 165, 0.12);
+    --accent-line:     #9BA9A5;
 
-    --accent: 26% 0 0;
-    --accent-foreground: 98.5% 0 0;
+    --bubble-user-bg:  #9BA9A5;
+    --bubble-user-fg:  #18141A;
 
-    --destructive: 65% 0.21 27;
-    --destructive-foreground: 98% 0 0;
+    --ring:            #9BA9A5;
 
-    --border: 26% 0 0;
-    --input: 26% 0 0;
-    --ring: 74% 0.13 195;
+    --success-bg: #2A4438; --success-fg: #C5D9CD;
+    --warning-bg: #3F341B; --warning-fg: #E8D6A8;
+    --error-bg:   #3E1F1B; --error-fg:   #E8B5AC;
+    --info-bg:    #1F2A40; --info-fg:    #B5C2DC;
 
-    --sidebar-background: 11% 0 0;
-    --sidebar-foreground: 98.5% 0 0;
-    --sidebar-border: 22% 0 0;
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.65);
+    --ring-focus: 0 0 0 2px #18141A, 0 0 0 4px #9BA9A5;
+  }
 
-    /* Status pills — darker bg, brighter fg; info shifts to cyan to stay distinct from brand teal */
-    --status-success-bg: 24% 0.045 150;
-    --status-success-fg: 82% 0.16 150;
-    --status-warning-bg: 26% 0.055 75;
-    --status-warning-fg: 85% 0.15 80;
-    --status-info-bg: 24% 0.05 220;
-    --status-info-fg: 82% 0.14 220;
-    --status-danger-bg: 25% 0.06 25;
-    --status-danger-fg: 80% 0.17 25;
+  /* ============================================================
+   * D4 — Twilight Garden (dark alt — botanical)
+   * ============================================================ */
+  [data-theme="dark-twilight"] {
+    --canvas:          #1B2420;
+    --surface-1:       #18141A;
+    --surface-2:       #242E29;
+    --surface-3:       #373541;
+    --surface-sidebar: #18141A;
+
+    --border:          #2D3934;
+    --border-strong:   #3F4F48;
+
+    --text-primary:    #C5D0CB;
+    --text-secondary:  #9BA9A5;
+    --text-muted:      #6A6581;
+    --text-subtle:     #4F5A55;
+
+    --primary:         #6A6581;
+    --primary-fg:      #EDEAF2;
+    --primary-hover:   #7B7592;
+
+    --brand-soft-bg:   rgba(106, 101, 129, 0.22);
+    --brand-soft-fg:   #B8B0C2;
+
+    --accent:          #9BA9A5;
+    --accent-soft:     rgba(155, 169, 165, 0.10);
+    --accent-line:     #9BA9A5;
+
+    --bubble-user-bg:  #6A6581;
+    --bubble-user-fg:  #EDEAF2;
+
+    --ring:            #9BA9A5;
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.50);
+    --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.70);
+    --ring-focus: 0 0 0 2px #1B2420, 0 0 0 4px #9BA9A5;
   }
 
   /* RTL-aware global styles */
   html[dir="rtl"] {
     text-align: right;
-  }
-
-  /* Force logical properties globally */
-  * {
-    /* Ensure margin/padding utilities use logical props */
   }
 }
 
@@ -149,7 +224,8 @@
     background: transparent;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: oklch(var(--muted-foreground) / 0.3);
+    background-color: var(--text-muted);
+    opacity: 0.3;
     border-radius: 2px;
   }
 }
@@ -161,7 +237,6 @@
  */
 
 @layer components {
-  /* Markdown content container — prevent overly large spacing in chat context */
   .markdown-content > :first-child {
     margin-top: 0;
   }
@@ -169,19 +244,16 @@
     margin-bottom: 0;
   }
 
-  /* Ensure markdown content doesn't escape bubble width */
   .markdown-content {
     overflow-wrap: break-word;
     word-break: break-word;
   }
 
-  /* Override highlight.js background to be transparent inside our code blocks */
   .markdown-content pre code.hljs {
     background: transparent !important;
     padding: 0 !important;
   }
 
-  /* Streaming cursor: position at the end of the last rendered element */
   .streaming-text .markdown-content > :last-child {
     display: inline;
   }
@@ -189,14 +261,12 @@
     display: inline;
   }
 
-  /* Task list checkboxes (GFM) */
   .markdown-content input[type="checkbox"] {
     margin-inline-end: 0.5rem;
     margin-inline-start: 0;
     pointer-events: none;
   }
 
-  /* Ensure lists show their markers in RTL context */
   .markdown-content ul,
   .markdown-content ol {
     list-style-position: inside;

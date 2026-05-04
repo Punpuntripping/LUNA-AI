@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Luna Color System — Final Spec (D1 · D4 · L1)</title>
+<link rel="stylesheet" href="../directions/_shared.css"/>
+<style>
+  :root {
+    /* spec page uses L1 herbarium light as canvas */
+    --canvas: #F7F2EC;
+    --surface-1: #FCF8F2;
+    --surface-2: #EFE9E1;
+    --surface-3: #E5DED2;
+    --border: #E0D6CA;
+    --border-strong: #C9BDAB;
+    --text-primary: #18141A;
+    --text-secondary: #373541;
+    --text-muted: #6A6581;
+    --primary: #4A6B5F;
+    --primary-fg: #FCF8F2;
+    --accent: #4A6B5F;
+    --accent-fg: #FCF8F2;
+    --accent-soft: rgba(74,107,95,0.08);
+  }
+
+  /* preview pane: per-mode swatch */
+  .modes {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .mode-card {
+    border-radius: 14px;
+    padding: 24px;
+    color: var(--mc-fg);
+    background: var(--mc-bg);
+    border: 1px solid rgba(0,0,0,0.06);
+    min-height: 200px;
+    position: relative;
+    overflow: hidden;
+  }
+  .mode-card .badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    background: var(--mc-accent);
+    color: var(--mc-bg);
+    margin-bottom: 12px;
+    direction: ltr;
+  }
+  .mode-card h3 { font-size: 22px; margin: 0 0 6px; font-weight: 600; letter-spacing: -0.01em; color: var(--mc-fg); }
+  .mode-card p { font-size: 13px; color: var(--mc-muted); margin: 0 0 16px; line-height: 1.6; }
+  .mode-card .swatches { display: flex; gap: 4px; }
+  .mode-card .swatches span { width: 22px; height: 22px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.08); }
+  .mode-card .demo {
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: var(--mc-cta);
+    color: var(--mc-cta-fg);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-block;
+  }
+
+  /* token tables */
+  .tokens-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+    direction: ltr;
+    text-align: left;
+  }
+  .tokens-table th, .tokens-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .tokens-table th {
+    background: var(--surface-2);
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .tokens-table tr:last-child td { border-bottom: none; }
+  .tokens-table .var { color: var(--accent); font-weight: 500; }
+  .tokens-table .hex { font-weight: 500; color: var(--text-primary); }
+  .tokens-table .swatch-inline {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid rgba(0,0,0,0.1);
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  .tokens-table .role {
+    font-family: 'IBM Plex Sans Arabic', system-ui, sans-serif;
+    font-size: 13px;
+    color: var(--text-secondary);
+    direction: rtl;
+    text-align: right;
+  }
+
+  /* sub-section */
+  h3.sub {
+    font-size: 16px;
+    margin: 32px 0 14px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    padding-bottom: 8px;
+    border-bottom: 1px dashed var(--border);
+  }
+
+  /* code block */
+  pre.code {
+    background: #18141A;
+    color: #E8E4EC;
+    padding: 18px 20px;
+    border-radius: 12px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.65;
+    overflow-x: auto;
+    direction: ltr;
+    text-align: left;
+    margin: 16px 0 0;
+  }
+  pre.code .c { color: #6A6581; }
+  pre.code .k { color: #9BA9A5; }
+  pre.code .v { color: #C9D2CF; }
+  pre.code .h { color: #B8C7C2; }
+
+  /* type ladder */
+  .type-row {
+    display: grid;
+    grid-template-columns: 140px 100px 1fr;
+    gap: 16px 24px;
+    align-items: baseline;
+    padding: 14px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .type-row:last-child { border: none; }
+  .type-row .name { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); direction: ltr; text-align: right; letter-spacing: 0.05em; }
+  .type-row .specs { font-family: ui-monospace, monospace; font-size: 11px; color: var(--accent); direction: ltr; text-align: right; }
+  .type-row .sample { color: var(--text-primary); }
+
+  /* spacing scale */
+  .scale-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+  }
+  .scale-cell {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    text-align: center;
+  }
+  .scale-cell .v { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted); direction: ltr; }
+  .scale-cell .px { font-family: ui-monospace, monospace; font-size: 14px; color: var(--text-primary); font-weight: 500; margin-top: 4px; direction: ltr; }
+  .scale-cell .demo {
+    margin-top: 10px;
+    background: var(--accent);
+    height: 6px;
+    border-radius: 2px;
+    margin-inline: auto;
+  }
+  .radius-cell .demo { background: var(--surface-3); height: 56px; border: 1px solid var(--border-strong); }
+
+  /* component preview */
+  .pv-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .pv-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .pv-card h4 {
+    margin: 0 0 14px;
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.15em;
+    color: var(--text-muted);
+    direction: ltr;
+    text-align: right;
+    text-transform: uppercase;
+  }
+
+  /* semantic palette table */
+  .semantic-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .sem-card {
+    border-radius: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+  .sem-card .label {
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    color: var(--text-muted);
+    letter-spacing: 0.1em;
+    direction: ltr;
+    text-align: right;
+    text-transform: uppercase;
+  }
+  .sem-card .pair {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .sem-card .pair span {
+    flex: 1;
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    direction: ltr;
+  }
+
+  /* mode preview blocks */
+  .mode-preview {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 24px;
+    align-items: stretch;
+    padding: 24px;
+    border-radius: 16px;
+    margin-bottom: 16px;
+  }
+  .mp-summary h3 {
+    font-size: 24px;
+    margin: 0 0 8px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .mp-summary p {
+    font-size: 14px;
+    line-height: 1.7;
+    margin: 0 0 16px;
+  }
+  .mp-mock {
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 240px;
+    border: 1px solid;
+    padding: 20px 24px;
+  }
+
+  /* pairing matrix */
+  .matrix {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .matrix th, .matrix td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    border-inline-end: 1px solid var(--border);
+    text-align: right;
+    font-size: 13px;
+  }
+  .matrix tr:last-child td { border-bottom: none; }
+  .matrix th:last-child, .matrix td:last-child { border-inline-end: none; }
+  .matrix th {
+    background: var(--surface-2);
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    color: var(--text-muted);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    direction: ltr;
+    text-align: right;
+  }
+  .matrix .star { color: var(--accent); font-weight: 600; }
+
+  /* table of contents */
+  .toc {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 56px;
+  }
+  .toc ol {
+    margin: 12px 0 0;
+    padding-inline-start: 0;
+    list-style: none;
+    counter-reset: toc;
+    columns: 2;
+    column-gap: 32px;
+  }
+  .toc li {
+    counter-increment: toc;
+    padding: 6px 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+    break-inside: avoid;
+  }
+  .toc li::before {
+    content: counter(toc, decimal-leading-zero);
+    font-family: ui-monospace, monospace;
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-inline-end: 10px;
+    letter-spacing: 0.1em;
+  }
+  .toc a { color: var(--text-primary); text-decoration: none; }
+  .toc a:hover { color: var(--accent); }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    direction: ltr;
+    margin-inline-start: 8px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="page-header">
+    <div>
+      <span class="dir-badge" style="background:#18141A;color:#9BA9A5">★</span>
+      <div class="kicker">LUNA · COMMITTED COLOR SYSTEM · 2026</div>
+      <h1>المواصفة النهائية للنظام اللوني</h1>
+    </div>
+    <div>
+      <p class="lede">ثلاثة أوضاع مُختارة للتثبيت في قاعدة الكود: وضع داكن أساسي (D1)، وضع داكن بديل (D4)، ووضع فاتح (L1). جميعها تتقاسم نفس المراسي الستّة ونفس مفردات الرّموز الدلالية.</p>
+      <span class="vibe">جاهزة للالتزام · CSS variables · Tailwind tokens</span>
+    </div>
+  </header>
+
+  <!-- TOC -->
+  <div class="toc">
+    <div class="kicker" style="margin-bottom:4px;">CONTENTS</div>
+    <ol>
+      <li><a href="#anchors">الألوان المرسيّة الستّة</a></li>
+      <li><a href="#modes">الأوضاع الثلاثة في لمحة</a></li>
+      <li><a href="#d1">الوضع الداكن D1 — Aubergine + Sage Voice</a></li>
+      <li><a href="#d4">الوضع الداكن D4 — Twilight Garden</a></li>
+      <li><a href="#l1">الوضع الفاتح L1 — Herbarium Paper</a></li>
+      <li><a href="#semantic">الرّموز الدلالية المشتركة</a></li>
+      <li><a href="#type">الطباعة</a></li>
+      <li><a href="#scales">الأبعاد · الزّوايا · الظلال</a></li>
+      <li><a href="#components">وصفات المكوّنات</a></li>
+      <li><a href="#pairings">جدول الإقتران (فاتح ↔ داكن)</a></li>
+      <li><a href="#commit">قصاصة CSS للالتزام</a></li>
+    </ol>
+  </div>
+
+  <!-- 1. ANCHORS -->
+  <section class="section" id="anchors">
+    <div class="section-head"><span class="num">01</span><h2>الألوان المرسيّة الستّة</h2><span class="meta">نفسها في الأوضاع الثلاثة</span></div>
+    <table class="tokens-table">
+      <thead><tr><th style="width:64px"></th><th>Name</th><th>Hex</th><th>OKLCH</th><th>Role family</th><th class="role" style="text-align:right">الدور</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="hex">Aubergine Black</td><td class="var">#18141A</td><td>oklch(15.5% 0.012 310)</td><td>Neutral · darkest</td><td class="role">قماش / حبر</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#373541"></span></td><td class="hex">Plum Shadow</td><td class="var">#373541</td><td>oklch(28% 0.018 290)</td><td>Neutral · mid-dark</td><td class="role">سطح مرتفع · هيكل</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#4C4158"></span></td><td class="hex">Royal Aubergine</td><td class="var">#4C4158</td><td>oklch(36% 0.035 310)</td><td>Neutral · accent dark</td><td class="role">سطح أعلى · شارات</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#6A6581"></span></td><td class="hex">Dusty Mauve</td><td class="var">#6A6581</td><td>oklch(48% 0.04 295)</td><td>Neutral · text muted</td><td class="role">نصّ خافت</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="hex">Sage Mist</td><td class="var">#9BA9A5</td><td>oklch(70% 0.018 165)</td><td>Brand · primary</td><td class="role">نداء · بريق العلامة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#242E29"></span></td><td class="hex">Forest Shadow</td><td class="var">#242E29</td><td>oklch(22% 0.018 165)</td><td>Brand · deep</td><td class="role">سطح ثانوي · بيانات</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 2. MODES OVERVIEW -->
+  <section class="section" id="modes">
+    <div class="section-head"><span class="num">02</span><h2>الأوضاع الثلاثة في لمحة</h2></div>
+    <div class="modes">
+      <div class="mode-card" style="--mc-bg:#18141A;--mc-fg:#E8E4EC;--mc-muted:#9A93A8;--mc-cta:#9BA9A5;--mc-cta-fg:#18141A;--mc-accent:#9BA9A5;">
+        <span class="badge">DARK · D1 · ★</span>
+        <h3>Aubergine + Sage Voice</h3>
+        <p>قراءةٌ على ضوء شمعة. الباذنجاني هو العالم؛ الميرامية هي ما يتحدّث.</p>
+        <div class="swatches">
+          <span style="background:#18141A"></span>
+          <span style="background:#373541"></span>
+          <span style="background:#4C4158"></span>
+          <span style="background:#9BA9A5"></span>
+          <span style="background:#242E29"></span>
+          <span style="background:#6A6581"></span>
+        </div>
+        <span class="demo">إرسال →</span>
+      </div>
+      <div class="mode-card" style="--mc-bg:#1B2420;--mc-fg:#C5D0CB;--mc-muted:#7C8E89;--mc-cta:#6A6581;--mc-cta-fg:#EDEAF2;--mc-accent:#9BA9A5;">
+        <span class="badge">DARK · D4</span>
+        <h3>Twilight Garden</h3>
+        <p>غابةٌ عند الغسق، من الداخل. الكانفس أخضر داكن. الباذنجاني يطفو كبطاقة.</p>
+        <div class="swatches">
+          <span style="background:#1B2420"></span>
+          <span style="background:#18141A"></span>
+          <span style="background:#373541"></span>
+          <span style="background:#9BA9A5"></span>
+          <span style="background:#6A6581"></span>
+          <span style="background:#242E29"></span>
+        </div>
+        <span class="demo">إرسال →</span>
+      </div>
+      <div class="mode-card" style="--mc-bg:#F7F2EC;--mc-fg:#18141A;--mc-muted:#6A6581;--mc-cta:#4A6B5F;--mc-cta-fg:#FCF8F2;--mc-accent:#4A6B5F;">
+        <span class="badge">LIGHT · L1 · ★</span>
+        <h3>Herbarium Paper</h3>
+        <p>كتابٌ قديم. صفحات كريمية، حبر باذنجاني، فاصلة من خيط ميرامية.</p>
+        <div class="swatches">
+          <span style="background:#F7F2EC"></span>
+          <span style="background:#FCF8F2"></span>
+          <span style="background:#EFE9E1"></span>
+          <span style="background:#18141A"></span>
+          <span style="background:#4A6B5F"></span>
+          <span style="background:#9BA9A5"></span>
+        </div>
+        <span class="demo">إرسال →</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. D1 FULL TOKENS -->
+  <section class="section" id="d1">
+    <div class="section-head">
+      <span class="num">03</span>
+      <h2>الوضع الداكن D1 — Aubergine + Sage Voice <span class="tag">PRIMARY DARK</span></h2>
+    </div>
+    <p style="font-size:14px;color:var(--text-secondary);max-width:720px;margin-bottom:24px;line-height:1.7;">
+      البنية: قماشٌ باذنجاني داكن، أسطحٌ تتدرّج عبر الخوخ والباذنجاني الملكي، ونداء الفعل ميرامية على نص باذنجاني (تباين ≈ ٥:١). نص أوّليٌّ بلون البنفسجي الفاتح، نص خافتٌ بالمَوف الغُباري. تستخدم ظلّ الغابة كسطحٍ ثانوي للشّريط الجانبي وكتل الكود.
+    </p>
+    <table class="tokens-table">
+      <thead><tr><th style="width:64px"></th><th>Token</th><th>Value</th><th>Source anchor</th><th class="role" style="text-align:right">الدور</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="var">--canvas</td><td class="hex">#18141A</td><td>Aubergine Black</td><td class="role">القماش الأوّلي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#1F1B22"></span></td><td class="var">--surface-1</td><td class="hex">#1F1B22</td><td>+ 4% L</td><td class="role">سطح البطاقة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#373541"></span></td><td class="var">--surface-2</td><td class="hex">#373541</td><td>Plum Shadow</td><td class="role">سطح مرتفع · حقل إدخال</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#4C4158"></span></td><td class="var">--surface-3</td><td class="hex">#4C4158</td><td>Royal Aubergine</td><td class="role">سطح القائمة المنبثقة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#242E29"></span></td><td class="var">--surface-sidebar</td><td class="hex">#242E29</td><td>Forest Shadow</td><td class="role">الشّريط الجانبي · كود</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#2D2935"></span></td><td class="var">--border</td><td class="hex">#2D2935</td><td>Aubergine + 8% L</td><td class="role">حدود ناعمة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#4C4158"></span></td><td class="var">--border-strong</td><td class="hex">#4C4158</td><td>Royal Aubergine</td><td class="role">حدود نشِطة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#E8E4EC"></span></td><td class="var">--text-primary</td><td class="hex">#E8E4EC</td><td>Aubergine 50</td><td class="role">النصّ الأساسي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#B8B0C2"></span></td><td class="var">--text-secondary</td><td class="hex">#B8B0C2</td><td>Aubergine 200</td><td class="role">نصّ ثانوي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#6A6581"></span></td><td class="var">--text-muted</td><td class="hex">#6A6581</td><td>Dusty Mauve</td><td class="role">نصّ خافت · تواريخ</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--primary</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">النّداء الأساسي · العلامة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="var">--primary-fg</td><td class="hex">#18141A</td><td>Aubergine Black</td><td class="role">نصّ على النّداء</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#B0BDB9"></span></td><td class="var">--primary-hover</td><td class="hex">#B0BDB9</td><td>Sage + 5% L</td><td class="role">حالة التحويم</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--ring</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">حلقة التركيز</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 4. D4 FULL TOKENS -->
+  <section class="section" id="d4">
+    <div class="section-head">
+      <span class="num">04</span>
+      <h2>الوضع الداكن D4 — Twilight Garden <span class="tag">ALT DARK · BOTANICAL</span></h2>
+    </div>
+    <p style="font-size:14px;color:var(--text-secondary);max-width:720px;margin-bottom:24px;line-height:1.7;">
+      البنية: قماشٌ أخضر داكن (مزيجٌ من ظلّ الغابة وسوادٍ خفيف)، الباذنجاني الأسود يصبح بطاقة، الخوخ سطحاً مرتفعاً. النداء الأساسي مَوف غُباري ناعم — لا يصرخ. الميرامية تظهر فقط كاقتباس وتأكيد. نصٌّ بلون الميرامية الفاتح يُذكّر بضوء القمر على الورق.
+    </p>
+    <table class="tokens-table">
+      <thead><tr><th style="width:64px"></th><th>Token</th><th>Value</th><th>Source anchor</th><th class="role" style="text-align:right">الدور</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch-inline" style="background:#1B2420"></span></td><td class="var">--canvas</td><td class="hex">#1B2420</td><td>Forest + Aubergine mix</td><td class="role">القماش الأخضر الداكن</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="var">--surface-1</td><td class="hex">#18141A</td><td>Aubergine Black</td><td class="role">سطح البطاقة الرئيسية</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#242E29"></span></td><td class="var">--surface-2</td><td class="hex">#242E29</td><td>Forest Shadow</td><td class="role">حقل إدخال · سطح ثانوي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#373541"></span></td><td class="var">--surface-3</td><td class="hex">#373541</td><td>Plum Shadow</td><td class="role">سطح مرتفع · قائمة منبثقة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="var">--surface-sidebar</td><td class="hex">#18141A</td><td>Aubergine Black</td><td class="role">الشّريط الجانبي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#2D3934"></span></td><td class="var">--border</td><td class="hex">#2D3934</td><td>Forest + 6% L</td><td class="role">حدود ناعمة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#3F4F48"></span></td><td class="var">--border-strong</td><td class="hex">#3F4F48</td><td>Forest + 14% L</td><td class="role">حدود نشِطة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#C5D0CB"></span></td><td class="var">--text-primary</td><td class="hex">#C5D0CB</td><td>Sage 200</td><td class="role">النصّ الأساسي · ضوء القمر</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--text-secondary</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">نصّ ثانوي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#6A6581"></span></td><td class="var">--text-muted</td><td class="hex">#6A6581</td><td>Dusty Mauve</td><td class="role">نصّ خافت</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#6A6581"></span></td><td class="var">--primary</td><td class="hex">#6A6581</td><td>Dusty Mauve</td><td class="role">النّداء الأساسي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#EDEAF2"></span></td><td class="var">--primary-fg</td><td class="hex">#EDEAF2</td><td>Aubergine 25</td><td class="role">نصّ على النّداء</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#7B7592"></span></td><td class="var">--primary-hover</td><td class="hex">#7B7592</td><td>Mauve + 6% L</td><td class="role">حالة التحويم</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--accent</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">اقتباسات · تأكيد</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--ring</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">حلقة التركيز</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 5. L1 FULL TOKENS -->
+  <section class="section" id="l1">
+    <div class="section-head">
+      <span class="num">05</span>
+      <h2>الوضع الفاتح L1 — Herbarium Paper <span class="tag">PRIMARY LIGHT</span></h2>
+    </div>
+    <p style="font-size:14px;color:var(--text-secondary);max-width:720px;margin-bottom:24px;line-height:1.7;">
+      البنية: قماشٌ كريمي دافئ، أسطح عاجيّة وكريمية مغبَرّة، حبر بلون الباذنجاني الأسود (نفس نصّ كتاب)، نداء الفعل ميرامية عميقة (مشتقّة من الميرامية الأساسية بخفض الإضاءة لـ ٤٢٪) على عاج. فقاعة المستخدم باذنجاني ملكي — يقطع الكريمي بدفءٍ بنفسجي.
+    </p>
+    <table class="tokens-table">
+      <thead><tr><th style="width:64px"></th><th>Token</th><th>Value</th><th>Source anchor</th><th class="role" style="text-align:right">الدور</th></tr></thead>
+      <tbody>
+        <tr><td><span class="swatch-inline" style="background:#F7F2EC"></span></td><td class="var">--canvas</td><td class="hex">#F7F2EC</td><td>Warm Cream (derived)</td><td class="role">القماش — ورقٌ مُعمَّر</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#FCF8F2"></span></td><td class="var">--surface-1</td><td class="hex">#FCF8F2</td><td>Ivory</td><td class="role">سطح البطاقة · فقاعة AI</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#EFE9E1"></span></td><td class="var">--surface-2</td><td class="hex">#EFE9E1</td><td>Dusty Cream</td><td class="role">سطح غائر · حقل إدخال</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#E5DED2"></span></td><td class="var">--surface-3</td><td class="hex">#E5DED2</td><td>Dusty Cream −5% L</td><td class="role">سطح أعمق · شارات</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#EFE9E1"></span></td><td class="var">--surface-sidebar</td><td class="hex">#EFE9E1</td><td>Dusty Cream</td><td class="role">الشّريط الجانبي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#E0D6CA"></span></td><td class="var">--border</td><td class="hex">#E0D6CA</td><td>Faint Warm Mauve</td><td class="role">حدود ناعمة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#C9BDAB"></span></td><td class="var">--border-strong</td><td class="hex">#C9BDAB</td><td>Bone-Mauve</td><td class="role">حدود نشِطة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#18141A"></span></td><td class="var">--text-primary</td><td class="hex">#18141A</td><td>Aubergine Black</td><td class="role">الحبر الأساسي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#373541"></span></td><td class="var">--text-secondary</td><td class="hex">#373541</td><td>Plum Shadow</td><td class="role">نصّ ثانوي</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#6A6581"></span></td><td class="var">--text-muted</td><td class="hex">#6A6581</td><td>Dusty Mauve</td><td class="role">نصّ خافت</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9A93A0"></span></td><td class="var">--text-subtle</td><td class="hex">#9A93A0</td><td>Mauve + 16% L</td><td class="role">نصّ مرتفعٍ خفيف</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#4A6B5F"></span></td><td class="var">--primary</td><td class="hex">#4A6B5F</td><td>Sage Mist −28% L</td><td class="role">النّداء الأساسي · ميرامية عميقة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#FCF8F2"></span></td><td class="var">--primary-fg</td><td class="hex">#FCF8F2</td><td>Ivory</td><td class="role">نصّ على النّداء</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#3D5A4D"></span></td><td class="var">--primary-hover</td><td class="hex">#3D5A4D</td><td>Sage Mist −33% L</td><td class="role">حالة التحويم</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#DDE5E0"></span></td><td class="var">--brand-soft-bg</td><td class="hex">#DDE5E0</td><td>Sage Mist + 30% L</td><td class="role">شارة العلامة الناعمة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#2A4438"></span></td><td class="var">--brand-soft-fg</td><td class="hex">#2A4438</td><td>Forest Sage</td><td class="role">نصّ على الناعمة</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#9BA9A5"></span></td><td class="var">--accent-line</td><td class="hex">#9BA9A5</td><td>Sage Mist</td><td class="role">خط تأكيد · تسطير</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#4C4158"></span></td><td class="var">--bubble-user-bg</td><td class="hex">#4C4158</td><td>Royal Aubergine</td><td class="role">فقاعة المستخدم</td></tr>
+        <tr><td><span class="swatch-inline" style="background:#FCF8F2"></span></td><td class="var">--bubble-user-fg</td><td class="hex">#FCF8F2</td><td>Ivory</td><td class="role">نصّ الفقاعة</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 6. SEMANTIC -->
+  <section class="section" id="semantic">
+    <div class="section-head">
+      <span class="num">06</span>
+      <h2>الرّموز الدلالية</h2>
+      <span class="meta">success · warning · error · info — مشتركة بين الأوضاع</span>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);max-width:720px;margin-bottom:20px;">جميع الدلاليات تتبع نمط <span class="mono">bg / fg</span> (٪١٠٠ / ٧٠٠ في الفاتح، ٧٠٠ / ٢٠٠ في الداكن). الأخضر متوافقٌ مع الميرامية، الأحمر مكتومٌ نحو الباذنجاني، الأصفر دافئ، الأزرق فولاذيّ بارد.</p>
+
+    <h3 class="sub">الوضع الفاتح L1</h3>
+    <div class="semantic-grid">
+      <div class="sem-card">
+        <span class="label">SUCCESS</span>
+        <div class="pair">
+          <span style="background:#DDE5E0;color:#2A4438;">#DDE5E0</span>
+          <span style="background:#2A4438;color:#FCF8F2;">#2A4438</span>
+        </div>
+      </div>
+      <div class="sem-card">
+        <span class="label">WARNING</span>
+        <div class="pair">
+          <span style="background:#F4E8D2;color:#6B5219;">#F4E8D2</span>
+          <span style="background:#6B5219;color:#FCF8F2;">#6B5219</span>
+        </div>
+      </div>
+      <div class="sem-card">
+        <span class="label">ERROR</span>
+        <div class="pair">
+          <span style="background:#EFD8D5;color:#6E2F2A;">#EFD8D5</span>
+          <span style="background:#6E2F2A;color:#FCF8F2;">#6E2F2A</span>
+        </div>
+      </div>
+      <div class="sem-card">
+        <span class="label">INFO</span>
+        <div class="pair">
+          <span style="background:#DDE0EA;color:#2E3A55;">#DDE0EA</span>
+          <span style="background:#2E3A55;color:#FCF8F2;">#2E3A55</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="sub">الوضع الداكن D1 / D4</h3>
+    <div class="semantic-grid">
+      <div class="sem-card" style="background:#1F1B22;border-color:#2D2935;">
+        <span class="label" style="color:#9A93A8">SUCCESS</span>
+        <div class="pair">
+          <span style="background:#2A4438;color:#C5D9CD;">#2A4438</span>
+          <span style="background:#C5D9CD;color:#18141A;">#C5D9CD</span>
+        </div>
+      </div>
+      <div class="sem-card" style="background:#1F1B22;border-color:#2D2935;">
+        <span class="label" style="color:#9A93A8">WARNING</span>
+        <div class="pair">
+          <span style="background:#3F341B;color:#E8D6A8;">#3F341B</span>
+          <span style="background:#E8D6A8;color:#18141A;">#E8D6A8</span>
+        </div>
+      </div>
+      <div class="sem-card" style="background:#1F1B22;border-color:#2D2935;">
+        <span class="label" style="color:#9A93A8">ERROR</span>
+        <div class="pair">
+          <span style="background:#3E1F1B;color:#E8B5AC;">#3E1F1B</span>
+          <span style="background:#E8B5AC;color:#18141A;">#E8B5AC</span>
+        </div>
+      </div>
+      <div class="sem-card" style="background:#1F1B22;border-color:#2D2935;">
+        <span class="label" style="color:#9A93A8">INFO</span>
+        <div class="pair">
+          <span style="background:#1F2A40;color:#B5C2DC;">#1F2A40</span>
+          <span style="background:#B5C2DC;color:#18141A;">#B5C2DC</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="sub">شارات أنواع القضايا (Light L1)</h3>
+    <div class="semantic-grid" style="grid-template-columns:repeat(7,1fr);">
+      <div class="sem-card"><span class="label">REAL ESTATE</span><div class="pair"><span style="background:#DDE0EA;color:#2E3A55;font-size:9px">عقاري</span></div></div>
+      <div class="sem-card"><span class="label">COMMERCIAL</span><div class="pair"><span style="background:#E8E0EA;color:#3D2D45;font-size:9px">تجاري</span></div></div>
+      <div class="sem-card"><span class="label">LABOR</span><div class="pair"><span style="background:#F4E8D2;color:#6B5219;font-size:9px">عمالي</span></div></div>
+      <div class="sem-card"><span class="label">CRIMINAL</span><div class="pair"><span style="background:#EFD8D5;color:#6E2F2A;font-size:9px">جنائي</span></div></div>
+      <div class="sem-card"><span class="label">PERSONAL</span><div class="pair"><span style="background:#EFD8E5;color:#6E2A4E;font-size:9px">أحوال</span></div></div>
+      <div class="sem-card"><span class="label">ADMIN</span><div class="pair"><span style="background:#D5E0E5;color:#264652;font-size:9px">إداري</span></div></div>
+      <div class="sem-card"><span class="label">EXECUTION</span><div class="pair"><span style="background:#DDE5E0;color:#2A4438;font-size:9px">تنفيذ</span></div></div>
+    </div>
+  </section>
+
+  <!-- 7. TYPE -->
+  <section class="section" id="type">
+    <div class="section-head"><span class="num">07</span><h2>الطباعة</h2><span class="meta">IBM Plex Sans Arabic · واحدة لجميع الأوضاع</span></div>
+    <div class="pv-card">
+      <div class="type-row"><span class="name">DISPLAY</span><span class="specs">56 / 700 / -0.02em</span><span class="sample" style="font-size:48px;font-weight:700;letter-spacing:-0.02em;line-height:1.05">لونا القانونية</span></div>
+      <div class="type-row"><span class="name">H1</span><span class="specs">32 / 600 / -0.01em / 1.2</span><span class="sample" style="font-size:32px;font-weight:600;letter-spacing:-0.01em;">المحاكم التجارية</span></div>
+      <div class="type-row"><span class="name">H2</span><span class="specs">22 / 600 / -0.005em / 1.3</span><span class="sample" style="font-size:22px;font-weight:600;">المادة الثالثة: التزامات المؤجِّر</span></div>
+      <div class="type-row"><span class="name">H3</span><span class="specs">18 / 600 / 1.4</span><span class="sample" style="font-size:18px;font-weight:600;">قضية رقم C-2026-0481</span></div>
+      <div class="type-row"><span class="name">BODY-LG</span><span class="specs">16 / 400 / 1.7</span><span class="sample" style="font-size:16px;line-height:1.7;">يلتزم المؤجِّر بتسليم العين المؤجَّرة في حالةٍ صالحةٍ للانتفاع بها وفقاً للغرض المتفق عليه.</span></div>
+      <div class="type-row"><span class="name">BODY</span><span class="specs">14 / 400 / 1.65</span><span class="sample" style="font-size:14px;line-height:1.65;">صياغةٌ مقترحة للمادة بناءً على نظام التحكيم السعودي.</span></div>
+      <div class="type-row"><span class="name">LABEL</span><span class="specs">13 / 500 / 1.4</span><span class="sample" style="font-size:13px;font-weight:500;">عنوان الحقل</span></div>
+      <div class="type-row"><span class="name">CAPTION</span><span class="specs">12 / 400 / 1.5</span><span class="sample" style="font-size:12px;color:var(--text-muted)">قبل ٣ دقائق · المحاكم التجارية</span></div>
+      <div class="type-row"><span class="name">META</span><span class="specs">11 / 500 / 1.4</span><span class="sample" style="font-size:11px;font-weight:500;color:var(--text-muted)">٤ مستندات · ٢ ساعة</span></div>
+      <div class="type-row"><span class="name">CODE</span><span class="specs">13 / mono / 1.6</span><span class="sample" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;background:var(--surface-2);padding:4px 8px;border-radius:4px;">case_id="C-2026-0481"</span></div>
+    </div>
+    <h3 class="sub">قواعد الطباعة الأساسية</h3>
+    <ul style="font-size:13px;line-height:1.9;color:var(--text-secondary);max-width:760px;">
+      <li><b>عربي + لاتيني في عائلةٍ واحدة:</b> IBM Plex Sans Arabic تشمل كلا الأبجديتين بمَترِيكا متوافقة.</li>
+      <li><b>الإرتفاع السطري الموصى به للعربية:</b> ١.٧ في BODY-LG و ١.٦٥ في BODY (أعلى ممّا تحتاجه اللاتينية).</li>
+      <li><b>تباعد الأحرف:</b> سالب في العناوين الكبيرة (-0.02em → -0.01em)، صفر في الجسم.</li>
+      <li><b>المحتوى اللاتيني داخل الجمل العربية:</b> غلِّفه في <span class="mono">&lt;span dir="ltr"&gt;</span>.</li>
+      <li><b>أوزان مُستخدَمة:</b> 400 (جسم) · 500 (تسميات / تنقّل) · 600 (عناوين) · 700 (شعار + H1 الكبير).</li>
+    </ul>
+  </section>
+
+  <!-- 8. SCALES -->
+  <section class="section" id="scales">
+    <div class="section-head"><span class="num">08</span><h2>الأبعاد · الزّوايا · الظلال</h2></div>
+
+    <h3 class="sub">سُلّم المسافات (Tailwind 4px base)</h3>
+    <div class="scale-grid">
+      <div class="scale-cell"><div class="v">space-1</div><div class="px">4px</div><div class="demo" style="width:4px;"></div></div>
+      <div class="scale-cell"><div class="v">space-2</div><div class="px">8px</div><div class="demo" style="width:8px;"></div></div>
+      <div class="scale-cell"><div class="v">space-3</div><div class="px">12px</div><div class="demo" style="width:12px;"></div></div>
+      <div class="scale-cell"><div class="v">space-4</div><div class="px">16px</div><div class="demo" style="width:16px;"></div></div>
+      <div class="scale-cell"><div class="v">space-6</div><div class="px">24px</div><div class="demo" style="width:24px;"></div></div>
+      <div class="scale-cell"><div class="v">space-8</div><div class="px">32px</div><div class="demo" style="width:32px;"></div></div>
+    </div>
+
+    <h3 class="sub">الزّوايا</h3>
+    <div class="scale-grid">
+      <div class="scale-cell radius-cell"><div class="v">radius-sm</div><div class="px">4px</div><div class="demo" style="border-radius:4px;"></div></div>
+      <div class="scale-cell radius-cell"><div class="v">radius-md</div><div class="px">6px</div><div class="demo" style="border-radius:6px;"></div></div>
+      <div class="scale-cell radius-cell"><div class="v">radius (base)</div><div class="px">8px</div><div class="demo" style="border-radius:8px;"></div></div>
+      <div class="scale-cell radius-cell"><div class="v">radius-xl</div><div class="px">12px</div><div class="demo" style="border-radius:12px;"></div></div>
+      <div class="scale-cell radius-cell"><div class="v">radius-2xl</div><div class="px">16px</div><div class="demo" style="border-radius:16px;"></div></div>
+      <div class="scale-cell radius-cell"><div class="v">radius-full</div><div class="px">9999</div><div class="demo" style="border-radius:9999px;"></div></div>
+    </div>
+    <p style="font-size:12px;color:var(--text-muted);margin-top:12px;direction:rtl;">
+      الإستعمالات: ٨px أزرار وبطاقات · ١٢px حقل المحادثة · ١٦px فقاعات الرّسائل · مُتخمر للشارات والأفاتار.
+    </p>
+
+    <h3 class="sub">الظلال</h3>
+    <table class="tokens-table">
+      <thead><tr><th>Token</th><th>Light L1</th><th>Dark D1 / D4</th><th class="role" style="text-align:right">الإستخدام</th></tr></thead>
+      <tbody>
+        <tr><td class="var">--shadow-xs</td><td>0 1px 1px rgba(24,20,26,0.04)</td><td>0 1px 2px rgba(0,0,0,0.4)</td><td class="role">حدود رفيعة على البطاقات</td></tr>
+        <tr><td class="var">--shadow-sm</td><td>0 1px 2px rgba(24,20,26,0.06)</td><td>0 2px 6px rgba(0,0,0,0.45)</td><td class="role">رفع البطاقة عند التحويم</td></tr>
+        <tr><td class="var">--shadow-md</td><td>0 4px 8px rgba(24,20,26,0.06), 0 1px 2px rgba(24,20,26,0.04)</td><td>0 4px 12px rgba(0,0,0,0.55)</td><td class="role">قائمة منبثقة</td></tr>
+        <tr><td class="var">--shadow-lg</td><td>0 12px 24px rgba(24,20,26,0.08), 0 2px 6px rgba(24,20,26,0.04)</td><td>0 12px 32px rgba(0,0,0,0.65)</td><td class="role">حوار مودال</td></tr>
+        <tr><td class="var">--ring-focus</td><td>0 0 0 2px #FCF8F2, 0 0 0 4px #4A6B5F</td><td>0 0 0 2px #18141A, 0 0 0 4px #9BA9A5</td><td class="role">حلقة التركيز</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- 9. COMPONENT RECIPES -->
+  <section class="section" id="components">
+    <div class="section-head"><span class="num">09</span><h2>وصفات المكوّنات</h2></div>
+
+    <div class="pv-grid">
+      <div class="pv-card">
+        <h4>BUTTON · PRIMARY</h4>
+        <pre class="code"><span class="c">/* light & dark — same recipe, different vars */</span>
+<span class="k">.btn-primary</span> {
+  <span class="k">height</span>: <span class="v">40px</span>;
+  <span class="k">padding</span>: <span class="v">0 18px</span>;
+  <span class="k">border-radius</span>: <span class="v">8px</span>;
+  <span class="k">background</span>: <span class="v">var(--primary)</span>;
+  <span class="k">color</span>: <span class="v">var(--primary-fg)</span>;
+  <span class="k">font</span>: <span class="v">500 14px/1 IBM Plex Sans Arabic</span>;
+  <span class="k">transition</span>: <span class="v">background 150ms</span>;
+}
+<span class="k">.btn-primary:hover</span> { <span class="k">background</span>: <span class="v">var(--primary-hover)</span>; }
+<span class="k">.btn-primary:focus-visible</span> { <span class="k">box-shadow</span>: <span class="v">var(--ring-focus)</span>; }</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>BUTTON · SECONDARY</h4>
+        <pre class="code"><span class="k">.btn-secondary</span> {
+  <span class="k">height</span>: <span class="v">40px</span>;
+  <span class="k">padding</span>: <span class="v">0 18px</span>;
+  <span class="k">border-radius</span>: <span class="v">8px</span>;
+  <span class="k">background</span>: <span class="v">var(--surface-2)</span>;
+  <span class="k">color</span>: <span class="v">var(--text-primary)</span>;
+  <span class="k">border</span>: <span class="v">1px solid var(--border)</span>;
+}
+<span class="k">.btn-secondary:hover</span> { <span class="k">background</span>: <span class="v">var(--surface-3)</span>; }</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>INPUT</h4>
+        <pre class="code"><span class="k">.input</span> {
+  <span class="k">height</span>: <span class="v">40px</span>;
+  <span class="k">padding</span>: <span class="v">0 14px</span>;
+  <span class="k">background</span>: <span class="v">var(--surface-2)</span>;
+  <span class="k">border</span>: <span class="v">1px solid var(--border)</span>;
+  <span class="k">border-radius</span>: <span class="v">8px</span>;
+  <span class="k">color</span>: <span class="v">var(--text-primary)</span>;
+  <span class="k">font</span>: <span class="v">14px IBM Plex Sans Arabic</span>;
+}
+<span class="k">.input:focus</span> {
+  <span class="k">border-color</span>: <span class="v">var(--accent)</span>;
+  <span class="k">box-shadow</span>: <span class="v">0 0 0 3px var(--accent-soft)</span>;
+}</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>CARD</h4>
+        <pre class="code"><span class="k">.card</span> {
+  <span class="k">background</span>: <span class="v">var(--surface-1)</span>;
+  <span class="k">border</span>: <span class="v">1px solid var(--border)</span>;
+  <span class="k">border-radius</span>: <span class="v">12px</span>;
+  <span class="k">padding</span>: <span class="v">16px 18px</span>;
+  <span class="k">box-shadow</span>: <span class="v">var(--shadow-xs)</span>;
+}
+<span class="k">.card:hover</span> { <span class="k">box-shadow</span>: <span class="v">var(--shadow-sm)</span>; }</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>BUBBLE · USER</h4>
+        <pre class="code"><span class="c">/* L1: aubergine bubble; D1: sage bubble */</span>
+<span class="k">.bubble-user</span> {
+  <span class="k">background</span>: <span class="v">var(--bubble-user-bg, var(--primary))</span>;
+  <span class="k">color</span>:      <span class="v">var(--bubble-user-fg, var(--primary-fg))</span>;
+  <span class="k">padding</span>:    <span class="v">14px 18px</span>;
+  <span class="k">border-radius</span>: <span class="v">18px 18px 6px 18px</span>;
+  <span class="k">max-width</span>: <span class="v">78%</span>;
+}</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>BUBBLE · ASSISTANT</h4>
+        <pre class="code"><span class="k">.bubble-assistant</span> {
+  <span class="k">background</span>: <span class="v">var(--surface-1)</span>;
+  <span class="k">color</span>:      <span class="v">var(--text-primary)</span>;
+  <span class="k">border</span>:     <span class="v">1px solid var(--border)</span>;
+  <span class="k">border-radius</span>: <span class="v">18px 18px 18px 6px</span>;
+  <span class="k">padding</span>:    <span class="v">14px 18px</span>;
+}
+<span class="k">.bubble-assistant .citation</span> {
+  <span class="k">background</span>: <span class="v">var(--accent-soft)</span>;
+  <span class="k">color</span>:      <span class="v">var(--accent)</span>;
+  <span class="k">padding</span>:    <span class="v">1px 7px</span>;
+  <span class="k">border-radius</span>: <span class="v">9999px</span>;
+  <span class="k">font</span>:       <span class="v">11px ui-monospace</span>;
+}</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>PILL · CASE TYPE</h4>
+        <pre class="code"><span class="k">.pill</span> {
+  <span class="k">padding</span>:    <span class="v">3px 10px</span>;
+  <span class="k">border-radius</span>: <span class="v">9999px</span>;
+  <span class="k">font</span>:       <span class="v">500 11px IBM Plex Sans Arabic</span>;
+  <span class="k">background</span>: <span class="v">var(--case-X-bg)</span>;
+  <span class="k">color</span>:      <span class="v">var(--case-X-fg)</span>;
+}</pre>
+      </div>
+
+      <div class="pv-card">
+        <h4>SIDEBAR · NAV ITEM</h4>
+        <pre class="code"><span class="k">.nav-item</span> {
+  <span class="k">padding</span>:    <span class="v">8px 12px</span>;
+  <span class="k">border-radius</span>: <span class="v">8px</span>;
+  <span class="k">color</span>:      <span class="v">var(--text-secondary)</span>;
+  <span class="k">font</span>:       <span class="v">13px IBM Plex Sans Arabic</span>;
+}
+<span class="k">.nav-item:hover</span> { <span class="k">background</span>: <span class="v">var(--surface-2)</span>; <span class="k">color</span>: <span class="v">var(--text-primary)</span>; }
+<span class="k">.nav-item.active</span> {
+  <span class="k">background</span>: <span class="v">var(--surface-2)</span>;
+  <span class="k">border</span>:     <span class="v">1px solid var(--border-strong)</span>;
+  <span class="k">color</span>:      <span class="v">var(--text-primary)</span>;
+}</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10. PAIRINGS -->
+  <section class="section" id="pairings">
+    <div class="section-head"><span class="num">10</span><h2>جدول الإقتران (فاتح ↔ داكن)</h2></div>
+    <table class="matrix">
+      <thead>
+        <tr><th>Light</th><th>Dark D1</th><th>Dark D4</th><th class="role" style="text-align:right">ملاحظة</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>L1 Herbarium</b></td>
+          <td class="star">★ COMMITTED</td>
+          <td>✓ alt</td>
+          <td class="role" style="text-align:right">المُعتمَد. كلاهما يعامل الميرامية كصوتٍ على هيكلٍ باذنجاني.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:13px;color:var(--text-muted);margin-top:12px;direction:rtl;">
+      الإقتران الأساسي: <b>L1 ↔ D1</b>. الإقتران البديل (للتسويق أو الشاشات الإفتتاحية): <b>L1 ↔ D4</b> — يمنح هويّةً نباتيّة أوضح.
+    </p>
+  </section>
+
+  <!-- 11. COMMIT SNIPPET -->
+  <section class="section" id="commit">
+    <div class="section-head"><span class="num">11</span><h2>قصاصة CSS للالتزام</h2><span class="meta">ضع هذا في <span class="mono">app/globals.css</span></span></div>
+    <pre class="code"><span class="c">/* ============================================================
+ * Luna Color System v2 — Committed
+ * Dark D1 (primary) + Dark D4 (alt) + Light L1 (primary)
+ * ============================================================ */</span>
+
+<span class="k">:root</span> {
+  <span class="c">/* anchors */</span>
+  <span class="k">--aubergine-black</span>: <span class="v">#18141A</span>;
+  <span class="k">--plum-shadow</span>:    <span class="v">#373541</span>;
+  <span class="k">--royal-aubergine</span>: <span class="v">#4C4158</span>;
+  <span class="k">--dusty-mauve</span>:    <span class="v">#6A6581</span>;
+  <span class="k">--sage-mist</span>:      <span class="v">#9BA9A5</span>;
+  <span class="k">--forest-shadow</span>:  <span class="v">#242E29</span>;
+
+  <span class="c">/* L1 Herbarium Paper — light primary */</span>
+  <span class="k">--canvas</span>:          <span class="v">#F7F2EC</span>;
+  <span class="k">--surface-1</span>:       <span class="v">#FCF8F2</span>;
+  <span class="k">--surface-2</span>:       <span class="v">#EFE9E1</span>;
+  <span class="k">--surface-3</span>:       <span class="v">#E5DED2</span>;
+  <span class="k">--surface-sidebar</span>: <span class="v">#EFE9E1</span>;
+  <span class="k">--border</span>:          <span class="v">#E0D6CA</span>;
+  <span class="k">--border-strong</span>:   <span class="v">#C9BDAB</span>;
+  <span class="k">--text-primary</span>:    <span class="v">#18141A</span>;
+  <span class="k">--text-secondary</span>:  <span class="v">#373541</span>;
+  <span class="k">--text-muted</span>:      <span class="v">#6A6581</span>;
+  <span class="k">--text-subtle</span>:     <span class="v">#9A93A0</span>;
+  <span class="k">--primary</span>:         <span class="v">#4A6B5F</span>;
+  <span class="k">--primary-fg</span>:      <span class="v">#FCF8F2</span>;
+  <span class="k">--primary-hover</span>:   <span class="v">#3D5A4D</span>;
+  <span class="k">--brand-soft-bg</span>:   <span class="v">#DDE5E0</span>;
+  <span class="k">--brand-soft-fg</span>:   <span class="v">#2A4438</span>;
+  <span class="k">--accent</span>:          <span class="v">#4A6B5F</span>;
+  <span class="k">--accent-soft</span>:     <span class="v">rgba(74,107,95,0.08)</span>;
+  <span class="k">--accent-line</span>:     <span class="v">#9BA9A5</span>;
+  <span class="k">--bubble-user-bg</span>:  <span class="v">#4C4158</span>;
+  <span class="k">--bubble-user-fg</span>:  <span class="v">#FCF8F2</span>;
+  <span class="k">--ring</span>:            <span class="v">#4A6B5F</span>;
+}
+
+<span class="k">.dark</span>, <span class="k">[data-theme="dark"]</span> {
+  <span class="c">/* D1 Aubergine + Sage Voice — dark primary */</span>
+  <span class="k">--canvas</span>:          <span class="v">#18141A</span>;
+  <span class="k">--surface-1</span>:       <span class="v">#1F1B22</span>;
+  <span class="k">--surface-2</span>:       <span class="v">#373541</span>;
+  <span class="k">--surface-3</span>:       <span class="v">#4C4158</span>;
+  <span class="k">--surface-sidebar</span>: <span class="v">#242E29</span>;
+  <span class="k">--border</span>:          <span class="v">#2D2935</span>;
+  <span class="k">--border-strong</span>:   <span class="v">#4C4158</span>;
+  <span class="k">--text-primary</span>:    <span class="v">#E8E4EC</span>;
+  <span class="k">--text-secondary</span>:  <span class="v">#B8B0C2</span>;
+  <span class="k">--text-muted</span>:      <span class="v">#6A6581</span>;
+  <span class="k">--text-subtle</span>:     <span class="v">#5A5567</span>;
+  <span class="k">--primary</span>:         <span class="v">#9BA9A5</span>;
+  <span class="k">--primary-fg</span>:      <span class="v">#18141A</span>;
+  <span class="k">--primary-hover</span>:   <span class="v">#B0BDB9</span>;
+  <span class="k">--brand-soft-bg</span>:   <span class="v">rgba(155,169,165,0.14)</span>;
+  <span class="k">--brand-soft-fg</span>:   <span class="v">#B8C7C2</span>;
+  <span class="k">--accent</span>:          <span class="v">#9BA9A5</span>;
+  <span class="k">--accent-soft</span>:     <span class="v">rgba(155,169,165,0.12)</span>;
+  <span class="k">--accent-line</span>:     <span class="v">#9BA9A5</span>;
+  <span class="k">--bubble-user-bg</span>:  <span class="v">#9BA9A5</span>;
+  <span class="k">--bubble-user-fg</span>:  <span class="v">#18141A</span>;
+  <span class="k">--ring</span>:            <span class="v">#9BA9A5</span>;
+}
+
+<span class="k">[data-theme="dark-twilight"]</span> {
+  <span class="c">/* D4 Twilight Garden — dark alt (botanical) */</span>
+  <span class="k">--canvas</span>:          <span class="v">#1B2420</span>;
+  <span class="k">--surface-1</span>:       <span class="v">#18141A</span>;
+  <span class="k">--surface-2</span>:       <span class="v">#242E29</span>;
+  <span class="k">--surface-3</span>:       <span class="v">#373541</span>;
+  <span class="k">--surface-sidebar</span>: <span class="v">#18141A</span>;
+  <span class="k">--border</span>:          <span class="v">#2D3934</span>;
+  <span class="k">--border-strong</span>:   <span class="v">#3F4F48</span>;
+  <span class="k">--text-primary</span>:    <span class="v">#C5D0CB</span>;
+  <span class="k">--text-secondary</span>:  <span class="v">#9BA9A5</span>;
+  <span class="k">--text-muted</span>:      <span class="v">#6A6581</span>;
+  <span class="k">--text-subtle</span>:     <span class="v">#4F5A55</span>;
+  <span class="k">--primary</span>:         <span class="v">#6A6581</span>;
+  <span class="k">--primary-fg</span>:      <span class="v">#EDEAF2</span>;
+  <span class="k">--primary-hover</span>:   <span class="v">#7B7592</span>;
+  <span class="k">--brand-soft-bg</span>:   <span class="v">rgba(106,101,129,0.22)</span>;
+  <span class="k">--brand-soft-fg</span>:   <span class="v">#B8B0C2</span>;
+  <span class="k">--accent</span>:          <span class="v">#9BA9A5</span>;
+  <span class="k">--accent-soft</span>:     <span class="v">rgba(155,169,165,0.10)</span>;
+  <span class="k">--accent-line</span>:     <span class="v">#9BA9A5</span>;
+  <span class="k">--bubble-user-bg</span>:  <span class="v">#6A6581</span>;
+  <span class="k">--bubble-user-fg</span>:  <span class="v">#EDEAF2</span>;
+  <span class="k">--ring</span>:            <span class="v">#9BA9A5</span>;
+}</pre>
+
+    <h3 class="sub">Tailwind config (مختصر)</h3>
+    <pre class="code"><span class="c">// tailwind.config.ts — colors block</span>
+<span class="k">colors</span>: {
+  <span class="k">canvas</span>:    <span class="v">'var(--canvas)'</span>,
+  <span class="k">surface</span>: {
+    <span class="k">1</span>: <span class="v">'var(--surface-1)'</span>,
+    <span class="k">2</span>: <span class="v">'var(--surface-2)'</span>,
+    <span class="k">3</span>: <span class="v">'var(--surface-3)'</span>,
+    <span class="k">sidebar</span>: <span class="v">'var(--surface-sidebar)'</span>,
+  },
+  <span class="k">border</span>: {
+    <span class="k">DEFAULT</span>: <span class="v">'var(--border)'</span>,
+    <span class="k">strong</span>:  <span class="v">'var(--border-strong)'</span>,
+  },
+  <span class="k">text</span>: {
+    <span class="k">primary</span>:   <span class="v">'var(--text-primary)'</span>,
+    <span class="k">secondary</span>: <span class="v">'var(--text-secondary)'</span>,
+    <span class="k">muted</span>:     <span class="v">'var(--text-muted)'</span>,
+    <span class="k">subtle</span>:    <span class="v">'var(--text-subtle)'</span>,
+  },
+  <span class="k">primary</span>: {
+    <span class="k">DEFAULT</span>: <span class="v">'var(--primary)'</span>,
+    <span class="k">fg</span>:      <span class="v">'var(--primary-fg)'</span>,
+    <span class="k">hover</span>:   <span class="v">'var(--primary-hover)'</span>,
+  },
+  <span class="k">brand</span>: {
+    <span class="k">soft</span>: {
+      <span class="k">DEFAULT</span>: <span class="v">'var(--brand-soft-bg)'</span>,
+      <span class="k">fg</span>:      <span class="v">'var(--brand-soft-fg)'</span>,
+    },
+    <span class="k">line</span>: <span class="v">'var(--accent-line)'</span>,
+  },
+  <span class="k">bubble</span>: {
+    <span class="k">user</span>:    <span class="v">'var(--bubble-user-bg)'</span>,
+    <span class="k">'user-fg'</span>: <span class="v">'var(--bubble-user-fg)'</span>,
+  },
+  <span class="k">ring</span>: <span class="v">'var(--ring)'</span>,
+}</pre>
+  </section>
+
+  <!-- close note -->
+  <section class="section">
+    <div class="notes">
+      <div class="note why">
+        <h4>الالتزام النهائي</h4>
+        <p>الوضع الفاتح <b>L1 Herbarium Paper</b> + الوضع الداكن الأساسي <b>D1 Aubergine + Sage Voice</b>. الوضع البديل <b>D4 Twilight Garden</b> متاحٌ لشاشات التسويق وعنوان البريد التعريفي ولوحات البيانات الكثيفة بصرياً. كلّ الأكواد قابلةٌ للنّسخ في <span class="mono">app/globals.css</span> و <span class="mono">tailwind.config.ts</span>.</p>
+      </div>
+      <div class="note">
+        <h4>الخطوات التّالية</h4>
+        <p>١. التحقق من تباين الألوان WCAG AA على نَصّ ١٤px (الحدّ الأدنى ٤.٥:١). ٢. إضافة سُلَّم Aubergine 25→950 و Sage 25→950 إذا أردنا توليد دلاليات إضافية. ٣. تحديث <span class="mono">colors_and_type.css</span> ليستبدِل المتغيّرات اللافندرية. ٤. تحديث الشّعار <span class="mono">luna-mark.svg</span> لاستخدام النّداء الجديد.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>
