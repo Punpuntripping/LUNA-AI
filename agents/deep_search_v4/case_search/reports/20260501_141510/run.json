@@ -1,0 +1,83 @@
+{
+  "log_id": "20260501_141510",
+  "query_id": 0,
+  "timestamp": "2026-05-01T14:15:29.593837+00:00",
+  "agent": "case_search",
+  "status": "error",
+  "duration_seconds": 18.67,
+  "model": "qwen3.5-plus",
+  "thinking_effort": null,
+  "input": {
+    "focus_instruction": "سؤال",
+    "user_context": ""
+  },
+  "prompt_keys": {
+    "expander": "prompt_3",
+    "aggregator": null
+  },
+  "result": {
+    "quality": "pending",
+    "rounds": 1,
+    "queries": [
+      "لا توجد وقائع نزاع محددة للتحليل",
+      "يتطلب النزاع تفصيلاً للبت في المبدأ القضائي"
+    ],
+    "citations_count": 0,
+    "reranker_queries": 0,
+    "total_kept": 0,
+    "summary_md_length": 0,
+    "summary_md": ""
+  },
+  "cost": {
+    "total_input_tokens": 5743,
+    "total_output_tokens": 899,
+    "total_tokens": 6642,
+    "per_agent": [
+      {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5743,
+        "output_tokens": 899,
+        "total_tokens": 6642,
+        "details": {
+          "reasoning_tokens": 488,
+          "text_tokens": 899
+        }
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "expander_usage": {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5743,
+        "output_tokens": 899,
+        "total_tokens": 6642,
+        "details": {
+          "reasoning_tokens": 488,
+          "text_tokens": 899
+        }
+      }
+    }
+  ],
+  "search_results_log": [],
+  "events": [
+    {
+      "type": "status",
+      "text": "تم توليد 2 استعلامات عبر 2 قنوات (facts:1, principle:1)"
+    },
+    {
+      "type": "status",
+      "text": "جاري تنفيذ 2 استعلامات مُقنّنة على 2 قناة..."
+    },
+    {
+      "type": "status",
+      "text": "حدث خطأ أثناء حلقة البحث في السوابق القضائية."
+    }
+  ],
+  "error": "'_Settings' object has no attribute 'ALIBABA_API_KEY'"
+}

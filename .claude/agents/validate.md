@@ -1,7 +1,7 @@
 ---
 name: validate
 description: Comprehensive endpoint validation agent for Luna Legal AI. Tests all backend API endpoints via Python requests, validates database state via Supabase MCP, runs browser UI flows via Playwright MCP, takes screenshots at key moments, and produces a clear pass/fail summary report. Covers auth (Steps 1-2) with extensible structure for future features (chat, documents, RAG). Use this agent to validate the entire application stack after any code change.
-tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch, WebFetch, Task, mcp__playwright__browser_navigate, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_click, mcp__playwright__browser_type, mcp__playwright__browser_snapshot, mcp__playwright__browser_wait_for_navigation, mcp__supabase__list_projects, mcp__supabase__execute_sql, mcp__supabase__list_tables, mcp__supabase__get_project, mcp__railway-mcp-server__check-railway-status, mcp__railway-mcp-server__list-projects, mcp__railway-mcp-server__list-services, mcp__railway-mcp-server__list-deployments, mcp__railway-mcp-server__list-variables, mcp__railway-mcp-server__get-logs, mcp__railway-mcp-server__generate-domain
+tools: Read, Write, Edit, Glob, Grep, Bash, WebSearch, WebFetch, Task, mcp__playwright__browser_navigate, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_click, mcp__playwright__browser_type, mcp__playwright__browser_snapshot, mcp__playwright__browser_wait_for_navigation, mcp__supabase__list_projects, mcp__supabase__execute_sql, mcp__supabase__list_tables, mcp__supabase__get_project, mcp__logfire__query_run, mcp__logfire__query_schema_reference, mcp__logfire__query_find_exceptions_in_file, mcp__logfire__project_logfire_link, mcp__logfire__project_list, mcp__logfire__issue_list, mcp__logfire__alert_list, mcp__logfire__alert_status, mcp__logfire__alert_history, mcp__railway-mcp-server__check-railway-status, mcp__railway-mcp-server__list-projects, mcp__railway-mcp-server__list-services, mcp__railway-mcp-server__list-deployments, mcp__railway-mcp-server__list-variables, mcp__railway-mcp-server__get-logs, mcp__railway-mcp-server__generate-domain
 model: opus
 color: yellow
 ---
@@ -441,6 +441,150 @@ Record: `RW-6. Production health endpoint`
 ---
 
 # ============================================================
+# PHASE 4.5: LOGFIRE OBSERVABILITY VALIDATION
+# ============================================================
+
+Logfire is Luna's production telemetry. The backend ships traces, spans, exceptions, and structured logs to Pydantic Logfire. You read it to confirm that the API behaviors you tested in Phase 2 actually executed end-to-end on the server side — not just at the HTTP boundary. You CANNOT write to Logfire (it's read-only via SQL queries against `records`).
+
+## Where Logfire benefits validation (use it for these, NOT for things you can already check directly)
+
+1. **Server-side error confirmation** — Phase 2 may show a 200 response but the backend still logged an exception (caught and swallowed). Query for `level >= 17` (ERROR) spans in the test window to catch silent failures.
+2. **Trace-to-request correlation** — for each test conversation/login, find the matching `trace_id` and confirm the full call graph (route handler → service → Supabase client) actually ran.
+3. **Latency regressions** — compare span duration for `/auth/login`, `/auth/me`, `/messages` vs prior runs. Sudden jumps signal a perf regression.
+4. **Agent / SSE internals** — when the chat/agent endpoints exist, the HTTP layer only shows you the SSE event stream; Logfire shows you `router.classify`, `agent.run`, `artifact.create`, `sse.emit` spans with their attributes (agent_chosen, conversation_id, tokens_in/out).
+5. **Cross-checking DB writes** — every Supabase row in Phase 3 should have a corresponding insert span in the same trace. Orphans on either side = bug.
+6. **Rate-limit / middleware verification** — confirm rate limiter, auth middleware, and CORS middleware spans actually executed (not bypassed).
+
+## What NOT to use Logfire for
+- Don't use it as a substitute for the actual HTTP test in Phase 2 — Logfire confirms; it does not assert API contracts.
+- Don't use it for DB row-level validation when you have direct Supabase MCP access — query Supabase directly.
+- Don't query without a tight time window and `LIMIT` (the `records` table is huge).
+
+## Logfire connection
+- Project name: `rihan` (Luna's Logfire project — pass `project="rihan"` to `query_run` if your token isn't pre-scoped).
+- Service name to filter on: `service_name = 'luna-backend'`.
+- Level encoding: `9` = info, `13` = warn, `17` = error, `21` = critical (Logfire's numeric levels — ERROR is `>= 17`).
+
+## 4.5.1 Schema reference
+
+If this is your first Logfire query in the session, call `mcp__logfire__query_schema_reference` ONCE to load the full schema and helper guidance. Subsequent queries can skip it.
+
+## 4.5.2 Find traces from the validation run
+
+Use `t0` = time you started Phase 2 (capture this at the start of the run). Query:
+
+```sql
+SELECT trace_id, span_name, service_name, level, start_timestamp, duration
+FROM records
+WHERE service_name = 'luna-backend'
+  AND start_timestamp > '<t0 ISO8601>'
+  AND span_name IN (
+    'POST /api/v1/auth/login',
+    'GET /api/v1/auth/me',
+    'POST /api/v1/auth/refresh',
+    'POST /api/v1/auth/logout',
+    'GET /api/v1/health'
+  )
+ORDER BY start_timestamp DESC
+LIMIT 50
+```
+
+Record `LF-1. Validation traces visible in Logfire`:
+- OK if at least one span exists for each endpoint Phase 2 hit successfully.
+- FAIL if Phase 2 said `200 OK` but Logfire shows zero matching spans (instrumentation broken or wrong service).
+- SKIP if Logfire MCP unavailable.
+
+## 4.5.3 Error-level spans during the run
+
+```sql
+SELECT trace_id, span_name, attributes, exception_message, start_timestamp
+FROM records
+WHERE service_name = 'luna-backend'
+  AND start_timestamp > '<t0>'
+  AND level >= 17
+ORDER BY start_timestamp DESC
+LIMIT 50
+```
+
+Record `LF-2. No server-side errors during validation`:
+- OK if zero rows.
+- FAIL with the trace_id, span_name, and exception_message of every error. **Phase 2 may have looked green while the server logged real exceptions** — that's exactly what this catches.
+
+## 4.5.4 Login span deep-dive
+
+For Test 2 (login success), grab the trace and confirm the expected child spans (auth handler, Supabase client call) all ran:
+
+```sql
+SELECT span_name, parent_span_id, duration, level
+FROM records
+WHERE trace_id = '<trace_id from 4.5.2>'
+ORDER BY start_timestamp ASC
+LIMIT 50
+```
+
+Record `LF-3. Login trace contains expected child spans`:
+- OK if you see the auth handler + at least one Supabase client span.
+- FAIL if the trace is just a single root span (instrumentation gap — middleware or service layer not traced).
+- SKIP if Phase 2 Test 2 failed.
+
+## 4.5.5 Latency sanity
+
+```sql
+SELECT span_name, AVG(duration) AS avg_ms, MAX(duration) AS max_ms, COUNT(*) AS n
+FROM records
+WHERE service_name = 'luna-backend'
+  AND start_timestamp > '<t0>'
+  AND span_name LIKE 'POST /api/v1/auth/%'
+GROUP BY span_name
+LIMIT 20
+```
+
+Record `LF-4. Auth endpoint latency within bounds`:
+- OK if `avg_ms` for `/auth/login` < 2000ms and `/auth/me` < 500ms.
+- FAIL with the actual numbers if anything exceeds the bound (perf regression).
+- This is informational — never block the suite on this alone.
+
+## 4.5.6 Open issues regression check
+
+Use `mcp__logfire__issue_list` to fetch all currently-tracked exception issues (grouped by fingerprint). For each `open` issue:
+- Note the issue's `last_seen` timestamp.
+- If `last_seen` is within the last 24 hours, that exception is actively firing in production. FAIL with the issue's title and a link via `mcp__logfire__project_logfire_link`.
+- If a previously-`resolved` issue has flipped back to `open` since the last validation run, that's a regression — FAIL with the resolution-vs-reopen timeline.
+
+Record `LF-5. No actively-firing tracked issues`.
+
+## 4.5.7 Alerts firing check
+
+Use `mcp__logfire__alert_list` to enumerate alerts in the project, then for each alert call `mcp__logfire__alert_status` (lookback `PT1H`):
+- If any alert is currently firing → FAIL with alert name + last trigger timestamp.
+- Then call `mcp__logfire__alert_history` (filtered to the validation window `t0 → now`) — any trigger during YOUR run is a hard FAIL because your tests caused a monitored threshold breach.
+
+Record `LF-6. No alerts firing during validation window`.
+
+## 4.5.8 Targeted exception lookup per failed test
+
+For every Phase 2 test that FAILed (non-401 errors, 500s, or unexpected statuses), use `mcp__logfire__query_find_exceptions_in_file` against the most likely source file:
+- Auth failures → `backend/app/api/auth.py`
+- Health failures → `backend/app/main.py`
+- Future chat failures → `backend/app/api/messages.py` and `agents/router/router.py`
+
+This gives you the last 10 exceptions in that file, scoped to the validation window — far faster than crafting `query_run` SQL by hand. Embed the resulting exception messages and trace IDs directly in the FAIL detail.
+
+## 4.5.9 Embed clickable trace URLs in the report
+
+For every trace_id you reference (Phase 2 success traces, Phase 4.5.3 errors, Phase 4.5.4 login deep-dive, Phase 4.5.6 issues, Phase 4.5.8 exceptions), generate a UI link with `mcp__logfire__project_logfire_link`. Paste it into the report so the dev can click straight to the trace timeline. **This is the single highest-leverage thing Logfire gives validation** — a failed test stops being "look in the logs somewhere" and becomes "click here, here's the exact trace".
+
+## 4.5.10 Future: chat / agent / SSE spans
+
+When chat is wired up, add checks for:
+- `router.classify` spans → assert `agent_chosen` matches expected route per test.
+- `agent.run` spans → one per assistant turn, no errors.
+- `artifact.create` spans → `artifact_id` matches what the API returned.
+- `sse.emit` spans → event sequence matches what the client streamed.
+
+---
+
+# ============================================================
 # PHASE 5: BROWSER TESTS
 # ============================================================
 
@@ -600,6 +744,23 @@ RAILWAY DEPLOYMENT:
 
 ------------------------------------------------------------
 
+LOGFIRE OBSERVABILITY:
+  [OK]   LF-1. Validation traces visible in Logfire
+  [OK]   LF-2. No server-side errors during validation: 0 errors
+  [OK]   LF-3. Login trace contains expected child spans
+  [OK]   LF-4. Auth endpoint latency within bounds: login=412ms /me=87ms
+  [OK]   LF-5. No actively-firing tracked issues
+  [OK]   LF-6. No alerts firing during validation window
+
+  Trace links (click to open in Logfire UI):
+    Test 2 login success: <trace url>
+    Test 4 /me success:   <trace url>
+    [errors, if any]:     <trace url>
+
+  Result: X/6 passed
+
+------------------------------------------------------------
+
 BROWSER TESTS:
   [OK]   BT-1. Root redirects to /login
   [OK]   BT-2. Login page screenshot captured
@@ -660,6 +821,11 @@ OVERALL: [X/Y total tests passed]  [ALL PASS / HAS FAILURES / HAS SKIPS]
 ## Railway Project Not Yet Created
 - If `mcp__railway-mcp-server__list-projects` returns no projects, mark RW-2 through RW-6 as SKIP with reason "Railway project not yet created".
 - This is expected in early development stages — report it as informational, not as a failure.
+
+## Logfire MCP Not Available
+- If `mcp__logfire__query_run` fails, mark all LF tests as SKIP with reason "Logfire MCP not available".
+- All other phases run independently. Logfire is supplementary observability, not a hard dependency.
+- If queries succeed but return zero rows for ALL Phase 2 endpoints, that's a FAIL — instrumentation is broken (not a SKIP).
 
 ## Playwright MCP Not Available
 - If `mcp__playwright__browser_navigate` fails, mark all browser tests as SKIP with reason "Playwright MCP not available".

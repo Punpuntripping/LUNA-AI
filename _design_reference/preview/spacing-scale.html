@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Spacing / Scale</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:18px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .row { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+  .tok { font-family:var(--font-mono); font-size:11px; color:var(--muted-foreground); min-width:60px; direction:ltr; }
+  .bar { height:12px; background:var(--luna-primary); border-radius:2px; }
+  .val { font-family:var(--font-mono); font-size:10px; color:var(--muted-foreground); direction:ltr; }
+</style>
+</head>
+<body>
+  <div class="row"><div class="tok">space-1</div><div class="bar" style="width:4px"></div><div class="val">4px</div></div>
+  <div class="row"><div class="tok">space-2</div><div class="bar" style="width:8px"></div><div class="val">8px · gap between controls</div></div>
+  <div class="row"><div class="tok">space-3</div><div class="bar" style="width:12px"></div><div class="val">12px · card padding (sm)</div></div>
+  <div class="row"><div class="tok">space-4</div><div class="bar" style="width:16px"></div><div class="val">16px · page padding, card padding</div></div>
+  <div class="row"><div class="tok">space-6</div><div class="bar" style="width:24px"></div><div class="val">24px</div></div>
+  <div class="row"><div class="tok">space-8</div><div class="bar" style="width:32px"></div><div class="val">32px · section gap</div></div>
+  <div class="row"><div class="tok">space-12</div><div class="bar" style="width:48px"></div><div class="val">48px</div></div>
+</body>
+</html>

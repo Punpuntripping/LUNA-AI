@@ -89,10 +89,6 @@ class UpdateConversationRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     """POST /api/v1/conversations/{conversation_id}/messages"""
     content: str = Field(..., min_length=1, max_length=10_000)
-    agent_family: Optional[str] = Field(
-        default=None,
-        description="Force a specialist family, bypassing the router."
-    )
     attachment_ids: Optional[list[str]] = None  # document_ids to attach to the message
 
     @field_validator("content", mode="before")
@@ -141,27 +137,3 @@ class UpdateWorkspaceItemRequest(BaseModel):
 class UpdatePreferencesRequest(BaseModel):
     """PATCH /api/v1/preferences"""
     preferences: dict
-
-
-# ── Templates ──────────────────────────────────────────
-
-class CreateTemplateRequest(BaseModel):
-    """POST /api/v1/templates"""
-    title: str = Field(..., min_length=1, max_length=500)
-    description: str = ""
-    prompt_template: str = Field(..., min_length=1)
-    agent_family: str = "end_services"
-
-    @field_validator("title", "description", "prompt_template", mode="before")
-    @classmethod
-    def check_null_bytes(cls, v):
-        return _reject_null_bytes(v) if isinstance(v, str) else v
-
-
-class UpdateTemplateRequest(BaseModel):
-    """PATCH /api/v1/templates/{template_id}"""
-    title: Optional[str] = None
-    description: Optional[str] = None
-    prompt_template: Optional[str] = None
-    agent_family: Optional[str] = None
-    is_active: Optional[bool] = None

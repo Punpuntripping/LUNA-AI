@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useParams } from "next/navigation";
 import { FileText } from "lucide-react";
-import { useCaseArtifacts } from "@/hooks/use-artifacts";
-import { ArtifactList } from "@/components/artifacts/ArtifactList";
-import { ArtifactViewer } from "@/components/artifacts/ArtifactViewer";
+import { useCaseWorkspace } from "@/hooks/use-workspace";
+import { WorkspaceList } from "@/components/workspace/WorkspaceList";
+import { WorkspaceItemViewer } from "@/components/workspace/WorkspaceItemViewer";
 import {
   Dialog,
   DialogContent,
@@ -18,16 +18,16 @@ import {
 export default function CaseArtifactsPage() {
   const params = useParams();
   const caseId = params.case_id as string;
-  const { data, isLoading } = useCaseArtifacts(caseId);
+  const { data, isLoading } = useCaseWorkspace(caseId);
 
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
 
-  function handleArtifactClick(artifactId: string) {
-    setSelectedArtifactId(artifactId);
+  function handleItemClick(itemId: string) {
+    setSelectedItemId(itemId);
   }
 
   function handleCloseDialog() {
-    setSelectedArtifactId(null);
+    setSelectedItemId(null);
   }
 
   return (
@@ -38,33 +38,33 @@ export default function CaseArtifactsPage() {
         <h1 className="text-lg font-semibold text-foreground">
           مستندات القضية
         </h1>
-        {data?.artifacts && data.artifacts.length > 0 && (
+        {data?.items && data.items.length > 0 && (
           <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-            {data.artifacts.length}
+            {data.items.length}
           </span>
         )}
       </div>
 
-      {/* Artifacts list */}
+      {/* Workspace list */}
       <div className="flex-1 overflow-auto">
         <div className="mx-auto max-w-3xl py-4">
-          <ArtifactList
-            artifacts={data?.artifacts}
+          <WorkspaceList
+            items={data?.items}
             isLoading={isLoading}
-            onArtifactClick={handleArtifactClick}
+            onItemClick={handleItemClick}
           />
         </div>
       </div>
 
-      {/* Artifact viewer dialog */}
-      <Dialog open={!!selectedArtifactId} onOpenChange={handleCloseDialog}>
+      {/* Item viewer dialog */}
+      <Dialog open={!!selectedItemId} onOpenChange={handleCloseDialog}>
         <DialogContent className="sm:max-w-[700px] h-[80vh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-6 pt-6 pb-0">
             <DialogTitle>عرض المستند</DialogTitle>
           </DialogHeader>
           <div className="flex-1 min-h-0">
-            {selectedArtifactId && (
-              <ArtifactViewer artifactId={selectedArtifactId} />
+            {selectedItemId && (
+              <WorkspaceItemViewer itemId={selectedItemId} />
             )}
           </div>
         </DialogContent>

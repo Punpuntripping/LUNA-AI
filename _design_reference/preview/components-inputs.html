@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Inputs</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  label { display:block; font-size:14px; font-weight:500; margin-bottom:6px; }
+  .field { margin-bottom:12px; }
+  input, textarea, select { width:100%; box-sizing:border-box; height:40px; border:1px solid var(--input); background:var(--background); border-radius:var(--radius-md); padding:0 12px; font-size:14px; font-family:inherit; color:var(--foreground); outline:none; }
+  textarea { height:auto; padding:10px 12px; min-height:40px; }
+  input:focus { border-color:transparent; box-shadow:0 0 0 2px var(--ring); }
+  .err input { border-color:var(--destructive); }
+  .err-msg { margin-top:4px; font-size:12px; color:var(--destructive); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="field">
+      <label>البريد الإلكتروني</label>
+      <input dir="ltr" value="laila@firm.sa"/>
+    </div>
+    <div class="field err">
+      <label>كلمة المرور</label>
+      <input dir="ltr" type="password" value="••••"/>
+      <div class="err-msg">كلمة المرور يجب أن تحتوي على 8 أحرف على الأقل</div>
+    </div>
+  </div>
+  <div class="field">
+    <label>نوع القضية</label>
+    <select><option>عقاري</option><option>تجاري</option><option>عمالي</option></select>
+  </div>
+</body>
+</html>

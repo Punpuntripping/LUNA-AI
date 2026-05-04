@@ -160,7 +160,7 @@ async def publish_writer_result(
         conversation_id=input.conversation_id,
         case_id=input.case_id,
         message_id=input.message_id,
-        agent_family="end_services",
+        agent_family="writing",
         content_md=content_md,
         metadata=metadata,
     )

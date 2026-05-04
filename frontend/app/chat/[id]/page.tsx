@@ -23,12 +23,10 @@ export default function ConversationPage() {
     }
   }, [conversationId, setSelectedConversation]);
 
-  // Reset consumed flag and agent selector when conversation changes so the
-  // ref doesn't stick from a previous conversation (React may reuse this component instance).
+  // Reset consumed flag when conversation changes so the ref doesn't stick
+  // from a previous conversation (React may reuse this component instance).
   useEffect(() => {
     pendingMessageConsumed.current = false;
-    // Reset agent selector to auto on conversation switch
-    useChatStore.getState().setSelectedAgent(null);
   }, [conversationId]);
 
   // Consume pending message from chat store (set by empty chat page)

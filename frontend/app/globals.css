@@ -32,12 +32,12 @@
     --popover: 100% 0 0;
     --popover-foreground: 14.1% 0.03 264;
 
-    /* Brand Primary: 44.6% 0.043 257.281 */
-    --primary: 44.6% 0.043 257.281;
-    --primary-foreground: 97% 0.005 265;
+    /* Brand Primary — Luna deep teal */
+    --primary: 42% 0.07 195;
+    --primary-foreground: 98% 0.01 195;
 
-    /* Brand Light: 87.1% 0.006 286.286 */
-    --secondary: 87.1% 0.006 286.286;
+    /* Brand Light — airy teal (used as hover surface / secondary) */
+    --secondary: 88% 0.02 195;
     --secondary-foreground: 22% 0.02 264;
 
     --muted: 95.5% 0.005 265;
@@ -51,49 +51,70 @@
 
     --border: 91.4% 0.008 265;
     --input: 91.4% 0.008 265;
-    --ring: 44.6% 0.043 257.281;
+    --ring: 42% 0.07 195;
 
     --radius: 0.5rem;
 
     --sidebar-background: 98% 0.003 265;
     --sidebar-foreground: 14.1% 0.03 264;
     --sidebar-border: 91.4% 0.008 265;
+
+    /* Status pill channels (bg / fg) — used for priority + destructive-tier signals */
+    --status-success-bg: 93% 0.06 145;
+    --status-success-fg: 45% 0.14 145;
+    --status-warning-bg: 95% 0.08 90;
+    --status-warning-fg: 48% 0.14 70;
+    --status-info-bg: 94% 0.04 250;
+    --status-info-fg: 45% 0.14 250;
+    --status-danger-bg: 94% 0.05 25;
+    --status-danger-fg: 48% 0.18 25;
   }
 
   .dark {
-    --background: 15% 0.02 260;
-    --foreground: 93% 0.006 265;
+    /* "Ivory on Obsidian" — pure-neutral charcoal, paper-white text.
+       Elevation: sidebar 11% → canvas 16% → card 20% → popover 23%. */
+    --background: 16% 0 0;
+    --foreground: 98.5% 0 0;
 
-    --card: 19% 0.02 260;
-    --card-foreground: 93% 0.006 265;
+    --card: 20% 0 0;
+    --card-foreground: 98.5% 0 0;
 
-    --popover: 19% 0.02 260;
-    --popover-foreground: 93% 0.006 265;
+    --popover: 23% 0 0;
+    --popover-foreground: 98.5% 0 0;
 
-    /* Lighter brand primary for dark backgrounds */
-    --primary: 58% 0.06 257.281;
-    --primary-foreground: 12% 0.02 260;
+    /* Teal brightens on dark */
+    --primary: 74% 0.13 195;
+    --primary-foreground: 14% 0.03 210;
 
-    /* Dark surface; brand light used as secondary text */
-    --secondary: 22% 0.02 260;
-    --secondary-foreground: 87.1% 0.006 286.286;
+    --secondary: 30% 0.04 195;
+    --secondary-foreground: 98.5% 0 0;
 
-    --muted: 22% 0.02 260;
-    --muted-foreground: 65% 0.012 265;
+    --muted: 22% 0 0;
+    --muted-foreground: 71.5% 0 0;
 
-    --accent: 25% 0.025 260;
-    --accent-foreground: 93% 0.006 265;
+    --accent: 26% 0 0;
+    --accent-foreground: 98.5% 0 0;
 
-    --destructive: 55% 0.2 27;
-    --destructive-foreground: 97% 0.005 265;
+    --destructive: 65% 0.21 27;
+    --destructive-foreground: 98% 0 0;
 
-    --border: 28% 0.02 260;
-    --input: 28% 0.02 260;
-    --ring: 58% 0.06 257.281;
+    --border: 26% 0 0;
+    --input: 26% 0 0;
+    --ring: 74% 0.13 195;
 
-    --sidebar-background: 17% 0.02 260;
-    --sidebar-foreground: 93% 0.006 265;
-    --sidebar-border: 28% 0.02 260;
+    --sidebar-background: 11% 0 0;
+    --sidebar-foreground: 98.5% 0 0;
+    --sidebar-border: 22% 0 0;
+
+    /* Status pills — darker bg, brighter fg; info shifts to cyan to stay distinct from brand teal */
+    --status-success-bg: 24% 0.045 150;
+    --status-success-fg: 82% 0.16 150;
+    --status-warning-bg: 26% 0.055 75;
+    --status-warning-fg: 85% 0.15 80;
+    --status-info-bg: 24% 0.05 220;
+    --status-info-fg: 82% 0.14 220;
+    --status-danger-bg: 25% 0.06 25;
+    --status-danger-fg: 80% 0.17 25;
   }
 
   /* RTL-aware global styles */

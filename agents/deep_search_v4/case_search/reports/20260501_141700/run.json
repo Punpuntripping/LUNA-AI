@@ -1,0 +1,84 @@
+{
+  "log_id": "20260501_141700",
+  "query_id": 0,
+  "timestamp": "2026-05-01T14:17:13.881229+00:00",
+  "agent": "case_search",
+  "status": "error",
+  "duration_seconds": 13.29,
+  "model": "qwen3.5-plus",
+  "thinking_effort": null,
+  "input": {
+    "focus_instruction": "ما هي شروط إثبات الزوجية؟",
+    "user_context": ""
+  },
+  "prompt_keys": {
+    "expander": "prompt_3",
+    "aggregator": null
+  },
+  "result": {
+    "quality": "pending",
+    "rounds": 1,
+    "queries": [
+      "من المُقرّر أن إثبات الزوجية يشترط وجود عقد نكاح صحيح",
+      "مدّعٍ يطالب بإثبات زوجية دون وجود وثيقة عقد نكاح رسمية",
+      "أحكام الإثبات في نظام الأحوال الشخصية وقانون المرافعات"
+    ],
+    "citations_count": 0,
+    "reranker_queries": 0,
+    "total_kept": 0,
+    "summary_md_length": 0,
+    "summary_md": ""
+  },
+  "cost": {
+    "total_input_tokens": 2551,
+    "total_output_tokens": 613,
+    "total_tokens": 3164,
+    "per_agent": [
+      {
+        "agent": "expander",
+        "round": 1,
+        "requests": 1,
+        "input_tokens": 2551,
+        "output_tokens": 613,
+        "total_tokens": 3164,
+        "details": {
+          "reasoning_tokens": 432,
+          "text_tokens": 613
+        }
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "expander_usage": {
+        "agent": "expander",
+        "round": 1,
+        "requests": 1,
+        "input_tokens": 2551,
+        "output_tokens": 613,
+        "total_tokens": 3164,
+        "details": {
+          "reasoning_tokens": 432,
+          "text_tokens": 613
+        }
+      }
+    }
+  ],
+  "search_results_log": [],
+  "events": [
+    {
+      "type": "status",
+      "text": "تم توليد 3 استعلامات عبر 3 قنوات (principle:1, facts:1, basis:1)"
+    },
+    {
+      "type": "status",
+      "text": "جاري تنفيذ 3 استعلامات مُقنّنة على 3 قناة..."
+    },
+    {
+      "type": "status",
+      "text": "حدث خطأ أثناء حلقة البحث في السوابق القضائية."
+    }
+  ],
+  "error": "'_Settings' object has no attribute 'ALIBABA_API_KEY'"
+}

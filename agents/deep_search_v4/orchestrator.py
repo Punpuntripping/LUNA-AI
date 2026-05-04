@@ -43,38 +43,38 @@ from agents.deep_search_v4.aggregator.runner import handle_aggregator_turn
 from agents.deep_search_v4.case_search.adapter import case_to_rqr
 from agents.deep_search_v4.case_search.loop import run_case_search
 from agents.deep_search_v4.case_search.models import CaseSearchDeps
-from agents.deep_search_v3.compliance_search.adapter import compliance_to_rqr
-from agents.deep_search_v3.compliance_search.logger import (
+from agents.deep_search_v4.compliance_search.adapter import compliance_to_rqr
+from agents.deep_search_v4.compliance_search.logger import (
     create_run_dir as create_compliance_run_dir,
     make_ura_log_id as make_compliance_log_id,
     save_run_json as save_compliance_run_json,
     save_run_md as save_compliance_run_md,
 )
-from agents.deep_search_v3.compliance_search.loop import (
+from agents.deep_search_v4.compliance_search.loop import (
     ExpanderNode as ComplianceExpanderNode,
     compliance_search_graph,
 )
-from agents.deep_search_v3.compliance_search.models import (
+from agents.deep_search_v4.compliance_search.models import (
     ComplianceSearchDeps,
     ComplianceSearchResult,
     LoopState as ComplianceLoopState,
 )
-from agents.deep_search_v3.reg_search.adapter import reg_to_rqr
-from agents.deep_search_v3.reg_search.logger import (
+from agents.deep_search_v4.reg_search.adapter import reg_to_rqr
+from agents.deep_search_v4.reg_search.logger import (
     create_run_dir,
     make_log_id,
     save_run_json,
     save_run_overview_md,
 )
-from agents.deep_search_v3.reg_search.loop import ExpanderNode, reg_search_graph
-from agents.deep_search_v3.reg_search.models import (
+from agents.deep_search_v4.reg_search.loop import ExpanderNode, reg_search_graph
+from agents.deep_search_v4.reg_search.models import (
     LoopState as RegLoopState,
     RegSearchDeps,
     RegSearchResult,
 )
-from agents.deep_search_v3.shared.models import RerankerQueryResult
-from agents.deep_search_v3.ura.merger import build_ura_from_phases
-from agents.deep_search_v3.ura.schema import UnifiedRetrievalArtifact
+from agents.deep_search_v4.shared.models import RerankerQueryResult
+from agents.deep_search_v4.ura.merger import build_ura_from_phases
+from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import (
     PlannerDeps,
     PlannerOutput,
@@ -111,7 +111,7 @@ class FullLoopDeps:
     jina_api_key: str = ""
     http_client: httpx.AsyncClient | None = None
     use_reranker: bool = False
-    expander_prompt_key: str = "prompt_2"
+    expander_prompt_key: str = "prompt_1"
     case_expander_prompt_key: str = "prompt_3"   # sectioned default
     concurrency: int = 10
     unfold_mode: str = "precise"
@@ -339,14 +339,14 @@ async def _run_reg_phase(
     except Exception as exc:
         logger.debug("reg_search phase: log write failed: %s", exc)
 
+    # Reg expander no longer picks sectors (planner is the sole source).
+    # The phase still returns this slot for backward compat — always empty.
     sectors: list[str] = []
-    if state.expander_output and state.expander_output.sectors:
-        sectors = list(state.expander_output.sectors)
 
     # Hand the per-phase log dir back to the monitor (best-effort path -- the
     # writer above stamps `reg_search/reports/query_{id}/{log_id}/`).
     try:
-        from agents.deep_search_v3.reg_search.logger import LOGS_DIR as _REG_LOGS
+        from agents.deep_search_v4.reg_search.logger import LOGS_DIR as _REG_LOGS
         deps._reg_log_dir = str(_REG_LOGS / log_id)
     except Exception:
         pass
@@ -431,6 +431,9 @@ async def _run_compliance_phase(
         expander_max_queries=comp_expander_cap,
         reranker_max_high=deps.compliance_max_high,
         reranker_max_medium=deps.compliance_max_medium,
+        sectors_override=(
+            list(deps.sectors_override) if deps.sectors_override else None
+        ),
     )
 
     t0 = _time.perf_counter()
@@ -488,7 +491,7 @@ async def _run_compliance_phase(
         logger.debug("compliance_search phase: log write failed: %s", exc)
 
     try:
-        from agents.deep_search_v3.compliance_search.logger import LOGS_DIR as _COMP_LOGS
+        from agents.deep_search_v4.compliance_search.logger import LOGS_DIR as _COMP_LOGS
         deps._comp_log_dir = str(_COMP_LOGS / log_id)
     except Exception:
         pass
@@ -709,27 +712,13 @@ async def run_full_loop(
     deps._comp_rqrs = list(comp_sqs or [])
     deps._case_rqrs = list(case_sqs or [])
 
-    # Phase 5 — sector decoupling. Prefer the planner's pick when present;
-    # fall back to reg's expander-derived sectors. Reg's own sectors stay
-    # advisory and are logged for comparison (V4_PLANNER_DESIGN.md §5).
-    if deps.sectors_override:
-        sector_filter = list(deps.sectors_override)
-        sector_source = "planner"
-    elif sectors:
-        sector_filter = list(sectors)
-        sector_source = "reg"
-    else:
-        sector_filter = []
-        sector_source = "none"
+    # Sectors come from the planner only (the executors no longer pick).
+    sector_filter = list(deps.sectors_override) if deps.sectors_override else []
+    sector_source = "planner" if sector_filter else "none"
     logger.info(
         "run_full_loop[%s]: sector_filter source=%s value=%s",
         query_id, sector_source, sector_filter,
     )
-    if deps.sectors_override and sectors and set(deps.sectors_override) != set(sectors):
-        logger.info(
-            "run_full_loop[%s]: planner sectors %s differ from reg sectors %s",
-            query_id, deps.sectors_override, sectors,
-        )
 
     ura = build_ura_from_phases(
         reg_rqrs=reg_sqs,

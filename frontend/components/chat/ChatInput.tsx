@@ -2,20 +2,11 @@
 
 import { useState, useCallback, useRef, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Send, Square, Plus, Paperclip, LayoutGrid, Terminal } from "lucide-react";
+import { Send, Square, Paperclip } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { FilePreview } from "@/components/chat/FilePreview";
-import { AtCommandPalette } from "@/components/chat/AtCommandPalette";
-import { parseAtCommands } from "@/lib/commands";
-import type { AtCommand } from "@/lib/commands";
 import type { PendingFile } from "@/types";
 
 interface ChatInputProps {
@@ -25,8 +16,6 @@ interface ChatInputProps {
   className?: string;
   /** When set, file uploads are enabled (uploaded to this case). */
   caseId?: string | null;
-  /** Callback when user selects "My Templates" from the + menu */
-  onOpenTemplates?: () => void;
 }
 
 const MAX_CHARS = 10_000;
@@ -34,11 +23,9 @@ const MAX_FILES = 5;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 
-export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenTemplates }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, className }: ChatInputProps) {
   const [content, setContent] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [atQuery, setAtQuery] = useState("");
-  const [isAtPaletteOpen, setIsAtPaletteOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -46,84 +33,15 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
   const pendingFiles = useChatStore((s) => s.pendingFiles);
   const addPendingFile = useChatStore((s) => s.addPendingFile);
   const removePendingFile = useChatStore((s) => s.removePendingFile);
-  const setSelectedAgentFamily = useChatStore((s) => s.setSelectedAgentFamily);
-  const setSelectedAgent = useChatStore((s) => s.setSelectedAgent);
-  const setModifiers = useChatStore((s) => s.setModifiers);
 
-  const isDisabled = disabled || (isStreaming && !onStop);
   const canSend = (content.trim().length > 0 || pendingFiles.length > 0) && !isStreaming && !disabled;
-
-  // ------------------------------------------
-  // @ palette detection
-  // ------------------------------------------
-
-  const detectAtTrigger = useCallback((value: string) => {
-    // Find the last @ in the text
-    const lastAtIndex = value.lastIndexOf("@");
-    if (lastAtIndex < 0) {
-      setIsAtPaletteOpen(false);
-      return;
-    }
-
-    const afterAt = value.slice(lastAtIndex + 1);
-
-    // Only show palette if the text after @ has no spaces or newlines
-    // (user is still typing the command trigger)
-    if (afterAt.includes(" ") || afterAt.includes("\n")) {
-      setIsAtPaletteOpen(false);
-      return;
-    }
-
-    setAtQuery(afterAt);
-    setIsAtPaletteOpen(true);
-  }, []);
-
-  // ------------------------------------------
-  // Text change handler
-  // ------------------------------------------
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const val = e.target.value;
-      setContent(val);
-      detectAtTrigger(val);
+      setContent(e.target.value);
     },
-    [detectAtTrigger]
+    []
   );
-
-  // ------------------------------------------
-  // @ command selection
-  // ------------------------------------------
-
-  const handleAtCommandSelect = useCallback(
-    (cmd: AtCommand) => {
-      // Replace the partial @query with the full @trigger
-      const lastAtIndex = content.lastIndexOf("@");
-      const before = lastAtIndex >= 0 ? content.slice(0, lastAtIndex) : content;
-      const newContent = `${before}@${cmd.trigger} `;
-      setContent(newContent);
-      setIsAtPaletteOpen(false);
-
-      // Sync the agent selector pill when a non-modifier @ command is selected
-      if (cmd.agent_family && !cmd.is_modifier) {
-        setSelectedAgent(cmd.agent_family);
-      }
-
-      // Refocus the textarea after selection
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-      });
-    },
-    [content, setSelectedAgent]
-  );
-
-  const handleAtPaletteClose = useCallback(() => {
-    setIsAtPaletteOpen(false);
-  }, []);
-
-  // ------------------------------------------
-  // Send handler (with @ command parsing)
-  // ------------------------------------------
 
   const handleSend = useCallback(() => {
     const trimmed = content.trim();
@@ -135,64 +53,19 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
     }
 
     setValidationError(null);
-
-    // Parse @ commands from the message (only if there's text)
-    let hasAtAgent = false;
-    if (trimmed) {
-      const parsed = parseAtCommands(trimmed);
-      if (parsed.agent_family) {
-        setSelectedAgentFamily(parsed.agent_family);
-        hasAtAgent = true;
-      }
-      if (parsed.modifiers.length > 0) {
-        setModifiers(parsed.modifiers);
-      }
-    }
-
-    // If no @ command specified an agent, use the persistent selector value
-    if (!hasAtAgent) {
-      const selectorAgent = useChatStore.getState().selectedAgent;
-      if (selectorAgent) {
-        setSelectedAgentFamily(selectorAgent);
-      }
-    }
-
     onSend(trimmed);
     setContent("");
-    setIsAtPaletteOpen(false);
-  }, [content, onSend, setSelectedAgentFamily, setModifiers, pendingFiles.length]);
-
-  // ------------------------------------------
-  // Keyboard handler
-  // ------------------------------------------
+  }, [content, onSend, pendingFiles.length]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // When the @ palette is open, let it handle navigation keys
-      if (isAtPaletteOpen) {
-        if (
-          e.key === "ArrowUp" ||
-          e.key === "ArrowDown" ||
-          e.key === "Enter" ||
-          e.key === "Tab" ||
-          e.key === "Escape"
-        ) {
-          // These are handled by the AtCommandPalette's window keydown listener
-          return;
-        }
-      }
-
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (canSend) handleSend();
       }
     },
-    [canSend, handleSend, isAtPaletteOpen]
+    [canSend, handleSend]
   );
-
-  // ------------------------------------------
-  // File selection
-  // ------------------------------------------
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -234,28 +107,13 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
         addPendingFile(pendingFile);
       }
 
-      // Reset input so same file can be selected again
       e.target.value = "";
     },
     [pendingFiles.length, addPendingFile]
   );
 
-  // ------------------------------------------
-  // + menu actions
-  // ------------------------------------------
-
   const handleAddFile = useCallback(() => {
     fileInputRef.current?.click();
-  }, []);
-
-  const handleOpenCommands = useCallback(() => {
-    // Insert @ to trigger the command palette
-    setContent((prev) => prev + "@");
-    setIsAtPaletteOpen(true);
-    setAtQuery("");
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-    });
   }, []);
 
   const handleStopClick = useCallback(() => {
@@ -264,7 +122,6 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
 
   return (
     <div dir="rtl" lang="ar" className={cn("border-t bg-background px-4 py-3", className)}>
-      {/* Pending files preview */}
       {pendingFiles.length > 0 && (
         <FilePreview
           files={pendingFiles}
@@ -273,22 +130,11 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
         />
       )}
 
-      {/* Validation error */}
       {validationError && (
         <p className="text-xs text-destructive mb-2">{validationError}</p>
       )}
 
-      {/* Input row with @ palette */}
       <div className="relative flex items-end gap-2">
-        {/* @ Command Palette (positioned above the input) */}
-        <AtCommandPalette
-          query={atQuery}
-          isOpen={isAtPaletteOpen}
-          onSelect={handleAtCommandSelect}
-          onClose={handleAtPaletteClose}
-        />
-
-        {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -298,7 +144,6 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
           onChange={handleFileSelect}
         />
 
-        {/* Textarea */}
         <TextareaAutosize
           ref={textareaRef}
           dir="rtl"
@@ -306,7 +151,7 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder="اكتب رسالتك هنا... (اكتب @ لعرض الأوامر)"
+          placeholder="اكتب رسالتك هنا..."
           minRows={1}
           maxRows={6}
           readOnly={isStreaming}
@@ -320,45 +165,17 @@ export function ChatInput({ onSend, onStop, disabled, className, caseId, onOpenT
           )}
         />
 
-        {/* + Menu button */}
-        <DropdownMenu dir="rtl">
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-10 w-10 shrink-0"
-              disabled={isStreaming}
-              aria-label="خيارات إضافية"
-            >
-              <Plus className="h-5 w-5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="top" align="end" className="min-w-[180px]">
-            <DropdownMenuItem
-              onClick={handleAddFile}
-              className="gap-2 cursor-pointer"
-            >
-              <Paperclip className="h-4 w-4" />
-              <span>إضافة مرفق</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={onOpenTemplates}
-              className="gap-2 cursor-pointer"
-            >
-              <LayoutGrid className="h-4 w-4" />
-              <span>قوالبي</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={handleOpenCommands}
-              className="gap-2 cursor-pointer"
-            >
-              <Terminal className="h-4 w-4" />
-              <span>الأوامر</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-10 w-10 shrink-0"
+          onClick={handleAddFile}
+          disabled={isStreaming}
+          aria-label="إضافة مرفق"
+        >
+          <Paperclip className="h-5 w-5" />
+        </Button>
 
-        {/* Send / Stop button */}
         {isStreaming ? (
           <Button
             variant="destructive"

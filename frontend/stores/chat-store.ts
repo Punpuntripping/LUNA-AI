@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentFamily, Citation, PendingFile } from "@/types";
+import type { Citation, PendingFile } from "@/types";
 
 const DEFAULT_SPLIT_RATIO = 50;
 const SPLIT_RATIO_KEY = "luna.workspace.splitRatio";
@@ -39,11 +39,6 @@ interface ChatState {
   pendingFiles: PendingFile[];
   pendingMessage: string | null;
   error: string | null;
-  /** Per-message agent family override (set from @ commands or selector, sent with the message) */
-  selectedAgentFamily: AgentFamily | null;
-  /** Persistent UI agent selector state (null = auto/router). Drives the pill display. */
-  selectedAgent: AgentFamily | null;
-  modifiers: string[];
   workspace: WorkspaceUiState;
   isAgentRunning: boolean;
   runningAgentFamily: string | null;
@@ -64,16 +59,11 @@ interface ChatState {
   setAbortController: (controller: AbortController | null) => void;
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
-  setSelectedAgentFamily: (family: AgentFamily | null) => void;
-  /** Set the persistent UI agent selector (null = auto/router) */
-  setSelectedAgent: (agent: AgentFamily | null) => void;
-  setModifiers: (mods: string[]) => void;
   openWorkspaceItem: (itemId: string) => void;
   closeWorkspaceItem: () => void;
   closeWorkspace: () => void;
   toggleWorkspace: () => void;
   setSplitRatio: (ratio: number) => void;
-  resetAgentSelection: () => void;
   startAgentRun: (agentFamily: string, subtype?: string | null) => void;
   finishAgentRun: () => void;
   startReconnect: () => void;
@@ -96,9 +86,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingFiles: [],
   pendingMessage: null,
   error: null,
-  selectedAgentFamily: null,
-  selectedAgent: null,
-  modifiers: [],
   workspace: { ...INITIAL_WORKSPACE, splitRatio: loadInitialSplitRatio() },
   isAgentRunning: false,
   runningAgentFamily: null,
@@ -172,13 +159,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearPendingMessage: () => set({ pendingMessage: null }),
 
-  setSelectedAgentFamily: (family) => set({ selectedAgentFamily: family }),
-
-  setSelectedAgent: (agent) =>
-    set({ selectedAgent: agent, selectedAgentFamily: agent }),
-
-  setModifiers: (mods) => set({ modifiers: mods }),
-
   openWorkspaceItem: (itemId) =>
     set((state) => ({
       workspace: { ...state.workspace, isOpen: true, openItemId: itemId },
@@ -213,9 +193,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
   },
 
-  resetAgentSelection: () =>
-    set({ selectedAgentFamily: null, modifiers: [] }),
-
   startAgentRun: (agentFamily, subtype) =>
     set({
       isAgentRunning: true,
@@ -229,8 +206,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       runningAgentFamily: null,
       runningAgentSubtype: null,
     }),
-  // Note: resetAgentSelection does NOT clear selectedAgent — that's the persistent
-  // UI selector. Only reset() clears the UI selector (e.g., on conversation switch).
 
   startReconnect: () =>
     set((state) => ({
@@ -251,9 +226,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingFiles: [],
       pendingMessage: null,
       error: null,
-      selectedAgentFamily: null,
-      selectedAgent: null,
-      modifiers: [],
       workspace: {
         isOpen: false,
         openItemId: null,

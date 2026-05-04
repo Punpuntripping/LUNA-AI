@@ -26,7 +26,6 @@ async def build_agent_context(
     Loads:
     - memory_md from artifacts table (if case-linked)
     - user_preferences from user_preferences table
-    - user_templates if agent is END_SERVICES
     - conversation_history from messages table
     - case_metadata from lawyer_cases table
     - document_summaries from case_documents table
@@ -79,14 +78,14 @@ async def build_agent_context(
 
     # Case-specific context loading
 
-    # Load memory_md from artifacts table
+    # Load memory_md from workspace_items (post-026 schema; subtype lives in metadata)
     try:
         mem_result = (
-            supabase.table("artifacts")
+            supabase.table("workspace_items")
             .select("content_md")
             .eq("user_id", user_id)
             .eq("case_id", case_id)
-            .eq("artifact_type", "memory_file")
+            .eq("metadata->>subtype", "memory_file")
             .is_("deleted_at", "null")
             .order("updated_at", desc=True)
             .limit(1)
@@ -126,21 +125,5 @@ async def build_agent_context(
             ctx.document_summaries = doc_result.data
     except Exception as e:
         logger.warning("Error loading document summaries: %s", e)
-
-    # Load user templates if END_SERVICES agent
-    if agent_family == AgentFamily.END_SERVICES:
-        try:
-            tmpl_result = (
-                supabase.table("user_templates")
-                .select("template_id, title, description, prompt_template, agent_family")
-                .eq("user_id", user_id)
-                .eq("is_active", True)
-                .is_("deleted_at", "null")
-                .execute()
-            )
-            if tmpl_result.data:
-                ctx.user_templates = tmpl_result.data
-        except Exception as e:
-            logger.warning("Error loading user templates: %s", e)
 
     return ctx

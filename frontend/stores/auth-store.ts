@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { User } from "@/types";
 import { setTokens, clearTokens, getAccessToken, authApi } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
+import { usePreferencesStore } from "@/stores/preferences-store";
 
 // Proactive refresh: refresh 5 minutes before token expiry
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -99,6 +100,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     cancelProactiveRefresh();
     clearTokens();
     await supabase.auth.signOut();
+    // Drop cached user-scoped preferences so a next sign-in rehydrates from DB.
+    usePreferencesStore.getState().reset();
     set({ user: null, isAuthenticated: false });
   },
 

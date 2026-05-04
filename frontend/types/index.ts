@@ -254,9 +254,9 @@ export interface SSEDone {
 // AGENTS & WORKSPACE ITEMS
 // ==========================================
 
-export type AgentFamily = 'deep_search' | 'end_services' | 'extraction' | 'memory' | 'router';
+export type AgentFamily = 'deep_search' | 'writing' | 'memory' | 'router';
 
-export type TaskType = 'deep_search' | 'end_services' | 'extraction';
+export type TaskType = 'deep_search' | 'writing';
 
 export type WorkspaceItemKind =
   | 'attachment'
@@ -332,7 +332,7 @@ export interface WorkspaceFileUrlResponse {
 }
 
 // ==========================================
-// PREFERENCES & TEMPLATES
+// PREFERENCES
 // ==========================================
 
 export type DetailLevel = "low" | "medium" | "high";
@@ -351,29 +351,9 @@ export interface UpdatePreferencesRequest {
   preferences: UserPreferencesData;
 }
 
-export interface UserTemplate {
-  template_id: string;
-  user_id: string;
-  title: string;
-  description: string;
-  prompt_template: string;
-  agent_family: AgentFamily;
-  is_active: boolean;
-  created_at: string;
-}
-
-export interface TemplateListResponse {
-  templates: UserTemplate[];
-  total: number;
-}
-
 // ==========================================
 // SSE EVENTS (Agent)
 // ==========================================
-
-export interface SSEAgentSelected {
-  agent_family: AgentFamily;
-}
 
 export interface SSEAgentRunStarted {
   agent_family: AgentFamily;
@@ -426,6 +406,5 @@ export interface SSEWorkspaceItemUnlocked {
 
 export interface SendMessagePayload {
   content: string;
-  agent_family?: AgentFamily | null;
   attachment_ids?: string[] | null;
 }

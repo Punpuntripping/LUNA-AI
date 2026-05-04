@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import time
 
+from agents.deep_search_v4.shared.sector_vocab.regulations import canonicalize_sectors
+
 from .agent import create_planner_agent, PLANNER_DEFAULT_MODEL
 from .models import PlannerDeps, PlannerOutput
 from .prompts import build_planner_user_message
@@ -83,6 +85,17 @@ async def run_planner(query: str, deps: PlannerDeps) -> PlannerOutput:
             },
         )
         return fallback
+
+    # Canonicalize sectors against the VALID_SECTORS vocabulary — catches
+    # near-misses ("السياحة" → "السياحة والترفيه") and drops invalid names.
+    if output.sectors:
+        canonical = canonicalize_sectors(output.sectors)
+        if canonical != output.sectors:
+            logger.info(
+                "planner: canonicalized sectors %s -> %s",
+                output.sectors, canonical,
+            )
+        output.sectors = canonical or None
 
     duration = time.perf_counter() - t0
     _emit(

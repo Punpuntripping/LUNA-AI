@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Case card</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .case { border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); padding:10px 12px; max-width:320px; }
+  .head { display:flex; align-items:center; gap:8px; font-size:14px; font-weight:500; }
+  .head svg { width:14px; height:14px; color:var(--muted-foreground); }
+
+  .pills { display:flex; gap:6px; margin-top:8px; }
+
+  /* Unified neutral case-type pill — icon carries identity */
+  .type { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:9999px; font-size:10px; font-weight:500; background:var(--muted); color:var(--foreground); }
+  .type svg { width:10px; height:10px; color:var(--muted-foreground); }
+
+  /* Priority — 3-step signal stays */
+  .prio { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:9999px; font-size:10px; font-weight:500; }
+  .prio .dot { width:5px; height:5px; border-radius:50%; }
+  .hi { background:var(--status-danger-bg); color:var(--status-danger-fg); }
+  .hi .dot { background:var(--status-danger-fg); }
+
+  .meta { display:flex; gap:12px; margin-top:8px; font-size:12px; color:var(--muted-foreground); }
+  .meta span { display:inline-flex; align-items:center; gap:4px; }
+  .meta svg { width:14px; height:14px; }
+</style>
+</head>
+<body>
+  <div class="case">
+    <div class="head"><i data-lucide="briefcase"></i><span>قضية الدار البيضاء للاستثمار</span></div>
+    <div class="pills">
+      <span class="type"><i data-lucide="building-2"></i>عقاري</span>
+      <span class="prio hi"><span class="dot"></span>عالية</span>
+    </div>
+    <div class="meta"><span><i data-lucide="message-square"></i>12</span><span><i data-lucide="file-text"></i>8</span></div>
+  </div>
+<script>lucide.createIcons();</script>
+</body>
+</html>

@@ -1,0 +1,685 @@
+{
+  "total_queries": 5,
+  "sufficient_queries": 3,
+  "total_articles_kept": 26,
+  "total_sections_kept": 12,
+  "total_dropped": 79,
+  "total_input_tokens": 60665,
+  "total_output_tokens": 35084,
+  "total_requests": 7,
+  "queries": [
+    {
+      "query": "إجراءات طلب الخلع أو التطليق القضائي بطلب من الزوجة",
+      "sufficient": true,
+      "articles_kept": 5,
+      "sections_kept": 2,
+      "dropped": 14,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 7995,
+          "output_tokens": 3670,
+          "requests": 1,
+          "reasoning_tokens": 2745
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي الجوانب الإجرائية الرئيسية: إجراءات المصالحة في طلبات الخلع، أحكام الخلع والفسخ في نظام الأحوال الشخصية ولائحته، متطلبات الإثبات والتوثيق، والعوض. هناك 3 نتائج عالية الصلة و6 متوسطة، وتكفي للإجابة عن الاستعلام الإجرائي."
+    },
+    {
+      "query": "ضوابط انقضاء العدة وإنهاء الرابطة الزوجية",
+      "sufficient": true,
+      "articles_kept": 6,
+      "sections_kept": 2,
+      "dropped": 13,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10460,
+          "output_tokens": 6674,
+          "requests": 1,
+          "reasoning_tokens": 5505
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي التعريف القانوني للعدة، وجوبها تبعاً للفرقة، بداية حسابها، إثبات انقضائها، وأثرها النهائي على إباحة الزواج، مما يجيب بشكل وافٍ عن المبدأ المجرد الذي يحكم علاقة انقضاء العدة بانتهاء الرابطة الزوجية."
+    },
+    {
+      "query": "إجراءات توثيق الطلاق أو الخلع لدى المحكمة المختصة",
+      "sufficient": true,
+      "articles_kept": 9,
+      "sections_kept": 2,
+      "dropped": 10,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 12672,
+          "output_tokens": 6833,
+          "requests": 1,
+          "reasoning_tokens": 5705
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 12,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 20,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "تغطي النتائج المحتفظ بها بشكل مباشر وشامل إجراءات توثيق الطلاق والخلع لدى المحكمة، بدءاً من مرحلة المصالحة الإلزامية، مروراً بالبيانات المطلوبة في الطلب وصك الحكم، وانتهاءً بالمهلة الزمنية للتوثيق وشروط إثبات الخلع والعوض."
+    },
+    {
+      "query": "الأثر القانوني لرفض الزوجة معاشرت زوجها دون إجراءات نظامية",
+      "sufficient": false,
+      "articles_kept": 4,
+      "sections_kept": 2,
+      "dropped": 21,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9460,
+          "output_tokens": 4955,
+          "requests": 1,
+          "reasoning_tokens": 3937
+        },
+        {
+          "round": 2,
+          "input_tokens": 4242,
+          "output_tokens": 3543,
+          "requests": 1,
+          "reasoning_tokens": 3114
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "تم الإبقاء على بابين رئيسيين يغطيان الشقاق والفسخ والنفقة كأثر للرفض، لكن النتائج لا تزال على مستوى العناوين العامة وتحتاج لتفصيل المواد الداخلية لتأكيد الأثر القانوني الدقيق للرفض دون إجراءات نظامية."
+    },
+    {
+      "query": "حكم عدة المرأة في حالة الخلع أو التطليق",
+      "sufficient": false,
+      "articles_kept": 2,
+      "sections_kept": 4,
+      "dropped": 21,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11591,
+          "output_tokens": 7100,
+          "requests": 1,
+          "reasoning_tokens": 6227
+        },
+        {
+          "round": 2,
+          "input_tokens": 4245,
+          "output_tokens": 2309,
+          "requests": 1,
+          "reasoning_tokens": 1910
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "النتائج المعروضة عبارة عن أبواب عامة لنظام الأحوال الشخصية ولا تحتوي على نص صريح يحدد مدة أو حكم عدة الخلع والتطليق، مع وجود إشارات غير مباشرة في فصول الفسخ والنفقة فقط."
+    }
+  ]
+}

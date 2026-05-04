@@ -3,20 +3,18 @@
 from agents.model_registry import create_model
 
 AGENT_MODELS: dict[str, str] = {
-    "deep_search_planner": "or-gemini-3.1-pro-tools",   # tool-calling planner
-    "search_regulations":  "or-gemini-3.1-pro-tools",   # tool-calling executor
+    "deep_search_planner": "qwen3.6-plus",   # tool-calling planner
+    "search_regulations":  "qwen3.6-plus",   # tool-calling executor
     "search_cases_courts": "gemini-2.5-flash",
     "search_compliance":   "gemini-2.5-flash",
-    "router":              "or-gemini-3.1-pro-tools",   # tool-calling router
-    "end_services":        "gemini-2.5-flash",
-    "extraction":          "gemini-2.5-flash",
+    "router":              "qwen3.6-plus",   # tool-calling router
     "memory":              "gemini-2.5-flash",
     # Deep Search V2 (revised) — hierarchical supervisor pattern
-    "deep_search_v2_plan_agent": "or-gemini-3.1-pro",   # PlanAgent (supervisor)
+    "deep_search_v2_plan_agent": "qwen3.6-plus",        # PlanAgent (supervisor)
     "deep_search_v2_expander":   "or-minimax-m2.7",     # QueryExpander (inner loop)
     "deep_search_v2_aggregator": "or-minimax-m2.7",     # Aggregator (inner loop)
     # Deep Search V3 — multi-executor supervisor pattern
-    "deep_search_v3_plan_agent":          "or-gemini-3.1-pro-tools",   # PlanAgent supervisor (customtools variant)
+    "deep_search_v3_plan_agent":          "qwen3.6-plus",            # PlanAgent supervisor
     "deep_search_v3_regulations_executor": "or-minimax-m2.7",    # Regulations executor
     "deep_search_v3_cases_executor":       "or-minimax-m2.7",    # Cases/Courts executor
     "deep_search_v3_compliance_executor":  "or-minimax-m2.7",    # Government Services executor

@@ -1,0 +1,775 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 1,
+  "total_articles_kept": 6,
+  "total_sections_kept": 8,
+  "total_dropped": 115,
+  "total_input_tokens": 102397,
+  "total_output_tokens": 21876,
+  "total_requests": 12,
+  "queries": [
+    {
+      "query": "آليات فض منازعات العمل وإجراءاتها النظامية",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 7,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8990,
+          "output_tokens": 1043,
+          "requests": 1,
+          "reasoning_tokens": 650
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج المتعلقة بأنظمة متخصصة (تأمين ضد تعطل، تفتيش، معايير سلامة) لا تغطي آليات فض منازعات العمل العامة؛ حاجة لاستخدام نظام العمل كمرجع أساسي"
+    },
+    {
+      "query": "حقوق العامل المالية عند انتهاء علاقة العمل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 11,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10459,
+          "output_tokens": 1123,
+          "requests": 1,
+          "reasoning_tokens": 716
+        },
+        {
+          "round": 2,
+          "input_tokens": 2774,
+          "output_tokens": 709,
+          "requests": 1,
+          "reasoning_tokens": 481
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 1,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.1
+          },
+          {
+            "position": 3,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 9,
+            "rrf": 0.2
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من نظام التأمين ضد البطالة الذي يختلف جوهرياً عن مستحقات نهاية الخدمة؛ لا توجد مواد كافية للإجابة عن الاستعلام الفرعي حول الحقوق المالية عند انتهاء العلاقة العمالية"
+    },
+    {
+      "query": "الإجراءات والمواعيد لنقل نزاع العمل من مكتب العمل إلى المحكمة العمالية",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 6,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 30943,
+          "output_tokens": 1180,
+          "requests": 3,
+          "reasoning_tokens": 505
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ],
+        "unfolded": []
+      }
+    },
+    {
+      "query": "تحمل صاحب العمل أتعاب المحاماة في نزاعات العمل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9153,
+          "output_tokens": 2329,
+          "requests": 1,
+          "reasoning_tokens": 1405
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج المتعلقة بأنظمة التأمين والضبط والمعايير لا تحتوي على نصوص صريحة حول تحمل أتعاب المحاماة في نزاعات العمل - المسألة تتطلب بحثاً مستقلاً في قانون المرافعات أو نظام العمل العام"
+    },
+    {
+      "query": "التعويض عن المماطلة في صرف مستحقات العمال",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 19,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8822,
+          "output_tokens": 2529,
+          "requests": 1,
+          "reasoning_tokens": 1581
+        },
+        {
+          "round": 2,
+          "input_tokens": 2786,
+          "output_tokens": 709,
+          "requests": 1,
+          "reasoning_tokens": 576
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 12,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من نظام التأمين ضد التعطل عن العمل — لا علاقة لها بمسألة التعويض عن مماطلة أصحاب العمل في دفع المستحقات العمالية"
+    },
+    {
+      "query": "التزامات صاحب العمل في تسوية مستحقات العاملين",
+      "sufficient": true,
+      "articles_kept": 4,
+      "sections_kept": 5,
+      "dropped": 12,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10160,
+          "output_tokens": 3505,
+          "requests": 1,
+          "reasoning_tokens": 2559
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 12,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143,
+            "relevance": "high"
+          },
+          {
+            "position": 20,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "9 نتائج محتفظ بها: 6 عالية الصلة (أنظمة عامة: التأمينات، التأمين ضد العطل، المخصص المالي) و3 متوسطة (غرامات إنفاذ وتعويضات أخطار). النتائج المجالية المحددة (دفاع مدني، عمالة منزلية، تأشيرات) حُذفت حسب توجيهات الفلترة الهيكلية. الكفاية ≥80% للإجابة عن الاستعلام الفرعي حول التزامات التسوية المالية."
+    },
+    {
+      "query": "حق العامل في رفض الصلح قبل صدور الحكم القضائي",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 2,
+      "dropped": 39,
+      "classification_rounds": 2,
+      "db_unfolds": 6,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8861,
+          "output_tokens": 3577,
+          "requests": 1,
+          "reasoning_tokens": 2311
+        },
+        {
+          "round": 2,
+          "input_tokens": 9449,
+          "output_tokens": 5172,
+          "requests": 1,
+          "reasoning_tokens": 4297
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.13335
+          },
+          {
+            "position": 14,
+            "rrf": 0.13335
+          },
+          {
+            "position": 15,
+            "rrf": 0.1
+          },
+          {
+            "position": 16,
+            "rrf": 0.1
+          },
+          {
+            "position": 17,
+            "rrf": 0.1
+          },
+          {
+            "position": 18,
+            "rrf": 0.1
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 22,
+            "rrf": 0.1
+          },
+          {
+            "position": 23,
+            "rrf": 0.1
+          },
+          {
+            "position": 24,
+            "rrf": 0.1
+          },
+          {
+            "position": 25,
+            "rrf": 0.1
+          },
+          {
+            "position": 26,
+            "rrf": 0.1
+          },
+          {
+            "position": 27,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          }
+        ]
+      },
+      "summary_note": "نتيجة واحدة فقط ذات صلة متوسطة، غير كافية للإجابة على الاستعلام الفرعي بدقة"
+    }
+  ]
+}

@@ -55,7 +55,7 @@ class DispatchAgent(BaseModel):
     """Router dispatches a specialist agent (Tier 2)."""
     type: Literal["dispatch"] = "dispatch"
     agent_family: Literal[
-        "deep_search", "end_services", "extraction", "writing", "memory"
+        "deep_search", "writing", "memory"
     ] = Field(
         description="Which specialist family to dispatch."
     )

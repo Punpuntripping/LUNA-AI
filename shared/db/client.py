@@ -17,6 +17,34 @@ from shared.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _harden_postgrest_session(client: Client) -> None:
+    """Replace the postgrest httpx session with an HTTP/1.1-only client.
+
+    Why: deep_search v4 fans out reg/compliance/case search via asyncio.to_thread.
+    The shared sync supabase client wraps a single httpx.Client; under HTTP/2
+    multiplexing, concurrent threaded writes overflow the send window and
+    raise httpcore.WriteError (broken pipe). HTTP/1.1 with a connection pool
+    avoids the multiplexing path entirely and is more forgiving under
+    threaded sync concurrency.
+    """
+    try:
+        import httpx
+        old = client.postgrest.session
+        client.postgrest.session = httpx.Client(
+            base_url=old.base_url,
+            headers=old.headers,
+            timeout=old.timeout,
+            http2=False,
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
+            ),
+        )
+    except Exception as e:
+        logger.warning("Could not harden postgrest session: %s", e)
+
+
 @lru_cache(maxsize=1)
 def get_supabase_client() -> Client:
     """
@@ -29,6 +57,7 @@ def get_supabase_client() -> Client:
         supabase_url=settings.SUPABASE_URL,
         supabase_key=settings.SUPABASE_SERVICE_KEY,  # Service role for backend operations
     )
+    _harden_postgrest_session(client)
     logger.info("Supabase sync client initialized")
     return client
 

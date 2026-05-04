@@ -27,8 +27,6 @@ import type {
   WorkspaceFileUrlResponse,
   UserPreferences,
   UserPreferencesData,
-  UserTemplate,
-  TemplateListResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -310,7 +308,7 @@ export const messagesApi = {
     conversationId: string,
     content: string,
     signal?: AbortSignal,
-    options?: { agent_family?: string; attachment_ids?: string[] }
+    options?: { attachment_ids?: string[] }
   ): Promise<Response> => {
     const url = `${API_BASE}${API_PREFIX}/conversations/${conversationId}/messages`;
     const doFetch = () => {
@@ -321,7 +319,6 @@ export const messagesApi = {
         headers["Authorization"] = `Bearer ${accessToken}`;
       }
       const body: Record<string, unknown> = { content };
-      if (options?.agent_family) body.agent_family = options.agent_family;
       if (options?.attachment_ids?.length) body.attachment_ids = options.attachment_ids;
       return fetch(url, {
         method: "POST",
@@ -465,21 +462,4 @@ export const preferencesApi = {
 
   update: (preferences: UserPreferencesData) =>
     api.patch<UserPreferences>("/preferences", { preferences }),
-};
-
-// -----------------------------------------------
-// Templates API
-// -----------------------------------------------
-
-export const templatesApi = {
-  list: () => api.get<TemplateListResponse>("/templates"),
-
-  create: (data: { title: string; description?: string; prompt_template: string; agent_family?: string }) =>
-    api.post<UserTemplate>("/templates", data),
-
-  update: (templateId: string, data: Record<string, unknown>) =>
-    api.patch<UserTemplate>(`/templates/${templateId}`, data),
-
-  delete: (templateId: string) =>
-    api.delete<{ success: boolean }>(`/templates/${templateId}`),
 };

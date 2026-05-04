@@ -30,6 +30,9 @@ Two modes: **General Q&A** (broad legal questions) and **Case-specific** (docume
 | Wave 7A | SSE hardening: heartbeat, disconnect detection, CancelledError | DONE | `wave_7a_sse_hardening.md` |
 | Wave 7B | Security & deployment: headers, Docker, healthcheck, rate limiting, error boundary | DONE | `wave_7b_security_deployment.md` |
 | Wave 7C | Operational maturity: error codes, audit logging, CI, reconnect, optimistic updates | DONE | `wave_7c_operational_maturity.md` |
+| Wave 8 | Conversation Workspace: two-pane layout, unified workspace_items, chip context bar, MD notes, agent_writing collab | NOT STARTED | `wave_8_workspace.md` |
+| Wave 9 | Drop task lifecycle — router-centric dispatch + `agent_runs` audit table | NOT STARTED | `wave_9_agent_runs.md` |
+| Wave 10 | Carry-over inventory from Wave 9 (real LLM behind memory agent, retry UI, semantic dirtiness, etc.) | STUB | `wave_10_stub.md` |
 
 ---
 

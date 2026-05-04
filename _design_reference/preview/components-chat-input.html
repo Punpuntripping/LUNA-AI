@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Chat input</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .agent { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px; border:1px solid oklch(42% 0.07 195 / 0.3); background:oklch(42% 0.07 195 / 0.05); color:var(--luna-primary); border-radius:9999px; font-size:14px; font-weight:500; margin-bottom:10px; }
+  .agent svg { width:14px; height:14px; }
+  .row { display:flex; gap:8px; align-items:flex-end; }
+  .ta { flex:1; background:oklch(95.5% 0.005 265 / 0.5); border:1px solid var(--border); border-radius:12px; padding:10px 14px; font-size:14px; color:var(--muted-foreground); min-height:42px; }
+  .ib { width:40px; height:40px; border-radius:var(--radius-lg); display:inline-flex; align-items:center; justify-content:center; border:1px solid transparent; cursor:pointer; }
+  .ib.plus { background:transparent; color:var(--foreground); }
+  .ib.plus:hover { background:var(--accent); }
+  .ib.send { background:var(--luna-primary); color:var(--luna-primary-foreground); }
+  svg { width:18px; height:18px; }
+</style>
+</head>
+<body>
+  <div class="agent"><i data-lucide="search"></i>بحث معمّق<i data-lucide="chevron-down"></i></div>
+  <div class="row">
+    <div class="ta">اكتب رسالتك هنا... (اكتب @ لعرض الأوامر)</div>
+    <button class="ib plus"><i data-lucide="plus"></i></button>
+    <button class="ib send"><i data-lucide="send"></i></button>
+  </div>
+<script>lucide.createIcons();</script>
+</body>
+</html>

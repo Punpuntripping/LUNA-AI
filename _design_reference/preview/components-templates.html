@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Template cards</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .row { display:flex; gap:10px; overflow:hidden; }
+  .c { display:flex; flex-direction:column; gap:6px; padding:14px; border:1px solid var(--border); border-radius:12px; min-width:200px; text-align:right; }
+  .c .t { font-size:14px; font-weight:500; }
+  .c .d { font-size:12px; color:var(--muted-foreground); }
+  .c .f { font-size:10px; font-weight:500; padding:2px 8px; border-radius:9999px; align-self:flex-start; margin-top:4px; }
+  .deep { background:oklch(60% 0.15 250 / 0.1); color:oklch(55% 0.15 250); }
+  .end  { background:oklch(55% 0.18 300 / 0.1); color:oklch(50% 0.18 300); }
+  .ext  { background:oklch(65% 0.15 50 / 0.1); color:oklch(55% 0.15 50); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="c"><span class="t">عقد إيجار تجاري</span><span class="d">إنشاء مسودة عقد إيجار</span><span class="f end">خدمات نهائية</span></div>
+    <div class="c"><span class="t">بحث في نظام العمل</span><span class="d">بحث معمق في نظام العمل السعودي</span><span class="f deep">بحث معمق</span></div>
+    <div class="c"><span class="t">تحليل عقد</span><span class="d">استخراج وتحليل بنود العقد</span><span class="f ext">استخراج</span></div>
+  </div>
+</body>
+</html>

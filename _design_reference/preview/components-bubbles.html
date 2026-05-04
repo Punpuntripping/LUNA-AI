@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Message bubbles</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    padding: 32px 20px;
+    background: var(--background);
+    font-family: var(--font-sans);
+    color: var(--foreground);
+  }
+  .page { max-width: 720px; margin: 0 auto; }
+
+  .section-head {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    direction: ltr;
+    text-align: right;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Conversation container */
+  .conversation {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;            /* generous breathing room between turns */
+    margin-bottom: 48px;
+  }
+
+  /* --- User turn (no bubble, prose style) --- */
+  .user-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .user-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .user-avatar {
+    width: 28px; height: 28px; border-radius: 9999px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600;
+    flex-shrink: 0;
+  }
+  .user-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  .user-time {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    margin-inline-start: auto;
+  }
+  .user-text {
+    font-size: 15px;
+    line-height: 1.75;
+    color: var(--foreground);
+    padding-inline-start: 38px;     /* align under name (avatar 28 + gap 10) */
+  }
+
+  /* --- Assistant turn (no bubble, prose style) --- */
+  .assistant-turn {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .assistant-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .assistant-avatar {
+    width: 28px; height: 28px; border-radius: 9999px;
+    background: var(--luna-primary);
+    color: var(--luna-primary-foreground);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .assistant-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+  .assistant-model {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--muted-foreground);
+    direction: ltr;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .assistant-model svg { width: 11px; height: 11px; }
+  .assistant-time {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    margin-inline-start: auto;
+  }
+  .assistant-text {
+    font-size: 15px;
+    line-height: 1.8;
+    color: var(--foreground);
+    padding-inline-start: 38px;
+  }
+  .assistant-text p { margin: 0 0 10px; }
+  .assistant-text p:last-child { margin-bottom: 0; }
+
+  .cites {
+    margin-top: 10px;
+    padding-inline-start: 38px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .cite {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    font-size: 11px;
+    color: var(--muted-foreground);
+    background: var(--background);
+  }
+  .cite svg { width: 11px; height: 11px; }
+
+  /* Action rail under assistant (optional) */
+  .actions {
+    margin-top: 6px;
+    padding-inline-start: 38px;
+    display: flex;
+    gap: 4px;
+  }
+  .action-btn {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .action-btn:hover { background: var(--muted); color: var(--foreground); }
+  .action-btn svg { width: 14px; height: 14px; }
+
+</style>
+</head>
+<body>
+  <div class="page">
+
+    <div class="section-head">Conversation — no-bubble / prose style</div>
+
+    <div class="conversation">
+
+      <!-- User turn -->
+      <div class="user-turn">
+        <div class="user-header">
+          <span class="user-avatar">ل</span>
+          <span class="user-name">ليلى القحطاني</span>
+          <span class="user-time">منذ دقيقتين</span>
+        </div>
+        <div class="user-text">
+          ما هي حقوق العامل في نظام العمل السعودي؟
+        </div>
+      </div>
+
+      <!-- Assistant turn -->
+      <div class="assistant-turn">
+        <div class="assistant-header">
+          <span class="assistant-avatar">ل</span>
+          <span class="assistant-name">لونا</span>
+          <span class="assistant-model"><i data-lucide="bot"></i> claude-sonnet-4</span>
+          <span class="assistant-time">منذ دقيقة</span>
+        </div>
+        <div class="assistant-text">
+          <p>نظام العمل السعودي يكفل للعامل مجموعة من الحقوق الأساسية، تشمل الأجر العادل وساعات العمل المحددة وإجازاته السنوية.</p>
+          <p>كما يضمن النظام الحماية من الفصل التعسفي، ويلزم المشغّل بتقديم إشعار مسبق قبل إنهاء العقد وفقاً للمادة 75.</p>
+        </div>
+        <div class="cites">
+          <span class="cite"><i data-lucide="scale"></i>نظام العمل — مادة 61</span>
+          <span class="cite"><i data-lucide="scale"></i>نظام العمل — مادة 75</span>
+          <span class="cite"><i data-lucide="scale"></i>نظام العمل — مادة 104</span>
+        </div>
+        <div class="actions">
+          <button class="action-btn" aria-label="Copy"><i data-lucide="copy"></i></button>
+          <button class="action-btn" aria-label="Good"><i data-lucide="thumbs-up"></i></button>
+          <button class="action-btn" aria-label="Bad"><i data-lucide="thumbs-down"></i></button>
+          <button class="action-btn" aria-label="Regenerate"><i data-lucide="rotate-cw"></i></button>
+        </div>
+      </div>
+
+      <!-- Follow-up user turn -->
+      <div class="user-turn">
+        <div class="user-header">
+          <span class="user-avatar">ل</span>
+          <span class="user-name">ليلى القحطاني</span>
+          <span class="user-time">الآن</span>
+        </div>
+        <div class="user-text">
+          وماذا عن الإجازة السنوية؟ كم يوماً يستحقها العامل؟
+        </div>
+      </div>
+
+      <!-- Assistant follow-up -->
+      <div class="assistant-turn">
+        <div class="assistant-header">
+          <span class="assistant-avatar">ل</span>
+          <span class="assistant-name">لونا</span>
+          <span class="assistant-model"><i data-lucide="bot"></i> claude-sonnet-4</span>
+          <span class="assistant-time">الآن</span>
+        </div>
+        <div class="assistant-text">
+          <p>يستحق العامل إجازة سنوية مدفوعة الأجر لا تقل عن 21 يوماً، تُزاد إلى 30 يوماً إذا أمضى في خدمة المشغّل خمس سنوات متصلة.</p>
+        </div>
+        <div class="cites">
+          <span class="cite"><i data-lucide="scale"></i>نظام العمل — مادة 109</span>
+        </div>
+        <div class="actions">
+          <button class="action-btn" aria-label="Copy"><i data-lucide="copy"></i></button>
+          <button class="action-btn" aria-label="Good"><i data-lucide="thumbs-up"></i></button>
+          <button class="action-btn" aria-label="Bad"><i data-lucide="thumbs-down"></i></button>
+          <button class="action-btn" aria-label="Regenerate"><i data-lucide="rotate-cw"></i></button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+<script>lucide.createIcons();</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Components / Buttons</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; align-items:center; }
+  .btn { display:inline-flex; align-items:center; gap:6px; height:36px; padding:0 14px; border-radius:var(--radius-lg); font-size:14px; font-weight:500; border:1px solid transparent; cursor:pointer; font-family:inherit; }
+  .btn.sm { height:32px; padding:0 10px; font-size:13px; }
+  .btn.icon { width:36px; padding:0; justify-content:center; }
+  .primary { background:var(--luna-primary); color:var(--luna-primary-foreground); }
+  .primary:hover { background:oklch(42% 0.07 195 / 0.9); }
+  .secondary { background:var(--luna-brand-light); color:oklch(30% 0.07 195); }
+  .outline { background:var(--background); border-color:var(--input); color:var(--foreground); }
+  .outline:hover { background:var(--accent); }
+  .ghost { background:transparent; color:var(--foreground); }
+  .ghost:hover { background:var(--accent); }
+  .destr { background:var(--destructive); color:var(--destructive-foreground); }
+  .link { background:transparent; color:var(--luna-primary); text-decoration:underline; text-underline-offset:4px; }
+  svg { width:16px; height:16px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <button class="btn primary"><i data-lucide="send"></i>إرسال</button>
+    <button class="btn secondary">حفظ</button>
+    <button class="btn outline">إلغاء</button>
+    <button class="btn ghost">تعديل</button>
+    <button class="btn destr"><i data-lucide="trash-2"></i>حذف</button>
+    <button class="btn link">تسجيل الدخول</button>
+  </div>
+  <div class="row">
+    <button class="btn sm primary">تسجيل الدخول</button>
+    <button class="btn sm outline">إعادة المحاولة</button>
+    <button class="btn icon outline"><i data-lucide="plus"></i></button>
+    <button class="btn icon ghost"><i data-lucide="more-horizontal"></i></button>
+    <button class="btn primary" disabled style="opacity:0.5;cursor:not-allowed">معطّل</button>
+  </div>
+<script>lucide.createIcons();</script>
+</body>
+</html>

@@ -1,0 +1,1021 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 5,
+  "total_articles_kept": 39,
+  "total_sections_kept": 17,
+  "total_dropped": 105,
+  "total_input_tokens": 134742,
+  "total_output_tokens": 32994,
+  "total_requests": 13,
+  "queries": [
+    {
+      "query": "حقوق الدائن في التصرف بالمرهون العقاري والمنقول",
+      "sufficient": true,
+      "articles_kept": 7,
+      "sections_kept": 0,
+      "dropped": 10,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8859,
+          "output_tokens": 2431,
+          "requests": 1,
+          "reasoning_tokens": 1469
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          }
+        ]
+      },
+      "summary_note": "تم الاحتفاظ بنتائج أنظمة الرهن (العقاري والتجاري) التي تتناول مباشرة حقوق الدائن في التصرف بالمضمون، مع استبعاد الأنظمة القطاعية الخاصة (بلدية/دولة/تمويل). التوسع مطلوب لأبواب الفصول الشاملة لضمان اكتمال المحتوى. النسبة كافية للإجابة عن الاستعلام."
+    },
+    {
+      "query": "حقوق المقترض بعد استرداد السيارة من شركة التمويل",
+      "sufficient": true,
+      "articles_kept": 7,
+      "sections_kept": 3,
+      "dropped": 10,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9580,
+          "output_tokens": 2833,
+          "requests": 1,
+          "reasoning_tokens": 1792
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 12,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 17,
+            "rrf": 0.1143
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها (13 نتيجة: 5 عالية الصلة و8 متوسطة) تغطي بشكل كافٍ إطار حقوق المقترض بعد الاسترداد، خاصة أنظمة الإيجار التمويلي وضوابط التسلم والتحصيل. النتائج المحذوفة إما بلديات لمركبات مهملة أو رهن عقاري أو تأمين، لذا التقدير الكافي 80%."
+    },
+    {
+      "query": "حظر الاستيفاء المزدوج في عقود التمويل المضمونة",
+      "sufficient": false,
+      "articles_kept": 2,
+      "sections_kept": 3,
+      "dropped": 30,
+      "classification_rounds": 2,
+      "db_unfolds": 3,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10867,
+          "output_tokens": 1016,
+          "requests": 1,
+          "reasoning_tokens": 607
+        },
+        {
+          "round": 2,
+          "input_tokens": 8734,
+          "output_tokens": 2696,
+          "requests": 1,
+          "reasoning_tokens": 1463
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 28,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 29,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.2
+          },
+          {
+            "position": 18,
+            "rrf": 0.2
+          },
+          {
+            "position": 19,
+            "rrf": 0.2
+          },
+          {
+            "position": 20,
+            "rrf": 0.2
+          },
+          {
+            "position": 21,
+            "rrf": 0.2
+          },
+          {
+            "position": 22,
+            "rrf": 0.2
+          },
+          {
+            "position": 23,
+            "rrf": 0.2
+          },
+          {
+            "position": 24,
+            "rrf": 0.2
+          },
+          {
+            "position": 25,
+            "rrf": 0.2
+          },
+          {
+            "position": 26,
+            "rrf": 0.2
+          },
+          {
+            "position": 27,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "جودة النتائج الحالية غير كافية للإجابة الشاملة — الاحتفاظ بـ3 نتائج عالية ووسطى الصلة يحتاج توسع إضافي لتغطية مبادئ منع الإثراء بلا سبب والاستيفاء المزدوج بشكل مفصل"
+    },
+    {
+      "query": "إجراءات نقل ملكية السيارة المستردة من جهة التمويل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 1,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8964,
+          "output_tokens": 4575,
+          "requests": 1,
+          "reasoning_tokens": 4494
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      }
+    },
+    {
+      "query": "الإجراءات النظامية لاسترداد المركبات من قبل شركات التمويل",
+      "sufficient": true,
+      "articles_kept": 9,
+      "sections_kept": 4,
+      "dropped": 12,
+      "classification_rounds": 2,
+      "db_unfolds": 5,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9648,
+          "output_tokens": 3092,
+          "requests": 1,
+          "reasoning_tokens": 2159
+        },
+        {
+          "round": 2,
+          "input_tokens": 17219,
+          "output_tokens": 2225,
+          "requests": 1,
+          "reasoning_tokens": 1754
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 1,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 6,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.08,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.08,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي الإجراءات النظامية للاسترداد من قواعد التصرف وضوابط التحصيل بشكل شامل، مع تحديد المتطلبات الزمنية والمستندات والشروط المسبقة"
+    },
+    {
+      "query": "مصير الفائض من بيع السيارة المستردة بالتمويل",
+      "sufficient": true,
+      "articles_kept": 14,
+      "sections_kept": 1,
+      "dropped": 28,
+      "classification_rounds": 2,
+      "db_unfolds": 5,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 22065,
+          "output_tokens": 3327,
+          "requests": 2,
+          "reasoning_tokens": 1503
+        },
+        {
+          "round": 2,
+          "input_tokens": 14884,
+          "output_tokens": 3264,
+          "requests": 1,
+          "reasoning_tokens": 2113
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 14,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 15,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 17,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 18,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 19,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 20,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 21,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 22,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 23,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 24,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 25,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 26,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 27,
+            "rrf": 0.2,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          }
+        ]
+      },
+      "summary_note": "تم فلترة المواد 1-13 كـ drop لأنها تنتمي لنظام النقل البري (عقوبات إدارية وليست عقود تمويل). المواد 14-27 ذات صلة مباشرة بإجراءات استرداد الأصول الممولة والتصرف فيها، والمادة 27 هي الأكثر تحديداً في بيان مصير المتبقى. تم الاحتفاظ بـ 13 نتيجة عالية الصلة و6 متوسطة الصلة ضمن الحد الأقصى المسموح."
+    },
+    {
+      "query": "حق شركة التمويل في بيع السيارة المستردة من العميل",
+      "sufficient": true,
+      "articles_kept": 0,
+      "sections_kept": 6,
+      "dropped": 14,
+      "classification_rounds": 2,
+      "db_unfolds": 5,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 20995,
+          "output_tokens": 3321,
+          "requests": 2,
+          "reasoning_tokens": 1589
+        },
+        {
+          "round": 2,
+          "input_tokens": 2927,
+          "output_tokens": 4214,
+          "requests": 1,
+          "reasoning_tokens": 3958
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.08,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.05,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          },
+          {
+            "position": 2,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها (خاصة [4]) توفر الأساس القانوني لإجراءات بيع الأصول المستردة مع توضيح المتطلبات الزمنية والإجرائية اللازمة."
+    }
+  ]
+}

@@ -1,0 +1,319 @@
+{
+  "total_queries": 5,
+  "sufficient_queries": 0,
+  "total_articles_kept": 1,
+  "total_sections_kept": 1,
+  "total_dropped": 43,
+  "total_input_tokens": 59385,
+  "total_output_tokens": 8719,
+  "total_requests": 6,
+  "queries": [
+    {
+      "query": "التعويض عن الضرر الناتج عن تأخر صرف نهاية الخدمة",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 1,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10707,
+          "output_tokens": 1140,
+          "requests": 1,
+          "reasoning_tokens": 1003
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "لا توجد نتائج مباشرة بخصوص تعويض التأخير في نهاية الخدمة - معظم النتائج تتعلق بأنظمة أخرى (تعطل، إعاقات، تأمين منزلي)"
+    },
+    {
+      "query": "مهلة نقل الدعوى العمالية من مكتب العمل للمحكمة",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 1,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 20402,
+          "output_tokens": 1695,
+          "requests": 2,
+          "reasoning_tokens": 1496
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      }
+    },
+    {
+      "query": "حق العامل في رفض الصلح قبل صدور الحكم القضائي",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 19,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8863,
+          "output_tokens": 1922,
+          "requests": 1,
+          "reasoning_tokens": 1054
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المعروضة لا تحتوي على نص قانوني مباشر يحقّق حق العامل في رفض الصلح قبل الحكم القضائي؛ معظم المواد تتعلق بأنظمة تأمين اجتماعي وتأمين بطالة وإجراءات تعويضات وليست أحكاماً إجرائية للصلح"
+    },
+    {
+      "query": "أحكام أتعاب المحاماة في الدعاوى العمالية",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10020,
+          "output_tokens": 1963,
+          "requests": 1,
+          "reasoning_tokens": 897
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج تم تصنيفها كـ drop لأن أسماء الأنظمة تشير إلى قطاعات متخصصة (ضمان اجتماعي، إعفاءات عمالية، سلامة مهنية، تأشيرات، إعاقة) لا تطرح أحكام أتعاب المحاماة في الدعاوى العمالية بشكل مباشر. الاستعلام الفرعي يتطلب مصادر خاصة بالأجور القانونية للمحامين في قضايا العمل (مثل نظام المحاماة أو لائحة أتعاب المحاكم أو أحكام النقض) لم يتم تضمينها في هذه النتيجة."
+    },
+    {
+      "query": "أحكام المماطلة في تنفيذ مستحقات العمال",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 1,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9393,
+          "output_tokens": 1999,
+          "requests": 1,
+          "reasoning_tokens": 1833
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المصنفة تركز على نظام ضمانات الاشتراكات وعقوبات التأخير في نظام التأمينات الاجتماعية ونظام التأمين ضد التعطل، وهي الأنظمة الأكثر صلة بموضوع إنفاذ مستحقات العمال والمماطلة في دفعها\""
+    }
+  ]
+}

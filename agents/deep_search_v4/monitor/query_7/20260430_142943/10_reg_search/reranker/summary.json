@@ -1,0 +1,1227 @@
+{
+  "total_queries": 5,
+  "sufficient_queries": 4,
+  "total_articles_kept": 37,
+  "total_sections_kept": 7,
+  "total_dropped": 206,
+  "total_input_tokens": 88616,
+  "total_output_tokens": 45263,
+  "total_requests": 7,
+  "queries": [
+    {
+      "query": "أثر انقضاء العدة على بقاء عقد الزواج",
+      "sufficient": false,
+      "articles_kept": 4,
+      "sections_kept": 3,
+      "dropped": 14,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10389,
+          "output_tokens": 1270,
+          "requests": 1,
+          "reasoning_tokens": 66
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "تم الاحتفاظ بالنتائج الأساسية المتعلقة بتعريف العدة وحالات وجوبها وآثارها في نظام الأحوال الشخصية. النظام يعطي سياقاً شاملاً لفهم أن العدة ترتبط بالفرقة الواقعة أصلاً، ولا تؤدي لانقضائها إلى طلاق جديد."
+    },
+    {
+      "query": "الأحكام العامة لوقوع الطلاق وانحلال عقد النكاح",
+      "sufficient": true,
+      "articles_kept": 8,
+      "sections_kept": 2,
+      "dropped": 11,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 6895,
+          "output_tokens": 5731,
+          "requests": 1,
+          "reasoning_tokens": 4516
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "high"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "تم الاحتفاظ بالمواد والفصول التي تحدد تعريف الطلاق، وألفاظه (صريح وكناية)، وكيفية وقوعه، وأنواعه (رجعي وبائن)، بالإضافة إلى أحكام الخلع والفسخ التي تغطي جوانب الانحلال غير القضائية والقضائية. النتائج تغطي المبادئ التأسيسية للإجابة عن الاستعلام بشكل وافٍ."
+    },
+    {
+      "query": "إجراءات التوثيق القضائي للطلاق بعد انتهاء العدة",
+      "sufficient": true,
+      "articles_kept": 5,
+      "sections_kept": 1,
+      "dropped": 15,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10088,
+          "output_tokens": 6836,
+          "requests": 1,
+          "reasoning_tokens": 5510
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي الجوانب الموضوعية والإجرائية لتوثيق الطلاق وإثباته قضائياً، بما في ذلك البيانات الإلزامية في الصك ونماذج الطلبات والإطار التنفيذي، مما يكفي للإجابة عن الاستعلام بنسبة تتجاوز 80%."
+    },
+    {
+      "query": "شروط طلب الزوجة الطلاق أو الخلع من القاضي",
+      "sufficient": true,
+      "articles_kept": 11,
+      "sections_kept": 1,
+      "dropped": 85,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8229,
+          "output_tokens": 3713,
+          "requests": 1,
+          "reasoning_tokens": 2590
+        },
+        {
+          "round": 2,
+          "input_tokens": 22051,
+          "output_tokens": 8133,
+          "requests": 1,
+          "reasoning_tokens": 4968
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 21,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 26,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 28,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 29,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 30,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 33,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 35,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 36,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 37,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 66,
+            "rrf": 0.13335,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.2
+          },
+          {
+            "position": 18,
+            "rrf": 0.2
+          },
+          {
+            "position": 20,
+            "rrf": 0.2
+          },
+          {
+            "position": 22,
+            "rrf": 0.2
+          },
+          {
+            "position": 23,
+            "rrf": 0.2
+          },
+          {
+            "position": 24,
+            "rrf": 0.2
+          },
+          {
+            "position": 25,
+            "rrf": 0.2
+          },
+          {
+            "position": 27,
+            "rrf": 0.2
+          },
+          {
+            "position": 31,
+            "rrf": 0.2
+          },
+          {
+            "position": 32,
+            "rrf": 0.2
+          },
+          {
+            "position": 34,
+            "rrf": 0.2
+          },
+          {
+            "position": 38,
+            "rrf": 0.2667
+          },
+          {
+            "position": 39,
+            "rrf": 0.13335
+          },
+          {
+            "position": 40,
+            "rrf": 0.13335
+          },
+          {
+            "position": 41,
+            "rrf": 0.13335
+          },
+          {
+            "position": 42,
+            "rrf": 0.13335
+          },
+          {
+            "position": 43,
+            "rrf": 0.13335
+          },
+          {
+            "position": 44,
+            "rrf": 0.13335
+          },
+          {
+            "position": 45,
+            "rrf": 0.13335
+          },
+          {
+            "position": 46,
+            "rrf": 0.13335
+          },
+          {
+            "position": 47,
+            "rrf": 0.13335
+          },
+          {
+            "position": 48,
+            "rrf": 0.13335
+          },
+          {
+            "position": 49,
+            "rrf": 0.13335
+          },
+          {
+            "position": 50,
+            "rrf": 0.13335
+          },
+          {
+            "position": 51,
+            "rrf": 0.13335
+          },
+          {
+            "position": 52,
+            "rrf": 0.13335
+          },
+          {
+            "position": 53,
+            "rrf": 0.13335
+          },
+          {
+            "position": 54,
+            "rrf": 0.13335
+          },
+          {
+            "position": 55,
+            "rrf": 0.13335
+          },
+          {
+            "position": 56,
+            "rrf": 0.13335
+          },
+          {
+            "position": 57,
+            "rrf": 0.13335
+          },
+          {
+            "position": 58,
+            "rrf": 0.13335
+          },
+          {
+            "position": 59,
+            "rrf": 0.13335
+          },
+          {
+            "position": 60,
+            "rrf": 0.13335
+          },
+          {
+            "position": 61,
+            "rrf": 0.13335
+          },
+          {
+            "position": 62,
+            "rrf": 0.13335
+          },
+          {
+            "position": 63,
+            "rrf": 0.13335
+          },
+          {
+            "position": 64,
+            "rrf": 0.13335
+          },
+          {
+            "position": 65,
+            "rrf": 0.13335
+          },
+          {
+            "position": 67,
+            "rrf": 0.13335
+          },
+          {
+            "position": 68,
+            "rrf": 0.13335
+          },
+          {
+            "position": 69,
+            "rrf": 0.13335
+          },
+          {
+            "position": 70,
+            "rrf": 0.13335
+          },
+          {
+            "position": 71,
+            "rrf": 0.13335
+          },
+          {
+            "position": 72,
+            "rrf": 0.13335
+          },
+          {
+            "position": 73,
+            "rrf": 0.13335
+          },
+          {
+            "position": 74,
+            "rrf": 0.13335
+          },
+          {
+            "position": 75,
+            "rrf": 0.13335
+          },
+          {
+            "position": 76,
+            "rrf": 0.13335
+          },
+          {
+            "position": 77,
+            "rrf": 0.13335
+          },
+          {
+            "position": 78,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "تم الاحتفاظ بـ 8 نتائج عالية الصلة تحدد مباشرة أسباب وشروط طلب الزوجة للفسخ أو الخلع من القاضي (كالعلّة، الإضرار، امتناع الإنفاق أو الجماع، الغياب، وخشية عدم أداء الحقوق)، بالإضافة إلى مادة تجيب عن صيغة وقوع الخلع لفظاً أو كتابة. وأُبقي على 4 نتائج متوسطة للإطار العام والإثبات. النتائج الأخرى إما تخص الطلاق بإرادة الزوج، أو مسائل عقد الزواج والنفقة والحضانة، أو إجراءات تالية ثانوية."
+    },
+    {
+      "query": "المركز القانوني للزوجة بعد انتهاء العدة دون حكم طلاق",
+      "sufficient": true,
+      "articles_kept": 9,
+      "sections_kept": 0,
+      "dropped": 81,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10606,
+          "output_tokens": 11742,
+          "requests": 1,
+          "reasoning_tokens": 10691
+        },
+        {
+          "round": 2,
+          "input_tokens": 20358,
+          "output_tokens": 7838,
+          "requests": 1,
+          "reasoning_tokens": 5134
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 12,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 17,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 18,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 49,
+            "rrf": 0.06665,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.2667
+          },
+          {
+            "position": 2,
+            "rrf": 0.13335
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          },
+          {
+            "position": 9,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.13335
+          },
+          {
+            "position": 14,
+            "rrf": 0.13335
+          },
+          {
+            "position": 15,
+            "rrf": 0.13335
+          },
+          {
+            "position": 19,
+            "rrf": 0.13335
+          },
+          {
+            "position": 20,
+            "rrf": 0.13335
+          },
+          {
+            "position": 21,
+            "rrf": 0.13335
+          },
+          {
+            "position": 22,
+            "rrf": 0.13335
+          },
+          {
+            "position": 23,
+            "rrf": 0.13335
+          },
+          {
+            "position": 24,
+            "rrf": 0.13335
+          },
+          {
+            "position": 25,
+            "rrf": 0.13335
+          },
+          {
+            "position": 26,
+            "rrf": 0.13335
+          },
+          {
+            "position": 27,
+            "rrf": 0.13335
+          },
+          {
+            "position": 28,
+            "rrf": 0.13335
+          },
+          {
+            "position": 29,
+            "rrf": 0.13335
+          },
+          {
+            "position": 30,
+            "rrf": 0.13335
+          },
+          {
+            "position": 31,
+            "rrf": 0.13335
+          },
+          {
+            "position": 32,
+            "rrf": 0.13335
+          },
+          {
+            "position": 33,
+            "rrf": 0.13335
+          },
+          {
+            "position": 34,
+            "rrf": 0.13335
+          },
+          {
+            "position": 35,
+            "rrf": 0.13335
+          },
+          {
+            "position": 36,
+            "rrf": 0.13335
+          },
+          {
+            "position": 37,
+            "rrf": 0.13335
+          },
+          {
+            "position": 38,
+            "rrf": 0.13335
+          },
+          {
+            "position": 39,
+            "rrf": 0.13335
+          },
+          {
+            "position": 40,
+            "rrf": 0.1333
+          },
+          {
+            "position": 41,
+            "rrf": 0.06665
+          },
+          {
+            "position": 42,
+            "rrf": 0.06665
+          },
+          {
+            "position": 43,
+            "rrf": 0.06665
+          },
+          {
+            "position": 44,
+            "rrf": 0.06665
+          },
+          {
+            "position": 45,
+            "rrf": 0.06665
+          },
+          {
+            "position": 46,
+            "rrf": 0.06665
+          },
+          {
+            "position": 47,
+            "rrf": 0.06665
+          },
+          {
+            "position": 48,
+            "rrf": 0.06665
+          },
+          {
+            "position": 50,
+            "rrf": 0.06665
+          },
+          {
+            "position": 51,
+            "rrf": 0.06665
+          },
+          {
+            "position": 52,
+            "rrf": 0.06665
+          },
+          {
+            "position": 53,
+            "rrf": 0.06665
+          },
+          {
+            "position": 54,
+            "rrf": 0.06665
+          },
+          {
+            "position": 55,
+            "rrf": 0.06665
+          },
+          {
+            "position": 56,
+            "rrf": 0.06665
+          },
+          {
+            "position": 57,
+            "rrf": 0.06665
+          },
+          {
+            "position": 58,
+            "rrf": 0.06665
+          },
+          {
+            "position": 59,
+            "rrf": 0.06665
+          },
+          {
+            "position": 60,
+            "rrf": 0.06665
+          },
+          {
+            "position": 61,
+            "rrf": 0.06665
+          },
+          {
+            "position": 62,
+            "rrf": 0.06665
+          },
+          {
+            "position": 63,
+            "rrf": 0.06665
+          },
+          {
+            "position": 64,
+            "rrf": 0.06665
+          },
+          {
+            "position": 65,
+            "rrf": 0.06665
+          },
+          {
+            "position": 66,
+            "rrf": 0.06665
+          },
+          {
+            "position": 67,
+            "rrf": 0.06665
+          },
+          {
+            "position": 68,
+            "rrf": 0.06665
+          },
+          {
+            "position": 69,
+            "rrf": 0.06665
+          },
+          {
+            "position": 70,
+            "rrf": 0.06665
+          },
+          {
+            "position": 71,
+            "rrf": 0.06665
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي الأحكام الجوهرية لانتهاء العقد بانقضاء العدة، وآثار التوثيق وعدمه، والحقوق المالية (النفقة) أثناء العدة وبعدها في حال عدم التوثيق، مما يحقق كفاية عالية للإجابة على الاستعلام."
+    }
+  ]
+}

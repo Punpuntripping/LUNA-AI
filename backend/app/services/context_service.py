@@ -134,14 +134,16 @@ def build_context(
     except Exception:
         context["document_summaries"] = []
 
-    # Load memory_md from artifacts table
+    # Load memory_md from workspace_items (post-migration 026). The legacy
+    # ``artifact_type='memory_file'`` filter becomes a metadata jsonb subtype
+    # filter via PostgREST ``->>`` syntax.
     try:
         memory_result = (
-            supabase.table("artifacts")
+            supabase.table("workspace_items")
             .select("content_md")
             .eq("user_id", user_id)
             .eq("case_id", case_id)
-            .eq("artifact_type", "memory_file")
+            .eq("metadata->>subtype", "memory_file")
             .is_("deleted_at", "null")
             .order("updated_at", desc=True)
             .limit(1)

@@ -1,0 +1,264 @@
+/*
+ * ============================================================
+ * Luna Design System — colors & type
+ * ============================================================
+ * Luna is an Arabic-first legal AI assistant for Saudi lawyers.
+ * The visual system is restrained, trustworthy, and professional:
+ * a single deep-teal brand color on near-white canvases, with
+ * IBM Plex Sans Arabic throughout.
+ *
+ * Token channels are stored as raw OKLCH "L C H" values so you
+ * can wrap them in oklch(... / <alpha>) and get opacity modifiers
+ * for free — this matches the Tailwind setup in the codebase.
+ * ============================================================
+ */
+
+@import url('./fonts/ibm-plex-sans-arabic.css');
+
+:root {
+  /* ---------- Brand ---------- */
+  /* Primary — deep teal. This is THE Luna color. */
+  --luna-primary-channels: 42% 0.07 195;
+  --luna-primary: oklch(42% 0.07 195);
+  --luna-primary-foreground: oklch(98% 0.01 195);
+
+  /* Brand light — airy cool teal used as secondary surface / text on primary */
+  --luna-brand-light-channels: 88% 0.02 195;
+  --luna-brand-light: oklch(88% 0.02 195);
+
+  /* Brand-hover — used for primary button :hover. Redefined in dark mode. */
+  --luna-primary-hover: oklch(38% 0.07 195);
+
+  /* ---------- Neutrals (light mode) ---------- */
+  --background: oklch(100% 0 0);                  /* pure white canvas */
+  --foreground: oklch(14.1% 0.03 264);            /* near-black text, tinted cool */
+  --card: oklch(100% 0 0);
+  --card-foreground: oklch(14.1% 0.03 264);
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(14.1% 0.03 264);
+
+  --muted: oklch(95.5% 0.005 265);                /* page-subtle backgrounds */
+  --muted-foreground: oklch(55.6% 0.015 264);     /* secondary text */
+  --accent: oklch(95.5% 0.005 265);               /* hover surface */
+  --accent-foreground: oklch(22% 0.02 264);
+
+  --border: oklch(91.4% 0.008 265);
+  --input: oklch(91.4% 0.008 265);
+  --ring: oklch(42% 0.07 195);                    /* focus ring = primary */
+
+  --sidebar-background: oklch(98% 0.003 265);
+  --sidebar-foreground: oklch(14.1% 0.03 264);
+  --sidebar-border: oklch(91.4% 0.008 265);
+
+  /* ---------- Semantic ---------- */
+  --destructive: oklch(57.7% 0.215 27);
+  --destructive-foreground: oklch(97% 0.005 265);
+  --destructive-hover: oklch(52% 0.215 27);
+
+  /* Status / case-type accents (used as 100/700 pairs in the app) */
+  --status-success-bg: oklch(93% 0.06 145);
+  --status-success-fg: oklch(45% 0.14 145);
+  --status-warning-bg: oklch(95% 0.08 90);
+  --status-warning-fg: oklch(48% 0.14 70);
+  --status-info-bg: oklch(94% 0.04 250);
+  --status-info-fg: oklch(45% 0.14 250);
+  --status-danger-bg: oklch(94% 0.05 25);
+  --status-danger-fg: oklch(48% 0.18 25);
+
+  --case-realestate-bg: oklch(94% 0.04 250);
+  --case-realestate-fg: oklch(45% 0.14 250);
+  --case-commercial-bg: oklch(94% 0.05 300);
+  --case-commercial-fg: oklch(45% 0.16 300);
+  --case-labor-bg: oklch(95% 0.06 60);
+  --case-labor-fg: oklch(50% 0.15 50);
+  --case-criminal-bg: oklch(94% 0.05 25);
+  --case-criminal-fg: oklch(48% 0.18 25);
+  --case-personal-bg: oklch(94% 0.05 350);
+  --case-personal-fg: oklch(48% 0.16 350);
+  --case-admin-bg: oklch(94% 0.04 210);
+  --case-admin-fg: oklch(46% 0.13 210);
+
+  /* ---------- Shape ---------- */
+  --radius: 0.5rem;                 /* base unit — cards, buttons */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: 0.75rem;             /* chat input */
+  --radius-2xl: 1rem;                /* message bubbles */
+  --radius-full: 9999px;            /* pills, badges */
+
+  /* ---------- Elevation ---------- */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --shadow-md: 0 2px 6px -1px rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+  --shadow-lg: 0 8px 24px -4px rgb(0 0 0 / 0.08), 0 2px 6px -2px rgb(0 0 0 / 0.05);
+  --shadow-focus-ring: 0 0 0 2px oklch(100% 0 0), 0 0 0 4px oklch(42% 0.07 195);
+
+  /* ---------- Spacing scale ---------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* ---------- Typography ---------- */
+  /* Single family throughout — Arabic + Latin live in the same file */
+  --font-sans: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
+
+  /* Type scale (matches the density of the shipped app) */
+  --text-10: 10px;   /* badge / meta */
+  --text-11: 11px;   /* meta inline */
+  --text-xs: 12px;   /* secondary labels */
+  --text-sm: 14px;   /* body in dense UI (chat, sidebar, forms) */
+  --text-base: 16px; /* prose body */
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;  /* login hero */
+  --text-4xl: 36px;
+  --text-5xl: 48px;
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.7;   /* Arabic body — needs more room */
+
+  --weight-light: 300;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---------- Motion ---------- */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ============================================================
+ * Dark mode — "Ivory on Obsidian" (v3)
+ *
+ * Pure-neutral charcoal canvas with paper-white text. Zero hue tint
+ * in the grays — the teal primary carries all the color. Cyan replaces
+ * teal in places where an accent needs to feel distinct from brand
+ * (e.g. info pills, links, inline emphasis).
+ *
+ * Elevation ladder:
+ *   sidebar 11% → canvas 15% → card 19% → popover 22%
+ *
+ * Text ladder (Tailwind zinc scale, pure neutral):
+ *   primary #fafafa (98%) → muted #a1a1aa (67%) → disabled #71717a (52%)
+ * ============================================================ */
+.dark,
+[data-theme="dark"] {
+  /* ---------- Canvas & surfaces (pure neutral) ---------- */
+  --background: oklch(16% 0 0);                     /* canvas */
+  --foreground: oklch(98.5% 0 0);                   /* #fafafa — zinc-50 */
+  --card: oklch(20% 0 0);
+  --card-foreground: oklch(98.5% 0 0);
+  --popover: oklch(23% 0 0);
+  --popover-foreground: oklch(98.5% 0 0);
+
+  /* ---------- Brand ---------- */
+  --luna-primary: oklch(74% 0.13 195);              /* teal brighter on dark */
+  --luna-primary-foreground: oklch(14% 0.03 210);
+  --luna-brand-light: oklch(30% 0.04 195);
+
+  /* ---------- Neutrals (zinc scale, pure) ---------- */
+  --muted: oklch(22% 0 0);                          /* subtle bg (hover, input) */
+  --muted-foreground: oklch(71.5% 0 0);             /* #a1a1aa — zinc-400 */
+  --accent: oklch(26% 0 0);                         /* hover surface on card */
+  --accent-foreground: oklch(98.5% 0 0);
+
+  --border: oklch(26% 0 0);                         /* soft dividers */
+  --input: oklch(26% 0 0);
+  --ring: oklch(74% 0.13 195);                      /* focus = brand teal */
+
+  /* ---------- Sidebar (deepest) ---------- */
+  --sidebar-background: oklch(11% 0 0);
+  --sidebar-foreground: oklch(98.5% 0 0);
+  --sidebar-border: oklch(22% 0 0);
+
+  /* ---------- Destructive ---------- */
+  --destructive: oklch(65% 0.21 27);
+  --destructive-foreground: oklch(98% 0 0);
+
+  /* ---------- Status pills — cyan replaces teal for info (distinct from brand) ---------- */
+  --status-success-bg: oklch(24% 0.045 150);
+  --status-success-fg: oklch(82% 0.16 150);
+  --status-warning-bg: oklch(26% 0.055 75);
+  --status-warning-fg: oklch(85% 0.15 80);
+  --status-info-bg:    oklch(24% 0.05  220);         /* cyan family */
+  --status-info-fg:    oklch(82% 0.14  220);
+  --status-danger-bg:  oklch(25% 0.06  25);
+  --status-danger-fg:  oklch(80% 0.17  25);
+
+  /* ---------- Case-type pills ---------- */
+  --case-realestate-bg: oklch(24% 0.05  220);
+  --case-realestate-fg: oklch(82% 0.14  220);
+  --case-commercial-bg: oklch(24% 0.055 300);
+  --case-commercial-fg: oklch(82% 0.16  300);
+  --case-labor-bg:      oklch(26% 0.055 60);
+  --case-labor-fg:      oklch(85% 0.15  60);
+  --case-criminal-bg:   oklch(25% 0.06  25);
+  --case-criminal-fg:   oklch(80% 0.17  25);
+  --case-personal-bg:   oklch(24% 0.055 350);
+  --case-personal-fg:   oklch(82% 0.15  350);
+  --case-admin-bg:      oklch(23% 0.045 220);
+  --case-admin-fg:      oklch(80% 0.12  220);
+
+  /* ---------- Elevation — darker + softer on dark ---------- */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.5);
+  --shadow-md: 0 2px 8px -1px rgb(0 0 0 / 0.55), 0 1px 2px -1px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 32px -6px rgb(0 0 0 / 0.65), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --shadow-focus-ring: 0 0 0 2px oklch(16% 0 0), 0 0 0 4px oklch(74% 0.13 195);
+
+  --luna-primary-hover: oklch(68% 0.13 195);
+  --destructive-hover: oklch(60% 0.21 27);
+}
+
+/* ============================================================
+ * Base element styles
+ * Arabic-first: default dir="rtl" when html[lang="ar"].
+ * ============================================================ */
+html {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  color: var(--foreground);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+html[lang="ar"], html[dir="rtl"] { direction: rtl; text-align: right; }
+
+body { margin: 0; font-family: var(--font-sans); line-height: var(--leading-relaxed); }
+
+h1, h2, h3, h4, h5, h6 { margin: 0; font-weight: var(--weight-semibold); color: var(--foreground); letter-spacing: -0.01em; }
+h1 { font-size: var(--text-3xl); font-weight: var(--weight-bold); line-height: var(--leading-tight); letter-spacing: -0.02em; }
+h2 { font-size: var(--text-2xl); line-height: var(--leading-snug); }
+h3 { font-size: var(--text-xl); line-height: var(--leading-snug); }
+h4 { font-size: var(--text-lg); line-height: var(--leading-snug); }
+h5 { font-size: var(--text-base); line-height: var(--leading-snug); }
+h6 { font-size: var(--text-sm); line-height: var(--leading-snug); }
+
+p { margin: 0 0 0.5em 0; font-size: var(--text-base); line-height: var(--leading-relaxed); }
+small, .text-meta { font-size: var(--text-xs); color: var(--muted-foreground); }
+
+code, pre, .ltr-content {
+  font-family: var(--font-mono);
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
+code { background: oklch(from var(--muted) l c h / 0.6); padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: 13px; }
+
+/* Utilities */
+.luna-pill        { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.5rem; border-radius: var(--radius-full); font-size: var(--text-10); font-weight: var(--weight-medium); }
+.luna-card        { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4); box-shadow: var(--shadow-sm); }
+.luna-focus-ring  { outline: none; box-shadow: var(--shadow-focus-ring); }

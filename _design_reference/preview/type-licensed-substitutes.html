@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Type / Licensed-font substitutes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;500;600;700&family=Noto+Sans+Arabic:wght@300;400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Vazirmatn:wght@300;400;500;600;700&family=Rubik:wght@400;500;600;700&family=Cairo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:16px; background:var(--background); color:var(--foreground); font-family:'IBM Plex Sans Arabic', sans-serif; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .card { border:1px solid var(--border); border-radius:12px; padding:14px 16px; background:var(--card); }
+  .head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px; border-bottom:1px solid var(--border); padding-bottom:8px; gap:10px; }
+  .target { font-size:13px; font-weight:600; }
+  .sub    { font-size:11px; color:var(--muted-foreground); }
+  .tag    { font-family: ui-monospace, Menlo, monospace; font-size:10px; color:var(--muted-foreground); direction:ltr; white-space:nowrap; }
+  .arrow  { color:var(--muted-foreground); margin:0 6px; }
+
+  .stack { display:flex; flex-direction:column; gap:6px; }
+  .h   { font-size:22px; font-weight:600; letter-spacing:-0.01em; line-height:1.25; }
+  .b   { font-size:14px; font-weight:400; line-height:1.7; }
+  .ui  { font-size:13px; font-weight:500; }
+  .num { font-size:13px; font-weight:500; direction:ltr; letter-spacing:0.02em; }
+
+  .f-readex  .stack * { font-family: 'Readex Pro', sans-serif; }
+  .f-noto    .stack * { font-family: 'Noto Sans Arabic', sans-serif; }
+  .f-vazir   .stack * { font-family: 'Vazirmatn', sans-serif; }
+  .f-cairo   .stack * { font-family: 'Cairo', sans-serif; }
+</style>
+</head>
+<body>
+  <div class="grid">
+
+    <div class="card f-readex">
+      <div class="head">
+        <div>
+          <div class="target">Frutiger Arabic <span class="arrow">→</span> <span class="sub">Readex Pro</span></div>
+          <div class="sub">humanist · warm terminals · open counters</div>
+        </div>
+        <span class="tag">free · Google Fonts</span>
+      </div>
+      <div class="stack">
+        <div class="h">المساعد القانوني الذكي</div>
+        <div class="b">نظام العمل السعودي يكفل للعامل حقوقاً أساسية، منها الأجر العادل وساعات العمل المحددة والإجازات السنوية.</div>
+        <div class="ui">تسجيل الدخول · إرسال · حذف</div>
+        <div class="num">المادة 61 · 2026/04/23 · 1,248 ر.س</div>
+      </div>
+    </div>
+
+    <div class="card f-noto">
+      <div class="head">
+        <div>
+          <div class="target">Neue Haas Unica Arabic <span class="arrow">→</span> <span class="sub">Noto Sans Arabic</span></div>
+          <div class="sub">neutral grotesque · technical · low personality</div>
+        </div>
+        <span class="tag">free · Google Fonts</span>
+      </div>
+      <div class="stack">
+        <div class="h">المساعد القانوني الذكي</div>
+        <div class="b">نظام العمل السعودي يكفل للعامل حقوقاً أساسية، منها الأجر العادل وساعات العمل المحددة والإجازات السنوية.</div>
+        <div class="ui">تسجيل الدخول · إرسال · حذف</div>
+        <div class="num">المادة 61 · 2026/04/23 · 1,248 ر.س</div>
+      </div>
+    </div>
+
+    <div class="card f-vazir">
+      <div class="head">
+        <div>
+          <div class="target">29LT Zarid Sans <span class="arrow">→</span> <span class="sub">Vazirmatn</span></div>
+          <div class="sub">editorial · geometric · slightly condensed</div>
+        </div>
+        <span class="tag">free · Google Fonts</span>
+      </div>
+      <div class="stack">
+        <div class="h">المساعد القانوني الذكي</div>
+        <div class="b">نظام العمل السعودي يكفل للعامل حقوقاً أساسية، منها الأجر العادل وساعات العمل المحددة والإجازات السنوية.</div>
+        <div class="ui">تسجيل الدخول · إرسال · حذف</div>
+        <div class="num">المادة 61 · 2026/04/23 · 1,248 ر.س</div>
+      </div>
+    </div>
+
+    <div class="card f-cairo">
+      <div class="head">
+        <div>
+          <div class="target">GE SS <span class="arrow">→</span> <span class="sub">Cairo</span></div>
+          <div class="sub">Saudi/Gulf workhorse · built as a GE SS-style stand-in</div>
+        </div>
+        <span class="tag">free · Google Fonts</span>
+      </div>
+      <div class="stack">
+        <div class="h">المساعد القانوني الذكي</div>
+        <div class="b">نظام العمل السعودي يكفل للعامل حقوقاً أساسية، منها الأجر العادل وساعات العمل المحددة والإجازات السنوية.</div>
+        <div class="ui">تسجيل الدخول · إرسال · حذف</div>
+        <div class="num">المادة 61 · 2026/04/23 · 1,248 ر.س</div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

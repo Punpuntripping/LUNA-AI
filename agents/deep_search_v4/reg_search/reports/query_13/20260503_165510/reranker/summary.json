@@ -1,0 +1,687 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 1,
+  "total_articles_kept": 8,
+  "total_sections_kept": 4,
+  "total_dropped": 100,
+  "total_input_tokens": 112946,
+  "total_output_tokens": 14742,
+  "total_requests": 12,
+  "queries": [
+    {
+      "query": "شروط إنهاء عقد العمل من قبل العامل للمادة 81",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 1,
+      "dropped": 20,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11699,
+          "output_tokens": 1385,
+          "requests": 1,
+          "reasoning_tokens": 509
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 20,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "لا توجد نتائج صريحة للمادة 81 من نظام العمل. النتائج المتوفرة لأنظمة متخصصة (عمالة منزلية، تعطل، معونات) أو أنظمة مهنية محددة لا تغطي استفسار شروط إنهاء عقد العمل العام. الحاجة لنظام العمل الأساسي وقوانين العمل العامة."
+    },
+    {
+      "query": "الأسباب المشروعة لفسخ عقد العمل بدون موافقة صاحب العمل",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 0,
+      "dropped": 20,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11084,
+          "output_tokens": 1922,
+          "requests": 1,
+          "reasoning_tokens": 958
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "معظم النتائج من أنظمة قطاعية خاصة (دعم مالي للعمالة، غرامات مخالفات، تأشيرات عمل، تأمين على عقود محددة) ولا تحتوي على نصوص عامة حول أسباب فسخ عقد العمل بدون موافقة الطرف الآخر. نتيجة واحدة فقط محتفظ بها بمستوى وسط الصلة لكنها غير كافية لتقديم تحليل قانوني شامل للموضوع."
+    },
+    {
+      "query": "حقوق صاحب العمل في المطالبة بالتعويض المادة 77",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 0,
+      "dropped": 20,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9310,
+          "output_tokens": 1547,
+          "requests": 1,
+          "reasoning_tokens": 710
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج من أنظمة التأمين الاجتماعي والضمان الاجتماعي ولا تحتوي على نص المادة 77 المذكورة صراحةً في الاستعلام (التي تتعلق بحقوق صاحب العمل في نظام العمل). توجد نتيجة واحدة متوسطة الصلة (#3) تخص غرامات المخالفات."
+    },
+    {
+      "query": "الدفع القانونية ضد مطالبة صاحب العمل بالتعويض",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 1,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8863,
+          "output_tokens": 1483,
+          "requests": 1,
+          "reasoning_tokens": 1307
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج الحالية تركز على أحكام النظام الإجرائية والإدارية للتأمين ضد التعطل عن العمل، لكنها لا توفر إجابة مباشرة عن الدفاعيات القانونية للعامل في مواجهة مطالبة صاحب العمل بالتعويض. يحتاج الموضوع إلى توسيع لاستخراج مواد نظام العمل العامة ذات الصلة بالنزاعات التعاقدية والتعويضات المتبادلة بين الطرفين.\""
+    },
+    {
+      "query": "الإجراءات النظامية للنزاعات العمالية حول تعويضات العقود",
+      "sufficient": true,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 0,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 19873,
+          "output_tokens": 1311,
+          "requests": 2,
+          "reasoning_tokens": 988
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها كافية للإجابة عن الاستعلام الفرعي حول الإجراءات النظامية للنزاعات العمالية والتعويضات"
+    },
+    {
+      "query": "طريقة حساب تعويض الأشهر المتبقية من عقد العمل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 23,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9803,
+          "output_tokens": 1581,
+          "requests": 1,
+          "reasoning_tokens": 721
+        },
+        {
+          "round": 2,
+          "input_tokens": 2782,
+          "output_tokens": 670,
+          "requests": 1,
+          "reasoning_tokens": 441
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          },
+          {
+            "position": 2,
+            "rrf": 0.13335
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من نظام التأمين ضد التعطل وهو قطاعي لا يغطي مسألة تعويضات نهاية الخدمة أو تعويضات عقود العمل العادية، لذا لم أحتفِ بأي نتيجة عالية الصلة"
+    },
+    {
+      "query": "مبادئ التعويض عن الإخلال بعقد العمل",
+      "sufficient": false,
+      "articles_kept": 5,
+      "sections_kept": 2,
+      "dropped": 16,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 36591,
+          "output_tokens": 3857,
+          "requests": 3,
+          "reasoning_tokens": 1341
+        },
+        {
+          "round": 2,
+          "input_tokens": 2941,
+          "output_tokens": 986,
+          "requests": 1,
+          "reasoning_tokens": 676
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 20,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 21,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          },
+          {
+            "position": 2,
+            "rrf": 0.08
+          },
+          {
+            "position": 3,
+            "rrf": 0.08
+          },
+          {
+            "position": 4,
+            "rrf": 0.08
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج تنتمي لأنظمة اجتماعية (تأمينات/تعطل) لا تتناول موضوع التعويض عن إخلال عقد العمل، وهو ما يخضع لنظام العمل بشكل أساسي. لا توجد نتائج كافية للإجابة على الاستعلام الفرعي."
+    }
+  ]
+}

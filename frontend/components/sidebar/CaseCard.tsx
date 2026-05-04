@@ -13,6 +13,15 @@ import {
   Archive,
   XCircle,
   Loader2,
+  Building2,
+  Store,
+  HardHat,
+  Gavel,
+  Users,
+  ClipboardList,
+  Scale,
+  Folder,
+  type LucideIcon,
 } from "lucide-react";
 import { cn, getCaseTypeLabel } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
@@ -51,21 +60,24 @@ interface CaseCardProps {
   caseSummary: CaseSummary;
 }
 
-const PRIORITY_COLORS: Record<string, string> = {
-  high: "bg-red-100 text-red-700",
-  medium: "bg-yellow-100 text-yellow-700",
-  low: "bg-green-100 text-green-700",
+// Priority tier (3 steps) — identity via colored dot, bg/fg via status-* tokens
+// Destructive (high) stays red since red = universal urgency signal
+const PRIORITY_TIER: Record<string, "danger" | "warning" | "success"> = {
+  high: "danger",
+  medium: "warning",
+  low: "success",
 };
 
-const CASE_TYPE_COLORS: Record<string, string> = {
-  "عقاري": "bg-blue-100 text-blue-700",
-  "تجاري": "bg-purple-100 text-purple-700",
-  "عمالي": "bg-orange-100 text-orange-700",
-  "جنائي": "bg-red-100 text-red-700",
-  "أحوال_شخصية": "bg-pink-100 text-pink-700",
-  "إداري": "bg-cyan-100 text-cyan-700",
-  "تنفيذ": "bg-amber-100 text-amber-700",
-  "عام": "bg-gray-100 text-gray-700",
+// Case type → Lucide icon. Identity now comes from the icon, not color.
+const CASE_TYPE_ICON: Record<string, LucideIcon> = {
+  "عقاري": Building2,
+  "تجاري": Store,
+  "عمالي": HardHat,
+  "جنائي": Gavel,
+  "أحوال_شخصية": Users,
+  "إداري": ClipboardList,
+  "تنفيذ": Scale,
+  "عام": Folder,
 };
 
 const CASE_TYPES: { value: CaseType; label: string }[] = [
@@ -136,8 +148,8 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
   const [editDescription, setEditDescription] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
 
-  const typeColor = CASE_TYPE_COLORS[caseSummary.case_type] || "bg-gray-100 text-gray-700";
-  const priorityColor = PRIORITY_COLORS[caseSummary.priority] || "";
+  const TypeIcon = CASE_TYPE_ICON[caseSummary.case_type] || Folder;
+  const priorityTier = PRIORITY_TIER[caseSummary.priority];
 
   const openEditDialog = () => {
     setEditName(caseSummary.case_name);
@@ -209,24 +221,25 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
 
               {/* Badges row */}
               <div className="flex flex-wrap items-center gap-1.5">
-                {/* Case type badge */}
-                <span
-                  className={cn(
-                    "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
-                    typeColor
-                  )}
-                >
+                {/* Case type — neutral pill, identity via icon */}
+                <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-foreground">
+                  <TypeIcon className="h-3 w-3" />
                   {getCaseTypeLabel(caseSummary.case_type)}
                 </span>
 
-                {/* Priority indicator */}
-                {caseSummary.priority && (
+                {/* Priority — 3-tier semantic pill with a colored dot */}
+                {priorityTier && (
                   <span
-                    className={cn(
-                      "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
-                      priorityColor
-                    )}
+                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
+                    style={{
+                      backgroundColor: `oklch(var(--status-${priorityTier}-bg))`,
+                      color: `oklch(var(--status-${priorityTier}-fg))`,
+                    }}
                   >
+                    <span
+                      className="h-1.5 w-1.5 rounded-full"
+                      style={{ backgroundColor: `oklch(var(--status-${priorityTier}-fg))` }}
+                    />
                     {caseSummary.priority === "high"
                       ? "عالية"
                       : caseSummary.priority === "medium"

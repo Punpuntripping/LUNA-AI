@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Colors / Neutrals</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:16px; background:var(--background); }
+  .wrap { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .sw { border-radius:var(--radius-lg); border:1px solid var(--border); padding:10px 12px; min-height:80px; display:flex; flex-direction:column; justify-content:space-between; font-size:12px; }
+  .sw .n { font-weight:500; }
+  .sw .v { font-family:var(--font-mono); font-size:10px; opacity:0.7; }
+  .bg   { background:var(--background); color:var(--foreground); }
+  .fg   { background:var(--foreground); color:var(--background); }
+  .mu   { background:var(--muted); color:var(--foreground); }
+  .muf  { background:var(--background); color:var(--muted-foreground); }
+  .bo   { background:var(--background); color:var(--foreground); border:1px solid var(--border); }
+  .sb   { background:var(--sidebar-background); color:var(--foreground); }
+  .acc  { background:var(--accent); color:var(--accent-foreground); }
+  .in   { background:var(--background); color:var(--foreground); border:1px solid var(--input); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="sw bg">  <div class="n">background</div>       <div class="v">100% 0 0</div></div>
+    <div class="sw fg">  <div class="n">foreground</div>       <div class="v">14.1% 0.03 264</div></div>
+    <div class="sw sb">  <div class="n">sidebar-bg</div>       <div class="v">98% 0.003 265</div></div>
+    <div class="sw mu">  <div class="n">muted</div>            <div class="v">95.5% 0.005 265</div></div>
+    <div class="sw muf"> <div class="n">muted-fg</div>         <div class="v">55.6% 0.015 264</div></div>
+    <div class="sw acc"> <div class="n">accent</div>           <div class="v">95.5% 0.005 265</div></div>
+    <div class="sw bo">  <div class="n">border</div>           <div class="v">91.4% 0.008 265</div></div>
+    <div class="sw in">  <div class="n">input</div>            <div class="v">91.4% 0.008 265</div></div>
+  </div>
+</body>
+</html>

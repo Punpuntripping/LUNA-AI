@@ -1,0 +1,1023 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 0,
+  "total_articles_kept": 21,
+  "total_sections_kept": 5,
+  "total_dropped": 155,
+  "total_input_tokens": 185555,
+  "total_output_tokens": 29190,
+  "total_requests": 17,
+  "queries": [
+    {
+      "query": "أحكام انتهاء عقد العمل المحدد المدة",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9488,
+          "output_tokens": 1914,
+          "requests": 1,
+          "reasoning_tokens": 1229
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج غير ذات صلة: لا يوجد نظام عمل عام ينظم انتهاء عقود العمل المحددة المدة؛ النتائج حصرًا عن تأشيرات وعمالة منزلية ودفاع مدني وتعويضات بطالة ودعم مالي."
+    },
+    {
+      "query": "إجراءات تسليم إشعار إنهاء العقد للعامل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 9,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10308,
+          "output_tokens": 2528,
+          "requests": 1,
+          "reasoning_tokens": 2044
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج إما لقوانين قطعية (منزلية، دينية، نقل، إلخ) أو تتناول إجراءات مختلفة (تأمين ببطالة، تأمين صحي، إرشادات) غير المتعلقة بإشعار إنهاء العقد بين صاحب العمل والعامل ضمن النظام العام للعمل."
+    },
+    {
+      "query": "إنهاء عقد العمل أثناء إجازة العامل",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 19,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9379,
+          "output_tokens": 3255,
+          "requests": 1,
+          "reasoning_tokens": 2316
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "لا توجد مواد من نظام العمل السعودي تحتوي على النص المباشر حول جواز إنهاء العقد خلال الإجازة. النتائج المتبقية ضمن نطاق المتوسط فقط لأحكام أنظمة الضمان الاجتماعي والتعطل عن العمل ذات صلة جزئية للأحكام الإجرائية العامة"
+    },
+    {
+      "query": "إشعار العامل بعدم تجديد عقد العمل قبل انتهائه",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 37002,
+          "output_tokens": 3362,
+          "requests": 3,
+          "reasoning_tokens": 2139
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج إما خاصة بقطاعات محدودة (العمالة المنزلية، الأئمة، الصيادلة، الأنشطة الموسمية) أو تتعلق بأنظمة غير مباشرة (تأمين البطالة، التأشيرات). لم تحتوي أي نتيجة على نصوص صريحة بشأن التزام صاحب العمل بإشعار العامل بعدم تجديد العقد قبل انتهائه"
+    },
+    {
+      "query": "شروط صحة إشعار إنهاء عقد العمل",
+      "sufficient": false,
+      "articles_kept": 4,
+      "sections_kept": 2,
+      "dropped": 15,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 24943,
+          "output_tokens": 3044,
+          "requests": 2,
+          "reasoning_tokens": 1296
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها متوسطة الصلة وتركز على شروط استحقاق تعويض البطالة وآليات التسجيل والإشعار ضمن أنظمة الضمان الاجتماعي، لكنها لا تغطي بشكل مباشر الشروط الشكلية والموضوعية لصحة إشعار إنهاء عقد العمل. الحاجة لتوسع في مصادر قانونية متخصصة في عقود العمل والشروط التعاقدية."
+    },
+    {
+      "query": "مدة الإشعار الواجب إعطاؤها للعامل قبل انتهاء العقد",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 1,
+      "dropped": 39,
+      "classification_rounds": 3,
+      "db_unfolds": 3,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 24488,
+          "output_tokens": 3260,
+          "requests": 2,
+          "reasoning_tokens": 559
+        },
+        {
+          "round": 2,
+          "input_tokens": 2684,
+          "output_tokens": 968,
+          "requests": 1,
+          "reasoning_tokens": 803
+        },
+        {
+          "round": 3,
+          "input_tokens": 7218,
+          "output_tokens": 1602,
+          "requests": 1,
+          "reasoning_tokens": 730
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.05
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          },
+          {
+            "position": 2,
+            "rrf": 0.066675
+          },
+          {
+            "position": 3,
+            "rrf": 0.066675
+          },
+          {
+            "position": 4,
+            "rrf": 0.066675
+          },
+          {
+            "position": 5,
+            "rrf": 0.066675
+          },
+          {
+            "position": 6,
+            "rrf": 0.066675
+          },
+          {
+            "position": 7,
+            "rrf": 0.066675
+          },
+          {
+            "position": 8,
+            "rrf": 0.066675
+          },
+          {
+            "position": 9,
+            "rrf": 0.066675
+          },
+          {
+            "position": 10,
+            "rrf": 0.066675
+          },
+          {
+            "position": 11,
+            "rrf": 0.066675
+          },
+          {
+            "position": 12,
+            "rrf": 0.066675
+          },
+          {
+            "position": 13,
+            "rrf": 0.066675
+          },
+          {
+            "position": 14,
+            "rrf": 0.066675
+          },
+          {
+            "position": 15,
+            "rrf": 0.066675
+          },
+          {
+            "position": 16,
+            "rrf": 0.066675
+          },
+          {
+            "position": 17,
+            "rrf": 0.066675
+          },
+          {
+            "position": 18,
+            "rrf": 0.066675
+          },
+          {
+            "position": 19,
+            "rrf": 0.066675
+          },
+          {
+            "position": 20,
+            "rrf": 0.066675
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          }
+        ]
+      },
+      "summary_note": "كل النتائج تعود إلى لائحة تأشيرات مؤقتة وموسمية لا تنظم الإشعار الإلزامي للعامل قبل انتهاء عقد العمل، يجب البحث عن نظام عمل عام أو عقد عمل"
+    },
+    {
+      "query": "حقوق العامل عند عدم تجديد عقد العمل المحدد",
+      "sufficient": false,
+      "articles_kept": 16,
+      "sections_kept": 1,
+      "dropped": 31,
+      "classification_rounds": 3,
+      "db_unfolds": 9,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 23215,
+          "output_tokens": 4115,
+          "requests": 2,
+          "reasoning_tokens": 2103
+        },
+        {
+          "round": 2,
+          "input_tokens": 28746,
+          "output_tokens": 4710,
+          "requests": 2,
+          "reasoning_tokens": 1924
+        },
+        {
+          "round": 3,
+          "input_tokens": 8084,
+          "output_tokens": 432,
+          "requests": 1,
+          "reasoning_tokens": 294
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          },
+          {
+            "position": 15,
+            "rrf": 0.08,
+            "relevance": "medium"
+          },
+          {
+            "position": 17,
+            "rrf": 0.08,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.08,
+            "relevance": "medium"
+          },
+          {
+            "position": 27,
+            "rrf": 0.05715,
+            "relevance": "medium"
+          },
+          {
+            "position": 29,
+            "rrf": 0.05715,
+            "relevance": "high"
+          },
+          {
+            "position": 30,
+            "rrf": 0.05715,
+            "relevance": "high"
+          },
+          {
+            "position": 31,
+            "rrf": 0.05715,
+            "relevance": "high"
+          },
+          {
+            "position": 32,
+            "rrf": 0.05715,
+            "relevance": "high"
+          },
+          {
+            "position": 33,
+            "rrf": 0.05715,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.2
+          },
+          {
+            "position": 2,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.13335
+          },
+          {
+            "position": 14,
+            "rrf": 0.08
+          },
+          {
+            "position": 16,
+            "rrf": 0.08
+          },
+          {
+            "position": 18,
+            "rrf": 0.08
+          },
+          {
+            "position": 20,
+            "rrf": 0.08
+          },
+          {
+            "position": 21,
+            "rrf": 0.08
+          },
+          {
+            "position": 22,
+            "rrf": 0.08
+          },
+          {
+            "position": 23,
+            "rrf": 0.08
+          },
+          {
+            "position": 25,
+            "rrf": 0.05715
+          },
+          {
+            "position": 26,
+            "rrf": 0.05715
+          },
+          {
+            "position": 28,
+            "rrf": 0.05715
+          },
+          {
+            "position": 34,
+            "rrf": 0.05
+          },
+          {
+            "position": 35,
+            "rrf": 0.05
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 12,
+            "rrf": 0.13335
+          },
+          {
+            "position": 13,
+            "rrf": 0.13335
+          },
+          {
+            "position": 24,
+            "rrf": 0.1143
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج تخص أنظمة التأمين الاجتماعي والتعطل، ولا تغطي أحكام حقوق العامل عند عدم تجديد العقد المحدد. يجب البحث في نظام العمل أو لوائحه التنفيذية."
+    }
+  ]
+}

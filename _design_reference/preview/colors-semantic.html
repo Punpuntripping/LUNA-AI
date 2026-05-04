@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Colors / Semantic + case types</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; padding:14px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .lbl { font-size:11px; color:var(--muted-foreground); margin-bottom:6px; font-family:var(--font-mono); direction:ltr; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; align-items:center; }
+  .row:last-child { margin-bottom:0; }
+
+  /* One unified pill shape for case types — neutral surface, icon carries identity */
+  .pill { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:var(--radius-full); font-size:11px; font-weight:500; background:var(--muted); color:var(--foreground); }
+  .pill svg { width:11px; height:11px; color:var(--muted-foreground); }
+
+  /* Priority: a 3-step signal because urgency IS semantic */
+  .prio { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:var(--radius-full); font-size:11px; font-weight:500; }
+  .prio .dot { width:6px; height:6px; border-radius:50%; }
+  .hi { background:var(--status-danger-bg); color:var(--status-danger-fg); }
+  .hi .dot { background:var(--status-danger-fg); }
+  .me { background:var(--status-warning-bg); color:var(--status-warning-fg); }
+  .me .dot { background:var(--status-warning-fg); }
+  .lo { background:var(--status-success-bg); color:var(--status-success-fg); }
+  .lo .dot { background:var(--status-success-fg); }
+
+  .destr { background:oklch(57.7% 0.215 27 / 0.1); color:var(--destructive); border:1px solid oklch(57.7% 0.215 27 / 0.2); padding:5px 10px; border-radius:var(--radius-md); font-size:12px; display:inline-flex; align-items:center; gap:6px; }
+  .destr svg { width:13px; height:13px; }
+</style>
+</head>
+<body>
+  <div class="lbl">Case types — unified neutral pills, icon carries identity</div>
+  <div class="row">
+    <span class="pill"><i data-lucide="building-2"></i>عقاري</span>
+    <span class="pill"><i data-lucide="briefcase"></i>تجاري</span>
+    <span class="pill"><i data-lucide="users"></i>عمالي</span>
+    <span class="pill"><i data-lucide="gavel"></i>جنائي</span>
+    <span class="pill"><i data-lucide="heart"></i>أحوال شخصية</span>
+    <span class="pill"><i data-lucide="landmark"></i>إداري</span>
+  </div>
+
+  <div class="lbl">Priority — 3-step signal (destructive → warning → success)</div>
+  <div class="row">
+    <span class="prio hi"><span class="dot"></span>عالية</span>
+    <span class="prio me"><span class="dot"></span>متوسطة</span>
+    <span class="prio lo"><span class="dot"></span>منخفضة</span>
+    <span class="destr"><i data-lucide="alert-circle"></i>حدث خطأ أثناء الإرسال</span>
+  </div>
+<script>lucide.createIcons();</script>
+</body>
+</html>

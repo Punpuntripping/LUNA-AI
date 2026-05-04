@@ -1,0 +1,1151 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 1,
+  "total_articles_kept": 18,
+  "total_sections_kept": 8,
+  "total_dropped": 178,
+  "total_input_tokens": 156654,
+  "total_output_tokens": 30107,
+  "total_requests": 17,
+  "queries": [
+    {
+      "query": "دعوى الاسترداد لعدم وجود عقد مكتوب",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 20400,
+          "output_tokens": 2270,
+          "requests": 2,
+          "reasoning_tokens": 1197
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج مرتبطة بأنظمة متخصصة (إيجار تمويلي، عقارات شاغرة، نزع ملكية، رهن عقاري) لا تنظم العقود العامة دون وثائق مكتوبة. النظام القانوني العام للعقود وأحكام الإثبات في غياب الكتابة لم يتوفر ضمن هذه النتائج المتخصصة، لذا التقييم الجماعي غير كافٍ للإجابة على السؤال الفرعي حول الإجراءات القضائية لاسترداد المبلغ بدون عقد مكتوب."
+    },
+    {
+      "query": "شروط انعقاد عقد الإيجار بدون كتابة",
+      "sufficient": true,
+      "articles_kept": 0,
+      "sections_kept": 3,
+      "dropped": 20,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9731,
+          "output_tokens": 1653,
+          "requests": 1,
+          "reasoning_tokens": 864
+        },
+        {
+          "round": 2,
+          "input_tokens": 2815,
+          "output_tokens": 921,
+          "requests": 1,
+          "reasoning_tokens": 652
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.2,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          }
+        ]
+      },
+      "summary_note": "النتائج الثلاث ذات صلة: الباب الأول يحوي الأساسيات وشروط الإيجار، الباب الثالث يحيل للمعاملات المدنية كمرجعية للشروط العامة للعقد. لا حاجة توسع إضافي."
+    },
+    {
+      "query": "التعويض عن الدفع بدون التزام تعاقدي",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 21,
+      "classification_rounds": 2,
+      "db_unfolds": 3,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9689,
+          "output_tokens": 1789,
+          "requests": 1,
+          "reasoning_tokens": 1177
+        },
+        {
+          "round": 2,
+          "input_tokens": 10354,
+          "output_tokens": 1487,
+          "requests": 1,
+          "reasoning_tokens": 608
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          },
+          {
+            "position": 9,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.13335
+          },
+          {
+            "position": 11,
+            "rrf": 0.13335
+          },
+          {
+            "position": 12,
+            "rrf": 0.13335
+          },
+          {
+            "position": 13,
+            "rrf": 0.13335
+          },
+          {
+            "position": 14,
+            "rrf": 0.13335
+          },
+          {
+            "position": 15,
+            "rrf": 0.13335
+          },
+          {
+            "position": 16,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج تنتمي لأنظمة نزع ملكية العقارات للمنفعة العامة - وهي أنظمة قطاعية محددة لا تغطي مبادئ الإثراء بلا سبب العامة في الالتزامات المدنية. الاستعلام يبحث عن نظرية الإثراء بلا سبب كفعل غير مشروع والدفع دون التزام تعاقدي، بينما هذه المواد تتعامل مع تعويض الدولة للملاك في إطار السلطة العلوية للنزع. لم تتوفر مواد قانونية عامة حول الإثراء بلا سبب أو استرداد ما دفع دون التزام."
+    },
+    {
+      "query": "حجية الإثبات في المعاملات المالية بدون عقد مكتوب",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 32,
+      "classification_rounds": 2,
+      "db_unfolds": 4,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9098,
+          "output_tokens": 1970,
+          "requests": 1,
+          "reasoning_tokens": 1477
+        },
+        {
+          "round": 2,
+          "input_tokens": 7646,
+          "output_tokens": 2147,
+          "requests": 1,
+          "reasoning_tokens": 897
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.2
+          },
+          {
+            "position": 18,
+            "rrf": 0.2
+          },
+          {
+            "position": 19,
+            "rrf": 0.2
+          },
+          {
+            "position": 20,
+            "rrf": 0.2
+          },
+          {
+            "position": 21,
+            "rrf": 0.2
+          },
+          {
+            "position": 22,
+            "rrf": 0.2
+          },
+          {
+            "position": 23,
+            "rrf": 0.13335
+          },
+          {
+            "position": 24,
+            "rrf": 0.13335
+          },
+          {
+            "position": 25,
+            "rrf": 0.1
+          },
+          {
+            "position": 26,
+            "rrf": 0.1
+          },
+          {
+            "position": 27,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من أنظمة قطاعية محددة (إيجار تمويلي، تمويل عقاري، شهادات مساهمات عقارية) ولا تغطي المبادئ العامة للإثبات في المعاملات المالية. يُنصح بالتوسع لاستدعاء نظام الإثبات أو القانون المدني."
+    },
+    {
+      "query": "أحكام فسخ الاتفاق قبل بدء التنفيذ",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 3,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9682,
+          "output_tokens": 5021,
+          "requests": 1,
+          "reasoning_tokens": 4782
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "تم تصنيف 21 نتيجة، تم الاحتفاظ بـ نتيجتين من نظام الإيجار التمويلي لاحتوائهما على أحكام فسخ العقود قبل انتهاء المدة، مع التوسُّع للحصول على سياق النظام الكامل. باقي النتائج حُذفت لأنها تنتمي لأنظمة قطاعية محدودة التطبيق (حكومية، عقارية خاصة، جهات معينة)."
+    },
+    {
+      "query": "حق المستأجر في إلغاء الإيجار قبل استلام العين",
+      "sufficient": false,
+      "articles_kept": 8,
+      "sections_kept": 2,
+      "dropped": 16,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 21691,
+          "output_tokens": 3622,
+          "requests": 2,
+          "reasoning_tokens": 959
+        },
+        {
+          "round": 2,
+          "input_tokens": 8001,
+          "output_tokens": 1901,
+          "requests": 2,
+          "reasoning_tokens": 1227
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 12,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 20,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.1
+          },
+          {
+            "position": 5,
+            "rrf": 0.1
+          },
+          {
+            "position": 6,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 8,
+            "rrf": 0.2
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من نظام الإيجار التمويلي المتخصص الذي يختلف عن الإيجار العام المطروح بالاستعلام، لا توجد مادة صريحة تعالج حق المستأجر في الإلغاء قبل الاستلام الفعلي"
+    },
+    {
+      "query": "استرداد الإيجار المدفوع مقدماً قبل بدء مدة الإيجار",
+      "sufficient": false,
+      "articles_kept": 9,
+      "sections_kept": 2,
+      "dropped": 65,
+      "classification_rounds": 3,
+      "db_unfolds": 6,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9360,
+          "output_tokens": 1562,
+          "requests": 1,
+          "reasoning_tokens": 634
+        },
+        {
+          "round": 2,
+          "input_tokens": 30984,
+          "output_tokens": 3637,
+          "requests": 2,
+          "reasoning_tokens": 906
+        },
+        {
+          "round": 3,
+          "input_tokens": 7203,
+          "output_tokens": 2127,
+          "requests": 1,
+          "reasoning_tokens": 1212
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 28,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 29,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 30,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 31,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 41,
+            "rrf": 0.08,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.1,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 9,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 15,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.2
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.1
+          },
+          {
+            "position": 11,
+            "rrf": 0.1
+          },
+          {
+            "position": 12,
+            "rrf": 0.1
+          },
+          {
+            "position": 13,
+            "rrf": 0.1
+          },
+          {
+            "position": 14,
+            "rrf": 0.1
+          },
+          {
+            "position": 15,
+            "rrf": 0.1
+          },
+          {
+            "position": 16,
+            "rrf": 0.1
+          },
+          {
+            "position": 17,
+            "rrf": 0.1
+          },
+          {
+            "position": 18,
+            "rrf": 0.1
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 22,
+            "rrf": 0.1
+          },
+          {
+            "position": 23,
+            "rrf": 0.1
+          },
+          {
+            "position": 24,
+            "rrf": 0.1
+          },
+          {
+            "position": 25,
+            "rrf": 0.1
+          },
+          {
+            "position": 26,
+            "rrf": 0.1
+          },
+          {
+            "position": 27,
+            "rrf": 0.1
+          },
+          {
+            "position": 32,
+            "rrf": 0.16
+          },
+          {
+            "position": 33,
+            "rrf": 0.08
+          },
+          {
+            "position": 34,
+            "rrf": 0.08
+          },
+          {
+            "position": 35,
+            "rrf": 0.08
+          },
+          {
+            "position": 36,
+            "rrf": 0.08
+          },
+          {
+            "position": 37,
+            "rrf": 0.08
+          },
+          {
+            "position": 38,
+            "rrf": 0.08
+          },
+          {
+            "position": 39,
+            "rrf": 0.08
+          },
+          {
+            "position": 40,
+            "rrf": 0.08
+          },
+          {
+            "position": 42,
+            "rrf": 0.08
+          },
+          {
+            "position": 5,
+            "rrf": 0.1
+          },
+          {
+            "position": 6,
+            "rrf": 0.1
+          },
+          {
+            "position": 8,
+            "rrf": 0.1
+          },
+          {
+            "position": 10,
+            "rrf": 0.1
+          },
+          {
+            "position": 12,
+            "rrf": 0.1
+          },
+          {
+            "position": 13,
+            "rrf": 0.1
+          },
+          {
+            "position": 14,
+            "rrf": 0.1
+          },
+          {
+            "position": 16,
+            "rrf": 0.1
+          },
+          {
+            "position": 17,
+            "rrf": 0.1
+          },
+          {
+            "position": 18,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          }
+        ]
+      },
+      "summary_note": "النتائج الحالية من نظام الإيجار التمويلي تغطي جوانب أساسية للعقد لكن لا يوجد نص صريح حول استرداد الإيجار المدفوع مقدماً قبل بدء المدة. الاحتفاظ بـ 8 مواد ذات صلة متوسطة و1 مادة عالية الصلة. يُرجى توسع البحث عن أنظمة الإيجار العادية (غير التمويلي) والحلول المتوافقة مع القانون المدني السعودي."
+    }
+  ]
+}

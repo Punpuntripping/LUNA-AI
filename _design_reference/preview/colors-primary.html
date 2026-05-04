@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Colors / Primary</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:16px; background:var(--background); font-family:var(--font-sans); }
+  .wrap { display:flex; gap:8px; align-items:stretch; }
+  .sw { flex:1; border-radius:var(--radius-lg); border:1px solid var(--border); padding:10px 12px; min-height:88px; display:flex; flex-direction:column; justify-content:space-between; }
+  .sw .label { font-size:12px; font-weight:500; }
+  .sw .val   { font-family:var(--font-mono); font-size:10px; opacity:0.8; direction:ltr; }
+  .p  { background:var(--luna-primary); color:var(--luna-primary-foreground); border-color:transparent; }
+  .p9 { background:oklch(42% 0.07 195 / 0.92); color:#fff; border-color:transparent; }
+  .p1 { background:oklch(42% 0.07 195 / 0.12); color:var(--luna-primary); border-color:transparent; }
+  .lt { background:var(--luna-brand-light); color:oklch(30% 0.07 195); border-color:transparent; }
+  .pf { background:var(--luna-primary-foreground); color:var(--luna-primary); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="sw p">     <div class="label">Primary</div>          <div class="val">42% 0.07 195</div></div>
+    <div class="sw p9">    <div class="label">Primary / 92</div>     <div class="val">hover state</div></div>
+    <div class="sw p1">    <div class="label">Primary / 12</div>     <div class="val">user bubble · soft</div></div>
+    <div class="sw lt">    <div class="label">Brand Light</div>      <div class="val">88% 0.02 195</div></div>
+    <div class="sw pf">    <div class="label">Primary FG</div>       <div class="val">98% 0.01 195</div></div>
+  </div>
+</body>
+</html>

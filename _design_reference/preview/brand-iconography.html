@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<title>Luna — Brand / Iconography</title>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; padding:18px; background:var(--background); font-family:var(--font-sans); color:var(--foreground); }
+  .lbl { font-size:11px; color:var(--muted-foreground); font-family:var(--font-mono); direction:ltr; margin-bottom:8px; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .i { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:10px; color:var(--muted-foreground); direction:ltr; }
+  .i svg { width:20px; height:20px; color:var(--foreground); }
+  .primary svg { color:var(--luna-primary); }
+  .destr svg { color:var(--destructive); }
+</style>
+</head>
+<body>
+  <div class="lbl">Lucide · 2px stroke · sizes 12/14/16/20px</div>
+  <div class="row">
+    <div class="i"><i data-lucide="send"></i>send</div>
+    <div class="i"><i data-lucide="plus"></i>plus</div>
+    <div class="i"><i data-lucide="paperclip"></i>paperclip</div>
+    <div class="i"><i data-lucide="bot"></i>bot</div>
+    <div class="i"><i data-lucide="sparkles"></i>sparkles</div>
+    <div class="i"><i data-lucide="search"></i>search</div>
+    <div class="i"><i data-lucide="file-search"></i>file-search</div>
+    <div class="i"><i data-lucide="brain"></i>brain</div>
+    <div class="i"><i data-lucide="file-edit"></i>file-edit</div>
+    <div class="i"><i data-lucide="scale"></i>scale</div>
+    <div class="i"><i data-lucide="briefcase"></i>briefcase</div>
+    <div class="i"><i data-lucide="message-square"></i>msg-sq</div>
+    <div class="i"><i data-lucide="file-text"></i>file-text</div>
+    <div class="i primary"><i data-lucide="check"></i>check</div>
+    <div class="i destr"><i data-lucide="trash-2"></i>trash-2</div>
+  </div>
+<script>lucide.createIcons();</script>
+</body>
+</html>

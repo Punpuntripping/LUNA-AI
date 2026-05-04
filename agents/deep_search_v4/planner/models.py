@@ -16,6 +16,7 @@ so the planner stays cheap and the tuning surface stays out of the prompt.
 """
 from __future__ import annotations
 
+import json as _json
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -52,7 +53,7 @@ class PlannerOutput(BaseModel):
         default=None,
         description=(
             "1–4 canonical sector names from "
-            "``agents.deep_search_v3.reg_search.sector_vocab.VALID_SECTORS``, "
+            "``agents.deep_search_v4.reg_search.sector_vocab.VALID_SECTORS``, "
             "or ``null`` when the query isn't sector-specific."
         ),
     )
@@ -103,14 +104,34 @@ class PlannerOutput(BaseModel):
         # Extra keys are tolerated but stripped to keep apply deterministic.
         return {k: v for k, v in value.items() if k in invoked_set}
 
+    @field_validator("sectors", mode="before")
+    @classmethod
+    def _coerce_sectors(cls, v):
+        # Coerce LLM quirks before strict list[str] validation:
+        # - JSON-stringified arrays: '["x","y"]' -> ["x","y"]
+        # - empty string: ''  -> None
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            try:
+                parsed = _json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return v
+
     @field_validator("sectors")
     @classmethod
     def _validate_sectors_size(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
-        if not 1 <= len(value) <= 4:
+        # Fallback rule: ≥5 entries means the query is too broad — drop the filter.
+        if len(value) >= 5:
+            return None
+        if len(value) < 1:
             raise ValueError(
-                f"sectors must contain 1–4 entries; got {len(value)}"
+                f"sectors must contain 1–4 entries or be null; got {len(value)}"
             )
         return value
 

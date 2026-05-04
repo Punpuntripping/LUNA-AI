@@ -671,6 +671,19 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         output_price=1.72,
         output_speed_tps=120.0,
     ),
+    # Alias used by the v4 planner default (V4_PLANNER_DESIGN.md §4.2). Points
+    # at the same Alibaba flash model as ``qwen3.5-flash``.
+    "qwen3-flash": ModelConfig(
+        model_id="qwen3.5-flash",
+        provider="alibaba",
+        display_name="Qwen3 Flash (alias of qwen3.5-flash)",
+        supports_vision=True,
+        max_tokens=65536,
+        context_length=1000000,
+        input_price=0.17,
+        output_price=1.72,
+        output_speed_tps=120.0,
+    ),
 
     # --- Qwen3 series ---
     "qwen3-max": ModelConfig(

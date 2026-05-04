@@ -171,7 +171,6 @@ async def send_message_stream(
     conv: dict,
     content: str,
     request: Request,
-    agent_family: str | None = None,
     attachment_ids: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
@@ -273,7 +272,6 @@ async def send_message_stream(
                 conversation_id=conversation_id,
                 supabase=supabase,
                 case_id=conv.get("case_id"),
-                explicit_agent_family=agent_family,
                 user_message_id=user_msg_id,
             ):
                 event_type = event.get("type")

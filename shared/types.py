@@ -6,7 +6,7 @@ Used by both backend and agents.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -124,21 +124,29 @@ class AuditAction(str, Enum):
 
 
 class AgentFamily(str, Enum):
-    """Agent family — mirrors agent_family_enum in 018_enums_agent.sql."""
+    """Agent family — mirrors agent_family_enum in 018_enums_agent.sql.
+
+    Note: the underlying pg enum still lists 'end_services' and 'extraction'
+    for migration history; the Python enum no longer exposes them.
+    """
     DEEP_SEARCH = "deep_search"
-    END_SERVICES = "end_services"
-    EXTRACTION = "extraction"
+    WRITING = "writing"
     MEMORY = "memory"
 
 
 class ArtifactType(str, Enum):
-    """Artifact type — mirrors artifact_type_enum in 018_enums_agent.sql."""
+    """Artifact type — mirrors artifact_type_enum in 018_enums_agent.sql + 022_artifact_type_legal_synthesis.sql."""
     REPORT = "report"
     CONTRACT = "contract"
     MEMO = "memo"
     SUMMARY = "summary"
     MEMORY_FILE = "memory_file"
     LEGAL_OPINION = "legal_opinion"
+    LEGAL_SYNTHESIS = "legal_synthesis"
+
+
+# Detail level for deep-search aggregator verbosity (UI toggle → user_preferences → agent).
+DetailLevel = Literal["low", "medium", "high"]
 
 
 # ============================================
@@ -201,6 +209,5 @@ class AgentContext:
     conversation_history: list[ChatMessage] = field(default_factory=list)
     case_metadata: Optional[dict] = None
     user_preferences: Optional[dict] = None
-    user_templates: Optional[list[dict]] = None
     document_summaries: Optional[list[dict]] = None
     modifiers: list[str] = field(default_factory=list)

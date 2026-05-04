@@ -1,0 +1,3 @@
+{"event": "planner_start", "model": "qwen3.6-plus"}
+{"event": "planner_done", "invoke": ["reg", "compliance"], "focus": {"reg": "high", "compliance": "default"}, "model": "qwen3.6-plus", "duration_s": 22.027}
+{"event": "plan_ready", "plan": {"invoke": ["reg", "compliance"], "focus": {"reg": "high", "compliance": "default"}, "sectors": ["العمل والتوظيف"], "rationale": "سؤال حول نظامية إرسال إشعار بعدم الرغبة في تجديد عقد محدد المدة لسائق أثناء إجازته، والتحقق من اشتراط الإشعار قبل شهر، والإجراء عبر منصة قوى.", "aborted": false}}

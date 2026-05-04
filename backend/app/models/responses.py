@@ -162,6 +162,7 @@ class MessageResponse(BaseModel):
     content: str
     model: Optional[str] = None
     attachments: list[AttachmentResponse] = []
+    metadata: dict = {}
     created_at: str
 
 
@@ -215,27 +216,37 @@ class MemoryListResponse(BaseModel):
     total: int
 
 
-# ── Artifacts ────────────────────────────────────────────
+# ── Workspace items (post-026) ───────────────────────────
 
-class ArtifactResponse(BaseModel):
-    """Single artifact."""
-    artifact_id: str
+
+class WorkspaceItemResponse(BaseModel):
+    """Single workspace item.
+
+    Replaces ArtifactResponse. ``artifact_type`` is gone -- subtype now lives
+    in ``metadata.subtype`` and is treated as a free-form string by the
+    backend.
+    """
+    item_id: str
     user_id: str
     conversation_id: Optional[str] = None
     case_id: Optional[str] = None
-    agent_family: str
-    artifact_type: str
+    message_id: Optional[str] = None
+    agent_family: Optional[str] = None
+    kind: str
+    created_by: str
     title: str
-    content_md: str
-    is_editable: bool
+    content_md: Optional[str] = None
+    storage_path: Optional[str] = None
+    document_id: Optional[str] = None
+    is_visible: bool = True
     metadata: dict = {}
     created_at: str
     updated_at: str
 
 
-class ArtifactListResponse(BaseModel):
-    """GET /api/v1/conversations/{id}/artifacts or cases/{id}/artifacts"""
-    artifacts: list[ArtifactResponse]
+class WorkspaceItemListResponse(BaseModel):
+    """GET /api/v1/conversations/{id}/workspace or cases/{id}/workspace"""
+    items: list[WorkspaceItemResponse]
     total: int
 
 
@@ -245,23 +256,3 @@ class PreferencesResponse(BaseModel):
     """GET/PATCH /api/v1/preferences"""
     user_id: str
     preferences: dict
-
-
-# ── Templates ────────────────────────────────────────────
-
-class TemplateResponse(BaseModel):
-    """Single template."""
-    template_id: str
-    user_id: str
-    title: str
-    description: str
-    prompt_template: str
-    agent_family: str
-    is_active: bool
-    created_at: str
-
-
-class TemplateListResponse(BaseModel):
-    """GET /api/v1/templates"""
-    templates: list[TemplateResponse]
-    total: int

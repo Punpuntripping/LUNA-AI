@@ -1,0 +1,84 @@
+{
+  "log_id": "20260501_141446",
+  "query_id": 0,
+  "timestamp": "2026-05-01T14:15:09.373341+00:00",
+  "agent": "case_search",
+  "status": "error",
+  "duration_seconds": 23.03,
+  "model": "qwen3.5-plus",
+  "thinking_effort": null,
+  "input": {
+    "focus_instruction": "سؤال",
+    "user_context": ""
+  },
+  "prompt_keys": {
+    "expander": "prompt_3",
+    "aggregator": null
+  },
+  "result": {
+    "quality": "pending",
+    "rounds": 1,
+    "queries": [
+      "لا تتوفر وقائع كافية لتحديد المبدأ القضائي",
+      "لم يُذكر ملخص الواقعة أو أطراف الدعوى أو المطالبات",
+      "لم تُذكر أنظمة أو مواد للاستشهاد بها في الأساس"
+    ],
+    "citations_count": 0,
+    "reranker_queries": 0,
+    "total_kept": 0,
+    "summary_md_length": 0,
+    "summary_md": ""
+  },
+  "cost": {
+    "total_input_tokens": 5706,
+    "total_output_tokens": 1129,
+    "total_tokens": 6835,
+    "per_agent": [
+      {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5706,
+        "output_tokens": 1129,
+        "total_tokens": 6835,
+        "details": {
+          "reasoning_tokens": 696,
+          "text_tokens": 1129
+        }
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "expander_usage": {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5706,
+        "output_tokens": 1129,
+        "total_tokens": 6835,
+        "details": {
+          "reasoning_tokens": 696,
+          "text_tokens": 1129
+        }
+      }
+    }
+  ],
+  "search_results_log": [],
+  "events": [
+    {
+      "type": "status",
+      "text": "تم توليد 3 استعلامات عبر 3 قنوات (principle:1, facts:1, basis:1)"
+    },
+    {
+      "type": "status",
+      "text": "جاري تنفيذ 3 استعلامات مُقنّنة على 3 قناة..."
+    },
+    {
+      "type": "status",
+      "text": "حدث خطأ أثناء حلقة البحث في السوابق القضائية."
+    }
+  ],
+  "error": "'_Settings' object has no attribute 'ALIBABA_API_KEY'"
+}

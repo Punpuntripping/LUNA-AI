@@ -69,10 +69,7 @@ class Settings(BaseSettings):
     # ========================================
 
     # OpenRouter (primary LLM gateway)
-    OPENROUTER_API_KEY: Optional[str] = Field(
-        default=None,
-        validation_alias="OPEN_ROUTER",
-    )
+    OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_DEFAULT_MODEL: str = "anthropic/claude-sonnet-4"
 
@@ -92,10 +89,7 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = None
 
     # Jina Reranker
-    JINA_RERANKER_API_KEY: Optional[str] = Field(
-        default=None,
-        validation_alias="JINA_RERANKER_API",
-    )
+    JINA_RERANKER_API_KEY: Optional[str] = None
 
     # DeepSeek
     DEEPSEEK_API_KEY: Optional[str] = None

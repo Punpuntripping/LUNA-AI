@@ -635,14 +635,12 @@ async def handle_message(
     conversation_id: str,
     supabase: SupabaseClient,
     case_id: str | None = None,
-    explicit_agent_family: str | None = None,
     user_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
     1. Pre-router memory hook (best-effort).
-    2. If explicit_agent_family: skip router, call _dispatch directly.
-    3. Else: call _route which runs the router LLM and fans out.
+    2. Run router which fans out to specialist agents.
 
     ``user_message_id`` is the FK of the persisted user message (inserted
     before the AI call, per CLAUDE.md rule #7). Thread-through to
@@ -677,22 +675,6 @@ async def handle_message(
         await memory.compact_conversation(supabase, conversation_id, user_id)
     except Exception:
         logger.warning("memory pre-hook failed", exc_info=True)
-
-    if explicit_agent_family:
-        async for ev in _dispatch(
-            agent_family=explicit_agent_family,
-            briefing=question,
-            target_item_id=None,
-            attached_item_ids=[],
-            subtype=None,
-            supabase=supabase,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            case_id=case_id,
-            user_message_id=user_message_id,
-        ):
-            yield ev
-        return
 
     async for ev in _route(
         question=question,
@@ -813,8 +795,6 @@ async def _dispatch(
             return  # NO agent_runs row on cap rejection.
 
     t0 = perf_counter()
-    # agent_selected is emitted by _route; re-emit here only on explicit dispatch
-    # (explicit_agent_family path has no prior agent_selected).
     yield {"type": "agent_run_started", "agent_family": agent_family, "subtype": subtype}
 
     run_result: SpecialistResult | None = None
@@ -1204,11 +1184,10 @@ async def _run_memory(
     user_id: str,
     supabase: SupabaseClient,
 ) -> SpecialistResult:
-    """Run the memory family (explicit dispatch path).
+    """Run the memory family.
 
     Wave 9: delegates to compact_conversation as a best-effort fallback.
-    The router does not normally dispatch to memory; this path is only hit
-    when the caller sets explicit_agent_family='memory'.
+    The router does not normally dispatch to memory.
     """
     new_item_id: str | None = None
     try:

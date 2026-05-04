@@ -10,11 +10,11 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from agents.deep_search_v3.shared.models import RerankerQueryResult
-from agents.deep_search_v3.source_viewer import SourceView
+from agents.deep_search_v4.shared.models import RerankerQueryResult
+from agents.deep_search_v4.source_viewer import SourceView
 
 if TYPE_CHECKING:
-    from agents.deep_search_v3.ura.schema import UnifiedRetrievalArtifact
+    from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,85 @@
+{
+  "log_id": "20260501_141411",
+  "query_id": 0,
+  "timestamp": "2026-05-01T14:14:42.798862+00:00",
+  "agent": "case_search",
+  "status": "error",
+  "duration_seconds": 31.2,
+  "model": "qwen3.5-plus",
+  "thinking_effort": null,
+  "input": {
+    "focus_instruction": "ما هي شروط إثبات الزوجية؟",
+    "user_context": ""
+  },
+  "prompt_keys": {
+    "expander": "prompt_3",
+    "aggregator": null
+  },
+  "result": {
+    "quality": "pending",
+    "rounds": 1,
+    "queries": [
+      "الأصل في إثبات الزوجية بشهادة الشهود أو وثيقة العقد",
+      "من أنكر الزوجية بعد الإقرار بها انقلب مدعياً وعليه الإثبات",
+      "طالب إثبات زوجية بعد وفاة الزوج للمطالبة بحقوق شرعية",
+      "أحكام نظام المرافعات الشرعية في إثبات الزوجية بالشهود"
+    ],
+    "citations_count": 0,
+    "reranker_queries": 0,
+    "total_kept": 0,
+    "summary_md_length": 0,
+    "summary_md": ""
+  },
+  "cost": {
+    "total_input_tokens": 5822,
+    "total_output_tokens": 1349,
+    "total_tokens": 7171,
+    "per_agent": [
+      {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5822,
+        "output_tokens": 1349,
+        "total_tokens": 7171,
+        "details": {
+          "reasoning_tokens": 883,
+          "text_tokens": 1349
+        }
+      }
+    ]
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "expander_usage": {
+        "agent": "expander",
+        "round": 1,
+        "requests": 2,
+        "input_tokens": 5822,
+        "output_tokens": 1349,
+        "total_tokens": 7171,
+        "details": {
+          "reasoning_tokens": 883,
+          "text_tokens": 1349
+        }
+      }
+    }
+  ],
+  "search_results_log": [],
+  "events": [
+    {
+      "type": "status",
+      "text": "تم توليد 4 استعلامات عبر 3 قنوات (principle:2, facts:1, basis:1)"
+    },
+    {
+      "type": "status",
+      "text": "جاري تنفيذ 4 استعلامات مُقنّنة على 3 قناة..."
+    },
+    {
+      "type": "status",
+      "text": "حدث خطأ أثناء حلقة البحث في السوابق القضائية."
+    }
+  ],
+  "error": "'_Settings' object has no attribute 'ALIBABA_API_KEY'"
+}

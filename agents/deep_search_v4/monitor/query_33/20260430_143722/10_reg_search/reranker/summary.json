@@ -1,0 +1,572 @@
+{
+  "total_queries": 5,
+  "sufficient_queries": 2,
+  "total_articles_kept": 8,
+  "total_sections_kept": 4,
+  "total_dropped": 92,
+  "total_input_tokens": 44808,
+  "total_output_tokens": 22754,
+  "total_requests": 5,
+  "queries": [
+    {
+      "query": "ضوابط الفصل التعسفي وشروط تحققه في عقود العمل",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 7875,
+          "output_tokens": 1838,
+          "requests": 1,
+          "reasoning_tokens": 892
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج الـ 21 غير ذات صلة بالاستعلام الفرعي عن ضوابط الفصل التعسفي في عقود العمل. النتائج المعادة تغطي قطاعات أخرى (التأمين، التمويل، العقارات، التراخيص البلدية، الضمان الصحي) ولا تتضمن أي نص من نظام العمل أو لوائحه التنفيذية الذي ينظم الفصل التعسفي. لا توجد نتائج كافية للإجابة عن الاستعلام."
+    },
+    {
+      "query": "مبدأ إساءة استعمال الحق في إنهاء العقود",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 7626,
+          "output_tokens": 3403,
+          "requests": 1,
+          "reasoning_tokens": 2423
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج الخاصة بأنظمة وقطاعات محددة (كالإيجار التمويلي، الامتياز التجاري، التمويل الاستهلاكي، ولوحات الدعاية) ولا تتناول المبدأ القانوني المجرد لإساءة استعمال الحق في إنهاء العقود، مما يستدعي بحثاً أعمق في المصادر العامة أو الفقه القانوني."
+    },
+    {
+      "query": "أسس تقدير التعويضات المالية عن الفصل غير المشروع",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 21,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11596,
+          "output_tokens": 4656,
+          "requests": 1,
+          "reasoning_tokens": 3804
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج تعود لأنظمة قطاعية أو تأمينية أو عقارية أو مالية لا تتناول نظام العمل أو أسس تقدير التعويض عن الفصل غير المشروع؛ لذا لا توجد نتائج كافية."
+    },
+    {
+      "query": "عبء الإثبات في المنازعات العمالية الخاصة بالفصل",
+      "sufficient": true,
+      "articles_kept": 5,
+      "sections_kept": 2,
+      "dropped": 14,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8612,
+          "output_tokens": 5546,
+          "requests": 1,
+          "reasoning_tokens": 4478
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي القاعدة العامة لتوزيع عبء الإثبات (البينة على المدعي) ونطاق سريانها الصريح على المنازعات العمالية، والإجراء القضائي للتحقق منه، مما يكفي للإجابة عن الاستعلام الفرعي بنسبة تتجاوز 80%."
+    },
+    {
+      "query": "اختصاص المحاكم العمالية وإجراءات الطعن في أحكام الفصل",
+      "sufficient": true,
+      "articles_kept": 3,
+      "sections_kept": 2,
+      "dropped": 15,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9099,
+          "output_tokens": 7311,
+          "requests": 1,
+          "reasoning_tokens": 6212
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 12,
+            "rrf": 0.16
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها والمُوسّعة تغطي الجانب الإجرائي بدقة: نص صريح بنقل اختصاص المحاكم العمالية، وأبواب الاختصاص والدفوع من نظام المرافعات العامة، ولائحتي الاستئناف والاعتراض العامتين التي تُطبق قياساً، مما يُشكل قاعدة كافية (>80%) للإجابة على الاستعلام."
+    }
+  ]
+}

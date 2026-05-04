@@ -4,39 +4,42 @@ import { useState, useEffect } from "react";
 import { Save, Loader2, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useArtifact, useUpdateArtifact } from "@/hooks/use-artifacts";
+import {
+  useUpdateWorkspaceItem,
+  useWorkspaceItem,
+} from "@/hooks/use-workspace";
 
 interface MemoryEditorProps {
-  artifactId: string;
+  itemId: string;
 }
 
-export function MemoryEditor({ artifactId }: MemoryEditorProps) {
-  const { data: artifact, isLoading, error } = useArtifact(artifactId);
-  const updateArtifact = useUpdateArtifact();
+export function MemoryEditor({ itemId }: MemoryEditorProps) {
+  const { data: item, isLoading, error } = useWorkspaceItem(itemId);
+  const updateItem = useUpdateWorkspaceItem();
 
   const [isEditing, setIsEditing] = useState(false);
   const [content, setContent] = useState("");
 
-  // Sync content when artifact loads or changes
+  // Sync content when item loads or changes
   useEffect(() => {
-    if (artifact) {
-      setContent(artifact.content_md);
+    if (item) {
+      setContent(item.content_md ?? "");
     }
-  }, [artifact]);
+  }, [item]);
 
   function handleSave() {
-    if (!artifact) return;
+    if (!item) return;
 
-    updateArtifact.mutate(
+    updateItem.mutate(
       {
-        artifactId: artifact.artifact_id,
+        itemId: item.item_id,
         data: { content_md: content },
       },
       {
         onSuccess: () => {
           setIsEditing(false);
         },
-      }
+      },
     );
   }
 
@@ -53,7 +56,7 @@ export function MemoryEditor({ artifactId }: MemoryEditorProps) {
   }
 
   // Error state
-  if (error || !artifact) {
+  if (error || !item) {
     return (
       <div className="flex items-center justify-center p-8">
         <p className="text-sm text-destructive">
@@ -67,9 +70,7 @@ export function MemoryEditor({ artifactId }: MemoryEditorProps) {
     <div className="flex flex-col rounded-lg border bg-card">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold text-foreground">
-          {artifact.title}
-        </h3>
+        <h3 className="text-sm font-semibold text-foreground">{item.title}</h3>
 
         <div className="flex items-center gap-1">
           {isEditing ? (
@@ -78,9 +79,9 @@ export function MemoryEditor({ artifactId }: MemoryEditorProps) {
               size="sm"
               className="h-8 gap-1.5"
               onClick={handleSave}
-              disabled={updateArtifact.isPending}
+              disabled={updateItem.isPending}
             >
-              {updateArtifact.isPending ? (
+              {updateItem.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Save className="h-3.5 w-3.5" />
@@ -118,7 +119,7 @@ export function MemoryEditor({ artifactId }: MemoryEditorProps) {
             className="p-4 text-sm leading-relaxed text-foreground whitespace-pre-wrap"
             dir="rtl"
           >
-            {artifact.content_md || (
+            {item.content_md || (
               <span className="text-muted-foreground">
                 لا توجد ملاحظات بعد. اضغط على زر التعديل لإضافة ملاحظات.
               </span>

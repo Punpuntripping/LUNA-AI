@@ -1,0 +1,935 @@
+{
+  "total_queries": 7,
+  "sufficient_queries": 0,
+  "total_articles_kept": 10,
+  "total_sections_kept": 8,
+  "total_dropped": 147,
+  "total_input_tokens": 142013,
+  "total_output_tokens": 26714,
+  "total_requests": 16,
+  "queries": [
+    {
+      "query": "طرق إبلاغ العامل بخطاب إنهاء عقد العمل",
+      "sufficient": false,
+      "articles_kept": 2,
+      "sections_kept": 0,
+      "dropped": 5,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10807,
+          "output_tokens": 1389,
+          "requests": 1,
+          "reasoning_tokens": 1055
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج الأولية محدودة جداً للاستعلام الفرعي، معظم الأنظمة إما قطاعات خاصة أو أنظمة تأمين ليست إجرائية للإبلاغ بإنهاء العقد"
+    },
+    {
+      "query": "حكم إنهاء الخدمة أثناء تمتع العامل بالإجازة السنوية",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 19,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 22778,
+          "output_tokens": 2686,
+          "requests": 2,
+          "reasoning_tokens": 1010
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "جميع النتائج إما متخصصة لفئات محددة (مساجد، وزراء، دفاع مدني، صيادلة) أو لأنظمة تعويض بطالة وتأمينات لا تجيب مباشرة على الاستعلام. النظام العام الذي يبحث عن استفسار إنهاء خدمة عام أثناء إجازة سنوية غير موجود في هذه النتائج."
+    },
+    {
+      "query": "مدة الإشعار اللازمة لإنهاء عقد العمل المحدد المدة",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 1,
+      "dropped": 28,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10100,
+          "output_tokens": 1368,
+          "requests": 1,
+          "reasoning_tokens": 434
+        },
+        {
+          "round": 2,
+          "input_tokens": 8499,
+          "output_tokens": 1127,
+          "requests": 1,
+          "reasoning_tokens": 557
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 14,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.2667
+          },
+          {
+            "position": 2,
+            "rrf": 0.13335
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          },
+          {
+            "position": 9,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          }
+        ]
+      },
+      "summary_note": "النتائج المعروضة كلها تابعة لنظام \"الصيغة النموذجية لوثيقة التأمين على عقد العمالة المنزلية\" - نظام تأمين متخصّص لا يغطي موضوعات إنهاء عقود العمل أو مدد الإشعار القانونية. الاستعلام يستهدف نظام العمل العام الذي ينظم العلاقة التعاقدية بين الأطراف وفترة الإشعار الإلزامية (الشهر المعتاد). لا توجد أي مادة قانونية في هذه النتائج تتناول إشعار إنهاء عقد العمل المحدد المدة."
+    },
+    {
+      "query": "أحكام إنهاء عقود العمل المحددة المدة",
+      "sufficient": false,
+      "articles_kept": 1,
+      "sections_kept": 1,
+      "dropped": 19,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10141,
+          "output_tokens": 4319,
+          "requests": 1,
+          "reasoning_tokens": 3315
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 15,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "معظم النتائج تتعلق بأنظمة التأشيرات والهجرة (تأشيرات عمل مؤقت/موسمي/حج) أو أنظمة متخصصة (منزلي، ضمان اجتماعي عاطلين، سلامة مهنية) ولم تتضمن نظام العمل العام الذي يحكم إنهاء العقود المحددة المدة مباشرة. الاحتفاظ بنتيجتين فقط من نظام التأمين ضد العاطلين يعطي إطاراً نظيراً محدوداً لأسباب الانهاء المقبول، لكنه غير كافٍ للإجابة الشاملة."
+    },
+    {
+      "query": "حقوق العامل خلال فترة الإشعار",
+      "sufficient": false,
+      "articles_kept": 2,
+      "sections_kept": 2,
+      "dropped": 5,
+      "classification_rounds": 2,
+      "db_unfolds": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10551,
+          "output_tokens": 3401,
+          "requests": 1,
+          "reasoning_tokens": 2892
+        },
+        {
+          "round": 2,
+          "input_tokens": 9713,
+          "output_tokens": 1148,
+          "requests": 3,
+          "reasoning_tokens": 698
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 1,
+            "rrf": 0.2
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          }
+        ]
+      },
+      "summary_note": "كلا الناتجين ينتميان لنظام التأمين ضد التعطل وهو نظام تأمين اجتماعي يختلف عن قانون العمل الأساسي الذي يحكم إشعار الإنهاء وحقوقه"
+    },
+    {
+      "query": "إجراءات إنهاء عقد العمل أثناء إجازة الموظف",
+      "sufficient": false,
+      "articles_kept": 0,
+      "sections_kept": 0,
+      "dropped": 47,
+      "classification_rounds": 2,
+      "db_unfolds": 3,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 21788,
+          "output_tokens": 2433,
+          "requests": 2,
+          "reasoning_tokens": 434
+        },
+        {
+          "round": 2,
+          "input_tokens": 23042,
+          "output_tokens": 2916,
+          "requests": 2,
+          "reasoning_tokens": 667
+        }
+      ],
+      "decisions": {
+        "kept": [],
+        "dropped": [
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.4
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.1
+          },
+          {
+            "position": 18,
+            "rrf": 0.1
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 22,
+            "rrf": 0.1
+          },
+          {
+            "position": 23,
+            "rrf": 0.1
+          },
+          {
+            "position": 24,
+            "rrf": 0.1
+          },
+          {
+            "position": 25,
+            "rrf": 0.1
+          },
+          {
+            "position": 26,
+            "rrf": 0.1
+          },
+          {
+            "position": 27,
+            "rrf": 0.1
+          },
+          {
+            "position": 28,
+            "rrf": 0.1
+          },
+          {
+            "position": 29,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          }
+        ]
+      },
+      "summary_note": "لا توجد نتائج صالحة - جميع النتائج تابعة لأنظمة التأمين (ضد التعطل والتأمينات الاجتماعية) التي تنظم المعاشات والفوائد المالية بعد انتهاء العلاقة الوظيفية، ولا تحتوي على أحكام حول إجراءات إنهاء عقد العمل أثناء إجازة الموظف. المطلوب من نظام العمل بشكل مباشر."
+    },
+    {
+      "query": "الآثار المترتبة على عدم الالتزام بمدة الإشعار النظامية",
+      "sufficient": false,
+      "articles_kept": 4,
+      "sections_kept": 3,
+      "dropped": 24,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 8959,
+          "output_tokens": 4869,
+          "requests": 1,
+          "reasoning_tokens": 3964
+        },
+        {
+          "round": 2,
+          "input_tokens": 5635,
+          "output_tokens": 1058,
+          "requests": 1,
+          "reasoning_tokens": 451
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 3,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.16,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 1,
+            "rrf": 0.13335
+          },
+          {
+            "position": 2,
+            "rrf": 0.06665
+          },
+          {
+            "position": 3,
+            "rrf": 0.06665
+          },
+          {
+            "position": 4,
+            "rrf": 0.06665
+          },
+          {
+            "position": 5,
+            "rrf": 0.06665
+          },
+          {
+            "position": 6,
+            "rrf": 0.06665
+          },
+          {
+            "position": 7,
+            "rrf": 0.06665
+          },
+          {
+            "position": 8,
+            "rrf": 0.06665
+          },
+          {
+            "position": 9,
+            "rrf": 0.06665
+          },
+          {
+            "position": 10,
+            "rrf": 0.06665
+          },
+          {
+            "position": 11,
+            "rrf": 0.06665
+          },
+          {
+            "position": 12,
+            "rrf": 0.06665
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          }
+        ]
+      },
+      "summary_note": "جميع النتائج من نظام محدد للوافدين ومخالفي أنظمة الإقامة والعمل، بينما الاستعلام يتعلق بالإشعار النظامي في عقود العمل بشكل عام. لا توجد علاقة بين موضوع الاستعلام (إشعار إنهاء عقد العمل) وأنظمة مخالفات الإقامة للوافدين."
+    }
+  ]
+}

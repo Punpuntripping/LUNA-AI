@@ -8,7 +8,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
-import type { Message } from "@/types";
+import type { Citation, Message } from "@/types";
 
 /** Pixel threshold: user is considered "near bottom" if within this distance. */
 const NEAR_BOTTOM_THRESHOLD = 100;
@@ -16,6 +16,8 @@ const NEAR_BOTTOM_THRESHOLD = 100;
 interface MessageListProps {
   conversationId: string;
   className?: string;
+  /** Citations streaming live for the in-flight assistant message */
+  streamingCitations?: Citation[];
   /** Called when user clicks Regenerate on an assistant message */
   onRegenerate?: (messageId: string) => void;
   /** Called when user edits their own message and clicks Save & Send */
@@ -27,6 +29,7 @@ interface MessageListProps {
 export function MessageList({
   conversationId,
   className,
+  streamingCitations,
   onRegenerate,
   onEditResend,
   onRetry,
@@ -246,6 +249,9 @@ export function MessageList({
           const isStreamingThis =
             msg.isStreaming ||
             (streamingMessageId !== null && msg.message_id === streamingMessageId);
+          const bubbleCitations = isStreamingThis
+            ? streamingCitations
+            : (msg.metadata?.citations as Citation[] | undefined);
           return (
             <MessageBubble
               key={msg.message_id}
@@ -255,6 +261,7 @@ export function MessageList({
                   : msg
               }
               streamingContent={isStreamingThis ? streamingContent : undefined}
+              citations={bubbleCitations}
               onRegenerate={onRegenerate}
               onEditResend={onEditResend}
               onRetry={onRetry}
@@ -285,6 +292,7 @@ export function MessageList({
                 isStreaming: true,
               }}
               streamingContent={streamingContent}
+              citations={streamingCitations}
             />
           )}
 

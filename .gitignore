@@ -22,3 +22,8 @@ agents/deep_search_v3/*/reports/
 agents/deep_search_v3/*/logs/
 agents/archive/*/logs/
 agents/archive/*/comparison/
+agents/_archive/
+frontend/tsconfig.tsbuildinfo
+_run5_*.txt
+_run5_state.json
+rtl-*.png

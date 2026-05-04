@@ -12,7 +12,6 @@ import type {
   SSEToken,
   SSECitations,
   SSEDone,
-  SSEAgentSelected,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
   SSEAgentQuestion,
@@ -146,10 +145,7 @@ export function useSendMessage(): UseSendMessageReturn {
 
       let assistantMessageId: string | null = null;
 
-      // 3. Capture task type before the first attempt (cleared after first send)
-      const { selectedAgentFamily } = useChatStore.getState();
       const sendOptions = {
-        agent_family: selectedAgentFamily ?? undefined,
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
       };
 
@@ -171,9 +167,6 @@ export function useSendMessage(): UseSendMessageReturn {
             attemptController.signal,
             sendOptions,
           );
-
-          // Clear agent selection after the first successful HTTP response
-          useChatStore.getState().resetAgentSelection();
 
           if (!response.ok) {
             // HTTP error — only 5xx errors are retryable
@@ -375,11 +368,6 @@ export function useSendMessage(): UseSendMessageReturn {
                 queryKey: workspaceKeys.byConversation(conversationId),
               });
               useChatStore.getState().openWorkspaceItem(payload.item_id);
-              break;
-            }
-            case "agent_selected": {
-              const payload = data as SSEAgentSelected;
-              useChatStore.getState().setSelectedAgentFamily(payload.agent_family);
               break;
             }
             case "agent_run_started": {

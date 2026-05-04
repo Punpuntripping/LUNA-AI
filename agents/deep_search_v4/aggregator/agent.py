@@ -49,6 +49,7 @@ def create_aggregator_agent(
 
     agent: Agent[None, AggregatorLLMOutput] = Agent(
         model,
+        name="aggregator",
         output_type=AggregatorLLMOutput,
         instructions=system_prompt,
         retries=2,
@@ -106,18 +107,21 @@ def create_dcr_agents(
 
     draft = _attach_summary_validator(Agent(
         create_model(model_name),
+        name="aggregator_draft",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_draft"),
         retries=1,
     ))
     critique = _attach_summary_validator(Agent(
         create_model(model_name),
+        name="aggregator_critique",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_critique"),
         retries=1,
     ))
     rewrite = _attach_summary_validator(Agent(
         create_model(model_name),
+        name="aggregator_rewrite",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_rewrite"),
         retries=1,

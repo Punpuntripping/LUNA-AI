@@ -1,0 +1,1070 @@
+{
+  "total_queries": 5,
+  "sufficient_queries": 5,
+  "total_articles_kept": 32,
+  "total_sections_kept": 9,
+  "total_dropped": 165,
+  "total_input_tokens": 86125,
+  "total_output_tokens": 44509,
+  "total_requests": 8,
+  "queries": [
+    {
+      "query": "الضوابط النظامية لانحلال عقد الزواج بمبادرة من أحد الطرفين",
+      "sufficient": true,
+      "articles_kept": 5,
+      "sections_kept": 3,
+      "dropped": 14,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 4907,
+          "output_tokens": 1839,
+          "requests": 1,
+          "reasoning_tokens": 1206
+        },
+        {
+          "round": 2,
+          "input_tokens": 4924,
+          "output_tokens": 3119,
+          "requests": 1,
+          "reasoning_tokens": 2533
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 9,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 11,
+            "rrf": 0.1143,
+            "relevance": "high"
+          },
+          {
+            "position": 1,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 5,
+            "rrf": 0.13335,
+            "relevance": "high"
+          },
+          {
+            "position": 6,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.16
+          },
+          {
+            "position": 8,
+            "rrf": 0.16
+          },
+          {
+            "position": 10,
+            "rrf": 0.1333
+          },
+          {
+            "position": 12,
+            "rrf": 0.1143
+          },
+          {
+            "position": 13,
+            "rrf": 0.1
+          },
+          {
+            "position": 14,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.13335
+          },
+          {
+            "position": 4,
+            "rrf": 0.13335
+          },
+          {
+            "position": 7,
+            "rrf": 0.13335
+          },
+          {
+            "position": 8,
+            "rrf": 0.13335
+          },
+          {
+            "position": 9,
+            "rrf": 0.13335
+          },
+          {
+            "position": 10,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "تم الاحتفاظ بنتيجتين عاليتي الصلة تغطيان الباب النظامي واللائحي للفرقة والفسخ، ونتيجة متوسطة الصلة لأحكام العدة المذكورة في المبرر. النتائج الأخرى ختامية أو تتناول مواضيع أسرية مختلفة غير مرتبطة بالانحلال بمبادرة طرف."
+    },
+    {
+      "query": "الإجراءات القضائية لمطالبة الزوجة بإنهاء العلاقة الزوجية أو الخلع",
+      "sufficient": true,
+      "articles_kept": 6,
+      "sections_kept": 2,
+      "dropped": 13,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 10891,
+          "output_tokens": 6722,
+          "requests": 1,
+          "reasoning_tokens": 5393
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 8,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها (4 عالية، 4 متوسطة) تغطي بشكل كافٍ الإجراءات القضائية لمطالبة الزوجة بالخلع أو الفسخ، بدءاً من رفع الدعوى والبيانات المطلوبة، مروراً بإجراءات المصالحة، وصولاً إلى إثبات الخلع وتوثيقه، بالإضافة إلى الأساس النظامي للفرقة."
+    },
+    {
+      "query": "أثر قول الزوجة لزوجها برفض العلاقة الزوجية في إثبات الطلاق",
+      "sufficient": true,
+      "articles_kept": 4,
+      "sections_kept": 1,
+      "dropped": 16,
+      "classification_rounds": 1,
+      "db_unfolds": 0,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11649,
+          "output_tokens": 7264,
+          "requests": 1,
+          "reasoning_tokens": 6149
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 2,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "high"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          }
+        ],
+        "unfolded": []
+      },
+      "summary_note": "النتائج المحتفظ بها توفر القاعدة الإثباتية المباشرة (المادة 93) التي تحكم قول الزوجة في دعوى الطلاق، وتوضح التمييز القانوني بين رفض العلاقة (المؤثر في النفقة) وبين إثبات الطلاق، مع تحديد صور وقوع الطلاق نظاماً. وهي كافية للإجابة على الاستعلام بدقة."
+    },
+    {
+      "query": "أحكام الخلع والتفريق القضائي بطلب من الزوجة",
+      "sufficient": true,
+      "articles_kept": 11,
+      "sections_kept": 1,
+      "dropped": 52,
+      "classification_rounds": 2,
+      "db_unfolds": 3,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 11024,
+          "output_tokens": 2256,
+          "requests": 1,
+          "reasoning_tokens": 1212
+        },
+        {
+          "round": 2,
+          "input_tokens": 14860,
+          "output_tokens": 9883,
+          "requests": 1,
+          "reasoning_tokens": 8126
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 7,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 9,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 10,
+            "rrf": 0.16,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333,
+            "relevance": "high"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 19,
+            "rrf": 0.1,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 21,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 22,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 23,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 26,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 27,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 30,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 31,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 32,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 34,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 35,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 36,
+            "rrf": 0.2,
+            "relevance": "high"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 5,
+            "rrf": 0.2667
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 3,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 11,
+            "rrf": 0.2
+          },
+          {
+            "position": 12,
+            "rrf": 0.2
+          },
+          {
+            "position": 13,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.2
+          },
+          {
+            "position": 18,
+            "rrf": 0.2
+          },
+          {
+            "position": 19,
+            "rrf": 0.2
+          },
+          {
+            "position": 20,
+            "rrf": 0.2
+          },
+          {
+            "position": 24,
+            "rrf": 0.2
+          },
+          {
+            "position": 25,
+            "rrf": 0.2
+          },
+          {
+            "position": 28,
+            "rrf": 0.2
+          },
+          {
+            "position": 29,
+            "rrf": 0.2
+          },
+          {
+            "position": 33,
+            "rrf": 0.2
+          },
+          {
+            "position": 37,
+            "rrf": 0.2
+          },
+          {
+            "position": 38,
+            "rrf": 0.2
+          },
+          {
+            "position": 39,
+            "rrf": 0.2
+          },
+          {
+            "position": 40,
+            "rrf": 0.13335
+          },
+          {
+            "position": 41,
+            "rrf": 0.13335
+          },
+          {
+            "position": 42,
+            "rrf": 0.13335
+          },
+          {
+            "position": 43,
+            "rrf": 0.13335
+          },
+          {
+            "position": 44,
+            "rrf": 0.13335
+          },
+          {
+            "position": 45,
+            "rrf": 0.13335
+          },
+          {
+            "position": 46,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها تغطي بشكل وافٍ المبادئ العامة لأنواع الفرقة التي تطلبها الزوجة، شاملةً أحكام الخلع (الرضا، الطبيعة، العوض) والتفريق القضائي (الضرر، الإعسار، الغيبة، الامتناع عن الجماع، والحكمين)."
+    },
+    {
+      "query": "الحكم على اعتبار الزوجة طالقة تلقائياً بعد انقضاء العدة دون حكم قضائي",
+      "sufficient": true,
+      "articles_kept": 6,
+      "sections_kept": 2,
+      "dropped": 70,
+      "classification_rounds": 2,
+      "db_unfolds": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "input_tokens": 9980,
+          "output_tokens": 6181,
+          "requests": 1,
+          "reasoning_tokens": 5088
+        },
+        {
+          "round": 2,
+          "input_tokens": 17890,
+          "output_tokens": 7245,
+          "requests": 1,
+          "reasoning_tokens": 5195
+        }
+      ],
+      "decisions": {
+        "kept": [
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "high"
+          },
+          {
+            "position": 4,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 16,
+            "rrf": 0.1143,
+            "relevance": "medium"
+          },
+          {
+            "position": 1,
+            "rrf": 0.4,
+            "relevance": "medium"
+          },
+          {
+            "position": 3,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 11,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 12,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 13,
+            "rrf": 0.2,
+            "relevance": "high"
+          },
+          {
+            "position": 28,
+            "rrf": 0.2,
+            "relevance": "medium"
+          },
+          {
+            "position": 40,
+            "rrf": 0.2667,
+            "relevance": "medium"
+          },
+          {
+            "position": 41,
+            "rrf": 0.13335,
+            "relevance": "medium"
+          }
+        ],
+        "dropped": [
+          {
+            "position": 3,
+            "rrf": 0.4
+          },
+          {
+            "position": 6,
+            "rrf": 0.2667
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.16
+          },
+          {
+            "position": 11,
+            "rrf": 0.16
+          },
+          {
+            "position": 12,
+            "rrf": 0.16
+          },
+          {
+            "position": 13,
+            "rrf": 0.1333
+          },
+          {
+            "position": 14,
+            "rrf": 0.1333
+          },
+          {
+            "position": 15,
+            "rrf": 0.1333
+          },
+          {
+            "position": 17,
+            "rrf": 0.1143
+          },
+          {
+            "position": 18,
+            "rrf": 0.1143
+          },
+          {
+            "position": 19,
+            "rrf": 0.1
+          },
+          {
+            "position": 20,
+            "rrf": 0.1
+          },
+          {
+            "position": 21,
+            "rrf": 0.1
+          },
+          {
+            "position": 2,
+            "rrf": 0.2
+          },
+          {
+            "position": 4,
+            "rrf": 0.2
+          },
+          {
+            "position": 5,
+            "rrf": 0.2
+          },
+          {
+            "position": 6,
+            "rrf": 0.2
+          },
+          {
+            "position": 7,
+            "rrf": 0.2
+          },
+          {
+            "position": 8,
+            "rrf": 0.2
+          },
+          {
+            "position": 9,
+            "rrf": 0.2
+          },
+          {
+            "position": 10,
+            "rrf": 0.2
+          },
+          {
+            "position": 14,
+            "rrf": 0.2
+          },
+          {
+            "position": 15,
+            "rrf": 0.2
+          },
+          {
+            "position": 16,
+            "rrf": 0.2
+          },
+          {
+            "position": 17,
+            "rrf": 0.2
+          },
+          {
+            "position": 18,
+            "rrf": 0.2
+          },
+          {
+            "position": 19,
+            "rrf": 0.2
+          },
+          {
+            "position": 20,
+            "rrf": 0.2
+          },
+          {
+            "position": 21,
+            "rrf": 0.2
+          },
+          {
+            "position": 22,
+            "rrf": 0.2
+          },
+          {
+            "position": 23,
+            "rrf": 0.2
+          },
+          {
+            "position": 24,
+            "rrf": 0.2
+          },
+          {
+            "position": 25,
+            "rrf": 0.2
+          },
+          {
+            "position": 26,
+            "rrf": 0.2
+          },
+          {
+            "position": 27,
+            "rrf": 0.2
+          },
+          {
+            "position": 29,
+            "rrf": 0.2
+          },
+          {
+            "position": 30,
+            "rrf": 0.2
+          },
+          {
+            "position": 31,
+            "rrf": 0.2
+          },
+          {
+            "position": 32,
+            "rrf": 0.2
+          },
+          {
+            "position": 33,
+            "rrf": 0.2
+          },
+          {
+            "position": 34,
+            "rrf": 0.2
+          },
+          {
+            "position": 35,
+            "rrf": 0.2
+          },
+          {
+            "position": 36,
+            "rrf": 0.2
+          },
+          {
+            "position": 37,
+            "rrf": 0.2
+          },
+          {
+            "position": 38,
+            "rrf": 0.2
+          },
+          {
+            "position": 39,
+            "rrf": 0.2
+          },
+          {
+            "position": 42,
+            "rrf": 0.13335
+          },
+          {
+            "position": 43,
+            "rrf": 0.13335
+          },
+          {
+            "position": 44,
+            "rrf": 0.13335
+          },
+          {
+            "position": 45,
+            "rrf": 0.13335
+          },
+          {
+            "position": 46,
+            "rrf": 0.13335
+          },
+          {
+            "position": 47,
+            "rrf": 0.13335
+          },
+          {
+            "position": 48,
+            "rrf": 0.13335
+          },
+          {
+            "position": 49,
+            "rrf": 0.13335
+          },
+          {
+            "position": 50,
+            "rrf": 0.13335
+          },
+          {
+            "position": 51,
+            "rrf": 0.13335
+          },
+          {
+            "position": 52,
+            "rrf": 0.13335
+          },
+          {
+            "position": 53,
+            "rrf": 0.13335
+          },
+          {
+            "position": 54,
+            "rrf": 0.13335
+          },
+          {
+            "position": 55,
+            "rrf": 0.13335
+          },
+          {
+            "position": 56,
+            "rrf": 0.13335
+          },
+          {
+            "position": 57,
+            "rrf": 0.13335
+          },
+          {
+            "position": 58,
+            "rrf": 0.13335
+          },
+          {
+            "position": 59,
+            "rrf": 0.13335
+          }
+        ],
+        "unfolded": [
+          {
+            "position": 2,
+            "rrf": 0.4
+          },
+          {
+            "position": 5,
+            "rrf": 0.2667
+          }
+        ]
+      },
+      "summary_note": "النتائج المحتفظ بها (المواد 85، 86، 87، 103، 77، وتعريف العدة) تجيب مباشرة على الاستعلام؛ حيث تثبت أن الطلاق يقع بإرادة الزوج لا بحكم قضائي، وأن الطلاق الرجعي ينهي العقد تلقائياً بانقضاء العدة دون حاجة لتدخل المحكمة."
+    }
+  ]
+}

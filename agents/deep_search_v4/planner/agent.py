@@ -25,7 +25,7 @@ from .prompts import PLANNER_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 
-PLANNER_DEFAULT_MODEL = "qwen3-flash"
+PLANNER_DEFAULT_MODEL = "qwen3.6-plus"
 
 PLANNER_LIMITS = UsageLimits(
     response_tokens_limit=4_000,
@@ -59,6 +59,7 @@ def create_planner_agent(
 
     agent: Agent[None, PlannerOutput | DeferredToolRequests] = Agent(
         model,
+        name="planner_agent",
         output_type=[PlannerOutput, DeferredToolRequests],
         instructions=PLANNER_SYSTEM_PROMPT,
         retries=2,
