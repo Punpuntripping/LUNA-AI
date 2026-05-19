@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Citation, PendingFile } from "@/types";
+import type { PendingFile } from "@/types";
 
 const DEFAULT_SPLIT_RATIO = 50;
 const SPLIT_RATIO_KEY = "luna.workspace.splitRatio";
@@ -34,7 +34,6 @@ interface ChatState {
   isStreaming: boolean;
   streamingMessageId: string | null;
   streamingContent: string;
-  streamingCitations: Citation[];
   abortController: AbortController | null;
   pendingFiles: PendingFile[];
   pendingMessage: string | null;
@@ -49,7 +48,6 @@ interface ChatState {
 
   startStreaming: (messageId: string) => void;
   appendToken: (text: string) => void;
-  setStreamingCitations: (citations: Citation[]) => void;
   stopStreaming: () => void;
   finishStreaming: () => void;
   setError: (error: string | null) => void;
@@ -81,7 +79,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamingMessageId: null,
   streamingContent: "",
-  streamingCitations: [],
   abortController: null,
   pendingFiles: [],
   pendingMessage: null,
@@ -99,14 +96,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingMessageId: messageId,
       streamingContent: "",
-      streamingCitations: [],
       error: null,
     }),
 
   appendToken: (text) =>
     set((state) => ({ streamingContent: state.streamingContent + text })),
-
-  setStreamingCitations: (citations) => set({ streamingCitations: citations }),
 
   stopStreaming: () => {
     const { abortController } = get();
@@ -115,7 +109,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
       streamingMessageId: null,
       streamingContent: "",
-      streamingCitations: [],
       abortController: null,
     });
   },
@@ -128,7 +121,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
       streamingMessageId: null,
       streamingContent: "",
-      streamingCitations: [],
       abortController: null,
       reconnectAttempts: 0,
       isReconnecting: false,
@@ -221,7 +213,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: false,
       streamingMessageId: null,
       streamingContent: "",
-      streamingCitations: [],
       abortController: null,
       pendingFiles: [],
       pendingMessage: null,

@@ -26,15 +26,13 @@ import { cn } from "@/lib/utils";
 import { getRelativeTimeAr } from "@/lib/utils";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
-import { CitationPills } from "@/components/chat/CitationPills";
-import type { Message, Citation } from "@/types";
+import type { Message } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
 interface MessageBubbleProps {
   message: Message;
   streamingContent?: string;
-  citations?: Citation[];
   /** Called when user clicks Regenerate on an assistant message */
   onRegenerate?: (messageId: string) => void;
   /** Called when user edits their own message and clicks Save & Send */
@@ -46,7 +44,6 @@ interface MessageBubbleProps {
 export function MessageBubble({
   message,
   streamingContent,
-  citations,
   onRegenerate,
   onEditResend,
   onRetry,
@@ -406,11 +403,6 @@ export function MessageBubble({
                 </div>
               ))}
             </div>
-          )}
-
-          {/* Citations */}
-          {!isCurrentlyStreaming && citations && citations.length > 0 && (
-            <CitationPills citations={citations} />
           )}
 
           {/* Action bar */}

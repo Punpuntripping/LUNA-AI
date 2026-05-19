@@ -168,19 +168,10 @@ async def publish_search_result(
     # item is durable even if the backing tables hiccup.
     await _persist_forensics(input, deps, item_id, logger)
 
-    # Project Reference -> dict so message_service.py's Reference->Citation
-    # mapper has the fields it expects (ref_id, regulation_title, article_num,
-    # relevance). Pydantic v2 model_dump for the Reference list.
-    references_payload: list[dict] = []
-    refs = getattr(input.agg_output, "references", None) or []
-    for ref in refs:
-        try:
-            references_payload.append(
-                ref.model_dump() if hasattr(ref, "model_dump") else dict(ref)
-            )
-        except Exception:
-            continue
-
+    # References are NOT streamed to chat. The full structured reference list
+    # lives on the artifact as ``metadata.references`` (see _build_metadata);
+    # the workspace ReferencePanel renders it from that JSON. The chat stream
+    # only needs to know a workspace item was created.
     sse_events: list[dict] = [
         {
             "type": "workspace_item_created",
@@ -191,14 +182,5 @@ async def publish_search_result(
             "created_by": "agent",
         },
     ]
-
-    # Citations event: makes <CitationPills> render under the assistant
-    # message bubble. message_service maps each Reference dict to the
-    # frontend Citation shape via _reference_to_citation.
-    if references_payload:
-        sse_events.append({
-            "type": "citations",
-            "articles": references_payload,
-        })
 
     return SearchPublishOutput(item_id=item_id, sse_events=sse_events)

@@ -547,6 +547,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     ),
 
     # --- OpenRouter tier-system fallback models (provider-fallback half) ---
+    # Prices below are provider list prices (USD per 1M tokens), May 2026.
+    # Note: OpenRouter shows temporary promos (qwen ~35% off, deepseek-v4-pro
+    # 75% off until 2026-05-31) — list prices kept here for stable cost tracking.
     "or-qwen3.6-plus": ModelConfig(
         model_id="qwen/qwen3.6-plus",
         provider="openrouter",
@@ -554,6 +557,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=True,
         max_tokens=65536,
         context_length=1000000,
+        input_price=0.50,
+        output_price=3.00,
     ),
     "or-qwen3.5-flash": ModelConfig(
         model_id="qwen/qwen3.5-flash-02-23",
@@ -562,6 +567,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=True,
         max_tokens=65536,
         context_length=1000000,
+        input_price=0.10,
+        output_price=0.40,
     ),
     "or-deepseek-v4-pro": ModelConfig(
         model_id="deepseek/deepseek-v4-pro",
@@ -570,6 +577,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=False,
         max_tokens=65536,
         context_length=163840,
+        input_price=1.74,
+        output_price=3.48,
+        cached_input_price=0.0036,
     ),
     "or-deepseek-v4-flash": ModelConfig(
         model_id="deepseek/deepseek-v4-flash",
@@ -578,6 +588,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=False,
         max_tokens=65536,
         context_length=163840,
+        input_price=0.112,
+        output_price=0.224,
+        cached_input_price=0.0028,
     ),
     "or-mimo-v2-pro": ModelConfig(
         model_id="xiaomi/mimo-v2-pro",
@@ -684,6 +697,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
 
     # --- DeepSeek V4 hosted on Alibaba Model Studio (international) ---
     # Used as the same-provider fallback family in the tier system.
+    # Prices are DeepSeek list prices (deepseek-v4-pro is 75% off until
+    # 2026-05-31 — list kept here for stable cost tracking).
     "deepseek-v4-pro": ModelConfig(
         model_id="deepseek-v4-pro",
         provider="alibaba",
@@ -691,6 +706,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=False,
         max_tokens=65536,
         context_length=163840,
+        input_price=1.74,
+        output_price=3.48,
+        cached_input_price=0.0036,
     ),
     "deepseek-v4-flash": ModelConfig(
         model_id="deepseek-v4-flash",
@@ -699,6 +717,9 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=False,
         max_tokens=65536,
         context_length=163840,
+        input_price=0.14,
+        output_price=0.28,
+        cached_input_price=0.0028,
     ),
 
     # --- Qwen3.5 series (February 2026) ---
@@ -720,8 +741,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=True,
         max_tokens=65536,
         context_length=1000000,
-        input_price=0.17,
-        output_price=1.72,
+        input_price=0.10,
+        output_price=0.40,
         output_speed_tps=120.0,
     ),
     # Alias used by the v4 planner default (V4_PLANNER_DESIGN.md §4.2). Points
@@ -733,8 +754,8 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         supports_vision=True,
         max_tokens=65536,
         context_length=1000000,
-        input_price=0.17,
-        output_price=1.72,
+        input_price=0.10,
+        output_price=0.40,
         output_speed_tps=120.0,
     ),
 

@@ -21,11 +21,12 @@ control surface.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Literal
 
 from pydantic_ai.models.fallback import FallbackModel
 
-from agents.model_registry import create_model
+from agents.model_registry import create_model, get_model_config
 
 Provider = Literal["alibaba", "openrouter"]
 Tier = Literal["tier_1", "tier_2"]
@@ -145,3 +146,133 @@ def get_agent_model(
             )
         policy = override
     return build_fallback_model(policy)
+
+
+# =============================================================================
+# COST ACCOUNTING
+# =============================================================================
+# Cost is tracked per *tier*, not per resolved model. Within a tier the qwen
+# and deepseek families (and Alibaba vs OpenRouter) price out roughly equal,
+# and ``FallbackModel`` only swaps off the qwen/Alibaba primary on a 4xx/5xx
+# API error. Billing every call at the tier's qwen/Alibaba primary rate is
+# therefore a correct *conservative ceiling* — the deepseek fallback and
+# OpenRouter are both cheaper. The registry is the single source of pricing
+# truth; tier rates are derived from it (no duplicated price tables).
+
+# A deep_search sub-agent's role name (the ``agent`` field on inner_usage
+# entries) → its tier. Mirrors AGENT_MODELS: expanders/aggregators are tier_1,
+# rerankers tier_2. Unknown roles default to tier_1.
+_SUBAGENT_TIER: dict[str, Tier] = {
+    "expander": "tier_1",
+    "reranker": "tier_2",
+    "aggregator": "tier_1",
+}
+
+
+def tier_of_subagent(agent: str) -> Tier:
+    """Return the tier a deep_search sub-agent role runs on."""
+    return _SUBAGENT_TIER.get(agent, "tier_1")
+
+
+@lru_cache(maxsize=None)
+def tier_rate(tier: Tier) -> tuple[float, float]:
+    """``(input_price, output_price)`` per 1M tokens for a tier.
+
+    Read from the registry entry for the tier's qwen/Alibaba primary model —
+    keeping ``model_registry`` the sole source of pricing truth.
+    """
+    key = TIERS[tier]["qwen"]["alibaba"]
+    cfg = get_model_config(key)
+    return (cfg.input_price or 0.0, cfg.output_price or 0.0)
+
+
+def cost_usd(
+    tier: str,
+    input_tokens: int,
+    output_tokens: int,
+    reasoning_tokens: int = 0,
+    cached_tokens: int = 0,
+) -> float:
+    """USD cost of a single LLM call billed at ``tier`` rates.
+
+    Reasoning tokens bill at the output rate — providers count them as
+    completion tokens, and pydantic_ai's ``output_tokens`` does NOT include
+    them (they live in ``usage.details['reasoning_tokens']``). ``cached_tokens``
+    is a subset of ``input_tokens``; pass it when prompt caching is active to
+    apply the discounted (~10x cheaper) cached-input rate.
+    """
+    in_rate, out_rate = tier_rate(tier if tier in TIERS else "tier_1")  # type: ignore[arg-type]
+    cached = max(int(cached_tokens or 0), 0)
+    billable_in = max(int(input_tokens or 0) - cached, 0)
+    billable_out = int(output_tokens or 0) + int(reasoning_tokens or 0)
+    return (
+        billable_in * in_rate
+        + cached * in_rate * 0.1
+        + billable_out * out_rate
+    ) / 1_000_000
+
+
+def usage_by_tier(inner_usage: list[dict] | None) -> dict[str, dict[str, int]]:
+    """Fold pydantic_ai usage entries into per-tier token totals.
+
+    Each entry should carry ``agent`` (sub-agent role), ``input_tokens``,
+    ``output_tokens`` and optionally ``details.reasoning_tokens``. Returns
+    ``{tier: {"input": int, "output": int, "reasoning": int}}`` — the shape
+    stored under ``per_phase_stats[phase]["per_tier"]``.
+    """
+    out: dict[str, dict[str, int]] = {}
+    for u in inner_usage or []:
+        if not isinstance(u, dict):
+            continue
+        tier = tier_of_subagent(str(u.get("agent", "")))
+        slot = out.setdefault(tier, {"input": 0, "output": 0, "reasoning": 0})
+        slot["input"] += int(u.get("input_tokens", 0) or 0)
+        slot["output"] += int(u.get("output_tokens", 0) or 0)
+        details = u.get("details") or {}
+        slot["reasoning"] += int(details.get("reasoning_tokens", 0) or 0)
+    return out
+
+
+def estimate_run_cost(
+    per_phase_stats: dict | None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+    tokens_reasoning: int | None = None,
+) -> tuple[float, int]:
+    """Return ``(cost_usd, reasoning_tokens_total)`` for one agent run.
+
+    Prefers a per-tier breakdown — deep_search phases each carry a ``per_tier``
+    dict under ``per_phase_stats``. Falls back to flat tier_1 pricing on the
+    aggregate token counts for single-model agents (writer, memory, router).
+    Never raises; returns ``(0.0, 0)`` on malformed input.
+    """
+    try:
+        total_cost = 0.0
+        total_reasoning = 0
+        found = False
+        for phase in (per_phase_stats or {}).values():
+            if not isinstance(phase, dict):
+                continue
+            per_tier = phase.get("per_tier")
+            if not isinstance(per_tier, dict):
+                continue
+            found = True
+            for tier, toks in per_tier.items():
+                if not isinstance(toks, dict):
+                    continue
+                r = int(toks.get("reasoning", 0) or 0)
+                total_reasoning += r
+                total_cost += cost_usd(
+                    str(tier),
+                    int(toks.get("input", 0) or 0),
+                    int(toks.get("output", 0) or 0),
+                    r,
+                )
+        if found:
+            return round(total_cost, 6), total_reasoning
+        # Single-model agent: bill aggregate tokens at tier_1.
+        r = int(tokens_reasoning or 0)
+        cost = cost_usd("tier_1", int(tokens_in or 0), int(tokens_out or 0), r)
+        return round(cost, 6), r
+    except Exception:
+        return 0.0, 0

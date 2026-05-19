@@ -6,6 +6,16 @@ Build marker: Wave 8A snapshot 2026-05-01.
 """
 from __future__ import annotations
 
+# Load .env into the process environment BEFORE anything reads os.getenv.
+# configure_logfire() below checks LOGFIRE_TOKEN via os.getenv directly (not
+# via pydantic Settings), so without this a local `uvicorn` run has no token
+# and Logfire silently no-ops — zero traceability. Harmless on Railway, where
+# there is no .env file (load_dotenv no-ops) and real env vars are injected;
+# load_dotenv does not override already-set process env vars.
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import logging
 import os
 import uuid

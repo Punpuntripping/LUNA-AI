@@ -21,7 +21,6 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   const setError = useChatStore((s) => s.setError);
   const isWorkspaceOpen = useChatStore((s) => s.workspace.isOpen);
   const toggleWorkspace = useChatStore((s) => s.toggleWorkspace);
-  const streamingCitations = useChatStore((s) => s.streamingCitations);
 
   const { data: convData } = useConversationDetail(conversationId);
   const caseId = convData?.conversation?.case_id ?? null;
@@ -102,7 +101,6 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
       <MessageList
         conversationId={conversationId}
         className="flex-1 min-h-0"
-        streamingCitations={streamingCitations}
         onRegenerate={handleRegenerate}
         onEditResend={handleEditResend}
         onRetry={handleRetry}

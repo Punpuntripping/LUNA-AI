@@ -36,8 +36,8 @@ Three terminals:
 # 1. Redis (only needed once, runs in background)
 docker compose up -d
 
-# 2. Backend
-cd backend && uvicorn app.main:app --port 8000 --reload
+# 2. Backend — run from the repo ROOT so `shared/` is importable
+uvicorn backend.app.main:app --port 8000 --reload
 
 # 3. Frontend
 cd frontend && npm run dev

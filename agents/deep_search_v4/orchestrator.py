@@ -77,6 +77,7 @@ from agents.deep_search_v4.ura.merger import build_ura_from_phases
 from agents.deep_search_v4.ura.reg_adapter import reg_to_rqr
 from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
+from agents.utils.agent_models import usage_by_tier
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -283,6 +284,9 @@ async def _run_reg_phase(
         "duration_ms": int(duration * 1000),
         "total_tokens_in": total_in,
         "total_tokens_out": total_out,
+        # Per-tier token split (expander=tier_1, reranker=tier_2) — drives the
+        # cost estimate in agent_runs.cost_usd. See utils/agent_models.py.
+        "per_tier": usage_by_tier(state.inner_usage),
     }
 
     placeholder = RegSearchResult(
@@ -448,6 +452,7 @@ async def _run_compliance_phase(
         "duration_ms": int(duration * 1000),
         "total_tokens_in": sum(int(u.get("input_tokens", 0) or 0) for u in state.inner_usage),
         "total_tokens_out": sum(int(u.get("output_tokens", 0) or 0) for u in state.inner_usage),
+        "per_tier": usage_by_tier(state.inner_usage),
     }
 
     # Best-effort run overview write so the compliance log directory is as
@@ -588,6 +593,7 @@ async def _run_case_phase(
         "duration_ms": int((_time.perf_counter() - t0) * 1000),
         "total_tokens_in": total_in,
         "total_tokens_out": total_out,
+        "per_tier": usage_by_tier(result.inner_usage),
     }
     try:
         from agents.deep_search_v4.case_search.logger import LOGS_DIR as _CASE_LOGS

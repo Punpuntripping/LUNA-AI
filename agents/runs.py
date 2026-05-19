@@ -19,6 +19,8 @@ from typing import Any
 
 from supabase import Client as SupabaseClient
 
+from agents.utils.agent_models import estimate_run_cost
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +37,14 @@ class AgentRunRecord:
     duration_ms: int | None = None
     tokens_in: int | None = None
     tokens_out: int | None = None
+    # Reasoning ("thinking") tokens. Tracked separately because pydantic_ai's
+    # output_tokens does NOT include them, yet providers bill them at the
+    # output rate. Left None to let record_agent_run derive it from
+    # per_phase_stats; set explicitly to override.
+    tokens_reasoning: int | None = None
+    # Estimated USD cost. Left None to let record_agent_run compute it from
+    # per_phase_stats (tier-accurate) or aggregate tokens (flat tier_1).
+    cost_usd: float | None = None
     model_used: str | None = None
     per_phase_stats: dict[str, Any] = field(default_factory=dict)
     status: str = "ok"
@@ -81,6 +91,19 @@ def record_agent_run(supabase: SupabaseClient, rec: AgentRunRecord) -> str | Non
             payload["tokens_in"] = rec.tokens_in
         if rec.tokens_out is not None:
             payload["tokens_out"] = rec.tokens_out
+        # Derive cost + reasoning tokens unless caller supplied them. Prefers
+        # the per-tier breakdown in per_phase_stats; falls back to flat tier_1.
+        est_cost, est_reasoning = estimate_run_cost(
+            rec.per_phase_stats, rec.tokens_in, rec.tokens_out, rec.tokens_reasoning
+        )
+        tokens_reasoning = (
+            rec.tokens_reasoning if rec.tokens_reasoning is not None else est_reasoning
+        )
+        if tokens_reasoning:
+            payload["tokens_reasoning"] = tokens_reasoning
+        cost_usd = rec.cost_usd if rec.cost_usd is not None else est_cost
+        if cost_usd:
+            payload["cost_usd"] = cost_usd
         if rec.model_used is not None:
             payload["model_used"] = rec.model_used
         if rec.error is not None:
@@ -146,6 +169,24 @@ def update_run_status(
                 payload[key] = val.isoformat()
             else:
                 payload[key] = val
+
+        # Derive cost when token/phase data is patched in (e.g. on deferred-run
+        # resume) and the caller did not supply cost_usd explicitly.
+        if "cost_usd" not in payload and (
+            "per_phase_stats" in payload
+            or "tokens_in" in payload
+            or "tokens_out" in payload
+        ):
+            est_cost, est_reasoning = estimate_run_cost(
+                payload.get("per_phase_stats"),
+                payload.get("tokens_in"),
+                payload.get("tokens_out"),
+                payload.get("tokens_reasoning"),
+            )
+            if est_cost:
+                payload["cost_usd"] = est_cost
+            if est_reasoning and "tokens_reasoning" not in payload:
+                payload["tokens_reasoning"] = est_reasoning
 
         supabase.table("agent_runs").update(payload).eq("run_id", run_id).execute()
         return True

@@ -33,7 +33,7 @@ agents_reports/ Agent output reports (validation, security, integration)
 
 | Task | Command |
 |------|---------|
-| Backend start | `cd backend && uvicorn app.main:app --port 8000 --reload` |
+| Backend start | `uvicorn backend.app.main:app --port 8000 --reload` (run from repo root) |
 | Frontend dev | `cd frontend && npm run dev` |
 | Redis | `docker compose up -d` |
 | Type check | `cd frontend && npx tsc --noEmit` |

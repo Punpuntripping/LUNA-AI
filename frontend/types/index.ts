@@ -122,7 +122,6 @@ export interface CreateConversationRequest {
 export type MessageMetadataKind = 'agent_question' | 'agent_answer';
 
 export interface MessageMetadata {
-  citations?: Citation[];
   /** When set, this message is part of an agent ask_user turn. */
   kind?: MessageMetadataKind;
   /** The agent_run that originated the question / is being answered. */
@@ -231,17 +230,6 @@ export interface SSEToken {
   text: string;
 }
 
-export interface SSECitations {
-  articles: Citation[];
-}
-
-export interface Citation {
-  article_id: string;
-  law_name: string;
-  article_number: number;
-  relevance_score?: number;
-}
-
 export interface SSEDone {
   message_id: string;
   usage: {
@@ -301,6 +289,94 @@ export interface WorkspaceItem {
 export interface WorkspaceItemListResponse {
   items: WorkspaceItem[];
   total: number;
+}
+
+// ==========================================
+// DEEP_SEARCH ARTIFACT REFERENCES (JSON render object)
+// ==========================================
+// Mirrors agents/deep_search_v4/aggregator/models.py::Reference and
+// agents/deep_search_v4/source_viewer.py::SourceView. Persisted on an
+// `agent_search` workspace item as `metadata.references` and rendered by
+// the workspace ReferencePanel.
+
+export type ReferenceDomain = 'regulations' | 'compliance' | 'cases';
+
+export type ReferenceSourceType =
+  | 'article'
+  | 'section'
+  | 'chunk'
+  | 'regulation'
+  | 'gov_service'
+  | 'form'
+  | 'case';
+
+/** One resolved cross-reference from a regulation chunk to a target unit. */
+export interface CrossRef {
+  target_type: string;
+  target_reg_title: string;
+  target_number: number | null;
+  relation: string;
+  content: string;
+}
+
+/** Click-ready original-source payload — discriminated on `source_type`. */
+export type SourceView =
+  | {
+      source_type: 'chunk';
+      title: string;
+      content: string;
+      regulation_title: string;
+      regulation_source_url: string;
+      regulation_pdf_link: { url?: string; [k: string]: unknown } | null;
+    }
+  | {
+      source_type: 'case';
+      title: string;
+      details_url: string;
+    }
+  | {
+      source_type: 'gov_service';
+      title: string;
+      national_platform_url: string;
+      service_url: string;
+    }
+  // Legacy variants — retained for reload of pre-URA-v3.0 artifacts.
+  | {
+      source_type: 'article' | 'section' | 'regulation';
+      title: string;
+      content?: string;
+      [k: string]: unknown;
+    };
+
+/** One numbered citation entry in a deep_search artifact's reference list. */
+export interface Reference {
+  n: number;
+  source_type: ReferenceSourceType;
+  domain: ReferenceDomain;
+  relevance: 'high' | 'medium';
+  regulation_title: string;
+  title: string;
+  snippet: string;
+  ref_id: string;
+  article_num?: string | null;
+  section_title?: string | null;
+  landing_url: string;
+  service_url: string;
+  url: string;
+  details_url: string;
+  entity_name: string;
+  cross_refs: CrossRef[];
+  source_view: SourceView | null;
+}
+
+/** Typed view of `metadata` on an `agent_search` workspace item. */
+export interface AgentSearchMetadata {
+  subtype?: string;
+  references?: Reference[];
+  confidence?: 'high' | 'medium' | 'low';
+  detail_level?: 'low' | 'medium' | 'high';
+  ura_log_id?: string;
+  [k: string]: unknown;
 }
 
 export interface CreateNoteRequest {

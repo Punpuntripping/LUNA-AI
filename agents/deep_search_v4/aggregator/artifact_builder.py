@@ -68,17 +68,16 @@ def build_artifact(
     """Build the full frontend artifact.
 
     - title: first 80 chars of `agg_input.original_query` + `…` if truncated
-    - content: synthesis_md + reference block + disclaimer (all markdown)
+    - content: synthesis_md + disclaimer (all markdown). The reference list is
+      NOT embedded in the markdown -- it ships as structured `references_json`
+      and is rendered by the workspace ReferencePanel from that JSON.
     - references_json: `[ref.model_dump() for ref in references]`
     - metadata: prompt_key, model_used, confidence, ref_count, cited_count
     """
     body = (synthesis_md or "").rstrip()
-    ref_block = render_reference_block(references)
     disclaimer = (disclaimer_ar or "").strip()
 
     parts: list[str] = [body]
-    if ref_block:
-        parts.append(ref_block)
     if disclaimer:
         parts.append("---\n\n" + disclaimer)
     content = "\n\n".join(parts)

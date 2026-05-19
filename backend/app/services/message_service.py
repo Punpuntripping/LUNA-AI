@@ -22,31 +22,6 @@ from agents.orchestrator import handle_message
 logger = logging.getLogger(__name__)
 
 
-def _reference_to_citation(ref: dict) -> dict:
-    """Map a deep_search_v4 ``Reference`` dict to the frontend ``Citation`` shape.
-
-    The frontend Citation contract is locked: ``{ article_id, law_name,
-    article_number, relevance_score }``. v4 emits richer ``Reference`` dicts;
-    we project them onto the legacy shape so existing UI keeps rendering.
-    """
-    article_num_raw = ref.get("article_num")
-    if isinstance(article_num_raw, str) and article_num_raw.isdigit():
-        article_number = int(article_num_raw)
-    elif isinstance(article_num_raw, int):
-        article_number = article_num_raw
-    else:
-        article_number = 0
-
-    relevance_score = 0.9 if ref.get("relevance") == "high" else 0.6
-
-    return {
-        "article_id": ref.get("ref_id", ""),
-        "law_name": ref.get("regulation_title", ""),
-        "article_number": article_number,
-        "relevance_score": relevance_score,
-    }
-
-
 def verify_conversation_ownership(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -245,7 +220,6 @@ async def send_message_stream(
 
     # 4. Stream from orchestrator (with heartbeat + disconnect detection)
     full_content = ""
-    citations = []
     # Set to True when the orchestrator ends the stream with an agent_question
     # event (run is paused, not finished).  In this case we skip inserting the
     # empty assistant placeholder row that would otherwise be written on 'done'.
@@ -264,7 +238,7 @@ async def send_message_stream(
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
-        nonlocal full_content, citations, paused
+        nonlocal full_content, paused
         try:
             async for event in handle_message(
                 question=content,
@@ -280,11 +254,6 @@ async def send_message_stream(
                     text = event.get("text", "")
                     full_content += text
                     await queue.put(_sse_event("token", {"text": text}))
-
-                elif event_type == "citations":
-                    raw_articles = event.get("articles", []) or []
-                    citations = [_reference_to_citation(r) for r in raw_articles]
-                    await queue.put(_sse_event("citations", {"articles": citations}))
 
                 elif event_type == "agent_selected":
                     await queue.put(_sse_event("agent_selected", {
@@ -379,8 +348,6 @@ async def send_message_stream(
                             if usage:
                                 update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
                                 update_data["completion_tokens"] = usage.get("completion_tokens", 0)
-                            if citations:
-                                update_data["metadata"] = {"citations": citations}
 
                             supabase.table("messages").update(
                                 update_data

@@ -10,7 +10,6 @@ import type {
   MessageListResponse,
   SSEMessageStart,
   SSEToken,
-  SSECitations,
   SSEDone,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
@@ -319,17 +318,11 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().appendToken(payload.text);
               break;
             }
-            case "citations": {
-              const payload = data as SSECitations;
-              useChatStore.getState().setStreamingCitations(payload.articles);
-              break;
-            }
             case "done": {
               const _payload = data as SSEDone;
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
               const finalContent = useChatStore.getState().streamingContent;
-              const finalCitations = useChatStore.getState().streamingCitations;
               if (assistantMessageId && finalContent) {
                 qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
                   messageKeys.list(conversationId),
@@ -346,10 +339,6 @@ export function useSendMessage(): UseSendMessageReturn {
                           content: finalContent,
                           attachments: [],
                           created_at: new Date().toISOString(),
-                          metadata:
-                            finalCitations.length > 0
-                              ? { citations: finalCitations }
-                              : undefined,
                         },
                         ...newPages[0].messages,
                       ],

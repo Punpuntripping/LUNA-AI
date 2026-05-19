@@ -8,7 +8,8 @@ import {
   useUpdateWorkspaceItem,
   useWorkspaceItem,
 } from "@/hooks/use-workspace";
-import type { WorkspaceItem } from "@/types";
+import { ReferencePanel } from "@/components/workspace/ReferencePanel";
+import type { AgentSearchMetadata, WorkspaceItem } from "@/types";
 
 const USER_EDITABLE_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<
   WorkspaceItem["kind"]
@@ -164,10 +165,17 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
       ) : (
         <ScrollArea className="flex-1">
           <div
-            className="p-4 text-sm leading-relaxed text-foreground whitespace-pre-wrap"
+            className="p-4 text-sm leading-relaxed text-foreground"
             dir="rtl"
           >
-            {item.content_md ?? ""}
+            <p className="whitespace-pre-wrap">{item.content_md ?? ""}</p>
+            {item.kind === "agent_search" && (
+              <ReferencePanel
+                references={
+                  ((item.metadata ?? {}) as AgentSearchMetadata).references ?? []
+                }
+              />
+            )}
           </div>
         </ScrollArea>
       )}
