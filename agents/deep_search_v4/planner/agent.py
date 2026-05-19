@@ -1,83 +1,90 @@
-"""Pydantic AI factory for the v4 Planner agent.
+"""Pydantic AI factories for the two-phase Planner agent.
 
-The planner emits a :class:`~.models.PlannerOutput` on a normal run.  When the
-LLM cannot derive a plan without clarification it calls the ``ask_user``
-deferred tool, which causes the agent run to terminate with a
-:class:`~pydantic_ai.DeferredToolRequests` output instead.  The caller must
-``isinstance``-check the result and resume via
-``agent.run(message_history=..., deferred_tool_results=DeferredToolResults({...}))``.
+Two agents, one per LLM phase (PLANNER_REDESIGN_PLAN.md §4):
 
-The default model is :envvar:`LUNA_PLANNER_MODEL` if set, else ``qwen3-flash``.
+- :func:`create_planner_decider` — phase 1. ``output_type`` is
+  ``[PlannerDecision, DeferredToolRequests]``: a normal run yields a
+  :class:`PlannerDecision`; calling the ``ask_user`` deferred tool ends the run
+  with a :class:`~pydantic_ai.DeferredToolRequests` instead. ``deps_type`` is
+  ``None`` — phase 1 is a pure classification call with no infra deps.
+- :func:`create_planner_responder` — phase 3. ``deps_type`` is
+  :class:`PlannerDeps`; a dynamic ``@instructions`` callback injects the trimmed
+  artifact digest + mode framing. Output is :class:`PlannerResponse`.
+
+Both phases resolve their model through the tier system
+(:func:`agents.utils.agent_models.get_agent_model`) via the ``planner_decider``
+and ``planner_responder`` slots. The decider is a tiny classification call; the
+responder writes Arabic prose — distinct slots allow separate tiers later.
 """
 from __future__ import annotations
 
 import logging
-import os
 
-from pydantic_ai import Agent, CallDeferred, DeferredToolRequests
+from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, RunContext
 from pydantic_ai.usage import UsageLimits
 
-from agents.model_registry import create_model
+from agents.utils.agent_models import ModelPolicy, get_agent_model
 
-from .models import PlannerOutput
-from .prompts import PLANNER_SYSTEM_PROMPT
+from .deps import PlannerDeps
+from .models import PlannerDecision, PlannerResponse
+from .prompts import (
+    PLANNER_DECIDER_SYSTEM_PROMPT,
+    PLANNER_RESPONDER_SYSTEM_PROMPT,
+    build_responder_instructions,
+)
 
 logger = logging.getLogger(__name__)
 
 
-PLANNER_DEFAULT_MODEL = "qwen3.6-plus"
-
-PLANNER_LIMITS = UsageLimits(
-    response_tokens_limit=4_000,
-    # request_limit counts CUMULATIVE requests across pause/resume because the
-    # rehydrated message_history carries forward the prior request count.
-    # 4 was tight (initial model call + ask_user + resume ≈ borderline);
-    # 8 leaves headroom for chained pauses + output_retries on resume.
+PLANNER_DECIDER_LIMITS = UsageLimits(
+    output_tokens_limit=4_000,
+    # request_limit counts CUMULATIVE requests across pause/resume — the
+    # rehydrated message_history carries the prior request count forward. The
+    # budget covers: initial call + ask_user + resume call + output_retries.
+    # 4 was too tight and broke resume once; 8 leaves headroom. Do NOT lower it.
     request_limit=8,
 )
 
+PLANNER_RESPONDER_LIMITS = UsageLimits(
+    output_tokens_limit=8_000,
+    request_limit=4,
+)
 
-def create_planner_agent(
-    model_name: str | None = None,
-) -> Agent[None, PlannerOutput | DeferredToolRequests]:
-    """Build a Pydantic AI agent that emits a :class:`PlannerOutput`.
 
-    When the LLM raises ``ask_user``, the run terminates early and the output
-    is a :class:`~pydantic_ai.DeferredToolRequests` instance instead.
+def create_planner_decider(
+    model_override: ModelPolicy | str | None = None,
+) -> Agent[None, PlannerDecision | DeferredToolRequests]:
+    """Build the phase-1 decider agent.
 
-    Args:
-        model_name: Explicit model registry key. When ``None`` we fall back to
-            :envvar:`LUNA_PLANNER_MODEL`, then :data:`PLANNER_DEFAULT_MODEL`.
+    A normal run emits a :class:`PlannerDecision`. When the LLM calls
+    ``ask_user`` the run ends early with a :class:`DeferredToolRequests`; the
+    caller resumes via ``agent.run(message_history=...,
+    deferred_tool_results=DeferredToolResults({tool_call_id: reply}))``.
 
-    Returns:
-        Agent ready to ``run(user_message)``. Failures of model lookup raise
-        immediately — the runner is responsible for catching and degrading.
+    ``model_override`` is an optional tier override token / :class:`ModelPolicy`
+    for the ``planner_decider`` slot (tier stays fixed).
     """
-    resolved = model_name or os.getenv("LUNA_PLANNER_MODEL") or PLANNER_DEFAULT_MODEL
-    logger.debug("create_planner_agent: resolved model=%s", resolved)
-    model = create_model(resolved)
+    model = get_agent_model("planner_decider", model_override)
 
-    agent: Agent[None, PlannerOutput | DeferredToolRequests] = Agent(
+    agent: Agent[None, PlannerDecision | DeferredToolRequests] = Agent(
         model,
-        name="planner_agent",
-        output_type=[PlannerOutput, DeferredToolRequests],
-        instructions=PLANNER_SYSTEM_PROMPT,
+        name="planner_decider",
+        output_type=[PlannerDecision, DeferredToolRequests],
+        instructions=PLANNER_DECIDER_SYSTEM_PROMPT,
         retries=2,
         output_retries=4,
     )
 
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
-        """Ask the user a clarifying question; pauses the run until they reply.
+        """Ask the user one clarifying question; pauses the run until they reply.
 
-        Use this ONLY when ambiguity blocks plan derivation (e.g. the user said
-        'بحث في القضايا' without naming a sector, or said 'recent' without a
-        time window that would change executor selection).  Do NOT use for
-        things you can plan around or research yourself.
+        Use this ONLY when the query names a corpus/domain but no concrete legal
+        question, so no useful retrieval can be derived (e.g. «ابحث في القضايا
+        البنكية»). Do NOT use it for anything you can plan around or research.
 
-        When raised, the agent run terminates with a
-        ``DeferredToolRequests`` output.  The caller resumes by calling
-        ``agent.run(message_history=...,
+        When raised, the run terminates with a ``DeferredToolRequests`` output.
+        The caller resumes via ``agent.run(message_history=...,
         deferred_tool_results=DeferredToolResults({tool_call_id: user_reply}))``.
 
         Args:
@@ -91,8 +98,41 @@ def create_planner_agent(
     return agent
 
 
+def create_planner_responder(
+    model_override: ModelPolicy | str | None = None,
+) -> Agent[PlannerDeps, PlannerResponse]:
+    """Build the phase-3 responder agent.
+
+    Emits a :class:`PlannerResponse` (chat summary + suggestion). A dynamic
+    ``@instructions`` callback reads ``ctx.deps._agg_output`` + ``_decision`` and
+    injects the trimmed artifact digest + mode-specific chat-summary framing.
+
+    ``model_override`` is an optional tier override token / :class:`ModelPolicy`
+    for the ``planner_responder`` slot (tier stays fixed).
+    """
+    model = get_agent_model("planner_responder", model_override)
+
+    agent: Agent[PlannerDeps, PlannerResponse] = Agent(
+        model,
+        name="planner_responder",
+        deps_type=PlannerDeps,
+        output_type=PlannerResponse,
+        instructions=PLANNER_RESPONDER_SYSTEM_PROMPT,
+        retries=2,
+        output_retries=4,
+    )
+
+    @agent.instructions
+    def _artifact_digest(ctx: RunContext[PlannerDeps]) -> str:
+        """Inject the per-turn artifact digest + mode framing (see prompts.py)."""
+        return build_responder_instructions(ctx.deps)
+
+    return agent
+
+
 __all__ = [
-    "create_planner_agent",
-    "PLANNER_DEFAULT_MODEL",
-    "PLANNER_LIMITS",
+    "PLANNER_DECIDER_LIMITS",
+    "PLANNER_RESPONDER_LIMITS",
+    "create_planner_decider",
+    "create_planner_responder",
 ]

@@ -1,12 +1,18 @@
-"""Search pipeline for the reg_search package.
+"""Search pipeline for the reg_search package (v2 chunk corpus).
 
-Regulations-only search pipeline using hybrid search (BM25 + semantic via RRF):
-- search_regulations_pipeline: embed -> 3 parallel hybrid RPCs -> optional Jina rerank -> unfold -> format
+Semantic-only chunk retrieval over the v2 corpus:
+- ``search_regulations_pipeline`` — embed -> ``search_chunk_titles`` RPC ->
+  dedup title rows by chunk_id -> select top-15 by best_sim -> fetch
+  ``chunks_v2`` rows -> optional sector filter -> rank-band into _mode -> return.
 
-Copied and adapted from agents/deep_search_v3/executors/search_pipeline.py.
-Only the regulations pipeline and shared helpers are included here.
-This is intentionally a copy (not an import) to avoid circular dependencies
-and allow independent evolution.
+Replaces the legacy 3-tier (articles/sections/regulations) hybrid + Jina
+rerank + markdown-assembly pipeline. There is no BM25 hybrid lane and no
+absolute score gate — the corpus is a single retrieval unit and selection is
+a top-15 relative cut (see ``planning/REG_SEARCH_V2_REFRAME.md`` §5 and
+``SUPABASE_V2_STATUS.md`` §9/§10).
+
+The Supabase client is sync; this module is async — every Supabase call is
+wrapped in ``asyncio.to_thread`` so it never blocks the event loop.
 """
 from __future__ import annotations
 
@@ -14,40 +20,27 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from .unfold_reranker import CHUNK_SELECT
+
 if TYPE_CHECKING:
     from .models import RegSearchDeps
 
 logger = logging.getLogger(__name__)
 
-# Jina reranking configuration
-JINA_RERANK_URL = "https://api.jina.ai/v1/rerank"
-JINA_MODEL = "jina-reranker-v3"
+# Semantic search knobs — locked at 150/150 (REG_SEARCH_V2_REFRAME §5 / §7.2).
+# The RPC default ef_search is 80 and silently truncates the candidate pool,
+# so BOTH match_count AND ef_search are passed as explicit named args.
+MATCH_COUNT = 150
+EF_SEARCH = 150
 
-# Default result counts (per-RPC, not split)
-MATCH_COUNT = 30
-MAX_RESULTS = 30
+# Top-N chunks kept after dedup + best_sim ranking (REG_SEARCH_V2_REFRAME §5.4).
+TOP_K = 15
 
+# Rank-band boundary: ranks 1-5 -> "precise", 6-15 -> "simple".
+PRECISE_BAND = 5
 
-async def _safe_rpc(
-    supabase: Any,
-    domain: str,
-    query_text: str,
-    embedding: list[float],
-    match_count: int,
-    filter_sectors: list[str] | None,
-    errors: list[str],
-) -> list[dict]:
-    """Call _hybrid_rpc_search, catch errors into `errors` list, return [] on failure."""
-    try:
-        return await _hybrid_rpc_search(
-            supabase, domain, query_text, embedding, match_count,
-            filter_sectors=filter_sectors,
-        )
-    except Exception as e:
-        msg = f"hybrid_search_{domain}: {e}"
-        logger.error(msg, exc_info=True)
-        errors.append(msg)
-        return []
+# Batch size for the `in_` chunk fetch.
+ID_BATCH = 180
 
 
 # -- Regulations pipeline -----------------------------------------------------
@@ -57,30 +50,35 @@ async def search_regulations_pipeline(
     query: str,
     deps: RegSearchDeps,
     filter_sectors: list[str] | None = None,
-    unfold_mode: str = "precise",
     precomputed_embedding: list[float] | None = None,
     semaphore: asyncio.Semaphore | None = None,
-) -> tuple[str, int]:
-    """Search regulations via embed -> 3 parallel RPCs -> Jina rerank -> unfold -> format.
+) -> tuple[list[dict], int]:
+    """Search the v2 chunk corpus for one sub-query.
 
     Args:
         query: Arabic search query.
-        deps: RegSearchDeps with supabase, embedding_fn, jina_api_key, http_client.
-        filter_sectors: Optional list of 1-4 sector names to narrow search scope.
-        unfold_mode: "precise" (compact) or "detailed" (full content).
-        precomputed_embedding: Pre-computed embedding vector. Skips embed step if provided.
+        deps: RegSearchDeps with ``supabase`` and ``embedding_fn``.
+        filter_sectors: Optional list of sector names to narrow scope. If the
+            filter empties the result set, it is dropped and the unfiltered
+            set is used instead.
+        precomputed_embedding: Pre-computed 1024-dim embedding. Skips the embed
+            step when provided (the loop.py batch path); ``deps.embedding_fn``
+            is the single-query fallback.
         semaphore: Optional concurrency limiter for parallel pipeline calls.
 
     Returns:
-        (result_markdown, result_count) tuple.
+        ``(chunk_rows, result_count)``. Each ``chunk_row`` is a ``chunks_v2``
+        row (``CHUNK_SELECT`` columns) plus two extra keys: ``_mode``
+        ("precise" for rank-band 1-5, "simple" for 6-15) and ``_rrf``
+        (float, = best_sim).
     """
     if semaphore:
         async with semaphore:
             return await _search_regulations_pipeline_inner(
-                query, deps, filter_sectors, unfold_mode, precomputed_embedding,
+                query, deps, filter_sectors, precomputed_embedding,
             )
     return await _search_regulations_pipeline_inner(
-        query, deps, filter_sectors, unfold_mode, precomputed_embedding,
+        query, deps, filter_sectors, precomputed_embedding,
     )
 
 
@@ -88,30 +86,9 @@ async def _search_regulations_pipeline_inner(
     query: str,
     deps: RegSearchDeps,
     filter_sectors: list[str] | None,
-    unfold_mode: str,
     precomputed_embedding: list[float] | None,
-) -> tuple[str, int]:
-    """Inner implementation of search_regulations_pipeline."""
-    # Check for mock results
-    if deps.mock_results and "regulations" in deps.mock_results:
-        mock_md = deps.mock_results["regulations"]
-        if isinstance(mock_md, str):
-            return mock_md, 2
-
-    from .unfold_reranker import (
-        collect_references,
-        format_unfolded_result,
-        format_unfolded_result_precise,
-        unfold_article,
-        unfold_article_precise,
-        unfold_regulation,
-        unfold_regulation_precise,
-        unfold_section,
-        unfold_section_precise,
-    )
-
-    _precise = unfold_mode == "precise"
-
+) -> tuple[list[dict], int]:
+    """Inner implementation of ``search_regulations_pipeline`` (§5 steps 1-8)."""
     events = deps._events
 
     try:
@@ -120,258 +97,232 @@ async def _search_regulations_pipeline_inner(
             "text": f"جاري البحث في الأنظمة واللوائح: {query[:80]}...",
         })
 
-        # Step 1: Embed query (skip if pre-computed)
+        # Step 1: Embed query (skip if pre-computed).
         embedding = precomputed_embedding or await deps.embedding_fn(query)
 
-        # Step 2: Search across 3 regulation RPCs in parallel
-        events.append({"type": "status", "text": "جاري البحث في قاعدة بيانات الأنظمة..."})
-
-        errors: list[str] = []
-        articles, sections, regulations = await asyncio.gather(
-            _safe_rpc(deps.supabase, "articles", query, embedding, MATCH_COUNT, filter_sectors, errors),
-            _safe_rpc(deps.supabase, "sections", query, embedding, MATCH_COUNT, filter_sectors, errors),
-            _safe_rpc(deps.supabase, "regulations", query, embedding, MATCH_COUNT, filter_sectors, errors),
-        )
-
-        if errors:
-            for err in errors:
-                events.append({"type": "error", "text": err})
-
-        # Fallback: if sector filter returned 0 results, retry without it
-        if not articles and not sections and not regulations and filter_sectors:
-            logger.warning(
-                "Sector filter %s returned 0 candidates — retrying without filter",
-                filter_sectors,
-            )
-            events.append({
-                "type": "status",
-                "text": "لم تُعطِ تصفية القطاعات نتائج — جاري البحث بدون تصفية...",
-            })
-            errors.clear()
-            articles, sections, regulations = await asyncio.gather(
-                _safe_rpc(deps.supabase, "articles", query, embedding, MATCH_COUNT, None, errors),
-                _safe_rpc(deps.supabase, "sections", query, embedding, MATCH_COUNT, None, errors),
-                _safe_rpc(deps.supabase, "regulations", query, embedding, MATCH_COUNT, None, errors),
-            )
-            if errors:
-                for err in errors:
-                    events.append({"type": "error", "text": err})
-
-        # Step 3: Merge and tag with source_type + _text for reranker
-        candidates: list[dict[str, Any]] = []
-        for row in articles:
-            row["source_type"] = "article"
-            row["_text"] = row.get("content", "")
-            candidates.append(row)
-        for row in sections:
-            row["source_type"] = "section"
-            row["_text"] = row.get("section_summary") or row.get("content", "")
-            candidates.append(row)
-        for row in regulations:
-            row["source_type"] = "regulation"
-            row["_text"] = row.get("regulation_summary", "")
-            candidates.append(row)
-
-        if not candidates:
-            events.append({"type": "status", "text": "لم يتم العثور على أنظمة مطابقة."})
-            return "لم يتم العثور على نتائج. لا توجد أنظمة أو مواد مطابقة للاستعلام.", 0
-
-        logger.info(
-            "Regulation candidates: %d articles, %d sections, %d regulations",
-            len(articles), len(sections), len(regulations),
-        )
-
-        # Step 4: Pre-filter by RRF score (positions below threshold are almost always
-        # dropped by the LLM reranker — saves unfold + reranker tokens)
-        if deps.rrf_min_score > 0:
-            before = len(candidates)
-            candidates = [c for c in candidates if c.get("score", 0) >= deps.rrf_min_score]
-            cut = before - len(candidates)
-            if cut:
-                logger.info("RRF pre-filter: cut %d/%d candidates below %.4f", cut, before, deps.rrf_min_score)
-
-        # Step 5: Rank by score, filter by threshold, cap at MAX_RESULTS
-        threshold = deps.score_threshold
-        if deps.use_reranker:
-            events.append({"type": "status", "text": f"جاري إعادة ترتيب {len(candidates)} نتيجة عبر Jina..."})
-            ranked = await _rerank(query, candidates, deps.http_client, deps.jina_api_key)
-            top_candidates = [
-                c for c in ranked if c.get("reranker_score", 0) >= threshold
-            ][:MAX_RESULTS]
-        else:
-            ranked = sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
-            top_candidates = [
-                c for c in ranked if c.get("score", 0) >= threshold
-            ][:MAX_RESULTS]
-            events.append({"type": "status", "text": f"تم اختيار {len(top_candidates)} نتيجة (عتبة: {threshold})"})
-
-        # Step 5: Unfold top results in parallel (carry scores through)
-        events.append({"type": "status", "text": f"جاري استخراج التفاصيل لأفضل {len(top_candidates)} نتيجة..."})
-
-        async def _unfold_one(candidate: dict) -> dict[str, Any] | None:
-            st = candidate.get("source_type", "")
-            try:
-                if _precise:
-                    fn = {
-                        "article": unfold_article_precise,
-                        "section": unfold_section_precise,
-                        "regulation": unfold_regulation_precise,
-                    }.get(st)
-                else:
-                    fn = {
-                        "article": unfold_article,
-                        "section": unfold_section,
-                        "regulation": unfold_regulation,
-                    }.get(st)
-                if fn is None:
-                    return None
-                u = await asyncio.to_thread(fn, deps.supabase, candidate)
-                u["_score"] = candidate.get("score")
-                u["_reranker_score"] = candidate.get("reranker_score")
-                return u
-            except Exception as e:
-                logger.warning(
-                    "Unfold failed for %s %s: %s",
-                    candidate.get("source_type"), candidate.get("id"), e,
-                )
-                return None
-
-        unfold_results = await asyncio.gather(
-            *[_unfold_one(c) for c in top_candidates]
-        )
-        unfolded: list[dict[str, Any]] = [u for u in unfold_results if u is not None]
-
-        if not unfolded:
-            return "لم يتم العثور على نتائج كافية بعد التوسع.", 0
-
-        # Step 6: Format into markdown (single flat ranked list)
-        _fmt = format_unfolded_result_precise if _precise else format_unfolded_result
-        output_lines: list[str] = [f"## نتائج البحث — {len(unfolded)} نتيجة\n"]
-        for i, result in enumerate(unfolded, start=1):
-            output_lines.append(_fmt(result, i))
-
-        refs_block = collect_references(unfolded)
-        if refs_block:
-            output_lines.append("\n---")
-            output_lines.append(refs_block)
-
-        result_md = "\n".join(output_lines)
-        result_count = len(unfolded)
-
+        # Step 2: Semantic search — search_chunk_titles RPC.
         events.append({
             "type": "status",
-            "text": f"تم استرجاع {result_count} نتيجة من الأنظمة واللوائح.",
+            "text": "جاري البحث في قاعدة بيانات الأنظمة...",
+        })
+        title_rows = await _search_chunk_titles(deps.supabase, embedding)
+
+        # Step 3: Dedup title rows by chunk_id, keep best_sim = 1 - min(distance).
+        best_sim: dict[str, float] = {}
+        for row in title_rows:
+            cid = row.get("chunk_id")
+            if not cid:
+                continue
+            sim = 1.0 - float(row.get("distance", 1.0))
+            if cid not in best_sim or sim > best_sim[cid]:
+                best_sim[cid] = sim
+
+        if not best_sim:
+            events.append({
+                "type": "status",
+                "text": "لم يتم العثور على أنظمة مطابقة.",
+            })
+            return [], 0
+
+        # Step 4: Select top-15 by best_sim (no absolute gate — SUPABASE §10).
+        ranked = sorted(best_sim.items(), key=lambda kv: kv[1], reverse=True)
+        top = ranked[:TOP_K]
+        top_ids = [cid for cid, _ in top]
+
+        # Step 5: Fetch chunks_v2 rows (CHUNK_SELECT) for the selected ids.
+        chunk_map = await _fetch_chunks(deps.supabase, top_ids)
+
+        # Step 6: Optional sector filter — intersect parent regulation sectors[].
+        # Applied before the rank-band cut; if it empties the set, retry without.
+        if filter_sectors:
+            allowed = await _filter_by_sectors(
+                deps.supabase, chunk_map, filter_sectors,
+            )
+            if allowed:
+                if len(allowed) < len(chunk_map):
+                    events.append({
+                        "type": "status",
+                        "text": (
+                            f"تصفية القطاعات: {len(allowed)} من "
+                            f"{len(chunk_map)} نتيجة ضمن النطاق."
+                        ),
+                    })
+                chunk_map = allowed
+            else:
+                logger.warning(
+                    "Sector filter %s emptied the result set — "
+                    "retrying without filter", filter_sectors,
+                )
+                events.append({
+                    "type": "status",
+                    "text": (
+                        "لم تُعطِ تصفية القطاعات نتائج — "
+                        "جاري البحث بدون تصفية..."
+                    ),
+                })
+
+        # Step 7: Rank-band the surviving chunks (in best_sim order), tag
+        # _mode + _rrf. Ranks 1-5 -> "precise", 6-15 -> "simple".
+        chunk_rows: list[dict] = []
+        rank = 0
+        for cid, sim in top:
+            row = chunk_map.get(cid)
+            if row is None:
+                continue
+            rank += 1
+            row["_mode"] = "precise" if rank <= PRECISE_BAND else "simple"
+            row["_rrf"] = sim
+            chunk_rows.append(row)
+
+        if not chunk_rows:
+            events.append({
+                "type": "status",
+                "text": "لم يتم العثور على أنظمة مطابقة.",
+            })
+            return [], 0
+
+        logger.info(
+            "Reg search '%s': %d chunks (%d precise / %d simple)",
+            query[:60], len(chunk_rows),
+            sum(1 for r in chunk_rows if r["_mode"] == "precise"),
+            sum(1 for r in chunk_rows if r["_mode"] == "simple"),
+        )
+        events.append({
+            "type": "status",
+            "text": f"تم استرجاع {len(chunk_rows)} نتيجة من الأنظمة واللوائح.",
         })
 
-        return result_md, result_count
+        # Step 8: Return.
+        return chunk_rows, len(chunk_rows)
 
     except Exception as e:
-        logger.error("Regulation search failed for '%s': %s", query[:80], e, exc_info=True)
-        events.append({"type": "status", "text": "حدث خطأ أثناء البحث في الأنظمة."})
-        return (
-            f"خطأ أثناء البحث في الأنظمة واللوائح: {e}\n\nلم يتم العثور على نتائج بسبب خطأ تقني.",
-            0,
+        logger.error(
+            "Regulation search failed for '%s': %s", query[:80], e,
+            exc_info=True,
         )
+        events.append({
+            "type": "status",
+            "text": "حدث خطأ أثناء البحث في الأنظمة.",
+        })
+        return [], 0
 
 
-# -- Shared helpers ------------------------------------------------------------
+# -- Supabase helpers (all wrapped in asyncio.to_thread) ----------------------
 
 
-async def _hybrid_rpc_search(
-    supabase: Any,
-    domain: str,
-    query_text: str,
-    embedding: list[float],
-    match_count: int,
-    full_text_weight: float = 0.2,
-    semantic_weight: float = 0.8,
-    rrf_k: int = 1,
-    filter_sectors: list[str] | None = None,
+async def _search_chunk_titles(
+    supabase: Any, embedding: list[float]
 ) -> list[dict]:
-    """Call a Supabase hybrid search RPC (BM25 + semantic via RRF)."""
-    rpc_name = f"hybrid_search_{domain}"
+    """Call the ``search_chunk_titles`` RPC — semantic-only title search.
 
+    Both ``match_count`` and ``ef_search`` are passed explicitly: the RPC's
+    default ``ef_search`` is 80 and silently truncates the pool.
+    """
     def _call() -> list[dict]:
-        params: dict[str, Any] = {
-            "query_text": query_text,
-            "query_embedding": embedding,
-            "match_count": match_count,
-            "full_text_weight": full_text_weight,
-            "semantic_weight": semantic_weight,
-            "rrf_k": rrf_k,
-            # Always include filter_sectors to resolve PostgREST
-            # overload ambiguity (PGRST203). NULL = no filtering.
-            "filter_sectors": filter_sectors,
-        }
-        result = supabase.rpc(rpc_name, params).execute()
+        result = (
+            supabase.rpc(
+                "search_chunk_titles",
+                {
+                    "query_embedding": embedding,
+                    "match_count": MATCH_COUNT,
+                    "ef_search": EF_SEARCH,
+                },
+            )
+            .execute()
+        )
         return result.data or []
 
     try:
         return await asyncio.to_thread(_call)
     except Exception as e:
-        logger.error("%s RPC failed: %s", rpc_name, e, exc_info=True)
+        logger.error("search_chunk_titles RPC failed: %s", e, exc_info=True)
         raise
 
 
-async def _rerank(
-    query: str,
-    candidates: list[dict[str, Any]],
-    http_client: Any,
-    jina_api_key: str,
-) -> list[dict[str, Any]]:
-    """Rerank candidates using Jina Reranker v3. Falls back to hybrid score sort."""
-    if not jina_api_key:
-        logger.info("No Jina API key -- falling back to hybrid score sort")
-        return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+async def _fetch_chunks(
+    supabase: Any, chunk_ids: list[str]
+) -> dict[str, dict]:
+    """Batched ``in_`` fetch of ``chunks_v2`` rows (CHUNK_SELECT columns).
 
-    documents: list[str] = []
-    for c in candidates:
-        text = c.get("_text", "")
-        if not text:
-            text = c.get("content", "") or c.get("service_markdown", "") or c.get("title", "")
-        documents.append(text[:2000] if text else "(empty)")
+    Returns a ``{chunk_id: row}`` map. Ids absent from the corpus simply do
+    not appear in the map.
+    """
+    if not chunk_ids:
+        return {}
 
-    try:
-        response = await http_client.post(
-            JINA_RERANK_URL,
-            headers={
-                "Authorization": f"Bearer {jina_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": JINA_MODEL,
-                "query": query,
-                "documents": documents,
-                "top_n": len(candidates),
-            },
-            timeout=10.0,
+    def _call(batch: list[str]) -> list[dict]:
+        result = (
+            supabase.table("chunks_v2")
+            .select(CHUNK_SELECT)
+            .in_("id", batch)
+            .execute()
         )
-        response.raise_for_status()
-        data = response.json()
+        return result.data or []
 
-        reranked = data.get("results", [])
-        if not reranked:
-            logger.warning("Jina returned empty -- falling back to hybrid score")
-            return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
-
-        top: list[dict[str, Any]] = []
-        for item in reranked:
-            idx = item.get("index", 0)
-            if 0 <= idx < len(candidates):
-                candidate = candidates[idx]
-                candidate["reranker_score"] = item.get("relevance_score", 0.0)
-                top.append(candidate)
-
-        logger.info("Jina reranking: %d -> %d results", len(candidates), len(top))
-        return top
-
-    except Exception as e:
-        logger.warning("Jina reranking failed: %s -- falling back to hybrid score", e)
-        return sorted(candidates, key=lambda c: c.get("score", 0.0), reverse=True)
+    out: dict[str, dict] = {}
+    for i in range(0, len(chunk_ids), ID_BATCH):
+        batch = chunk_ids[i:i + ID_BATCH]
+        try:
+            rows = await asyncio.to_thread(_call, batch)
+        except Exception as e:
+            logger.error("chunks_v2 in_ fetch failed: %s", e, exc_info=True)
+            raise
+        for row in rows:
+            rid = row.get("id")
+            if rid:
+                out[rid] = row
+    return out
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    """Truncate text, appending '...' if truncated."""
-    if not text or len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "..."
+async def _filter_by_sectors(
+    supabase: Any,
+    chunk_map: dict[str, dict],
+    filter_sectors: list[str],
+) -> dict[str, dict]:
+    """Keep only chunks whose parent regulation's ``sectors[]`` intersects.
+
+    One batched ``in_`` lookup on ``regulations_v2`` for the distinct parent
+    regulation ids of ``chunk_map``. A regulation with no/empty ``sectors``
+    is treated as out of scope (dropped).
+    """
+    if not chunk_map:
+        return {}
+
+    reg_ids = sorted({
+        row.get("regulation_id")
+        for row in chunk_map.values()
+        if row.get("regulation_id")
+    })
+    if not reg_ids:
+        return {}
+
+    def _call(batch: list[str]) -> list[dict]:
+        result = (
+            supabase.table("regulations_v2")
+            .select("id, sectors")
+            .in_("id", batch)
+            .execute()
+        )
+        return result.data or []
+
+    reg_sectors: dict[str, set[str]] = {}
+    for i in range(0, len(reg_ids), ID_BATCH):
+        batch = reg_ids[i:i + ID_BATCH]
+        try:
+            rows = await asyncio.to_thread(_call, batch)
+        except Exception as e:
+            logger.error(
+                "regulations_v2 sector lookup failed: %s", e, exc_info=True,
+            )
+            raise
+        for row in rows:
+            rid = row.get("id")
+            if rid:
+                reg_sectors[rid] = set(row.get("sectors") or [])
+
+    wanted = set(filter_sectors)
+    return {
+        cid: row
+        for cid, row in chunk_map.items()
+        if reg_sectors.get(row.get("regulation_id"), set()) & wanted
+    }

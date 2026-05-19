@@ -31,7 +31,6 @@ domain the merger:
     - lifts ``relevance`` to ``max("high" > "medium")``,
     - joins ``reasoning`` with ``"؛ "`` preserving first-seen order and
       deduping empty / repeated strings,
-    - keeps the first non-empty ``content``,
     - keeps the maximum ``rrf_max``.
 
 Tier split & ordering
@@ -148,30 +147,10 @@ def build_ura_from_phases(
     # the first); only counted when the merge actually contributed a new
     # sub-query index, so cross-sub-query dedup is reflected accurately.
     merge_counts: dict[str, int] = {}
-    empties_filtered = 0
 
-    def _is_empty(result: _DomainResult) -> bool:
-        """A result is 'useless' when its ``content`` body is blank.
-
-        Why content-only (tightened post Wave-D monitor findings): the
-        aggregator synthesizes from ``content``; a row with a title but
-        no body cannot ground any citation. Three q27 medium-tier reg
-        entries (refs #1, #3, #60 of monitor dump) carried titles like
-        "المعايير الأساسية للسلامة" but empty bodies and produced
-        un-citeable references. Filter at the merger so they never
-        reach the aggregator.
-
-        Section-level URA results often carry their substance in
-        ``section_summary`` rather than ``content``; for those we accept
-        section_summary as a body proxy.
-        """
-        content = (getattr(result, "content", "") or "").strip()
-        if content:
-            return False
-        section_summary = (getattr(result, "section_summary", "") or "").strip()
-        if section_summary:
-            return False
-        return True
+    # v3.0: no merger-side empty-content filter. Content is domain-specific
+    # and unpopulated at merge time -- enrich.py runs later and owns the
+    # post-fetch empty-drop. The merger keeps only the ref_id-presence check.
 
     def _cap(results: list) -> list:
         """Keep top ``MAX_HIGH_PER_SUBQUERY`` high + ``MAX_MEDIUM_PER_SUBQUERY``
@@ -188,7 +167,7 @@ def build_ura_from_phases(
     capped_total = 0
 
     def _absorb(domain: Domain, rqrs: list[RerankerQueryResult]) -> None:
-        nonlocal empties_filtered, capped_total
+        nonlocal capped_total
         for sq in rqrs or []:
             sq_index = len(sub_queries_meta)
             raw_results = list(sq.results or [])
@@ -211,17 +190,6 @@ def build_ura_from_phases(
             for result in capped_results:
                 ref_id = getattr(result, "ref_id", "") or ""
                 if not ref_id:
-                    continue
-
-                if _is_empty(result):
-                    empties_filtered += 1
-                    logger.debug(
-                        "ura.merger: filtered empty-content result ref_id=%s "
-                        "domain=%s sub_query=%d",
-                        ref_id,
-                        domain,
-                        sq_index,
-                    )
                     continue
 
                 if ref_id not in grouped:
@@ -250,8 +218,6 @@ def build_ura_from_phases(
                 existing.reasoning = _join_reasoning(
                     [existing.reasoning, result.reasoning or ""]
                 )
-                if not existing.content and result.content:
-                    existing.content = result.content
                 incoming_rrf = float(getattr(result, "rrf_max", 0.0) or 0.0)
                 if incoming_rrf > float(existing.rrf_max or 0.0):
                     existing.rrf_max = incoming_rrf
@@ -270,10 +236,9 @@ def build_ura_from_phases(
     total_dedup_merges = sum(merge_counts.values())
 
     logger.info(
-        "ura.merger: kept=%d unique  empties_filtered=%d  dedup_merges=%d  "
+        "ura.merger: kept=%d unique  dedup_merges=%d  "
         "subquery_overflow_capped=%d",
         len(grouped),
-        empties_filtered,
         total_dedup_merges,
         capped_total,
     )
@@ -290,7 +255,7 @@ def build_ura_from_phases(
     medium.sort(key=_order_key)
 
     return UnifiedRetrievalArtifact(
-        schema_version="2.0",
+        schema_version="3.0",
         query_id=query_id,
         log_id=log_id,
         original_query=original_query,

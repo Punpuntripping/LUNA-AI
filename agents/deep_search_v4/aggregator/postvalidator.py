@@ -40,9 +40,12 @@ _AR_STOPWORDS: frozenset[str] = frozenset(
     }
 )
 
-# Inline citation pattern: digit-only parenthesized groups like (1) or (1,3)
-# Match ASCII digits. Allow ASCII comma OR Arabic comma U+060C as separator.
-_CITATION_RE = re.compile(r"\((\d+(?:\s*[,\u060C]\s*\d+)*)\)")
+# Inline citation pattern: digit-only SQUARE-BRACKET groups like [1] or [1,3].
+# Square brackets are the reserved citation tag (shared citation index); bare
+# parens are NOT scanned, so an article number written \u00AB(81)\u00BB / \u00AB\u0627\u0644\u0645\u0627\u062F\u0629 81\u00BB in
+# prose can never be mistaken for a reference citation.
+# Allow ASCII comma OR Arabic comma U+060C as separator.
+_CITATION_RE = re.compile(r"\[(\d+(?:\s*[,\u060C]\s*\d+)*)\]")
 
 # Thinking block: <thinking>...</thinking> (case-insensitive, dotall)
 _THINKING_RE = re.compile(r"<thinking\b[^>]*>.*?</thinking\s*>", re.IGNORECASE | re.DOTALL)
@@ -98,9 +101,10 @@ def strip_thinking_block(synthesis_md: str) -> str:
 
 
 def extract_cited_numbers(synthesis_md: str) -> list[int]:
-    """Regex-extract all (N) or (N,M,...) inline citations as sorted unique ints.
+    """Regex-extract all [N] or [N,M,...] inline citations as sorted unique ints.
 
-    Only matches digit-only parenthesized groups. `(مادة 5)` is ignored.
+    Only matches digit-only square-bracket groups. Bare parens — `(81)`,
+    `(مادة 5)` — are NOT citations and are ignored.
     """
     if not synthesis_md:
         return []
@@ -340,24 +344,53 @@ def check_structure(synthesis_md: str, prompt_key: str) -> tuple[bool, list[str]
     return True, notes
 
 
+def _grounding_haystack(agg_input: AggregatorInput) -> list[str]:
+    """Collect the text the LLM actually synthesized from.
+
+    URA v3.0: the aggregator view is the citable / grounding source of truth.
+    When ``agg_input.ura`` is set, the haystack is built from each URA result's
+    ``.for_aggregator()`` content (full body + resolved cross-refs).
+
+    Legacy path (``ura is None``): fall back to the reranker results'
+    ``content`` / ``section_summary`` / ``title`` fields.
+    """
+    parts: list[str] = []
+    ura = getattr(agg_input, "ura", None)
+    if ura is not None:
+        # Imported lazily to avoid any import-order coupling with the
+        # preprocessor module.
+        from agents.deep_search_v4.aggregator.preprocessor import (
+            render_aggregator_content,
+        )
+
+        for r in list(ura.high_results or []) + list(ura.medium_results or []):
+            for_aggregator = getattr(r, "for_aggregator", None)
+            if for_aggregator is None:
+                continue
+            parts.append(render_aggregator_content(for_aggregator()))
+        return parts
+
+    for sq in agg_input.sub_queries or []:
+        for r in (sq.results or []):
+            parts.append(getattr(r, "content", "") or "")
+            parts.append(getattr(r, "section_summary", "") or "")
+            parts.append(getattr(r, "title", "") or "")
+    return parts
+
+
 def check_grounding(
     references: list[Reference],
     agg_input: AggregatorInput,
 ) -> list[int]:
-    """Return reference numbers whose snippet is NOT found in any reranker result."""
+    """Return reference numbers whose snippet is NOT found in the synthesis source.
+
+    Grounds against the aggregator-view content (URA v3.0) -- the text the LLM
+    synthesized from -- NOT ``Reference.snippet`` (which is a truncated UI-hover
+    derivative of that same content).
+    """
     if not references:
         return []
-    # Build one big normalized haystack from all reranked content + section summaries
-    haystack_parts: list[str] = []
-    for sq in agg_input.sub_queries or []:
-        for r in (sq.results or []):
-            content = getattr(r, "content", "") or ""
-            section_summary = getattr(r, "section_summary", "") or ""
-            title = getattr(r, "title", "") or ""
-            haystack_parts.append(content)
-            haystack_parts.append(section_summary)
-            haystack_parts.append(title)
-    haystack_norm = _normalize_ar(" || ".join(haystack_parts))
+    haystack_norm = _normalize_ar(" || ".join(_grounding_haystack(agg_input)))
 
     ungrounded: list[int] = []
     for ref in references:

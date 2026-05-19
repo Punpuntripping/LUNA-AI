@@ -545,6 +545,40 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         input_price=0.26,
         output_price=0.38,
     ),
+
+    # --- OpenRouter tier-system fallback models (provider-fallback half) ---
+    "or-qwen3.6-plus": ModelConfig(
+        model_id="qwen/qwen3.6-plus",
+        provider="openrouter",
+        display_name="Qwen3.6 Plus (OpenRouter)",
+        supports_vision=True,
+        max_tokens=65536,
+        context_length=1000000,
+    ),
+    "or-qwen3.5-flash": ModelConfig(
+        model_id="qwen/qwen3.5-flash-02-23",
+        provider="openrouter",
+        display_name="Qwen3.5 Flash (OpenRouter)",
+        supports_vision=True,
+        max_tokens=65536,
+        context_length=1000000,
+    ),
+    "or-deepseek-v4-pro": ModelConfig(
+        model_id="deepseek/deepseek-v4-pro",
+        provider="openrouter",
+        display_name="DeepSeek V4 Pro (OpenRouter)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=163840,
+    ),
+    "or-deepseek-v4-flash": ModelConfig(
+        model_id="deepseek/deepseek-v4-flash",
+        provider="openrouter",
+        display_name="DeepSeek V4 Flash (OpenRouter)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=163840,
+    ),
     "or-mimo-v2-pro": ModelConfig(
         model_id="xiaomi/mimo-v2-pro",
         provider="openrouter",
@@ -646,6 +680,25 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         context_length=1000000,
         input_price=0.57,
         output_price=3.44,
+    ),
+
+    # --- DeepSeek V4 hosted on Alibaba Model Studio (international) ---
+    # Used as the same-provider fallback family in the tier system.
+    "deepseek-v4-pro": ModelConfig(
+        model_id="deepseek-v4-pro",
+        provider="alibaba",
+        display_name="DeepSeek V4 Pro (Alibaba)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=163840,
+    ),
+    "deepseek-v4-flash": ModelConfig(
+        model_id="deepseek-v4-flash",
+        provider="alibaba",
+        display_name="DeepSeek V4 Flash (Alibaba)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=163840,
     ),
 
     # --- Qwen3.5 series (February 2026) ---

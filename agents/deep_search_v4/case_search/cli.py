@@ -27,50 +27,17 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
+from agents.utils.agent_models import OVERRIDE_TOKENS
+
 from .logger import LOGS_DIR
 from .prompts import DEFAULT_EXPANDER_PROMPT, EXPANDER_PROMPTS
 
 
 def _get_expander_model_id(model_override: str | None = None) -> str:
-    if model_override:
-        from agents.model_registry import MODEL_REGISTRY
-        config = MODEL_REGISTRY.get(model_override)
-        return config.model_id if config else model_override
+    """Return the expander's primary (chain head) model ID."""
     from .expander import get_expander_model_id
     return get_expander_model_id()
 
-
-OR_MODEL_CHOICES = [
-    "or-minimax-m2.7",
-    "or-gemini-3.1-pro",
-    "or-gemini-3.1-pro-tools",
-    "or-gemini-2.5-pro",
-    "or-gemini-2.5-flash",
-    "or-deepseek-chat",
-    "or-qwen3.5-397b",
-    "or-deepseek-v3.2",
-    "or-mimo-v2-pro",
-    "or-glm-5-turbo",
-    "or-gemma-4-31b",
-]
-
-ALIBABA_MODEL_CHOICES = [
-    "qwen3.6-plus",
-    "qwen3.5-plus",
-    "qwen3.5-flash",
-    "qwen3-max",
-    "qwen3-coder-plus",
-    "qwen3-coder-flash",
-    "qwen3-vl-plus",
-    "qwen3-vl-flash",
-    "qwq-plus",
-    "qvq-max",
-    "qwen-plus",
-    "qwen-long",
-    "qwen-vl-ocr",
-]
-
-ALL_MODEL_CHOICES = OR_MODEL_CHOICES + ALIBABA_MODEL_CHOICES
 
 _VALID_CHANNELS = ("principle", "facts", "basis")
 
@@ -241,9 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        choices=ALL_MODEL_CHOICES,
+        choices=list(OVERRIDE_TOKENS),
         default=None,
-        help="Override the model for expander and reranker",
+        help="Tier override token for expander + reranker: qwen|deepseek pick "
+             "the primary family, alibaba|openrouter pick the primary provider. "
+             "Tier stays fixed.",
     )
     parser.add_argument(
         "--concurrency",
@@ -510,16 +479,19 @@ async def main() -> None:
 
     if args.list_models:
         from agents.model_registry import MODEL_REGISTRY
+        from agents.utils.agent_models import AGENT_MODELS, resolve_chain
 
-        print("\nAvailable models:")
-        print(f"\n{'Model Key':<25} {'Provider':<12} {'Model ID'}")
-        print(f"{'=' * 25} {'=' * 12} {'=' * 40}")
-        for key in ALL_MODEL_CHOICES:
-            config = MODEL_REGISTRY.get(key)
-            if config:
-                print(f"  {key:<23} {config.provider:<10} {config.model_id}")
-            else:
-                print(f"  {key:<23} (not found)")
+        for slot in ("case_search_expander", "case_search_reranker"):
+            policy = AGENT_MODELS[slot]
+            print(
+                f"\n{slot}: tier={policy.tier} provider={policy.provider} "
+                f"primary={policy.primary}"
+            )
+            print("  fallback chain:")
+            for i, key in enumerate(resolve_chain(policy), 1):
+                config = MODEL_REGISTRY.get(key)
+                print(f"    {i}. {key:<24} {config.model_id if config else key}")
+        print(f"\n--model override tokens: {', '.join(OVERRIDE_TOKENS)}")
         return
 
     if args.list_logs:

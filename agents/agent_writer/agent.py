@@ -14,7 +14,7 @@ import logging
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.usage import UsageLimits
 
-from agents.model_registry import create_model
+from agents.utils.agent_models import get_agent_model
 
 from .context import format_writer_context
 from .deps import WriterDeps
@@ -39,14 +39,12 @@ def create_writer_agent(
     """Build a Pydantic AI agent for the requested writing subtype.
 
     Args:
-        deps: Optional WriterDeps; when provided, the model_name defaults to
-            ``deps.primary_model`` so the runner's fallback decision (primary
-            vs fallback) drives which agent is created.
+        deps: Optional WriterDeps (workspace context).
         subtype: One of WriterSubtype literals -- selects the static system
             prompt that encodes subtype-specific drafting rules.
-        model_name: Override the registry key. When ``None`` and ``deps`` is
-            provided, falls back to ``deps.primary_model``; otherwise to
-            "qwen3.6-plus".
+        model_name: Provenance label only — does NOT select a model. The model
+            is always the ``agent_writer`` tier FallbackModel. Retained so the
+            runner can tag the primary vs fallback drafting pass.
 
     Returns:
         Agent[WriterDeps, WriterLLMOutput] ready to
@@ -54,16 +52,11 @@ def create_writer_agent(
         The static ``instructions`` carries the subtype rules.
         The ``@agent.system_prompt`` decorator appends the workspace context
         block (briefing + attached_items + style prefs) from deps at run time.
-        Failures of model lookup raise immediately -- the runner is responsible
-        for catching and falling back.
+
+    The model is the ``agent_writer`` tier slot — a provider FallbackModel.
     """
     system_prompt = get_writer_prompt(subtype)
-    chosen_model = (
-        model_name
-        or (deps.primary_model if deps is not None else None)
-        or "qwen3.6-plus"
-    )
-    model = create_model(chosen_model)
+    model = get_agent_model("agent_writer")
 
     agent: Agent[WriterDeps, WriterLLMOutput] = Agent(
         model,

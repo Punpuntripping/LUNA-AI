@@ -9,19 +9,23 @@ Wave 9 rewrite (Task 7):
 - Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
 - Logfire span wraps _dispatch; trace_id / span_id populated on AgentRunRecord.
 
-Wave 9 Task 13.4/13.5 additions:
+Planner-redesign rewiring:
+- The planner owns the loop. _run_deep_search builds PlannerDeps and calls
+  handle_planner_turn (phase 1 decide → phase 2 retrieve → phase 3 respond),
+  returning a _DeepSearchOutcome (kind="completed" | "paused").
 - Pre-route pause check: _find_awaiting_user / _expired / _resume_major_agent.
-- _dispatch handles DeferredToolRequests output from the planner: records an
-  'awaiting_user' agent_runs row, inserts an agent_question message, yields
-  agent_question + done events (stream closes; run stays alive).
-- _run_deep_search accepts an optional plan_override so the resume path can
-  skip the planner and jump straight to the search/aggregate/publish phases.
+- A phase-1 ask_user pause comes back as kind="paused"; _dispatch records the
+  'awaiting_user' agent_runs row + agent_question message and skips the run row.
+- _run_deep_search accepts an optional `decision`: on resume, _resume_major_agent
+  resumes planner_decider itself, then passes the PlannerDecision so phases 2–3
+  run through the same convergence point as a fresh dispatch.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import AsyncGenerator
@@ -310,18 +314,24 @@ async def _resume_major_agent(
             yield ev
         return
 
-    # ── Resume the planner with the user's answer ────────────────────────────
+    # ── Resume the planner_decider (phase 1) with the user's answer ──────────
+    # The two-phase planner resumes ONLY phase 1 here — it yields a
+    # PlannerDecision. Phases 2–3 then run via _run_deep_search(decision=...),
+    # the same convergence point as a fresh dispatch.
     try:
-        from agents.deep_search_v4.planner import PlannerDeps, PlannerOutput
-        from agents.deep_search_v4.planner.agent import create_planner_agent, PLANNER_LIMITS
+        from agents.deep_search_v4.planner import PlannerDecision
+        from agents.deep_search_v4.planner.agent import (
+            create_planner_decider,
+            PLANNER_DECIDER_LIMITS,
+        )
         from pydantic_ai import DeferredToolRequests
 
-        planner_agent = create_planner_agent()
-        planner_result = await planner_agent.run(
+        planner_decider = create_planner_decider()
+        planner_result = await planner_decider.run(
             "",  # user_prompt unused on resume — history provides full context
             message_history=history,
             deferred_tool_results=results,
-            usage_limits=PLANNER_LIMITS,
+            usage_limits=PLANNER_DECIDER_LIMITS,
         )
         planner_output = planner_result.output
     except Exception as exc:
@@ -360,8 +370,8 @@ async def _resume_major_agent(
         yield {"type": "done", "usage": _zero_usage("paused")}
         return
 
-    # ── PlannerOutput.aborted — give up on deep_search, re-route fresh ──────
-    if isinstance(planner_output, PlannerOutput) and planner_output.aborted:
+    # ── PlannerDecision.aborted — give up on deep_search, re-route fresh ────
+    if isinstance(planner_output, PlannerDecision) and planner_output.aborted:
         logger.info(
             "_resume_major_agent: planner aborted run_id=%s; re-routing via router",
             run_id,
@@ -378,8 +388,8 @@ async def _resume_major_agent(
             yield ev
         return
 
-    # ── Normal PlannerOutput — continue the deep_search pipeline ────────────
-    if not isinstance(planner_output, PlannerOutput):
+    # ── Unexpected output type — bail out cleanly ───────────────────────────
+    if not isinstance(planner_output, PlannerDecision):
         logger.error(
             "_resume_major_agent: unexpected planner output type=%s for run_id=%s",
             type(planner_output), run_id,
@@ -407,7 +417,12 @@ async def _resume_major_agent(
             case_id=case_id,
         )
 
-        run_result = await _run_deep_search(major_input, supabase, plan_override=planner_output)
+        # Phases 2–3 run via the same convergence point as fresh dispatch.
+        # decision is supplied → phase 1 is skipped → cannot pause again.
+        ds_outcome = await _run_deep_search(
+            major_input, supabase, decision=planner_output
+        )
+        run_result = ds_outcome.result
 
         for ev in run_result.sse_events:
             yield ev
@@ -538,90 +553,12 @@ def _record_deferred(
 from typing import Any  # noqa: E402 — after class definitions
 
 
-# ---------------------------------------------------------------------------
-# Planner pre-flight for _dispatch (Task 13.4)
-# ---------------------------------------------------------------------------
-
-# Sentinel: returned by _try_run_planner_for_dispatch when the planner issued a
-# DeferredToolRequests — the deferred events have already been yielded by the
-# caller-side generator and _dispatch must stop without recording a completed row.
-_DEFERRED_EMITTED = object()
-
-
 class _SkipRunRecord(Exception):
     """Raised inside _dispatch's try block to skip the agent_runs INSERT.
 
     Used when the run transitions to 'awaiting_user' and is persisted by
     _record_deferred instead of by the normal finally block.
     """
-
-
-async def _try_run_planner_for_dispatch(
-    briefing: str,
-    supabase: SupabaseClient,
-    user_id: str,
-    conversation_id: str,
-    case_id: str | None,
-    user_message_id: str | None,
-    agent_family: str,
-) -> "PlannerOutput | None | object":
-    """Run the planner once before the deep_search pipeline.
-
-    Returns:
-    - ``PlannerOutput``   — planner succeeded; pass as plan_override to _run_deep_search.
-    - ``None``            — planner disabled or degraded fallback; _run_deep_search handles it.
-    - ``_DEFERRED_EMITTED`` — planner paused; the caller (a generator) has already
-      yielded the agent_question + done events and must return immediately.
-
-    Note: this function is NOT a generator; it cannot yield.  The generator
-    contract is handled one level up in _dispatch by checking the return value.
-    """
-    # Import lazily so the module stays importable without pydantic_ai.
-    try:
-        from agents.deep_search_v4.planner import PlannerDeps
-        from agents.deep_search_v4.planner.agent import create_planner_agent, PLANNER_LIMITS
-        from agents.deep_search_v4.planner.prompts import build_planner_user_message
-        from pydantic_ai import DeferredToolRequests
-    except ImportError:
-        return None
-
-    try:
-        planner_deps = PlannerDeps(model_override=None, emit_sse=None)
-        user_message = build_planner_user_message(briefing)
-        planner_agent = create_planner_agent()
-        planner_result = await planner_agent.run(user_message, usage_limits=PLANNER_LIMITS)
-        planner_output = planner_result.output
-    except Exception as exc:
-        logger.warning(
-            "_try_run_planner_for_dispatch: planner failed, skipping plan: %s", exc, exc_info=True,
-        )
-        return None
-
-    if isinstance(planner_output, DeferredToolRequests):
-        # Persist the pause state and the question message.
-        _record_deferred(
-            supabase=supabase,
-            planner_result=planner_result,
-            planner_output=planner_output,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            case_id=case_id,
-            user_message_id=user_message_id,
-            agent_family=agent_family,
-            briefing=briefing,
-        )
-        return _DEFERRED_EMITTED
-
-    # Normal PlannerOutput (including aborted=True — let _run_deep_search handle it).
-    from agents.deep_search_v4.planner import PlannerOutput
-    if isinstance(planner_output, PlannerOutput):
-        return planner_output
-
-    # Unknown type — degrade gracefully.
-    logger.warning(
-        "_try_run_planner_for_dispatch: unexpected planner output type=%s", type(planner_output),
-    )
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -827,30 +764,26 @@ async def _dispatch(
             )
 
             if agent_family == "deep_search":
-                # Planner pre-flight: run the planner here (outside run_full_loop)
-                # so DeferredToolRequests can be caught before any search phase runs.
-                planner_plan_override = await _try_run_planner_for_dispatch(
-                    briefing=briefing,
-                    supabase=supabase,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    user_message_id=user_message_id,
-                    agent_family=agent_family,
-                )
-                # _try_run_planner_for_dispatch returns either:
-                #   - a PlannerOutput  → continue with deep_search pipeline
-                #   - None             → planner disabled / degraded fallback
-                #   - the sentinel _DEFERRED_EMITTED → planner paused; caller must stop
-                if planner_plan_override is _DEFERRED_EMITTED:
-                    # The deferred event + done were yielded inside _try_run_planner_for_dispatch.
-                    # We must NOT record a completed agent_runs row — the run is still alive
-                    # (status='awaiting_user').  Return without falling through to the finally block
-                    # by raising a dedicated sentinel that the outer try/except/finally handles.
+                # The planner owns the loop: _run_deep_search → handle_planner_turn
+                # runs phase 1 (decide) → phase 2 (retrieve) → phase 3 (respond).
+                # A phase-1 ask_user pause comes back as kind="paused".
+                ds_outcome = await _run_deep_search(major_input, supabase)
+                if ds_outcome.kind == "paused":
+                    # Persist the awaiting_user row + question message, then skip
+                    # the normal completed-run record (the run stays alive).
+                    _record_deferred(
+                        supabase=supabase,
+                        planner_result=ds_outcome.planner_result,
+                        planner_output=ds_outcome.deferred,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        user_message_id=user_message_id,
+                        agent_family=agent_family,
+                        briefing=briefing,
+                    )
                     raise _SkipRunRecord()
-                run_result = await _run_deep_search(
-                    major_input, supabase, plan_override=planner_plan_override
-                )
+                run_result = ds_outcome.result
             elif agent_family == "writing":
                 run_result = await _run_writer(major_input, subtype, supabase)
             elif agent_family == "memory":
@@ -889,19 +822,11 @@ async def _dispatch(
             }
 
         except _SkipRunRecord:
-            # Planner issued DeferredToolRequests — the run is alive as 'awaiting_user'.
-            # No completed agent_runs row should be written; no error SSE either.
-            # The deferred events (agent_question + done) have already been yielded
-            # by _try_run_planner_for_dispatch via _record_deferred.
-            # We simply yield the agent_question + done that _record_deferred stored
-            # and return without hitting the finally record_agent_run call.
-            question_text = getattr(_SkipRunRecord, "_question", None)
-            run_id_deferred = getattr(_SkipRunRecord, "_run_id", None)
-            # Note: the events were already persisted to messages; we just need
-            # to emit SSE events for the client.  _try_run_planner_for_dispatch
-            # stored them on the _SkipRunRecord class for retrieval here.
-            # Actually: _record_deferred returns (question, run_id) but we raised
-            # before capturing those values here.  Instead we re-query the fresh row.
+            # Phase-1 ask_user pause — _run_deep_search returned kind="paused"
+            # and the deep_search branch already persisted the awaiting_user row
+            # + question message via _record_deferred. The run is alive; no
+            # completed agent_runs row should be written and no error SSE.
+            # Re-query the fresh row to emit the agent_question SSE event.
             deferred_row = _find_awaiting_user(supabase, conversation_id, user_id)
             if deferred_row:
                 yield {
@@ -956,25 +881,44 @@ async def _dispatch(
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _DeepSearchOutcome:
+    """What :func:`_run_deep_search` returns.
+
+    - ``kind="completed"`` — the planner ran phases 2–3; ``result`` is the
+      ``SpecialistResult`` to stream.
+    - ``kind="paused"`` — phase 1 called ``ask_user``; ``planner_result`` +
+      ``deferred`` carry the pause state for :func:`_record_deferred`.
+    """
+
+    kind: str  # "completed" | "paused"
+    result: SpecialistResult | None = None
+    planner_result: Any = None
+    deferred: Any = None
+
+
 async def _run_deep_search(
     input: MajorAgentInput,
     supabase: SupabaseClient,
-    plan_override: "PlannerOutput | None" = None,
-) -> SpecialistResult:
-    """Run the deep_search_v4 URA pipeline and return a SpecialistResult.
+    decision: Any = None,
+) -> _DeepSearchOutcome:
+    """Run the planner-driven deep_search_v4 loop.
 
-    Extracted from the former _run_pydantic_ai_task deep_search branch.
-    Key changes:
-    - supabase passed explicitly (MajorAgentInput is DB-free by contract).
-    - Full synthesis_md NOT yielded to chat; chat_summary + key_findings used instead.
-    - SSE events from deps._events and publish_result.sse_events are collected into
-      SpecialistResult.sse_events.
-    - Token counts mapped from AggregatorOutput (currently zero — placeholders).
-    - plan_override: when provided (Task 13.4/13.5), the planner step inside
-      run_full_loop is skipped and this plan is applied directly to FullLoopDeps
-      via apply_plan_to_deps.  This supports both the initial dispatch path (after
-      DeferredToolRequests is ruled out) and the resume path (planner already ran
-      on the prior turn).
+    Builds ``PlannerDeps``, then runs ``handle_planner_turn`` — phase 1 decide
+    (skipped when ``decision`` is supplied), phase 2 retrieve, phase 3 respond.
+
+    - On a phase-1 ``ask_user`` pause → returns ``kind="paused"`` (the caller
+      persists it via ``_record_deferred``). Only happens on fresh dispatch.
+    - Otherwise publishes the ``agent_search`` artifact and returns
+      ``kind="completed"`` with a ``SpecialistResult``.
+
+    ``decision``: supplied on the resume path (phase 1 already resolved by
+    ``_resume_major_agent``); ``None`` on fresh dispatch.
+
+    The user-facing chat summary is written by the **planner** (phase 3), not
+    the aggregator: ``SpecialistResult.chat_summary`` = the planner's
+    ``chat_summary_md`` + ``suggestion_md``; ``key_findings`` comes from the
+    aggregator artifact.
     """
     import httpx
 
@@ -983,7 +927,7 @@ async def _run_deep_search(
         SearchPublishInput,
         publish_search_result,
     )
-    from agents.deep_search_v4.orchestrator import FullLoopDeps, run_full_loop
+    from agents.deep_search_v4.planner import build_planner_deps, handle_planner_turn
     from agents.utils.embeddings import embed_regulation_query_alibaba
     from backend.app.services.preferences_service import get_detail_level
     from shared.config import get_settings
@@ -997,74 +941,63 @@ async def _run_deep_search(
 
     settings = get_settings()
     sse_events: list[dict] = []
+    output_item_id: str | None = None
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
-        deps = FullLoopDeps(
+        deps = build_planner_deps(
             supabase=supabase,
             embedding_fn=embed_regulation_query_alibaba,
-            jina_api_key=settings.JINA_RERANKER_API_KEY or "",
             http_client=http_client,
+            jina_api_key=settings.JINA_RERANKER_API_KEY or "",
             detail_level=detail_level,
-            # When we have a pre-computed plan (from initial dispatch or resume),
-            # set enable_planner=False so run_full_loop doesn't run it again.
-            # apply_plan_to_deps below will overlay the plan onto deps directly.
-            enable_planner=False,
         )
 
-        # Apply the pre-computed plan (if any) before handing deps to run_full_loop.
-        if plan_override is not None:
-            try:
-                from agents.deep_search_v4.planner import apply_plan_to_deps, derive_aggregator_prompt_key
-                deps = apply_plan_to_deps(deps, plan_override)
-                deps._plan = plan_override
-            except Exception as exc:
-                logger.warning(
-                    "_run_deep_search: apply_plan_to_deps failed, proceeding without plan: %s", exc,
-                )
+        # The planner owns the loop — decide → retrieve → respond. Never raises.
+        turn = await handle_planner_turn(input.briefing, deps, decision=decision)
 
-        agg_output = await run_full_loop(
-            query=input.briefing,
-            query_id=0,
-            deps=deps,
-        )
-
-        # Collect pipeline-accumulated SSE events (progress events etc.).
+        # Pipeline-accumulated SSE events (planner + executor progress).
         sse_events.extend(deps._events)
 
-        # Persist via agent_search publisher.
-        output_item_id: str | None = None
-        try:
-            publish_input = SearchPublishInput(
-                user_id=input.user_id,
-                conversation_id=input.conversation_id,
-                case_id=input.case_id,
-                message_id=None,  # user_message_id threaded through Task 10 via MajorAgentInput
-                agg_output=agg_output,
-                original_query=input.briefing,
-                detail_level=detail_level,
-                ura=getattr(deps, "_ura", None),
-                reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
-                comp_rqrs=list(getattr(deps, "_comp_rqrs", []) or []),
-                case_rqrs=list(getattr(deps, "_case_rqrs", []) or []),
-                per_executor_stats=dict(
-                    getattr(deps, "_per_executor_stats", {}) or {}
-                ),
+        if turn.kind == "paused":
+            # Phase-1 ask_user pause — hand the raw pause state back to the
+            # caller, which records the awaiting_user row.
+            return _DeepSearchOutcome(
+                kind="paused",
+                planner_result=turn.planner_result,
+                deferred=turn.deferred,
             )
-            publish_result = await publish_search_result(
-                publish_input,
-                SearchPublishDeps(supabase=supabase, logger=logger),
-            )
-            sse_events.extend(publish_result.sse_events)
-            output_item_id = publish_result.item_id
-        except Exception as exc:
-            logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
 
-    # Aggregate token usage from per-executor stats. run_full_loop populates
-    # deps._per_executor_stats with total_tokens_in/out per executor (see
-    # agents/deep_search_v4/orchestrator.py:206/452/588). Planner + aggregator
-    # tokens are not currently captured into this dict — they will show up in
-    # Logfire spans (gen_ai.usage.*) but not on the agent_runs row. Tracked
-    # as a follow-up.
+        # ── completed — persist the artifact via the agent_search publisher ──
+        agg_output = turn.agg_output
+        if agg_output is not None:
+            try:
+                publish_input = SearchPublishInput(
+                    user_id=input.user_id,
+                    conversation_id=input.conversation_id,
+                    case_id=input.case_id,
+                    message_id=None,
+                    agg_output=agg_output,
+                    original_query=input.briefing,
+                    detail_level=detail_level,
+                    ura=getattr(deps, "_ura", None),
+                    reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
+                    comp_rqrs=list(getattr(deps, "_comp_rqrs", []) or []),
+                    case_rqrs=list(getattr(deps, "_case_rqrs", []) or []),
+                    per_executor_stats=dict(
+                        getattr(deps, "_per_executor_stats", {}) or {}
+                    ),
+                )
+                publish_result = await publish_search_result(
+                    publish_input,
+                    SearchPublishDeps(supabase=supabase, logger=logger),
+                )
+                sse_events.extend(publish_result.sse_events)
+                output_item_id = publish_result.item_id
+            except Exception as exc:
+                logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
+
+    # Aggregate token usage from per-executor stats (planner + aggregator tokens
+    # land in Logfire spans, not this dict — tracked as a follow-up).
     stats: dict = dict(getattr(deps, "_per_executor_stats", {}) or {})
     tokens_in = sum(
         int(v.get("total_tokens_in", 0) or 0)
@@ -1077,15 +1010,33 @@ async def _run_deep_search(
         if isinstance(v, dict)
     )
 
-    return SpecialistResult(
-        output_item_id=output_item_id,
-        chat_summary=agg_output.chat_summary or "",
-        key_findings=list(agg_output.key_findings or []),
-        sse_events=sse_events,
-        model_used=agg_output.model_used or "deep_search_v4",
-        tokens_in=tokens_in,
-        tokens_out=tokens_out,
-        per_phase_stats=stats,
+    # chat_summary = planner's phase-3 prose + the next-step suggestion.
+    response = turn.response
+    chat_summary = (getattr(response, "chat_summary_md", "") or "") if response else ""
+    suggestion = (getattr(response, "suggestion_md", "") or "").strip() if response else ""
+    if suggestion:
+        chat_summary = f"{chat_summary}\n\n{suggestion}" if chat_summary else suggestion
+    key_findings = (
+        list(getattr(agg_output, "key_findings", []) or []) if agg_output else []
+    )
+    model_used = (
+        getattr(agg_output, "model_used", None) or "deep_search_v4"
+        if agg_output
+        else "deep_search_v4"
+    )
+
+    return _DeepSearchOutcome(
+        kind="completed",
+        result=SpecialistResult(
+            output_item_id=output_item_id,
+            chat_summary=chat_summary,
+            key_findings=key_findings,
+            sse_events=sse_events,
+            model_used=model_used,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            per_phase_stats=stats,
+        ),
     )
 
 

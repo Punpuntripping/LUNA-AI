@@ -1,12 +1,16 @@
-"""Standalone mock test for run_compliance_from_partial_ura().
+"""Standalone mock test for the compliance loop.
 
-Builds a synthetic PartialURA (no DB needed) and runs the compliance loop
-with mock=True so no real embedding/RPC calls are made.
+DEAD INFRASTRUCTURE WARNING: this module imports ``PartialURA`` and
+``compliance_search.ura_runner.run_compliance_from_partial_ura`` -- both were
+removed when the two-stage merger was replaced by ``ura/merger.build_ura_from_phases``
+(see ``ura/__init__.py``). The file therefore cannot import-clean and the
+``run_mock_test`` / ``run_live_test`` entry points are non-functional.
 
-Usage:
-    python -m agents.deep_search_v4.test_compliance_ura
-    python -m agents.deep_search_v4.test_compliance_ura --query-id 5
-    python -m agents.deep_search_v4.test_compliance_ura --live   # real DB
+It is kept only as a reference fixture. ``_build_mock_reg_results`` has been
+updated to the URA v3.0 two-view schema (chunk-shaped ``RegURAResult``) so the
+result-construction code byte-compiles and matches the current contract; the
+surrounding harness still needs a rewrite against ``build_ura_from_phases``
+before it can run.
 """
 from __future__ import annotations
 
@@ -39,54 +43,32 @@ def _load_queries() -> dict[int, dict]:
     return {q["id"]: q for q in data["queries"] if q.get("text")}
 
 
-def _build_mock_partial_ura(query_id: int, query_text: str):
-    from datetime import datetime, timezone
-    from agents.deep_search_v4.ura.schema import PartialURA, URAResult
+def _build_mock_reg_results():
+    """Build mock URA v3.0 ``RegURAResult`` shells (chunk-shaped, two-view)."""
+    from agents.deep_search_v4.ura.schema import RegURAResult
 
-    reg_results = [
-        URAResult(
+    return [
+        RegURAResult(
             ref_id="reg:550e8400-e29b-41d4-a716-446655440000",
-            domain="regulations",
-            source_type="article",
-            title="نظام العمل - المادة 84 -- مكافأة نهاية الخدمة",
-            content="يستحق العامل عند انتهاء عقده مكافأة نهاية الخدمة عن كل سنة...",
-            metadata={
-                "regulation_title": "نظام العمل",
-                "article_num": "84",
-                "section_title": "",
-            },
+            source_type="reg_chunk",
             relevance="high",
             reasoning="نص صريح في مكافأة نهاية الخدمة",
+            reg_title="نظام العمل",
+            reg_scope="علاقات العمل",
+            chunk_content=(
+                "يستحق العامل عند انتهاء عقده مكافأة نهاية الخدمة عن كل سنة..."
+            ),
         ),
-        URAResult(
+        RegURAResult(
             ref_id="reg:550e8400-e29b-41d4-a716-446655440001",
-            domain="regulations",
-            source_type="article",
-            title="نظام العمل - المادة 109 -- الإجازة السنوية",
-            content="للعامل الحق في إجازة سنوية مدفوعة الأجر...",
-            metadata={
-                "regulation_title": "نظام العمل",
-                "article_num": "109",
-                "section_title": "",
-            },
+            source_type="reg_chunk",
             relevance="medium",
             reasoning="متعلق باحتساب بدل الإجازات",
+            reg_title="نظام العمل",
+            reg_scope="علاقات العمل",
+            chunk_content="للعامل الحق في إجازة سنوية مدفوعة الأجر...",
         ),
     ]
-
-    return PartialURA(
-        schema_version="1.0",
-        query_id=query_id,
-        log_id=f"mock_{query_id}",
-        original_query=query_text,
-        produced_at=datetime.now(timezone.utc).isoformat(),
-        sub_queries=[
-            {"index": 0, "query": "مكافأة نهاية الخدمة عند عدم تجديد العقد"},
-            {"index": 1, "query": "بدل الإجازات السنوية عند انتهاء العقد"},
-        ],
-        results=reg_results,
-        sector_filter=["العمل والتوظيف"],  # simulates prompt_2 expander output
-    )
 
 
 async def run_mock_test(query_id: int) -> None:

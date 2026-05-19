@@ -33,7 +33,7 @@ function getLockedUntil(item: WorkspaceItem): number | null {
  * Behaviour:
  * - 800 ms debounced autosave on change.
  * - When the agent holds the lock, the textarea becomes read-only and a
- *   "Luna يحرر…" banner shows above it.
+ *   "ريحان يحرر…" banner shows above it.
  * - Title is editable in a small input above the body for ``note`` items.
  *   For ``agent_writing`` items the title comes from the agent and is
  *   read-only here.
@@ -91,7 +91,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
         },
         onError: (err) => {
           if (err instanceof ApiClientError && err.status === 409) {
-            setConflict(err.message || "Luna يحرر هذا الملف الآن، حاول مجدداً");
+            setConflict(err.message || "ريحان يحرر هذا الملف الآن، حاول مجدداً");
           }
         },
       },
@@ -104,7 +104,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
       {isLocked && (
         <div className="flex items-center gap-2 border-b bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
           <Lock className="h-3.5 w-3.5" />
-          <span>Luna يحرر هذا الملف الآن…</span>
+          <span>ريحان يحرر هذا الملف الآن…</span>
         </div>
       )}
       {conflict && !isLocked && (

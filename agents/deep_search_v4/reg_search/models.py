@@ -16,7 +16,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-import httpx
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
@@ -115,14 +114,62 @@ from agents.deep_search_v4.shared.reranker_models import (  # noqa: E402
 )
 
 
+# -- Reg-local reranker models (v2: chunk corpus, label-addressed) ------------
+# The v2 reg_search reranker diverges from the shared RerankerDecision — chunks
+# are addressed by a stable label (not a per-round position), and `unfold`
+# targets a prev/next neighbour. The shared `reranker_models.py` stays untouched
+# because case_search / compliance_search still depend on it.
+
+
+class RegRerankerDecision(BaseModel):
+    """One reranker decision for a v2 chunk, addressed by its stable label."""
+
+    label: str = Field(
+        description="Chunk label exactly as shown in the '### [Cn]' header, e.g. 'C7'",
+    )
+    action: Literal["keep", "drop", "unfold"] = Field(
+        description="keep: relevant; drop: out of scope; unfold: pull a neighbour chunk",
+    )
+    direction: Optional[Literal["prev", "next"]] = Field(
+        default=None,
+        description="Which neighbour to pull — set only when action='unfold'",
+    )
+    relevance: Optional[Literal["high", "medium"]] = Field(
+        default=None,
+        description="Relevance tier — set only when action='keep'",
+    )
+    reasoning: str = Field(
+        default="",
+        description="Short Arabic note; states the regulation-scope-applicability verdict",
+    )
+
+
+class RegRerankerClassification(BaseModel):
+    """Output of one v2 reg_search reranker LLM call — decisions only."""
+
+    sufficient: bool = Field(
+        description="True if the kept chunks are >=80% sufficient to answer the sub-query",
+    )
+    decisions: list[RegRerankerDecision] = Field(
+        default_factory=list,
+        description="Per-chunk classification decisions",
+    )
+    summary_note: str = Field(
+        default="",
+        description="Brief Arabic note on collective sufficiency",
+    )
+
+
 class RerankedResult(BaseModel):
     """A single result kept by the reranker (assembled by code, not LLM).
 
-    Can be an article or a section (up to 2 sections allowed).
+    v2: every result is a chunk (``source_type == "chunk"``). The legacy
+    article/section fields below are kept — and left at their defaults — so the
+    ``adapter.py`` -> shared ``RegURAResult`` boundary keeps compiling unchanged.
     """
 
-    source_type: Literal["article", "section"] = Field(
-        description="Type of result",
+    source_type: Literal["chunk", "article", "section"] = Field(
+        description='Type of result — "chunk" for the v2 corpus',
     )
     title: str = Field(
         description="Arabic title",
@@ -215,7 +262,7 @@ class SearchResult:
     """Result from a single search pipeline execution."""
 
     query: str
-    raw_markdown: str
+    chunks: list  # list[dict] — tagged chunks_v2 rows from search.py
     result_count: int
 
 
@@ -232,8 +279,8 @@ class RerankerQueryResult:
     unfold_rounds: int = 0   # how many LLM classification runs (1-3)
     total_unfolds: int = 0   # how many DB unfold calls were made
     caps_applied: dict = field(default_factory=dict)
-    # ``caps_applied`` carries {"max_high", "max_medium", "truncated_by_cap"}
-    # when keep caps were applied. Empty dict when caps were not active.
+    # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the keep
+    # cap was applied. Empty dict when the cap was not active.
 
 
 @dataclass
@@ -248,8 +295,13 @@ class LoopState:
     model_override: str | None = None
     unfold_mode: str = "precise"
     concurrency: int = 10
-    reranker_max_high: int = 8    # Max high-relevance results per sub-query
-    reranker_max_medium: int = 4  # Max medium-relevance results per sub-query
+    reranker_max_keep: int = 8  # Max results kept per sub-query (single flat cap)
+    # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
+    # planner/orchestrator, the per-sub-query reranker keep is derived at
+    # runtime as ceil(result_budget / max(N, 3)) from the expander's actual
+    # query count N — and ``reranker_max_keep`` above is ignored. When None
+    # (CLI / monitor path), the fixed ``reranker_max_keep`` is used.
+    result_budget: int | None = None
     round_count: int = 0
     max_rounds: int = 3
     expander_output: ExpanderOutput | None = None
@@ -270,9 +322,6 @@ class LoopState:
     # Hard cap on number of sub-queries from the expander, plumbed from
     # the planner's focus profile via the orchestrator.
     expander_max_queries: int | None = None
-    # RRF floor passed through from deps for state visibility (search-time
-    # filter is applied via deps; this mirror is informational only).
-    rrf_min_score: float = 0.1
     step_timings: dict = field(default_factory=dict)  # {expander: float, search: float, reranker: float, aggregator: float}
 
 
@@ -282,12 +331,6 @@ class RegSearchDeps:
 
     supabase: SupabaseClient
     embedding_fn: Callable[[str], Awaitable[list[float]]]
-    jina_api_key: str = ""
-    http_client: httpx.AsyncClient | None = None
-    use_reranker: bool = False
-    score_threshold: float = 0.005
-    rrf_min_score: float = 0.1  # Drop RRF positions below this before reranker (saves tokens)
-    mock_results: dict | None = None
     _query_id: int = 0   # Set by CLI before run_reg_search()
     _log_id: str = ""    # Set by run_reg_search() before graph starts
     _events: list[dict] = field(default_factory=list)

@@ -40,10 +40,8 @@ from supabase import Client as SupabaseClient
 from agents.deep_search_v4.aggregator.deps import build_aggregator_deps
 from agents.deep_search_v4.aggregator.models import AggregatorInput, AggregatorOutput
 from agents.deep_search_v4.aggregator.runner import handle_aggregator_turn
-from agents.deep_search_v4.case_search.adapter import case_to_rqr
 from agents.deep_search_v4.case_search.loop import run_case_search
 from agents.deep_search_v4.case_search.models import CaseSearchDeps
-from agents.deep_search_v4.compliance_search.adapter import compliance_to_rqr
 from agents.deep_search_v4.compliance_search.logger import (
     create_run_dir as create_compliance_run_dir,
     make_ura_log_id as make_compliance_log_id,
@@ -59,7 +57,6 @@ from agents.deep_search_v4.compliance_search.models import (
     ComplianceSearchResult,
     LoopState as ComplianceLoopState,
 )
-from agents.deep_search_v4.reg_search.adapter import reg_to_rqr
 from agents.deep_search_v4.reg_search.logger import (
     create_run_dir,
     make_log_id,
@@ -73,15 +70,13 @@ from agents.deep_search_v4.reg_search.models import (
     RegSearchResult,
 )
 from agents.deep_search_v4.shared.models import RerankerQueryResult
+from agents.deep_search_v4.ura.case_adapter import case_to_rqr
+from agents.deep_search_v4.ura.compliance_adapter import compliance_to_rqr
+from agents.deep_search_v4.ura.enrich import enrich_ura
 from agents.deep_search_v4.ura.merger import build_ura_from_phases
+from agents.deep_search_v4.ura.reg_adapter import reg_to_rqr
 from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
-from agents.deep_search_v4.planner import (
-    PlannerDeps,
-    PlannerOutput,
-    apply_plan_to_deps,
-    derive_aggregator_prompt_key,
-    run_planner,
-)
+from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -119,34 +114,40 @@ class FullLoopDeps:
     include_compliance: bool = True
     include_cases: bool = True
     detail_level: DetailLevel = "medium"
-    # Planner integration (V4 cut-1). Default OFF — pre-existing behavior is
-    # byte-identical when ``enable_planner=False``.
+    # DEPRECATED — the planner redesign moved planning out of run_full_loop into
+    # the planner-owned loop (``run_retrieval`` + ``handle_planner_turn``). These
+    # two fields are inert: run_full_loop no longer runs a planner. Kept only so
+    # existing CLI / monitor constructors don't break.
     enable_planner: bool = False
     planner_model: str | None = None
-    # Planner-driven runtime knobs (forward-compat with ``apply_plan_to_deps``).
+    # Planner-driven runtime knobs. ``run_retrieval`` populates these from the
+    # mode-derived ``RetrievalConfig``.
     expander_max_queries: dict[str, int] | None = None
+    # Per-executor result budget ("reg" / "compliance" / "cases"). When set, the
+    # executor loop derives reranker_max_keep dynamically from it; when None the
+    # fixed ``*_max_keep`` caps apply. See MODE_PROFILES.md §1.
+    result_budget: dict[str, int] | None = None
     sectors_override: list[str] | None = None
-    reg_rrf_min_score: float | None = None
     case_score_threshold: float | None = None
     # Phase 6 clarification hook — superseded by the deferred-tool path in
     # cut-2 (Task 13.7).  ask_user is now a @agent.tool_plain on the planner
     # that raises CallDeferred; the orchestrator receives a DeferredToolRequests
     # output and handles the resume cycle directly.  The callable field has been
     # removed; callers that previously set ask_user= should be updated.
-    # Per-run keep caps for each domain's reranker (applied per sub-query
-    # for reg/case, and to the total kept pool for compliance).
-    reg_max_high: int = 8
-    reg_max_medium: int = 4
-    case_max_high: int = 6
-    case_max_medium: int = 4
-    compliance_max_high: int = 6
-    compliance_max_medium: int = 4
+    # Per-run flat keep cap for each domain's reranker. One cap over all kept
+    # results; within the cap, high-relevance results are ordered ahead of
+    # medium, ties broken by score (descending), before truncation.
+    reg_max_keep: int = 8
+    case_max_keep: int = 10
+    compliance_max_keep: int = 5
     # Optional logger injected by the monitor harness so the aggregator's
     # exact prompt + raw LLM output + thinking + validation all land on disk
     # alongside the per-phase logs. Production callers leave this None.
     aggregator_logger: Any | None = None
     _events: list[dict] = field(default_factory=list)
-    _plan: PlannerOutput | None = None
+    # Telemetry stash — the planner's RetrievalConfig / decision, when run via
+    # run_retrieval. Typed Any to keep this module decoupled from the schema.
+    _plan: Any = None
     _ura: UnifiedRetrievalArtifact | None = None
     _reg_rqrs: list[RerankerQueryResult] = field(default_factory=list)
     _comp_rqrs: list[RerankerQueryResult] = field(default_factory=list)
@@ -224,18 +225,13 @@ async def _run_reg_phase(
         expander_prompt_key=deps.expander_prompt_key,
         unfold_mode=deps.unfold_mode,
         concurrency=deps.concurrency,
-        use_reranker=deps.use_reranker,
-        reg_max_high=deps.reg_max_high,
-        reg_max_medium=deps.reg_max_medium,
+        reg_max_keep=deps.reg_max_keep,
     )
     _phase_span.__enter__()
 
     reg_deps = RegSearchDeps(
         supabase=deps.supabase,
         embedding_fn=deps.embedding_fn,
-        jina_api_key=deps.jina_api_key,
-        http_client=deps.http_client,
-        use_reranker=deps.use_reranker,
         _query_id=query_id,
     )
     reg_deps._log_id = log_id
@@ -243,6 +239,10 @@ async def _run_reg_phase(
     reg_expander_cap: int | None = None
     if deps.expander_max_queries:
         reg_expander_cap = deps.expander_max_queries.get("reg")
+
+    reg_budget: int | None = None
+    if deps.result_budget:
+        reg_budget = deps.result_budget.get("reg")
 
     state = RegLoopState(
         focus_instruction=query,
@@ -252,23 +252,13 @@ async def _run_reg_phase(
         unfold_mode=deps.unfold_mode,
         concurrency=deps.concurrency,
         skip_aggregator=True,
-        reranker_max_high=deps.reg_max_high,
-        reranker_max_medium=deps.reg_max_medium,
+        reranker_max_keep=deps.reg_max_keep,
+        result_budget=reg_budget,
         expander_max_queries=reg_expander_cap,
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
-        rrf_min_score=deps.reg_rrf_min_score,
     )
-
-    # Best-effort: thread RRF threshold onto reg's pre-reranker deps as well
-    # (search-time rrf floor; distinct from the reranker drop-floor wired via
-    # state.rrf_min_score).
-    if deps.reg_rrf_min_score is not None:
-        try:
-            reg_deps.rrf_min_score = deps.reg_rrf_min_score
-        except Exception:
-            pass
 
     t0 = _time.perf_counter()
     error_msg: str | None = None
@@ -409,6 +399,10 @@ async def _run_compliance_phase(
     )
     create_compliance_run_dir(log_id)
 
+    comp_budget: int | None = None
+    if deps.result_budget:
+        comp_budget = deps.result_budget.get("compliance")
+
     compliance_deps = ComplianceSearchDeps(
         supabase=deps.supabase,
         embedding_fn=deps.embedding_fn,
@@ -416,8 +410,8 @@ async def _run_compliance_phase(
         http_client=deps.http_client,
         use_reranker=deps.use_reranker,
         model_override=deps.model_override,
-        compliance_max_high=deps.compliance_max_high,
-        compliance_max_medium=deps.compliance_max_medium,
+        reranker_max_keep=deps.compliance_max_keep,
+        result_budget=comp_budget,
     )
 
     comp_expander_cap: int | None = None
@@ -429,8 +423,6 @@ async def _run_compliance_phase(
         user_context="",
         log_id=log_id,
         expander_max_queries=comp_expander_cap,
-        reranker_max_high=deps.compliance_max_high,
-        reranker_max_medium=deps.compliance_max_medium,
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
@@ -542,12 +534,16 @@ async def _run_case_phase(
         _logfire.info("deep_search.phase.case.skipped", query_id=query_id)
         return []
 
+    case_budget: int | None = None
+    if deps.result_budget:
+        case_budget = deps.result_budget.get("cases")
+
     case_deps = CaseSearchDeps(
         supabase=deps.supabase,
         embedding_fn=deps.embedding_fn,
         _query_id=query_id,
-        reranker_max_high=deps.case_max_high,
-        reranker_max_medium=deps.case_max_medium,
+        reranker_max_keep=deps.case_max_keep,
+        result_budget=case_budget,
     )
     # Best-effort: thread case score threshold when the deps object exposes it.
     if deps.case_score_threshold is not None:
@@ -608,8 +604,7 @@ async def _run_case_phase(
         total_tokens_in=total_in,
         total_tokens_out=total_out,
         rqr_count=len(rqrs),
-        case_max_high=deps.case_max_high,
-        case_max_medium=deps.case_max_medium,
+        case_max_keep=deps.case_max_keep,
     )
     return rqrs
 
@@ -647,49 +642,11 @@ async def run_full_loop(
     )
     _full_span.__enter__()
 
-    # Planner pass (V4 Phase 2). Default OFF — preserves byte-identical
-    # behavior for callers that haven't opted into the planner. When ON, the
-    # planner output overrides the caller-supplied ``prompt_key`` for the
-    # aggregator (see V4_PLANNER_DESIGN.md §4.4).
-    if deps.enable_planner:
-        planner_deps = PlannerDeps(
-            model_override=deps.planner_model,
-            emit_sse=None,
-        )
-        try:
-            with _logfire.span(
-                "deep_search.planner",
-                query_id=query_id,
-                planner_model=deps.planner_model,
-            ) as _planner_span:
-                plan = await run_planner(query=query, deps=planner_deps)
-                try:
-                    if plan is not None:
-                        _planner_span.set_attribute("invoke", list(getattr(plan, "invoke", []) or []))
-                        _planner_span.set_attribute("sectors", list(getattr(plan, "sectors", []) or []))
-                        _planner_span.set_attribute("focus", getattr(plan, "focus", None))
-                except Exception:
-                    pass
-        except Exception as exc:
-            # ``run_planner`` already has a degraded fallback; this catch is
-            # only a last-resort guard so a planner crash never kills the run.
-            logger.error(
-                "run_full_loop[%s]: planner crashed unexpectedly: %s",
-                query_id, exc, exc_info=True,
-            )
-            plan = None
-
-        if plan is not None:
-            deps = apply_plan_to_deps(deps, plan)
-            deps._events.extend(planner_deps._events)
-            deps._events.append({
-                "event": "plan_ready",
-                "plan": plan.model_dump(mode="json"),
-            })
-            deps._plan = plan
-            # Planner's invoke set drives the aggregator prompt key
-            # (programmatic mapping, not LLM-chosen).
-            prompt_key = derive_aggregator_prompt_key(plan)
+    # No planner branch here. The planner redesign moved planning into the
+    # planner-owned loop: the planner derives a RetrievalConfig and calls
+    # ``run_retrieval``, which assembles a populated ``FullLoopDeps`` (executor
+    # toggles, caps, budgets, ``prompt_key``) before invoking ``run_full_loop``.
+    # ``run_full_loop`` is now a thin gather → merge → aggregator pass.
 
     logger.info(
         "run_full_loop[%s]: launching reg + compliance + case in parallel "
@@ -729,6 +686,10 @@ async def run_full_loop(
         log_id=reg_log_id,
         sector_filter=sector_filter,
     )
+    # v3.0 two-view URA: post-merge enrichment fills the heavy fields (full
+    # chunk content, cross-refs, landing urls, entity names) for the surviving
+    # deduped results, and drops empty-content reg results. Best-effort.
+    await enrich_ura(ura, deps.supabase)
     deps._ura = ura
     logger.info(
         "run_full_loop[%s]: URA built -- high=%d medium=%d "
@@ -793,4 +754,72 @@ async def run_full_loop(
     return agg_output
 
 
-__all__ = ["FullLoopDeps", "DetailLevel", "run_full_loop"]
+# ---------------------------------------------------------------------------
+# Planner phase 2 — run_retrieval
+# ---------------------------------------------------------------------------
+
+
+async def run_retrieval(
+    query: str,
+    config: RetrievalConfig,
+    deps: PlannerDeps,
+) -> AggregatorOutput:
+    """Planner phase 2 — assemble ``FullLoopDeps`` from a ``RetrievalConfig`` and run it.
+
+    Builds the internal ``FullLoopDeps`` (executor toggles, expander caps,
+    result budgets, sector override) from the mode-derived ``config``, runs
+    ``run_full_loop`` (gather → URA merge → enrich → aggregator), then copies the
+    read-back fields off the internal deps onto ``PlannerDeps`` so artifact
+    persistence and the monitor still see them (PLANNER_REDESIGN_PLAN.md §6
+    Blocking 3). The ``enrich_ura`` stage already runs inside ``run_full_loop``.
+
+    Called by ``planner.handle_planner_turn`` (lazy-imported there to break the
+    planner → orchestrator import cycle).
+    """
+    full_deps = FullLoopDeps(
+        supabase=deps.supabase,
+        embedding_fn=deps.embedding_fn,
+        model_override=deps.model_override,
+        jina_api_key=deps.jina_api_key,
+        http_client=deps.http_client,
+        concurrency=deps.concurrency,
+        unfold_mode=deps.unfold_mode,
+        include_reg=config.include_reg,
+        include_compliance=config.include_compliance,
+        include_cases=config.include_cases,
+        detail_level=deps.detail_level,
+        expander_max_queries=dict(config.expander_max_queries),
+        result_budget=dict(config.result_budget),
+        sectors_override=(
+            list(config.sectors_override) if config.sectors_override else None
+        ),
+        aggregator_logger=deps.aggregator_logger,
+        enable_planner=False,
+    )
+    full_deps._plan = config
+
+    agg_output = await run_full_loop(
+        query=query,
+        query_id=deps.query_id,
+        deps=full_deps,
+        prompt_key=config.aggregator_prompt_key,
+    )
+
+    # Publisher read-back — copy everything the orchestrator / monitor needs off
+    # the internal FullLoopDeps onto the PlannerDeps. Without this, artifact
+    # persistence breaks (§6 Blocking 3).
+    deps._ura = full_deps._ura
+    deps._reg_rqrs = list(full_deps._reg_rqrs or [])
+    deps._comp_rqrs = list(full_deps._comp_rqrs or [])
+    deps._case_rqrs = list(full_deps._case_rqrs or [])
+    deps._per_executor_stats = dict(full_deps._per_executor_stats or {})
+    deps._reg_log_dir = full_deps._reg_log_dir
+    deps._comp_log_dir = full_deps._comp_log_dir
+    deps._case_log_dir = full_deps._case_log_dir
+    deps._aggregator_input = full_deps._aggregator_input
+    deps._events.extend(full_deps._events)
+    deps._agg_output = agg_output
+    return agg_output
+
+
+__all__ = ["FullLoopDeps", "DetailLevel", "run_full_loop", "run_retrieval"]

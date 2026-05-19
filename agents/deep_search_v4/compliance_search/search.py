@@ -34,6 +34,7 @@ MATCH_COUNT = 20
 async def search_compliance_raw(
     query: str,
     deps: "ComplianceSearchDeps",
+    sectors: list[str] | None = None,
 ) -> list[dict]:
     """Search government services and return raw candidate dicts.
 
@@ -43,15 +44,18 @@ async def search_compliance_raw(
     Args:
         query: Arabic search query.
         deps: ComplianceSearchDeps with supabase, embedding_fn.
+        sectors: Optional unified-vocabulary sector tags. When non-empty,
+            forwarded to the RPC's ``filter_sectors`` (array-overlap filter).
+            An empty/None value means "no filter" — never pass ``[]`` to the
+            RPC (``sectors && '{}'`` is always false → zero rows).
 
     Returns:
         List of raw service row dicts with all fields from the RPC,
         sorted by RRF score DESC. Empty list on failure.
 
     Fields present in each returned dict:
-        id, service_ref, service_name_ar, provider_name, platform_name,
-        service_context, service_markdown, service_url, url,
-        target_audience, service_channels, category, is_most_used,
+        id, service_ref, service_name_ar, provider_name, service_context,
+        service_url, url, is_most_used, is_proactive, sectors, entity_id,
         score (RRF score).
     """
     # Mock check — only honour list mocks in raw mode
@@ -74,6 +78,7 @@ async def search_compliance_raw(
         # Step 2: Hybrid search via RPC
         candidates = await _hybrid_rpc_search(
             deps.supabase, "services", query, embedding, MATCH_COUNT,
+            filter_sectors=sectors or None,
         )
 
         if not candidates:
@@ -115,24 +120,29 @@ async def _hybrid_rpc_search(
     match_count: int,
     full_text_weight: float = 0.2,
     semantic_weight: float = 0.8,
+    filter_sectors: list[str] | None = None,
 ) -> list[dict]:
-    """Call a Supabase hybrid search RPC (BM25 + semantic via RRF)."""
+    """Call a Supabase hybrid search RPC (BM25 + semantic via RRF).
+
+    ``filter_sectors`` is passed through to the RPC only when non-empty;
+    otherwise it is omitted so the RPC default (``NULL`` = no filter)
+    applies. An empty list must never reach the RPC — ``sectors && '{}'``
+    is always false and would zero out every row.
+    """
     rpc_name = f"hybrid_search_{domain}"
 
     def _call() -> list[dict]:
         try:
-            result = supabase.rpc(
-                rpc_name,
-                {
-                    "query_text": query_text,
-                    "query_embedding": embedding,
-                    "match_count": match_count,
-                    "full_text_weight": full_text_weight,
-                    "semantic_weight": semantic_weight,
-                    "filter_entity_id": None,
-                    "filter_category": None,
-                },
-            ).execute()
+            params: dict = {
+                "query_text": query_text,
+                "query_embedding": embedding,
+                "match_count": match_count,
+                "full_text_weight": full_text_weight,
+                "semantic_weight": semantic_weight,
+            }
+            if filter_sectors:
+                params["filter_sectors"] = filter_sectors
+            result = supabase.rpc(rpc_name, params).execute()
             return result.data or []
         except Exception as e:
             logger.warning("%s RPC failed: %s", rpc_name, e)
@@ -162,8 +172,7 @@ async def _rerank(
         text = c.get("_text", "")
         if not text:
             text = (
-                c.get("service_markdown", "")
-                or c.get("service_context", "")
+                c.get("service_context", "")
                 or c.get("service_name_ar", "")
             )
         documents.append(text[:2000] if text else "(empty)")

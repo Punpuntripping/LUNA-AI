@@ -22,8 +22,10 @@ const config: Config = {
     extend: {
       fontFamily: {
         sans: [
-          "var(--font-ibm-plex-arabic)",
-          "IBM Plex Sans Arabic",
+          "var(--font-arabic)",
+          "Noto Naskh Arabic",
+          "Tahoma",
+          "Traditional Arabic",
           "ui-sans-serif",
           "system-ui",
           "sans-serif",
@@ -57,6 +59,12 @@ const config: Config = {
         "brand-soft": {
           DEFAULT: "var(--brand-soft-bg)",
           fg: "var(--brand-soft-fg)",
+        },
+
+        // Direction 01 — pill chrome (sage @ 14% bg, sage-mauve fg)
+        pill: {
+          DEFAULT: "var(--pill-bg)",
+          fg: "var(--pill-fg)",
         },
 
         // accent: shadcn semantic = "hover surface" (kept as surface-2),
@@ -145,6 +153,8 @@ const config: Config = {
         lg:    "var(--radius)",     // legacy alias
         xl:    "var(--radius-xl)",
         "2xl": "var(--radius-2xl)",
+        bubble: "var(--radius-bubble)",
+        "bubble-tail": "var(--radius-bubble-tail)",
         full:  "var(--radius-full)",
       },
 
@@ -162,7 +172,7 @@ const config: Config = {
         h2:        ["22px", { lineHeight: "1.30", fontWeight: "600" }],
         h3:        ["18px", { lineHeight: "1.40", fontWeight: "600" }],
         "body-lg": ["16px", { lineHeight: "1.70" }],
-        body:      ["14px", { lineHeight: "1.65" }],
+        body:      ["14px", { lineHeight: "1.70" }],
         label:     ["13px", { lineHeight: "1.40", fontWeight: "500" }],
         caption:   ["12px", { lineHeight: "1.50" }],
         meta:      ["11px", { lineHeight: "1.40", fontWeight: "500" }],

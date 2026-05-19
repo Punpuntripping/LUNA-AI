@@ -14,10 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+
+# Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
+# When the planner passes a ``result_budget``, the per-sub-query reranker keep
+# is ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
+# expander's actual emitted query count. The floor stops a degenerate 1-2
+# query expansion from piling the whole budget onto one sub-query.
+MIN_EXPANDER_DIVISOR = 3
 
 from .expander import EXPANDER_LIMITS, create_expander_agent, get_expander_model_id as _get_expander_model_id
 
@@ -242,14 +250,14 @@ class SearchNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
         tasks = [
             search_regulations_pipeline(
                 query=q, deps=deps, filter_sectors=filter_sectors,
-                unfold_mode=state.unfold_mode,
                 precomputed_embedding=emb,
                 semaphore=sem,
             )
             for q, emb in zip(queries, embeddings)
         ]
 
-        results_raw: list[tuple[str, int]] = await asyncio.gather(*tasks)
+        # search_regulations_pipeline now returns (chunk_rows, result_count)
+        results_raw: list[tuple[list[dict], int]] = await asyncio.gather(*tasks)
 
         # Build rationale lookup from expander output
         rationales = (
@@ -259,36 +267,36 @@ class SearchNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
         )
 
         # Create SearchResult for each and append to state
-        for qi, (query, (raw_markdown, result_count)) in enumerate(
+        for qi, (query, (chunks, result_count)) in enumerate(
             zip(queries, results_raw), 1
         ):
             rationale = rationales[qi - 1] if qi <= len(rationales) else ""
 
             search_result = SearchResult(
                 query=query,
-                raw_markdown=raw_markdown,
+                chunks=chunks,
                 result_count=result_count,
             )
             state.all_search_results.append(search_result)
 
-            # Log for debugging
+            # Log for debugging — chunk rows replace raw_markdown.
             state.search_results_log.append({
                 "round": state.round_count,
                 "query": query,
                 "rationale": rationale,
+                "chunks": chunks,
                 "result_count": result_count,
-                "raw_markdown_length": len(raw_markdown),
-                "raw_markdown": raw_markdown,
             })
 
-            # Per-query markdown log
+            # Per-query markdown log — render a compact summary of the chunk
+            # rows since save_search_query_md still expects a markdown body.
             if deps._log_id:
                 save_search_query_md(
                     log_id=deps._log_id,
                     round_num=state.round_count,
                     query_index=qi,
                     query=query,
-                    raw_markdown=raw_markdown,
+                    raw_markdown=_render_chunks_summary(chunks),
                     result_count=result_count,
                     rationale=rationale,
                 )
@@ -347,6 +355,21 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             logger.warning("RerankerNode: no search results for round %d", state.round_count)
             return _end_placeholder(state)
 
+        # Dynamic result-budget model (MODE_PROFILES.md §1). When the planner
+        # passes a ``result_budget``, derive the per-sub-query reranker keep
+        # from the expander's ACTUAL emitted query count N. When it is None
+        # (CLI / monitor path), fall back to the fixed ``reranker_max_keep``.
+        reranker_max_keep = state.reranker_max_keep
+        if state.result_budget is not None:
+            n_queries = len(current_round_results)
+            reranker_max_keep = math.ceil(
+                state.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR)
+            )
+            logger.info(
+                "RerankerNode: dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
+                state.result_budget, n_queries, reranker_max_keep,
+            )
+
         from .reranker import run_reranker_for_query
 
         # Get rationales from expander output
@@ -369,11 +392,10 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
         # Build tasks for parallel execution
         async def _process_one(qi: int, sr_log: dict) -> None:
             query = sr_log["query"]
-            raw_markdown = sr_log.get("raw_markdown", "")
+            chunks = sr_log.get("chunks", []) or []
             rationale = rationales[qi] if qi < len(rationales) else ""
-            result_count = sr_log.get("result_count", 0)
 
-            if result_count == 0 or not raw_markdown.strip():
+            if not chunks:
                 state.reranker_results.append(RerankerQueryResult(
                     query=query,
                     rationale=rationale,
@@ -389,10 +411,9 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
                 query_result, usage_entries, decision_log = await run_reranker_for_query(
                     query=query,
                     rationale=rationale,
-                    raw_markdown=raw_markdown,
+                    chunks=chunks,
                     supabase=deps.supabase,
-                    max_high=state.reranker_max_high,
-                    max_medium=state.reranker_max_medium,
+                    max_keep=reranker_max_keep,
                     model_override=state.model_override,
                     round_trace=round_trace,
                 )
@@ -513,6 +534,7 @@ async def run_reg_search(
     skip_reranker: bool = False,
     skip_aggregator: bool = False,
     sectors_override: list[str] | None = None,
+    result_budget: int | None = None,
 ) -> RegSearchResult:
     """Run the complete reg_search loop for a focus instruction.
 
@@ -530,6 +552,10 @@ async def run_reg_search(
         model_override: Registry key to override both expander and aggregator model.
         unfold_mode: "precise" (compact) or "detailed" (full content).
         concurrency: Max concurrent search pipelines (default 3).
+        result_budget: Optional target total results (dynamic-budget model,
+            MODE_PROFILES.md §1). When set, the per-sub-query reranker keep is
+            derived at runtime from the expander's actual query count. When
+            None, the fixed ``reranker_max_keep`` on LoopState is used.
 
     Returns:
         RegSearchResult with quality, summary_md, citations, metadata.
@@ -562,6 +588,7 @@ async def run_reg_search(
         skip_reranker=skip_reranker,
         skip_aggregator=skip_aggregator,
         sectors_override=list(sectors_override) if sectors_override else None,
+        result_budget=result_budget,
     )
 
     t0 = time.perf_counter()
@@ -643,6 +670,31 @@ async def run_reg_search(
     )
 
     return output
+
+
+def _render_chunks_summary(chunks: list[dict]) -> str:
+    """Render search-result chunk rows into a compact markdown summary.
+
+    search.py no longer produces pre-rendered markdown — it returns chunk
+    rows. The per-query markdown log (``save_search_query_md``) still wants a
+    text body, so we render a lightweight digest of each chunk here.
+    """
+    if not chunks:
+        return "_(لا توجد نتائج)_"
+    parts: list[str] = [f"## نتائج البحث — {len(chunks)} مقطعاً", ""]
+    for i, ch in enumerate(chunks, 1):
+        title = ch.get("title", "") or "(بدون عنوان)"
+        mode = ch.get("_mode", "simple")
+        rrf = ch.get("_rrf", 0.0)
+        parts.append(f"### {i}. {title}")
+        parts.append(f"- chunk_ref: `{ch.get('chunk_ref', '')}`")
+        parts.append(f"- id: `{ch.get('id', '')}`")
+        parts.append(f"- mode: `{mode}` | rrf: {float(rrf or 0.0):.4f}")
+        summary = ch.get("summary", "") or ""
+        if summary:
+            parts.append(f"\n> {summary[:500]}")
+        parts.append("")
+    return "\n".join(parts)
 
 
 def _build_round_summaries(state: LoopState) -> list[dict]:

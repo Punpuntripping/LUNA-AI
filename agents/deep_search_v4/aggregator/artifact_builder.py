@@ -41,10 +41,10 @@ def render_reference_block(references: list[Reference]) -> str:
         return ""
 
     lines: list[str] = ["## المراجع", ""]
-    # Preserve caller ordering but emit by `n` so the displayed numbering
-    # always matches the inline `(n)` citations.
+    # Emit by `n` with the `[n]` tag so each entry visually matches the inline
+    # `[n]` citation in the synthesis body (shared citation index).
     for ref in sorted(references, key=lambda r: r.n):
-        lines.append(f"{ref.n}. {_shorten_label(ref.render_label())}")
+        lines.append(f"[{ref.n}] {_shorten_label(ref.render_label())}")
     return "\n".join(lines)
 
 
@@ -84,7 +84,7 @@ def build_artifact(
     content = "\n\n".join(parts)
 
     # cited_count = distinct reference numbers actually referenced inline.
-    # We approximate by scanning the synthesis body for `(n)` / `(n,m)` tokens
+    # We approximate by scanning the synthesis body for `[n]` / `[n,m]` tokens
     # belonging to the supplied reference numbers. The validator produces the
     # authoritative count; this metadata mirror is best-effort.
     ref_numbers = {ref.n for ref in references}
@@ -92,7 +92,7 @@ def build_artifact(
     if body and ref_numbers:
         import re
 
-        for match in re.finditer(r"\(([\d,\s]+)\)", body):
+        for match in re.finditer(r"\[([\d,\s]+)\]", body):
             for tok in match.group(1).split(","):
                 tok = tok.strip()
                 if tok.isdigit():

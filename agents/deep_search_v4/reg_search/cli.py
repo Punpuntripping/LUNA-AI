@@ -35,72 +35,35 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agents.utils.agent_models import OVERRIDE_TOKENS
+
 from .logger import LOGS_DIR
 
 
 def _get_expander_model_id(model_override: str | None = None) -> str:
-    """Lazy import — returns the actual model ID string being used."""
-    if model_override:
-        from agents.model_registry import MODEL_REGISTRY
-        config = MODEL_REGISTRY.get(model_override)
-        return config.model_id if config else model_override
+    """Lazy import — returns the expander's primary (chain head) model ID."""
     from .expander import get_expander_model_id
     return get_expander_model_id()
 
 
 def _resolve_models(model_override: str | None = None) -> dict[str, str]:
-    """Resolve the model ID for each agent in the reg_search pipeline.
+    """Resolve the primary (chain-head) model ID for each reg_search agent.
 
-    Reranker is hardcoded to its registry default (--model does NOT apply).
-    Expander uses the override if provided; reranker always uses its default.
+    ``model_override`` is a tier override token; it shifts the expander's chain
+    head. The reranker always uses its own slot policy (--model does not apply).
     """
     from agents.model_registry import MODEL_REGISTRY
-    from agents.utils.agent_models import AGENT_MODELS
+    from agents.utils.agent_models import apply_override, resolve_chain
 
-    def resolve(override: str | None, default_key: str) -> str:
-        key = override or AGENT_MODELS.get(default_key, "")
+    def resolve(slot: str, override: str | None) -> str:
+        key = resolve_chain(apply_override(slot, override))[0]
         config = MODEL_REGISTRY.get(key)
         return config.model_id if config else key
 
     return {
-        "expander": resolve(model_override, "reg_search_expander"),
-        "reranker": resolve(None, "reg_search_reranker"),
+        "expander": resolve("reg_search_expander", model_override),
+        "reranker": resolve("reg_search_reranker", None),
     }
-
-
-# All OpenRouter model keys available for --model
-OR_MODEL_CHOICES = [
-    "or-minimax-m2.7",
-    "or-gemini-3.1-pro",
-    "or-gemini-3.1-pro-tools",
-    "or-gemini-2.5-pro",
-    "or-gemini-2.5-flash",
-    "or-deepseek-chat",
-    "or-qwen3.5-397b",
-    "or-deepseek-v3.2",
-    "or-mimo-v2-pro",
-    "or-glm-5-turbo",
-    "or-gemma-4-31b",
-]
-
-# All Alibaba (Qwen) model keys available for --model
-ALIBABA_MODEL_CHOICES = [
-    "qwen3.6-plus",
-    "qwen3.5-plus",
-    "qwen3.5-flash",
-    "qwen3-max",
-    "qwen3-coder-plus",
-    "qwen3-coder-flash",
-    "qwen3-vl-plus",
-    "qwen3-vl-flash",
-    "qwq-plus",
-    "qvq-max",
-    "qwen-plus",
-    "qwen-long",
-    "qwen-vl-ocr",
-]
-
-ALL_MODEL_CHOICES = OR_MODEL_CHOICES + ALIBABA_MODEL_CHOICES
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        choices=ALL_MODEL_CHOICES,
+        choices=list(OVERRIDE_TOKENS),
         default=None,
-        help="Override the model for the expander (reranker uses its default)."
-             "(OpenRouter or Alibaba/Qwen models). "
-             "Default: per-agent setting from agent_models.py.",
+        help="Tier override token for the expander: qwen|deepseek pick the "
+             "primary family, alibaba|openrouter pick the primary provider. "
+             "Tier stays fixed; the reranker keeps its own slot policy.",
     )
     parser.add_argument(
         "--unfold",
@@ -373,6 +336,7 @@ async def run_expand_only(args, query: str, deps) -> None:
     from .expander import EXPANDER_LIMITS, create_expander_agent
     from .prompts import build_expander_user_message
     from .search import search_regulations_pipeline
+    from .loop import _render_chunks_summary
 
     model_label = args.model or "(default)"
     print(f"[expand-only] Expander prompt: {args.expander_prompt}")
@@ -423,7 +387,7 @@ async def run_expand_only(args, query: str, deps) -> None:
     t1 = time.perf_counter()
     tasks = [
         search_regulations_pipeline(
-            q, deps, filter_sectors=filter_sectors, unfold_mode=args.unfold,
+            q, deps, filter_sectors=filter_sectors,
             precomputed_embedding=emb, semaphore=sem,
         )
         for q, emb in zip(output.queries, embeddings)
@@ -435,13 +399,11 @@ async def run_expand_only(args, query: str, deps) -> None:
     print(f"\n{'=' * 60}")
 
     total_count = 0
-    for i, (query_text, (raw_md, count)) in enumerate(zip(output.queries, results_raw), 1):
+    for i, (query_text, (chunks, count)) in enumerate(zip(output.queries, results_raw), 1):
         total_count += count
         print(f"\n--- Query {i}: \"{query_text}\" ({count} results) ---")
-        preview = raw_md[:2000]
+        preview = _render_chunks_summary(chunks)[:2000]
         print(preview)
-        if len(raw_md) > 2000:
-            print(f"... ({len(raw_md) - 2000} more chars)")
 
     print(f"\n{'=' * 60}")
     print(f"Total: {len(output.queries)} queries, {total_count} results")
@@ -472,17 +434,17 @@ async def run_expand_only(args, query: str, deps) -> None:
 
     # Per-query search markdowns
     search_log = []
-    for qi, (q_text, (raw_md, count)) in enumerate(zip(output.queries, results_raw), 1):
+    for qi, (q_text, (chunks, count)) in enumerate(zip(output.queries, results_raw), 1):
         rationale = output.rationales[qi - 1] if qi <= len(output.rationales) else ""
         save_search_query_md(
             log_id=log_id, round_num=1, query_index=qi,
-            query=q_text, raw_markdown=raw_md, result_count=count,
-            rationale=rationale,
+            query=q_text, raw_markdown=_render_chunks_summary(chunks),
+            result_count=count, rationale=rationale,
         )
         search_log.append({
             "round": 1, "query": q_text, "rationale": rationale,
             "result_count": count,
-            "raw_markdown_length": len(raw_md), "raw_markdown": raw_md,
+            "chunks": chunks,
         })
 
     # Overview + JSON
@@ -509,7 +471,7 @@ async def run_expand_only(args, query: str, deps) -> None:
         models=_resolve_models(args.model),
         thinking_effort=args.thinking,
     )
-    print(f"\nLog dir: agents/deep_search_v3/reg_search/logs/{log_id}/")
+    print(f"\nLog dir: {LOGS_DIR / log_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -529,9 +491,9 @@ async def run_batch(args) -> None:
     from .prompts import get_expander_prompt
     from .models import RegSearchDeps, RegSearchResult
     from .search import search_regulations_pipeline
+    from .loop import _render_chunks_summary
 
     from agents.utils.embeddings import embed_regulation_query
-    from shared.config import get_settings
     from shared.db.client import get_supabase_client
 
     query_ids = [int(x.strip()) for x in args.batch.split(",")]
@@ -543,7 +505,6 @@ async def run_batch(args) -> None:
     print(f"BATCH RUN — {len(query_ids)} queries | prompt: {prompt_key} | model: {model_label} | delay: {delay}s")
     print(f"{'=' * 90}")
 
-    settings = get_settings()
     supabase = get_supabase_client()
 
     # Per-query summary rows for final table
@@ -568,10 +529,6 @@ async def run_batch(args) -> None:
         deps = RegSearchDeps(
             supabase=supabase,
             embedding_fn=embed_regulation_query,
-            jina_api_key=getattr(settings, "JINA_API_KEY", ""),
-            use_reranker=args.rerank,
-            score_threshold=args.score_threshold,
-            rrf_min_score=args.rrf_min,
             _query_id=query_id,
         )
 
@@ -625,15 +582,12 @@ async def run_batch(args) -> None:
             sq_deps = RegSearchDeps(
                 supabase=supabase,
                 embedding_fn=embed_regulation_query,
-                score_threshold=args.score_threshold,
-                rrf_min_score=args.rrf_min,
             )
             qt0 = time.perf_counter()
-            raw_md = ""
+            chunks: list[dict] = []
             try:
-                raw_md, count = await search_regulations_pipeline(
+                chunks, count = await search_regulations_pipeline(
                     query=sq, deps=sq_deps, filter_sectors=filter_sectors,
-                    unfold_mode=args.unfold,
                     precomputed_embedding=sq_emb,
                 )
             except Exception as e:
@@ -657,7 +611,7 @@ async def run_batch(args) -> None:
             filter_label = "fallback" if fallback else ("yes" if filter_sectors else "no")
             detail = {"qi": qi, "query": sq[:55], "results": count,
                       "dur": round(qt_dur, 1), "filter": filter_label,
-                      "raw_markdown": raw_md}
+                      "chunks": chunks}
             search_details.append(detail)
 
             status_str = "OK  " if count > 0 else "MISS"
@@ -687,19 +641,18 @@ async def run_batch(args) -> None:
         )
         search_log = []
         for qi, (sq_text, detail) in enumerate(zip(output.queries, search_details), 1):
-            sq_raw_md = detail.get("raw_markdown", "")
+            sq_chunks = detail.get("chunks", []) or []
             rationale = output.rationales[qi - 1] if qi <= len(output.rationales) else ""
             save_search_query_md(
                 log_id=log_id, round_num=1, query_index=qi,
-                query=sq_text, raw_markdown=sq_raw_md,
+                query=sq_text, raw_markdown=_render_chunks_summary(sq_chunks),
                 result_count=detail["results"],
                 rationale=rationale,
             )
             search_log.append({
                 "round": 1, "query": sq_text, "rationale": rationale,
                 "result_count": detail["results"],
-                "raw_markdown_length": len(sq_raw_md),
-                "raw_markdown": sq_raw_md,
+                "chunks": sq_chunks,
             })
         pending_result = RegSearchResult(
             quality="pending", summary_md="", citations=[],
@@ -837,19 +790,31 @@ async def run_replay_reranker(path_str: str) -> None:
     if not target.is_absolute():
         target = LOGS_DIR / path_str
 
-    search_dir = target / "search"
     reranker_dir = target / "reranker"
+    run_json = target / "run.json"
 
-    if not search_dir.exists():
-        print(f"[replay-reranker] ERROR: search/ not found at {search_dir}")
+    # The v2 reranker needs chunk-row dicts, not rendered markdown. Those rows
+    # are only persisted in run.json's `search_results_log` — the per-query
+    # search/*.md files hold a human summary that cannot be reconstructed into
+    # chunk dicts. Replay therefore reads run.json.
+    if not run_json.exists():
+        print(f"[replay-reranker] ERROR: run.json not found at {run_json}")
+        print("[replay-reranker] v2 replay needs run.json's search_results_log "
+              "(chunk rows); the search/*.md files are not sufficient.")
         return
 
-    search_files = sorted(search_dir.glob("round_1_q*.md"))
-    if not search_files:
-        print(f"[replay-reranker] ERROR: no round_1_q*.md files in {search_dir}")
+    try:
+        run_data = json.loads(run_json.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"[replay-reranker] ERROR: cannot parse run.json: {e}")
         return
 
-    print(f"[replay-reranker] {len(search_files)} queries in {target}")
+    search_log = run_data.get("search_results_log", []) or []
+    if not search_log:
+        print(f"[replay-reranker] ERROR: empty search_results_log in {run_json}")
+        return
+
+    print(f"[replay-reranker] {len(search_log)} queries in {target}")
     reranker_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove stale reranker files so old results don't linger
@@ -862,26 +827,14 @@ async def run_replay_reranker(path_str: str) -> None:
     supabase = get_supabase_client()
     total_kept = total_dropped = 0
 
-    for sf in search_files:
-        m = re.match(r"round_(\d+)_q(\d+)_", sf.name)
-        if not m:
-            print(f"[replay-reranker] SKIP: cannot parse filename {sf.name}")
-            continue
-        round_num, query_idx = int(m.group(1)), int(m.group(2))
+    for query_idx, sr_log in enumerate(search_log, 1):
+        round_num = sr_log.get("round", 1)
+        query = sr_log.get("query", "")
+        rationale = sr_log.get("rationale", "")
+        chunks = sr_log.get("chunks", []) or []
 
-        text = sf.read_text(encoding="utf-8")
-        query = rationale = ""
-        for line in text.splitlines():
-            if line.startswith("**Query:**"):
-                query = line.removeprefix("**Query:**").strip()
-            elif line.startswith("**Rationale:**"):
-                rationale = line.removeprefix("**Rationale:**").strip()
-
-        sep = "\n---\n"
-        raw_md = text.split(sep, 1)[1].strip() if sep in text else ""
-
-        if not query or not raw_md:
-            print(f"[replay-reranker] SKIP q{query_idx}: missing query or content")
+        if not query or not chunks:
+            print(f"[replay-reranker] SKIP q{query_idx}: missing query or chunks")
             continue
 
         print(f"  q{query_idx:>2}: {query[:65]}", end="", flush=True)
@@ -891,7 +844,7 @@ async def run_replay_reranker(path_str: str) -> None:
             rqr, usage_entries, decision_log = await run_reranker_for_query(
                 query=query,
                 rationale=rationale,
-                raw_markdown=raw_md,
+                chunks=chunks,
                 supabase=supabase,
             )
             rqr._usage_entries = usage_entries
@@ -919,6 +872,12 @@ async def run_replay_reranker(path_str: str) -> None:
 
 async def main() -> None:
     """Main CLI entry point."""
+    # Windows cp1252 stdout cannot print Arabic — force UTF-8.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
     parser = build_parser()
     args = parser.parse_args()
 
@@ -926,20 +885,19 @@ async def main() -> None:
     # -- Handle --list-models --
     if args.list_models:
         from agents.model_registry import MODEL_REGISTRY
-        from agents.utils.agent_models import AGENT_MODELS
+        from agents.utils.agent_models import AGENT_MODELS, resolve_chain
 
-        default_exp = AGENT_MODELS.get("reg_search_expander", "?")
-        print(f"\nDefaults: expander={default_exp}, aggregator={default_agg}")
-        for label, choices in [("OpenRouter", OR_MODEL_CHOICES), ("Alibaba/Qwen", ALIBABA_MODEL_CHOICES)]:
-            print(f"\n{label} models (--model):")
-            print(f"  {'Key':<28} {'Model ID':<45} {'In':>6} {'Out':>6}")
-            print(f"  {'─'*28} {'─'*45} {'─'*6} {'─'*6}")
-            for key in choices:
+        for slot in ("reg_search_expander", "reg_search_reranker"):
+            policy = AGENT_MODELS[slot]
+            print(
+                f"\n{slot}: tier={policy.tier} provider={policy.provider} "
+                f"primary={policy.primary}"
+            )
+            print("  fallback chain:")
+            for i, key in enumerate(resolve_chain(policy), 1):
                 cfg = MODEL_REGISTRY.get(key)
-                if cfg:
-                    inp = f"${cfg.input_price:.2f}" if cfg.input_price else "?"
-                    out = f"${cfg.output_price:.2f}" if cfg.output_price else "?"
-                    print(f"  {key:<28} {cfg.model_id:<45} {inp:>6} {out:>6}")
+                print(f"    {i}. {key:<24} {cfg.model_id if cfg else key}")
+        print(f"\n--model override tokens: {', '.join(OVERRIDE_TOKENS)}")
         return
 
     # -- Handle --list-prompts --
@@ -999,34 +957,15 @@ async def main() -> None:
     print(f"[query_{query_id}] {query[:100]}...")
 
     from agents.utils.embeddings import embed_regulation_query
-    from shared.config import get_settings
     from shared.db.client import get_supabase_client
 
     from .models import RegSearchDeps
 
-    settings = get_settings()
     supabase = get_supabase_client()
-
-    mock_results = None
-    if args.mock:
-        mock_results = {
-            "regulations": (
-                "# نتائج وهمية للاختبار\n\n"
-                "## المادة 74 من نظام العمل\n"
-                "ينتهي عقد العمل في الحالات التالية...\n\n"
-                "## المادة 77 من نظام العمل\n"
-                "إذا أنهي العقد لسبب غير مشروع...\n"
-            ),
-        }
 
     deps = RegSearchDeps(
         supabase=supabase,
         embedding_fn=embed_regulation_query,
-        jina_api_key=getattr(settings, "JINA_API_KEY", ""),
-        use_reranker=args.rerank,
-        score_threshold=args.score_threshold,
-        rrf_min_score=args.rrf_min,
-        mock_results=mock_results,
         _query_id=query_id,
     )
 
@@ -1076,7 +1015,7 @@ async def main() -> None:
 
     # Show log location
     log_id = deps._log_id
-    print(f"\nLog dir: agents/deep_search_v3/reg_search/logs/{log_id}/")
+    print(f"\nLog dir: {LOGS_DIR / log_id}")
 
 
 if __name__ == "__main__":

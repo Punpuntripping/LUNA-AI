@@ -37,9 +37,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Per-candidate content cap. Saudi rulings are typically 1.5-3k chars; 8k
+# Per-candidate content cap. Saudi rulings are typically 1.5-3k chars; 10k
 # absorbs the long tail without blowing reranker context.
-MAX_CONTENT_CHARS = 8_000
+MAX_CONTENT_CHARS = 10_000
 
 # Only `id` (for the join) and `content` (for the body) are needed. Header
 # fields (court/city/case_number/...) are intentionally NOT pulled — the

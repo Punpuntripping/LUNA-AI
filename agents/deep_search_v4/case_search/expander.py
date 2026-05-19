@@ -19,7 +19,7 @@ from typing import Any
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from agents.utils.agent_models import get_agent_model, AGENT_MODELS
+from agents.utils.agent_models import get_agent_model, AGENT_MODELS, resolve_chain
 from agents.model_registry import MODEL_REGISTRY
 
 from .prompts import (
@@ -39,8 +39,8 @@ EXPANDER_LIMITS = UsageLimits(
 
 
 def get_expander_model_id() -> str:
-    """Return the actual model ID string used for the expander."""
-    key = AGENT_MODELS.get("case_search_expander", "")
+    """Return the model ID of the expander's primary (chain head) model."""
+    key = resolve_chain(AGENT_MODELS["case_search_expander"])[0]
     config = MODEL_REGISTRY.get(key)
     return config.model_id if config else key
 
@@ -69,7 +69,8 @@ def create_expander_agent(
         prompt_key: Key into EXPANDER_PROMPTS dict (e.g. "prompt_2", "prompt_3").
         thinking_effort: Reasoning effort level -- "low", "medium", "high", "none",
             or None to use the per-prompt default from EXPANDER_PROMPT_THINKING.
-        model_override: Registry key to use instead of the default.
+        model_override: Tier override token (``qwen``/``deepseek``/``alibaba``/
+            ``openrouter``) applied to the slot's policy; tier stays fixed.
 
     Returns:
         Configured Agent with the appropriate output model.
@@ -88,8 +89,7 @@ def create_expander_agent(
             },
         }
 
-    from agents.model_registry import create_model
-    model = create_model(model_override) if model_override else get_agent_model("case_search_expander")
+    model = get_agent_model("case_search_expander", model_override)
 
     return Agent(
         model,

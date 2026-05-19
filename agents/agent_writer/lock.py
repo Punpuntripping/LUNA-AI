@@ -15,7 +15,7 @@ Usage::
 If a refresh raises, the scope swallows the error -- a flaky DB write must
 never break the user-visible stream. The caller is still notified via the
 ``workspace_item_locked`` event each time the column is extended (so the
-frontend can display an accurate "Luna يحرر…" indicator).
+frontend can display an accurate "ريحان يحرر…" indicator).
 """
 from __future__ import annotations
 

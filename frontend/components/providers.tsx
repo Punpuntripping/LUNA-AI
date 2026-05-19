@@ -30,7 +30,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <DirectionProvider dir="rtl">
-      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <ThemeProvider
+        attribute="class"
+        defaultTheme="system"
+        enableSystem
+        themes={["light", "light-conservatory", "dark"]}
+      >
         <QueryClientProvider client={queryClient}>
           <AuthGuard>{children}</AuthGuard>
           <ReactQueryDevtools initialIsOpen={false} />

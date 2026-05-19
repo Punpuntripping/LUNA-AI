@@ -5,8 +5,10 @@
 /* ============================================================
  * Luna Color System v2 — Committed
  * Light L1 (Herbarium Paper) — primary light  (default)
- * Dark  D1 (Aubergine + Sage Voice) — primary dark  (.dark)
- * Dark  D4 (Twilight Garden) — alt dark  ([data-theme="dark-twilight"])
+ * Light L2 (Conservatory)    — alt light    ([data-theme="light-conservatory"])
+ * Dark  D6 (Full Systematized Scales) — primary dark  (.dark)
+ *   Two seed scales (Aubergine 25–900, Sage 25–900); every token a pointer.
+ *   Replaces the disabled D1 (Aubergine + Sage Voice) and D4 (Twilight Garden).
  * ============================================================ */
 
 @layer base {
@@ -40,6 +42,8 @@
 
     --brand-soft-bg:   #DDE5E0;
     --brand-soft-fg:   #2A4438;
+    --pill-bg:         #DDE5E0;
+    --pill-fg:         #2A4438;
 
     --accent:          #4A6B5F;
     --accent-soft:     rgba(74, 107, 95, 0.08);
@@ -66,12 +70,14 @@
     --case-execution-bg:  #DDE5E0; --case-execution-fg:  #2A4438;
 
     /* ---------- Shape ---------- */
-    --radius-sm:   4px;
-    --radius-md:   6px;
-    --radius:      8px;
-    --radius-xl:   12px;
-    --radius-2xl:  16px;
-    --radius-full: 9999px;
+    --radius-sm:     4px;
+    --radius-md:     6px;
+    --radius:        8px;     /* buttons, inputs */
+    --radius-xl:     12px;    /* cards, chat input */
+    --radius-2xl:    16px;    /* mocks */
+    --radius-bubble: 18px;    /* chat bubbles (one corner tightens to tail) */
+    --radius-bubble-tail: 6px;
+    --radius-full:   9999px;
 
     /* ---------- Elevation ---------- */
     --shadow-xs: 0 1px 1px rgba(24, 20, 26, 0.04);
@@ -86,8 +92,8 @@
     --space-8: 32px;  --space-10: 40px; --space-12: 48px;
 
     /* ---------- Type ---------- */
-    --font-sans: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, -apple-system,
-                 'Segoe UI', Tahoma, sans-serif;
+    --font-sans: var(--font-arabic), 'Noto Naskh Arabic', 'Tahoma',
+                 'Traditional Arabic', ui-sans-serif, system-ui, sans-serif;
     --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
 
     --text-display: 56px;
@@ -110,91 +116,133 @@
   }
 
   /* ============================================================
-   * D1 — Aubergine + Sage Voice (dark primary)
+   * L2 — Conservatory (light alt — green-tinted, pairs with D4)
+   * Sage = identity (CTA, focus, brand). Aubergine = architecture (text, user voice).
+   * Canvas is faintly chlorophyll-touched — the room is the conservatory.
+   * ============================================================ */
+  .light-conservatory,
+  [data-theme="light-conservatory"] {
+    --canvas:          #F0F3EF;
+    --surface-1:       #FBFCFA;
+    --surface-2:       #E5EAE5;
+    --surface-3:       #D8E2DB;
+    --surface-sidebar: #E5EAE5;
+
+    --border:          #D4DDD7;
+    --border-strong:   #B5C2BA;
+
+    --text-primary:    #18141A;
+    --text-secondary:  #373541;
+    --text-muted:      #5A7367;
+    --text-subtle:     #8FA39A;
+
+    --primary:         #3D5A4D;
+    --primary-fg:      #FBFCFA;
+    --primary-hover:   #2D4439;
+
+    --brand-soft-bg:   #D8E2DB;
+    --brand-soft-fg:   #243A30;
+    --pill-bg:         #D8E2DB;
+    --pill-fg:         #243A30;
+
+    --accent:          #3D5A4D;
+    --accent-fg:       #FBFCFA;
+    --accent-soft:     rgba(61, 90, 77, 0.08);
+    --accent-line:     #3D5A4D;
+
+    --bubble-user-bg:  #373541;
+    --bubble-user-fg:  #F0F3EF;
+
+    --ring:            #3D5A4D;
+
+    /* Single shadow tone — aubergine-tinted, no neutral black under depth. */
+    --shadow-xs: 0 1px 2px rgba(24, 20, 26, 0.05);
+    --shadow-sm: 0 1px 2px rgba(24, 20, 26, 0.05);
+    --shadow-md: 0 1px 2px rgba(24, 20, 26, 0.05);
+    --shadow-lg: 0 1px 2px rgba(24, 20, 26, 0.05);
+    /* Soft sage halo — accent @ 8%, no hard outer ring. */
+    --ring-focus: 0 0 0 3px rgba(61, 90, 77, 0.08);
+  }
+
+  /* ============================================================
+   * D6 — Full Systematized Scales (dark primary)
+   *
+   * Two seed scales replace D1's six anchors. Every token below is a pointer
+   * into one of them — production-grade, defensible by step-number.
+   *
+   *   Aubergine scale (neutral / structural):
+   *     25  #FAF8FB · 50  #F1EEF3 · 100 #E0DAE5 · 200 #C2B8CB · 300 #9D91AC
+   *     400 #7E7290 · 500 #6A6581 · 600 #544F66 · 700 #4C4158 · 800 #373541
+   *     900 #18141A
+   *
+   *   Sage scale (brand):
+   *     25  #F4F7F6 · 50  #E8EDEB · 100 #D4DCD9 · 200 #C9D2CF · 300 #B0BDB9
+   *     400 #9BA9A5 · 500 #7C8E89 · 600 #5F716C · 700 #465451 · 800 #242E29
+   *     900 #141A17
+   *
+   * Architectural moves vs D1:
+   *   1. --primary (#6A8077, muted) and --accent (#9BA9A5, bright) split into
+   *      two speeds. Primary carries CTAs; accent reserved for system feedback.
+   *   2. --pill-bg decouples from sage → equals --surface-2. Pills become
+   *      neutral chrome chips, not sage-tinted.
+   *   3. Surfaces gain an intermediate (#221E26 between 800–900) for finer lift.
+   *   4. --primary-fg flips to light (#EDEAF2) since muted CTA can't carry
+   *      aubergine-on-aubergine contrast.
    * ============================================================ */
   .dark,
   [data-theme="dark"] {
-    --canvas:          #18141A;
-    --surface-1:       #1F1B22;
-    --surface-2:       #373541;
-    --surface-3:       #4C4158;
-    --surface-sidebar: #242E29;
+    /* Surfaces — Aubergine scale */
+    --canvas:          #18141A;  /* Aubergine 900 */
+    --surface-1:       #221E26;  /* between 800–900, intermediate lift */
+    --surface-2:       #2D2935;  /* between 700–800, also --pill-bg */
+    --surface-3:       #373541;  /* Aubergine 800, sidebar / chrome */
+    --surface-sidebar: #373541;  /* = surface-3, nav chrome plane */
 
-    --border:          #2D2935;
-    --border-strong:   #4C4158;
+    /* Borders — Aubergine scale */
+    --border:          #2A2630;  /* between 800–900 */
+    --border-strong:   #4C4158;  /* Aubergine 700 */
 
-    --text-primary:    #E8E4EC;
-    --text-secondary:  #B8B0C2;
-    --text-muted:      #6A6581;
-    --text-subtle:     #5A5567;
+    /* Text — Aubergine scale */
+    --text-primary:    #EDEAF2;  /* near Aubergine 25 */
+    --text-secondary:  #B8B0C2;  /* between 200–300 */
+    --text-muted:      #6A6581;  /* Aubergine 500 */
+    --text-subtle:     #544F66;  /* Aubergine 600 */
 
-    --primary:         #9BA9A5;
-    --primary-fg:      #18141A;
-    --primary-hover:   #B0BDB9;
+    /* Brand — two-speed: muted CTA + bright system voice */
+    --primary:         #6A8077;  /* Sage 500–600, muted CTA */
+    --primary-fg:      #EDEAF2;  /* light text on muted sage (NOT canvas) */
+    --primary-hover:   #7B928A;  /* near Sage 500, lifts toward bright on hover */
 
-    --brand-soft-bg:   rgba(155, 169, 165, 0.14);
-    --brand-soft-fg:   #B8C7C2;
+    --accent:          #9BA9A5;  /* Sage 400, bright voice — ≤ 3% coverage */
+    --accent-fg:       #18141A;  /* Aubergine 900, used on bright sage */
+    --accent-soft:     rgba(155, 169, 165, 0.14);  /* sage @ 14% — raised from D1's 12% */
+    --accent-line:     #9BA9A5;  /* = accent, owns the quoted-clause left rule */
 
-    --accent:          #9BA9A5;
-    --accent-soft:     rgba(155, 169, 165, 0.12);
-    --accent-line:     #9BA9A5;
+    /* Pills — neutral chips (decoupled from sage) */
+    --pill-bg:         #2D2935;  /* = surface-2 */
+    --pill-fg:         #C5BFD0;  /* between Aubergine 200–300 */
+    --brand-soft-bg:   #2D2935;  /* = pill-bg, alias for legacy utilities */
+    --brand-soft-fg:   #C5BFD0;  /* = pill-fg */
 
-    --bubble-user-bg:  #9BA9A5;
-    --bubble-user-fg:  #18141A;
+    /* User bubble inherits --primary (muted CTA tone) */
+    --bubble-user-bg:  #6A8077;  /* = primary */
+    --bubble-user-fg:  #EDEAF2;  /* = primary-fg */
 
+    /* Focus halo — sage @ 14%, no hard outer ring */
     --ring:            #9BA9A5;
+    --ring-focus:      0 0 0 3px rgba(155, 169, 165, 0.14);
 
+    /* Semantic — kept from D1; eligible to be re-derived from scales later */
     --success-bg: #2A4438; --success-fg: #C5D9CD;
     --warning-bg: #3F341B; --warning-fg: #E8D6A8;
     --error-bg:   #3E1F1B; --error-fg:   #E8B5AC;
     --info-bg:    #1F2A40; --info-fg:    #B5C2DC;
 
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
-    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.55);
-    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.65);
-    --ring-focus: 0 0 0 2px #18141A, 0 0 0 4px #9BA9A5;
-  }
-
-  /* ============================================================
-   * D4 — Twilight Garden (dark alt — botanical)
-   * ============================================================ */
-  [data-theme="dark-twilight"] {
-    --canvas:          #1B2420;
-    --surface-1:       #18141A;
-    --surface-2:       #242E29;
-    --surface-3:       #373541;
-    --surface-sidebar: #18141A;
-
-    --border:          #2D3934;
-    --border-strong:   #3F4F48;
-
-    --text-primary:    #C5D0CB;
-    --text-secondary:  #9BA9A5;
-    --text-muted:      #6A6581;
-    --text-subtle:     #4F5A55;
-
-    --primary:         #6A6581;
-    --primary-fg:      #EDEAF2;
-    --primary-hover:   #7B7592;
-
-    --brand-soft-bg:   rgba(106, 101, 129, 0.22);
-    --brand-soft-fg:   #B8B0C2;
-
-    --accent:          #9BA9A5;
-    --accent-soft:     rgba(155, 169, 165, 0.10);
-    --accent-line:     #9BA9A5;
-
-    --bubble-user-bg:  #6A6581;
-    --bubble-user-fg:  #EDEAF2;
-
-    --ring:            #9BA9A5;
-
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
-    --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.50);
-    --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.55);
-    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.70);
-    --ring-focus: 0 0 0 2px #1B2420, 0 0 0 4px #9BA9A5;
+    /* Single shadow token — production-grade depth (deeper than D1's 0.40) */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
 
   /* RTL-aware global styles */
@@ -270,5 +318,55 @@
   .markdown-content ul,
   .markdown-content ol {
     list-style-position: inside;
+  }
+
+  /* ============================================================
+   * Direction 01 — speaker-pointing chat bubbles
+   * Tail clip: outer corner stays 18px, "speaker" corner tightens to 6px.
+   * RTL-aware: user is start side (right in RTL), assistant is end side.
+   * ============================================================ */
+  .bubble-user {
+    background-color: var(--bubble-user-bg);
+    color: var(--bubble-user-fg);
+    border-radius: var(--radius-bubble);
+    border-end-end-radius: var(--radius-bubble-tail);
+  }
+  .bubble-assistant {
+    background-color: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-bubble);
+    border-end-start-radius: var(--radius-bubble-tail);
+  }
+
+  /* Citation chip — mono, sage soft pill (the only inline sage in body copy). */
+  .citation-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    height: 18px;
+    padding-inline: 7px;
+    border-radius: var(--radius-full);
+    background-color: var(--accent-soft);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-meta);
+    font-weight: 500;
+    line-height: 1;
+    unicode-bidi: isolate;
+    direction: ltr;
+  }
+
+  /* Uppercase mono kicker label — LTR escape for section heads, captions. */
+  .kicker {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: var(--text-meta);
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 }

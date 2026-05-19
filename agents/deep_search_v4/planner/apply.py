@@ -1,164 +1,157 @@
-"""Apply a :class:`PlannerOutput` onto a :class:`FullLoopDeps` instance.
+"""Mode profiles + the pure ``build_retrieval_config`` function.
 
-The planner LLM emits a tiny schema (``invoke``, ``focus``, ``sectors``,
-``rationale``). All concrete numbers — expander caps, reranker caps,
-aggregator prompt key — are derived **here** in code via two tables:
+The planner LLM emits a tiny :class:`~.models.PlannerDecision` (mode + support +
+sectors). Every concrete number — expander caps, result budgets, aggregator
+prompt key — is derived **here**, in code, from three tables. The LLM never
+sees a number.
 
-- :data:`FOCUS_PROFILES` — per-executor mapping
-  ``focus_level -> {expander_max_queries, reranker_max_high, reranker_max_medium}``.
-  ``"default"`` mirrors the existing :class:`FullLoopDeps` defaults so a plan
-  that picks ``default`` everywhere is byte-identical to the planner-disabled
-  baseline.
-- :data:`INVOKE_TO_AGG_PROMPT` — set of invoked executors (frozenset) → the
-  registered aggregator prompt key (``prompt_reg_only``, ``prompt_1``, ...).
+The result-budget model (full spec: ``planning/MODE_PROFILES.md``):
 
-This separation keeps the planner prompt short and lets us re-tune the numeric
-profile without touching the LLM.
+- Each executor carries an ``expander_max_queries`` ceiling and a
+  ``result_budget`` (target total results) — **not** a fixed reranker keep.
+- The per-sub-query reranker keep is computed *inside each executor's loop* at
+  runtime: ``ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR))`` where ``N`` is
+  the expander's actual emitted query count. ``build_retrieval_config`` does not
+  compute it — only the loop knows ``N``.
+
+This module is **pure** — only ``pydantic`` (via ``.models``) is imported, never
+``pydantic_ai`` or an executor package, so the apply tier of the test suite
+runs without the agent runtime.
 """
 from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
 
-from .models import Executor, FocusLevel, PlannerOutput
+from .models import Mode, PlannerDecision
 
-if TYPE_CHECKING:
-    from agents.deep_search_v4.orchestrator import FullLoopDeps
 
-logger = logging.getLogger(__name__)
+# Divisor floor for the dynamic-keep formula. Documented in MODE_PROFILES.md §1;
+# re-exported so the executor loops import the single source of truth.
+MIN_EXPANDER_DIVISOR = 3
 
 
 # ---------------------------------------------------------------------------
-# Focus profiles — per-executor numeric caps for each focus level.
-# ``default`` mirrors FullLoopDeps defaults; ``high`` widens, ``low`` narrows.
-# Tunable without touching the planner prompt.
+# Role-based budgets — modes 1–3 (case_led / reg_led / compliance_led).
+# The budget depends on the executor's ROLE, not on which executor it is.
 # ---------------------------------------------------------------------------
 
-FOCUS_PROFILES: dict[Executor, dict[FocusLevel, dict[str, int]]] = {
-    "reg": {
-        "high":    {"expander_max_queries": 7, "reranker_max_high": 12, "reranker_max_medium": 6},
-        "default": {"expander_max_queries": 5, "reranker_max_high": 8,  "reranker_max_medium": 4},
-        "low":     {"expander_max_queries": 3, "reranker_max_high": 5,  "reranker_max_medium": 2},
-    },
-    "compliance": {
-        "high":    {"expander_max_queries": 5, "reranker_max_high": 10, "reranker_max_medium": 5},
-        "default": {"expander_max_queries": 3, "reranker_max_high": 6,  "reranker_max_medium": 4},
-        "low":     {"expander_max_queries": 2, "reranker_max_high": 4,  "reranker_max_medium": 2},
-    },
-    "cases": {
-        "high":    {"expander_max_queries": 4, "reranker_max_high": 10, "reranker_max_medium": 6},
-        "default": {"expander_max_queries": 2, "reranker_max_high": 6,  "reranker_max_medium": 4},
-        "low":     {"expander_max_queries": 1, "reranker_max_high": 4,  "reranker_max_medium": 2},
-    },
+ROLE_PROFILES: dict[str, dict[str, int]] = {
+    "base":    {"expander_max_queries": 10, "result_budget": 60},
+    "support": {"expander_max_queries": 6,  "result_budget": 30},
 }
 
 
 # ---------------------------------------------------------------------------
-# Invoke set -> aggregator prompt key. frozenset key, deterministic.
+# Full mode — explicit, lower per-executor budgets. Three executors unioned
+# would otherwise flood the aggregator, so 'full' does not use ROLE_PROFILES.
 # ---------------------------------------------------------------------------
 
-INVOKE_TO_AGG_PROMPT: dict[frozenset[Executor], str] = {
-    frozenset({"reg"}):                            "prompt_reg_only",
-    frozenset({"compliance"}):                    "prompt_comp_only",
-    frozenset({"cases"}):                         "prompt_cases_only",
-    frozenset({"compliance", "cases"}):           "prompt_cases_focus",
-    frozenset({"reg", "compliance"}):             "prompt_1",
-    frozenset({"reg", "cases"}):                  "prompt_1",
-    frozenset({"reg", "compliance", "cases"}):    "prompt_1",
+FULL_PROFILE: dict[str, dict[str, int]] = {
+    "reg":        {"expander_max_queries": 7, "result_budget": 40},
+    "cases":      {"expander_max_queries": 4, "result_budget": 25},
+    "compliance": {"expander_max_queries": 3, "result_budget": 15},
 }
 
 
-def derive_aggregator_prompt_key(plan: PlannerOutput) -> str:
-    """Map ``plan.invoke`` (as a set) to a registered aggregator prompt key.
+# ---------------------------------------------------------------------------
+# Mode -> executor roles + aggregator prompt key. Single source of truth.
+# ---------------------------------------------------------------------------
 
-    Falls back to ``prompt_1`` (CRAC multi-source) for any invoke set the
-    table doesn't list — keeps the pipeline robust if a future planner
-    iteration adds a combination we forgot to register.
+MODE_PROFILES: dict[Mode, dict] = {
+    "case_led": {
+        "base": "cases", "support": "reg",
+        "aggregator_prompt_key": "prompt_mode_case",
+    },
+    "reg_led": {
+        "base": "reg", "support": "compliance",
+        "aggregator_prompt_key": "prompt_mode_reg",
+    },
+    "compliance_led": {
+        "base": "compliance", "support": "reg",
+        "aggregator_prompt_key": "prompt_mode_compliance",
+    },
+    "full": {
+        "executors": ["reg", "cases", "compliance"],   # all base-equivalent peers
+        "aggregator_prompt_key": "prompt_mode_full",
+    },
+}
+
+
+@dataclass
+class RetrievalConfig:
+    """Mode-derived retrieval knobs — the output of :func:`build_retrieval_config`.
+
+    Plain dataclass, no heavy imports — stays in the pure layer. ``run_retrieval``
+    reads it to assemble the internal ``FullLoopDeps``.
+
+    ``expander_max_queries`` and ``result_budget`` are keyed by executor name
+    (``"reg"`` / ``"compliance"`` / ``"cases"``) and contain an entry only for
+    *included* executors.
     """
-    key = frozenset(plan.invoke)
-    return INVOKE_TO_AGG_PROMPT.get(key, "prompt_1")
+
+    include_reg: bool
+    include_compliance: bool
+    include_cases: bool
+    expander_max_queries: dict[str, int]
+    result_budget: dict[str, int]
+    aggregator_prompt_key: str
+    sectors_override: list[str] | None = None
+    # Echoed for telemetry / logging — not consumed downstream.
+    mode: Mode | None = None
+    support: bool = False
 
 
-def _profile_for(executor: Executor, level: FocusLevel) -> dict[str, int]:
-    """Return the numeric profile for ``(executor, focus_level)``.
+def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
+    """Expand a :class:`PlannerDecision` into a concrete :class:`RetrievalConfig`.
 
-    Defensive: an unknown focus value falls back to ``default`` rather than
-    raising — the LLM might emit a stale literal once in a while.
+    Pure function — no I/O, no side effects. See MODE_PROFILES.md §6.
+
+    - Modes 1–3: the ``base`` executor always runs; the ``support`` executor
+      runs iff ``decision.support`` is True. Caps come from ``ROLE_PROFILES``
+      by role.
+    - ``full``: all three executors run as peers; ``decision.support`` is
+      ignored (structural — 'full' has no support role). Caps come from
+      ``FULL_PROFILE`` per executor.
     """
-    by_level = FOCUS_PROFILES[executor]
-    if level not in by_level:
-        logger.warning(
-            "planner: unknown focus=%r for executor=%s; falling back to 'default'",
-            level, executor,
-        )
-        level = "default"
-    return by_level[level]
+    profile = MODE_PROFILES[decision.mode]
+    expander_max_queries: dict[str, int] = {}
+    result_budget: dict[str, int] = {}
 
+    if decision.mode == "full":
+        for executor in profile["executors"]:
+            caps = FULL_PROFILE[executor]
+            expander_max_queries[executor] = caps["expander_max_queries"]
+            result_budget[executor] = caps["result_budget"]
+    else:
+        base = profile["base"]
+        base_caps = ROLE_PROFILES["base"]
+        expander_max_queries[base] = base_caps["expander_max_queries"]
+        result_budget[base] = base_caps["result_budget"]
+        if decision.support:
+            support = profile["support"]
+            support_caps = ROLE_PROFILES["support"]
+            expander_max_queries[support] = support_caps["expander_max_queries"]
+            result_budget[support] = support_caps["result_budget"]
 
-def apply_plan_to_deps(
-    deps: "FullLoopDeps",
-    plan: PlannerOutput,
-) -> "FullLoopDeps":
-    """Overlay ``plan`` onto ``deps`` in-place and return ``deps``.
-
-    Steps:
-    1. Set ``include_*`` flags from ``plan.invoke`` (executors not invoked
-       are turned OFF; previously-True flags for non-invoked executors are
-       cleared).
-    2. For each invoked executor, look up its focus profile and write
-       ``*_max_high`` / ``*_max_medium`` + the per-executor entry in
-       ``expander_max_queries``. Disabled executors keep whatever defaults
-       the caller already set.
-    3. Set ``sectors_override`` from ``plan.sectors``.
-    4. Stash a ``_planner_plan`` reference for telemetry. The orchestrator
-       reads :func:`derive_aggregator_prompt_key` separately to pick the
-       prompt key — apply doesn't return it, keeping this function purely
-       about deps state.
-    """
-    invoke_set = set(plan.invoke)
-    deps.include_reg = "reg" in invoke_set
-    deps.include_compliance = "compliance" in invoke_set
-    deps.include_cases = "cases" in invoke_set
-
-    # Build the per-executor expander cap dict explicitly. Only invoked
-    # executors land in the dict — the orchestrator reads with .get(...).
-    expander_caps: dict[str, int] = {}
-    for executor in plan.invoke:
-        prof = _profile_for(executor, plan.focus[executor])
-        expander_caps[executor] = prof["expander_max_queries"]
-        if executor == "reg":
-            deps.reg_max_high = prof["reranker_max_high"]
-            deps.reg_max_medium = prof["reranker_max_medium"]
-        elif executor == "compliance":
-            deps.compliance_max_high = prof["reranker_max_high"]
-            deps.compliance_max_medium = prof["reranker_max_medium"]
-        elif executor == "cases":
-            deps.case_max_high = prof["reranker_max_high"]
-            deps.case_max_medium = prof["reranker_max_medium"]
-    deps.expander_max_queries = expander_caps
-
-    deps.sectors_override = list(plan.sectors) if plan.sectors else None
-
-    # RRF / score thresholds aren't planner-driven anymore; they remain
-    # caller-set fields on FullLoopDeps. Don't touch them here.
-
-    logger.info(
-        "apply_plan_to_deps: invoke=%s focus=%s sectors=%s "
-        "(reg=%s/%s, comp=%s/%s, cases=%s/%s, expander=%s)",
-        sorted(plan.invoke),
-        {k: plan.focus[k] for k in sorted(plan.focus)},
-        plan.sectors,
-        deps.reg_max_high, deps.reg_max_medium,
-        deps.compliance_max_high, deps.compliance_max_medium,
-        deps.case_max_high, deps.case_max_medium,
-        expander_caps,
+    included = set(expander_max_queries)
+    return RetrievalConfig(
+        include_reg="reg" in included,
+        include_compliance="compliance" in included,
+        include_cases="cases" in included,
+        expander_max_queries=expander_max_queries,
+        result_budget=result_budget,
+        aggregator_prompt_key=profile["aggregator_prompt_key"],
+        sectors_override=list(decision.sectors) if decision.sectors else None,
+        mode=decision.mode,
+        support=False if decision.mode == "full" else decision.support,
     )
-    return deps
 
 
 __all__ = [
-    "FOCUS_PROFILES",
-    "INVOKE_TO_AGG_PROMPT",
-    "apply_plan_to_deps",
-    "derive_aggregator_prompt_key",
+    "MIN_EXPANDER_DIVISOR",
+    "ROLE_PROFILES",
+    "FULL_PROFILE",
+    "MODE_PROFILES",
+    "RetrievalConfig",
+    "build_retrieval_config",
 ]

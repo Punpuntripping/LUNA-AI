@@ -14,22 +14,25 @@ the URA result does not already carry, and returns a discriminated-union
 ``SourceView`` model that the frontend can render directly into the source
 popup.
 
-Five view variants are produced, one per source type the user can click:
+View variants the user can click (URA v3.0 -- the reg domain is chunk-shaped,
+the article/section split is gone):
 
-- ``ArticleSourceView``    -- a single article, full content + parent reg link.
-- ``SectionSourceView``    -- a section, summary + context + parent reg link.
-- ``RegulationSourceView`` -- the regulation itself; only the source URL /
-  PDF link matter.
+- ``ChunkSourceView``      -- a regulation chunk, full ``chunk_content`` +
+  ``chunk_context`` + parent regulation landing/PDF link.
 - ``CaseSourceView``       -- a court ruling; one ``details_url`` plus a
   human-readable composite title.
 - ``ServiceSourceView``    -- a government service; both the national-platform
   URL (``services.url``) and the service URL (``services.service_url``).
 
+``ArticleSourceView`` / ``SectionSourceView`` / ``RegulationSourceView`` are
+retained in the ``SourceView`` union ONLY so pre-v3.0 persisted ``source_view``
+payloads still validate on reload -- ``build_source_view`` no longer produces
+them.
+
 The ref_id formats produced by the three executor adapters are::
 
-    reg_search/adapter.py        ->  ``reg:<uuid>``        (the article OR
-                                     section OR regulation row id; type is
-                                     disambiguated via ``RegURAResult.source_type``)
+    reg_search/adapter.py        ->  ``reg:<uuid>``        (the chunks_v2.id;
+                                     enrich.py strips the ``reg:`` prefix)
     case_search/adapter.py       ->  ``case:<uuid>``       (the cases.id)
     compliance_search/adapter.py ->  ``compliance:<sha1>`` (16-char hash; the
                                      real lookup key is ``ComplianceURAResult.service_ref``,
@@ -74,8 +77,33 @@ SupabaseClient = Any
 # ---------------------------------------------------------------------------
 
 
+class ChunkSourceView(BaseModel):
+    """Click-ready payload for a regulation **chunk** (URA v3.0).
+
+    The reg domain is chunk-shaped now -- the article/section split is gone.
+    The URA result (post-``enrich.py``) already carries every field, so this
+    view is built with no Supabase round-trip.
+    """
+
+    source_type: Literal["chunk"] = "chunk"
+    title: str = ""
+    """Parent regulation title (``RegURAResult.reg_title``)."""
+    content: str = ""
+    """Full chunk content -- ``chunk_content`` + ``chunk_context`` concatenated
+    (blank line separated) when both are present."""
+    regulation_title: str = ""
+    regulation_source_url: str = ""
+    """Parent regulation's ``landing_url`` -- main click target."""
+    regulation_pdf_link: dict | None = None
+    """Fallback link object, derived from ``RegURAResult.pdf_url``."""
+
+
 class ArticleSourceView(BaseModel):
-    """Click-ready payload for a regulation **article**."""
+    """Click-ready payload for a regulation **article**.
+
+    Legacy (pre-URA-v3.0) -- retained for persisted-artifact reload compat
+    only. ``build_source_view`` no longer produces it.
+    """
 
     source_type: Literal["article"] = "article"
     title: str
@@ -94,7 +122,11 @@ class ArticleSourceView(BaseModel):
 
 
 class SectionSourceView(BaseModel):
-    """Click-ready payload for a regulation **section**."""
+    """Click-ready payload for a regulation **section**.
+
+    Legacy (pre-URA-v3.0) -- retained for persisted-artifact reload compat
+    only. ``build_source_view`` no longer produces it.
+    """
 
     source_type: Literal["section"] = "section"
     title: str
@@ -109,8 +141,8 @@ class SectionSourceView(BaseModel):
 class RegulationSourceView(BaseModel):
     """Click-ready payload for a **regulation** itself.
 
-    Only ``source_url`` (or ``pdf_link`` as fallback) is meaningful at the UI
-    layer; ``title`` is rendered as a label.
+    Legacy (pre-URA-v3.0) -- retained for persisted-artifact reload compat
+    only. ``build_source_view`` no longer produces it.
     """
 
     source_type: Literal["regulation"] = "regulation"
@@ -143,9 +175,10 @@ class ServiceSourceView(BaseModel):
 
 SourceView = Annotated[
     Union[
-        ArticleSourceView,
-        SectionSourceView,
-        RegulationSourceView,
+        ChunkSourceView,
+        ArticleSourceView,     # legacy -- reload compat only
+        SectionSourceView,     # legacy -- reload compat only
+        RegulationSourceView,  # legacy -- reload compat only
         CaseSourceView,
         ServiceSourceView,
     ],
@@ -196,64 +229,6 @@ def _parse_simple_ref_id(prefix: str, ref_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Supabase fetch helpers (sync client driven via asyncio.to_thread)
 # ---------------------------------------------------------------------------
-
-
-async def _fetch_article(supabase: SupabaseClient, article_id: str) -> dict | None:
-    def _call() -> dict | None:
-        try:
-            resp = (
-                supabase.table("articles")
-                .select("id, title, content, article_num, regulation_id")
-                .eq("id", article_id)
-                .maybe_single()
-                .execute()
-            )
-            return resp.data if resp else None
-        except Exception as e:
-            logger.debug("source_viewer: fetch article %s failed: %s", article_id, e)
-            return None
-
-    return await asyncio.to_thread(_call)
-
-
-async def _fetch_section(supabase: SupabaseClient, section_id: str) -> dict | None:
-    def _call() -> dict | None:
-        try:
-            resp = (
-                supabase.table("sections")
-                .select(
-                    "id, title, section_summary, section_context, regulation_id"
-                )
-                .eq("id", section_id)
-                .maybe_single()
-                .execute()
-            )
-            return resp.data if resp else None
-        except Exception as e:
-            logger.debug("source_viewer: fetch section %s failed: %s", section_id, e)
-            return None
-
-    return await asyncio.to_thread(_call)
-
-
-async def _fetch_regulation(supabase: SupabaseClient, regulation_id: str) -> dict | None:
-    def _call() -> dict | None:
-        try:
-            resp = (
-                supabase.table("regulations")
-                .select("id, title, source_url, pdf_link")
-                .eq("id", regulation_id)
-                .maybe_single()
-                .execute()
-            )
-            return resp.data if resp else None
-        except Exception as e:
-            logger.debug(
-                "source_viewer: fetch regulation %s failed: %s", regulation_id, e
-            )
-            return None
-
-    return await asyncio.to_thread(_call)
 
 
 async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
@@ -326,81 +301,29 @@ def _normalize_pdf_link(raw: Any) -> dict | None:
 
 async def _build_reg_view(
     supabase: SupabaseClient, ura: RegURAResult
-) -> ArticleSourceView | SectionSourceView | RegulationSourceView:
-    """Dispatch a ``RegURAResult`` to the right SourceView variant.
+) -> ChunkSourceView:
+    """Build a ``ChunkSourceView`` from a ``RegURAResult`` (URA v3.0).
 
-    Sub-kind resolution order:
-      1. ``reg:<kind>:<uuid>`` extended ref_id (if the adapter ever emits it).
-      2. ``RegURAResult.source_type`` (current adapter only sets ``article``
-         or ``section``).
-      3. Fall back to ``"article"``.
+    The reg domain is chunk-shaped now. ``ura/enrich.py`` has already filled
+    every field this view needs (``chunk_content``, ``chunk_context``,
+    ``reg_title``, ``landing_url``, ``pdf_url``), so no Supabase round-trip is
+    required -- ``supabase`` is accepted for signature symmetry only.
     """
-    sub_kind, db_id = _parse_reg_ref_id(ura.ref_id)
-    if not sub_kind:
-        sub_kind = (ura.source_type or "").strip().lower() or "article"
+    _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 
-    # ---- regulation ----------------------------------------------------
-    if sub_kind == "regulation":
-        reg_row: dict = {}
-        if db_id:
-            reg_row = (await _fetch_regulation(supabase, db_id)) or {}
-        return RegulationSourceView(
-            title=reg_row.get("title") or ura.regulation_title or ura.title,
-            source_url=reg_row.get("source_url", "") or "",
-            pdf_link=_normalize_pdf_link(reg_row.get("pdf_link")),
-        )
-
-    # ---- section -------------------------------------------------------
-    if sub_kind == "section":
-        sec_row: dict = {}
-        if db_id:
-            sec_row = (await _fetch_section(supabase, db_id)) or {}
-
-        # Compose full content -- summary + context, blank line separated.
-        summary = (sec_row.get("section_summary") or ura.section_summary or "").strip()
-        context = (sec_row.get("section_context") or ura.article_context or "").strip()
-        if summary and context:
-            content = f"{summary}\n\n{context}"
-        else:
-            content = summary or context or (ura.content or "")
-
-        # Parent regulation lookup for source_url + pdf_link.
-        reg_row = {}
-        reg_id = sec_row.get("regulation_id")
-        if reg_id:
-            reg_row = (await _fetch_regulation(supabase, reg_id)) or {}
-
-        return SectionSourceView(
-            title=sec_row.get("title") or ura.title,
-            content=content,
-            regulation_title=reg_row.get("title") or ura.regulation_title or "",
-            regulation_source_url=reg_row.get("source_url", "") or "",
-            regulation_pdf_link=_normalize_pdf_link(reg_row.get("pdf_link")),
-        )
-
-    # ---- article (default) --------------------------------------------
-    art_row: dict = {}
-    if db_id:
-        art_row = (await _fetch_article(supabase, db_id)) or {}
-
-    reg_row = {}
-    reg_id = art_row.get("regulation_id")
-    if reg_id:
-        reg_row = (await _fetch_regulation(supabase, reg_id)) or {}
-
-    article_num = art_row.get("article_num")
-    if article_num is not None:
-        article_num = str(article_num)
+    chunk_content = (ura.chunk_content or "").strip()
+    chunk_context = (ura.chunk_context or "").strip()
+    if chunk_content and chunk_context:
+        content = f"{chunk_content}\n\n{chunk_context}"
     else:
-        article_num = ura.article_num
+        content = chunk_content or chunk_context
 
-    return ArticleSourceView(
-        title=art_row.get("title") or ura.title,
-        article_num=article_num,
-        content=art_row.get("content") or ura.content or "",
-        regulation_title=reg_row.get("title") or ura.regulation_title or "",
-        regulation_source_url=reg_row.get("source_url", "") or "",
-        regulation_pdf_link=_normalize_pdf_link(reg_row.get("pdf_link")),
+    return ChunkSourceView(
+        title=ura.reg_title or "",
+        content=content,
+        regulation_title=ura.reg_title or "",
+        regulation_source_url=ura.landing_url or "",
+        regulation_pdf_link=_normalize_pdf_link(ura.pdf_url),
     )
 
 
@@ -446,9 +369,9 @@ async def _build_service_view(
         national_platform_url = row.get("url", "") or ""
 
     return ServiceSourceView(
-        title=ura.title,
+        title=ura.service_name or "",
         national_platform_url=national_platform_url,
-        service_url=ura.service_url or "",
+        service_url=ura.service_url or ura.url or "",
     )
 
 
@@ -486,6 +409,7 @@ async def build_source_view(
 
 
 __all__ = [
+    "ChunkSourceView",
     "ArticleSourceView",
     "SectionSourceView",
     "RegulationSourceView",
@@ -538,26 +462,6 @@ def _self_test() -> None:
             return _StubResp(self._fixtures.get(self._table))
 
     fixtures = {
-        "articles": {
-            "id": "art-1",
-            "title": "مادة 51",
-            "content": "نص المادة الكامل",
-            "article_num": "51",
-            "regulation_id": "reg-1",
-        },
-        "sections": {
-            "id": "sec-1",
-            "title": "الباب الأول",
-            "section_summary": "ملخص الفصل",
-            "section_context": "سياق الفصل",
-            "regulation_id": "reg-1",
-        },
-        "regulations": {
-            "id": "reg-1",
-            "title": "نظام الأحوال الشخصية",
-            "source_url": "https://laws.boe.gov.sa/...",
-            "pdf_link": {"url": "https://files/x.pdf"},
-        },
         "cases": {
             "id": "case-1",
             "court": "محكمة الاستئناف",
@@ -575,68 +479,41 @@ def _self_test() -> None:
     stub = _StubChain(fixtures)
 
     async def _run():
-        # 1) article (bare reg:<uuid> ref_id, sub_kind from source_type)
-        art = RegURAResult(
-            ref_id="reg:art-1",
-            source_type="article",
-            title="مادة 51",
-            content="snippet",
+        # 1) reg chunk (URA v3.0 -- fully URA-sourced, no DB call)
+        chunk = RegURAResult(
+            ref_id="reg:550e8400-e29b-41d4-a716-446655440000",
+            source_type="reg_chunk",
             relevance="high",
-            regulation_title="نظام الأحوال الشخصية",
-            article_num="51",
+            reg_title="نظام الأحوال الشخصية",
+            chunk_content="نص المقطع الكامل",
+            chunk_context="سياق المقطع",
+            landing_url="https://laws.boe.gov.sa/...",
+            pdf_url="https://files/x.pdf",
         )
-        v = await build_source_view(stub, art)
-        assert isinstance(v, ArticleSourceView), v
-        assert v.article_num == "51"
+        v = await build_source_view(stub, chunk)
+        assert isinstance(v, ChunkSourceView), v
         assert v.regulation_source_url.startswith("https://")
-        assert v.content == "نص المادة الكامل"
+        assert "نص المقطع الكامل" in v.content and "سياق المقطع" in v.content
+        assert v.regulation_pdf_link == {"url": "https://files/x.pdf"}
 
-        # 2) section (extended reg:section:<uuid> ref_id form)
-        sec = RegURAResult(
-            ref_id="reg:section:sec-1",
-            source_type="section",
-            title="الباب الأول",
-            content="snippet",
-            relevance="medium",
-            regulation_title="نظام الأحوال الشخصية",
-        )
-        v = await build_source_view(stub, sec)
-        assert isinstance(v, SectionSourceView), v
-        assert "ملخص الفصل" in v.content and "سياق الفصل" in v.content
-
-        # 3) regulation (extended ref_id)
-        reg = RegURAResult(
-            ref_id="reg:regulation:reg-1",
-            source_type="regulation",
-            title="نظام الأحوال الشخصية",
-            content="",
-            relevance="high",
-            regulation_title="نظام الأحوال الشخصية",
-        )
-        v = await build_source_view(stub, reg)
-        assert isinstance(v, RegulationSourceView), v
-        assert v.source_url.startswith("https://")
-
-        # 4) case
+        # 2) case
         case = CaseURAResult(
             ref_id="case:case-1",
             source_type="case",
-            title="قضية",
-            content="snippet",
             relevance="high",
+            title="قضية",
         )
         v = await build_source_view(stub, case)
         assert isinstance(v, CaseSourceView), v
         assert "محكمة الاستئناف" in v.title
         assert v.details_url.endswith("/1")
 
-        # 5) gov_service
+        # 3) gov_service
         svc = ComplianceURAResult(
             ref_id="compliance:abcdef0123456789",
             source_type="gov_service",
-            title="خدمة كذا",
-            content="...",
             relevance="medium",
+            service_name="خدمة كذا",
             service_ref="svc-abc",
             service_url="https://entity.gov.sa/svc",
         )
@@ -652,7 +529,7 @@ def _self_test() -> None:
         assert _parse_simple_ref_id("case", "case:xyz") == "xyz"
         assert _parse_simple_ref_id("case", "reg:xyz") == ""
 
-        print("source_viewer self-test: OK (5 variants + ref_id parsers)")
+        print("source_viewer self-test: OK (3 variants + ref_id parsers)")
 
     _asyncio.run(_run())
 

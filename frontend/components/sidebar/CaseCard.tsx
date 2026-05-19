@@ -4,26 +4,14 @@ import { useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
-  FileText,
-  MessageSquare,
-  Briefcase,
   MoreHorizontal,
   Pencil,
   Trash2,
   Archive,
   XCircle,
   Loader2,
-  Building2,
-  Store,
-  HardHat,
-  Gavel,
-  Users,
-  ClipboardList,
-  Scale,
-  Folder,
-  type LucideIcon,
 } from "lucide-react";
-import { cn, getCaseTypeLabel } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useConversations } from "@/hooks/use-conversations";
 import { useDeleteCase, useUpdateCase, useUpdateCaseStatus } from "@/hooks/use-cases";
@@ -60,26 +48,6 @@ interface CaseCardProps {
   caseSummary: CaseSummary;
 }
 
-// Priority tier (3 steps) — identity via colored dot, bg/fg via status-* tokens
-// Destructive (high) stays red since red = universal urgency signal
-const PRIORITY_TIER: Record<string, "danger" | "warning" | "success"> = {
-  high: "danger",
-  medium: "warning",
-  low: "success",
-};
-
-// Case type → Lucide icon. Identity now comes from the icon, not color.
-const CASE_TYPE_ICON: Record<string, LucideIcon> = {
-  "عقاري": Building2,
-  "تجاري": Store,
-  "عمالي": HardHat,
-  "جنائي": Gavel,
-  "أحوال_شخصية": Users,
-  "إداري": ClipboardList,
-  "تنفيذ": Scale,
-  "عام": Folder,
-};
-
 const CASE_TYPES: { value: CaseType; label: string }[] = [
   { value: "عقاري", label: "عقاري" },
   { value: "تجاري", label: "تجاري" },
@@ -115,14 +83,14 @@ function CaseConversations({ caseId }: { caseId: string }) {
 
   if (!data?.conversations || data.conversations.length === 0) {
     return (
-      <div className="ps-6 py-2 px-2">
-        <p className="text-xs text-muted-foreground">لا توجد محادثات</p>
+      <div className="ps-8 py-1.5">
+        <p className="text-xs text-muted-foreground/70">لا توجد محادثات</p>
       </div>
     );
   }
 
   return (
-    <div className="ps-4 space-y-0.5 py-1 border-s border-border ms-4">
+    <div className="ps-4 ms-4 border-s border-border/60 py-1 space-y-0.5">
       {data.conversations.map((conv) => (
         <ConversationItem key={conv.conversation_id} conversation={conv} />
       ))}
@@ -147,9 +115,6 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
   const [editPriority, setEditPriority] = useState<CasePriority>("medium");
   const [editDescription, setEditDescription] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
-
-  const TypeIcon = CASE_TYPE_ICON[caseSummary.case_type] || Folder;
-  const priorityTier = PRIORITY_TIER[caseSummary.priority];
 
   const openEditDialog = () => {
     setEditName(caseSummary.case_name);
@@ -194,77 +159,32 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
 
   return (
     <>
-      <div className="rounded-md border border-border/50 bg-background/50">
-        {/* Case header — clickable to expand */}
-        <div className="flex items-start">
-          <button
-            onClick={() => toggleCaseExpanded(caseSummary.case_id)}
-            className="flex flex-1 items-start gap-2 p-2.5 text-start hover:bg-accent/30 rounded-md transition-colors min-w-0"
+      <div>
+        <div
+          className={cn(
+            "group flex items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors",
+            isExpanded
+              ? "bg-accent/40 text-foreground"
+              : "text-sidebar-foreground/85 hover:bg-accent/30 hover:text-foreground"
+          )}
+          onClick={() => toggleCaseExpanded(caseSummary.case_id)}
+        >
+          <span className="shrink-0 text-muted-foreground/70">
+            {isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronLeft className="h-3.5 w-3.5" />
+            )}
+          </span>
+
+          <p className="flex-1 min-w-0 text-sm truncate">
+            {caseSummary.case_name}
+          </p>
+
+          <div
+            className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            onClick={(e) => e.stopPropagation()}
           >
-            {/* Expand/collapse chevron */}
-            <div className="mt-0.5 shrink-0">
-              {isExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-              ) : (
-                <ChevronLeft className="h-3.5 w-3.5 text-muted-foreground" />
-              )}
-            </div>
-
-            <div className="flex-1 min-w-0 space-y-1.5">
-              {/* Case name */}
-              <div className="flex items-center gap-2">
-                <Briefcase className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <p className="text-sm font-medium truncate text-sidebar-foreground">
-                  {caseSummary.case_name}
-                </p>
-              </div>
-
-              {/* Badges row */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                {/* Case type — neutral pill, identity via icon */}
-                <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-foreground">
-                  <TypeIcon className="h-3 w-3" />
-                  {getCaseTypeLabel(caseSummary.case_type)}
-                </span>
-
-                {/* Priority — 3-tier semantic pill with a colored dot */}
-                {priorityTier && (
-                  <span
-                    className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    style={{
-                      backgroundColor: `oklch(var(--status-${priorityTier}-bg))`,
-                      color: `oklch(var(--status-${priorityTier}-fg))`,
-                    }}
-                  >
-                    <span
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{ backgroundColor: `oklch(var(--status-${priorityTier}-fg))` }}
-                    />
-                    {caseSummary.priority === "high"
-                      ? "عالية"
-                      : caseSummary.priority === "medium"
-                      ? "متوسطة"
-                      : "منخفضة"}
-                  </span>
-                )}
-              </div>
-
-              {/* Counts */}
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <MessageSquare className="h-3 w-3" />
-                  {caseSummary.conversation_count}
-                </span>
-                <span className="flex items-center gap-1">
-                  <FileText className="h-3 w-3" />
-                  {caseSummary.document_count}
-                </span>
-              </div>
-            </div>
-          </button>
-
-          {/* Dropdown menu */}
-          <div className="p-1.5" onClick={(e) => e.stopPropagation()}>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-6 w-6">
@@ -302,7 +222,6 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
           </div>
         </div>
 
-        {/* Expanded: show case conversations */}
         {isExpanded && <CaseConversations caseId={caseSummary.case_id} />}
       </div>
 

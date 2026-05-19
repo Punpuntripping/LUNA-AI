@@ -20,9 +20,15 @@ agents/.md
 # Agent run logs/reports — too noisy to commit
 agents/deep_search_v3/*/reports/
 agents/deep_search_v3/*/logs/
+agents/deep_search_v4/*/reports/
+agents/deep_search_v4/*/logs/
+agents/deep_search_v4/planning/
+agents/plans/reports/
 agents/archive/*/logs/
 agents/archive/*/comparison/
 agents/_archive/
+cli_smoke_err.log
+luna-*.png
 frontend/tsconfig.tsbuildinfo
 _run5_*.txt
 _run5_state.json

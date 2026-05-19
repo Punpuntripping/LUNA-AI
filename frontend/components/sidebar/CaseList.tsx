@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { FolderOpen, Plus, Loader2 } from "lucide-react";
+import { FolderOpen, Loader2 } from "lucide-react";
 import { useCases, useCreateCase } from "@/hooks/use-cases";
+import { useSidebarStore } from "@/stores/sidebar-store";
 import { CaseCard } from "@/components/sidebar/CaseCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -35,23 +36,20 @@ const PRIORITIES: { value: CasePriority; label: string }[] = [
 
 function CaseListSkeleton() {
   return (
-    <div className="space-y-2 p-2">
-      {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} className="rounded-md border border-border/50 p-2.5 animate-pulse space-y-2">
-          <div className="flex items-center gap-2">
-            <div className="h-3.5 w-3.5 rounded bg-muted" />
-            <div className="h-3.5 w-3/4 rounded bg-muted" />
-          </div>
-          <div className="flex gap-1.5">
-            <div className="h-4 w-12 rounded-full bg-muted" />
-            <div className="h-4 w-10 rounded-full bg-muted" />
-          </div>
-          <div className="flex gap-3">
-            <div className="h-3 w-8 rounded bg-muted" />
-            <div className="h-3 w-8 rounded bg-muted" />
-          </div>
-        </div>
+    <div className="space-y-1.5 px-3 py-2">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div key={i} className="h-7 rounded-md bg-muted/40 animate-pulse" />
       ))}
+    </div>
+  );
+}
+
+function SectionHeader({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-4 pt-3 pb-2 shrink-0">
+      <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground/60">
+        {children}
+      </p>
     </div>
   );
 }
@@ -59,8 +57,8 @@ function CaseListSkeleton() {
 export function CaseList() {
   const { data, isLoading, isError } = useCases("active");
   const createCase = useCreateCase();
+  const { isCreateCaseDialogOpen, setCreateCaseDialogOpen } = useSidebarStore();
 
-  const [showDialog, setShowDialog] = useState(false);
   const [caseName, setCaseName] = useState("");
   const [caseType, setCaseType] = useState<CaseType>("عام");
   const [priority, setPriority] = useState<CasePriority>("medium");
@@ -90,7 +88,7 @@ export function CaseList() {
       },
       {
         onSuccess: () => {
-          setShowDialog(false);
+          setCreateCaseDialogOpen(false);
           resetForm();
         },
         onError: () => {
@@ -100,40 +98,22 @@ export function CaseList() {
     );
   };
 
-  if (isLoading) {
-    return <CaseListSkeleton />;
-  }
-
-  if (isError) {
-    return (
-      <div className="flex flex-col items-center justify-center py-8 px-4 text-center">
-        <p className="text-sm text-destructive">
-          حدث خطأ في تحميل القضايا
-        </p>
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="flex flex-col flex-1 min-h-0">
-        {/* New case button */}
-        <div className="p-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full justify-center gap-2 text-xs"
-            onClick={() => setShowDialog(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            قضية جديدة
-          </Button>
-        </div>
+        <SectionHeader>القضايا الأخيرة</SectionHeader>
 
-        {/* Case list */}
-        {!data?.cases || data.cases.length === 0 ? (
+        {isLoading && <CaseListSkeleton />}
+
+        {isError && (
+          <div className="flex flex-col items-center justify-center py-8 px-4 text-center">
+            <p className="text-sm text-destructive">حدث خطأ في تحميل القضايا</p>
+          </div>
+        )}
+
+        {!isLoading && !isError && (!data?.cases || data.cases.length === 0) && (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
-            <FolderOpen className="h-10 w-10 text-muted-foreground/50" />
+            <FolderOpen className="h-9 w-9 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-medium text-muted-foreground">
                 لا توجد قضايا مسجلة
@@ -143,9 +123,11 @@ export function CaseList() {
               </p>
             </div>
           </div>
-        ) : (
-          <ScrollArea className="flex-1">
-            <div className="p-2 space-y-2">
+        )}
+
+        {!isLoading && !isError && data?.cases && data.cases.length > 0 && (
+          <ScrollArea className="flex-1 min-h-0">
+            <div className="px-2 pb-2 space-y-0.5">
               {data.cases.map((caseSummary) => (
                 <CaseCard key={caseSummary.case_id} caseSummary={caseSummary} />
               ))}
@@ -154,14 +136,17 @@ export function CaseList() {
         )}
       </div>
 
-      {/* Create case dialog */}
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      <Dialog
+        open={isCreateCaseDialogOpen}
+        onOpenChange={(open) => {
+          setCreateCaseDialogOpen(open);
+          if (!open) resetForm();
+        }}
+      >
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
             <DialogTitle>إنشاء قضية جديدة</DialogTitle>
-            <DialogDescription>
-              أدخل تفاصيل القضية لإنشائها
-            </DialogDescription>
+            <DialogDescription>أدخل تفاصيل القضية لإنشائها</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
@@ -171,11 +156,8 @@ export function CaseList() {
               </div>
             )}
 
-            {/* Case name */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">
-                اسم القضية
-              </label>
+              <label className="text-sm font-medium text-foreground">اسم القضية</label>
               <input
                 type="text"
                 value={caseName}
@@ -186,11 +168,8 @@ export function CaseList() {
               />
             </div>
 
-            {/* Case type */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">
-                نوع القضية
-              </label>
+              <label className="text-sm font-medium text-foreground">نوع القضية</label>
               <select
                 value={caseType}
                 onChange={(e) => setCaseType(e.target.value as CaseType)}
@@ -205,11 +184,8 @@ export function CaseList() {
               </select>
             </div>
 
-            {/* Priority */}
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">
-                الأولوية
-              </label>
+              <label className="text-sm font-medium text-foreground">الأولوية</label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value as CasePriority)}
@@ -224,13 +200,10 @@ export function CaseList() {
               </select>
             </div>
 
-            {/* Description */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium text-foreground">
                 وصف القضية
-                <span className="text-muted-foreground font-normal me-1">
-                  {" "}(اختياري)
-                </span>
+                <span className="text-muted-foreground font-normal me-1"> (اختياري)</span>
               </label>
               <textarea
                 value={description}
@@ -247,19 +220,14 @@ export function CaseList() {
             <Button
               variant="outline"
               onClick={() => {
-                setShowDialog(false);
+                setCreateCaseDialogOpen(false);
                 resetForm();
               }}
             >
               إلغاء
             </Button>
-            <Button
-              onClick={handleCreate}
-              disabled={createCase.isPending}
-            >
-              {createCase.isPending && (
-                <Loader2 className="h-4 w-4 animate-spin me-2" />
-              )}
+            <Button onClick={handleCreate} disabled={createCase.isPending}>
+              {createCase.isPending && <Loader2 className="h-4 w-4 animate-spin me-2" />}
               إنشاء القضية
             </Button>
           </DialogFooter>

@@ -42,11 +42,11 @@ export default function ChatEmptyPage() {
     <div className="flex flex-1 flex-col h-full">
       <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
         <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground text-3xl font-bold mb-6">
-          لونا
+          ريحان
         </div>
 
         <h1 className="text-2xl font-bold text-foreground mb-2">
-          مرحبا بك في لونا
+          مرحبا بك في ريحان
         </h1>
         <p className="text-muted-foreground text-sm mb-8 max-w-md">
           المساعد القانوني الذكي المتخصص في الأنظمة السعودية. اطرح أسئلتك

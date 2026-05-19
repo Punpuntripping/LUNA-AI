@@ -2,9 +2,8 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { MessageSquare, MoreHorizontal, Pencil, Trash2, Check, X } from "lucide-react";
+import { MoreHorizontal, Pencil, Trash2, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getRelativeTimeAr } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useDeleteConversation, useRenameConversation } from "@/hooks/use-conversations";
 import {
@@ -103,15 +102,15 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
     <>
       <div
         className={cn(
-          "group rounded-md border px-3 py-2.5 text-sm cursor-pointer transition-colors",
+          "group flex items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors",
           isActive
-            ? "border-primary/30 bg-accent text-accent-foreground"
-            : "border-border/50 bg-background/50 text-sidebar-foreground hover:bg-accent/50"
+            ? "bg-accent text-accent-foreground"
+            : "text-sidebar-foreground/85 hover:bg-accent/40 hover:text-foreground"
         )}
         onClick={handleClick}
       >
         {isRenaming ? (
-          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <div className="flex flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
             <input
               ref={inputRef}
               type="text"
@@ -136,49 +135,39 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
           </div>
         ) : (
           <>
-            {/* Top row: icon + title + actions */}
-            <div className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-              <p className="flex-1 min-w-0 text-sm font-medium line-clamp-2">
-                {searchQuery ? (
-                  <HighlightedText text={title} highlight={searchQuery} />
-                ) : (
-                  title
-                )}
-              </p>
-
-              {/* Actions dropdown — visible on hover */}
-              <div
-                className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-6 w-6">
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-40">
-                    <DropdownMenuItem onClick={handleStartRename}>
-                      <Pencil className="h-3.5 w-3.5 me-2" />
-                      إعادة تسمية
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => setShowDeleteDialog(true)}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5 me-2" />
-                      حذف
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-
-            {/* Bottom row: timestamp */}
-            <p className="text-xs text-muted-foreground mt-1">
-              {getRelativeTimeAr(conversation.updated_at)}
+            <p className="flex-1 min-w-0 text-sm truncate">
+              {searchQuery ? (
+                <HighlightedText text={title} highlight={searchQuery} />
+              ) : (
+                title
+              )}
             </p>
+
+            <div
+              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-6 w-6">
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-40">
+                  <DropdownMenuItem onClick={handleStartRename}>
+                    <Pencil className="h-3.5 w-3.5 me-2" />
+                    إعادة تسمية
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setShowDeleteDialog(true)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 me-2" />
+                    حذف
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </>
         )}
       </div>

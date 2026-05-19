@@ -46,21 +46,21 @@ def format_result(result) -> str:
         lines.append(f"  {i}. {q}")
     lines.append("")
 
-    # Kept services
+    # Kept services — items are RerankedServiceResult pydantic models
     if result.kept_results:
         lines.append(f"Kept services ({len(result.kept_results)}):")
         for i, row in enumerate(result.kept_results, 1):
-            ref = row.get("service_ref", "?")
-            name = row.get("service_name", row.get("name", "?"))
-            relevance = row.get("_relevance", "")
-            score = row.get("score", 0.0)
+            ref = row.service_ref or "?"
+            name = row.title or "?"
+            relevance = row.relevance
+            score = row.score
             lines.append(f"  {i}. [{relevance}] {name} -- ref:{ref} (score={score:.3f})")
         lines.append("")
 
     # Show service_context preview for top result
     if result.kept_results:
         top = result.kept_results[0]
-        ctx = top.get("service_context", "")
+        ctx = top.content
         if ctx:
             lines.append(f"{'~' * 40}")
             lines.append(f"Top service context preview ({len(ctx)} chars):")
@@ -170,9 +170,9 @@ async def main() -> None:
         mock_results = {
             "compliance": (
                 "# نتائج وهمية للاختبار\n\n"
-                "## خدمة نقل خدمات عامل -- منصة قوى\n"
-                "**المنصة:** قوى\n"
+                "## خدمة نقل خدمات عامل\n"
                 "**الجهة:** وزارة الموارد البشرية\n"
+                "**القطاع:** الموارد البشرية\n"
                 "**الرابط:** https://www.qiwa.sa\n\n"
                 "الخطوات:\n"
                 "1. الدخول على منصة قوى\n"
@@ -214,7 +214,7 @@ async def main() -> None:
     # Show log location
     logs = list_logs(1)
     if logs:
-        print(f"\nFull log: agents/deep_search_v3/compliance_search/logs/{logs[0]}.json")
+        print(f"\nFull log: agents/deep_search_v4/compliance_search/logs/{logs[0]}.json")
 
 
 if __name__ == "__main__":

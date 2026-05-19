@@ -216,8 +216,8 @@ class RerankerQueryResult:
     unfold_rounds: int = 0   # always 0 for cases (flat documents, no unfold)
     total_unfolds: int = 0   # always 0 for cases
     caps_applied: dict = field(default_factory=dict)
-    # ``caps_applied`` carries {"max_high", "max_medium", "truncated_by_cap"}
-    # when keep caps were applied. Empty dict when caps were not active.
+    # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the flat
+    # keep cap was applied. Empty dict when the cap was not active.
 
 
 @dataclass
@@ -279,8 +279,13 @@ class CaseSearchDeps:
     score_threshold: float = 0.005
     mock_results: dict | None = None
     cli_channels: list[str] | None = None
-    reranker_max_high: int = 6    # Max high-relevance results per sub-query
-    reranker_max_medium: int = 4  # Max medium-relevance results per sub-query
+    reranker_max_keep: int = 10  # Max results per sub-query — single flat cap
+    # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
+    # planner/orchestrator, the per-sub-query reranker keep is derived at
+    # runtime as ceil(result_budget / max(N, 3)) from the expander's actual
+    # query count N — and ``reranker_max_keep`` above is ignored. When None
+    # (CLI / monitor path), the fixed ``reranker_max_keep`` is used.
+    result_budget: int | None = None
     _query_id: int = 0
     _log_id: str = ""
     _events: list[dict] = field(default_factory=list)

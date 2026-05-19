@@ -1,108 +1,92 @@
-"""Pydantic models + deps for the deep-search v4 Planner agent (cut-1.5).
+"""Pydantic schemas for the deep-search v4 Planner agent (planner-driven loop).
 
-The planner's decision surface is intentionally narrow:
+The planner is a **two-phase** agent:
 
-- :attr:`PlannerOutput.invoke` — which executors to run.
-- :attr:`PlannerOutput.focus`  — per-invoked-executor focus level (``high`` /
-  ``default`` / ``low``). Mapped programmatically in
-  :mod:`agents.deep_search_v4.planner.apply` to concrete expander +
-  reranker numbers via ``FOCUS_PROFILES``.
-- :attr:`PlannerOutput.sectors` — pre-filter; promoted out of reg's expander.
-- :attr:`PlannerOutput.rationale` — short Arabic justification (logged).
+- **Phase 1 — decide.** ``planner_decider`` emits a :class:`PlannerDecision`:
+  one of four retrieval *modes*, an optional ``support`` flag (modes 1–3),
+  optional sector pre-filter, and a logged rationale. It may instead pause via
+  the ``ask_user`` deferred tool when the query is too vague to plan.
+- **Phase 3 — respond.** ``planner_responder`` emits a :class:`PlannerResponse`:
+  the user-facing Arabic chat summary, a plain-text next-step suggestion, and a
+  machine ``suggested_action`` seam for future planner tools.
 
-Aggregator prompt key, expander caps, reranker caps, and RRF thresholds are
-**not** chosen by the LLM — they're derived from ``invoke`` + ``focus`` in code,
-so the planner stays cheap and the tuning surface stays out of the prompt.
+Phase 2 (retrieval) runs as plain Python between the two — no schema here.
+
+The per-mode numeric profile (expander caps, result budgets, aggregator prompt
+key) is derived from :class:`PlannerDecision` in :mod:`.apply` —
+``build_retrieval_config`` — so the LLM never picks numbers.
+
+This module is **pure** — it imports only ``pydantic``, never ``pydantic_ai``
+or any executor package, so the model tier of the test suite runs without the
+agent runtime installed.
 """
 from __future__ import annotations
 
 import json as _json
-from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
-Executor = Literal["reg", "compliance", "cases"]
-FocusLevel = Literal["high", "default", "low"]
+# The four retrieval modes. ``reg_led`` is the default for ordinary questions.
+Mode = Literal["case_led", "reg_led", "compliance_led", "full"]
+
+# Forward-compat seam: what the planner suggests the user do next. Each literal
+# (except "none"/"writer") maps to a future planner tool — see
+# PLANNER_TOOL_MIGRATION_PLAN.md.
+SuggestedAction = Literal["internet", "cross_executor", "writer", "none"]
 
 
-class PlannerOutput(BaseModel):
-    """Lightweight plan emitted by a single planner LLM call.
+class PlannerDecision(BaseModel):
+    """Phase-1 output — the retrieval plan.
 
-    The schema is deliberately small: 4 fields, no nested caps/thresholds. The
-    apply step (:mod:`.apply`) expands ``focus`` into concrete numbers and
-    derives the aggregator prompt key from ``invoke``.
+    Emitted by ``planner_decider``. A single mode choice drives everything:
+    executor set, caps, aggregator prompt. The apply step
+    (``build_retrieval_config``) expands it into a concrete ``RetrievalConfig``.
     """
 
-    invoke: list[Executor] = Field(
+    mode: Mode = Field(
         ...,
         description=(
-            "Subset of {'reg', 'compliance', 'cases'}. At least one executor "
-            "must be chosen. Order is irrelevant — the apply step uses a set."
+            "Exactly one retrieval mode. 'reg_led' is the default for ordinary "
+            "legal questions; 'case_led' when the lawyer asks about a specific "
+            "precedent or an open case; 'compliance_led' for procedural / "
+            "e-government questions; 'full' when the query genuinely needs the "
+            "statute, the procedure, and the case law together."
         ),
     )
-    focus: dict[Executor, FocusLevel] = Field(
-        ...,
+    support: bool = Field(
+        default=False,
         description=(
-            "Per-invoked-executor focus level. Must contain a key for every "
-            "entry in ``invoke``. Disabled executors should be omitted."
+            "When True, modes 1–3 also run their support executor (case_led + "
+            "reg, reg_led + compliance, compliance_led + reg). Ignored when "
+            "mode == 'full' — 'full' has no support role."
         ),
     )
     sectors: list[str] | None = Field(
         default=None,
         description=(
             "1–4 canonical sector names from "
-            "``agents.deep_search_v4.reg_search.sector_vocab.VALID_SECTORS``, "
+            "``agents.deep_search_v4.shared.sector_vocab.regulations.VALID_SECTORS``, "
             "or ``null`` when the query isn't sector-specific."
         ),
     )
     rationale: str = Field(
         ...,
-        description="Short Arabic justification for invoke + focus choices.",
+        description="Short Arabic justification for the mode + support choice (logged).",
     )
     aborted: bool = Field(
         default=False,
         description=(
-            "Set True when the user's response after an ask_user deferral is "
-            "so off-script that the agent cannot continue.  The orchestrator "
-            "should re-route via the router instead of resuming the current "
-            "planner run."
+            "Set True when the user's reply after an ask_user deferral is so "
+            "off-script that no plan can be built. The orchestrator re-routes "
+            "via the router instead of running phases 2–3."
         ),
     )
 
     # ------------------------------------------------------------------
-    # Validators
+    # Validators — sectors only (mode/support/aborted are constrained by type)
     # ------------------------------------------------------------------
-
-    @field_validator("invoke")
-    @classmethod
-    def _validate_invoke_nonempty_unique(cls, value: list[Executor]) -> list[Executor]:
-        if not value:
-            raise ValueError("invoke must contain at least one executor")
-        seen: set[str] = set()
-        for e in value:
-            if e in seen:
-                raise ValueError(f"invoke contains duplicate executor: {e!r}")
-            seen.add(e)
-        return value
-
-    @field_validator("focus")
-    @classmethod
-    def _validate_focus_keys(
-        cls, value: dict[Executor, FocusLevel], info,
-    ) -> dict[Executor, FocusLevel]:
-        # ``invoke`` is validated first (declaration order). Cross-field check.
-        invoked = info.data.get("invoke") or []
-        invoked_set = set(invoked)
-        focus_set = set(value.keys())
-        missing = invoked_set - focus_set
-        if missing:
-            raise ValueError(
-                f"focus must include every invoked executor; missing: {sorted(missing)}"
-            )
-        # Extra keys are tolerated but stripped to keep apply deterministic.
-        return {k: v for k, v in value.items() if k in invoked_set}
 
     @field_validator("sectors", mode="before")
     @classmethod
@@ -136,18 +120,37 @@ class PlannerOutput(BaseModel):
         return value
 
 
-@dataclass
-class PlannerDeps:
-    """Runtime deps for :func:`agents.deep_search_v4.planner.runner.run_planner`.
+class PlannerResponse(BaseModel):
+    """Phase-3 output — the user-facing chat message.
 
-    Intentionally minimal — the planner is a single LLM call with no corpus
-    access. ``_events`` mirrors the orchestrator's per-phase SSE buffer; if
-    ``emit_sse`` is provided the runner also calls it on every event.
+    Emitted by ``planner_responder`` after retrieval. The planner — not the
+    aggregator — writes the chat summary the user actually reads. The aggregator
+    still produces the immutable ``agent_search`` artifact body separately.
     """
 
-    model_override: str | None = None
-    _events: list[dict] = field(default_factory=list)
-    emit_sse: Callable[[dict], None] | None = None
+    chat_summary_md: str = Field(
+        ...,
+        description=(
+            "User-facing Arabic chat summary of the findings. Prose, not a "
+            "report: no '[n]' citation markers, no '##' headings — those belong "
+            "to the artifact, not the chat bubble."
+        ),
+    )
+    suggestion_md: str = Field(
+        default="",
+        description=(
+            "A short plain-text next-step suggestion for the user, or empty "
+            "string when there is nothing useful to suggest."
+        ),
+    )
+    suggested_action: SuggestedAction = Field(
+        default="none",
+        description=(
+            "Machine-readable next-step hint. 'internet' — a DB gap warrants a "
+            "web search; 'cross_executor' — another corpus is worth searching; "
+            "'writer' — hand off to the writer; 'none' — nothing to suggest."
+        ),
+    )
 
 
-__all__ = ["Executor", "FocusLevel", "PlannerOutput", "PlannerDeps"]
+__all__ = ["Mode", "SuggestedAction", "PlannerDecision", "PlannerResponse"]

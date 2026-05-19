@@ -8,6 +8,7 @@ interface SidebarState {
   expandedCases: Set<string>;
   selectedConversationId: string | null;
   selectedCaseId: string | null;
+  isCreateCaseDialogOpen: boolean;
 
   toggle: () => void;
   setOpen: (open: boolean) => void;
@@ -15,6 +16,7 @@ interface SidebarState {
   toggleCaseExpanded: (caseId: string) => void;
   setSelectedConversation: (id: string | null) => void;
   setSelectedCase: (id: string | null) => void;
+  setCreateCaseDialogOpen: (open: boolean) => void;
 }
 
 export const useSidebarStore = create<SidebarState>((set) => ({
@@ -23,6 +25,7 @@ export const useSidebarStore = create<SidebarState>((set) => ({
   expandedCases: new Set<string>(),
   selectedConversationId: null,
   selectedCaseId: null,
+  isCreateCaseDialogOpen: false,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   setOpen: (isOpen) => set({ isOpen }),
@@ -36,4 +39,5 @@ export const useSidebarStore = create<SidebarState>((set) => ({
     }),
   setSelectedConversation: (id) => set({ selectedConversationId: id }),
   setSelectedCase: (id) => set({ selectedCaseId: id }),
+  setCreateCaseDialogOpen: (isCreateCaseDialogOpen) => set({ isCreateCaseDialogOpen }),
 }));

@@ -22,13 +22,10 @@ Every executor's unfold modules are expected to implement:
 Compliance ("no real unfold" note)
 -----------------------------------
 Compliance data is flat -- every service row already contains all fields
-needed by both stages. The split between unfold_reranker and unfold_ura
-is purely a *field selection* concern:
-
-  Stage 1 (unfold_reranker): uses `service_context` (~600 chars) so a
-      30-row pool stays within reranker token budget.
-  Stage 2 (unfold_ura): uses `service_markdown` (full source text) so the
-      aggregator synthesises from richer content.
+needed by both stages. Both unfold_reranker and unfold_ura select the same
+compact `service_context` field (~600 chars; RPC-clamped to ~2,000): the
+reranker grades it and the aggregator synthesises from it. There is no
+full-markdown stage.
 
 There are no DB fetches in either compliance unfold module.
 """

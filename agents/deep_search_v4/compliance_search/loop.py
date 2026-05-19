@@ -13,11 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time as _time
 from datetime import datetime, timezone
 from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+
+# Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
+# When the planner passes a ``result_budget``, the keep is
+# ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
+# expander's actual emitted query count.
+MIN_EXPANDER_DIVISOR = 3
 
 from .expander import EXPANDER_LIMITS, create_expander_agent
 from .logger import (
@@ -181,12 +188,16 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
 
         logger.info("SearchNode: executing %d queries concurrently", len(queries))
         if state.sectors_override:
-            # Forward-compat: planner emits a sector list, but the compliance
-            # RPC has no sector parameter today. Log the intent and continue
-            # with an unfiltered search.
+            # hybrid_search_services now exposes a ``filter_sectors`` param
+            # (migration 035), but compliance still runs semantic-only here
+            # by design (D2 / Option A): the planner canonicalizes sectors
+            # against the regulations vocabulary, whose names differ from the
+            # unified vocab stored in services.sectors — passing them through
+            # raw would zero out every row. Wiring filter_sectors is gated on
+            # the planner-vocab unification (migration plan D2 / Option C).
             logger.info(
-                "compliance.search: sectors_override=%s — schema does not "
-                "support sector filter yet, ignoring",
+                "compliance.search: sectors_override=%s — not applied as a "
+                "DB filter (planner/services vocab mismatch, D2)",
                 state.sectors_override,
             )
         state.sse_events.append({
@@ -307,17 +318,29 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
             ))
 
         deps = ctx.deps
-        max_high = deps.compliance_max_high
-        max_medium = deps.compliance_max_medium
         reranker = create_reranker_agent(model_override=deps.model_override)
         n_queries = len(state.expander_output.queries) if state.expander_output else 1
+
+        # Dynamic result-budget model (MODE_PROFILES.md §1). When the planner
+        # passes a ``result_budget``, derive the keep cap from the expander's
+        # ACTUAL emitted query count N. When None (CLI / monitor path), fall
+        # back to the fixed ``reranker_max_keep``.
+        if deps.result_budget is not None:
+            max_keep = math.ceil(
+                deps.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR)
+            )
+            logger.info(
+                "RerankerNode: dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
+                deps.result_budget, n_queries, max_keep,
+            )
+        else:
+            max_keep = deps.reranker_max_keep
         user_message = build_reranker_user_message(
             state.focus_instruction,
             state.all_results_flat,
             state.round_count,
             n_queries,
-            max_high=max_high,
-            max_medium=max_medium,
+            max_keep=max_keep,
         )
 
         state.sse_events.append({
@@ -355,13 +378,12 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                                 service_ref=ref,
                                 title=row.get("service_name_ar", "") or "",
                                 content=row.get("service_context", "") or "",
-                                service_markdown=row.get("service_markdown", "") or "",
                                 provider_name=row.get("provider_name", "") or "",
-                                platform_name=row.get("platform_name", "") or "",
                                 service_url=(
                                     row.get("service_url") or row.get("url", "") or ""
                                 ),
-                                target_audience=row.get("target_audience") or [],
+                                sectors=row.get("sectors") or [],
+                                is_proactive=bool(row.get("is_proactive", False)),
                                 score=float(row.get("score", 0.0) or 0.0),
                                 relevance=dec.relevance or "medium",
                                 reasoning=dec.reasoning or "",
@@ -369,7 +391,8 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                             state.kept_results.append(typed)
                             kept_refs.add(ref)
 
-            # Apply caps to the total kept pool (sort by score desc within each tier)
+            # Apply a single flat cap to the total kept pool. High-relevance
+            # results are ordered ahead of medium; ties broken by score desc.
             high_kept = sorted(
                 [r for r in state.kept_results if r.relevance == "high"],
                 key=lambda r: -r.score,
@@ -378,12 +401,13 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                 [r for r in state.kept_results if r.relevance != "high"],
                 key=lambda r: -r.score,
             )
-            cap_truncated = max(0, len(high_kept) - max_high) + max(0, len(med_kept) - max_medium)
-            state.kept_results = high_kept[:max_high] + med_kept[:max_medium]
+            ordered = high_kept + med_kept
+            cap_truncated = max(0, len(ordered) - max_keep)
+            state.kept_results = ordered[:max_keep]
             if cap_truncated > 0:
                 logger.info(
-                    "RerankerNode: cap truncated %d results (max_high=%d max_medium=%d)",
-                    cap_truncated, max_high, max_medium,
+                    "RerankerNode: cap truncated %d results (max_keep=%d)",
+                    cap_truncated, max_keep,
                 )
 
             kept_count = len(state.kept_results)

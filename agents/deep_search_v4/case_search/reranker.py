@@ -33,16 +33,13 @@ def create_reranker_agent(
     prompt_key: str = "prompt_1",
     model_override: str | None = None,
 ) -> Agent[None, RerankerClassification]:
-    """Create a per-query classification reranker agent. No tools, no deps."""
+    """Create a per-query classification reranker agent. No tools, no deps.
+
+    ``model_override`` is a tier override token (``qwen``/``deepseek``/
+    ``alibaba``/``openrouter``) applied to the slot's policy; tier stays fixed.
+    """
     system_prompt = get_reranker_prompt(prompt_key)
-
-    from agents.model_registry import create_model
-
-    model = (
-        create_model(model_override)
-        if model_override
-        else get_agent_model("case_search_reranker")
-    )
+    model = get_agent_model("case_search_reranker", model_override)
 
     return Agent(
         model,
@@ -168,8 +165,7 @@ async def run_reranker_for_query(
     model_override: str | None = None,
     prompt_key: str = "prompt_1",
     *,
-    max_high: int = 6,
-    max_medium: int = 4,
+    max_keep: int = 10,
     round_trace: list[dict] | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
     """Run per-query LLM reranker classification for a single sub-query.
@@ -180,8 +176,7 @@ async def run_reranker_for_query(
         raw_markdown: Search results in markdown format (from search_pipeline).
         model_override: Optional model registry key.
         prompt_key: Which reranker prompt variant to use.
-        max_high: Max high-relevance results to keep per sub-query.
-        max_medium: Max medium-relevance results to keep per sub-query.
+        max_keep: Max results to keep per sub-query (single flat cap).
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
@@ -201,7 +196,7 @@ async def run_reranker_for_query(
     agent = create_reranker_agent(prompt_key=prompt_key, model_override=model_override)
     user_msg = build_reranker_user_message(
         query, rationale, raw_markdown,
-        max_high=max_high, max_medium=max_medium,
+        max_keep=max_keep,
     )
 
     logger.info(
@@ -317,7 +312,8 @@ async def run_reranker_for_query(
             })
         dropped += undecided
 
-    # Apply per-sub-query keep caps (sort by score desc within each tier)
+    # Apply a single flat per-sub-query keep cap. High-relevance results are
+    # ordered ahead of medium; ties broken by score desc.
     high_results = sorted(
         [r for r in kept if r.relevance == "high"],
         key=lambda r: -r.score,
@@ -326,14 +322,15 @@ async def run_reranker_for_query(
         [r for r in kept if r.relevance != "high"],
         key=lambda r: -r.score,
     )
-    truncated = max(0, len(high_results) - max_high) + max(0, len(med_results) - max_medium)
-    kept = high_results[:max_high] + med_results[:max_medium]
+    ordered = high_results + med_results
+    truncated = max(0, len(ordered) - max_keep)
+    kept = ordered[:max_keep]
     dropped += truncated
 
     if truncated > 0:
         logger.info(
-            "Reranker [%s]: cap truncated %d results (max_high=%d max_medium=%d)",
-            query[:40], truncated, max_high, max_medium,
+            "Reranker [%s]: cap truncated %d results (max_keep=%d)",
+            query[:40], truncated, max_keep,
         )
 
     logger.info(
@@ -352,5 +349,5 @@ async def run_reranker_for_query(
         results=kept,
         dropped_count=dropped,
         summary_note=classification.summary_note,
-        caps_applied={"max_high": max_high, "max_medium": max_medium, "truncated_by_cap": truncated},
+        caps_applied={"max_keep": max_keep, "truncated_by_cap": truncated},
     ), usage_entries, decision_log

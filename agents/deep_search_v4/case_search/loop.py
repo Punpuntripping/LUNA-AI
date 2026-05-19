@@ -16,10 +16,35 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+
+# Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
+# When the planner passes a ``result_budget``, the per-sub-query reranker keep
+# is ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
+# expander's actual emitted query count.
+MIN_EXPANDER_DIVISOR = 3
+
+
+def _resolve_reranker_max_keep(deps: "CaseSearchDeps", n_queries: int) -> int:
+    """Per-sub-query keep: dynamic from ``result_budget`` or fixed fallback.
+
+    When ``deps.result_budget`` is set (planner / orchestrator path), derive
+    the keep from the expander's ACTUAL emitted query count ``n_queries``.
+    When it is None (CLI path), return the fixed ``deps.reranker_max_keep``
+    unchanged.
+    """
+    if deps.result_budget is None:
+        return deps.reranker_max_keep
+    keep = math.ceil(deps.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR))
+    logger.info(
+        "case_search dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
+        deps.result_budget, n_queries, keep,
+    )
+    return keep
 
 from .unfold_ura import assemble_kept_cases
 from .unfold_reranker import (
@@ -282,6 +307,11 @@ class RerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
             "text": f"جاري تصنيف وتصفية النتائج ({len(current_round_logs)} استعلام)...",
         })
 
+        # Dynamic result-budget model (MODE_PROFILES.md §1): per-sub-query keep
+        # is derived from the expander's actual query count N when the planner
+        # passed a ``result_budget``; otherwise the fixed fallback is used.
+        reranker_max_keep = _resolve_reranker_max_keep(deps, len(current_round_logs))
+
         # Run per-query reranking concurrently (each gets its own trace list)
         per_query_traces: list[list[dict]] = [[] for _ in current_round_logs]
         tasks = [
@@ -291,8 +321,7 @@ class RerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
                 raw_markdown=sr.get("raw_markdown", ""),
                 model_override=state.model_override,
                 round_trace=per_query_traces[i],
-                max_high=deps.reranker_max_high,
-                max_medium=deps.reranker_max_medium,
+                max_keep=reranker_max_keep,
             )
             for i, sr in enumerate(current_round_logs)
         ]
@@ -762,6 +791,11 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             (q, cands[: self._TOP_N_PER_QUERY]) for q, cands in per_query
         ]
 
+        # Dynamic result-budget model (MODE_PROFILES.md §1): per-sub-query keep
+        # is derived from the expander's actual typed-query count N when the
+        # planner passed a ``result_budget``; otherwise the fixed fallback.
+        reranker_max_keep = _resolve_reranker_max_keep(deps, len(capped_per_query))
+
         state.sse_events.append({
             "type": "status",
             "text": (
@@ -801,8 +835,7 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                     rationale=f"[{q.channel}] {q.rationale}",
                     raw_markdown=raw_markdown,
                     model_override=state.model_override,
-                    max_high=deps.reranker_max_high,
-                    max_medium=deps.reranker_max_medium,
+                    max_keep=reranker_max_keep,
                     round_trace=_rt,
                 )
                 reranker_result._round_trace = _rt  # type: ignore[attr-defined]

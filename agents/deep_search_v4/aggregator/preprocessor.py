@@ -29,9 +29,12 @@ from typing import Any, Iterable
 from agents.deep_search_v4.reg_search.models import RerankedResult
 from agents.deep_search_v4.source_viewer import build_source_view
 from agents.deep_search_v4.ura.schema import (
+    AggregatorItem,
     CaseURAResult,
     ComplianceURAResult,
+    CrossRef,
     RegURAResult,
+    ReferenceView,
     URAResultBase,
 )
 
@@ -44,6 +47,8 @@ __all__ = [
     "attach_source_views",
     "collect_ordered_ura_results",
     "build_snippet",
+    "render_aggregator_content",
+    "render_cross_ref",
     "_identity_key",
     "_merge_duplicates",
 ]
@@ -177,22 +182,82 @@ def _build_snippet_text(text: str, max_chars: int = 500) -> str:
     return source[:cut].rstrip()
 
 
+# ---------------------------------------------------------------------------
+# Aggregator-view content rendering (URA v3.0 two-view)
+# ---------------------------------------------------------------------------
+#
+# The aggregator view is the citable / grounding source of truth. The synthesis
+# prompt block and the grounding validator both read the text produced here;
+# ``Reference.snippet`` is a truncated derivative for UI hover only.
+
+
+def render_cross_ref(cr: CrossRef) -> str:
+    """Render one resolved cross-reference.
+
+    Shape (identical in both projections, per the URA reframe plan)::
+
+        {target_reg_title}, {target_type}:{target_number}
+        content: {content}
+    """
+    number = "" if cr.target_number is None else str(cr.target_number)
+    head = f"{cr.target_reg_title or ''}, {cr.target_type or ''}:{number}".strip()
+    body = (cr.content or "").strip()
+    if body:
+        return f"{head}\ncontent: {body}"
+    return head
+
+
+def render_aggregator_content(item: AggregatorItem) -> str:
+    """Render an ``AggregatorItem`` into the full synthesis-input text body.
+
+    This is the canonical content the LLM synthesizes from AND the text the
+    grounding validator grounds against. Per-domain shape:
+
+    - regulations: ``chunk_content`` followed by rendered ``cross_refs``.
+    - compliance:  ``service_context``.
+    - cases:       ``case_content`` followed by ``referenced_regulations``.
+    """
+    parts: list[str] = []
+    if item.domain == "regulations":
+        if item.chunk_content:
+            parts.append(item.chunk_content.strip())
+        for cr in item.cross_refs or []:
+            rendered = render_cross_ref(cr)
+            if rendered:
+                parts.append(rendered)
+    elif item.domain == "compliance":
+        if item.service_context:
+            parts.append(item.service_context.strip())
+    elif item.domain == "cases":
+        if item.case_content:
+            parts.append(item.case_content.strip())
+        for rr in item.referenced_regulations or []:
+            if isinstance(rr, dict):
+                text = " ".join(
+                    str(v).strip() for v in rr.values() if v
+                ).strip()
+            else:
+                text = str(rr).strip()
+            if text:
+                parts.append(text)
+    return "\n\n".join(p for p in parts if p)
+
+
 def build_snippet(result, max_chars: int = 500) -> str:
-    """Extract a short excerpt suitable for hover tooltips + validator grounding.
+    """Extract a short excerpt suitable for hover tooltips.
 
     Accepts either a legacy ``RerankedResult`` or a URA result (any of the
-    discriminated union members). Prefers ``content`` -> ``section_summary`` ->
-    ``title``.
+    discriminated union members).
+
+    URA v3.0: the snippet is derived from the **aggregator-view** content
+    (``result.for_aggregator()`` -> ``AggregatorItem``), truncated. It is
+    UI-hover-only metadata, NOT the grounding source of truth.
+
+    Legacy ``RerankedResult``: prefers ``content`` -> ``section_summary`` ->
+    ``title`` (pre-URA path, unchanged).
     """
-    if isinstance(result, RegURAResult):
-        source = (
-            result.content
-            or result.section_summary
-            or result.title
-            or ""
-        )
-    elif isinstance(result, (ComplianceURAResult, CaseURAResult)):
-        source = result.content or result.title or ""
+    if isinstance(result, (RegURAResult, ComplianceURAResult, CaseURAResult)):
+        source = render_aggregator_content(result.for_aggregator())
     else:
         # Legacy RerankedResult
         source = (
@@ -227,75 +292,76 @@ def _reference_from_result(n: int, result: RerankedResult) -> Reference:
 
 
 # ---------------------------------------------------------------------------
-# URA 2.0 path -- typed URA result -> Reference
+# URA v3.0 path -- typed URA result -> Reference (via the two-view projections)
 # ---------------------------------------------------------------------------
+#
+# This is the load-bearing ``ReferenceView -> Reference`` mapping. It lives
+# here (not in ura/schema.py) so schema.py never imports the aggregator --
+# preprocessor.py already depends on both modules.
 
 
 def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
-    """Dispatch on the URA discriminated union to build a Reference.
+    """Build a numbered ``Reference`` from a URA result via ``for_reference()``.
 
-    - RegURAResult:        source_type passes through ("article" | "section")
-    - ComplianceURAResult: source_type = "gov_service"; label = provider/platform name
-    - CaseURAResult:       source_type = "case"; label = court name
+    The URA result exposes a typed ``ReferenceView`` (display metadata) and a
+    typed ``AggregatorItem`` (citable content). The snippet is derived from the
+    aggregator view, truncated -- UI hover only.
     """
+    view: ReferenceView = r.for_reference()  # type: ignore[attr-defined]
     snippet = build_snippet(r)
 
-    if isinstance(r, RegURAResult):
-        st = r.source_type if r.source_type in ("article", "section") else "article"
+    if view.domain == "regulations":
         return Reference(
             n=n,
-            source_type=st,  # type: ignore[arg-type]
-            regulation_title=r.regulation_title or "",
-            article_num=r.article_num if st == "article" else None,
-            section_title=r.section_title if st == "section" else None,
-            title=r.title,
+            source_type="chunk",
+            regulation_title=view.reg_title or "",
+            title=view.reg_title or "",
             snippet=snippet,
-            relevance=r.relevance,
-            ref_id=r.ref_id,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
             domain="regulations",
+            landing_url=view.landing_url or "",
+            cross_refs=list(view.cross_refs or []),
         )
 
-    if isinstance(r, ComplianceURAResult):
-        label = r.provider_name or r.platform_name or ""
+    if view.domain == "compliance":
         return Reference(
             n=n,
             source_type="gov_service",
-            regulation_title=label,
-            article_num=None,
-            section_title=None,
-            title=r.title,
+            regulation_title=view.provider_name or "",
+            title=view.service_name or "",
             snippet=snippet,
-            relevance=r.relevance,
-            ref_id=r.ref_id,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
             domain="compliance",
+            service_url=view.service_url or "",
+            url=view.url or "",
         )
 
-    if isinstance(r, CaseURAResult):
+    if view.domain == "cases":
         return Reference(
             n=n,
             source_type="case",
-            regulation_title=r.court or "",
-            article_num=None,
-            section_title=None,
-            title=r.title,
+            regulation_title=view.entity_name or view.court or "",
+            title=view.case_number or view.judgment_number or "قضية",
             snippet=snippet,
-            relevance=r.relevance,
-            ref_id=r.ref_id,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
             domain="cases",
+            details_url=view.details_url or "",
+            entity_name=view.entity_name or "",
         )
 
-    # Defensive: unknown URA subclass. Build a minimal Reference so callers
-    # keep working; upstream type checkers will catch new domains.
+    # Defensive: unknown URA domain. Build a minimal Reference so callers keep
+    # working; upstream type checkers catch new domains.
     return Reference(
         n=n,
         source_type="regulation",
-        regulation_title=getattr(r, "title", "") or "",
-        article_num=None,
-        section_title=None,
-        title=getattr(r, "title", "") or "",
+        regulation_title="",
+        title="",
         snippet=snippet,
-        relevance=getattr(r, "relevance", "medium"),
-        ref_id=getattr(r, "ref_id", "") or "",
+        relevance=getattr(view, "relevance", "medium"),
+        ref_id=getattr(view, "ref_id", "") or "",
         domain="regulations",
     )
 

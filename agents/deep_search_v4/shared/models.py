@@ -41,9 +41,9 @@ class RerankerQueryResult:
     unfold_rounds: int = 0
     total_unfolds: int = 0
     caps_applied: dict = field(default_factory=dict)
-    # ``caps_applied`` carries {"max_high": int, "max_medium": int,
-    # "truncated_by_cap": int} when per-run keep caps were applied by the
-    # domain reranker. Empty dict when caps were not active or not supported.
+    # ``caps_applied`` carries {"max_keep": int, "truncated_by_cap": int} when
+    # the per-run flat keep cap was applied by the domain reranker. Empty dict
+    # when the cap was not active or not supported.
 
 
 __all__ = ["Domain", "DomainResult", "RerankerQueryResult"]

@@ -35,20 +35,13 @@ def create_reranker_agent(
 ) -> Agent[None, ServiceRerankerOutput]:
     """Create ServiceReranker agent — structured output, no tools.
 
-    If ``model_override`` is provided it is used in place of the registry
-    default (``compliance_search_reranker``). Pass ``None`` (default) to use
-    the configured default model.
+    ``model_override`` is a tier override token (``qwen``/``deepseek``/
+    ``alibaba``/``openrouter``) applied to the slot's policy; tier stays fixed.
 
     Returns:
         Configured Agent with ServiceRerankerOutput output type.
     """
-    from agents.model_registry import create_model
-
-    model = (
-        create_model(model_override)
-        if model_override
-        else get_agent_model("compliance_search_reranker")
-    )
+    model = get_agent_model("compliance_search_reranker", model_override)
     return Agent(
         model,
         name="compliance_search_reranker",

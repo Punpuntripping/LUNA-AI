@@ -31,21 +31,42 @@ def _truncate(text: str, n: int = 220) -> str:
 # URA renderer
 # ---------------------------------------------------------------------------
 
+def _render_cross_refs(cross_refs: Any) -> list[str]:
+    """Render a list of ``CrossRef`` objects as markdown bullet lines."""
+    out: list[str] = []
+    for cr in cross_refs or []:
+        target_type = getattr(cr, "target_type", "") or ""
+        target_reg_title = getattr(cr, "target_reg_title", "") or ""
+        target_number = getattr(cr, "target_number", None)
+        relation = getattr(cr, "relation", "") or ""
+        cr_content = getattr(cr, "content", "") or ""
+        num = "" if target_number is None else str(target_number)
+        head = f"{target_reg_title}, {target_type}:{num}".strip()
+        if relation:
+            head = f"{head} ({relation})"
+        out.append(f"  - {head}")
+        if cr_content:
+            out.append(f"    content: {_truncate(cr_content, 300)}")
+    return out
+
+
 def _render_result_block(idx: int, r: Any) -> str:
+    """Render one URA v3.0 result (RegURAResult / ComplianceURAResult /
+    CaseURAResult) as a markdown block."""
     domain = getattr(r, "domain", "?")
     source_type = getattr(r, "source_type", "?")
     ref_id = getattr(r, "ref_id", "?")
-    title = getattr(r, "title", "")
     relevance = getattr(r, "relevance", "?")
     reasoning = getattr(r, "reasoning", "") or ""
     appears = getattr(r, "appears_in_sub_queries", []) or []
     rrf_max = getattr(r, "rrf_max", 0.0)
-    content = getattr(r, "content", "") or ""
+
+    # URA v3.0: no generic title/content -- each domain names its own.
+    content = ""
 
     lines: list[str] = []
     lines.append(f"### [{idx}] {ref_id} -- {domain} -- {source_type}")
     lines.append("")
-    lines.append(f"- **title**: {title}")
     lines.append(f"- **relevance**: {relevance}")
     lines.append(f"- **rrf_max**: {rrf_max}")
     lines.append(f"- **appears_in_sub_queries**: {appears}")
@@ -53,44 +74,48 @@ def _render_result_block(idx: int, r: Any) -> str:
         lines.append(f"- **reasoning**: {reasoning}")
 
     if domain == "regulations":
-        lines.append(f"- **regulation_title**: {getattr(r, 'regulation_title', '')}")
-        if getattr(r, "article_num", None):
-            lines.append(f"- **article_num**: {r.article_num}")
-        if getattr(r, "section_title", None):
-            lines.append(f"- **section_title**: {r.section_title}")
-        if getattr(r, "article_context", ""):
-            lines.append(f"- **article_context**: {r.article_context}")
-        if getattr(r, "section_summary", ""):
-            lines.append(f"- **section_summary**: {r.section_summary}")
-        if getattr(r, "references_content", ""):
+        lines.append(f"- **reg_title**: {getattr(r, 'reg_title', '')}")
+        if getattr(r, "reg_scope", ""):
+            lines.append(f"- **reg_scope**: {getattr(r, 'reg_scope', '')}")
+        if getattr(r, "landing_url", ""):
+            lines.append(f"- **landing_url**: {getattr(r, 'landing_url', '')}")
+        if getattr(r, "pdf_url", ""):
+            lines.append(f"- **pdf_url**: {getattr(r, 'pdf_url', '')}")
+        if getattr(r, "owns", None):
+            lines.append(f"- **owns**: {getattr(r, 'owns', {})}")
+        cross_refs = getattr(r, "cross_refs", []) or []
+        if cross_refs:
+            lines.append(f"- **cross_refs** ({len(cross_refs)}):")
+            lines.extend(_render_cross_refs(cross_refs))
+        content = getattr(r, "chunk_content", "") or ""
+        chunk_context = getattr(r, "chunk_context", "") or ""
+        if chunk_context:
             lines.append("")
-            lines.append("**references_content**:")
+            lines.append("**chunk_context**:")
             lines.append("")
             lines.append("```")
-            lines.append(r.references_content)
+            lines.append(chunk_context)
             lines.append("```")
     elif domain == "compliance":
+        lines.append(f"- **service_name**: {getattr(r, 'service_name', '')}")
         lines.append(f"- **service_ref**: {getattr(r, 'service_ref', '')}")
         lines.append(f"- **provider_name**: {getattr(r, 'provider_name', '')}")
-        lines.append(f"- **platform_name**: {getattr(r, 'platform_name', '')}")
         if getattr(r, "service_url", ""):
             lines.append(f"- **service_url**: {r.service_url}")
-        if getattr(r, "target_audience", ""):
-            lines.append(f"- **target_audience**: {r.target_audience}")
-        if getattr(r, "service_channels", ""):
-            lines.append(f"- **service_channels**: {r.service_channels}")
+        if getattr(r, "url", ""):
+            lines.append(f"- **url**: {r.url}")
+        sectors = getattr(r, "sectors", []) or []
+        if sectors:
+            lines.append(f"- **sectors**: {sectors}")
         lines.append(f"- **is_most_used**: {getattr(r, 'is_most_used', False)}")
-        if getattr(r, "service_markdown", ""):
-            lines.append("")
-            lines.append("**service_markdown**:")
-            lines.append("")
-            lines.append("```")
-            lines.append(r.service_markdown)
-            lines.append("```")
+        lines.append(f"- **is_proactive**: {getattr(r, 'is_proactive', False)}")
+        content = getattr(r, "service_context", "") or ""
     elif domain == "cases":
+        lines.append(f"- **title**: {getattr(r, 'title', '')}")
         for fld in (
             "court", "city", "court_level", "case_number", "judgment_number",
-            "date_hijri", "appeal_result",
+            "date_hijri", "appeal_result", "entity_name", "entity_id",
+            "details_url",
         ):
             val = getattr(r, fld, None)
             if val:
@@ -101,6 +126,7 @@ def _render_result_block(idx: int, r: Any) -> str:
         ref_regs = getattr(r, "referenced_regulations", []) or []
         if ref_regs:
             lines.append(f"- **referenced_regulations**: {ref_regs}")
+        content = getattr(r, "case_content", "") or ""
 
     lines.append("")
     lines.append("**content**:")

@@ -2,7 +2,7 @@
 
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
-import { Moon, Sun, Monitor } from "lucide-react";
+import { Moon, Sun, Monitor, Leaf } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -11,12 +11,21 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const THEME_CYCLE = ["light", "dark", "system"] as const;
+const THEME_CYCLE = ["light", "light-conservatory", "dark", "system"] as const;
+type ThemeKey = (typeof THEME_CYCLE)[number];
 
-const THEME_LABELS: Record<string, string> = {
-  light: "الوضع الفاتح",
-  dark: "الوضع الداكن",
+const THEME_LABELS: Record<ThemeKey, string> = {
+  light: "ورق العشب — فاتح",
+  "light-conservatory": "البيت الزجاجي — فاتح بديل",
+  dark: "النظام المُمَنهَج — داكن",
   system: "وضع النظام",
+};
+
+const THEME_ICONS: Record<ThemeKey, React.ComponentType<{ className?: string }>> = {
+  light: Sun,
+  "light-conservatory": Leaf,
+  dark: Moon,
+  system: Monitor,
 };
 
 export function ThemeToggle() {
@@ -28,14 +37,12 @@ export function ThemeToggle() {
   }, []);
 
   function cycleTheme() {
-    const currentIndex = THEME_CYCLE.indexOf(
-      (theme as (typeof THEME_CYCLE)[number]) ?? "system"
-    );
-    const nextIndex = (currentIndex + 1) % THEME_CYCLE.length;
-    setTheme(THEME_CYCLE[nextIndex]);
+    const current = (theme as ThemeKey) ?? "system";
+    const idx = THEME_CYCLE.indexOf(current);
+    const nextIdx = (idx + 1) % THEME_CYCLE.length;
+    setTheme(THEME_CYCLE[nextIdx]);
   }
 
-  // Prevent hydration mismatch — render a placeholder until mounted
   if (!mounted) {
     return (
       <Button variant="ghost" size="icon" disabled aria-label="تبديل المظهر">
@@ -44,7 +51,9 @@ export function ThemeToggle() {
     );
   }
 
-  const label = THEME_LABELS[theme ?? "system"] ?? THEME_LABELS.system;
+  const key = (theme as ThemeKey) ?? "system";
+  const Icon = THEME_ICONS[key] ?? Monitor;
+  const label = THEME_LABELS[key] ?? THEME_LABELS.system;
 
   return (
     <TooltipProvider>
@@ -56,9 +65,7 @@ export function ThemeToggle() {
             onClick={cycleTheme}
             aria-label="تبديل المظهر"
           >
-            {theme === "light" && <Sun className="h-4 w-4" />}
-            {theme === "dark" && <Moon className="h-4 w-4" />}
-            {theme === "system" && <Monitor className="h-4 w-4" />}
+            <Icon className="h-4 w-4" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">

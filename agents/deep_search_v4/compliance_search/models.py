@@ -84,16 +84,17 @@ class RerankedServiceResult(BaseModel):
     title: str = Field(default="", description="Arabic service name")
     content: str = Field(
         default="",
-        description="Compact service context (reranker view, ~600 chars)",
-    )
-    service_markdown: str = Field(
-        default="",
-        description="Full service description (aggregator view)",
+        description="Compact service context — reranker AND aggregator view",
     )
     provider_name: str = Field(default="", description="Government entity name")
-    platform_name: str = Field(default="", description="Digital platform name")
     service_url: str = Field(default="", description="Service URL")
-    target_audience: list[str] = Field(default_factory=list)
+    sectors: list[str] = Field(
+        default_factory=list,
+        description="Unified ministry-sector tags (same vocab as cases.legal_domains)",
+    )
+    is_proactive: bool = Field(
+        default=False, description="Whether this is a proactive government service",
+    )
     score: float = Field(default=0.0, description="RRF hybrid score")
     relevance: Literal["high", "medium"] = Field(default="medium")
     reasoning: str = Field(default="", description="Arabic explanation of relevance")
@@ -162,11 +163,11 @@ class LoopState:
     per_query_service_refs: dict[str, list[str]] = field(default_factory=dict)
     # Planner-supplied caps (cap defaults match orchestrator FullLoopDeps).
     expander_max_queries: int | None = None
-    reranker_max_high: int = 6
-    reranker_max_medium: int = 4
-    # Planner-supplied sector list. The compliance schema does not yet
-    # support sector filtering at the RPC level — this field is plumbed
-    # through for forward-compat (logged on use, otherwise no-op).
+    # Planner-supplied sector list. Forwarded by SearchNode to
+    # search_compliance_raw -> hybrid_search_services' ``filter_sectors``
+    # array-overlap filter. NOTE: the planner currently canonicalizes
+    # against the regulations vocabulary, whose names differ from the
+    # unified vocab stored in services.sectors — see migration plan D2.
     sectors_override: list[str] | None = None
 
 
@@ -181,7 +182,12 @@ class ComplianceSearchDeps:
     use_reranker: bool = False
     mock_results: dict | None = None  # For testing: {"compliance": "...markdown..."}
     model_override: str | None = None  # Optional model override for the reranker
-    compliance_max_high: int = 2    # Max high-relevance results to keep (total pool); prefer 1
-    compliance_max_medium: int = 3  # Max medium-relevance results to keep (total pool)
+    reranker_max_keep: int = 5  # Max results to keep — single flat cap over the total pool
+    # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
+    # planner/orchestrator, the keep cap is derived at runtime as
+    # ceil(result_budget / max(N, 3)) from the expander's actual query count
+    # N — and ``reranker_max_keep`` above is ignored. When None (CLI / monitor
+    # path), the fixed ``reranker_max_keep`` is used.
+    result_budget: int | None = None
     _events: list[dict] = field(default_factory=list)
     _search_log: list[dict] = field(default_factory=list)

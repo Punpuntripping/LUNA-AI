@@ -5,18 +5,20 @@ Two factory functions:
 - `create_dcr_agents(model_name)` — tuple of (draft, critique, rewrite) agents
   used by prompt_3 (Draft-Critique-Rewrite chain).
 
-Both consume `qwen3.6-plus` by default; fallback to `gemini-3-flash` is
-handled at the runner level, not here — keeping this module pure & declarative.
+Both resolve their model via the ``aggregator`` tier slot
+(:func:`agents.utils.agent_models.get_agent_model`), which yields a provider
+FallbackModel. ``model_name`` is a provenance label only — it does NOT select a
+model. The runner's validation-based retry (primary → fallback prompt) is a
+separate, complementary mechanism.
 """
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
-from agents.model_registry import create_model
+from agents.utils.agent_models import get_agent_model
 
 from .models import AggregatorLLMOutput
 from .prompts import get_aggregator_prompt
@@ -32,20 +34,21 @@ AGGREGATOR_LIMITS = UsageLimits(
 
 def create_aggregator_agent(
     prompt_key: str = "prompt_1",
-    model_name: str = "qwen3.6-plus",
+    model_name: str | None = None,
 ) -> Agent[None, AggregatorLLMOutput]:
     """Single-shot aggregator agent.
 
     Args:
         prompt_key: Variant key into AGGREGATOR_PROMPTS ("prompt_1", "prompt_2",
             "prompt_4", or the three DCR stage keys when called by the runner).
-        model_name: Key in agents.model_registry.MODEL_REGISTRY.
+        model_name: Provenance label only — does NOT select a model. The model
+            is always the ``aggregator`` tier FallbackModel.
 
     Returns:
         Agent configured with the selected prompt and AggregatorLLMOutput type.
     """
     system_prompt = get_aggregator_prompt(prompt_key)
-    model = create_model(model_name)
+    model = get_agent_model("aggregator")
 
     agent: Agent[None, AggregatorLLMOutput] = Agent(
         model,
@@ -79,7 +82,7 @@ class _CritiqueOutput(AggregatorLLMOutput):
 
 
 def create_dcr_agents(
-    model_name: str = "qwen3.6-plus",
+    model_name: str | None = None,
 ) -> tuple[
     Agent[None, AggregatorLLMOutput],
     Agent[None, AggregatorLLMOutput],
@@ -87,8 +90,9 @@ def create_dcr_agents(
 ]:
     """Three agents for the Draft → Critique → Rewrite chain.
 
-    All three use the same model. If any stage fails, the runner falls back
-    whole-chain to single-shot Gemini — stages are not individually retried.
+    All three use the ``aggregator`` tier model. ``model_name`` is a provenance
+    label only — it does NOT select a model. If any stage fails, the runner
+    falls back whole-chain to single-shot — stages are not individually retried.
     """
     def _attach_summary_validator(
         a: Agent[None, AggregatorLLMOutput],
@@ -106,21 +110,21 @@ def create_dcr_agents(
         return a
 
     draft = _attach_summary_validator(Agent(
-        create_model(model_name),
+        get_agent_model("aggregator"),
         name="aggregator_draft",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_draft"),
         retries=1,
     ))
     critique = _attach_summary_validator(Agent(
-        create_model(model_name),
+        get_agent_model("aggregator"),
         name="aggregator_critique",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_critique"),
         retries=1,
     ))
     rewrite = _attach_summary_validator(Agent(
-        create_model(model_name),
+        get_agent_model("aggregator"),
         name="aggregator_rewrite",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_rewrite"),

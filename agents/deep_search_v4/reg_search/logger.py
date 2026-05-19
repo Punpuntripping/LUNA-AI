@@ -47,6 +47,22 @@ def _load_test_queries() -> dict:
     return {"metadata": {}, "queries": []}
 
 
+def _query_text(q: dict) -> str:
+    """Extract a query's text, tolerating both test_queries.json schemas.
+
+    Most entries carry a flat ``text`` string. Some (e.g. multi-message
+    consultations) carry ``sub_queries`` — a list of ``{"text": ...}`` objects;
+    those are joined into one query string.
+    """
+    text = q.get("text")
+    if text:
+        return text
+    subs = q.get("sub_queries") or []
+    return "\n\n".join(
+        s.get("text", "") for s in subs if isinstance(s, dict) and s.get("text")
+    ).strip()
+
+
 def resolve_query_id(query_text: str | None, query_id: int | None = None) -> tuple[int, str]:
     """Resolve a query to its ID and text.
 
@@ -72,7 +88,7 @@ def resolve_query_id(query_text: str | None, query_id: int | None = None) -> tup
     if query_id is not None:
         for q in queries:
             if q.get("id") == query_id:
-                return query_id, q["text"]
+                return query_id, _query_text(q)
         raise ValueError(f"Query ID {query_id} not found in test_queries.json")
 
     # Random pick (no query text provided)
@@ -80,7 +96,7 @@ def resolve_query_id(query_text: str | None, query_id: int | None = None) -> tup
         if not queries:
             raise ValueError("No queries in test_queries.json and no query text provided")
         pick = random.choice(queries)
-        return pick["id"], pick["text"]
+        return pick["id"], _query_text(pick)
 
     # Try to match existing query by text
     for q in queries:
@@ -353,7 +369,9 @@ def save_reranker_md(
         lines.append("")
         for i, res in enumerate(query_result.results, 1):
             rel_label = "عالية" if res.relevance == "high" else "متوسطة"
-            type_label = "مادة" if res.source_type == "article" else "باب/فصل"
+            type_label = {"article": "مادة", "section": "باب/فصل"}.get(
+                res.source_type, "مقطع"
+            )
             lines.append(f"### {i}. [{type_label}] {res.title} (صلة: {rel_label})")
             if res.regulation_title:
                 lines.append(f"- **النظام:** {res.regulation_title}")
@@ -374,11 +392,12 @@ def save_reranker_md(
     except Exception as e:
         logger.warning("Failed to save reranker MD: %s", e)
 
-    # Per-round I/O trace — written when the reranker ran multiple LLM rounds
-    # (e.g. round 2 after unfolds). Each file shows the exact markdown the LLM
-    # received and the full classification it emitted.
+    # Per-round I/O trace — written for EVERY query and EVERY round, so the
+    # full reranker process is inspectable: each `round_N_input.md` is the exact
+    # markdown the LLM received, each `round_N_output.md` the full classification
+    # it emitted.
     round_trace: list[dict] = getattr(query_result, "_round_trace", None) or []
-    if len(round_trace) > 1 or (len(round_trace) == 1 and round_trace[0].get("unfolds")):
+    if round_trace:
         rounds_dir = run_dir / "reranker" / f"q{query_index}_rounds"
         try:
             rounds_dir.mkdir(parents=True, exist_ok=True)
@@ -409,28 +428,32 @@ def save_reranker_md(
                     f"- **sufficient**: {cls.get('sufficient')}",
                     f"- **summary_note**: {cls.get('summary_note', '')}",
                     "",
-                    "## Decisions",
+                    f"## Decisions ({len(cls.get('decisions', []))})",
                     "",
-                    "| pos | action | relevance | reasoning |",
-                    "|-----|--------|-----------|-----------|",
+                    "| label | action | direction | relevance | reasoning |",
+                    "|-------|--------|-----------|-----------|-----------|",
                 ]
                 for d in cls.get("decisions", []):
                     r = (d.get("reasoning") or "").replace("|", "\\|").replace("\n", " ")
-                    if len(r) > 160:
-                        r = r[:160] + "..."
                     out_lines.append(
-                        f"| {d.get('position')} | {d.get('action')} "
-                        f"| {d.get('relevance', '-')} | {r} |"
+                        f"| {d.get('label', '-')} | {d.get('action', '-')} "
+                        f"| {d.get('direction') or '-'} | {d.get('relevance') or '-'} | {r} |"
                     )
 
                 if rt.get("unfolds"):
                     out_lines += ["", "## Unfolds triggered after this round", ""]
                     for u in rt["unfolds"]:
-                        status = f"{u['resulting_blocks']} blocks" if u["resulting_blocks"] else u.get("error", "0 blocks")
-                        out_lines.append(f"- `{u['mode']}` on `{u['block_id'][:12]}` → {status}")
-                        if u.get("titles"):
-                            for t in u["titles"]:
-                                out_lines.append(f"  - {t}")
+                        # v2 reranker unfold_summary shape:
+                        # {label, direction, result, new_label?}
+                        result = u.get("result", "?")
+                        direction = u.get("direction", "?")
+                        if result == "ok":
+                            detail = f"→ new block `{u.get('new_label', '')}`"
+                        else:
+                            detail = f"({result})"
+                        out_lines.append(
+                            f"- `{u.get('label', '')}` unfold {direction} {detail}"
+                        )
 
                 out_path.write_text("\n".join(out_lines), encoding="utf-8")
         except Exception as e:
@@ -496,15 +519,15 @@ def save_reranker_json(
             "rounds": rounds,
             "decisions": {
                 "kept": [
-                    {"position": d["position"], "rrf": d.get("rrf", 0), "relevance": d.get("relevance", "medium")}
+                    {"label": d.get("label", ""), "rrf": d.get("rrf", 0), "relevance": d.get("relevance", "medium")}
                     for d in kept_decisions
                 ],
                 "dropped": [
-                    {"position": d["position"], "rrf": d.get("rrf", 0)}
+                    {"label": d.get("label", ""), "rrf": d.get("rrf", 0)}
                     for d in dropped_decisions
                 ],
                 "unfolded": [
-                    {"position": d["position"], "rrf": d.get("rrf", 0)}
+                    {"label": d.get("label", ""), "rrf": d.get("rrf", 0)}
                     for d in unfolded_decisions
                 ],
             },

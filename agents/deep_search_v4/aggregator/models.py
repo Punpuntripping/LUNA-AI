@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.source_viewer import SourceView
+from agents.deep_search_v4.ura.schema import CrossRef
 
 if TYPE_CHECKING:
     from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
@@ -25,15 +26,16 @@ if TYPE_CHECKING:
 class Reference(BaseModel):
     """One numbered citation entry in the final reference list.
 
-    `n` is the 1-based number used in the synthesis body as `(n)` or `(n,m)`.
+    `n` is the 1-based number used in the synthesis body as `[n]` or `[n,m]`.
     Numbers are assigned by the pre-processor (code), NOT by the LLM —
     this is the central anti-hallucination mechanism.
     """
 
-    n: int = Field(description="1-based citation number used inline in synthesis")
+    n: int = Field(description="1-based citation number used inline in synthesis as [n]")
     source_type: Literal[
         "article",
         "section",
+        "chunk",
         "regulation",
         "gov_service",
         "form",
@@ -42,16 +44,20 @@ class Reference(BaseModel):
     regulation_title: str = Field(description="Parent regulation name (Arabic)")
     article_num: Optional[str] = Field(
         default=None,
-        description="Article number if source_type == 'article'",
+        description="Legacy article number (pre-URA-v3.0 reranker path only)",
     )
     section_title: Optional[str] = Field(
         default=None,
-        description="Section path if source_type == 'section'",
+        description="Legacy section path (pre-URA-v3.0 reranker path only)",
     )
     title: str = Field(description="Human-readable title (Arabic)")
     snippet: str = Field(
         default="",
-        description="Short Arabic excerpt (used for UI hover + validator grounding)",
+        description=(
+            "Short Arabic excerpt for UI hover only. Derived from the "
+            "aggregator-view content (truncated). NOT the grounding source "
+            "of truth -- the validator grounds against aggregator-view content."
+        ),
     )
     relevance: Literal["high", "medium"] = Field(description="Upstream reranker tag")
     ref_id: str = Field(
@@ -61,6 +67,33 @@ class Reference(BaseModel):
     domain: Literal["regulations", "compliance", "cases"] = Field(
         default="regulations",
         description="Which executor produced this reference",
+    )
+    # -- Reference-view link/metadata fields (URA v3.0 two-view reframe) -----
+    # Populated from ``URAResult.for_reference()`` -> ``ReferenceView``.
+    # Display-only metadata for the citation panel / frontend.
+    landing_url: str = Field(
+        default="",
+        description="Regulation landing URL (reg domain)",
+    )
+    service_url: str = Field(
+        default="",
+        description="Government service URL (compliance domain)",
+    )
+    url: str = Field(
+        default="",
+        description="National-platform URL fallback for service_url (compliance domain)",
+    )
+    details_url: str = Field(
+        default="",
+        description="Court ruling details URL (cases domain)",
+    )
+    entity_name: str = Field(
+        default="",
+        description="Resolved court/entity Arabic name (cases domain)",
+    )
+    cross_refs: list[CrossRef] = Field(
+        default_factory=list,
+        description="Resolved cross-references (reg domain, reference-view cap)",
     )
     source_view: SourceView | None = Field(
         default=None,
@@ -73,7 +106,10 @@ class Reference(BaseModel):
     def render_label(self) -> str:
         """Human-readable reference label for the end-of-doc list.
 
-        Example: "نظام الأحوال الشخصية — مادة 51"
+        URA v3.0: reg references are chunk-shaped -- the article/section
+        distinction is gone, so reg degrades to a bare ``regulation_title``.
+        The legacy ``article``/``section`` types (pre-URA reranker path)
+        still render the richer label.
         """
         if self.source_type == "article" and self.article_num:
             return f"{self.regulation_title} — مادة {self.article_num}"
@@ -86,7 +122,7 @@ class AggregatorLLMOutput(BaseModel):
     """Raw output expected from the LLM (before post-validation).
 
     The LLM receives pre-numbered references and must only:
-    - write synthesis_md using `(n)` inline citations
+    - write synthesis_md using `[n]` inline citations
     - list the reference numbers it actually used in `used_refs`
     - flag any gaps it noticed
     - self-rate confidence
@@ -94,7 +130,7 @@ class AggregatorLLMOutput(BaseModel):
     """
 
     synthesis_md: str = Field(
-        description="Arabic markdown body with inline (n) or (n,m) citations"
+        description="Arabic markdown body with inline [n] or [n,m] citations"
     )
     used_refs: list[int] = Field(
         default_factory=list,
@@ -126,7 +162,7 @@ class AggregatorLLMOutput(BaseModel):
 class AggregatorOutput(BaseModel):
     """Final output returned to callers (post-validation + artifact built)."""
 
-    synthesis_md: str = Field(description="Arabic markdown with inline (n) citations")
+    synthesis_md: str = Field(description="Arabic markdown with inline [n] citations")
     references: list[Reference] = Field(
         default_factory=list,
         description="Ordered list — references[i-1].n == i",
@@ -179,7 +215,7 @@ class ValidationReport(BaseModel):
     cited_numbers: list[int] = Field(default_factory=list)
     dangling_citations: list[int] = Field(
         default_factory=list,
-        description="(n) in synthesis that has no matching reference",
+        description="[n] in synthesis that has no matching reference",
     )
     unused_references: list[int] = Field(
         default_factory=list,

@@ -541,13 +541,13 @@ def _write_planner_dump(out_dir: Path, deps: FullLoopDeps) -> bool:
     derived_lines = [
         "# 05/derived -- caps + aggregator prompt",
         "",
-        "| executor | invoked | reranker_max_high | reranker_max_medium | expander_max_queries |",
-        "|----------|---------|-------------------|---------------------|----------------------|",
-        f"| reg | {deps.include_reg} | {deps.reg_max_high} | {deps.reg_max_medium} "
+        "| executor | invoked | reranker_max_keep | expander_max_queries |",
+        "|----------|---------|-------------------|----------------------|",
+        f"| reg | {deps.include_reg} | {deps.reg_max_keep} "
         f"| {(deps.expander_max_queries or {}).get('reg', '-')} |",
-        f"| compliance | {deps.include_compliance} | {deps.compliance_max_high} | {deps.compliance_max_medium} "
+        f"| compliance | {deps.include_compliance} | {deps.compliance_max_keep} "
         f"| {(deps.expander_max_queries or {}).get('compliance', '-')} |",
-        f"| cases | {deps.include_cases} | {deps.case_max_high} | {deps.case_max_medium} "
+        f"| cases | {deps.include_cases} | {deps.case_max_keep} "
         f"| {(deps.expander_max_queries or {}).get('cases', '-')} |",
         "",
         f"- **aggregator_prompt_key**: `{agg_key}`",

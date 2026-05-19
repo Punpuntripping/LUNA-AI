@@ -78,7 +78,7 @@ def _assert_writable(item: dict) -> None:
                 raise LunaHTTPException(
                     status_code=409,
                     code=ErrorCode.ARTIFACT_NOT_EDITABLE,
-                    detail="Luna يحرر هذا الملف الآن، انتظر لحظة",
+                    detail="ريحان يحرر هذا الملف الآن، انتظر لحظة",
                 )
 
 
