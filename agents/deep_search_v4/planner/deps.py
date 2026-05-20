@@ -6,15 +6,26 @@ Three objects model the planner's runtime state — see PLANNER_REDESIGN_PLAN.md
   client, model overrides) plus the read-back slots that ``run_retrieval`` copies
   off the internal ``FullLoopDeps`` so artifact persistence and the monitor still
   work. Holds ``_agg_output`` — the ``AggregatorOutput`` stash read by phase 3
-  and the degraded fallback.
+  and the degraded fallback. Also holds the per-turn **comprehension inputs**
+  (post Wave 2 / Phase C): ``case_brief``, ``recent_messages``,
+  ``prior_searches``, ``attached_items``, plus ``user_id`` / ``conversation_id``
+  needed by the decider's ``read_workspace_item`` tool for explicit scope
+  enforcement.
 - :class:`~.apply.RetrievalConfig` — the mode-derived knobs (lives in ``apply.py``).
 - ``FullLoopDeps`` — the executor-config object assembled inside ``run_retrieval``.
 
 **Invariant — ``PlannerDeps`` is never persisted and never survives a pause.**
 It is rebuilt fresh by :func:`build_planner_deps` on every entry, including the
 resume path. Only ``agent_runs.message_history`` (the decider's bytes) crosses
-the pause boundary. ``planner_decider`` runs with ``deps_type=None`` — phase 1
-needs no infra — so this object is used by phases 2–3 only.
+the pause boundary. Per Phase C, the **comprehension fields** (``case_brief``,
+``recent_messages``, ``prior_searches``, ``attached_items``) are hydrated per
+turn from the orchestrator's loaders — they are never persisted across a pause;
+on resume they are re-loaded fresh (per §6.3.1 of the redesign spec).
+
+The decider's ``deps_type`` flipped from ``None`` to :class:`PlannerDeps` in
+Phase C — phase 1 now needs infra (the ``read_workspace_item`` tool reads
+Supabase) and the comprehension inputs (the dynamic instructions render
+``recent_messages`` / ``prior_searches`` / etc.).
 
 Heavy types (Supabase, httpx, aggregator/URA models) are referenced under
 ``TYPE_CHECKING`` only, so importing this module stays cheap.
@@ -24,6 +35,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+
+from agents.models import ChatMessageSnapshot, WorkspaceItemSnapshot
+
+from .models import PriorSearchSummary
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import httpx
@@ -60,6 +75,22 @@ class PlannerDeps:
     unfold_mode: str = "precise"
     aggregator_logger: Any | None = None
 
+    # --- scope identifiers (Phase C — needed by read_workspace_item) -------
+    # Both default to empty string so the existing planner_deps test fixture
+    # (which doesn't pass them) still constructs cleanly. The orchestrator
+    # always populates them in real dispatches.
+    user_id: str = ""
+    conversation_id: str = ""
+
+    # --- per-turn comprehension inputs (Phase C — hydrated by orchestrator)
+    # Rebuilt fresh every turn; NEVER persisted across pause. On resume the
+    # orchestrator re-loads each surface (recent_messages picks up the
+    # clarification reply; the others reload as a consistency invariant).
+    case_brief: str | None = None
+    recent_messages: list[ChatMessageSnapshot] = field(default_factory=list)
+    prior_searches: list[PriorSearchSummary] = field(default_factory=list)
+    attached_items: list[WorkspaceItemSnapshot] = field(default_factory=list)
+
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
@@ -95,6 +126,13 @@ def build_planner_deps(
     unfold_mode: str = "precise",
     aggregator_logger: Any | None = None,
     emit_sse: Callable[[dict], None] | None = None,
+    # Phase C — scope + comprehension inputs (orchestrator-hydrated)
+    user_id: str = "",
+    conversation_id: str = "",
+    case_brief: str | None = None,
+    recent_messages: list[ChatMessageSnapshot] | None = None,
+    prior_searches: list[PriorSearchSummary] | None = None,
+    attached_items: list[WorkspaceItemSnapshot] | None = None,
 ) -> PlannerDeps:
     """Construct a fresh :class:`PlannerDeps`.
 
@@ -102,6 +140,11 @@ def build_planner_deps(
     The resume path opens a brand-new ``httpx.AsyncClient`` and calls this
     builder fresh; it never reuses a deps object across a pause (see the
     module-level invariant), which removes the dead-``http_client`` risk class.
+
+    Comprehension kwargs (``case_brief``, ``recent_messages``, ``prior_searches``,
+    ``attached_items``, plus ``user_id`` / ``conversation_id``) are Phase C
+    additions — hydrated by the orchestrator per turn. They default to empty so
+    legacy callers (tests, scripts) construct without changes.
     """
     return PlannerDeps(
         supabase=supabase,
@@ -115,6 +158,12 @@ def build_planner_deps(
         unfold_mode=unfold_mode,
         aggregator_logger=aggregator_logger,
         emit_sse=emit_sse,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        case_brief=case_brief,
+        recent_messages=list(recent_messages) if recent_messages else [],
+        prior_searches=list(prior_searches) if prior_searches else [],
+        attached_items=list(attached_items) if attached_items else [],
     )
 
 

@@ -156,8 +156,11 @@ def _safe_instrument(logfire_mod: Any, name: str) -> None:
     try:
         fn()
     except Exception as exc:
-        # instrument_redis raises if redis isn't installed; that's fine.
-        logger.debug("logfire.%s skipped: %s", name, exc)
+        # Surfaced at WARNING — a silently-dead instrument_*() call (e.g. a
+        # logfire/pydantic-ai version skew) otherwise drops whole span
+        # families with no visible signal. instrument_redis raising because
+        # redis isn't installed is the one benign case in dev.
+        logger.warning("logfire.%s failed: %s — spans from this SDK disabled", name, exc)
 
 
 # ── Lazy-imported logfire helper for non-critical call sites ──────────────

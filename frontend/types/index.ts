@@ -142,6 +142,18 @@ export interface Message {
   attachments: Attachment[];
   created_at: string;
   metadata?: MessageMetadata;
+  /**
+   * Workspace item ids produced by the agent run that authored this message.
+   * Populated by the backend on assistant messages whose agent_runs created
+   * one or more ``workspace_items``. Always undefined / empty for user or
+   * legacy / Q&A / agent_question messages.
+   *
+   * NOTE (Window C, 2026-05-20): backend does not yet expose this field on
+   * ``MessageResponse``; the frontend treats it defensively as possibly
+   * undefined so the new citation + chip UI is a no-op until the backend
+   * ships it.
+   */
+  artifact_ids?: string[] | null;
   isOptimistic?: boolean;
   isFailed?: boolean;
   isStreaming?: boolean;
@@ -473,6 +485,20 @@ export interface SSEWorkspaceItemLocked {
 }
 
 export interface SSEWorkspaceItemUnlocked {
+  item_id: string;
+}
+
+/**
+ * Phase E (full_redesign §3.4a / §6.3 / §9 O5):
+ *
+ * Emitted by the orchestrator when the planner's responder concludes that a
+ * prior workspace_item already covers the current question and therefore
+ * sets ``build_artifact=False`` + ``referenced_item_id=<id>``. No new card
+ * is published; the frontend surfaces a chip on the in-flight assistant
+ * bubble that the user can click to jump to the existing card.
+ */
+export interface SSEReferencedExistingItem {
+  type: "referenced_existing_item";
   item_id: string;
 }
 

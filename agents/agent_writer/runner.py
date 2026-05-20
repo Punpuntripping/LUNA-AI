@@ -13,11 +13,14 @@ structured output to the publisher.
 
 Context injection seam (Task 5b)
 ---------------------------------
-Workspace context (attached_items, briefing, revising_item_id, detail_level,
-tone) is now carried in WriterDeps and injected via the agent's
+Workspace context (attached_items, describe_query, revising_item_id,
+detail_level, tone) is now carried in WriterDeps and injected via the agent's
 ``@agent.system_prompt`` callable rather than being concatenated into the user
 message.  The user message contains only the research references so the LLM
 can still resolve ``(n)`` citations deterministically.
+
+Wave 1 redesign: ``describe_query`` was named ``briefing`` pre-redesign —
+the field carries the same data (forwarded from MajorAgentInput).
 """
 from __future__ import annotations
 
@@ -44,13 +47,14 @@ def _populate_deps_from_input(input: WriterInput, deps: WriterDeps) -> None:
 
     WriterInput.workspace_context carries the old-style WorkspaceContextBlock /
     dict.  Those are kept as-is for the research user message builder.
-    The new fields (briefing=user_request, attached_items from WorkspaceItemSnapshot,
-    revising_item_id, detail_level, tone) are mapped here so they reach the
-    @agent.system_prompt callable without touching the user message string.
+    The new fields (describe_query=user_request, attached_items from
+    WorkspaceItemSnapshot, revising_item_id, detail_level, tone) are mapped
+    here so they reach the @agent.system_prompt callable without touching the
+    user message string.
     """
-    # Briefing: user_request is the canonical task statement.
-    if not deps.briefing:
-        deps.briefing = input.user_request or ""
+    # describe_query: user_request is the canonical task statement.
+    if not deps.describe_query:
+        deps.describe_query = input.user_request or ""
 
     # attached_items: WriterInput does not carry WorkspaceItemSnapshot objects
     # directly (that is Wave 10+ via MajorAgentInput).  Leave deps.attached_items
@@ -76,8 +80,8 @@ async def handle_writer_turn(
     Args:
         input: User request + research context + workspace context.
         deps: Supabase client + model selection + SSE emit hook.
-            Workspace context fields (briefing, attached_items, etc.) on deps
-            take precedence; any gaps are backfilled from input by
+            Workspace context fields (describe_query, attached_items, etc.)
+            on deps take precedence; any gaps are backfilled from input by
             ``_populate_deps_from_input``.
 
     Returns:
@@ -124,8 +128,8 @@ async def _run_writer(
     """Primary -> fallback chain. Always returns a valid WriterLLMOutput.
 
     ``deps`` is passed to ``agent.run()`` so the ``@agent.system_prompt``
-    callable (``inject_workspace_context``) can access briefing, attached_items,
-    revising_item_id, detail_level, and tone at run time.
+    callable (``inject_workspace_context``) can access describe_query,
+    attached_items, revising_item_id, detail_level, and tone at run time.
 
     On hard failure of both primary and fallback, returns a degraded
     placeholder so the pipeline can still produce something for the user.

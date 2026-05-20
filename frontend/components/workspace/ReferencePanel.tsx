@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Scale,
   Gavel,
@@ -22,6 +22,15 @@ import type { Reference, ReferenceDomain, SourceView } from "@/types";
 
 interface ReferencePanelProps {
   references: Reference[];
+  /**
+   * When non-null, the matching ``<li id="ref-{n}">`` is scrolled into view
+   * and briefly flashes. Set by ``openWorkspaceItemAtReference`` in the chat
+   * store; cleared via ``onFlashDone`` (called from the ``<li>`` animation-
+   * end handler) so the same marker can be re-clicked.
+   */
+  focusedReferenceN?: number | null;
+  /** Called after the flash animation completes. */
+  onFlashDone?: () => void;
 }
 
 const DOMAIN_META: Record<
@@ -43,13 +52,40 @@ const DOMAIN_META: Record<
  * Renders one card per ``Reference`` (from ``metadata.references``), switching
  * on ``domain``. Each card exposes the primary external link and — when a
  * ``source_view`` payload is present — a popup with the full original source.
+ *
+ * Window C: each card carries ``id="ref-{n}"`` so chat-bubble citation
+ * markers can scroll the matching card into view and trigger a brief flash
+ * via the ``data-flash`` attribute + ``ref-flash`` keyframe (globals.css).
  */
-export function ReferencePanel({ references }: ReferencePanelProps) {
+export function ReferencePanel({
+  references,
+  focusedReferenceN,
+  onFlashDone,
+}: ReferencePanelProps) {
   const [openView, setOpenView] = useState<Reference | null>(null);
+  // Per-card refs so we can scrollIntoView the focused one without a global
+  // querySelector on every focus change.
+  const itemRefs = useRef<Map<number, HTMLLIElement | null>>(new Map());
+
+  useEffect(() => {
+    if (focusedReferenceN == null) return;
+    const el = itemRefs.current.get(focusedReferenceN);
+    if (!el) return;
+    // Scroll first; the data-flash attribute is set immediately after so the
+    // animation starts on the now-visible card.
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.setAttribute("data-flash", "true");
+  }, [focusedReferenceN]);
 
   if (!references || references.length === 0) return null;
 
   const ordered = [...references].sort((a, b) => a.n - b.n);
+
+  const handleAnimationEnd = (n: number) => {
+    const el = itemRefs.current.get(n);
+    if (el) el.removeAttribute("data-flash");
+    onFlashDone?.();
+  };
 
   return (
     <div dir="rtl" className="mt-6 border-t pt-4">
@@ -61,6 +97,14 @@ export function ReferencePanel({ references }: ReferencePanelProps) {
           <ReferenceCard
             key={`${ref.n}-${ref.ref_id}`}
             reference={ref}
+            registerRef={(node) => {
+              if (node) {
+                itemRefs.current.set(ref.n, node);
+              } else {
+                itemRefs.current.delete(ref.n);
+              }
+            }}
+            onAnimationEnd={() => handleAnimationEnd(ref.n)}
             onViewSource={() => setOpenView(ref)}
           />
         ))}
@@ -81,9 +125,13 @@ export function ReferencePanel({ references }: ReferencePanelProps) {
 
 function ReferenceCard({
   reference,
+  registerRef,
+  onAnimationEnd,
   onViewSource,
 }: {
   reference: Reference;
+  registerRef: (node: HTMLLIElement | null) => void;
+  onAnimationEnd: () => void;
   onViewSource: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -95,7 +143,12 @@ function ReferenceCard({
   const crossRefs = reference.domain === "regulations" ? reference.cross_refs : [];
 
   return (
-    <li className="rounded-lg border bg-card px-3 py-2.5">
+    <li
+      ref={registerRef}
+      id={`ref-${reference.n}`}
+      onAnimationEnd={onAnimationEnd}
+      className="rounded-lg border bg-card px-3 py-2.5 ref-flash-target"
+    >
       <div className="flex items-start gap-2.5">
         {/* [n] badge */}
         <span className="mt-0.5 flex h-6 min-w-6 shrink-0 items-center justify-center rounded-md bg-muted px-1.5 text-xs font-semibold tabular-nums text-foreground">

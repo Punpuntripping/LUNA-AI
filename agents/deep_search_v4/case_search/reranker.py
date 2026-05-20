@@ -24,7 +24,11 @@ from .prompts import build_reranker_user_message, get_reranker_prompt
 logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 25k = 15k thinking budget + ~10k per-chunk text output headroom.
+    # Same shape as reg_search reranker — uncapped thinking on qwen3.5-flash
+    # is otherwise the wall-clock tail risk.
+    # (`response_tokens_limit` was the deprecated alias — switched.)
+    output_tokens_limit=25_000,
     request_limit=3,
 )
 
@@ -47,6 +51,13 @@ def create_reranker_agent(
         output_type=RerankerClassification,
         instructions=system_prompt,
         retries=2,
+        # Cap reasoning at 15k — same rationale as reg_search reranker.
+        model_settings={
+            "extra_body": {
+                "enable_thinking": True,
+                "thinking_budget": 15_000,
+            },
+        },
     )
 
 

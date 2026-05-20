@@ -100,6 +100,9 @@ AGENT_MODELS: dict[str, ModelPolicy] = {
     "case_search_aggregator":     ModelPolicy("tier_1"),
     "compliance_search_expander": ModelPolicy("tier_1"),
     "compliance_search_reranker": ModelPolicy("tier_2"),
+    # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
+    # workspace item to produce an agent-facing coverage summary.
+    "artifact_summarizer":        ModelPolicy("tier_2", primary="deepseek"),
 }
 
 

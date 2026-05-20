@@ -32,6 +32,14 @@ class SearchPublishInput:
     comp_rqrs: list["RerankerQueryResult"] = field(default_factory=list)
     case_rqrs: list["RerankerQueryResult"] = field(default_factory=list)
     per_executor_stats: dict[str, Any] = field(default_factory=dict)
+    # Router-emitted short Arabic label (≤80 chars). When set, prefers this
+    # over the aggregator artifact title / original_query fallback.
+    # Optional during the Wave 1 migration; required path is router → orchestrator → here.
+    task_label: Optional[str] = None
+    # Router-emitted description of the user's query (typically 50–150 words).
+    # Persisted to workspace_items.describe_query (migration 038). Used by the
+    # planner to read prior task intent without parsing input_summary truncations.
+    describe_query: Optional[str] = None
 
 
 @dataclass

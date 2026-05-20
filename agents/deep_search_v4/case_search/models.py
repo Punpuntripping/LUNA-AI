@@ -31,6 +31,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 CaseChannel = Literal["principle", "facts", "basis"]
 CHANNEL_NAMES: tuple[str, ...] = ("principle", "facts", "basis")
 
@@ -259,6 +261,10 @@ class LoopState:
     sse_events: list[dict] = field(default_factory=list)
     inner_usage: list[dict] = field(default_factory=list)
     search_results_log: list[dict] = field(default_factory=list)
+    # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
+    # the expander user message; the reranker is hardcoded to receive zero
+    # blocks. Empty list → no <context_blocks> XML in the prompt.
+    context_blocks: list[ContextBlock] = field(default_factory=list)
 
 
 @dataclass

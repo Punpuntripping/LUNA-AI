@@ -19,7 +19,10 @@ from .prompts import EXPANDER_SYSTEM_PROMPT, build_expander_dynamic_instructions
 logger = logging.getLogger(__name__)
 
 EXPANDER_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 15k absorbs uncapped thinking + query expansion output. Same shape as
+    # reg_search / case_search expanders.
+    # (`response_tokens_limit` was the deprecated alias — switched.)
+    output_tokens_limit=15_000,
     request_limit=3,
 )
 

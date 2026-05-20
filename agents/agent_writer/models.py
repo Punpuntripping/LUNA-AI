@@ -117,7 +117,7 @@ class WriterInput:
     conversation_id: str
     case_id: Optional[str]
     message_id: Optional[str]
-    user_request: str            # The user's drafting brief (from router OpenTask.briefing)
+    user_request: str            # The user's drafting brief (from router DispatchAgent.describe_query)
     subtype: WriterSubtype = "memo"
     # Optional research evidence -- agent_search items the user (or router)
     # selected to ground the writing on. Each entry is the loaded dict from

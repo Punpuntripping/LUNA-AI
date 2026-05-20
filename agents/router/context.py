@@ -46,15 +46,36 @@ class RouterContext:
 
 
 def _load_case_block(
-    supabase: SupabaseClient, case_id: str
+    supabase: SupabaseClient, case_id: str, user_id: str
 ) -> tuple[dict | None, str | None]:
-    """Return (case_metadata, case_memory_md) for ``case_id``."""
+    """Return (case_metadata, case_memory_md) for ``case_id`` owned by ``user_id``.
+
+    Both the ``lawyer_cases`` lookup and the ``case_memories`` lookup are
+    scoped explicitly:
+
+    - ``lawyer_cases`` filters on ``case_id`` AND ``lawyer_user_id = user_id``
+      (the column is ``lawyer_user_id`` per the schema, not ``user_id``).
+    - ``case_memories`` joins via ``case_id`` (already user-scoped via the
+      ``lawyer_cases`` foreign key).
+
+    These filters are **load-bearing** (§6.4 of the redesign spec): the
+    backend's Supabase client runs as ``service_role`` and bypasses RLS, so
+    the explicit ``.eq("lawyer_user_id", user_id)`` is the actual scope
+    enforcement — not a defense-in-depth supplement to RLS.
+
+    ``case_memories`` stores text in ``content_ar`` / ``content_en`` (NOT a
+    single ``content`` column — Luna's Arabic-first policy keeps the Arabic
+    text as the primary memory body). We select both and prefer ``content_ar``
+    when rendering, falling back to ``content_en`` only when ``content_ar``
+    is empty.
+    """
     case_metadata: dict | None = None
     try:
         case_row = (
             supabase.table("lawyer_cases")
             .select("case_name, case_type, status, parties, description")
             .eq("case_id", case_id)
+            .eq("lawyer_user_id", user_id)
             .is_("deleted_at", "null")
             .maybe_single()
             .execute()
@@ -68,7 +89,7 @@ def _load_case_block(
     try:
         mem_resp = (
             supabase.table("case_memories")
-            .select("content")
+            .select("content_ar, content_en")
             .eq("case_id", case_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=False)
@@ -87,10 +108,18 @@ def _load_case_block(
             f"**نوع القضية:** {case_metadata.get('case_type', '')}"
         )
     if memories:
-        parts.append(
-            "### الوقائع والمعلومات المحفوظة\n\n"
-            + "\n".join(f"- {m.get('content', '')}" for m in memories)
-        )
+        rendered_lines: list[str] = []
+        for m in memories:
+            content_ar = (m.get("content_ar") or "").strip()
+            content_en = (m.get("content_en") or "").strip()
+            text = content_ar or content_en
+            if text:
+                rendered_lines.append(f"- {text}")
+        if rendered_lines:
+            parts.append(
+                "### الوقائع والمعلومات المحفوظة\n\n"
+                + "\n".join(rendered_lines)
+            )
     if parts:
         case_memory_md = "\n\n".join(parts)
     return case_metadata, case_memory_md
@@ -244,7 +273,7 @@ def load_router_context(
     case_metadata: dict | None = None
     case_memory_md: str | None = None
     if case_id:
-        case_metadata, case_memory_md = _load_case_block(supabase, case_id)
+        case_metadata, case_memory_md = _load_case_block(supabase, case_id, user_id)
 
     user_preferences = _load_user_preferences(supabase, user_id)
 

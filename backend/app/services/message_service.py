@@ -298,6 +298,15 @@ async def send_message_stream(
                         "item_id": event.get("item_id"),
                     }))
 
+                elif event_type == "referenced_existing_item":
+                    # Phase E (§3.5 / §6.3): planner responder identified a
+                    # prior artifact that covers the current question — no new
+                    # card is published. Frontend highlights / chips the
+                    # existing card by item_id.
+                    await queue.put(_sse_event("referenced_existing_item", {
+                        "item_id": event.get("item_id"),
+                    }))
+
                 elif event_type == "status":
                     await queue.put(_sse_event("status", {
                         "text": event.get("text", ""),

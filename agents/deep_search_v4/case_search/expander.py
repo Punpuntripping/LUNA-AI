@@ -33,7 +33,11 @@ from .models import ExpanderOutput, ExpanderOutputV2
 logger = logging.getLogger(__name__)
 
 EXPANDER_LIMITS = UsageLimits(
-    response_tokens_limit=2_000,
+    # 15k absorbs uncapped thinking + sectioned query expansion output.
+    # The old 2000 cap crashed every case_led run we observed (2519, 3302 tokens
+    # generated against the cap — UsageLimitExceeded with degraded retrieval).
+    # (`response_tokens_limit` was the deprecated alias — switched.)
+    output_tokens_limit=15_000,
     request_limit=3,
 )
 

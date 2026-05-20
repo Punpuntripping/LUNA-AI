@@ -20,6 +20,8 @@ from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
 # When the planner passes a ``result_budget``, the per-sub-query reranker keep
 # is ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
@@ -101,10 +103,12 @@ class ExpanderNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             model_override=state.model_override,
         )
 
-        # Build base user message
+        # Build base user message — pass planner-curated context bundle so the
+        # expander sees the <context_blocks> XML when non-empty.
         user_message = build_expander_user_message(
             state.focus_instruction,
             state.user_context,
+            context_blocks=state.context_blocks,
         )
 
         # Always build dynamic instructions — picks up planner caps and
@@ -535,6 +539,7 @@ async def run_reg_search(
     skip_aggregator: bool = False,
     sectors_override: list[str] | None = None,
     result_budget: int | None = None,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> RegSearchResult:
     """Run the complete reg_search loop for a focus instruction.
 
@@ -589,6 +594,7 @@ async def run_reg_search(
         skip_aggregator=skip_aggregator,
         sectors_override=list(sectors_override) if sectors_override else None,
         result_budget=result_budget,
+        context_blocks=list(context_blocks) if context_blocks else [],
     )
 
     t0 = time.perf_counter()

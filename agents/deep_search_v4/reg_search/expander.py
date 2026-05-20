@@ -20,7 +20,11 @@ from .models import ExpanderOutput
 logger = logging.getLogger(__name__)
 
 EXPANDER_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 15k absorbs uncapped thinking + actual query expansion output.
+    # Observed max output ~3950, max reasoning ~3340 → typical total ~7k.
+    # (`response_tokens_limit` was the deprecated alias — switched to the
+    # current `output_tokens_limit` name.)
+    output_tokens_limit=15_000,
     request_limit=3,
 )
 

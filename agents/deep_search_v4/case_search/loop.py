@@ -22,6 +22,8 @@ from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
 # When the planner passes a ``result_budget``, the per-sub-query reranker keep
 # is ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
@@ -113,6 +115,7 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
         user_message = build_expander_user_message(
             state.focus_instruction,
             state.user_context,
+            context_blocks=state.context_blocks,
         )
 
         try:
@@ -424,6 +427,7 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
         user_message = build_expander_user_message(
             state.focus_instruction,
             state.user_context,
+            context_blocks=state.context_blocks,
         )
 
         try:
@@ -973,6 +977,7 @@ async def run_case_search(
     expander_max_queries: int | None = None,
     sectors_override: list[str] | None = None,
     score_threshold: float | None = None,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> CaseSearchResult:
     """Run the case_search loop for a focus instruction.
 
@@ -1023,6 +1028,7 @@ async def run_case_search(
         model_override=model_override,
         concurrency=concurrency,
         sectors_override=list(sectors_override) if sectors_override else None,
+        context_blocks=list(context_blocks) if context_blocks else [],
     )
 
     t0 = time.perf_counter()
@@ -1120,6 +1126,7 @@ async def run_sectioned_case_search(
     thinking_effort: str | None = None,
     model_override: str | None = None,
     concurrency: int = 10,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> CaseSearchResult:
     """Convenience entry point that forces the sectioned pipeline.
 
@@ -1135,6 +1142,7 @@ async def run_sectioned_case_search(
         model_override=model_override,
         concurrency=concurrency,
         sectioned=True,
+        context_blocks=context_blocks,
     )
 
 

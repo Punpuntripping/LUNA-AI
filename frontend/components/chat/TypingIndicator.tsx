@@ -10,7 +10,7 @@ import { useChatStore } from "@/stores/chat-store";
 // The assistant's name + the action phrases it rotates through while working.
 // To add an action: just add a string to the relevant array below.
 // To add a brand-new agent family: add a key to AGENT_PHRASES matching the
-// `agent_family` value (see agent_family_enum in Supabase).
+// `agent_family` value the orchestrator dispatches (deep_search | writing | memory).
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The assistant's display name, shown before every action. */
@@ -25,11 +25,8 @@ const DEFAULT_PHRASES = ["يفكّر", "يتفكّر", "يحلّل"];
 /** Used while a specific agent family is running. Keys match `agent_family`. */
 const AGENT_PHRASES: Record<string, string[]> = {
   deep_search: ["يبحث بعمق", "يحلّل المصادر", "يراجع الأنظمة"],
-  simple_search: ["يبحث", "يطّلع على الأنظمة"],
-  extraction: ["يستخرج المعلومات", "يقرأ المستند"],
   memory: ["يستحضر السياق", "يتذكّر"],
   writing: ["يصيغ الإجابة", "يكتب"],
-  end_services: ["يُجهّز الرد"],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,8 +81,9 @@ export function TypingIndicator({ className }: TypingIndicatorProps) {
               i === index ? "opacity-100" : "opacity-0"
             )}
           >
-            <span className="font-medium text-foreground/90">{RAYHAN}</span>{" "}
-            <span className="text-muted-foreground">{phrase}</span>
+            <span className="text-muted-foreground">
+              {RAYHAN} {phrase}
+            </span>
           </span>
         ))}
       </div>

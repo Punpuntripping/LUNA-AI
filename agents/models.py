@@ -59,9 +59,23 @@ class DispatchAgent(BaseModel):
     ] = Field(
         description="Which specialist family to dispatch."
     )
-    briefing: str = Field(
-        description="Context summary for the specialist. Must include: what the user wants, "
-        "relevant conversation context, any specific requirements mentioned."
+    task_label: str = Field(
+        max_length=80,
+        description=(
+            "Short Arabic content-derived label (≤80 chars, typical 30–60). "
+            "Used as workspace_item.title and agent_runs.task_label. "
+            "Describes the SUBJECT of the task, not the action — no verbs "
+            "like «أبحث»/«أكتب»/«أحلل». Stable across rephrases of the same "
+            "question."
+        ),
+    )
+    describe_query: str = Field(
+        description=(
+            "A description of the user's QUERY (not the workflow). What the "
+            "user is asking and the conversation context that informs the "
+            "question — ~50–150 words. Do NOT narrate 'the user wants me to "
+            "do X'."
+        ),
     )
     target_item_id: str | None = Field(
         default=None,
@@ -114,7 +128,19 @@ class MajorAgentInput(BaseModel):
     receive only what the orchestrator passes here. This keeps specialists
     deterministic, testable in isolation, and immune to RLS/auth concerns.
     """
-    briefing: str
+    describe_query: str = Field(
+        description=(
+            "Router-emitted description of the user's query (50–150 words). "
+            "Forwarded from DispatchAgent.describe_query."
+        ),
+    )
+    task_label: str = Field(
+        description=(
+            "Router-emitted short Arabic content-derived label (≤80 chars). "
+            "Forwarded from DispatchAgent.task_label. Used as the workspace "
+            "item title and agent_runs.task_label."
+        ),
+    )
     attached_items: list[WorkspaceItemSnapshot] = Field(
         default_factory=list,
         description="Router-selected workspace items, full content_md included.",

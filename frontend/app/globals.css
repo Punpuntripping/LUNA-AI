@@ -369,4 +369,24 @@
     direction: ltr;
     unicode-bidi: isolate;
   }
+
+  /* ============================================================
+   * Window C — Reference card flash highlight
+   *
+   * Triggered when a chat-bubble citation marker [n] is clicked: the
+   * matching <li id="ref-{n}"> in ReferencePanel gets data-flash="true",
+   * which runs ref-flash once. The animationend handler clears the
+   * attribute so subsequent clicks on the same marker re-fire the flash.
+   * ============================================================ */
+  @keyframes ref-flash {
+    0% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 60%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 0%, transparent);
+    }
+  }
+  li[data-flash="true"].ref-flash-target {
+    animation: ref-flash 1.6s ease-out forwards;
+  }
 }

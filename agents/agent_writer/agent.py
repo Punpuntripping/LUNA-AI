@@ -3,9 +3,9 @@
 Single-shot: one LLM call, structured WriterLLMOutput.
 The static ``instructions`` carry the subtype-specific drafting rules.
 A ``@agent.system_prompt`` callable appends the dynamic workspace context
-(briefing, attached items, revision target, style prefs) from ``WriterDeps``
-at run time — so the runner never concatenates context into the user message.
-The runner handles fallback and persistence.
+(describe_query, attached items, revision target, style prefs) from
+``WriterDeps`` at run time — so the runner never concatenates context into
+the user message. The runner handles fallback and persistence.
 """
 from __future__ import annotations
 
@@ -51,7 +51,8 @@ def create_writer_agent(
         ``run(task_statement, deps=writer_deps)``.
         The static ``instructions`` carries the subtype rules.
         The ``@agent.system_prompt`` decorator appends the workspace context
-        block (briefing + attached_items + style prefs) from deps at run time.
+        block (describe_query + attached_items + style prefs) from deps at
+        run time.
 
     The model is the ``agent_writer`` tier slot — a provider FallbackModel.
     """
@@ -68,12 +69,12 @@ def create_writer_agent(
 
     @agent.system_prompt
     async def inject_workspace_context(ctx: RunContext[WriterDeps]) -> str:
-        """Append router-selected attached_items + briefing + revision target
-        as a second system block. Re-evaluated on every run (including resumes
-        via message_history in Wave 10+)."""
+        """Append router-selected attached_items + describe_query + revision
+        target as a second system block. Re-evaluated on every run (including
+        resumes via message_history in Wave 10+)."""
         return format_writer_context(
             attached_items=ctx.deps.attached_items,
-            briefing=ctx.deps.briefing,
+            describe_query=ctx.deps.describe_query,
             revising_item_id=ctx.deps.revising_item_id,
             detail_level=ctx.deps.detail_level,
             tone=ctx.deps.tone,

@@ -22,6 +22,8 @@ import httpx
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 
 # -- Pydantic models (LLM output) ---------------------------------------------
 
@@ -169,6 +171,10 @@ class LoopState:
     # against the regulations vocabulary, whose names differ from the
     # unified vocab stored in services.sectors — see migration plan D2.
     sectors_override: list[str] | None = None
+    # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
+    # the expander user message; the reranker is hardcoded to receive zero
+    # blocks. Empty list → no <context_blocks> XML in the prompt.
+    context_blocks: list[ContextBlock] = field(default_factory=list)
 
 
 @dataclass

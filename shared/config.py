@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     STORAGE_BUCKET_DOCUMENTS: str = "documents"
 
     # ========================================
+    # INTERNAL WEBHOOKS (Supabase trigger → backend)
+    # ========================================
+    # Shared secret that Postgres triggers attach as ``X-Webhook-Secret`` when
+    # POSTing to internal endpoints (e.g. /internal/summarize-workspace-item).
+    # MUST be configured both here and via ``ALTER DATABASE ... SET app.webhook_secret = ...``
+    # on the Supabase side for the trigger to fire.
+    INTERNAL_WEBHOOK_SECRET: Optional[str] = None
+
+    # ========================================
     # ENVIRONMENT
     # ========================================
     ENVIRONMENT: str = "development"  # Alias for APP_ENV used by Railway

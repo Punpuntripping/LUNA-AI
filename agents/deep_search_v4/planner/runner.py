@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from agents.deep_search_v4.shared.sector_vocab.regulations import canonicalize_sectors
+from shared.observability import get_logfire
 
 from .agent import (
     PLANNER_DECIDER_LIMITS,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from agents.deep_search_v4.aggregator.models import AggregatorOutput
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 
 # ---------------------------------------------------------------------------
@@ -101,18 +103,33 @@ def _default_decision(reason: str) -> PlannerDecision:
     )
 
 
+_DEGRADED_SYNTHESIS_DIGEST_CHARS = 500
+
+
 def _response_from_artifact(agg_output: "AggregatorOutput") -> PlannerResponse:
-    """Phase-3 fallback when the artifact exists but the responder LLM failed."""
+    """Phase-3 fallback when the artifact exists but the responder LLM failed.
+
+    Uses the synthesis body's head as the chat content. The outer orchestrator
+    re-runs the artifact_summarizer on the published item and overrides
+    ``SpecialistResult.chat_summary`` with a proper coverage summary, so this
+    fallback only surfaces when both the responder AND the summarizer fail.
+
+    Defaults ``build_artifact=True`` (the artifact already exists — publish it).
+    """
+    synthesis = (getattr(agg_output, "synthesis_md", "") or "").strip()
+    head = synthesis[:_DEGRADED_SYNTHESIS_DIGEST_CHARS]
     return PlannerResponse(
-        chat_summary_md=(getattr(agg_output, "chat_summary", "") or "").strip()
-        or "اكتمل البحث؛ التفاصيل والمراجع في بطاقة البحث.",
+        chat_summary_md=head or "اكتمل البحث؛ التفاصيل والمراجع في بطاقة البحث.",
         suggestion_md="",
-        suggested_action="none",
     )
 
 
 def _minimal_response(reason: str) -> PlannerResponse:
-    """Phase-2 fallback when retrieval failed entirely — honest, no fabrication."""
+    """Phase-2 fallback when retrieval failed entirely — honest, no fabrication.
+
+    Phase E: sets ``build_artifact=False`` because there is no aggregator output
+    to publish — the orchestrator's publish branch must be skipped.
+    """
     logger.warning("planner: minimal degraded response (%s)", reason)
     return PlannerResponse(
         chat_summary_md=(
@@ -120,7 +137,7 @@ def _minimal_response(reason: str) -> PlannerResponse:
             "وإذا تكرر الأمر جرّب إعادة صياغة السؤال."
         ),
         suggestion_md="",
-        suggested_action="none",
+        build_artifact=False,
     )
 
 
@@ -160,7 +177,64 @@ async def _resolve_run_retrieval(injected: Callable | None) -> Callable:
 
 
 async def handle_planner_turn(
-    briefing: str,
+    describe_query: str,
+    deps: PlannerDeps,
+    decision: PlannerDecision | None = None,
+    *,
+    run_retrieval: Callable | None = None,
+) -> PlannerTurnResult:
+    """Public entry point — wraps :func:`_run_planner_turn` in a Logfire span.
+
+    The ``deep_search.planner`` span makes the planner a visible stage in the
+    trace tree (peer to ``deep_search.aggregator``); without it the planner's
+    phase-1/phase-3 LLM calls are indistinguishable httpx ``POST`` spans. The
+    span never changes behaviour — ``_run_planner_turn`` still never raises.
+
+    ``describe_query`` is the router-emitted query description (Wave 1/Phase B
+    redesign — renamed from positional ``briefing`` in Phase C).
+    """
+    with _logfire.span(
+        "deep_search.planner",
+        query_id=getattr(deps, "query_id", None),
+        resumed=decision is not None,
+    ) as span:
+        result = await _run_planner_turn(
+            describe_query, deps, decision, run_retrieval=run_retrieval,
+        )
+        span.set_attribute("kind", result.kind)
+        span.set_attribute("degraded", result.degraded)
+        if result.decision is not None:
+            span.set_attribute("mode", result.decision.mode)
+            span.set_attribute("support", result.decision.support)
+        return result
+
+
+def _count_workspace_reads(events: list[dict]) -> int:
+    """Count ``read_workspace_item`` tool_call events emitted onto ``deps._events``.
+
+    Used by the logger payload (§3.8) to record how many prior artifacts the
+    decider opened during phase 1 — split from ``ask_user_invoked`` so a
+    pathological «planner keeps reading» pattern is distinguishable from a
+    «planner asked one clarifying question» pattern.
+    """
+    return sum(
+        1 for e in events
+        if e.get("type") == "tool_call" and e.get("tool") == "read_workspace_item"
+    )
+
+
+def _ask_user_was_invoked(events: list[dict]) -> bool:
+    """True iff at least one ``ask_user`` tool_call event was emitted.
+
+    The agent infrastructure does not emit a ``tool_call`` event for
+    ``ask_user`` itself (it raises ``CallDeferred`` and pauses), so we infer the
+    invocation from the planner_paused lifecycle event when present.
+    """
+    return any(e.get("event") == EVENT_PAUSED for e in events)
+
+
+async def _run_planner_turn(
+    describe_query: str,
     deps: PlannerDeps,
     decision: PlannerDecision | None = None,
     *,
@@ -169,8 +243,12 @@ async def handle_planner_turn(
     """Run the planner-driven loop for one turn.
 
     Args:
-        briefing: the user's query (raw text).
-        deps: phase 2–3 runtime deps — built fresh by ``build_planner_deps``.
+        describe_query: the user's query (raw text). Renamed from ``briefing``
+            in Phase C of the redesign — mechanical rename only.
+        deps: phase 1-3 runtime deps — built fresh by ``build_planner_deps``.
+            Phase C: deps now carry the comprehension surface (case_brief,
+            recent_messages, prior_searches, attached_items) AND user_id /
+            conversation_id; the decider's dynamic instructions read these.
         decision: when supplied (resume path) phase 1 is skipped; when ``None``
             (fresh dispatch) phase 1 runs and may pause via ``ask_user``.
         run_retrieval: optional injected retrieval coroutine — for tests. When
@@ -180,7 +258,7 @@ async def handle_planner_turn(
         :class:`PlannerTurnResult` — ``kind="completed"`` or ``kind="paused"``.
         Never raises.
     """
-    query = briefing or ""
+    query = describe_query or ""
 
     # ── PHASE 1 — decide ───────────────────────────────────────────────────
     if decision is None:
@@ -189,8 +267,12 @@ async def handle_planner_turn(
         t0 = time.perf_counter()
         try:
             decider = create_planner_decider(model_override=deps.model_override)
+            # Phase C: decider's deps_type flipped from None → PlannerDeps.
+            # Pass deps so the dynamic instructions render comprehension blocks
+            # AND read_workspace_item has supabase/user_id/conversation_id.
             result = await decider.run(
                 build_decider_user_message(query),
+                deps=deps,
                 usage_limits=PLANNER_DECIDER_LIMITS,
             )
             output = result.output
@@ -217,20 +299,34 @@ async def handle_planner_turn(
                 "mode": decision.mode,
                 "support": decision.support,
                 "sectors": list(decision.sectors or []),
+                "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
+                "context_labels": list(getattr(decision, "context_labels", []) or []),
+                "workspace_reads_count": _count_workspace_reads(deps._events),
+                "ask_user_invoked": False,  # paused-branch returned above
                 "duration_s": round(time.perf_counter() - t0, 3),
             })
             logger.info(
-                "planner: decided mode=%s support=%s sectors=%s",
+                "planner: decided mode=%s support=%s sectors=%s brief_chars=%d labels=%s reads=%d",
                 decision.mode, decision.support, decision.sectors,
+                len(getattr(decision, "planner_brief", "") or ""),
+                list(getattr(decision, "context_labels", []) or []),
+                _count_workspace_reads(deps._events),
             )
     else:
-        # Resume path — decision already resolved by the orchestrator.
+        # Resume path — decision already resolved by the orchestrator. The
+        # decider's read_workspace_item tool-call events (if any) lived on the
+        # PRIOR turn's deps; this turn's deps._events is fresh, so the resume
+        # read-back records 0 reads (correct — no new reads happened here).
         _canonicalize_decision_sectors(decision)
         emit(deps, {
             "event": EVENT_DECIDED,
             "mode": decision.mode,
             "support": decision.support,
             "sectors": list(decision.sectors or []),
+            "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
+            "context_labels": list(getattr(decision, "context_labels", []) or []),
+            "workspace_reads_count": _count_workspace_reads(deps._events),
+            "ask_user_invoked": _ask_user_was_invoked(deps._events),
             "resumed": True,
         })
 
@@ -278,7 +374,12 @@ async def handle_planner_turn(
         response: PlannerResponse = result.output
         emit(deps, {
             "event": EVENT_RESPONDED,
-            "suggested_action": response.suggested_action,
+            # Phase E (§3.8): publish-gate fields replace the dropped
+            # `suggested_action` enum. `build_artifact` is the orchestrator's
+            # branch input; `referenced_item_id` is the SSE payload for the
+            # «referenced_existing_item» event when present.
+            "build_artifact": response.build_artifact,
+            "referenced_item_id": response.referenced_item_id,
             "duration_s": round(time.perf_counter() - t2, 3),
         })
     except Exception as exc:  # phase 3 raised → reuse the artifact (§9)

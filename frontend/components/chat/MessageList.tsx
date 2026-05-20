@@ -4,11 +4,12 @@ import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMessages } from "@/hooks/use-messages";
+import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useChatStore } from "@/stores/chat-store";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
-import type { Message } from "@/types";
+import type { Message, WorkspaceItemKind } from "@/types";
 
 /** Pixel threshold: user is considered "near bottom" if within this distance. */
 const NEAR_BOTTOM_THRESHOLD = 100;
@@ -39,9 +40,72 @@ export function MessageList({
     fetchNextPage,
   } = useMessages(conversationId);
 
-  const isStreaming = useChatStore((s) => s.isStreaming);
   const streamingMessageId = useChatStore((s) => s.streamingMessageId);
   const streamingContent = useChatStore((s) => s.streamingContent);
+  // The streaming buffer is global; only treat it as "streaming here" when the
+  // active stream actually belongs to this conversation. Without this guard one
+  // conversation's stream renders inside every other conversation.
+  const isStreaming = useChatStore(
+    (s) => s.isStreaming && s.streamingConversationId === conversationId,
+  );
+
+  // Window C: artifact lookup keyed by workspace_item.item_id → {kind, title}.
+  // Re-uses the workspace list query the WorkspacePane already loads so this
+  // is free of additional network cost in steady state.
+  const { data: workspaceData } = useConversationWorkspace(conversationId);
+  const artifactLookup = useMemo(() => {
+    const out: Record<string, { kind: WorkspaceItemKind; title: string }> = {};
+    for (const item of workspaceData?.items ?? []) {
+      out[item.item_id] = { kind: item.kind, title: item.title };
+    }
+    return out;
+  }, [workspaceData?.items]);
+
+  const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
+  const openWorkspaceItemAtReference = useChatStore(
+    (s) => s.openWorkspaceItemAtReference,
+  );
+  const highlightWorkspaceItem = useChatStore((s) => s.highlightWorkspaceItem);
+  // Phase E (§9 O5): item ids the planner referenced for each assistant
+  // message in this conversation. Reading the whole map is cheap (keyed by
+  // message_id, sparse) and means a new SSE event causes an O(1) selector
+  // re-render even when the message-cache is otherwise stale.
+  const referencedItemsByMessage = useChatStore(
+    (s) => s.referencedItemsByMessage,
+  );
+
+  const handleOpenArtifact = useCallback(
+    (itemId: string) => {
+      openWorkspaceItem(conversationId, itemId);
+    },
+    [openWorkspaceItem, conversationId],
+  );
+
+  // Phase E (§9 O5): chip-click handler — opens the workspace pane and
+  // briefly rings the matching card.
+  const handleJumpToReferencedItem = useCallback(
+    (itemId: string) => {
+      highlightWorkspaceItem(conversationId, itemId);
+    },
+    [highlightWorkspaceItem, conversationId],
+  );
+
+  // Citation clicks always target the message's first agent_search artifact.
+  // Resolves the id from the lookup; no-op if the message has no agent_search
+  // among its artifacts (defensive — should not happen for deep_search runs).
+  const buildCitationHandler = useCallback(
+    (artifactIds: string[] | null | undefined) => {
+      if (!artifactIds || artifactIds.length === 0) return undefined;
+      const firstSearchId = artifactIds.find(
+        (id) => artifactLookup[id]?.kind === "agent_search",
+      );
+      if (!firstSearchId) return undefined;
+      return (n: number) => {
+        openWorkspaceItemAtReference(conversationId, firstSearchId, n);
+      };
+    },
+    [artifactLookup, openWorkspaceItemAtReference, conversationId],
+  );
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -243,9 +307,15 @@ export function MessageList({
 
         {/* Messages */}
         {messages.map((msg) => {
+          // `isStreaming` is already scoped to this conversation, so the
+          // global streamingContent is only ever applied to its own stream.
           const isStreamingThis =
-            msg.isStreaming ||
-            (streamingMessageId !== null && msg.message_id === streamingMessageId);
+            isStreaming &&
+            (msg.isStreaming ||
+              (streamingMessageId !== null &&
+                msg.message_id === streamingMessageId));
+          const ids = msg.artifact_ids;
+          const referencedIds = referencedItemsByMessage[msg.message_id];
           return (
             <MessageBubble
               key={msg.message_id}
@@ -258,6 +328,12 @@ export function MessageList({
               onRegenerate={onRegenerate}
               onEditResend={onEditResend}
               onRetry={onRetry}
+              artifactIds={ids}
+              artifactLookup={artifactLookup}
+              onOpenArtifact={handleOpenArtifact}
+              onCitationClick={buildCitationHandler(ids)}
+              referencedItemIds={referencedIds}
+              onJumpToReferencedItem={handleJumpToReferencedItem}
             />
           );
         })}
@@ -282,6 +358,10 @@ export function MessageList({
                 content: "",
                 attachments: [],
                 created_at: new Date().toISOString(),
+                // Window C: stream-in-progress bubbles never carry artifacts;
+                // the chip and citation clicks stay disabled until the message
+                // is replaced by the canonical row from the messages cache.
+                artifact_ids: undefined,
                 isStreaming: true,
               }}
               streamingContent={streamingContent}

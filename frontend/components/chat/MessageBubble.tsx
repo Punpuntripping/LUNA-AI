@@ -5,6 +5,7 @@ import {
   Check,
   Bot,
   FileText,
+  FileSearch,
   ImageIcon,
   AlertCircle,
   RefreshCw,
@@ -12,6 +13,7 @@ import {
   ThumbsUp,
   ThumbsDown,
   HelpCircle,
+  CornerUpLeft,
 } from "lucide-react";
 import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
@@ -22,11 +24,17 @@ import {
   TooltipContent,
   TooltipProvider,
 } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { getRelativeTimeAr } from "@/lib/utils";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
-import type { Message } from "@/types";
+import type { Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
@@ -39,6 +47,30 @@ interface MessageBubbleProps {
   onEditResend?: (messageId: string, newContent: string) => void;
   /** Called when user clicks Retry on a failed message */
   onRetry?: (messageId: string) => void;
+  /**
+   * Workspace item ids associated with this assistant message (Window C).
+   * When non-empty an inline "المصدر" chip renders next to the model badge.
+   * Passed through unchanged for user / streaming bubbles where it is
+   * always undefined.
+   */
+  artifactIds?: string[] | null;
+  /** Resolve ``artifactIds[i]`` to its workspace_item kind + title. */
+  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  /** Open a workspace item in the pane (used by chip click). */
+  onOpenArtifact?: (itemId: string) => void;
+  /** Open the message's first ``agent_search`` artifact at reference ``n``. */
+  onCitationClick?: (n: number) => void;
+  /**
+   * Phase E (full_redesign §9 O5): workspace_item ids the planner flagged
+   * as "already covers this question" for this assistant message. When
+   * non-empty a chip renders below the model badge ("راجع البطاقة
+   * السابقة") that jumps to the existing card in the workspace pane.
+   * Sourced from ``chat-store.referencedItemsByMessage`` so it survives
+   * the messages-cache invalidate at stream completion.
+   */
+  referencedItemIds?: string[];
+  /** Open + highlight a referenced workspace_item (chip click). */
+  onJumpToReferencedItem?: (itemId: string) => void;
 }
 
 export function MessageBubble({
@@ -47,6 +79,12 @@ export function MessageBubble({
   onRegenerate,
   onEditResend,
   onRetry,
+  artifactIds,
+  artifactLookup,
+  onOpenArtifact,
+  onCitationClick,
+  referencedItemIds,
+  onJumpToReferencedItem,
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>("none");
@@ -61,6 +99,22 @@ export function MessageBubble({
   const isAgentQuestion = metadataKind === "agent_question";
   const isAgentAnswer = metadataKind === "agent_answer";
   const agentSuggestions = isAgentQuestion ? message.metadata?.suggestions : undefined;
+  // Window C: assistant messages whose agent run produced one or more
+  // workspace_items get an inline source chip + clickable citations.
+  // Defensive check — backend may not yet populate this field.
+  const hasArtifacts =
+    !isUser &&
+    !isAgentQuestion &&
+    Array.isArray(artifactIds) &&
+    artifactIds.length > 0;
+  // Phase E (§9 O5): planner referenced a prior artifact instead of
+  // publishing a new card; render a "go to prior card" chip below the
+  // bubble body.
+  const hasReferencedItems =
+    !isUser &&
+    !isAgentQuestion &&
+    Array.isArray(referencedItemIds) &&
+    referencedItemIds.length > 0;
 
   // Focus the textarea when entering edit mode
   useEffect(() => {
@@ -335,13 +389,24 @@ export function MessageBubble({
             </div>
           )}
 
-          {/* Model badge */}
-          {!isCurrentlyStreaming && !isAgentQuestion && message.model && (
-            <div className="flex items-center gap-1 mb-1.5">
-              <Bot className="h-3 w-3 text-muted-foreground" />
-              <span className="text-[10px] text-muted-foreground">
-                {message.model}
-              </span>
+          {/* Model badge + optional artifact chip */}
+          {!isCurrentlyStreaming && !isAgentQuestion && (message.model || hasArtifacts) && (
+            <div className="flex items-center gap-2 mb-1.5">
+              {message.model && (
+                <div className="flex items-center gap-1">
+                  <Bot className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-[10px] text-muted-foreground">
+                    {message.model}
+                  </span>
+                </div>
+              )}
+              {hasArtifacts && (
+                <ArtifactChip
+                  artifactIds={artifactIds!}
+                  artifactLookup={artifactLookup}
+                  onOpenArtifact={onOpenArtifact}
+                />
+              )}
             </div>
           )}
 
@@ -349,7 +414,27 @@ export function MessageBubble({
           {isCurrentlyStreaming ? (
             <StreamingText content={streamingContent ?? ""} />
           ) : (
-            <MarkdownRenderer content={displayContent ?? ""} />
+            <MarkdownRenderer
+              content={displayContent ?? ""}
+              onCitationClick={hasArtifacts ? onCitationClick : undefined}
+            />
+          )}
+
+          {/* Phase E (§9 O5): chip(s) for prior cards the planner referenced
+              instead of publishing a new one. Stays hidden during streaming
+              — the SSE handler attaches ids to the assistant message_id, and
+              once `done` fires the bubble re-renders with the chip visible. */}
+          {!isCurrentlyStreaming && hasReferencedItems && (
+            <div className="flex flex-wrap gap-1.5 mt-2.5">
+              {referencedItemIds!.map((id) => (
+                <ReferencedItemChip
+                  key={id}
+                  itemId={id}
+                  label={artifactLookup?.[id]?.title}
+                  onJump={onJumpToReferencedItem}
+                />
+              ))}
+            </div>
           )}
 
           {/* Agent question suggestions (read-only chips — the user types their reply
@@ -527,5 +612,127 @@ export function MessageBubble({
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+// ============================================================================
+// Artifact chip (Window C)
+// ============================================================================
+
+interface ArtifactChipProps {
+  artifactIds: string[];
+  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  onOpenArtifact?: (itemId: string) => void;
+}
+
+/**
+ * Inline "المصدر" chip rendered next to the model badge on assistant
+ * bubbles that produced at least one workspace_item.
+ *
+ * - One artifact → a single ghost button. Click opens it in the pane.
+ * - Multiple artifacts → a DropdownMenu trigger; clicking a row opens that id.
+ *
+ * If ``artifactLookup`` is missing or doesn't yet include an id (race with
+ * the workspace list query), the row falls back to a generic "مصدر" label.
+ */
+function ArtifactChip({
+  artifactIds,
+  artifactLookup,
+  onOpenArtifact,
+}: ArtifactChipProps) {
+  if (artifactIds.length === 0) return null;
+
+  const baseButtonClass = cn(
+    "h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-foreground",
+    "rounded-full bg-muted/40 hover:bg-muted/70 transition-colors",
+  );
+
+  if (artifactIds.length === 1) {
+    const id = artifactIds[0];
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className={baseButtonClass}
+        onClick={() => onOpenArtifact?.(id)}
+        aria-label="فتح المصدر"
+      >
+        <FileSearch className="h-3 w-3" />
+        المصدر
+      </Button>
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={baseButtonClass}
+          aria-label="فتح المصادر"
+        >
+          <FileSearch className="h-3 w-3" />
+          المصدر ({artifactIds.length})
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-[220px]">
+        {artifactIds.map((id) => {
+          const entry = artifactLookup?.[id];
+          const label = entry?.title || "مصدر";
+          return (
+            <DropdownMenuItem
+              key={id}
+              onClick={() => onOpenArtifact?.(id)}
+              className="text-xs"
+            >
+              <FileSearch className="h-3 w-3 me-1.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{label}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// ============================================================================
+// Referenced item chip (Phase E — full_redesign §9 O5)
+// ============================================================================
+
+interface ReferencedItemChipProps {
+  itemId: string;
+  /** Optional resolved title from the workspace list cache. */
+  label?: string;
+  onJump?: (itemId: string) => void;
+}
+
+/**
+ * "راجع البطاقة السابقة" chip — rendered on an assistant bubble when the
+ * planner's responder set ``build_artifact=False`` + ``referenced_item_id``
+ * (no new card published). Clicking jumps to and highlights the referenced
+ * card in the workspace pane.
+ *
+ * Subtle outline style — distinct from the inline ``ArtifactChip`` so the
+ * user can tell at a glance that "this conversation re-used a prior card"
+ * vs "this turn produced its own card".
+ */
+function ReferencedItemChip({ itemId, label, onJump }: ReferencedItemChipProps) {
+  const labelText = label ? `راجع: ${label}` : "راجع البطاقة السابقة";
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className={cn(
+        "h-7 gap-1.5 px-2.5 text-[11px]",
+        "rounded-full border-border/70 text-muted-foreground hover:text-foreground",
+        "hover:bg-accent/40 transition-colors",
+      )}
+      onClick={() => onJump?.(itemId)}
+      aria-label="فتح البطاقة السابقة"
+    >
+      <CornerUpLeft className="h-3 w-3" />
+      <span className="truncate max-w-[280px]">{labelText}</span>
+    </Button>
   );
 }

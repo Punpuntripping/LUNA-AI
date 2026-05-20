@@ -27,18 +27,50 @@ function persistSplitRatio(ratio: number): void {
 interface WorkspaceUiState {
   isOpen: boolean;
   openItemId: string | null;
-  splitRatio: number;
+  /**
+   * When set, ``ReferencePanel`` scrolls reference ``n`` into view and
+   * briefly flashes it. Cleared by ``clearFocusedReference`` on
+   * animation-end so re-clicking the same marker fires the animation again.
+   */
+  focusedReferenceN: number | null;
+  /**
+   * Phase E (full_redesign §9 O5): when set, the ``WorkspaceList`` scrolls
+   * the matching ``<div id="workspace-item-{id}">`` into view and the
+   * ``WorkspaceCard`` for that id renders a ring highlight for ~2s. Set by
+   * ``highlightWorkspaceItem`` (chip click on the assistant bubble) and
+   * cleared via a setTimeout in the same action.
+   */
+  highlightedItemId: string | null;
 }
 
 interface ChatState {
   isStreaming: boolean;
   streamingMessageId: string | null;
+  // Conversation the active stream belongs to. The streaming buffer is a
+  // single global value; consumers MUST check this against their own
+  // conversation id before rendering, or one conversation's stream leaks
+  // into another.
+  streamingConversationId: string | null;
   streamingContent: string;
   abortController: AbortController | null;
   pendingFiles: PendingFile[];
   pendingMessage: string | null;
   error: string | null;
-  workspace: WorkspaceUiState;
+  // Per-conversation workspace pane state, keyed by conversation_id, so the
+  // pane follows conversation navigation instead of leaking across them.
+  workspaceByConversation: Record<string, WorkspaceUiState>;
+  /**
+   * Phase E (full_redesign §9 O5): item ids the planner flagged as
+   * "already covers this question" for a given assistant message. Keyed by
+   * ``assistant_message_id``. The MessageBubble for that message renders a
+   * chip per id; clicking the chip invokes ``highlightWorkspaceItem`` and
+   * opens the workspace pane to that item. Survives the messages-cache
+   * invalidate that happens at stream completion (the cache is keyed by
+   * conversation, this map is keyed by message_id and lives on the store).
+   */
+  referencedItemsByMessage: Record<string, string[]>;
+  // Global layout preference (persisted to localStorage) — NOT per-conversation.
+  splitRatio: number;
   isAgentRunning: boolean;
   runningAgentFamily: string | null;
   runningAgentSubtype: string | null;
@@ -46,7 +78,7 @@ interface ChatState {
   maxReconnectAttempts: number;
   isReconnecting: boolean;
 
-  startStreaming: (messageId: string) => void;
+  startStreaming: (messageId: string, conversationId: string) => void;
   appendToken: (text: string) => void;
   stopStreaming: () => void;
   finishStreaming: () => void;
@@ -57,10 +89,42 @@ interface ChatState {
   setAbortController: (controller: AbortController | null) => void;
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
-  openWorkspaceItem: (itemId: string) => void;
-  closeWorkspaceItem: () => void;
-  closeWorkspace: () => void;
-  toggleWorkspace: () => void;
+  openWorkspaceItem: (conversationId: string, itemId: string) => void;
+  /**
+   * Open ``itemId`` in the pane AND mark reference ``n`` as focused so the
+   * panel scroll-into-views + flashes it. Used by citation marker clicks.
+   */
+  openWorkspaceItemAtReference: (
+    conversationId: string,
+    itemId: string,
+    n: number,
+  ) => void;
+  /** Clear the focused reference flag (called on animation-end). */
+  clearFocusedReference: (conversationId: string) => void;
+  /**
+   * Phase E (§9 O5): record that the planner referenced ``itemId`` for the
+   * assistant message ``messageId``. Idempotent — repeat calls add to the
+   * list without duplicates. Called by the ``referenced_existing_item`` SSE
+   * handler.
+   */
+  recordReferencedItem: (messageId: string, itemId: string) => void;
+  /**
+   * Phase E (§9 O5): open the workspace pane to ``itemId`` AND briefly
+   * highlight the matching ``WorkspaceCard`` so the user sees which prior
+   * card the planner referred to. The highlight clears itself after ~2.5s
+   * via setTimeout in the action. Called when the user clicks the chip on
+   * an assistant bubble.
+   */
+  highlightWorkspaceItem: (conversationId: string, itemId: string) => void;
+  /**
+   * Phase E (§9 O5): clear the highlighted item id for ``conversationId``.
+   * Used internally by ``highlightWorkspaceItem``'s setTimeout; exposed so
+   * unit tests can clear it manually.
+   */
+  clearHighlightedItem: (conversationId: string) => void;
+  closeWorkspaceItem: (conversationId: string) => void;
+  closeWorkspace: (conversationId: string) => void;
+  toggleWorkspace: (conversationId: string) => void;
   setSplitRatio: (ratio: number) => void;
   startAgentRun: (agentFamily: string, subtype?: string | null) => void;
   finishAgentRun: () => void;
@@ -69,21 +133,32 @@ interface ChatState {
   reset: () => void;
 }
 
-const INITIAL_WORKSPACE: WorkspaceUiState = {
+// Pane state for a conversation with nothing stored yet — used as the base
+// when an action mutates a conversation absent from the map.
+const DEFAULT_WORKSPACE: WorkspaceUiState = {
   isOpen: false,
   openItemId: null,
-  splitRatio: DEFAULT_SPLIT_RATIO,
+  focusedReferenceN: null,
+  highlightedItemId: null,
 };
+
+// Duration of the WorkspaceCard ring highlight triggered by the Phase E chip.
+// 2.5s gives the user time to notice the card without overstaying — same
+// rough budget as the existing ref-flash animation.
+const HIGHLIGHT_ITEM_MS = 2500;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamingMessageId: null,
+  streamingConversationId: null,
   streamingContent: "",
   abortController: null,
   pendingFiles: [],
   pendingMessage: null,
   error: null,
-  workspace: { ...INITIAL_WORKSPACE, splitRatio: loadInitialSplitRatio() },
+  workspaceByConversation: {},
+  referencedItemsByMessage: {},
+  splitRatio: loadInitialSplitRatio(),
   isAgentRunning: false,
   runningAgentFamily: null,
   runningAgentSubtype: null,
@@ -91,10 +166,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   maxReconnectAttempts: 5,
   isReconnecting: false,
 
-  startStreaming: (messageId) =>
+  startStreaming: (messageId, conversationId) =>
     set({
       isStreaming: true,
       streamingMessageId: messageId,
+      streamingConversationId: conversationId,
       streamingContent: "",
       error: null,
     }),
@@ -108,6 +184,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       isStreaming: false,
       streamingMessageId: null,
+      streamingConversationId: null,
       streamingContent: "",
       abortController: null,
     });
@@ -120,6 +197,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       isStreaming: false,
       streamingMessageId: null,
+      streamingConversationId: null,
       streamingContent: "",
       abortController: null,
       reconnectAttempts: 0,
@@ -151,38 +229,149 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearPendingMessage: () => set({ pendingMessage: null }),
 
-  openWorkspaceItem: (itemId) =>
-    set((state) => ({
-      workspace: { ...state.workspace, isOpen: true, openItemId: itemId },
-    })),
+  openWorkspaceItem: (conversationId, itemId) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: {
+            isOpen: true,
+            openItemId: itemId,
+            focusedReferenceN: null,
+            // Preserve an active highlight so a chip click that targets a
+            // card in the list view can keep ringing it after the pane opens.
+            highlightedItemId: cur.highlightedItemId,
+          },
+        },
+      };
+    }),
 
-  closeWorkspaceItem: () =>
-    set((state) => ({
-      // Returns the workspace pane from item-detail view back to the list view.
-      // Pane stays open; just clears the focused item.
-      workspace: { ...state.workspace, openItemId: null },
-    })),
+  openWorkspaceItemAtReference: (conversationId, itemId, n) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: {
+            isOpen: true,
+            openItemId: itemId,
+            focusedReferenceN: n,
+            highlightedItemId: cur.highlightedItemId,
+          },
+        },
+      };
+    }),
 
-  closeWorkspace: () =>
-    set((state) => ({
-      workspace: { ...state.workspace, isOpen: false, openItemId: null },
-    })),
+  clearFocusedReference: (conversationId) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: { ...cur, focusedReferenceN: null },
+        },
+      };
+    }),
 
-  toggleWorkspace: () =>
+  recordReferencedItem: (messageId, itemId) =>
+    set((state) => {
+      const cur = state.referencedItemsByMessage[messageId] ?? [];
+      if (cur.includes(itemId)) return state;
+      return {
+        referencedItemsByMessage: {
+          ...state.referencedItemsByMessage,
+          [messageId]: [...cur, itemId],
+        },
+      };
+    }),
+
+  highlightWorkspaceItem: (conversationId, itemId) => {
     set((state) => ({
-      workspace: {
-        ...state.workspace,
-        isOpen: !state.workspace.isOpen,
-        openItemId: state.workspace.isOpen ? null : state.workspace.openItemId,
+      workspaceByConversation: {
+        ...state.workspaceByConversation,
+        [conversationId]: {
+          // Force the pane open + drop back to list mode so the highlighted
+          // card is visible. If the user already had a different item open
+          // in detail mode, navigating to the list lets the ring be seen.
+          isOpen: true,
+          openItemId: null,
+          focusedReferenceN: null,
+          highlightedItemId: itemId,
+        },
+      },
+    }));
+    // Auto-clear after the ring animation budget so re-clicking the same
+    // chip re-fires the highlight. Guarded against double-set: if the user
+    // clicks a different chip mid-flight, only the matching id is cleared.
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        const cur =
+          get().workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+        if (cur.highlightedItemId === itemId) {
+          get().clearHighlightedItem(conversationId);
+        }
+      }, HIGHLIGHT_ITEM_MS);
+    }
+  },
+
+  clearHighlightedItem: (conversationId) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: { ...cur, highlightedItemId: null },
+        },
+      };
+    }),
+
+  closeWorkspaceItem: (conversationId) =>
+    set((state) => {
+      // Return the pane from item-detail view to the list view: the pane
+      // stays open, just clear the focused item.
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: { ...cur, openItemId: null, focusedReferenceN: null },
+        },
+      };
+    }),
+
+  closeWorkspace: (conversationId) =>
+    set((state) => ({
+      workspaceByConversation: {
+        ...state.workspaceByConversation,
+        [conversationId]: {
+          isOpen: false,
+          openItemId: null,
+          focusedReferenceN: null,
+          highlightedItemId: null,
+        },
       },
     })),
+
+  toggleWorkspace: (conversationId) =>
+    set((state) => {
+      const cur = state.workspaceByConversation[conversationId] ?? DEFAULT_WORKSPACE;
+      return {
+        workspaceByConversation: {
+          ...state.workspaceByConversation,
+          [conversationId]: {
+            isOpen: !cur.isOpen,
+            openItemId: cur.isOpen ? null : cur.openItemId,
+            focusedReferenceN: null,
+            highlightedItemId: cur.isOpen ? null : cur.highlightedItemId,
+          },
+        },
+      };
+    }),
 
   setSplitRatio: (ratio) => {
     const clamped = Math.max(0, Math.min(100, ratio));
     persistSplitRatio(clamped);
-    set((state) => ({
-      workspace: { ...state.workspace, splitRatio: clamped },
-    }));
+    set({ splitRatio: clamped });
   },
 
   startAgentRun: (agentFamily, subtype) =>
@@ -209,24 +398,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ reconnectAttempts: 0, isReconnecting: false }),
 
   reset: () =>
-    set((state) => ({
+    // splitRatio is intentionally preserved — it is a global layout preference.
+    set({
       isStreaming: false,
       streamingMessageId: null,
+      streamingConversationId: null,
       streamingContent: "",
       abortController: null,
       pendingFiles: [],
       pendingMessage: null,
       error: null,
-      workspace: {
-        isOpen: false,
-        openItemId: null,
-        splitRatio: state.workspace.splitRatio,
-      },
+      workspaceByConversation: {},
+      referencedItemsByMessage: {},
       isAgentRunning: false,
       runningAgentFamily: null,
       runningAgentSubtype: null,
       reconnectAttempts: 0,
       maxReconnectAttempts: 5,
       isReconnecting: false,
-    })),
+    }),
 }));

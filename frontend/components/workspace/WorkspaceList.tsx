@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronLeft, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useChatStore } from "@/stores/chat-store";
 import { WorkspaceCard } from "./WorkspaceCard";
 import type { WorkspaceItem, WorkspaceItemKind } from "@/types";
 
@@ -44,6 +45,29 @@ export function WorkspaceList({
   const [collapsedGroups, setCollapsedGroups] = useState<
     Set<WorkspaceItemKind>
   >(new Set());
+
+  // Phase E (§9 O5): if a card in this list becomes the highlighted item,
+  // auto-expand its group so the ring + scrollIntoView in WorkspaceCard
+  // actually has a DOM node to target. Pulls the conversation_id off the
+  // first item — all items in a WorkspaceList share a conversation in the
+  // pane usage; defensive default keeps the empty/loading paths quiet.
+  const highlightedItemId = useChatStore((s) => {
+    const convoId = items?.[0]?.conversation_id;
+    if (!convoId) return null;
+    return s.workspaceByConversation[convoId]?.highlightedItemId ?? null;
+  });
+
+  useEffect(() => {
+    if (!highlightedItemId || !items) return;
+    const target = items.find((i) => i.item_id === highlightedItemId);
+    if (!target) return;
+    setCollapsedGroups((prev) => {
+      if (!prev.has(target.kind)) return prev;
+      const next = new Set(prev);
+      next.delete(target.kind);
+      return next;
+    });
+  }, [highlightedItemId, items]);
 
   function toggleGroup(kind: WorkspaceItemKind) {
     setCollapsedGroups((prev) => {

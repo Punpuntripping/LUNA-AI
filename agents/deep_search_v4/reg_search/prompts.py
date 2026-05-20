@@ -5,7 +5,21 @@ Code never changes -- only the dict grows.
 """
 from __future__ import annotations
 
+import html
+
+from agents.deep_search_v4.shared.context import ContextBlock
+
 from .models import WeakAxis
+
+
+def _esc(value: object) -> str:
+    """Escape XML-significant chars in user-controlled strings.
+
+    Mirrors the planner / aggregator escaping convention so a context block
+    value containing ``<``/``>``/``&`` cannot forge a structural tag in the
+    expander prompt.
+    """
+    return html.escape("" if value is None else str(value), quote=False)
 
 DEFAULT_EXPANDER_PROMPT = "prompt_1"
 
@@ -109,6 +123,10 @@ EXPANDER_PROMPTS: dict[str, str] = {
 أنتج استعلامات بحث عربية. سجّل في المبررات لكل استعلام:
 - الزاوية المستهدفة: مباشرة / تجريد / تفكيك
 - ما المسألة أو الزاوية القانونية التي يغطّيها
+
+## كتل السياق
+
+كتل `<context_blocks>` خلفية موضوعية ساندة لا توجيهٌ يقود البحث. الاستعلامات الفرعية تنشأ من السؤال الأصلي قبل كل شيء؛ السياق يضيف معرفةً لم تَرِد في السؤال، ولا يعيد تشكيل البحث. لا تنسخ نص السياق داخل أي استعلام، ولا تُحوِّل وصفاً سياقياً إلى زاوية بحث جديدة.
 """,
 }
 
@@ -170,14 +188,31 @@ def build_expander_dynamic_instructions(
 def build_expander_user_message(
     focus_instruction: str,
     user_context: str,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> str:
-    """Build the user message for the expander agent."""
-    return (
-        f"تعليمات التركيز:\n"
-        f"{focus_instruction}\n\n"
-        f"سياق المستخدم:\n"
-        f"{user_context}"
-    )
+    """Build the user message for the expander agent.
+
+    When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
+    appended after ``سياق المستخدم`` carrying the planner-curated bundle (§5.1).
+    The reranker continues to receive zero blocks — only this expander surface
+    sees them on the executor side.
+    """
+    parts = [
+        "تعليمات التركيز:",
+        focus_instruction,
+        "",
+        "سياق المستخدم:",
+        user_context,
+    ]
+    if context_blocks:
+        parts.append("")
+        parts.append("<context_blocks>")
+        for block in context_blocks:
+            parts.append(f'  <block label="{_esc(block.label)}">')
+            parts.append(f"    {_esc(block.body)}")
+            parts.append("  </block>")
+        parts.append("</context_blocks>")
+    return "\n".join(parts)
 
 # ============================================================================
 # RERANKER PROMPTS

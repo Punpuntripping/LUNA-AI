@@ -17,6 +17,20 @@ Add new prompt variants by adding entries to the respective dicts.
 """
 from __future__ import annotations
 
+import html
+
+from agents.deep_search_v4.shared.context import ContextBlock
+
+
+def _esc(value: object) -> str:
+    """Escape XML-significant chars in user-controlled strings.
+
+    Mirrors the planner / aggregator escaping convention so a context block
+    value containing ``<``/``>``/``&`` cannot forge a structural tag in the
+    expander prompt.
+    """
+    return html.escape("" if value is None else str(value), quote=False)
+
 
 # ---------------------------------------------------------------------------
 # Expander prompts
@@ -110,6 +124,10 @@ EXPANDER_PROMPTS: dict[str, str] = {
 5. **الأنظمة المُشار إليها**: إذا ذكر المستخدم نظاماً بعينه، يمكنك ذكره في الاستعلام
 
 6. **1-10 استعلامات**: حدد العدد حسب تعقيد السؤال. لا تتجاوز 10 استعلامات في الجولة الواحدة، واكتفِ بأقل عدد يغطّي المسألة — لا تُولّد استعلامات إضافية إلا لمسائل مستقلة فعلاً
+
+## كتل السياق
+
+كتل `<context_blocks>` خلفية موضوعية ساندة لا توجيهٌ يقود البحث. الاستعلامات الفرعية تنشأ من السؤال الأصلي قبل كل شيء؛ السياق يضيف معرفةً لم تَرِد في السؤال، ولا يعيد تشكيل البحث. لا تنسخ نص السياق داخل أي استعلام، ولا تُحوِّل وصفاً سياقياً إلى زاوية بحث جديدة.
 """,
 
     # -------------------------------------------------------------------------
@@ -316,6 +334,10 @@ EXPANDER_PROMPTS: dict[str, str] = {
 - النوع: مباشر / تجريدي / تفكيكي
 - المبدأ القضائي المستهدف
 - الزاوية التي يُغطّيها هذا الاستعلام في الإجابة
+
+## كتل السياق
+
+كتل `<context_blocks>` خلفية موضوعية ساندة لا توجيهٌ يقود البحث. الاستعلامات الفرعية تنشأ من السؤال الأصلي قبل كل شيء؛ السياق يضيف معرفةً لم تَرِد في السؤال، ولا يعيد تشكيل البحث. لا تنسخ نص السياق داخل أي استعلام، ولا تُحوِّل وصفاً سياقياً إلى زاوية بحث جديدة.
 """,
 
     # -------------------------------------------------------------------------
@@ -466,6 +488,10 @@ EXPANDER_PROMPTS: dict[str, str] = {
 تأكّد قبل الإرسال:
 - كل استعلام أسلوبه يُطابق قناته (لا تسرد واقعة في principle، لا تذكر مبدأً مجرّداً في basis).
 - القنوات المُغطّاة ≥ 2.
+
+## كتل السياق
+
+كتل `<context_blocks>` خلفية موضوعية ساندة لا توجيهٌ يقود البحث. الاستعلامات الفرعية تنشأ من السؤال الأصلي قبل كل شيء؛ السياق يضيف معرفةً لم تَرِد في السؤال، ولا يعيد تشكيل البحث. لا تنسخ نص السياق داخل أي استعلام، ولا تُحوِّل وصفاً سياقياً إلى زاوية بحث جديدة.
 """,
 }
 
@@ -485,14 +511,31 @@ def get_expander_prompt(key: str) -> str:
 def build_expander_user_message(
     focus_instruction: str,
     user_context: str,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> str:
-    """Build the user message for the expander agent."""
-    return (
-        f"تعليمات التركيز:\n"
-        f"{focus_instruction}\n\n"
-        f"سياق المستخدم:\n"
-        f"{user_context}"
-    )
+    """Build the user message for the expander agent.
+
+    When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
+    appended after ``سياق المستخدم`` carrying the planner-curated bundle (§5.1).
+    The reranker continues to receive zero blocks — only this expander surface
+    sees them on the executor side.
+    """
+    parts = [
+        "تعليمات التركيز:",
+        focus_instruction,
+        "",
+        "سياق المستخدم:",
+        user_context,
+    ]
+    if context_blocks:
+        parts.append("")
+        parts.append("<context_blocks>")
+        for block in context_blocks:
+            parts.append(f'  <block label="{_esc(block.label)}">')
+            parts.append(f"    {_esc(block.body)}")
+            parts.append("  </block>")
+        parts.append("</context_blocks>")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,14 @@ logger = logging.getLogger(__name__)
 
 
 AGGREGATOR_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 100k = far above any plausible aggregator output. Synthesis at
+    # detail_level=high is genuinely unpredictable and benefits from uncapped
+    # reasoning; observed output max ~5500 tokens with ~3500 reasoning. The
+    # explicit ceiling is documentation more than constraint — the provider's
+    # own `max_tokens` for qwen3.6-plus (~16-32k) bounds us first.
+    # (`response_tokens_limit` was the deprecated alias — switched to the
+    # current `output_tokens_limit` name.)
+    output_tokens_limit=100_000,
     request_limit=3,
 )
 
@@ -58,17 +65,6 @@ def create_aggregator_agent(
         retries=2,
     )
 
-    @agent.output_validator
-    async def _validate_summary_length(
-        ctx,  # RunContext[None]
-        value: AggregatorLLMOutput,
-    ) -> AggregatorLLMOutput:
-        if len(value.chat_summary) > 500:
-            value.chat_summary = value.chat_summary[:500].rstrip()
-        if len(value.key_findings) > 5:
-            value.key_findings = value.key_findings[:5]
-        return value
-
     return agent
 
 
@@ -94,40 +90,25 @@ def create_dcr_agents(
     label only — it does NOT select a model. If any stage fails, the runner
     falls back whole-chain to single-shot — stages are not individually retried.
     """
-    def _attach_summary_validator(
-        a: Agent[None, AggregatorLLMOutput],
-    ) -> Agent[None, AggregatorLLMOutput]:
-        @a.output_validator
-        async def _validate_summary_length(
-            ctx,  # RunContext[None]
-            value: AggregatorLLMOutput,
-        ) -> AggregatorLLMOutput:
-            if len(value.chat_summary) > 500:
-                value.chat_summary = value.chat_summary[:500].rstrip()
-            if len(value.key_findings) > 5:
-                value.key_findings = value.key_findings[:5]
-            return value
-        return a
-
-    draft = _attach_summary_validator(Agent(
+    draft = Agent(
         get_agent_model("aggregator"),
         name="aggregator_draft",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_draft"),
         retries=1,
-    ))
-    critique = _attach_summary_validator(Agent(
+    )
+    critique = Agent(
         get_agent_model("aggregator"),
         name="aggregator_critique",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_critique"),
         retries=1,
-    ))
-    rewrite = _attach_summary_validator(Agent(
+    )
+    rewrite = Agent(
         get_agent_model("aggregator"),
         name="aggregator_rewrite",
         output_type=AggregatorLLMOutput,
         instructions=get_aggregator_prompt("prompt_3_rewrite"),
         retries=1,
-    ))
+    )
     return draft, critique, rewrite

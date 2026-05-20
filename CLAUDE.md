@@ -22,7 +22,7 @@ Two modes: **General Q&A** (broad legal questions) and **Case-specific** (docume
 frontend/       Next.js app — pages, components, hooks, stores, types
 backend/        FastAPI app — routes, services, models, middleware
 shared/         Python shared layer — config, db client, auth/JWT, cache, types
-agents/         Mock RAG pipeline (agents/rag/)
+agents/         Real agent pipeline — orchestrator, router, deep_search_v4, agent_search, agent_writer, memory
 .claude/agents/ Claude Code sub-agents (build, deploy, review)
 agents/.claude/agents/ Pydantic AI agent builder pipeline (6 agents)
 .claude/plans/  Wave-by-wave build plans (primary reference for @plan-reviewer)
@@ -134,7 +134,7 @@ Agents MUST read existing reports before starting work to stay aligned on known 
 - `frontend/.env.local` not present — dev env needs explicit env vars or symlink
 - Supabase uses **ES256** JWTs (not HS256) — `shared/auth/jwt.py` handles both via JWKS
 - Wave 5 validation: 68/70 pass (2 known limitations: stateless JWT logout, document upload test)
-- All 5 agents are **mock** — return hardcoded Arabic text, no real LLM/RAG calls yet
+- `agents/memory/agent.py` still uses **mock summary text** (`_mock_item_summary`, `_mock_compaction_summary`) — real DB logic, placeholder LLM output pending Wave 10
 
 ## Plans (Source of Truth)
 

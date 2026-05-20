@@ -241,6 +241,17 @@ def create_app() -> FastAPI:
         tags=["preferences"],
     )
 
+    # Internal webhooks — invoked by Supabase database triggers, NOT end users.
+    # Auth via X-Webhook-Secret header. Lives under /internal/ to keep it
+    # visually separate from /api/v1/.
+    from backend.app.api.internal_webhooks import router as internal_webhooks_router
+
+    application.include_router(
+        internal_webhooks_router,
+        prefix="/internal",
+        tags=["internal"],
+    )
+
     return application
 
 

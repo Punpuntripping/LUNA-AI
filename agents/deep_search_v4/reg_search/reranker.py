@@ -49,7 +49,12 @@ from .unfold_reranker import (
 logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 25k accommodates: 15k thinking budget (capped via model_settings below) +
+    # ~10k for per-chunk decision text on ~15 chunks. Without a cap, one rogue
+    # worker in run 1779196337 emitted 9784 reasoning + 11910 text = 21694 tokens.
+    # With thinking budget capped, expected total stays around 12-18k.
+    # (`response_tokens_limit` was the deprecated alias — switched.)
+    output_tokens_limit=25_000,
     request_limit=3,
 )
 
@@ -81,6 +86,15 @@ def create_reranker_agent(
         output_type=RegRerankerClassification,
         instructions=system_prompt,
         retries=2,
+        # Cap reasoning at 15k — DashScope thinking on qwen3.5-flash is otherwise
+        # unbounded and one rogue worker can hit 9k+ reasoning tokens, dominating
+        # the concurrent fan-out (RerankerNode wall-clock = slowest worker).
+        model_settings={
+            "extra_body": {
+                "enable_thinking": True,
+                "thinking_budget": 15_000,
+            },
+        },
     )
 
 

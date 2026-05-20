@@ -32,6 +32,11 @@ class AgentRunRecord:
     case_id: str | None = None
     message_id: str | None = None
     subtype: str | None = None
+    # Short Arabic content-derived label (≤80 chars) emitted by the router on
+    # DispatchAgent. Used by the planner to enumerate prior tasks without
+    # reading full describe_query text. Persisted to agent_runs.task_label
+    # (migration 039).
+    task_label: str | None = None
     input_summary: str | None = None
     output_item_id: str | None = None
     duration_ms: int | None = None
@@ -81,6 +86,8 @@ def record_agent_run(supabase: SupabaseClient, rec: AgentRunRecord) -> str | Non
             payload["message_id"] = str(rec.message_id)
         if rec.subtype is not None:
             payload["subtype"] = rec.subtype
+        if rec.task_label is not None:
+            payload["task_label"] = rec.task_label
         if rec.input_summary is not None:
             payload["input_summary"] = rec.input_summary
         if rec.output_item_id is not None:

@@ -171,8 +171,6 @@ async def handle_aggregator_turn(
         model_used=model_used,
         validation=validation,
         artifact=artifact,
-        chat_summary=llm_output.chat_summary or "",
-        key_findings=llm_output.key_findings or [],
     )
 
     duration_s = time.perf_counter() - t0

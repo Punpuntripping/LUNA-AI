@@ -19,6 +19,7 @@ import type {
   SSEWorkspaceItemUpdated,
   SSEWorkspaceItemLocked,
   SSEWorkspaceItemUnlocked,
+  SSEReferencedExistingItem,
   WorkspaceItem,
   WorkspaceItemListResponse,
 } from "@/types";
@@ -75,6 +76,13 @@ export function useSendMessage(): UseSendMessageReturn {
 
   const sendMessage = useCallback(
     async ({ conversationId, content, caseId }: SendMessageParams) => {
+      // A new send supersedes any stream still in flight. The store tracks a
+      // single global stream buffer, so abort + clear the previous stream
+      // first — otherwise two conversations' tokens interleave into the same
+      // buffer. regenerate/retry/editAndResend all funnel through here, so
+      // this one guard covers every send path.
+      storeStopStreaming();
+
       // 0. Upload pending files (if any and conversation has a case)
       const { pendingFiles, clearPendingFiles } = useChatStore.getState();
       const attachmentIds: string[] = [];
@@ -116,6 +124,9 @@ export function useSendMessage(): UseSendMessageReturn {
         content: messageContent,
         attachments: optimisticAttachments,
         created_at: new Date().toISOString(),
+        // Window C: user messages never carry artifact_ids; explicit so the
+        // shape stays consistent with backend MessageResponse.
+        artifact_ids: undefined,
         isOptimistic: true,
       };
 
@@ -309,8 +320,11 @@ export function useSendMessage(): UseSendMessageReturn {
               assistantMessageId = payload.assistant_message_id;
               // Replace optimistic user message ID with real one
               replaceOptimisticId(qc, conversationId, optimisticId, payload.user_message_id);
-              // Start streaming the assistant message
-              useChatStore.getState().startStreaming(payload.assistant_message_id);
+              // Start streaming the assistant message, tagged with the
+              // conversation so other conversations don't render this stream.
+              useChatStore
+                .getState()
+                .startStreaming(payload.assistant_message_id, conversationId);
               break;
             }
             case "token": {
@@ -339,6 +353,10 @@ export function useSendMessage(): UseSendMessageReturn {
                           content: finalContent,
                           attachments: [],
                           created_at: new Date().toISOString(),
+                          // Window C: the streaming `done` event doesn't yet
+                          // carry artifact_ids; the subsequent invalidate +
+                          // refetch will fill them in from the server.
+                          artifact_ids: undefined,
                         },
                         ...newPages[0].messages,
                       ],
@@ -356,7 +374,9 @@ export function useSendMessage(): UseSendMessageReturn {
               void qc.invalidateQueries({
                 queryKey: workspaceKeys.byConversation(conversationId),
               });
-              useChatStore.getState().openWorkspaceItem(payload.item_id);
+              useChatStore
+                .getState()
+                .openWorkspaceItem(conversationId, payload.item_id);
               break;
             }
             case "agent_run_started": {
@@ -408,6 +428,22 @@ export function useSendMessage(): UseSendMessageReturn {
             case "workspace_item_unlocked": {
               const payload = data as SSEWorkspaceItemUnlocked;
               patchWorkspaceItemLock(qc, conversationId, payload.item_id, null);
+              break;
+            }
+            case "referenced_existing_item": {
+              // Phase E (full_redesign §3.4a / §6.3 / §9 O5):
+              // Planner's responder decided a prior workspace_item already
+              // covers this question — no new card was published. Stash the
+              // referenced item_id against the in-flight assistant message
+              // so the MessageBubble can render a clickable chip
+              // ("راجع البطاقة السابقة") that jumps to and highlights the
+              // existing card in the workspace pane.
+              const payload = data as SSEReferencedExistingItem;
+              if (assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .recordReferencedItem(assistantMessageId, payload.item_id);
+              }
               break;
             }
             case "heartbeat":

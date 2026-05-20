@@ -87,6 +87,11 @@ class RetrievalConfig:
     ``expander_max_queries`` and ``result_budget`` are keyed by executor name
     (``"reg"`` / ``"compliance"`` / ``"cases"``) and contain an entry only for
     *included* executors.
+
+    Phase C: ``context_labels`` echoes ``PlannerDecision.context_labels`` here
+    as a pass-through. The field is plumbed in Wave 2 but not yet consumed
+    downstream — Phase D wires it into ``LoopState`` + ``AggregatorInput`` via
+    ``ContextBlock`` objects rendered by ``run_retrieval``.
     """
 
     include_reg: bool
@@ -99,6 +104,9 @@ class RetrievalConfig:
     # Echoed for telemetry / logging — not consumed downstream.
     mode: Mode | None = None
     support: bool = False
+    # Phase C — planner-emitted context label list (placeholder; consumed in
+    # Phase D when run_retrieval builds ContextBlock objects from it).
+    context_labels: list[str] = field(default_factory=list)
 
 
 def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
@@ -144,6 +152,9 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
         sectors_override=list(decision.sectors) if decision.sectors else None,
         mode=decision.mode,
         support=False if decision.mode == "full" else decision.support,
+        # Phase C — pass through the planner's label selection. Phase D will
+        # consume these via ContextBlock objects in run_retrieval.
+        context_labels=list(getattr(decision, "context_labels", []) or []),
     )
 
 

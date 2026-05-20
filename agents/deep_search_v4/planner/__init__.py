@@ -27,7 +27,13 @@ don't have the agent runtime installed.
 """
 from __future__ import annotations
 
-from .models import Mode, PlannerDecision, PlannerResponse, SuggestedAction
+from .models import (
+    Mode,
+    PlannerDecision,
+    PlannerResponse,
+    PriorSearchSummary,
+    SuggestedAction,
+)
 from .apply import (
     FULL_PROFILE,
     MIN_EXPANDER_DIVISOR,
@@ -66,6 +72,7 @@ __all__ = [
     "Mode",
     "SuggestedAction",
     "PlannerDecision",
+    "PriorSearchSummary",
     "PlannerResponse",
     # apply / caps
     "MODE_PROFILES",

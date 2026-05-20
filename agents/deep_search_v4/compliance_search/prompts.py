@@ -3,7 +3,8 @@
 One static system prompt for the embedded pydantic_ai QueryExpander agent:
 - EXPANDER_SYSTEM_PROMPT: Arabic-first prompt with task-counting strategy
 
-Plus one dynamic builder:
+Plus dynamic builders:
+- build_expander_user_message: assembles focus + user_context + context_blocks XML
 - build_expander_dynamic_instructions: Weak axes injection for round 2+
 
 The Aggregator has been removed — the shared aggregator (deep_search_v3/aggregator)
@@ -13,10 +14,23 @@ The reranker prompt lives in reranker_prompts.py.
 """
 from __future__ import annotations
 
+import html
 from typing import TYPE_CHECKING
+
+from agents.deep_search_v4.shared.context import ContextBlock
 
 if TYPE_CHECKING:
     from .models import WeakAxis
+
+
+def _esc(value: object) -> str:
+    """Escape XML-significant chars in user-controlled strings.
+
+    Mirrors the planner / aggregator escaping convention so a context block
+    value containing ``<``/``>``/``&`` cannot forge a structural tag in the
+    expander prompt.
+    """
+    return html.escape("" if value is None else str(value), quote=False)
 
 
 # -- QueryExpander System Prompt -----------------------------------------------
@@ -90,7 +104,43 @@ EXPANDER_SYSTEM_PROMPT = """\
 - **queries**: قائمة استعلامات (1-10) بالعربية، كل استعلام بالبنية الثلاثية (وصف + مستفيد + هدف) بدون ذكر أي منصة.
 - **rationales**: مبرر داخلي مختصر لكل استعلام يوضح: أي جزء من الرواية أثار هذا الاحتياج، ومن هو المستفيد، وما الهدف. (للتسجيل فقط، لا يُرسل للبحث.)
 - **task_count**: عدد الاحتياجات التنفيذية المستقلة التي استخرجتها.
+
+## كتل السياق
+
+كتل `<context_blocks>` خلفية موضوعية ساندة لا توجيهٌ يقود البحث. الاستعلامات الفرعية تنشأ من السؤال الأصلي قبل كل شيء؛ السياق يضيف معرفةً لم تَرِد في السؤال، ولا يعيد تشكيل البحث. لا تنسخ نص السياق داخل أي استعلام، ولا تُحوِّل وصفاً سياقياً إلى زاوية بحث جديدة.
 """
+
+
+def build_expander_user_message(
+    focus_instruction: str,
+    user_context: str,
+    context_blocks: list[ContextBlock] | None = None,
+) -> str:
+    """Build the user message for the compliance expander agent.
+
+    The focus instruction always leads; ``سياق المستخدم`` is appended only when
+    ``user_context`` is non-empty (preserving the prior inline behaviour at
+    ``loop.py:84-92`` before this refactor). When ``context_blocks`` is
+    non-empty, a ``<context_blocks>`` XML block is appended afterward
+    carrying the planner-curated bundle (§5.1).
+
+    The reranker continues to receive zero blocks — only this expander surface
+    sees them on the executor side.
+    """
+    parts: list[str] = [focus_instruction]
+    if user_context:
+        parts.append("")
+        parts.append("سياق المستخدم:")
+        parts.append(user_context)
+    if context_blocks:
+        parts.append("")
+        parts.append("<context_blocks>")
+        for block in context_blocks:
+            parts.append(f'  <block label="{_esc(block.label)}">')
+            parts.append(f"    {_esc(block.body)}")
+            parts.append("  </block>")
+        parts.append("</context_blocks>")
+    return "\n".join(parts)
 
 
 # -- Dynamic Instruction Builders ----------------------------------------------

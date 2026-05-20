@@ -69,6 +69,7 @@ from agents.deep_search_v4.reg_search.models import (
     RegSearchDeps,
     RegSearchResult,
 )
+from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
 from agents.deep_search_v4.ura.compliance_adapter import compliance_to_rqr
@@ -145,6 +146,12 @@ class FullLoopDeps:
     # exact prompt + raw LLM output + thinking + validation all land on disk
     # alongside the per-phase logs. Production callers leave this None.
     aggregator_logger: Any | None = None
+    # Planner-curated context bundle (§3.6 / §4 / §5.1 / §5.3). The same
+    # filtered list flows to every executor's ``LoopState.context_blocks`` AND
+    # to ``AggregatorInput.context_blocks``. ``run_retrieval`` populates this
+    # from ``decision.context_labels``; ``run_full_loop`` reads it. Default
+    # empty preserves pre-redesign behavior. NEVER threaded into any reranker.
+    context_blocks: list[ContextBlock] = field(default_factory=list)
     _events: list[dict] = field(default_factory=list)
     # Telemetry stash — the planner's RetrievalConfig / decision, when run via
     # run_retrieval. Typed Any to keep this module decoupled from the schema.
@@ -259,6 +266,7 @@ async def _run_reg_phase(
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
+        context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
     )
 
     t0 = _time.perf_counter()
@@ -430,6 +438,7 @@ async def _run_compliance_phase(
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
+        context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
     )
 
     t0 = _time.perf_counter()
@@ -573,6 +582,7 @@ async def _run_case_phase(
             expander_max_queries=case_expander_cap,
             sectors_override=deps.sectors_override,
             score_threshold=deps.case_score_threshold,
+            context_blocks=list(deps.context_blocks) if deps.context_blocks else None,
         )
     except Exception as exc:
         logger.error("case_search phase failed: %s", exc, exc_info=True)
@@ -713,6 +723,13 @@ async def run_full_loop(
         prompt_key=prompt_key,
         detail_level=deps.detail_level,
     )
+    # Thread the planner-curated context bundle into the aggregator user
+    # message (rendered before <references> by build_aggregator_user_message).
+    # SAME filtered list the executors received -- §3.6 (run_retrieval changes).
+    # ``AggregatorInput.context_blocks`` defaults to []; setting it after
+    # ``from_ura`` avoids touching the classmethod (out of scope per Phase D).
+    if deps.context_blocks:
+        agg_input.context_blocks = list(deps.context_blocks)
     deps._aggregator_input = agg_input
     agg_deps = build_aggregator_deps(
         detail_level=deps.detail_level,
@@ -765,6 +782,82 @@ async def run_full_loop(
 # ---------------------------------------------------------------------------
 
 
+def _build_candidate_context_blocks(
+    decision: Any,
+    deps: PlannerDeps,
+) -> dict[str, ContextBlock]:
+    """Build the 4 candidate ``ContextBlock`` objects from planner decision + deps.
+
+    Returns a dict keyed by label so the filter step in :func:`run_retrieval`
+    can pick by label without scanning. A source is silently skipped when it
+    would produce an empty body (e.g. ``deps.case_brief is None``,
+    ``decision.planner_brief`` blank, ``deps.prior_searches`` empty,
+    ``deps.attached_items`` empty).
+
+    See §4.2 (vocabulary table) of the full_redesign spec for rendering
+    conventions per label. Note that ``recent_messages`` is NOT a context
+    block — it reaches the decider prompt only via dynamic instructions
+    (handled by the planner in Wave 2), never downstream.
+    """
+    candidates: dict[str, ContextBlock] = {}
+
+    # case_brief — persistence="case" (lives with the case across turns).
+    if deps.case_brief:
+        candidates["case_brief"] = ContextBlock(
+            label="case_brief",
+            body=deps.case_brief,
+            persistence="case",
+        )
+
+    # planner_brief — persistence="turn" (recomputed per dispatch).
+    brief = (decision.planner_brief or "").strip() if decision is not None else ""
+    if brief:
+        candidates["planner_brief"] = ContextBlock(
+            label="planner_brief",
+            body=brief,
+            persistence="turn",
+        )
+
+    # prior_search_lessons — persistence="conversation".
+    # Rendered per §4.2: list of {title, describe_query, confidence, summary}.
+    # NEVER the full content_md or original references. When summary is empty
+    # (e.g. async trigger hasn't fired yet), render only the other three rows.
+    if deps.prior_searches:
+        rendered = []
+        for ps in deps.prior_searches:
+            lines = [
+                f"- العنوان: {ps.title}",
+                f"  السؤال: {ps.describe_query}",
+                f"  الثقة: {ps.confidence}",
+            ]
+            if ps.summary:
+                lines.append(f"  الخلاصة: {ps.summary}")
+            rendered.append("\n".join(lines))
+        candidates["prior_search_lessons"] = ContextBlock(
+            label="prior_search_lessons",
+            body="\n\n".join(rendered),
+            persistence="conversation",
+        )
+
+    # attached_artifacts — persistence="turn".
+    # Full content_md of each router-attached item. Bundled into one block; the
+    # individual item_id audit trail lives on workspace_items, not here.
+    if deps.attached_items:
+        rendered = []
+        for item in deps.attached_items:
+            rendered.append(
+                f"## {item.title}\n\n{item.content_md}".strip()
+            )
+        candidates["attached_artifacts"] = ContextBlock(
+            label="attached_artifacts",
+            body="\n\n---\n\n".join(rendered),
+            persistence="turn",
+            source_item_id=None,
+        )
+
+    return candidates
+
+
 async def run_retrieval(
     query: str,
     config: RetrievalConfig,
@@ -782,6 +875,23 @@ async def run_retrieval(
     Called by ``planner.handle_planner_turn`` (lazy-imported there to break the
     planner → orchestrator import cycle).
     """
+    # Build candidate context blocks from the 4 label sources, then filter by
+    # the planner's emitted label list. The SAME filtered bundle flows to all
+    # executor expanders AND the aggregator (§3.6). The reranker continues to
+    # receive zero blocks -- enforced by the executors not threading
+    # context_blocks into reranker calls (Wave 3A).
+    decision = deps._decision
+    candidates = _build_candidate_context_blocks(decision, deps)
+    label_order = (decision.context_labels if decision is not None else []) or []
+    selected_blocks: list[ContextBlock] = [
+        candidates[label] for label in label_order if label in candidates
+    ]
+    if selected_blocks:
+        logger.info(
+            "run_retrieval: context_blocks selected = %s",
+            [b.label for b in selected_blocks],
+        )
+
     full_deps = FullLoopDeps(
         supabase=deps.supabase,
         embedding_fn=deps.embedding_fn,
@@ -801,6 +911,7 @@ async def run_retrieval(
         ),
         aggregator_logger=deps.aggregator_logger,
         enable_planner=False,
+        context_blocks=selected_blocks,
     )
     full_deps._plan = config
 

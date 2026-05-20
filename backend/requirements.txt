@@ -36,7 +36,10 @@ pydantic-ai>=1.39.0,<2.0.0
 
 # Observability — Pydantic Logfire (no-ops gracefully when LOGFIRE_TOKEN is absent)
 # [fastapi] extra pulls opentelemetry-instrumentation-fastapi for request spans.
-logfire[fastapi]>=3.0.0,<5.0.0
+# Floor is 4.33.0: logfire <4 calls pydantic-ai's InstrumentationSettings with an
+# `event_logger_provider` kwarg that pydantic-ai >=1.39 removed, so instrument_pydantic_ai()
+# raises and ALL gen_ai spans (tokens, tool calls, per-agent timing) silently vanish.
+logfire[fastapi]>=4.33.0,<5.0.0
 
 # LLM provider SDKs — pydantic_ai.models.<provider> imports these at runtime
 #   - openai: OpenAIChatModel (also used by DeepSeek, OpenRouter, Alibaba via OpenAI-compat)

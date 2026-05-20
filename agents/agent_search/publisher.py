@@ -29,6 +29,10 @@ _TITLE_MAX = 80
 
 
 def _build_title(input: SearchPublishInput) -> str:
+    # Router-emitted task_label is the preferred title source (content-derived
+    # Arabic phrase, ≤80 chars — already sized for workspace_items.title).
+    if input.task_label:
+        return input.task_label[:_TITLE_MAX]
     artifact = getattr(input.agg_output, "artifact", None)
     if artifact is not None and getattr(artifact, "title", None):
         return artifact.title
@@ -155,6 +159,7 @@ async def publish_search_result(
         agent_family="deep_search",
         content_md=content_md,
         metadata=metadata,
+        describe_query=input.describe_query,
     )
 
     # Tolerate either the new or legacy column name on the returned row so

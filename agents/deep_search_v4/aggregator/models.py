@@ -10,6 +10,7 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
+from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.source_viewer import SourceView
 from agents.deep_search_v4.ura.schema import CrossRef
@@ -126,7 +127,10 @@ class AggregatorLLMOutput(BaseModel):
     - list the reference numbers it actually used in `used_refs`
     - flag any gaps it noticed
     - self-rate confidence
-    - produce a short chat_summary and up to 5 key_findings for inline chat display
+
+    Chat-display summarization (the old ``chat_summary`` + ``key_findings``
+    fields) was moved out of the aggregator in Wave 10 and is now produced
+    by the dedicated ``artifact_summarizer`` agent on the published artifact.
     """
 
     synthesis_md: str = Field(
@@ -142,20 +146,6 @@ class AggregatorLLMOutput(BaseModel):
     )
     confidence: Literal["high", "medium", "low"] = Field(
         description="LLM self-assessed confidence in synthesis"
-    )
-    chat_summary: str = Field(
-        default="",
-        description=(
-            "جملة أو جملتان بالعربية تلخّصان الإجابة للعرض المختصر في المحادثة. "
-            "الحد الأقصى 500 حرف."
-        ),
-    )
-    key_findings: list[str] = Field(
-        default_factory=list,
-        description=(
-            "أبرز النقاط القانونية مستخلصةً من synthesis_md — 3 إلى 5 بنود كحد أقصى. "
-            "كل بند جملة قصيرة باللغة العربية."
-        ),
     )
 
 
@@ -191,20 +181,6 @@ class AggregatorOutput(BaseModel):
     artifact: "Artifact | None" = Field(
         default=None,
         description="Frontend artifact object (None if caller requested raw-only)",
-    )
-    chat_summary: str = Field(
-        default="",
-        description=(
-            "Short Arabic summary (≤ 500 chars) for inline chat display. "
-            "Copied from AggregatorLLMOutput.chat_summary."
-        ),
-    )
-    key_findings: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Up to 5 Arabic bullet-point findings for inline chat display. "
-            "Copied from AggregatorLLMOutput.key_findings."
-        ),
     )
 
 
@@ -279,6 +255,11 @@ class AggregatorInput:
     enable_dcr: bool = False  # Draft-Critique-Rewrite chain (prompt_3 only)
     detail_level: Literal["low", "medium", "high"] = "medium"
     ura: "UnifiedRetrievalArtifact | None" = None
+    # Planner-curated context bundle (§4 / §5.3). Default empty preserves
+    # pre-redesign behavior; the inner orchestrator wires this in run_retrieval
+    # after the planner emits decision.context_labels. The bundle reaches the
+    # aggregator user message (rendered before <references>) — NOT any reranker.
+    context_blocks: list[ContextBlock] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # ``Literal`` on a dataclass field is type-hint only -- not enforced at

@@ -19,7 +19,9 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   const { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage } = useSendMessage();
   const error = useChatStore((s) => s.error);
   const setError = useChatStore((s) => s.setError);
-  const isWorkspaceOpen = useChatStore((s) => s.workspace.isOpen);
+  const isWorkspaceOpen = useChatStore(
+    (s) => s.workspaceByConversation[conversationId]?.isOpen ?? false,
+  );
   const toggleWorkspace = useChatStore((s) => s.toggleWorkspace);
 
   const { data: convData } = useConversationDetail(conversationId);
@@ -70,7 +72,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         <Button
           variant={isWorkspaceOpen ? "secondary" : "ghost"}
           size="sm"
-          onClick={toggleWorkspace}
+          onClick={() => toggleWorkspace(conversationId)}
           className="gap-1.5 text-xs"
           aria-label={isWorkspaceOpen ? "إغلاق لوحة المخرجات" : "فتح لوحة المخرجات"}
         >

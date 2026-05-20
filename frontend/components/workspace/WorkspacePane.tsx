@@ -43,10 +43,16 @@ interface WorkspacePaneProps {
  * | references      | ReferencesRenderer    |
  */
 export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
-  const openItemId = useChatStore((s) => s.workspace.openItemId);
+  const openItemId = useChatStore(
+    (s) => s.workspaceByConversation[conversationId]?.openItemId ?? null,
+  );
+  const focusedReferenceN = useChatStore(
+    (s) => s.workspaceByConversation[conversationId]?.focusedReferenceN ?? null,
+  );
   const closeWorkspace = useChatStore((s) => s.closeWorkspace);
   const closeWorkspaceItem = useChatStore((s) => s.closeWorkspaceItem);
   const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
+  const clearFocusedReference = useChatStore((s) => s.clearFocusedReference);
 
   // Always loaded so the list mode renders without an extra fetch on close.
   const { data: listData, isLoading: listLoading } =
@@ -64,8 +70,8 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
       <PaneHeader
         item={inDetailMode ? item ?? null : null}
         inDetailMode={inDetailMode}
-        onBack={closeWorkspaceItem}
-        onClose={closeWorkspace}
+        onBack={() => closeWorkspaceItem(conversationId)}
+        onClose={() => closeWorkspace(conversationId)}
       />
 
       <div className="flex flex-1 flex-col min-h-0 overflow-y-auto">
@@ -73,14 +79,18 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
           <WorkspaceList
             items={listData?.items}
             isLoading={listLoading}
-            onItemClick={openWorkspaceItem}
+            onItemClick={(itemId) => openWorkspaceItem(conversationId, itemId)}
           />
         ) : itemLoading ? (
           <LoadingState />
         ) : itemError || !item ? (
           <ErrorState />
         ) : (
-          <KindRouter item={item} />
+          <KindRouter
+            item={item}
+            focusedReferenceN={focusedReferenceN}
+            onFlashDone={() => clearFocusedReference(conversationId)}
+          />
         )}
       </div>
 
@@ -151,7 +161,15 @@ function ErrorState() {
   );
 }
 
-function KindRouter({ item }: { item: WorkspaceItem }) {
+function KindRouter({
+  item,
+  focusedReferenceN,
+  onFlashDone,
+}: {
+  item: WorkspaceItem;
+  focusedReferenceN: number | null;
+  onFlashDone: () => void;
+}) {
   switch (item.kind) {
     case "attachment":
       return <AttachmentRenderer item={item} />;
@@ -159,7 +177,13 @@ function KindRouter({ item }: { item: WorkspaceItem }) {
     case "agent_writing":
       return <NoteEditor item={item} />;
     case "agent_search":
-      return <AgentSearchViewer item={item} />;
+      return (
+        <AgentSearchViewer
+          item={item}
+          focusedReferenceN={focusedReferenceN}
+          onFlashDone={onFlashDone}
+        />
+      );
     case "convo_context":
       return <ConvoContextViewer item={item} />;
     case "references":

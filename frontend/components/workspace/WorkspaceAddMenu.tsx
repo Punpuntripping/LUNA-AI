@@ -70,14 +70,14 @@ export function WorkspaceAddMenu({
   function handleCreateNote() {
     createNote.mutate(
       { title: "ملاحظة جديدة", content_md: "" },
-      { onSuccess: (item) => openWorkspaceItem(item.item_id) },
+      { onSuccess: (item) => openWorkspaceItem(conversationId, item.item_id) },
     );
   }
 
   function handleCreateReference() {
     createReference.mutate(
       { title: "مراجع", content_md: "" },
-      { onSuccess: (item) => openWorkspaceItem(item.item_id) },
+      { onSuccess: (item) => openWorkspaceItem(conversationId, item.item_id) },
     );
   }
 
@@ -89,7 +89,7 @@ export function WorkspaceAddMenu({
     const file = e.target.files?.[0];
     if (!file) return;
     uploadAttachment.mutate(file, {
-      onSuccess: (item) => openWorkspaceItem(item.item_id),
+      onSuccess: (item) => openWorkspaceItem(conversationId, item.item_id),
     });
     e.target.value = "";
   }
@@ -180,7 +180,7 @@ function CaseDocumentPicker({
       { document_id: doc.document_id },
       {
         onSuccess: (item) => {
-          openWorkspaceItem(item.item_id);
+          openWorkspaceItem(conversationId, item.item_id);
           onClose();
         },
       },

@@ -151,18 +151,23 @@ async def publish_writer_result(
         "revised_from": input.revising_item_id,
     }
 
+    # Title preference: router-emitted task_label (content-derived Arabic
+    # phrase) wins over the LLM's title_ar when set. Falls back to title_ar.
+    title = (deps.task_label or "").strip() or llm_output.title_ar
+
     row = create_workspace_item(
         deps.supabase,
         input.user_id,
         kind="agent_writing",
         created_by="agent",
-        title=llm_output.title_ar,
+        title=title,
         conversation_id=input.conversation_id,
         case_id=input.case_id,
         message_id=input.message_id,
         agent_family="writing",
         content_md=content_md,
         metadata=metadata,
+        describe_query=deps.describe_query,
     )
 
     # Tolerate either the new or legacy column name on the returned row so
@@ -184,7 +189,7 @@ async def publish_writer_result(
         "item_id": item_id,
         "kind": "agent_writing",
         "subtype": input.subtype,
-        "title": llm_output.title_ar,
+        "title": title,
         "created_by": "agent",
     })
     _emit(deps, {
@@ -203,7 +208,7 @@ async def publish_writer_result(
         item_id=item_id,
         kind="agent_writing",
         subtype=input.subtype,
-        title=llm_output.title_ar,
+        title=title,
         content_md=content_md,
         confidence=llm_output.confidence,
         notes=list(llm_output.notes_ar or []),

@@ -42,8 +42,14 @@ class WriterDeps:
             make HTTP calls itself; field reserved for parity with other agents.
         logger: Module-scoped logger by default; tests can inject silent loggers.
 
-        briefing: The user's task statement forwarded from MajorAgentInput.
-            Rendered into the dynamic system prompt by inject_workspace_context.
+        describe_query: The router-emitted description of the user's query,
+            forwarded from MajorAgentInput.describe_query (Wave 1 redesign —
+            was ``briefing`` pre-redesign). Rendered into the dynamic system
+            prompt by inject_workspace_context. Also persisted to
+            workspace_items.describe_query at publish time.
+        task_label: Router-emitted short Arabic content-derived label (≤80
+            chars). Used as workspace_items.title by the publisher in
+            preference to the LLM's generated title_ar (Wave 1 redesign).
         attached_items: Router-selected workspace items (full content_md
             hydrated by the orchestrator).  Rendered into the dynamic system
             prompt.  When revising_item_id is set, the revision target MUST be
@@ -69,7 +75,8 @@ class WriterDeps:
     emit_sse: Optional[Callable[[dict], None]] = None
     # Workspace context fields — populated from MajorAgentInput by the runner.
     # All default to empty/None so existing callers require no changes.
-    briefing: str = ""
+    describe_query: str = ""
+    task_label: str = ""
     attached_items: list[WorkspaceItemSnapshot] = field(default_factory=list)
     revising_item_id: Optional[str] = None
     detail_level: str = "standard"
@@ -88,7 +95,8 @@ def build_writer_deps(
     model_registry: Any = None,
     logger: Optional[logging.Logger] = None,
     # Workspace context fields (Task 5b) ------------------------------------
-    briefing: str = "",
+    describe_query: str = "",
+    task_label: str = "",
     attached_items: Optional[list[WorkspaceItemSnapshot]] = None,
     revising_item_id: Optional[str] = None,
     detail_level: str = "standard",
@@ -99,9 +107,11 @@ def build_writer_deps(
     Precedence: kwargs > env > defaults. Mirrors build_aggregator_deps so
     callers can swap one for the other without surprises.
 
-    The workspace context kwargs (briefing, attached_items, revising_item_id,
-    detail_level, tone) are all optional with safe defaults so existing call
-    sites need no changes.
+    The workspace context kwargs (describe_query, task_label, attached_items,
+    revising_item_id, detail_level, tone) are all optional with safe defaults
+    so existing call sites need no changes. ``describe_query`` was named
+    ``briefing`` pre-Wave-1 redesign — the field carries the same data
+    (forwarded from MajorAgentInput).
     """
     return WriterDeps(
         supabase=supabase,
@@ -120,7 +130,8 @@ def build_writer_deps(
         ),
         temperature=temperature if temperature is not None else TEMPERATURE_DEFAULT,
         emit_sse=emit_sse,
-        briefing=briefing,
+        describe_query=describe_query,
+        task_label=task_label,
         attached_items=attached_items if attached_items is not None else [],
         revising_item_id=revising_item_id,
         detail_level=detail_level,

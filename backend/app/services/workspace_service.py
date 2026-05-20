@@ -103,6 +103,7 @@ def create_workspace_item(
     document_id: Optional[str] = None,
     is_visible: bool = True,
     metadata: Optional[dict] = None,
+    describe_query: Optional[str] = None,
 ) -> dict:
     """Create a new workspace_item row.
 
@@ -114,6 +115,10 @@ def create_workspace_item(
     ``document_id``; for every other kind, ``content_md`` is required. The DB
     CHECK constraint (migration 026) enforces this -- the function does not
     duplicate the check, but callers are warned via the docstring.
+
+    ``describe_query`` is the router-emitted description of the user's query
+    (typically 50–150 words). Persisted to the ``workspace_items.describe_query``
+    column (migration 038). NULL for user-authored kinds (note, attachment).
     """
     payload: dict = {
         "user_id": user_id,
@@ -137,6 +142,8 @@ def create_workspace_item(
         payload["storage_path"] = storage_path
     if document_id is not None:
         payload["document_id"] = document_id
+    if describe_query is not None:
+        payload["describe_query"] = describe_query
 
     try:
         result = supabase.table("workspace_items").insert(payload).execute()

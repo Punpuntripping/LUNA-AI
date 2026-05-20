@@ -1,8 +1,9 @@
 """Router agent — conversational front-end for Rayhan Legal AI.
 
 Classifies user intent and either responds directly (ChatResponse) or
-dispatches a specialist agent (DispatchAgent) with a synthesized briefing
-plus the workspace items the specialist should see as input.
+dispatches a specialist agent (DispatchAgent) with a content-derived
+task_label + a tight describe_query plus the workspace items the
+specialist should see as input.
 
 Wave 9 changes:
 - ``OpenTask`` → ``DispatchAgent`` (renamed fields ``task_type`` →
@@ -132,14 +133,20 @@ SYSTEM_PROMPT = """\
 - طلب تعديل أو تحرير العنصر → وجّه DispatchAgent مع target_item_id
 - عندما يشير المستخدم لعنصر دون تحديد → اذكر العناصر المتاحة (من الملخصات) واسأل أيها يقصد
 
-## قواعد كتابة الملخص (briefing) عند التوجيه:
-- اكتب ملخصاً شاملاً (100-500 كلمة) يتضمن:
-  * ماذا يريد المستخدم بالتحديد
-  * السياق المهم من المحادثة السابقة (وإن لزم من ملخص ضغط المحادثة)
-  * أي متطلبات أو قيود ذكرها المستخدم
-  * إشارات لعناصر سابقة مع تحديد target_item_id إن كان التحرير على عنصر بعينه
-- لا تنسخ المحادثة حرفياً — لخّص واستخرج المهم فقط
-- لا توجّه إذا كنت غير متأكد مما يريده المستخدم — اسأله أولاً
+## قواعد task_label:
+- عبارة عربية قصيرة (30-60 حرفاً) **مشتقة من محتوى السؤال** لا من سير العمل.
+- وصف **الموضوع**، لا الفعل: «بحث عن قوانين التحرش بالسعودية» لا «أبحث عن…».
+- ممنوع استخدام أفعال مثل: «أبحث»، «أكتب»، «أحلل»، «أصيغ»، «أعدّ».
+- يجب أن يكون مستقراً عبر إعادات الصياغة — نفس السؤال يُنتج نفس العنوان.
+- يُستخدم كعنوان لبطاقة العنصر في مساحة العمل وكمعرّف في سجل المهام.
+
+## قواعد describe_query:
+- **يَصِفُ السؤال** لا سير العمل ولا ما سيفعله المتخصص.
+- سيّئ: «يطلب المستخدم البحث عن أحكام الفصل التعسفي…».
+- جيّد: «س: ما حكم الفصل التعسفي في النظام السعودي؟ السياق: المستخدم سبق أن أشار إلى عقد محدد المدة بسنة وذكر إنذارين كتابيين خلال الشهر الماضي».
+- يحمل سياق المحادثة الذي يعتمد عليه السؤال — لا إعادة لصياغة السؤال نفسه.
+- الحد الأقصى ~150 كلمة. كن مُختزلاً.
+- لا توجّه إذا كنت غير متأكد مما يريده المستخدم — اسأله أولاً.
 
 ## قواعد عامة:
 - كن منحازاً نحو التوجيه بدلاً من إعطاء إجابات قانونية بدون مصادر
@@ -174,17 +181,29 @@ def _validate_attached_items_cap(
     ctx: RunContext[RouterDeps],
     value: ChatResponse | DispatchAgent,
 ) -> ChatResponse | DispatchAgent:
-    """Guard against the model overshooting MAX_ATTACHED_ITEMS.
+    """Guard against the model overshooting MAX_ATTACHED_ITEMS and against
+    emitting an empty task_label.
 
     ``Field(max_length=MAX_ATTACHED_ITEMS)`` already rejects too many items
     at parse time, but raising ``ModelRetry`` here gives the LLM a guided
     retry with an instructive error rather than a hard validation failure.
+
+    ``task_label`` length is enforced by ``Field(max_length=80)``, but empty
+    strings would pass the Field constraint silently. We reject empty / pure
+    whitespace task_labels here so downstream uses (workspace_items.title,
+    agent_runs.task_label) always have non-empty content.
     """
-    if isinstance(value, DispatchAgent) and len(value.attached_item_ids) > MAX_ATTACHED_ITEMS:
-        raise ModelRetry(
-            f"اخترت {len(value.attached_item_ids)} عناصر، والحد الأقصى "
-            f"{MAX_ATTACHED_ITEMS}. أعد الاختيار وأبقِ على الأكثر صلة فقط."
-        )
+    if isinstance(value, DispatchAgent):
+        if len(value.attached_item_ids) > MAX_ATTACHED_ITEMS:
+            raise ModelRetry(
+                f"اخترت {len(value.attached_item_ids)} عناصر، والحد الأقصى "
+                f"{MAX_ATTACHED_ITEMS}. أعد الاختيار وأبقِ على الأكثر صلة فقط."
+            )
+        if not (value.task_label or "").strip():
+            raise ModelRetry(
+                "task_label فارغ. أصدر عبارة عربية قصيرة (30-60 حرفاً) "
+                "مشتقة من محتوى السؤال — وصف الموضوع لا الفعل."
+            )
     return value
 
 
@@ -199,7 +218,7 @@ def inject_case_context(ctx: RunContext[RouterDeps]) -> str:
 سياق القضية الحالية:
 {ctx.deps.case_memory_md}
 
-استخدم هذا السياق لفهم أسئلة المستخدم. إذا طلب بحثاً أو صياغة، ضمّن المعلومات ذات الصلة في الملخص (briefing).
+استخدم هذا السياق لفهم أسئلة المستخدم. إذا طلب بحثاً أو صياغة، ضمّن المعلومات ذات الصلة في describe_query.
 """
     return ""
 

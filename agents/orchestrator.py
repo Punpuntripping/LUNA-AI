@@ -33,6 +33,7 @@ from typing import AsyncGenerator
 from supabase import Client as SupabaseClient
 
 import agents.memory.agent as memory
+from agents.deep_search_v4.planner.models import PriorSearchSummary
 from agents.models import (
     ChatResponse,
     DispatchAgent,
@@ -84,8 +85,21 @@ def _count_artifact_kinds(supabase: SupabaseClient, conversation_id: str) -> int
 def _load_attached_items(
     supabase: SupabaseClient,
     item_ids: list[str],
+    user_id: str,
+    conversation_id: str,
 ) -> list[WorkspaceItemSnapshot]:
-    """Hydrate workspace item UUIDs into full WorkspaceItemSnapshot objects."""
+    """Hydrate workspace item UUIDs into full WorkspaceItemSnapshot objects.
+
+    Scope: ONLY items in the current conversation owned by the current user.
+    The ``.eq("user_id", user_id)`` + ``.eq("conversation_id", conversation_id)``
+    filters are **load-bearing** (§6.4 of the redesign spec): the backend's
+    Supabase client runs as ``service_role`` and bypasses RLS, so these filters
+    are the actual scope enforcement, not a defense-in-depth supplement.
+
+    The router may emit a hallucinated ``attached_item_ids`` UUID that doesn't
+    belong to this conversation or user; those rows are silently dropped (no
+    error) so a single bad id doesn't poison the dispatch.
+    """
     if not item_ids:
         return []
     snapshots: list[WorkspaceItemSnapshot] = []
@@ -95,6 +109,8 @@ def _load_attached_items(
                 supabase.table("workspace_items")
                 .select("item_id, kind, title, content_md, metadata")
                 .eq("item_id", item_id)
+                .eq("user_id", user_id)
+                .eq("conversation_id", conversation_id)
                 .is_("deleted_at", "null")
                 .maybe_single()
                 .execute()
@@ -147,6 +163,106 @@ def _load_recent_messages(
     except Exception as e:
         logger.warning("_load_recent_messages failed: %s", e)
         return []
+
+
+# Cap on how many prior agent_search items to surface to the planner. Bounded
+# by _WORKSPACE_CAP (15) but the planner only needs the most relevant recents —
+# 10 leaves room for older sub-tasks without ballooning the decider prompt.
+_PRIOR_SEARCH_LIMIT = 10
+
+
+def _load_case_brief(
+    supabase: SupabaseClient, case_id: str, user_id: str
+) -> str | None:
+    """Render a planner-facing case brief string from lawyer_cases + case_memories.
+
+    Wraps the existing :func:`agents.router.context._load_case_block` so both
+    the router and the planner read from the same source. The router consumes
+    a ``(metadata, memory_md)`` tuple; the planner only needs the rendered
+    markdown — we return that directly. Returns ``None`` on any DB failure or
+    when neither the case row nor its memories yielded anything to render.
+
+    The ``user_id`` is threaded through to ``_load_case_block`` so the
+    ``lawyer_cases`` lookup is scoped to ``lawyer_user_id = user_id``. This
+    filter is **load-bearing** (§6.4) — service_role bypasses RLS.
+    """
+    if not case_id:
+        return None
+    try:
+        from agents.router.context import _load_case_block  # lazy import
+        _metadata, memory_md = _load_case_block(supabase, case_id, user_id)
+        return memory_md
+    except Exception as e:
+        logger.warning("_load_case_brief failed for case_id=%s: %s", case_id, e)
+        return None
+
+
+def _load_prior_search_summaries(
+    supabase: SupabaseClient, conversation_id: str, user_id: str
+) -> list[PriorSearchSummary]:
+    """Hydrate prior ``kind='agent_search'`` items into ``PriorSearchSummary`` list.
+
+    Filters by ``user_id`` AND ``conversation_id`` (both **load-bearing** —
+    service_role bypasses RLS per §6.4 of the redesign spec), ``kind='agent_search'``,
+    and ``deleted_at IS NULL``. Confidence comes from ``metadata.confidence``
+    and defaults to ``"medium"`` when missing or when the value isn't one of
+    the three accepted literals. ``summary`` may be NULL/empty — see Window D
+    race in §11a; tolerated by including empty string so the planner can still
+    reason about prior task identity.
+
+    Capped at :data:`_PRIOR_SEARCH_LIMIT` (most recent first), ordered by
+    ``created_at DESC`` then re-sorted for chronological rendering downstream.
+    """
+    if not conversation_id:
+        return []
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .select("item_id, title, describe_query, summary, metadata, created_at")
+            .eq("user_id", user_id)
+            .eq("conversation_id", conversation_id)
+            .eq("kind", "agent_search")
+            .is_("deleted_at", "null")
+            .order("created_at", desc=True)
+            .limit(_PRIOR_SEARCH_LIMIT)
+            .execute()
+        )
+        rows = result.data or []
+    except Exception as e:
+        logger.warning(
+            "_load_prior_search_summaries failed for conversation_id=%s: %s",
+            conversation_id, e,
+        )
+        return []
+
+    summaries: list[PriorSearchSummary] = []
+    for row in rows:
+        metadata = row.get("metadata") or {}
+        confidence_raw = (
+            metadata.get("confidence") if isinstance(metadata, dict) else None
+        )
+        confidence = (
+            confidence_raw
+            if confidence_raw in ("high", "medium", "low")
+            else "medium"
+        )
+        try:
+            summaries.append(
+                PriorSearchSummary(
+                    item_id=row.get("item_id") or "",
+                    title=row.get("title") or "",
+                    describe_query=row.get("describe_query") or "",
+                    summary=row.get("summary") or "",
+                    confidence=confidence,
+                    created_at=row.get("created_at") or "",
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "_load_prior_search_summaries: skipping malformed row %r: %s",
+                row.get("item_id"), exc,
+            )
+    return summaries
 
 
 def _extract_logfire_ids() -> tuple[str | None, str | None]:
@@ -318,22 +434,62 @@ async def _resume_major_agent(
     # The two-phase planner resumes ONLY phase 1 here — it yields a
     # PlannerDecision. Phases 2–3 then run via _run_deep_search(decision=...),
     # the same convergence point as a fresh dispatch.
+    #
+    # Phase C: the decider's deps_type is now PlannerDeps (no longer None) — we
+    # build a minimal deps object so the resume call still satisfies the
+    # decider's contract. The comprehension surface is hydrated here too: the
+    # user's clarification reply is already in `messages` (patched above before
+    # this resume entry), so `recent_messages` reload picks it up. The decider
+    # itself reads its prior turn's bytes from `message_history`, so the
+    # rendered comprehension is the *post-pause* world, not the pre-pause one
+    # (per §6.3.1).
     try:
-        from agents.deep_search_v4.planner import PlannerDecision
+        import httpx as _httpx
+
+        from agents.deep_search_v4.planner import PlannerDecision, build_planner_deps
         from agents.deep_search_v4.planner.agent import (
             create_planner_decider,
             PLANNER_DECIDER_LIMITS,
         )
+        from agents.utils.embeddings import embed_regulation_query_alibaba
+        from shared.config import get_settings as _get_settings
         from pydantic_ai import DeferredToolRequests
 
-        planner_decider = create_planner_decider()
-        planner_result = await planner_decider.run(
-            "",  # user_prompt unused on resume — history provides full context
-            message_history=history,
-            deferred_tool_results=results,
-            usage_limits=PLANNER_DECIDER_LIMITS,
+        _resume_case_brief = (
+            _load_case_brief(supabase, case_id, user_id) if case_id else None
         )
-        planner_output = planner_result.output
+        _resume_prior_searches = _load_prior_search_summaries(
+            supabase, conversation_id, user_id,
+        )
+        _resume_attached_items = _load_attached_items(
+            supabase, [], user_id, conversation_id
+        )
+        _resume_recent_messages = _load_recent_messages(supabase, conversation_id)
+        _resume_settings = _get_settings()
+
+        async with _httpx.AsyncClient(timeout=30.0) as _resume_http:
+            _resume_deps = build_planner_deps(
+                supabase=supabase,
+                embedding_fn=embed_regulation_query_alibaba,
+                http_client=_resume_http,
+                jina_api_key=_resume_settings.JINA_RERANKER_API_KEY or "",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_brief=_resume_case_brief,
+                recent_messages=_resume_recent_messages,
+                prior_searches=_resume_prior_searches,
+                attached_items=_resume_attached_items,
+            )
+
+            planner_decider = create_planner_decider()
+            planner_result = await planner_decider.run(
+                "",  # user_prompt unused on resume — history provides full context
+                message_history=history,
+                deferred_tool_results=results,
+                deps=_resume_deps,
+                usage_limits=PLANNER_DECIDER_LIMITS,
+            )
+            planner_output = planner_result.output
     except Exception as exc:
         logger.error(
             "_resume_major_agent: planner resume failed for run_id=%s: %s",
@@ -362,7 +518,10 @@ async def _resume_major_agent(
             case_id=case_id,
             user_message_id=user_message_id,
             agent_family="deep_search",
-            briefing=user_reply,
+            describe_query=user_reply,
+            # Inherit the original task_label from the paused row so the chained
+            # pause carries the same label forward (router did not re-run here).
+            task_label=(pending.get("task_label") if pending else None),
         )
         # Close out the previous run row (it's superseded by the new one).
         update_run_status(supabase, run_id, "abandoned")
@@ -405,10 +564,18 @@ async def _resume_major_agent(
     err_payload: dict | None = None
 
     try:
-        attached_items = _load_attached_items(supabase, [])
+        attached_items = _load_attached_items(
+            supabase, [], user_id, conversation_id
+        )
         recent_messages = _load_recent_messages(supabase, conversation_id)
+        # On resume the router has NOT re-run, so task_label / describe_query
+        # are inherited from the paused agent_runs row (populated at original
+        # dispatch time). Fall back to a placeholder if missing — keeps the
+        # required MajorAgentInput field satisfied without inventing data.
+        resumed_task_label = (pending.get("task_label") or "").strip() or "متابعة المحادثة"
         major_input = MajorAgentInput(
-            briefing=user_reply,
+            describe_query=user_reply,
+            task_label=resumed_task_label,
             attached_items=attached_items,
             recent_messages=recent_messages,
             target_item_id=None,
@@ -490,13 +657,18 @@ def _record_deferred(
     case_id: str | None,
     user_message_id: str | None,
     agent_family: str,
-    briefing: str,
+    describe_query: str,
+    task_label: str | None = None,
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
 
     Inserts the agent_runs row and the agent_question message row.
     Returns (question_text, run_id).  Both are best-effort; run_id may be None
     on DB failure.
+
+    ``task_label`` is the router-emitted short Arabic label for the dispatched
+    task (Wave 1 redesign). Persisted to ``agent_runs.task_label`` so the
+    resume path can recover it without re-running the router.
     """
     from typing import Any as _Any
 
@@ -515,7 +687,8 @@ def _record_deferred(
             case_id=case_id,
             agent_family=agent_family,
             message_id=user_message_id,
-            input_summary=briefing[:500],
+            task_label=task_label,
+            input_summary=describe_query[:500],
             status="awaiting_user",
             message_history=planner_result.all_messages_json(),
             deferred_payload={
@@ -675,7 +848,8 @@ async def _route(
         yield {"type": "agent_selected", "agent_family": result.agent_family}
         async for ev in _dispatch(
             agent_family=result.agent_family,
-            briefing=result.briefing,
+            describe_query=result.describe_query,
+            task_label=result.task_label,
             target_item_id=result.target_item_id,
             attached_item_ids=list(result.attached_item_ids),
             subtype=result.subtype,
@@ -701,7 +875,8 @@ async def _route(
 
 async def _dispatch(
     agent_family: str,
-    briefing: str,
+    describe_query: str,
+    task_label: str,
     target_item_id: str | None,
     attached_item_ids: list[str],
     subtype: str | None,
@@ -716,6 +891,11 @@ async def _dispatch(
     Cap pre-flight: families deep_search and writing refuse when workspace_items
     would exceed _WORKSPACE_CAP, UNLESS target_item_id is set (editing
     an existing item does not create a new one). Memory family bypasses cap.
+
+    ``describe_query`` is the router-emitted query description (Wave 1
+    redesign — was ``briefing`` pre-redesign). ``task_label`` is the
+    router-emitted short Arabic content-derived label used as both the
+    workspace item title and the ``agent_runs.task_label`` value.
     """
     # ── Cap pre-flight ──────────────────────────────────────────────────
     if agent_family in ("deep_search", "writing") and target_item_id is None:
@@ -750,11 +930,17 @@ async def _dispatch(
     ):
         try:
             # Build MajorAgentInput — hydrate attached items + recent messages.
-            attached_items = _load_attached_items(supabase, attached_item_ids)
+            # _load_attached_items takes user_id + conversation_id so the
+            # workspace_items lookup is scoped to this conversation only
+            # (load-bearing — service_role bypasses RLS per §6.4).
+            attached_items = _load_attached_items(
+                supabase, attached_item_ids, user_id, conversation_id
+            )
             recent_messages = _load_recent_messages(supabase, conversation_id)
 
             major_input = MajorAgentInput(
-                briefing=briefing,
+                describe_query=describe_query,
+                task_label=task_label,
                 attached_items=attached_items,
                 recent_messages=recent_messages,
                 target_item_id=target_item_id,
@@ -780,7 +966,8 @@ async def _dispatch(
                         case_id=case_id,
                         user_message_id=user_message_id,
                         agent_family=agent_family,
-                        briefing=briefing,
+                        describe_query=describe_query,
+                        task_label=task_label,
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
@@ -788,7 +975,7 @@ async def _dispatch(
                 run_result = await _run_writer(major_input, subtype, supabase)
             elif agent_family == "memory":
                 run_result = await _run_memory(
-                    briefing=briefing,
+                    describe_query=describe_query,
                     conversation_id=conversation_id,
                     user_id=user_id,
                     supabase=supabase,
@@ -859,7 +1046,8 @@ async def _dispatch(
                     agent_family=agent_family,
                     subtype=subtype,
                     message_id=user_message_id,
-                    input_summary=briefing[:500],
+                    task_label=task_label,
+                    input_summary=describe_query[:500],
                     output_item_id=getattr(run_result, "output_item_id", None),
                     duration_ms=duration_ms,
                     tokens_in=getattr(run_result, "tokens_in", None),
@@ -909,16 +1097,26 @@ async def _run_deep_search(
 
     - On a phase-1 ``ask_user`` pause → returns ``kind="paused"`` (the caller
       persists it via ``_record_deferred``). Only happens on fresh dispatch.
-    - Otherwise publishes the ``agent_search`` artifact and returns
-      ``kind="completed"`` with a ``SpecialistResult``.
+    - Otherwise: branches on ``response.build_artifact`` (Phase E §6.3).
+      * ``build_artifact=True`` (default) → publishes the ``agent_search``
+        artifact via ``publish_search_result``; ``output_item_id`` is set.
+      * ``build_artifact=False`` → publish is SKIPPED entirely
+        (``output_item_id`` stays ``None``). When ``response.referenced_item_id``
+        is set (prior-artifact-covers branch), appends a
+        ``referenced_existing_item`` SSE event so the frontend can highlight or
+        chip the existing card. The user-facing chat summary still flows from
+        the responder's ``chat_summary_md`` + ``suggestion_md``.
+    Returns ``kind="completed"`` with a ``SpecialistResult`` in either branch.
 
     ``decision``: supplied on the resume path (phase 1 already resolved by
     ``_resume_major_agent``); ``None`` on fresh dispatch.
 
-    The user-facing chat summary is written by the **planner** (phase 3), not
-    the aggregator: ``SpecialistResult.chat_summary`` = the planner's
-    ``chat_summary_md`` + ``suggestion_md``; ``key_findings`` comes from the
-    aggregator artifact.
+    The user-facing chat summary is written by the **planner** (phase 3):
+    ``SpecialistResult.chat_summary`` = the planner's ``chat_summary_md`` +
+    ``suggestion_md``. ``key_findings`` was historically copied from the
+    aggregator artifact; since Wave 10 the aggregator no longer emits it
+    (the per-artifact agent-facing summary is written asynchronously by the
+    Supabase-trigger-driven ``artifact_summarizer`` to ``workspace_items.summary``).
     """
     import httpx
 
@@ -943,6 +1141,20 @@ async def _run_deep_search(
     sse_events: list[dict] = []
     output_item_id: str | None = None
 
+    # Phase C — hydrate the comprehension surface for the planner decider.
+    # These loaders are best-effort; failures return safe defaults so a flaky
+    # DB query doesn't abort the dispatch. Reload on every entry into
+    # _run_deep_search (including resume) per the invariant in
+    # `planner/deps.py` — PlannerDeps is never persisted across pause.
+    case_brief = (
+        _load_case_brief(supabase, input.case_id, input.user_id)
+        if input.case_id
+        else None
+    )
+    prior_searches = _load_prior_search_summaries(
+        supabase, input.conversation_id, input.user_id
+    )
+
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         deps = build_planner_deps(
             supabase=supabase,
@@ -950,10 +1162,19 @@ async def _run_deep_search(
             http_client=http_client,
             jina_api_key=settings.JINA_RERANKER_API_KEY or "",
             detail_level=detail_level,
+            user_id=input.user_id,
+            conversation_id=input.conversation_id,
+            case_brief=case_brief,
+            recent_messages=list(input.recent_messages),
+            prior_searches=prior_searches,
+            attached_items=list(input.attached_items),
         )
 
         # The planner owns the loop — decide → retrieve → respond. Never raises.
-        turn = await handle_planner_turn(input.briefing, deps, decision=decision)
+        # `describe_query` is the renamed positional parameter (Phase C —
+        # previously `briefing`, mechanical rename per the Wave 1 plan-reviewer
+        # follow-up note).
+        turn = await handle_planner_turn(input.describe_query, deps, decision=decision)
 
         # Pipeline-accumulated SSE events (planner + executor progress).
         sse_events.extend(deps._events)
@@ -967,9 +1188,21 @@ async def _run_deep_search(
                 deferred=turn.deferred,
             )
 
-        # ── completed — persist the artifact via the agent_search publisher ──
+        # ── completed — Phase E publish-gate branch (§6.3) ─────────────────
+        # `response.build_artifact` is the orchestrator's branch input:
+        #   True  → publish the agent_search artifact (default path).
+        #   False → skip publish entirely; output_item_id stays None. When
+        #           response.referenced_item_id is set, emit a
+        #           `referenced_existing_item` SSE event so the frontend can
+        #           highlight/chip the prior covering card.
         agg_output = turn.agg_output
-        if agg_output is not None:
+        response = turn.response
+        should_publish = (
+            agg_output is not None
+            and response is not None
+            and getattr(response, "build_artifact", True)
+        )
+        if should_publish:
             try:
                 publish_input = SearchPublishInput(
                     user_id=input.user_id,
@@ -977,7 +1210,7 @@ async def _run_deep_search(
                     case_id=input.case_id,
                     message_id=None,
                     agg_output=agg_output,
-                    original_query=input.briefing,
+                    original_query=input.describe_query,
                     detail_level=detail_level,
                     ura=getattr(deps, "_ura", None),
                     reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
@@ -986,6 +1219,9 @@ async def _run_deep_search(
                     per_executor_stats=dict(
                         getattr(deps, "_per_executor_stats", {}) or {}
                     ),
+                    # Wave 1 redesign: router-emitted title/query description.
+                    task_label=input.task_label,
+                    describe_query=input.describe_query,
                 )
                 publish_result = await publish_search_result(
                     publish_input,
@@ -995,10 +1231,35 @@ async def _run_deep_search(
                 output_item_id = publish_result.item_id
             except Exception as exc:
                 logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
+        elif response is not None and not getattr(response, "build_artifact", True):
+            # Phase E build_artifact=False branch: no new card, no publish.
+            # When the responder identified a prior covering artifact, emit a
+            # SSE event so the frontend can highlight/chip the existing card.
+            referenced_item_id = getattr(response, "referenced_item_id", None)
+            if referenced_item_id:
+                sse_events.append({
+                    "type": "referenced_existing_item",
+                    "item_id": referenced_item_id,
+                })
+            logger.info(
+                "deep_search: build_artifact=False (referenced_item_id=%s) — "
+                "skipped publish",
+                referenced_item_id,
+            )
 
     # Aggregate token usage from per-executor stats (planner + aggregator tokens
     # land in Logfire spans, not this dict — tracked as a follow-up).
     stats: dict = dict(getattr(deps, "_per_executor_stats", {}) or {})
+    # §7 forensic surface — planner decisions on this turn. EVENT_DECIDED /
+    # EVENT_RESPONDED already log these to Logfire for dashboards; this writes
+    # them to agent_runs.per_phase_stats for post-hoc SQL queries.
+    decision = getattr(deps, "_decision", None)
+    if decision is not None:
+        stats["planner_brief"] = getattr(decision, "planner_brief", "") or ""
+        stats["context_labels_used"] = list(getattr(decision, "context_labels", []) or [])
+    if response is not None:
+        stats["build_artifact"] = getattr(response, "build_artifact", True)
+        stats["referenced_item_id"] = getattr(response, "referenced_item_id", None)
     tokens_in = sum(
         int(v.get("total_tokens_in", 0) or 0)
         for v in stats.values()
@@ -1011,14 +1272,15 @@ async def _run_deep_search(
     )
 
     # chat_summary = planner's phase-3 prose + the next-step suggestion.
-    response = turn.response
+    # `response` already captured above for the build_artifact branch.
     chat_summary = (getattr(response, "chat_summary_md", "") or "") if response else ""
     suggestion = (getattr(response, "suggestion_md", "") or "").strip() if response else ""
     if suggestion:
         chat_summary = f"{chat_summary}\n\n{suggestion}" if chat_summary else suggestion
-    key_findings = (
-        list(getattr(agg_output, "key_findings", []) or []) if agg_output else []
-    )
+    # key_findings: aggregator no longer emits these (Wave 10 — moved to the
+    # async artifact_summarizer). Kept as a default-empty list so the SSE
+    # bullet block simply yields nothing for deep_search turns.
+    key_findings: list[str] = []
     model_used = (
         getattr(agg_output, "model_used", None) or "deep_search_v4"
         if agg_output
@@ -1052,8 +1314,10 @@ async def _run_writer(
     - supabase passed explicitly (MajorAgentInput is DB-free by contract).
     - Workspace context loading replaced by attached_items from MajorAgentInput.
     - Full content_md NOT streamed to chat; chat_summary + key_findings used instead.
-    - WriterDeps built with briefing + attached_items + revising_item_id already set,
-      so _populate_deps_from_input in the runner fills any remaining gaps.
+    - WriterDeps built with describe_query + task_label + attached_items +
+      revising_item_id already set (Wave 1 redesign — was ``briefing`` field
+      pre-redesign), so _populate_deps_from_input in the runner fills any
+      remaining gaps.
     """
     import httpx
 
@@ -1091,7 +1355,7 @@ async def _run_writer(
         conversation_id=input.conversation_id,
         case_id=input.case_id,
         message_id=None,  # task 10 will pass user_message_id through MajorAgentInput
-        user_request=input.briefing,
+        user_request=input.describe_query,
         subtype=chosen_subtype,  # type: ignore[arg-type]
         research_items=research_items,
         workspace_context=WorkspaceContextBlock(
@@ -1108,7 +1372,8 @@ async def _run_writer(
         writer_deps = build_writer_deps(
             supabase=supabase,
             http_client=http_client,
-            briefing=input.briefing,
+            describe_query=input.describe_query,
+            task_label=input.task_label,
             attached_items=list(input.attached_items),
             revising_item_id=input.target_item_id,
             detail_level=detail_level,
@@ -1130,7 +1395,7 @@ async def _run_writer(
 
 
 async def _run_memory(
-    briefing: str,
+    describe_query: str,
     conversation_id: str,
     user_id: str,
     supabase: SupabaseClient,
@@ -1139,7 +1404,15 @@ async def _run_memory(
 
     Wave 9: delegates to compact_conversation as a best-effort fallback.
     The router does not normally dispatch to memory.
+
+    ``describe_query`` is accepted for parity with the other dispatch paths
+    (Wave 1 redesign). Memory's output items are sparse — task_label /
+    describe_query plumbing into a publisher surface is deferred until memory
+    grows a real artifact pipeline.
     """
+    # Silence unused-arg lint; reserved for the future memory artifact pipeline.
+    _ = describe_query
+
     new_item_id: str | None = None
     try:
         new_item_id = await memory.compact_conversation(

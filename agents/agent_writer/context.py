@@ -38,7 +38,7 @@ _TONE_LABELS: dict[str, str] = {
 def format_writer_context(
     *,
     attached_items: list["WorkspaceItemSnapshot"],
-    briefing: str,
+    describe_query: str,
     revising_item_id: str | None,
     detail_level: str,
     tone: str,
@@ -49,8 +49,9 @@ def format_writer_context(
         attached_items: Router-selected workspace items (full ``content_md``
             already hydrated by the orchestrator).  At most 7 items
             (MAX_ATTACHED_ITEMS from ``agents/models.py``).
-        briefing: The user's task statement / drafting brief, forwarded from
-            ``MajorAgentInput.briefing``.
+        describe_query: The router-emitted description of the user's query,
+            forwarded from ``MajorAgentInput.describe_query`` (Wave 1
+            redesign — was ``briefing`` pre-redesign).
         revising_item_id: item_id of the draft being revised.  When set, the
             revision target **must** appear as ``attached_items[0]``.
         detail_level: Stylistic hint — "low" | "standard" | "medium" | "high".
@@ -58,17 +59,17 @@ def format_writer_context(
 
     Returns:
         A multi-line Arabic string that Pydantic AI appends as a second system
-        message.  Empty briefing and empty attached_items still produce a
-        valid (short) block so the LLM call never receives a malformed prompt.
+        message.  Empty describe_query and empty attached_items still produce
+        a valid (short) block so the LLM call never receives a malformed prompt.
     """
     lines: list[str] = []
 
     lines.append("## سياق المهمة الحالية")
     lines.append("")
 
-    # --- Briefing -------------------------------------------------------
+    # --- Query description ---------------------------------------------
     lines.append("### الطلب")
-    lines.append((briefing or "").strip() or "(لا يوجد طلب)")
+    lines.append((describe_query or "").strip() or "(لا يوجد طلب)")
     lines.append("")
 
     # --- Attached items -------------------------------------------------

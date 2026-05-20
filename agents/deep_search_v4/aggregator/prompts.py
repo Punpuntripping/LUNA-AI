@@ -64,6 +64,7 @@ _SHARED_ROLE_AR = """\
 - إن كان المرجع المتاح الوحيد لجانب من السؤال هو خدمة أو نموذج أو حكم قضائي، فهذا كافٍ لذكره — لا تتجاهله بحجة غياب نص نظامي صريح.
 - الإجابة كلها بالعربية الفصحى المبسّطة. ممنوع الخلط بالإنجليزية في الجسم.
 - لا تُدرج قسم "المراجع" في `synthesis_md` — يُضاف آلياً من قائمة `<references>` بعد التوليد.
+- كتل `<context_blocks>` خلفية موضوعية ساندة، لا أساسٌ للإجابة. الإجابة تنبني على `<references>` أولاً، والسياق يضيف معرفةً تأطيرية لم تَرِد في المراجع. لا تستشهد بأي كتلة سياق كأنها مرجع: الاستشهادات `[n]` تأتي حصراً من `<references>`. لا تذكر «وفق ملخص البحث السابق» كاستناد قانوني.
 """
 
 
@@ -107,13 +108,7 @@ _CITATION_RULES_AR = """\
   "synthesis_md": "<كتلة thinking> ثم جسم الإجابة بالماركداون العربي>",
   "used_refs": [1, 2, 3],
   "gaps": ["...", "..."],
-  "confidence": "high | medium | low",
-  "chat_summary": "جملة أو جملتان تلخّصان الإجابة — 500 حرف كحد أقصى.",
-  "key_findings": [
-    "أبرز نتيجة قانونية أولى",
-    "نتيجة ثانية",
-    "نتيجة ثالثة"
-  ]
+  "confidence": "high | medium | low"
 }
 ```
 
@@ -125,8 +120,6 @@ _CITATION_RULES_AR = """\
   - `high` — كل المحاور الحقيقية للسؤال الأصلي مغطاة بمراجع عالية الصلة، ولا توجد فجوات جوهرية.
   - `medium` — المحاور الأساسية مغطاة لكن بعضها بمراجع متوسطة الصلة، أو محور ثانوي ناقص.
   - `low` — محور رئيسي واحد على الأقل غير مغطى، أو المراجع لا تجيب فعلياً عن السؤال الأصلي رغم وفرتها، أو ثمة تعارض جوهري بين المراجع.
-- `chat_summary`: جملة أو جملتان بالعربية تُقدِّمان الإجابة في **500 حرف كحد أقصى صارم**. لا تُكرِّر الإجابة الكاملة؛ استخلص الجوهر فقط.
-- `key_findings`: **3 إلى 5 بنود كحد أقصى صارم**، كل بند جملة قصيرة تُعبِّر عن نتيجة قانونية مستخلصة من synthesis_md. أدرج الأبرز فأبرز. لا تتجاوز 5 بنود بأي حال.
 
 ## ممنوعات صارمة
 
@@ -134,8 +127,6 @@ _CITATION_RULES_AR = """\
 - ممنوع الاستشهاد برقم مرجع غير موجود في قسم `<references>`.
 - ممنوع إضافة قسم "## المراجع" داخل `synthesis_md` — هذا القسم يُضاف برمجياً.
 - ممنوع كتابة إخلاء المسؤولية القانونية داخل `synthesis_md` — يُضاف برمجياً.
-- ممنوع أن يتجاوز `chat_summary` 500 حرف.
-- ممنوع أن يتجاوز `key_findings` 5 بنود.
 """
 
 
@@ -801,6 +792,18 @@ def build_aggregator_user_message(
         lines.append(f"  </sub_query>")
     lines.append("</sub_queries>")
     lines.append("")
+
+    # §5.3.B — planner-curated context bundle, rendered BEFORE <references>.
+    # Empty list (default) emits nothing — pre-redesign behavior preserved.
+    context_blocks = getattr(agg_input, "context_blocks", None) or []
+    if context_blocks:
+        lines.append("<context_blocks>")
+        for block in context_blocks:
+            lines.append(f'  <block label="{_esc(block.label)}">')
+            lines.append(f"    {_esc(block.body)}")
+            lines.append("  </block>")
+        lines.append("</context_blocks>")
+        lines.append("")
 
     # URA v3.0: the synthesis <content> block is built from the aggregator
     # view (.for_aggregator() -> AggregatorItem -> render_aggregator_content),

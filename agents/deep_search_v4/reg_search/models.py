@@ -19,6 +19,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 
 # -- Pydantic models (LLM output) ---------------------------------------------
 
@@ -322,6 +324,10 @@ class LoopState:
     # Hard cap on number of sub-queries from the expander, plumbed from
     # the planner's focus profile via the orchestrator.
     expander_max_queries: int | None = None
+    # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
+    # the expander user message; the reranker is hardcoded to receive zero
+    # blocks. Empty list → no <context_blocks> XML in the prompt.
+    context_blocks: list[ContextBlock] = field(default_factory=list)
     step_timings: dict = field(default_factory=dict)  # {expander: float, search: float, reranker: float, aggregator: float}
 
 

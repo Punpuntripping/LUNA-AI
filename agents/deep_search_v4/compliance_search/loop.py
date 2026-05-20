@@ -20,6 +20,8 @@ from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from agents.deep_search_v4.shared.context import ContextBlock
+
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
 # When the planner passes a ``result_budget``, the keep is
 # ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR)) where N is the
@@ -41,7 +43,11 @@ from .models import (
     RerankedServiceResult,
     ServiceRerankerOutput,
 )
-from .prompts import EXPANDER_SYSTEM_PROMPT, build_expander_dynamic_instructions
+from .prompts import (
+    EXPANDER_SYSTEM_PROMPT,
+    build_expander_dynamic_instructions,
+    build_expander_user_message,
+)
 from .reranker import RERANKER_LIMITS, create_reranker_agent
 from .unfold_reranker import build_reranker_user_message
 from .search import search_compliance_raw
@@ -80,10 +86,14 @@ class ExpanderNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
         weak_axes = state.weak_axes if state.round_count > 1 else None
         expander = create_expander_agent(weak_axes=weak_axes)
 
-        # Build user message from focus_instruction + user_context
-        user_message = state.focus_instruction
-        if state.user_context:
-            user_message += f"\n\nسياق المستخدم:\n{state.user_context}"
+        # Build user message via the shared helper — focus + user_context +
+        # planner-curated <context_blocks> XML (§5.1.C). The reranker still
+        # receives zero blocks; this expander surface is the only consumer.
+        user_message = build_expander_user_message(
+            state.focus_instruction,
+            state.user_context,
+            context_blocks=state.context_blocks,
+        )
 
         # On round 2+, append dynamic instructions for weak axes
         if state.round_count > 1 and state.weak_axes:
@@ -525,6 +535,7 @@ async def run_compliance_search(
     user_context: str,
     deps: ComplianceSearchDeps,
     log_id: str | None = None,
+    context_blocks: list[ContextBlock] | None = None,
 ) -> ComplianceSearchResult:
     """Run the compliance search loop.
 
@@ -555,6 +566,7 @@ async def run_compliance_search(
         focus_instruction=focus_instruction,
         user_context=user_context,
         log_id=log_id,
+        context_blocks=list(context_blocks) if context_blocks else [],
     )
 
     t0 = _time.perf_counter()

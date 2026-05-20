@@ -25,7 +25,10 @@ from .prompts import RERANKER_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
-    response_tokens_limit=70_000,
+    # 25k = 15k thinking budget + ~10k text output headroom.
+    # Same shape as reg_search / case_search rerankers.
+    # (`response_tokens_limit` was the deprecated alias — switched.)
+    output_tokens_limit=25_000,
     request_limit=3,
 )
 
@@ -48,4 +51,11 @@ def create_reranker_agent(
         output_type=ServiceRerankerOutput,
         instructions=RERANKER_SYSTEM_PROMPT,
         retries=2,
+        # Cap reasoning at 15k — same rationale as reg_search reranker.
+        model_settings={
+            "extra_body": {
+                "enable_thinking": True,
+                "thinking_budget": 15_000,
+            },
+        },
     )

@@ -21,8 +21,13 @@ interface ChatLayoutClientProps {
 export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
   const params = useParams();
   const conversationId = params?.id as string | undefined;
-  const isWorkspaceOpen = useChatStore((s) => s.workspace.isOpen);
-  const splitRatio = useChatStore((s) => s.workspace.splitRatio);
+  const isWorkspaceOpen = useChatStore(
+    (s) =>
+      (conversationId
+        ? s.workspaceByConversation[conversationId]?.isOpen
+        : false) ?? false,
+  );
+  const splitRatio = useChatStore((s) => s.splitRatio);
   const setSplitRatio = useChatStore((s) => s.setSplitRatio);
   const isSidebarOpen = useSidebarStore((s) => s.isOpen);
   const setSidebarOpen = useSidebarStore((s) => s.setOpen);
