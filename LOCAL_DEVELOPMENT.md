@@ -106,7 +106,7 @@ when migrating fully back to Railway.
    ```
 2. **`.env`** (only if you want backend to use Railway Redis too):
    ```
-   REDIS_URL=redis://default:CNjbXKzNprDIQvblxCHMIQtdYGOixYPC@hopper.proxy.rlwy.net:11864
+   REDIS_URL=redis://default:<password>@hopper.proxy.rlwy.net:11864
    ```
 3. Restart `npm run dev` (Next.js only reads `.env.local` at startup).
 
