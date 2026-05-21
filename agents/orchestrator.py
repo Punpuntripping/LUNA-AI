@@ -610,6 +610,20 @@ async def _resume_major_agent(
             },
         }
 
+    except asyncio.CancelledError:
+        # Convo-1 forensics bug #2: cancellation during resume must NOT persist
+        # as status='ok'. See _dispatch sibling handler for the rationale.
+        logger.info(
+            "_resume_major_agent: deep_search run cancelled mid-resume run_id=%s",
+            run_id,
+        )
+        status = "cancelled"
+        err_payload = {
+            "type": "CancelledError",
+            "message": "resume cancelled mid-run",
+        }
+        raise
+
     except Exception as exc:
         logger.error(
             "_resume_major_agent: deep_search run failed for run_id=%s: %s",
@@ -1041,6 +1055,27 @@ async def _dispatch(
                 }
             yield {"type": "done", "usage": _zero_usage("paused")}
             return  # skip finally record_agent_run
+
+        except asyncio.CancelledError:
+            # Convo-1 forensics bug #2: SSE consumer / Railway gateway / explicit
+            # client disconnect cancels the pipeline task mid-run. The Exception
+            # handler below does NOT catch CancelledError (it's BaseException in
+            # py 3.8+), so without this branch the `finally` block records
+            # status='ok' — silently lying about what happened. Set status here
+            # then re-raise per the asyncio contract; the finally block writes
+            # the row honestly. Partial-token capture from in-flight executor
+            # stats is deferred (run_result is None on cancel — see note in
+            # convo_1_report/SYNTHESIS.md §4 bug #2).
+            logger.info(
+                "specialist %s cancelled mid-run (SSE disconnect, gateway, or stop)",
+                agent_family,
+            )
+            status = "cancelled"
+            err_payload = {
+                "type": "CancelledError",
+                "message": "pipeline cancelled mid-run",
+            }
+            raise
 
         except Exception as exc:
             logger.error("specialist %s failed: %s", agent_family, exc, exc_info=True)

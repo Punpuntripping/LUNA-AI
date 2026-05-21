@@ -24,6 +24,19 @@ logger = logging.getLogger(__name__)
 _logfire = get_logfire()
 
 
+# Convo-1 forensics bug #1 fix: when an SSE consumer exits before the pipeline
+# task has finished (Railway gateway timeout, browser navigation, repeat-send,
+# explicit Stop), the pipeline is moved here instead of cancelled. The Task
+# runs to natural completion in the background, the workspace_item still
+# publishes, and the artifact is visible to the user on next page load.
+#
+# Without this registry, the local pipeline_task variable would be GC'd after
+# send_message_stream returns and Python would log a "Task was destroyed but it
+# is pending" warning. The add_done_callback (registered at the detach site)
+# discards the reference once the task naturally completes.
+_inflight_pipelines: set[asyncio.Task] = set()
+
+
 def verify_conversation_ownership(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -466,19 +479,28 @@ async def send_message_stream(
         yield _sse_event("error", {"detail": "حدث خطأ أثناء معالجة الرسالة"})
     finally:
         heartbeat_task.cancel()
-        # CRITICAL OBSERVABILITY HOOK — this is the cancel() call that causes
-        # the in-flight LLM pipeline to die mid-stream when the SSE consumer
-        # exits early (Railway gateway timeout, browser navigation, or a
-        # repeat-send). We surface the act of cancelling — and *why* —
-        # before doing it so Logfire trace trees show the killshot.
+        # Convo-1 forensics bug #1 fix: do NOT cancel the pipeline_task when
+        # the SSE consumer exits early (Railway gateway timeout, browser nav,
+        # repeat-send, explicit Stop). Before this fix, the cancel cascaded
+        # into in-flight LLM streams and silently dropped:
+        #   (a) ~$0.05–$0.10 of LLM spend per cancelled dispatch
+        #   (b) the workspace_item that the pipeline would have published
+        # New behavior: detach the pipeline to a module-level registry so it
+        # runs to natural completion in the background, publishes the artifact,
+        # and the user sees the card on next page load.
+        #
+        # The smoking-gun warning event still fires because "consumer exited
+        # while pipeline was still running" is itself worth alerting on —
+        # frequent occurrences may indicate broken UX or under-tuned gateway
+        # timeouts.
         pipeline_already_done = pipeline_task.done()
         if not pipeline_already_done:
             try:
                 _stream_span.set_attribute(
-                    "pipeline_task.cancelled_by_consumer", True
+                    "pipeline_task.detached_to_background", True
                 )
                 _logfire.warning(
-                    "message.stream.pipeline_cancelled",
+                    "message.stream.pipeline_detached",
                     conversation_id=conversation_id,
                     user_message_id=user_msg_id,
                     outcome=_stream_outcome,
@@ -486,12 +508,17 @@ async def send_message_stream(
                 )
             except Exception:
                 pass
-            pipeline_task.cancel()
+            # Module-level set keeps the task alive past this function's exit
+            # and prevents Python's "Task was destroyed but it is pending"
+            # warning. add_done_callback removes the reference on completion.
+            _inflight_pipelines.add(pipeline_task)
+            pipeline_task.add_done_callback(_inflight_pipelines.discard)
         try:
             _stream_span.set_attributes({
                 "outcome": _stream_outcome,
                 "disconnect_detected": _disconnect_detected,
-                "pipeline_task.done_before_cancel": pipeline_already_done,
+                "pipeline_task.done_before_detach": pipeline_already_done,
+                "pipeline_task.detached": not pipeline_already_done,
                 "paused": paused,
                 "full_content_chars": len(full_content or ""),
             })

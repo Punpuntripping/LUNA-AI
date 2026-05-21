@@ -94,6 +94,10 @@ class AgentRunRecord:
     cost_usd: float | None = None
     model_used: str | None = None
     per_phase_stats: dict[str, Any] = field(default_factory=dict)
+    # One of: "ok" | "error" | "awaiting_user" | "cancelled".
+    # "cancelled" is written by _dispatch / _resume_major_agent when an
+    # asyncio.CancelledError propagates mid-run (SSE consumer disconnect,
+    # Railway gateway timeout, explicit user stop). Convo-1 forensics bug #2.
     status: str = "ok"
     error: dict | None = None
     # Populated from the active Logfire span at write time, e.g.:
