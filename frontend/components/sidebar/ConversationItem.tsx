@@ -44,6 +44,12 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
 
   const isActive = selectedConversationId === conversation.conversation_id;
   const title = conversation.title_ar || "محادثة جديدة";
+  // Optimistic placeholder rows carry an ``optimistic-<timestamp>`` id while
+  // the create-conversation POST is in flight. Navigating to that id leaks
+  // it into every downstream API call (messages, workspace, …) and breaks
+  // the chat with a 5-retry "فشل الاتصال" loop. Disable clicks until the
+  // real UUID arrives via the list invalidate.
+  const isPendingCreate = conversation.conversation_id.startsWith("optimistic-");
 
   useEffect(() => {
     if (isRenaming && inputRef.current) {
@@ -54,6 +60,7 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
 
   const handleClick = () => {
     if (isRenaming) return;
+    if (isPendingCreate) return;
     setSelectedConversation(conversation.conversation_id);
     router.push(`/chat/${conversation.conversation_id}`);
   };
@@ -102,11 +109,15 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
     <>
       <div
         className={cn(
-          "group flex items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors",
+          "group flex items-center gap-2 rounded-md px-3 py-2 transition-colors",
+          isPendingCreate
+            ? "cursor-wait opacity-60"
+            : "cursor-pointer",
           isActive
             ? "bg-accent text-accent-foreground"
             : "text-sidebar-foreground/85 hover:bg-accent/40 hover:text-foreground"
         )}
+        title={isPendingCreate ? "جارٍ إنشاء المحادثة…" : undefined}
         onClick={handleClick}
       >
         {isRenaming ? (

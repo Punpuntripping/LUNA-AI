@@ -37,12 +37,41 @@ _logfire = get_logfire()
 _inflight_pipelines: set[asyncio.Task] = set()
 
 
+def _is_valid_uuid(value: str) -> bool:
+    """Cheap pre-flight UUID syntax check.
+
+    The frontend can briefly hold an optimistic placeholder id like
+    ``optimistic-1779397580677`` for a conversation that hasn't been
+    persisted yet. If that placeholder leaks into a request URL, passing it
+    straight to Supabase produces a ``invalid input syntax for type uuid``
+    error that bubbles up as 500 and trips the SSE retry loop in
+    ``frontend/hooks/use-chat.ts`` (the user sees «فشل الاتصال بعد عدة
+    محاولات»).
+
+    Validating up front lets us return a clean 404 (non-retryable) and keep
+    the error surface honest — the conversation genuinely doesn't exist.
+    """
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
 def verify_conversation_ownership(
     supabase: SupabaseClient,
     conversation_id: str,
     user_id: str,
 ) -> dict:
     """Verify conversation exists and belongs to user. Returns conversation row."""
+    if not _is_valid_uuid(conversation_id):
+        # Optimistic placeholder or malformed id — treat as "not found" so the
+        # frontend gets a non-retryable 404 with a clean Arabic detail string.
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.CONV_NOT_FOUND,
+            detail="المحادثة غير موجودة",
+        )
     try:
         result = (
             supabase.table("conversations")
@@ -73,6 +102,9 @@ def list_messages(
 ) -> dict:
     """Paginated message list with ownership check. Newest first."""
     user_id = get_user_id(supabase, auth_id)
+    # ``verify_conversation_ownership`` already short-circuits on invalid UUID
+    # via the _is_valid_uuid pre-flight, so the optimistic-placeholder case
+    # is handled here transparently.
     verify_conversation_ownership(supabase, conversation_id, user_id)
 
     limit = max(1, min(limit, 100))
