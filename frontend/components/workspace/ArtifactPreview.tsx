@@ -25,6 +25,13 @@ interface ArtifactPreviewProps {
   className?: string;
   /** Override the copy button label / aria-label. Default: "نسخ". */
   copyLabel?: string;
+  /**
+   * When provided, ``[n]`` markers inside ``content`` become clickable
+   * ``CitationMarker`` buttons. AgentSearchViewer wires this to scroll its
+   * sibling ``ReferencePanel`` to the matching card. Other viewers (notes,
+   * convo_context, references) omit it and the markers stay as plain text.
+   */
+  onCitationClick?: (n: number) => void;
   /** Test hook. */
   "data-testid"?: string;
 }
@@ -51,6 +58,7 @@ export function ArtifactPreview({
   hideToolbar = false,
   className,
   copyLabel = "نسخ",
+  onCitationClick,
   "data-testid": testId,
 }: ArtifactPreviewProps) {
   const [copied, setCopied] = useState(false);
@@ -114,7 +122,10 @@ export function ArtifactPreview({
       <ScrollArea className="flex-1" data-testid={testId}>
         <div className="p-6 pt-12" dir="rtl">
           {hasContent ? (
-            <MarkdownRenderer content={content} />
+            <MarkdownRenderer
+              content={content}
+              onCitationClick={onCitationClick}
+            />
           ) : (
             <p className="text-sm text-muted-foreground">لا يوجد محتوى للعرض.</p>
           )}

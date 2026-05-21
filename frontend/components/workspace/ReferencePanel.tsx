@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Scale,
   Gavel,
@@ -67,22 +67,39 @@ export function ReferencePanel({
 }: ReferencePanelProps) {
   const [openView, setOpenView] = useState<Reference | null>(null);
   // Per-card refs so we can scrollIntoView the focused one without a global
-  // querySelector on every focus change.
+  // querySelector on every focus change. Only used for the no-source-view
+  // fallback path — references that DO carry a source_view open the popup
+  // dialog directly (same as clicking the «عرض المصدر» button on the card).
   const itemRefs = useRef<Map<number, HTMLLIElement | null>>(new Map());
+
+  // Stable sorted list — memoized so the effect below doesn't fire on every
+  // parent re-render (a fresh array literal would defeat React's dep check).
+  const ordered = useMemo(
+    () => [...(references ?? [])].sort((a, b) => a.n - b.n),
+    [references],
+  );
 
   useEffect(() => {
     if (focusedReferenceN == null) return;
+    const ref = ordered.find((r) => r.n === focusedReferenceN);
+    if (!ref) return;
+    // Preferred path: behave exactly like clicking the card's «عرض المصدر»
+    // button — open the source-view dialog with the full original source.
+    // Same component, same content, same close affordance.
+    if (ref.source_view) {
+      setOpenView(ref);
+      return;
+    }
+    // Fallback: reference has no source_view payload (legacy rows, manually
+    // authored references, etc). Scroll the card into view and flash it so
+    // the user at least sees which entry was meant.
     const el = itemRefs.current.get(focusedReferenceN);
     if (!el) return;
-    // Scroll first; the data-flash attribute is set immediately after so the
-    // animation starts on the now-visible card.
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.setAttribute("data-flash", "true");
-  }, [focusedReferenceN]);
+  }, [focusedReferenceN, ordered]);
 
   if (!references || references.length === 0) return null;
-
-  const ordered = [...references].sort((a, b) => a.n - b.n);
 
   const handleAnimationEnd = (n: number) => {
     const el = itemRefs.current.get(n);
@@ -113,7 +130,18 @@ export function ReferencePanel({
         ))}
       </ul>
 
-      <Dialog open={openView !== null} onOpenChange={(o) => !o && setOpenView(null)}>
+      <Dialog
+        open={openView !== null}
+        onOpenChange={(o) => {
+          if (o) return;
+          setOpenView(null);
+          // Mirror the flash-end semantics: tell the parent the focused
+          // reference has been consumed so repeat-clicking the same ``[n]``
+          // re-opens the dialog instead of going no-op on the unchanged
+          // focusedReferenceN value.
+          onFlashDone?.();
+        }}
+      >
         <DialogContent className="max-w-2xl" dir="rtl">
           {openView && <SourceViewBody reference={openView} />}
         </DialogContent>
