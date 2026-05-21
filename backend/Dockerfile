@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /build
 COPY backend/requirements.txt .
 RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 FROM python:3.11-slim
