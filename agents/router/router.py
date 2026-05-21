@@ -429,9 +429,13 @@ async def run_router(
         compaction_summary_md=compaction_summary_md,
     )
 
+    # PII note: user_id intentionally NOT on this span. The monitor recovers
+    # user_id via Supabase join on conversation_id (see agent_runs / messages /
+    # conversations tables — all carry user_id as a column). Keeping user_id
+    # out of Logfire span attributes narrows the PII surface area across the
+    # 30-day retention window.
     with _logfire.span(
         "router.classify",
-        user_id=user_id,
         conversation_id=conversation_id,
         case_id=case_id,
         question_length=len(question),

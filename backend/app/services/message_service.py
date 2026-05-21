@@ -18,8 +18,10 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from agents.orchestrator import handle_message
+from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 
 def verify_conversation_ownership(
@@ -218,12 +220,38 @@ async def send_message_stream(
         "conversation_id": conversation_id,
     })
 
-    # 4. Stream from orchestrator (with heartbeat + disconnect detection)
+    # ── message.stream span ────────────────────────────────────────────────
+    # Wraps the SSE consumer loop + pipeline_task lifecycle. Tagged with
+    # conversation_id + both message ids so the Logfire trace tree for one
+    # turn (router.classify → dispatch.specialist → … → SSE drain) is
+    # filterable end-to-end on conversation_id alone.
+    #
+    # Cancellation source is recorded as the ``outcome`` attribute set in the
+    # finally block — it surfaces *why* pipeline_task.cancel() fired (the
+    # smoking-gun bug from convo-1 forensics). Possible values:
+    #   completed              — pipeline finished naturally, sentinel drained.
+    #   client_disconnect      — request.is_disconnected() flipped True.
+    #   stream_cancelled       — asyncio.CancelledError raised in the consumer
+    #                            (usually Railway gateway timeout, occasionally
+    #                            a hard-kill from upstream).
+    #   error                  — unhandled exception escaped the consumer.
     full_content = ""
-    # Set to True when the orchestrator ends the stream with an agent_question
-    # event (run is paused, not finished).  In this case we skip inserting the
-    # empty assistant placeholder row that would otherwise be written on 'done'.
     paused = False
+    _stream_outcome = "unknown"
+    _disconnect_detected = False
+    # PII note: user_id intentionally NOT propagated here. The pre-existing
+    # router.classify + dispatch.specialist spans (which DO carry user_id)
+    # cover the per-turn user identity; downstream spans pivot by
+    # conversation_id alone to keep user_id off ~10× more span surfaces.
+    _stream_span = _logfire.span(
+        "message.stream",
+        conversation_id=conversation_id,
+        user_message_id=user_msg_id,
+        assistant_message_id=assistant_msg_id,
+        case_id=conv.get("case_id"),
+        attachment_count=len(attachment_ids or []),
+    )
+    _stream_span.__enter__()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
@@ -411,6 +439,8 @@ async def send_message_stream(
     try:
         while True:
             if await request.is_disconnected():
+                _disconnect_detected = True
+                _stream_outcome = "client_disconnect"
                 logger.info("Client disconnected during streaming for conversation %s", conversation_id)
                 break
             try:
@@ -418,18 +448,56 @@ async def send_message_stream(
             except asyncio.TimeoutError:
                 continue  # Re-check disconnect
             if item is None:
+                _stream_outcome = "completed"
                 break
             yield item
     except asyncio.CancelledError:
+        _stream_outcome = "stream_cancelled"
         logger.info("SSE stream cancelled for conversation %s (client disconnect)", conversation_id)
         raise  # MUST re-raise per asyncio contract
     except Exception as e:
+        _stream_outcome = "error"
+        try:
+            _stream_span.set_attribute("error", str(e))
+            _stream_span.set_attribute("error.type", type(e).__name__)
+        except Exception:
+            pass
         logger.exception("Error in agent pipeline: %s", e)
         yield _sse_event("error", {"detail": "حدث خطأ أثناء معالجة الرسالة"})
     finally:
         heartbeat_task.cancel()
-        if not pipeline_task.done():
+        # CRITICAL OBSERVABILITY HOOK — this is the cancel() call that causes
+        # the in-flight LLM pipeline to die mid-stream when the SSE consumer
+        # exits early (Railway gateway timeout, browser navigation, or a
+        # repeat-send). We surface the act of cancelling — and *why* —
+        # before doing it so Logfire trace trees show the killshot.
+        pipeline_already_done = pipeline_task.done()
+        if not pipeline_already_done:
+            try:
+                _stream_span.set_attribute(
+                    "pipeline_task.cancelled_by_consumer", True
+                )
+                _logfire.warning(
+                    "message.stream.pipeline_cancelled",
+                    conversation_id=conversation_id,
+                    user_message_id=user_msg_id,
+                    outcome=_stream_outcome,
+                    disconnect_detected=_disconnect_detected,
+                )
+            except Exception:
+                pass
             pipeline_task.cancel()
+        try:
+            _stream_span.set_attributes({
+                "outcome": _stream_outcome,
+                "disconnect_detected": _disconnect_detected,
+                "pipeline_task.done_before_cancel": pipeline_already_done,
+                "paused": paused,
+                "full_content_chars": len(full_content or ""),
+            })
+        except Exception:
+            pass
+        _stream_span.__exit__(None, None, None)
 
 
 def _sse_event(event_type: str, data: dict) -> str:

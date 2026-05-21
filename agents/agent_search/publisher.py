@@ -23,6 +23,9 @@ from backend.app.services.retrieval_artifacts_service import (
     save_reranker_runs,
     save_retrieval_artifact,
 )
+from shared.observability import get_logfire
+
+_logfire = get_logfire()
 
 _FALLBACK_TITLE = "إجابة البحث العميق"
 _TITLE_MAX = 80
@@ -147,45 +150,71 @@ async def publish_search_result(
     content_md = _build_content_md(input)
     metadata = _build_metadata(input)
 
-    row = create_workspace_item(
-        deps.supabase,
-        input.user_id,
+    # PII note: user_id not on this span (recoverable via Supabase join).
+    # router.classify + dispatch.specialist already carry the user identity
+    # for this turn.
+    with _logfire.span(
+        "publish.workspace_item",
         kind="agent_search",
-        created_by="agent",
-        title=title,
         conversation_id=input.conversation_id,
         case_id=input.case_id,
         message_id=input.message_id,
-        agent_family="deep_search",
-        content_md=content_md,
-        metadata=metadata,
-        describe_query=input.describe_query,
-    )
+        title_chars=len(title or ""),
+        content_md_chars=len(content_md or ""),
+        describe_query_chars=len(input.describe_query or ""),
+        confidence=getattr(input.agg_output, "confidence", None),
+    ) as _pub_span:
+        row = create_workspace_item(
+            deps.supabase,
+            input.user_id,
+            kind="agent_search",
+            created_by="agent",
+            title=title,
+            conversation_id=input.conversation_id,
+            case_id=input.case_id,
+            message_id=input.message_id,
+            agent_family="deep_search",
+            content_md=content_md,
+            metadata=metadata,
+            describe_query=input.describe_query,
+        )
 
-    # Tolerate either the new or legacy column name on the returned row so
-    # tests that stub create_workspace_item with the old shape keep working.
-    item_id = row.get("item_id") or row.get("artifact_id") or ""
-    if not item_id:
-        raise RuntimeError("agent_search: publish returned no item_id")
+        # Tolerate either the new or legacy column name on the returned row so
+        # tests that stub create_workspace_item with the old shape keep working.
+        item_id = row.get("item_id") or row.get("artifact_id") or ""
+        if not item_id:
+            try:
+                _pub_span.set_attribute("outcome", "no_item_id")
+            except Exception:
+                pass
+            raise RuntimeError("agent_search: publish returned no item_id")
 
-    # Forensic persistence is best-effort -- failure here is logged but never
-    # crashes the publish. Done AFTER the main insert so the user-visible
-    # item is durable even if the backing tables hiccup.
-    await _persist_forensics(input, deps, item_id, logger)
+        try:
+            _pub_span.set_attributes({
+                "item_id": item_id,
+                "outcome": "ok",
+            })
+        except Exception:
+            pass
 
-    # References are NOT streamed to chat. The full structured reference list
-    # lives on the artifact as ``metadata.references`` (see _build_metadata);
-    # the workspace ReferencePanel renders it from that JSON. The chat stream
-    # only needs to know a workspace item was created.
-    sse_events: list[dict] = [
-        {
-            "type": "workspace_item_created",
-            "item_id": item_id,
-            "kind": "agent_search",
-            "title": row.get("title", title),
-            "subtype": "legal_synthesis",
-            "created_by": "agent",
-        },
-    ]
+        # Forensic persistence is best-effort -- failure here is logged but never
+        # crashes the publish. Done AFTER the main insert so the user-visible
+        # item is durable even if the backing tables hiccup.
+        await _persist_forensics(input, deps, item_id, logger)
 
-    return SearchPublishOutput(item_id=item_id, sse_events=sse_events)
+        # References are NOT streamed to chat. The full structured reference list
+        # lives on the artifact as ``metadata.references`` (see _build_metadata);
+        # the workspace ReferencePanel renders it from that JSON. The chat stream
+        # only needs to know a workspace item was created.
+        sse_events: list[dict] = [
+            {
+                "type": "workspace_item_created",
+                "item_id": item_id,
+                "kind": "agent_search",
+                "title": row.get("title", title),
+                "subtype": "legal_synthesis",
+                "created_by": "agent",
+            },
+        ]
+
+        return SearchPublishOutput(item_id=item_id, sse_events=sse_events)

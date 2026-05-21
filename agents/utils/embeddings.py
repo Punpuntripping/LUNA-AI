@@ -45,6 +45,11 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
 ALIBABA_EMBEDDING_MODEL = "text-embedding-v4"
 ALIBABA_EMBEDDING_DIMS = 1024
 
+# Per-call input cap for the DashScope embeddings endpoint. Used by the
+# batched helper to auto-split oversized lists. Shared across case_search,
+# reg_search, and compliance_search so all three pipelines batch identically.
+MAX_EMBED_BATCH = 25
+
 _alibaba_client: AsyncOpenAI | None = None
 
 
@@ -73,14 +78,34 @@ async def embed_regulation_query_alibaba(text: str) -> list[float]:
 
 
 async def embed_regulation_queries_alibaba(texts: list[str]) -> list[list[float]]:
-    """Batch embed multiple texts using Alibaba text-embedding-v4 (max 25 per call)."""
+    """Batch embed multiple texts using Alibaba text-embedding-v4.
+
+    Auto-splits into chunks of ``MAX_EMBED_BATCH`` (DashScope's per-call cap)
+    when the input list is larger. Order is preserved.
+    """
+    if not texts:
+        return []
+
     client = _get_alibaba_client()
-    response = await client.embeddings.create(
-        input=texts,
-        model=ALIBABA_EMBEDDING_MODEL,
-        dimensions=ALIBABA_EMBEDDING_DIMS,
-    )
-    return [item.embedding for item in response.data]
+
+    if len(texts) <= MAX_EMBED_BATCH:
+        response = await client.embeddings.create(
+            input=texts,
+            model=ALIBABA_EMBEDDING_MODEL,
+            dimensions=ALIBABA_EMBEDDING_DIMS,
+        )
+        return [item.embedding for item in response.data]
+
+    out: list[list[float]] = []
+    for i in range(0, len(texts), MAX_EMBED_BATCH):
+        chunk = texts[i : i + MAX_EMBED_BATCH]
+        response = await client.embeddings.create(
+            input=chunk,
+            model=ALIBABA_EMBEDDING_MODEL,
+            dimensions=ALIBABA_EMBEDDING_DIMS,
+        )
+        out.extend(item.embedding for item in response.data)
+    return out
 
 
 # ── Qwen3 embeddings (1024-dim, backup via OpenRouter) ────────────────────────

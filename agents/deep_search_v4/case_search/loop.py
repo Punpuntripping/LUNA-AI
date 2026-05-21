@@ -22,6 +22,7 @@ from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
@@ -969,7 +970,7 @@ async def run_case_search(
     expander_prompt_key: str = DEFAULT_EXPANDER_PROMPT,
     thinking_effort: str | None = None,
     model_override: str | None = None,
-    concurrency: int = 10,
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     sectioned: bool | None = None,
     # Accepted-but-not-yet-applied knobs that v3 supported and the v4
     # orchestrator still passes. Threading them into LoopState is a follow-up;
@@ -1125,7 +1126,7 @@ async def run_sectioned_case_search(
     expander_prompt_key: str = "prompt_3",
     thinking_effort: str | None = None,
     model_override: str | None = None,
-    concurrency: int = 10,
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     context_blocks: list[ContextBlock] | None = None,
 ) -> CaseSearchResult:
     """Convenience entry point that forces the sectioned pipeline.

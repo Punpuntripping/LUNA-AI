@@ -20,6 +20,7 @@ from typing import Union
 
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
@@ -534,7 +535,7 @@ async def run_reg_search(
     thinking_effort: str | None = None,
     model_override: str | None = None,
     unfold_mode: str = "precise",
-    concurrency: int = 10,
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     skip_reranker: bool = False,
     skip_aggregator: bool = False,
     sectors_override: list[str] | None = None,

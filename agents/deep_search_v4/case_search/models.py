@@ -31,6 +31,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 
 CaseChannel = Literal["principle", "facts", "basis"]
@@ -238,7 +239,7 @@ class LoopState:
     sectors_override: list[str] | None = None
     thinking_effort: str | None = None
     model_override: str | None = None
-    concurrency: int = 10
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     round_count: int = 0
     max_rounds: int = 1  # single round — no retry
     # Legacy expander shape (prompt_1 / prompt_2)

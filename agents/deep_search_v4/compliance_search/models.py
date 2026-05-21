@@ -22,6 +22,7 @@ import httpx
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 
 
@@ -175,6 +176,11 @@ class LoopState:
     # the expander user message; the reranker is hardcoded to receive zero
     # blocks. Empty list → no <context_blocks> XML in the prompt.
     context_blocks: list[ContextBlock] = field(default_factory=list)
+    # Max concurrent per-sub-query RPC calls in SearchNode. Mirrors the same
+    # knob in case_search / reg_search so all three pipelines bound fan-out
+    # identically. Default: ``DEFAULT_SEARCH_CONCURRENCY`` from the shared
+    # layer.
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY
 
 
 @dataclass

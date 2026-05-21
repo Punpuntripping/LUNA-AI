@@ -10,12 +10,15 @@ import logging
 import time
 from typing import Any
 
+from shared.observability import get_logfire
+
 from .agent import SUMMARIZER_LIMITS, create_artifact_summarizer
 from .deps import ArtifactSummaryDeps
 from .models import ArtifactSummaryInput, ArtifactSummaryOutput
 from .prompts import build_user_message
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 
 _FALLBACK_LEN = 500
@@ -33,66 +36,110 @@ async def handle_artifact_summary_turn(
     """
     t0 = time.perf_counter()
 
-    if not (input.content_md or "").strip():
-        # Nothing to summarize. Return an empty fallback, no LLM call.
-        return ArtifactSummaryOutput(
-            summary_md="",
-            fallback_used=True,
-        )
-
-    user_message = build_user_message(
-        original_query=input.original_query,
-        title=input.title,
+    with _logfire.span(
+        "artifact_summarizer.run",
         kind=input.kind,
-        content_md=input.content_md,
-    )
+        title_chars=len(input.title or ""),
+        describe_query_chars=len(input.describe_query or ""),
+        content_md_chars=len(input.content_md or ""),
+    ) as _ar_span:
+        if not (input.content_md or "").strip():
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "empty_content",
+                    "fallback_used": True,
+                })
+            except Exception:
+                pass
+            # Nothing to summarize. Return an empty fallback, no LLM call.
+            return ArtifactSummaryOutput(
+                summary_md="",
+                fallback_used=True,
+            )
 
-    agent = create_artifact_summarizer()
-
-    try:
-        result = await agent.run(user_message, usage_limits=SUMMARIZER_LIMITS)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "artifact_summarizer: LLM call failed (%s) — falling back to truncated content_md",
-            exc,
+        user_message = build_user_message(
+            describe_query=input.describe_query,
+            title=input.title,
+            kind=input.kind,
+            content_md=input.content_md,
         )
-        return ArtifactSummaryOutput(
-            summary_md=input.content_md[:_FALLBACK_LEN],
-            fallback_used=True,
-        )
 
-    summary_md = (result.output.summary_md or "").strip()
-    if not summary_md:
-        logger.warning("artifact_summarizer: empty summary — using fallback")
-        return ArtifactSummaryOutput(
-            summary_md=input.content_md[:_FALLBACK_LEN],
-            fallback_used=True,
-        )
+        agent = create_artifact_summarizer()
 
-    usage = result.usage()
-    details = dict(usage.details) if usage.details else {}
-    tokens_reasoning = int(details.get("reasoning_tokens", 0) or 0)
-
-    model_used = _model_label_from_result(result)
-
-    output = ArtifactSummaryOutput(
-        summary_md=summary_md,
-        tokens_in=int(usage.input_tokens or 0),
-        tokens_out=int(usage.output_tokens or 0),
-        tokens_reasoning=tokens_reasoning,
-        model_used=model_used,
-        fallback_used=False,
-    )
-
-    duration_s = time.perf_counter() - t0
-
-    if deps.logger is not None:
         try:
-            deps.logger.write_run(input, output, duration_s)
+            result = await agent.run(user_message, usage_limits=SUMMARIZER_LIMITS)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("artifact_summarizer: logger failed: %s", exc)
+            logger.warning(
+                "artifact_summarizer: LLM call failed (%s) — falling back to truncated content_md",
+                exc,
+            )
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "llm_failed",
+                    "fallback_used": True,
+                    "error": str(exc),
+                    "error.type": type(exc).__name__,
+                })
+            except Exception:
+                pass
+            return ArtifactSummaryOutput(
+                summary_md=input.content_md[:_FALLBACK_LEN],
+                fallback_used=True,
+            )
 
-    return output
+        summary_md = (result.output.summary_md or "").strip()
+        if not summary_md:
+            logger.warning("artifact_summarizer: empty summary — using fallback")
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "empty_output",
+                    "fallback_used": True,
+                })
+            except Exception:
+                pass
+            return ArtifactSummaryOutput(
+                summary_md=input.content_md[:_FALLBACK_LEN],
+                fallback_used=True,
+            )
+
+        usage = result.usage()
+        details = dict(usage.details) if usage.details else {}
+        tokens_reasoning = int(details.get("reasoning_tokens", 0) or 0)
+
+        model_used = _model_label_from_result(result)
+
+        output = ArtifactSummaryOutput(
+            summary_md=summary_md,
+            tokens_in=int(usage.input_tokens or 0),
+            tokens_out=int(usage.output_tokens or 0),
+            tokens_reasoning=tokens_reasoning,
+            model_used=model_used,
+            fallback_used=False,
+        )
+
+        duration_s = time.perf_counter() - t0
+
+        try:
+            _ar_span.set_attributes({
+                "outcome": "ok",
+                "model_used": model_used,
+                "tokens_in": output.tokens_in,
+                "tokens_out": output.tokens_out,
+                "tokens_reasoning": tokens_reasoning,
+                "summary_chars": len(summary_md),
+                "duration_s": round(duration_s, 3),
+                "fallback_used": False,
+            })
+        except Exception:
+            pass
+
+        if deps.logger is not None:
+            try:
+                deps.logger.write_run(input, output, duration_s)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("artifact_summarizer: logger failed: %s", exc)
+
+        return output
 
 
 def _model_label_from_result(result: Any) -> str:

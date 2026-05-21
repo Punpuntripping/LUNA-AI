@@ -19,6 +19,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 
 
@@ -296,7 +297,7 @@ class LoopState:
     thinking_effort: str | None = None
     model_override: str | None = None
     unfold_mode: str = "precise"
-    concurrency: int = 10
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     reranker_max_keep: int = 8  # Max results kept per sub-query (single flat cap)
     # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
     # planner/orchestrator, the per-sub-query reranker keep is derived at

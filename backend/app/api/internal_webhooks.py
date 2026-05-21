@@ -33,10 +33,19 @@ from agents.runs import AgentRunRecord, record_agent_run
 from backend.app.deps import get_supabase
 from backend.app.errors import ErrorCode, LunaHTTPException
 from shared.config import get_settings
+from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 router = APIRouter()
+
+
+# Below this many characters of content_md, we skip the LLM entirely and
+# leave summary = NULL. Matches the same gate enforced by the Postgres trigger
+# (see migration 041) — kept here as defense in depth in case the webhook is
+# called via a path that bypasses the trigger (manual POST, backfill script).
+MIN_CONTENT_LENGTH_CHARS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -95,36 +104,6 @@ def _verify_webhook_secret(x_webhook_secret: Optional[str] = Header(default=None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _lookup_original_query(supabase: SupabaseClient, conversation_id: Optional[str]) -> str:
-    """Best-effort: return the most recent user message text in this conversation.
-
-    Returns "" on any failure or when there's no conversation context. The
-    summarizer copes with empty original_query — the prompt just describes
-    the content without a query anchor.
-    """
-    if not conversation_id:
-        return ""
-    try:
-        resp = (
-            supabase.table("messages")
-            .select("content")
-            .eq("conversation_id", conversation_id)
-            .eq("role", "user")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = resp.data or []
-        if rows:
-            return str(rows[0].get("content") or "")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "summarize-workspace-item: original_query lookup failed (conv=%s): %s",
-            conversation_id, exc,
-        )
-    return ""
 
 
 def _persist_summary(
@@ -229,64 +208,130 @@ async def summarize_workspace_item(
     """
     item_id = payload.item_id
 
-    # Fetch the row.
-    try:
-        resp = (
-            supabase.table("workspace_items")
-            .select("*")
-            .eq("item_id", item_id)
-            .maybe_single()
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("summarize-workspace-item: fetch failed item_id=%s: %s", item_id, exc)
-        return SummarizeWorkspaceItemResponse(
-            status="error", item_id=item_id, detail="fetch_failed"
-        )
-
-    row = (resp.data or {}) if resp else {}
-    if not row:
-        return SummarizeWorkspaceItemResponse(
-            status="not_found", item_id=item_id, detail="row missing"
-        )
-
-    # Idempotency: skip if already summarized (trigger may fire on resummarize
-    # updates if expanded later; today it's INSERT-only).
-    if (row.get("summary") or "").strip():
-        return SummarizeWorkspaceItemResponse(
-            status="skipped", item_id=item_id, detail="already_summarized"
-        )
-
-    content_md = (row.get("content_md") or "").strip()
-    if not content_md:
-        # Attachment / empty-body kinds: nothing to summarize.
-        return SummarizeWorkspaceItemResponse(
-            status="skipped", item_id=item_id, detail="empty_content_md"
-        )
-
-    # Run the agent.
-    original_query = _lookup_original_query(supabase, row.get("conversation_id"))
-    summary = await run_artifact_summary(
-        ArtifactSummaryInput(
-            original_query=original_query,
-            content_md=content_md,
-            title=str(row.get("title") or ""),
-            kind=str(row.get("kind") or "agent_search"),
-        ),
-        build_artifact_summary_deps(),
-    )
-
-    # Persist + record cost (best-effort).
-    _persist_summary(
-        supabase,
-        item_id,
-        summary,
-        source_length=len(content_md),
-        existing_metadata=row.get("metadata") or {},
-    )
-    _record_cost(supabase, row, summary)
-
-    return SummarizeWorkspaceItemResponse(
-        status="ok" if not summary.fallback_used else "ok_fallback",
+    with _logfire.span(
+        "webhook.summarize_artifact",
         item_id=item_id,
-    )
+    ) as _wb_span:
+        # Fetch the row.
+        try:
+            resp = (
+                supabase.table("workspace_items")
+                .select("*")
+                .eq("item_id", item_id)
+                .maybe_single()
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("summarize-workspace-item: fetch failed item_id=%s: %s", item_id, exc)
+            try:
+                _wb_span.set_attributes({
+                    "outcome": "fetch_failed",
+                    "error.type": type(exc).__name__,
+                    "error": str(exc),
+                })
+            except Exception:
+                pass
+            return SummarizeWorkspaceItemResponse(
+                status="error", item_id=item_id, detail="fetch_failed"
+            )
+
+        row = (resp.data or {}) if resp else {}
+        if not row:
+            try:
+                _wb_span.set_attribute("outcome", "not_found")
+            except Exception:
+                pass
+            return SummarizeWorkspaceItemResponse(
+                status="not_found", item_id=item_id, detail="row missing"
+            )
+
+        # Tag the span with the row's identity NOW so even early-exit paths
+        # (already_summarized / empty / below_min) surface conversation_id.
+        # PII note: user_id deliberately not surfaced — recoverable via Supabase
+        # join from item_id when needed.
+        try:
+            _wb_span.set_attributes({
+                "conversation_id": str(row.get("conversation_id") or ""),
+                "case_id": str(row.get("case_id") or "") or None,
+                "kind": str(row.get("kind") or ""),
+                "content_md_chars": len((row.get("content_md") or "")),
+                "has_describe_query": bool((row.get("describe_query") or "").strip()),
+            })
+        except Exception:
+            pass
+
+        # Idempotency: skip if already summarized (trigger may fire on resummarize
+        # updates if expanded later; today it's INSERT-only).
+        if (row.get("summary") or "").strip():
+            try:
+                _wb_span.set_attribute("outcome", "already_summarized")
+            except Exception:
+                pass
+            return SummarizeWorkspaceItemResponse(
+                status="skipped", item_id=item_id, detail="already_summarized"
+            )
+
+        content_md = (row.get("content_md") or "").strip()
+        if not content_md:
+            try:
+                _wb_span.set_attribute("outcome", "empty_content_md")
+            except Exception:
+                pass
+            # Attachment / empty-body kinds: nothing to summarize.
+            return SummarizeWorkspaceItemResponse(
+                status="skipped", item_id=item_id, detail="empty_content_md"
+            )
+        if len(content_md) < MIN_CONTENT_LENGTH_CHARS:
+            try:
+                _wb_span.set_attribute("outcome", "below_min_length")
+            except Exception:
+                pass
+            # Below the threshold the LLM call is wasteful — short blurbs don't
+            # need an agent-facing summary; downstream agents can just read
+            # content_md directly. Saves token cost on notes / tiny artifacts.
+            return SummarizeWorkspaceItemResponse(
+                status="skipped",
+                item_id=item_id,
+                detail=f"content_md_below_min_length:{len(content_md)}<{MIN_CONTENT_LENGTH_CHARS}",
+            )
+
+        # The agent reads exactly three columns off the workspace_items row —
+        # title, describe_query (router-written query description, migration 038),
+        # and content_md. NULL describe_query is fine: the prompt falls back to
+        # describing content without a query anchor.
+        summary = await run_artifact_summary(
+            ArtifactSummaryInput(
+                describe_query=str(row.get("describe_query") or ""),
+                content_md=content_md,
+                title=str(row.get("title") or ""),
+                kind=str(row.get("kind") or "agent_search"),
+            ),
+            build_artifact_summary_deps(),
+        )
+
+        # Persist + record cost (best-effort).
+        _persist_summary(
+            supabase,
+            item_id,
+            summary,
+            source_length=len(content_md),
+            existing_metadata=row.get("metadata") or {},
+        )
+        _record_cost(supabase, row, summary)
+
+        try:
+            _wb_span.set_attributes({
+                "outcome": "ok_fallback" if summary.fallback_used else "ok",
+                "model_used": summary.model_used,
+                "tokens_in": summary.tokens_in,
+                "tokens_out": summary.tokens_out,
+                "fallback_used": summary.fallback_used,
+                "summary_chars": len(summary.summary_md or ""),
+            })
+        except Exception:
+            pass
+
+        return SummarizeWorkspaceItemResponse(
+            status="ok" if not summary.fallback_used else "ok_fallback",
+            item_id=item_id,
+        )

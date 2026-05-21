@@ -20,8 +20,50 @@ from typing import Any
 from supabase import Client as SupabaseClient
 
 from agents.utils.agent_models import estimate_run_cost
+from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
+
+
+def _hydrate_trace_ids_from_span(rec: "AgentRunRecord") -> None:
+    """Best-effort: populate ``rec.trace_id`` / ``rec.span_id`` from the active
+    Logfire span when the caller did not supply them.
+
+    Why this matters: cross-referencing Supabase ``agent_runs`` to Logfire
+    traces is the join the monitor agent uses to reconcile what persisted
+    vs. what the spans show. The convo-1 forensics found that cancelled
+    dispatch rows had ``trace_id=NULL`` and ``status='ok'`` simultaneously —
+    Supabase silently lying about success. Auto-capturing the trace ids
+    here makes the join survive even when callers forget to set them.
+    """
+    if rec.trace_id and rec.span_id:
+        return
+    try:
+        span = _logfire.current_span() if hasattr(_logfire, "current_span") else None
+    except Exception:
+        return
+    if span is None:
+        return
+    ctx = getattr(span, "context", None) or (
+        span.get_span_context() if hasattr(span, "get_span_context") else None
+    )
+    if ctx is None:
+        return
+    if not rec.trace_id:
+        try:
+            tid = getattr(ctx, "trace_id", None)
+            if tid:
+                rec.trace_id = format(int(tid), "032x")
+        except Exception:
+            pass
+    if not rec.span_id:
+        try:
+            sid = getattr(ctx, "span_id", None)
+            if sid:
+                rec.span_id = format(int(sid), "016x")
+        except Exception:
+            pass
 
 
 @dataclass
@@ -72,6 +114,50 @@ class AgentRunRecord:
 
 def record_agent_run(supabase: SupabaseClient, rec: AgentRunRecord) -> str | None:
     """Insert a row into agent_runs. Returns run_id, or None on failure (never raises)."""
+    # Auto-capture trace_id / span_id from the active Logfire span when the
+    # caller left them unset. Wrap the insert in a span so the DB write itself
+    # is visible in Logfire AND so log-only audits of a conversation surface
+    # the run-record at the point of insertion.
+    _hydrate_trace_ids_from_span(rec)
+    # PII note: user_id intentionally NOT on this span. The row being inserted
+    # carries user_id in the DB; the monitor recovers it via Supabase join.
+    # Keeping user_id off this span (and ~10× more surfaces system-wide)
+    # narrows the PII surface area in Logfire.
+    with _logfire.span(
+        "agent_runs.record",
+        agent_family=rec.agent_family,
+        subtype=rec.subtype,
+        status=rec.status,
+        conversation_id=str(rec.conversation_id) if rec.conversation_id else None,
+        case_id=str(rec.case_id) if rec.case_id else None,
+        task_label=rec.task_label,
+        tokens_in=rec.tokens_in,
+        tokens_out=rec.tokens_out,
+        cost_usd=rec.cost_usd,
+        model_used=rec.model_used,
+        has_output_item=rec.output_item_id is not None,
+    ) as _span:
+        try:
+            run_id = _record_agent_run_inner(supabase, rec)
+            try:
+                _span.set_attribute("run_id", run_id)
+                _span.set_attribute("write_ok", run_id is not None)
+            except Exception:
+                pass
+            return run_id
+        except Exception as exc:
+            try:
+                _span.set_attribute("write_ok", False)
+                _span.set_attribute("error", str(exc))
+                _span.set_attribute("error.type", type(exc).__name__)
+            except Exception:
+                pass
+            raise
+
+
+def _record_agent_run_inner(supabase: SupabaseClient, rec: AgentRunRecord) -> str | None:
+    """Body of ``record_agent_run`` — kept separate so the span wrapper above
+    can capture exceptions without obscuring the original control flow."""
     try:
         payload: dict[str, Any] = {
             "user_id": str(rec.user_id),
@@ -165,6 +251,13 @@ def update_run_status(
 
     Returns True on success, False on failure (never raises).
     """
+    _span = _logfire.span(
+        "agent_runs.update_status",
+        run_id=run_id,
+        new_status=status,
+        patched_keys=sorted(k for k, v in fields.items() if v is not None),
+    )
+    _span.__enter__()
     try:
         payload: dict[str, Any] = {"status": status}
         for key, val in fields.items():
@@ -196,7 +289,19 @@ def update_run_status(
                 payload["tokens_reasoning"] = est_reasoning
 
         supabase.table("agent_runs").update(payload).eq("run_id", run_id).execute()
+        try:
+            _span.set_attribute("write_ok", True)
+        except Exception:
+            pass
         return True
     except Exception as e:
+        try:
+            _span.set_attribute("write_ok", False)
+            _span.set_attribute("error", str(e))
+            _span.set_attribute("error.type", type(e).__name__)
+        except Exception:
+            pass
         logger.warning("update_run_status failed (non-blocking): run_id=%s status=%s %s", run_id, status, e)
         return False
+    finally:
+        _span.__exit__(None, None, None)

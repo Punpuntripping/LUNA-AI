@@ -918,16 +918,34 @@ async def _dispatch(
     err_payload: dict | None = None
     status = "ok"
 
+    # PII note: user_id intentionally NOT on this span. The monitor recovers
+    # user_id via Supabase join on conversation_id — every persisted row
+    # (agent_runs, messages, conversations, workspace_items) carries user_id
+    # as a column. Keeping user_id off Logfire spans narrows the PII surface
+    # area across the 30-day retention window.
     with _logfire.span(
         "dispatch.specialist",
         agent_family=agent_family,
         subtype=subtype,
-        user_id=user_id,
         conversation_id=conversation_id,
         case_id=case_id,
         target_item_id=target_item_id,
         attached_count=len(attached_item_ids),
-    ):
+    ) as _dispatch_span:
+        # §6.1 / Wave 1 redesign — surface the router-emitted dispatch context
+        # as Logfire attributes so dashboards can filter on task identity.
+        # `describe_query_chars` (not full text) keeps span attribute size
+        # bounded — describe_query can be up to ~150 words and full-text in
+        # attributes balloons telemetry cost.
+        try:
+            _dispatch_span.set_attributes({
+                "dispatch.task_label": task_label,
+                "dispatch.describe_query_chars": len(describe_query or ""),
+                "dispatch.agent_family": agent_family,
+                "dispatch.attached_item_count": len(attached_item_ids or []),
+            })
+        except Exception:
+            pass
         try:
             # Build MajorAgentInput — hydrate attached items + recent messages.
             # _load_attached_items takes user_id + conversation_id so the

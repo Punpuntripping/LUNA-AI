@@ -69,6 +69,7 @@ from agents.deep_search_v4.reg_search.models import (
     RegSearchDeps,
     RegSearchResult,
 )
+from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
@@ -110,7 +111,7 @@ class FullLoopDeps:
     use_reranker: bool = False
     expander_prompt_key: str = "prompt_1"
     case_expander_prompt_key: str = "prompt_3"   # sectioned default
-    concurrency: int = 10
+    concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     unfold_mode: str = "precise"
     include_reg: bool = True
     include_compliance: bool = True
@@ -169,6 +170,16 @@ class FullLoopDeps:
     # AggregatorInput as actually handed to handle_aggregator_turn (post-merge,
     # post-from_ura). Useful for the monitor to render exactly what the LLM saw.
     _aggregator_input: Any | None = None
+    # Conversation identity — populated by ``run_retrieval`` from PlannerDeps so
+    # every span emitted inside ``run_full_loop`` (per-phase, aggregator) can be
+    # filtered by conversation_id in Logfire without a trace_id pivot. Defaults
+    # to empty for CLI / smoke-test paths that have no real conversation.
+    # NOTE: only conversation_id is propagated here (user_id is intentionally
+    # NOT carried). The monitor / forensic agent recovers user_id via Supabase
+    # join when needed; keeping user_id off ~10× more span surfaces is a
+    # belt-and-suspenders PII reduction. router.classify + dispatch.specialist
+    # still carry user_id from before — those are the canonical user-tagged spans.
+    conversation_id: str = ""
 
     def __post_init__(self) -> None:
         # ``DetailLevel`` is a dataclass type hint, not a runtime constraint.
@@ -217,7 +228,11 @@ async def _run_reg_phase(
             "total_tokens_in": 0,
             "total_tokens_out": 0,
         }
-        _logfire.info("deep_search.phase.reg.skipped", query_id=query_id)
+        _logfire.info(
+            "deep_search.phase.reg.skipped",
+            query_id=query_id,
+            conversation_id=deps.conversation_id or None,
+        )
         return ([], "", [])
 
     log_id = (
@@ -229,6 +244,7 @@ async def _run_reg_phase(
     _phase_span = _logfire.span(
         "deep_search.phase.reg",
         query_id=query_id,
+        conversation_id=deps.conversation_id or None,
         log_id=log_id,
         expander_prompt_key=deps.expander_prompt_key,
         unfold_mode=deps.unfold_mode,
@@ -394,7 +410,11 @@ async def _run_compliance_phase(
             "total_tokens_in": 0,
             "total_tokens_out": 0,
         }
-        _logfire.info("deep_search.phase.compliance.skipped", query_id=query_id)
+        _logfire.info(
+            "deep_search.phase.compliance.skipped",
+            query_id=query_id,
+            conversation_id=deps.conversation_id or None,
+        )
         return []
 
     # Generate a log_id matching reg_search's convention so the per-round
@@ -439,6 +459,7 @@ async def _run_compliance_phase(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
         context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
+        concurrency=deps.concurrency,
     )
 
     t0 = _time.perf_counter()
@@ -515,6 +536,7 @@ async def _run_compliance_phase(
     _logfire.info(
         "deep_search.phase.compliance",
         query_id=query_id,
+        conversation_id=deps.conversation_id or None,
         log_id=log_id,
         duration_ms=int(duration * 1000),
         total_tokens_in=deps._per_executor_stats["compliance_search"]["total_tokens_in"],
@@ -545,7 +567,11 @@ async def _run_case_phase(
             "total_tokens_in": 0,
             "total_tokens_out": 0,
         }
-        _logfire.info("deep_search.phase.case.skipped", query_id=query_id)
+        _logfire.info(
+            "deep_search.phase.case.skipped",
+            query_id=query_id,
+            conversation_id=deps.conversation_id or None,
+        )
         return []
 
     case_budget: int | None = None
@@ -615,6 +641,7 @@ async def _run_case_phase(
     _logfire.info(
         "deep_search.phase.case",
         query_id=query_id,
+        conversation_id=deps.conversation_id or None,
         log_id=getattr(case_deps, "_log_id", None),
         duration_ms=deps._per_executor_stats["case_search"]["duration_ms"],
         total_tokens_in=total_in,
@@ -647,6 +674,7 @@ async def run_full_loop(
     _full_span = _logfire.span(
         "deep_search.run_full_loop",
         query_id=query_id,
+        conversation_id=deps.conversation_id or None,
         query_length=len(query),
         detail_level=deps.detail_level,
         include_reg=deps.include_reg,
@@ -739,6 +767,7 @@ async def run_full_loop(
     with _logfire.span(
         "deep_search.aggregator",
         query_id=query_id,
+        conversation_id=deps.conversation_id or None,
         prompt_key=prompt_key,
         detail_level=deps.detail_level,
         ura_high=len(ura.high_results),
@@ -912,6 +941,7 @@ async def run_retrieval(
         aggregator_logger=deps.aggregator_logger,
         enable_planner=False,
         context_blocks=selected_blocks,
+        conversation_id=getattr(deps, "conversation_id", "") or "",
     )
     full_deps._plan = config
 

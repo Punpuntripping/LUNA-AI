@@ -1,6 +1,11 @@
-"""One-shot smoke test for agents/memory/artifact_summarizer.
+"""Two-shot smoke test for agents/memory/artifact_summarizer.
 
-Sends a tiny Arabic legal text through the summarizer and prints the result.
+Runs:
+1. **useful content** — a tiny Arabic legal text → expect a real 3-section
+   coverage summary.
+2. **crappy content** — placeholder/test text → expect the agent to declare
+   the artifact useless, NOT fabricate a fake summary.
+
 Run from repo root: ``python -m scripts.smoke_artifact_summarizer``.
 """
 from __future__ import annotations
@@ -20,9 +25,10 @@ from agents.memory.artifact_summarizer import (
     run_artifact_summary,
 )
 
-_SAMPLE_QUERY = "ما عقوبة تعاطي المخدرات في النظام السعودي؟"
-_SAMPLE_TITLE = "إجابة بحث عميق — عقوبات المخدرات"
-_SAMPLE_BODY = """\
+# ---------- Case 1: useful content ----------
+USEFUL_QUERY = "ما عقوبة تعاطي المخدرات في النظام السعودي؟"
+USEFUL_TITLE = "إجابة بحث عميق — عقوبات المخدرات"
+USEFUL_BODY = """\
 ## الخلاصة
 
 تنظّم اللائحة التنفيذية لنظام مكافحة المخدرات والمؤثرات العقلية آلية الإثبات
@@ -43,19 +49,26 @@ _SAMPLE_BODY = """\
 التمييز الشرعي بين عقوبة الحدّ للخمر وعقوبة التعزير للمواد المخدرة.
 """
 
+# ---------- Case 2: crappy content ----------
+CRAP_QUERY = "ما عقوبة تعاطي المخدرات؟"
+CRAP_TITLE = "نتيجة اختبار"
+CRAP_BODY = "محتوى اختبار البحث — placeholder. لا يوجد نصّ قانوني فعلي هنا."
 
-async def main() -> int:
+
+async def _run_one(label: str, describe_query: str, title: str, content_md: str) -> int:
     deps = build_artifact_summary_deps()
-    input = ArtifactSummaryInput(
-        original_query=_SAMPLE_QUERY,
-        content_md=_SAMPLE_BODY,
-        title=_SAMPLE_TITLE,
-        kind="agent_search",
+    output = await run_artifact_summary(
+        ArtifactSummaryInput(
+            describe_query=describe_query,
+            content_md=content_md,
+            title=title,
+            kind="agent_search",
+        ),
+        deps,
     )
-    output = await run_artifact_summary(input, deps)
 
     print("=" * 60)
-    print("ARTIFACT SUMMARIZER SMOKE TEST")
+    print(f"CASE: {label}")
     print("=" * 60)
     print(f"model_used      : {output.model_used!r}")
     print(f"tokens_in       : {output.tokens_in}")
@@ -65,13 +78,18 @@ async def main() -> int:
     print("-" * 60)
     print(output.summary_md)
     print("=" * 60)
+    print()
 
     if not output.summary_md.strip():
-        print("FAIL: empty summary", file=sys.stderr)
+        print(f"FAIL ({label}): empty summary", file=sys.stderr)
         return 1
-    if output.fallback_used:
-        print("WARN: fallback path was used (LLM call failed)", file=sys.stderr)
     return 0
+
+
+async def main() -> int:
+    rc1 = await _run_one("USEFUL CONTENT", USEFUL_QUERY, USEFUL_TITLE, USEFUL_BODY)
+    rc2 = await _run_one("CRAPPY CONTENT", CRAP_QUERY, CRAP_TITLE, CRAP_BODY)
+    return rc1 or rc2
 
 
 if __name__ == "__main__":

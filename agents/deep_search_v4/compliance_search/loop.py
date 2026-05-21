@@ -215,8 +215,34 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
             "text": f"جاري تنفيذ {len(queries)} استعلامات بحث...",
         })
 
-        # Run all queries concurrently (search_compliance_raw handles embedding internally)
-        tasks = [search_compliance_raw(q, deps) for q in queries]
+        # Batch-embed all queries in one API call (parity with case_search /
+        # reg_search). Auto-splits at MAX_EMBED_BATCH inside the helper, so a
+        # round that emits >25 queries still costs 1 call per 25-query chunk
+        # instead of N per-query calls.
+        from agents.utils.embeddings import embed_regulation_queries_alibaba
+
+        try:
+            embeddings = await embed_regulation_queries_alibaba(queries)
+        except Exception as e:
+            logger.error(
+                "compliance.SearchNode: batch embed failed (%d queries): %s",
+                len(queries), e, exc_info=True,
+            )
+            # Degrade gracefully — fall back to per-query embedding via the
+            # injected ``deps.embedding_fn``. Keeps the round alive at the
+            # cost of N API calls.
+            embeddings = [None] * len(queries)  # type: ignore[list-item]
+
+        sem = asyncio.Semaphore(state.concurrency)
+        tasks = [
+            search_compliance_raw(
+                q,
+                deps,
+                precomputed_embedding=emb,
+                semaphore=sem,
+            )
+            for q, emb in zip(queries, embeddings)
+        ]
         results_per_query: list[list[dict]] = await asyncio.gather(*tasks)
 
         # Capture per-query service_ref attribution BEFORE dedup so the

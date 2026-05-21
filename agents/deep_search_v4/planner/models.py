@@ -254,9 +254,32 @@ class PlannerResponse(BaseModel):
             "When build_artifact=False because a prior artifact covers the "
             "question, the item_id of that prior artifact. Used by the "
             "orchestrator to emit a referenced_existing_item SSE event. Null "
-            "otherwise."
+            "otherwise. May arrive as literal string 'None'/'null' from LLM "
+            "JSON output; the field validator coerces those to actual None."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Validators — referenced_item_id (string-'None'/'null' coercion)
+    # ------------------------------------------------------------------
+
+    @field_validator("referenced_item_id", mode="before")
+    @classmethod
+    def _coerce_none_strings(cls, v):
+        """LLMs sometimes serialize None as the literal string 'None' or 'null'.
+
+        Coerce those (and empty/whitespace) to actual None so downstream code
+        can rely on truthiness checks (``if response.referenced_item_id:`` etc.)
+        without having to second-guess the JSON shape the responder emitted.
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped == "" or stripped.lower() in ("none", "null"):
+                return None
+            return stripped
+        return v
 
 
 __all__ = [

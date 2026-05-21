@@ -17,13 +17,21 @@ from pydantic import BaseModel, Field
 class ArtifactSummaryInput:
     """Everything the summarizer needs.
 
-    ``kind`` is passed as context only (used by the prompt to set tone), not
-    branched on. The agent picks whatever output shape best conveys coverage —
-    a three-section "ملخص المحتوى / المحاور الرئيسية / الخلاصة" layout is the
-    suggested default but not enforced.
+    These map 1:1 to the three ``workspace_items`` columns the agent
+    reads (post-Window-D-v2):
+
+    - ``title``           → ``workspace_items.title``
+    - ``describe_query``  → ``workspace_items.describe_query`` — the
+      router-written description of the question the artifact answers
+      (migration 038). NOT the user's raw chat message.
+    - ``content_md``      → ``workspace_items.content_md`` — the full body.
+
+    ``kind`` is passed as context only (lets the prompt set tone for e.g.
+    ``compose_document`` vs ``agent_search``), not branched on. The agent
+    picks whatever output shape best conveys coverage.
     """
 
-    original_query: str
+    describe_query: str
     content_md: str
     title: str
     kind: str = "agent_search"

@@ -35,6 +35,8 @@ async def search_compliance_raw(
     query: str,
     deps: "ComplianceSearchDeps",
     sectors: list[str] | None = None,
+    precomputed_embedding: list[float] | None = None,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> list[dict]:
     """Search government services and return raw candidate dicts.
 
@@ -48,6 +50,10 @@ async def search_compliance_raw(
             forwarded to the RPC's ``filter_sectors`` (array-overlap filter).
             An empty/None value means "no filter" — never pass ``[]`` to the
             RPC (``sectors && '{}'`` is always false → zero rows).
+        precomputed_embedding: Pre-computed embedding vector. When provided,
+            skips the per-query embed step — the loop batches all sub-queries
+            into one API call upstream (parity with case_search / reg_search).
+        semaphore: Optional concurrency limiter for parallel pipeline calls.
 
     Returns:
         List of raw service row dicts with all fields from the RPC,
@@ -58,6 +64,23 @@ async def search_compliance_raw(
         service_url, url, is_most_used, is_proactive, sectors, entity_id,
         score (RRF score).
     """
+    if semaphore:
+        async with semaphore:
+            return await _search_compliance_raw_inner(
+                query, deps, sectors, precomputed_embedding,
+            )
+    return await _search_compliance_raw_inner(
+        query, deps, sectors, precomputed_embedding,
+    )
+
+
+async def _search_compliance_raw_inner(
+    query: str,
+    deps: "ComplianceSearchDeps",
+    sectors: list[str] | None,
+    precomputed_embedding: list[float] | None,
+) -> list[dict]:
+    """Inner worker: mock hook -> embed (or use precomputed) -> RPC."""
     # Mock check — only honour list mocks in raw mode
     if deps.mock_results and "compliance" in deps.mock_results:
         mock_val = deps.mock_results["compliance"]
@@ -72,8 +95,8 @@ async def search_compliance_raw(
         return []
 
     try:
-        # Step 1: Embed query
-        embedding = await deps.embedding_fn(query)
+        # Step 1: Embed query (skip if pre-computed by the loop's batch path).
+        embedding = precomputed_embedding or await deps.embedding_fn(query)
 
         # Step 2: Hybrid search via RPC
         candidates = await _hybrid_rpc_search(

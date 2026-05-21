@@ -196,6 +196,7 @@ async def handle_planner_turn(
     with _logfire.span(
         "deep_search.planner",
         query_id=getattr(deps, "query_id", None),
+        conversation_id=getattr(deps, "conversation_id", "") or None,
         resumed=decision is not None,
     ) as span:
         result = await _run_planner_turn(
@@ -294,7 +295,7 @@ async def _run_planner_turn(
             # PlannerDecision in hand.
             decision = output
             _canonicalize_decision_sectors(decision)
-            emit(deps, {
+            _decided_payload = {
                 "event": EVENT_DECIDED,
                 "mode": decision.mode,
                 "support": decision.support,
@@ -304,7 +305,25 @@ async def _run_planner_turn(
                 "workspace_reads_count": _count_workspace_reads(deps._events),
                 "ask_user_invoked": False,  # paused-branch returned above
                 "duration_s": round(time.perf_counter() - t0, 3),
-            })
+            }
+            emit(deps, _decided_payload)
+            # §3.8 observability — surface the EVENT_DECIDED payload as
+            # attributes on the active `deep_search.planner` span so
+            # dashboards can filter/alert on them. Telemetry must never
+            # break the run, hence the broad except.
+            try:
+                _span = _logfire.current_span()
+                if _span is not None:
+                    _span.set_attributes({
+                        "planner.mode": _decided_payload["mode"],
+                        "planner.support": _decided_payload["support"],
+                        "planner.planner_brief_chars": _decided_payload["planner_brief_chars"],
+                        "planner.context_labels": _decided_payload["context_labels"],
+                        "planner.workspace_reads_count": _decided_payload["workspace_reads_count"],
+                        "planner.ask_user_invoked": _decided_payload["ask_user_invoked"],
+                    })
+            except Exception:
+                pass
             logger.info(
                 "planner: decided mode=%s support=%s sectors=%s brief_chars=%d labels=%s reads=%d",
                 decision.mode, decision.support, decision.sectors,
@@ -318,7 +337,7 @@ async def _run_planner_turn(
         # PRIOR turn's deps; this turn's deps._events is fresh, so the resume
         # read-back records 0 reads (correct — no new reads happened here).
         _canonicalize_decision_sectors(decision)
-        emit(deps, {
+        _decided_payload = {
             "event": EVENT_DECIDED,
             "mode": decision.mode,
             "support": decision.support,
@@ -328,7 +347,23 @@ async def _run_planner_turn(
             "workspace_reads_count": _count_workspace_reads(deps._events),
             "ask_user_invoked": _ask_user_was_invoked(deps._events),
             "resumed": True,
-        })
+        }
+        emit(deps, _decided_payload)
+        # §3.8 — same span-attribute surface on the resume path. Same
+        # try/except guard.
+        try:
+            _span = _logfire.current_span()
+            if _span is not None:
+                _span.set_attributes({
+                    "planner.mode": _decided_payload["mode"],
+                    "planner.support": _decided_payload["support"],
+                    "planner.planner_brief_chars": _decided_payload["planner_brief_chars"],
+                    "planner.context_labels": _decided_payload["context_labels"],
+                    "planner.workspace_reads_count": _decided_payload["workspace_reads_count"],
+                    "planner.ask_user_invoked": _decided_payload["ask_user_invoked"],
+                })
+        except Exception:
+            pass
 
     deps._decision = decision
 
@@ -382,6 +417,21 @@ async def _run_planner_turn(
             "referenced_item_id": response.referenced_item_id,
             "duration_s": round(time.perf_counter() - t2, 3),
         })
+        # §3.8 observability — surface the EVENT_RESPONDED payload as
+        # attributes on the active `deep_search.planner` span. Note
+        # `referenced_item_id` is post-coercion (validator on
+        # PlannerResponse normalises 'None'/'null'/'' → actual None).
+        try:
+            _span = _logfire.current_span()
+            if _span is not None:
+                _span.set_attributes({
+                    "planner.build_artifact": response.build_artifact,
+                    "planner.referenced_item_id": response.referenced_item_id,
+                    "planner.chat_summary_chars": len(response.chat_summary_md or ""),
+                    "planner.suggestion_chars": len(response.suggestion_md or ""),
+                })
+        except Exception:
+            pass
     except Exception as exc:  # phase 3 raised → reuse the artifact (§9)
         degraded = True
         logger.error(

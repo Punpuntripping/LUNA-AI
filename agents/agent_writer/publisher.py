@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from backend.app.services.workspace_service import create_workspace_item
+from shared.observability import get_logfire
 
 from .deps import WriterDeps
 from .lock import write_lock_column
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 
 def _assemble_content(llm_output: WriterLLMOutput) -> str:
@@ -122,102 +124,139 @@ async def publish_writer_result(
         publish in Cut-1; Wave 8D will hold the lock through token-by-token
         streaming).
     """
-    # 1. Revision: soft-delete the row being revised.
-    if input.revising_item_id:
-        _soft_delete_revising(deps.supabase, input.revising_item_id)
-
-    # 2. Build the markdown body.
-    content_md = _assemble_content(llm_output)
-
-    # 3. Build metadata BEFORE the insert so the same dict ships into the row
-    # AND drives the SSE event payloads. The subtype is preserved verbatim --
-    # post-026 there is no enum constraint to dodge.
-    research_item_ids = [
-        item.get("item_id") or item.get("artifact_id")
-        for item in (input.research_items or [])
-        if isinstance(item, dict)
-    ]
-    research_item_ids = [r for r in research_item_ids if r]
-
-    metadata: dict = {
-        "subtype": input.subtype,
-        "model_used": deps.primary_model,
-        "confidence": llm_output.confidence,
-        "citations_used": list(llm_output.citations_used or []),
-        "notes": list(llm_output.notes_ar or []),
-        "research_item_ids": research_item_ids,
-        "detail_level": input.detail_level,
-        "tone": input.tone,
-        "revised_from": input.revising_item_id,
-    }
-
-    # Title preference: router-emitted task_label (content-derived Arabic
-    # phrase) wins over the LLM's title_ar when set. Falls back to title_ar.
-    title = (deps.task_label or "").strip() or llm_output.title_ar
-
-    row = create_workspace_item(
-        deps.supabase,
-        input.user_id,
+    # PII note: user_id not on this span (recoverable via Supabase join).
+    # router.classify + dispatch.specialist already carry the user identity
+    # for this turn.
+    _pub_span = _logfire.span(
+        "publish.workspace_item",
         kind="agent_writing",
-        created_by="agent",
-        title=title,
         conversation_id=input.conversation_id,
         case_id=input.case_id,
         message_id=input.message_id,
-        agent_family="writing",
-        content_md=content_md,
-        metadata=metadata,
-        describe_query=deps.describe_query,
-    )
-
-    # Tolerate either the new or legacy column name on the returned row so
-    # tests that stub create_workspace_item with the old shape keep working.
-    item_id = row.get("item_id") or row.get("artifact_id") or ""
-    if not item_id:
-        raise RuntimeError("agent_writer: publish returned no item_id")
-
-    # 4. Acquire lock on the real column.
-    locked_until_dt = datetime.now(timezone.utc) + timedelta(
-        seconds=deps.lock_ttl_seconds
-    )
-    locked_until_iso = locked_until_dt.isoformat()
-    _set_lock_column(deps.supabase, item_id, locked_until_iso)
-
-    # SSE events.
-    _emit(deps, {
-        "type": "workspace_item_created",
-        "item_id": item_id,
-        "kind": "agent_writing",
-        "subtype": input.subtype,
-        "title": title,
-        "created_by": "agent",
-    })
-    _emit(deps, {
-        "type": "workspace_item_locked",
-        "item_id": item_id,
-        "locked_until": locked_until_iso,
-    })
-
-    # 5. Release lock immediately for Cut-1 (no token-stream yet -- the full
-    # body arrived in one LLM response). Wave 8D will hold the lock through
-    # the streaming window.
-    _set_lock_column(deps.supabase, item_id, None)
-    _emit(deps, {"type": "workspace_item_unlocked", "item_id": item_id})
-
-    return WriterOutput(
-        item_id=item_id,
-        kind="agent_writing",
         subtype=input.subtype,
-        title=title,
-        content_md=content_md,
-        confidence=llm_output.confidence,
-        notes=list(llm_output.notes_ar or []),
-        metadata=metadata,
-        sse_events=list(deps._events),
-        locked_until=None,
-        chat_summary=llm_output.chat_summary or "",
-        key_findings=list(llm_output.key_findings or []),
+        revising_item_id=input.revising_item_id,
+        confidence=getattr(llm_output, "confidence", None),
     )
+    _pub_span.__enter__()
+    try:
+        # 1. Revision: soft-delete the row being revised.
+        if input.revising_item_id:
+            _soft_delete_revising(deps.supabase, input.revising_item_id)
+
+        # 2. Build the markdown body.
+        content_md = _assemble_content(llm_output)
+
+        # 3. Build metadata BEFORE the insert so the same dict ships into the row
+        # AND drives the SSE event payloads. The subtype is preserved verbatim --
+        # post-026 there is no enum constraint to dodge.
+        research_item_ids = [
+            item.get("item_id") or item.get("artifact_id")
+            for item in (input.research_items or [])
+            if isinstance(item, dict)
+        ]
+        research_item_ids = [r for r in research_item_ids if r]
+
+        metadata: dict = {
+            "subtype": input.subtype,
+            "model_used": deps.primary_model,
+            "confidence": llm_output.confidence,
+            "citations_used": list(llm_output.citations_used or []),
+            "notes": list(llm_output.notes_ar or []),
+            "research_item_ids": research_item_ids,
+            "detail_level": input.detail_level,
+            "tone": input.tone,
+            "revised_from": input.revising_item_id,
+        }
+
+        # Title preference: router-emitted task_label (content-derived Arabic
+        # phrase) wins over the LLM's title_ar when set. Falls back to title_ar.
+        title = (deps.task_label or "").strip() or llm_output.title_ar
+
+        row = create_workspace_item(
+            deps.supabase,
+            input.user_id,
+            kind="agent_writing",
+            created_by="agent",
+            title=title,
+            conversation_id=input.conversation_id,
+            case_id=input.case_id,
+            message_id=input.message_id,
+            agent_family="writing",
+            content_md=content_md,
+            metadata=metadata,
+            describe_query=deps.describe_query,
+        )
+
+        # Tolerate either the new or legacy column name on the returned row so
+        # tests that stub create_workspace_item with the old shape keep working.
+        item_id = row.get("item_id") or row.get("artifact_id") or ""
+        if not item_id:
+            raise RuntimeError("agent_writer: publish returned no item_id")
+
+        # 4. Acquire lock on the real column.
+        locked_until_dt = datetime.now(timezone.utc) + timedelta(
+            seconds=deps.lock_ttl_seconds
+        )
+        locked_until_iso = locked_until_dt.isoformat()
+        _set_lock_column(deps.supabase, item_id, locked_until_iso)
+
+        # SSE events.
+        _emit(deps, {
+            "type": "workspace_item_created",
+            "item_id": item_id,
+            "kind": "agent_writing",
+            "subtype": input.subtype,
+            "title": title,
+            "created_by": "agent",
+        })
+        _emit(deps, {
+            "type": "workspace_item_locked",
+            "item_id": item_id,
+            "locked_until": locked_until_iso,
+        })
+
+        # 5. Release lock immediately for Cut-1 (no token-stream yet -- the full
+        # body arrived in one LLM response). Wave 8D will hold the lock through
+        # the streaming window.
+        _set_lock_column(deps.supabase, item_id, None)
+        _emit(deps, {"type": "workspace_item_unlocked", "item_id": item_id})
+
+        try:
+            _pub_span.set_attributes({
+                "item_id": item_id,
+                "title_chars": len(title or ""),
+                "content_md_chars": len(content_md or ""),
+                "outcome": "ok",
+            })
+        except Exception:
+            pass
+
+        return WriterOutput(
+            item_id=item_id,
+            kind="agent_writing",
+            subtype=input.subtype,
+            title=title,
+            content_md=content_md,
+            confidence=llm_output.confidence,
+            notes=list(llm_output.notes_ar or []),
+            metadata=metadata,
+            sse_events=list(deps._events),
+            locked_until=None,
+            chat_summary=llm_output.chat_summary or "",
+            key_findings=list(llm_output.key_findings or []),
+        )
+    except Exception as exc:
+        try:
+            _pub_span.set_attributes({
+                "outcome": "error",
+                "error": str(exc),
+                "error.type": type(exc).__name__,
+            })
+        except Exception:
+            pass
+        raise
+    finally:
+        _pub_span.__exit__(None, None, None)
 
 
 __all__ = [
