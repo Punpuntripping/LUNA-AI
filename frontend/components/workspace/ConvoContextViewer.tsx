@@ -1,7 +1,6 @@
 "use client";
 
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { ArtifactPreview } from "./ArtifactPreview";
 import type { WorkspaceItem } from "@/types";
 
 interface ConvoContextViewerProps {
@@ -12,7 +11,8 @@ interface ConvoContextViewerProps {
  * Read-only render of the running conversation summary.
  *
  * Wave 8D will wire generation cadence; for now this just displays whatever
- * the backend stored.
+ * the backend stored. Uses the shared ``ArtifactPreview`` so the copy button
+ * and markdown rendering match every other artifact surface.
  */
 export function ConvoContextViewer({ item }: ConvoContextViewerProps) {
   if (!item.content_md) {
@@ -25,11 +25,5 @@ export function ConvoContextViewer({ item }: ConvoContextViewerProps) {
     );
   }
 
-  return (
-    <ScrollArea className="flex-1">
-      <div className="p-6" dir="rtl">
-        <MarkdownRenderer content={item.content_md} />
-      </div>
-    </ScrollArea>
-  );
+  return <ArtifactPreview content={item.content_md} />;
 }

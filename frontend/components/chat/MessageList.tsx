@@ -315,7 +315,15 @@ export function MessageList({
               (streamingMessageId !== null &&
                 msg.message_id === streamingMessageId));
           const ids = msg.artifact_ids;
-          const referencedIds = referencedItemsByMessage[msg.message_id];
+          // Window B Tasks 5–7: prefer the persisted row value over the
+          // store-only entry. The store is populated live by the
+          // ``referenced_existing_item`` SSE event but does not survive a
+          // refresh; the persisted column on ``messages.referenced_item_ids``
+          // is the durable source.
+          const referencedIds =
+            (Array.isArray(msg.referenced_item_ids) && msg.referenced_item_ids.length > 0
+              ? msg.referenced_item_ids
+              : undefined) ?? referencedItemsByMessage[msg.message_id];
           return (
             <MessageBubble
               key={msg.message_id}

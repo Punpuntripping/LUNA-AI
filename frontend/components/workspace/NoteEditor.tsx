@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Lock, Save, Loader2, AlertTriangle } from "lucide-react";
+import { Lock, Save, Loader2, AlertTriangle, Eye, Pencil } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { useUpdateWorkspaceItem } from "@/hooks/use-workspace";
 import { useDebounce } from "@/hooks/use-debounce";
 import { ApiClientError } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { WorkspaceItem } from "@/types";
 
 interface NoteEditorProps {
@@ -44,6 +47,14 @@ export function NoteEditor({ item }: NoteEditorProps) {
   const [content, setContent] = useState(item.content_md ?? "");
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
+  // Preview/edit toggle. Default: preview when there's existing content (so
+  // opening an existing note feels like a clean read), edit when the note is
+  // empty (so the user can start typing immediately). The same toggle covers
+  // ``note`` and ``agent_writing`` kinds — the markdown renderer doesn't care
+  // who authored the body.
+  const initialMode: "edit" | "preview" =
+    (item.content_md ?? "").trim().length > 0 ? "preview" : "edit";
+  const [mode, setMode] = useState<"edit" | "preview">(initialMode);
   const lastSent = useRef<{ title: string; content: string }>({
     title: item.title,
     content: item.content_md ?? "",
@@ -56,6 +67,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
     lastSent.current = { title: item.title, content: item.content_md ?? "" };
     setSavedAt(null);
     setConflict(null);
+    setMode((item.content_md ?? "").trim().length > 0 ? "preview" : "edit");
   }, [item.item_id, item.title, item.content_md]);
 
   const debouncedTitle = useDebounce(title, AUTOSAVE_DELAY_MS);
@@ -122,32 +134,69 @@ export function NoteEditor({ item }: NoteEditorProps) {
         </div>
       )}
 
-      <div className="border-b px-4 py-3">
+      <div className="flex items-center gap-2 border-b px-4 py-3">
         <input
           type="text"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           readOnly={!titleEditable || isLocked}
           dir="rtl"
-          className="w-full bg-transparent text-sm font-semibold text-foreground focus:outline-none disabled:cursor-not-allowed read-only:cursor-default"
+          className="flex-1 bg-transparent text-sm font-semibold text-foreground focus:outline-none disabled:cursor-not-allowed read-only:cursor-default"
           placeholder="عنوان الملاحظة..."
         />
+        <div
+          className={cn(
+            "flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted/30 p-0.5",
+          )}
+          role="tablist"
+          aria-label="وضع العرض"
+        >
+          <Button
+            type="button"
+            variant={mode === "edit" ? "default" : "ghost"}
+            size="sm"
+            className="h-6 gap-1 px-2 text-[11px]"
+            role="tab"
+            aria-selected={mode === "edit"}
+            onClick={() => setMode("edit")}
+            disabled={isLocked && mode !== "edit"}
+          >
+            <Pencil className="h-3 w-3" />
+            تحرير
+          </Button>
+          <Button
+            type="button"
+            variant={mode === "preview" ? "default" : "ghost"}
+            size="sm"
+            className="h-6 gap-1 px-2 text-[11px]"
+            role="tab"
+            aria-selected={mode === "preview"}
+            onClick={() => setMode("preview")}
+          >
+            <Eye className="h-3 w-3" />
+            معاينة
+          </Button>
+        </div>
       </div>
 
-      <ScrollArea className="flex-1">
-        <textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          readOnly={isLocked}
-          dir="rtl"
-          className="block h-full min-h-[400px] w-full resize-none border-0 bg-transparent p-4 text-sm leading-relaxed focus:outline-none read-only:cursor-default"
-          placeholder={
-            item.kind === "note"
-              ? "اكتب ملاحظاتك هنا..."
-              : "محتوى المسودة..."
-          }
-        />
-      </ScrollArea>
+      {mode === "edit" ? (
+        <ScrollArea className="flex-1">
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            readOnly={isLocked}
+            dir="rtl"
+            className="block h-full min-h-[400px] w-full resize-none border-0 bg-transparent p-4 text-sm leading-relaxed focus:outline-none read-only:cursor-default"
+            placeholder={
+              item.kind === "note"
+                ? "اكتب ملاحظاتك هنا..."
+                : "محتوى المسودة..."
+            }
+          />
+        </ScrollArea>
+      ) : (
+        <ArtifactPreview content={content} />
+      )}
 
       <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
         <span>

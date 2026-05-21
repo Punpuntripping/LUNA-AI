@@ -154,6 +154,14 @@ export interface Message {
    * ships it.
    */
   artifact_ids?: string[] | null;
+  /**
+   * Workspace items the planner pointed back to instead of publishing a new
+   * card (Phase E ``build_artifact=False``). Drives the prior-card chip in
+   * the assistant bubble. When set, the chat-store entry recorded by the
+   * live ``referenced_existing_item`` SSE event still wins for the
+   * just-streamed turn; the persisted value lights up the chip on refresh.
+   */
+  referenced_item_ids?: string[] | null;
   isOptimistic?: boolean;
   isFailed?: boolean;
   isStreaming?: boolean;
@@ -248,6 +256,20 @@ export interface SSEDone {
     prompt_tokens: number;
     completion_tokens: number;
   };
+  /**
+   * Window B Tasks 5–7: workspace_items produced by the agent run that
+   * authored this assistant message. Echoed on the live `done` event so the
+   * chip + clickable [n] citations light up immediately, without waiting for
+   * the next messages-list refetch. ``null`` when the turn produced no
+   * artifact (mock RAG, Q&A, paused agent_question, etc).
+   */
+  artifact_ids?: string[] | null;
+  /**
+   * Window B Tasks 5–7: workspace_items the planner referenced instead of
+   * publishing a new card (Phase E build_artifact=False branch). Drives the
+   * "راجع البطاقة السابقة" chip.
+   */
+  referenced_item_ids?: string[] | null;
 }
 
 // ==========================================

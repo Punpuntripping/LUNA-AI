@@ -145,6 +145,11 @@ def list_messages(
             "attachments": attachments_map.get(m["message_id"], []),
             "metadata": m.get("metadata") or {},
             "created_at": m["created_at"],
+            # Window B Tasks 5–7: pass the persisted linkage through to the UI
+            # so a refresh / scroll-load still shows the source chip and the
+            # clickable [n] citations on prior assistant messages.
+            "artifact_ids": m.get("artifact_ids"),
+            "referenced_item_ids": m.get("referenced_item_ids"),
         })
 
     return {
@@ -277,6 +282,16 @@ async def send_message_stream(
         except asyncio.CancelledError:
             pass
 
+    # Window B Tasks 5–7: capture every workspace_item produced by this turn
+    # (and every prior card the planner pointed back to via build_artifact=False)
+    # so we can write them onto the messages row at `done` time AND echo them
+    # on the outgoing `done` SSE event. Without this, MessageBubble's
+    # `hasArtifacts` gate (frontend/components/chat/MessageBubble.tsx:105)
+    # never flips True and the inline source chip + clickable [n] citations
+    # stay dark for every assistant message.
+    captured_artifact_ids: list[str] = []
+    captured_referenced_ids: list[str] = []
+
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
         nonlocal full_content, paused
@@ -313,8 +328,15 @@ async def send_message_stream(
                     }))
 
                 elif event_type == "workspace_item_created":
+                    item_id = event.get("item_id")
+                    # Capture for the messages.artifact_ids write at done time.
+                    # Skip None / duplicates defensively — the orchestrator emits
+                    # one event per publish, but a future retry path could emit
+                    # twice and we don't want duplicate uuids in the array.
+                    if item_id and item_id not in captured_artifact_ids:
+                        captured_artifact_ids.append(item_id)
                     payload = {
-                        "item_id": event.get("item_id"),
+                        "item_id": item_id,
                         "kind": event.get("kind"),
                         "title": event.get("title", ""),
                         "created_by": event.get("created_by"),
@@ -344,8 +366,11 @@ async def send_message_stream(
                     # prior artifact that covers the current question — no new
                     # card is published. Frontend highlights / chips the
                     # existing card by item_id.
+                    ref_id = event.get("item_id")
+                    if ref_id and ref_id not in captured_referenced_ids:
+                        captured_referenced_ids.append(ref_id)
                     await queue.put(_sse_event("referenced_existing_item", {
-                        "item_id": event.get("item_id"),
+                        "item_id": ref_id,
                     }))
 
                 elif event_type == "status":
@@ -398,6 +423,15 @@ async def send_message_stream(
                             if usage:
                                 update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
                                 update_data["completion_tokens"] = usage.get("completion_tokens", 0)
+                            # Window B Tasks 5–7: persist the linkage. Only
+                            # write when non-empty so legacy / mock-RAG / Q&A
+                            # rows keep NULL (frontend treats null === [] for
+                            # gating, but NULL is the cleaner signal that "no
+                            # agent run published an artifact for this turn").
+                            if captured_artifact_ids:
+                                update_data["artifact_ids"] = captured_artifact_ids
+                            if captured_referenced_ids:
+                                update_data["referenced_item_ids"] = captured_referenced_ids
 
                             supabase.table("messages").update(
                                 update_data
@@ -431,13 +465,18 @@ async def send_message_stream(
                     except Exception as e:
                         logger.exception("Error updating conversation: %s", e)
 
-                    # 7. Yield done event
+                    # 7. Yield done event. Echo the captured arrays so the
+                    # frontend cache injection in use-chat.ts can light up the
+                    # chip + citation linking immediately, without waiting for
+                    # the next messages-list refetch.
                     await queue.put(_sse_event("done", {
                         "message_id": assistant_msg_id,
                         "usage": {
                             "prompt_tokens": usage.get("prompt_tokens", 0),
                             "completion_tokens": usage.get("completion_tokens", 0),
                         },
+                        "artifact_ids": captured_artifact_ids or None,
+                        "referenced_item_ids": captured_referenced_ids or None,
                     }))
 
         except Exception as e:

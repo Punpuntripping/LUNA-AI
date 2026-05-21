@@ -9,6 +9,8 @@ import {
   ChevronDown,
   FileText,
   Link2,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -17,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { cn } from "@/lib/utils";
 import type { Reference, ReferenceDomain, SourceView } from "@/types";
 
@@ -255,26 +258,74 @@ function ReferenceCard({
 function SourceViewBody({ reference }: { reference: Reference }) {
   const view = reference.source_view;
   if (!view) return null;
+  const sourceContent = extractSourceContent(view);
 
   return (
     <>
       <DialogHeader>
         <DialogTitle className="text-base">{view.title || referenceLabel(reference)}</DialogTitle>
       </DialogHeader>
-      <div className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground">
-        <SourceViewContent view={view} />
+      <div className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground" dir="rtl">
+        <SourceViewContent view={view} sourceContent={sourceContent} />
       </div>
+      {sourceContent ? <SourceCopyButton content={sourceContent} /> : null}
     </>
   );
 }
 
-function SourceViewContent({ view }: { view: SourceView }) {
+function SourceCopyButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // See ArtifactPreview: clipboard can fail silently — the user can
+      // still highlight & copy by hand.
+    }
+  };
+  return (
+    <div className="mt-3 flex justify-start">
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        className="h-7 gap-1.5 px-2 text-[11px]"
+        onClick={handleCopy}
+      >
+        {copied ? (
+          <>
+            <Check className="h-3 w-3" />
+            تم النسخ
+          </>
+        ) : (
+          <>
+            <Copy className="h-3 w-3" />
+            نسخ المحتوى
+          </>
+        )}
+      </Button>
+    </div>
+  );
+}
+
+function extractSourceContent(view: SourceView): string {
+  if ("content" in view && typeof view.content === "string") return view.content;
+  return "";
+}
+
+function SourceViewContent({
+  view,
+  sourceContent,
+}: {
+  view: SourceView;
+  sourceContent: string;
+}) {
   if (view.source_type === "chunk") {
     return (
       <div className="space-y-3">
-        {view.content && (
-          <p className="whitespace-pre-wrap">{view.content}</p>
-        )}
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
         <SourceLink label="رابط النظام" url={view.regulation_source_url} />
         <SourceLink label="ملف PDF" url={view.regulation_pdf_link?.url} />
       </div>
@@ -298,9 +349,7 @@ function SourceViewContent({ view }: { view: SourceView }) {
   // Legacy variants (article / section / regulation).
   return (
     <div className="space-y-3">
-      {typeof view.content === "string" && view.content && (
-        <p className="whitespace-pre-wrap">{view.content}</p>
-      )}
+      {sourceContent && <MarkdownRenderer content={sourceContent} />}
     </div>
   );
 }

@@ -333,7 +333,7 @@ export function useSendMessage(): UseSendMessageReturn {
               break;
             }
             case "done": {
-              const _payload = data as SSEDone;
+              const payload = data as SSEDone;
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
               const finalContent = useChatStore.getState().streamingContent;
@@ -353,10 +353,13 @@ export function useSendMessage(): UseSendMessageReturn {
                           content: finalContent,
                           attachments: [],
                           created_at: new Date().toISOString(),
-                          // Window C: the streaming `done` event doesn't yet
-                          // carry artifact_ids; the subsequent invalidate +
-                          // refetch will fill them in from the server.
-                          artifact_ids: undefined,
+                          // Window B Tasks 5–7: read the linkage from the live
+                          // `done` event so MessageBubble's `hasArtifacts`
+                          // gate flips True immediately — no wait for the
+                          // post-stream invalidate + refetch. Backend echoes
+                          // null when the turn produced nothing.
+                          artifact_ids: payload.artifact_ids ?? null,
+                          referenced_item_ids: payload.referenced_item_ids ?? null,
                         },
                         ...newPages[0].messages,
                       ],

@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext, TextOutput
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import UsageLimits
 from supabase import Client as SupabaseClient
@@ -28,6 +28,28 @@ from supabase import Client as SupabaseClient
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.utils.agent_models import get_agent_model
 from shared.observability import get_logfire
+
+
+# ── Plain-text fallback ───────────────────────────────────────────────────────
+# qwen3.6-plus occasionally emits the final chat answer as plain text after a
+# long thinking pass, instead of wrapping it in `ChatResponse(message=...)`.
+# Without a fallback, Pydantic AI raises ModelRetry → a full extra LLM round-trip
+# costing ~$0.04 per turn (observed twice in convo_1: T05 round 2, T07 round 1).
+# Registering TextOutput tells Pydantic AI to accept plain text as a valid
+# output, wrapped via `_text_as_chat`. DispatchAgent still requires an explicit
+# tool call — only chat responses get this fallback because the failure mode is
+# specific to text-shaped answers.
+
+def _text_as_chat(text: str) -> ChatResponse:
+    text = (text or "").strip()
+    if len(text) < 20:
+        # Defensive: model emitted a fragment, not a real answer. Force a
+        # retry so we don't ship garbage downstream.
+        raise ModelRetry(
+            "الرد قصير جداً أو فارغ. أصدر إجابة كاملة عبر استدعاء ChatResponse "
+            "أو أعد كتابة النص الكامل."
+        )
+    return ChatResponse(message=text)
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -164,7 +186,10 @@ SYSTEM_PROMPT = """\
 router_agent = Agent(
     get_agent_model("router"),
     name="router_agent",
-    output_type=[ChatResponse, DispatchAgent],
+    # TextOutput accepts a raw text response as a ChatResponse fallback —
+    # see _text_as_chat above for rationale. DispatchAgent stays strict
+    # (no text-shaped equivalent) so routing decisions remain structured.
+    output_type=[ChatResponse, DispatchAgent, TextOutput(_text_as_chat)],
     deps_type=RouterDeps,
     instructions=SYSTEM_PROMPT,
     retries=2,

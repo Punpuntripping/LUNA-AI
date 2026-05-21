@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
@@ -27,13 +27,33 @@ SUMMARIZER_LIMITS = UsageLimits(
 )
 
 
+def _text_as_summary(text: str) -> ArtifactSummaryLLMOutput:
+    """Plain-text → ArtifactSummaryLLMOutput fallback.
+
+    `ArtifactSummaryLLMOutput` has a single semantic field (``summary_md``), so
+    any plain-text emission from the model maps loss-free to the structured
+    output. This eliminates the retry round when reasoning-mode models
+    occasionally finalise as text instead of calling the output tool.
+    """
+    text = (text or "").strip()
+    if len(text) < 40:
+        raise ModelRetry(
+            "الملخّص قصير جداً. أعد كتابته بصيغة ماركداون عربية كاملة "
+            "تصف ما يغطّيه العنصر وما لا يغطّيه."
+        )
+    return ArtifactSummaryLLMOutput(summary_md=text)
+
+
 def create_artifact_summarizer() -> Agent[None, ArtifactSummaryLLMOutput]:
     """Build the artifact_summarizer agent."""
     model = get_agent_model("artifact_summarizer")
     return Agent(
         model,
         name="artifact_summarizer",
-        output_type=ArtifactSummaryLLMOutput,
+        # TextOutput absorbs plain-text emissions as a valid summary, sparing
+        # a Pydantic AI ModelRetry round. The structured tool path is still
+        # the preferred route — text only kicks in when the model forgets.
+        output_type=[ArtifactSummaryLLMOutput, TextOutput(_text_as_summary)],
         instructions=SYSTEM_PROMPT_AR,
         model_settings={
             "extra_body": {

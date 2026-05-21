@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { Pencil, Save, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   useUpdateWorkspaceItem,
   useWorkspaceItem,
 } from "@/hooks/use-workspace";
+import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import type { AgentSearchMetadata, WorkspaceItem } from "@/types";
 
@@ -163,21 +163,18 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           />
         </div>
       ) : (
-        <ScrollArea className="flex-1">
-          <div
-            className="p-4 text-sm leading-relaxed text-foreground"
-            dir="rtl"
-          >
-            <p className="whitespace-pre-wrap">{item.content_md ?? ""}</p>
-            {item.kind === "agent_search" && (
+        <ArtifactPreview
+          content={item.content_md ?? ""}
+          footer={
+            item.kind === "agent_search" ? (
               <ReferencePanel
                 references={
                   ((item.metadata ?? {}) as AgentSearchMetadata).references ?? []
                 }
               />
-            )}
-          </div>
-        </ScrollArea>
+            ) : null
+          }
+        />
       )}
 
       <div className="border-t px-4 py-2 text-[11px] text-muted-foreground">

@@ -164,6 +164,14 @@ class MessageResponse(BaseModel):
     attachments: list[AttachmentResponse] = []
     metadata: dict = {}
     created_at: str
+    # Window B Tasks 5–7: workspace_items linked to this message.
+    # ``artifact_ids`` — items this assistant message produced; drives the
+    #   inline source chip + clickable [n] citations.
+    # ``referenced_item_ids`` — items the planner pointed back to via
+    #   build_artifact=False; drives the "راجع البطاقة السابقة" chip.
+    # Both are None for user, agent_question, and pre-Window-B rows.
+    artifact_ids: Optional[list[str]] = None
+    referenced_item_ids: Optional[list[str]] = None
 
 
 class MessageListResponse(BaseModel):

@@ -11,23 +11,25 @@ blocks regardless of opt-in.
 Frozen vocabulary (§4.2 — re-quoted verbatim so the contract lives next to the
 type):
 
-    | label                  | source                                                                 | persistence    | default opt-in?      | volume                          |
-    |------------------------|------------------------------------------------------------------------|----------------|----------------------|---------------------------------|
-    | case_brief             | orchestrator: ``_load_case_block(supabase, case_id, user_id)`` from    | case           | yes (when case-      | small (~500-2000 chars)         |
-    |                        | ``lawyer_cases + case_memories``                                       |                | scoped)              |                                 |
-    | planner_brief          | planner decider output                                                 | turn           | only when non-empty  | small (≤120 words, often empty) |
-    |                        |                                                                        |                | (empty is the        |                                 |
-    |                        |                                                                        |                | expected default)    |                                 |
-    | prior_search_lessons   | orchestrator: prior ``kind=agent_search`` items rendered as            | conversation   | almost always (cheap | small                           |
-    |                        | ``{title, describe_query, confidence, summary}`` (summary =            |                | and small)           |                                 |
-    |                        | artifact_summarizer output, already includes gap analysis)             |                |                      |                                 |
-    | attached_artifacts     | router-curated ``attached_items`` full ``content_md``                  | turn           | only when user       | large                           |
-    |                        |                                                                        |                | references attached  |                                 |
-    |                        |                                                                        |                | items                |                                 |
+    | label                  | source                                                                 | persistence    | default opt-in?      | volume                            |
+    |------------------------|------------------------------------------------------------------------|----------------|----------------------|-----------------------------------|
+    | case_brief             | orchestrator: ``_load_case_block(supabase, case_id, user_id)`` from    | case           | yes (when case-      | small (~500-2000 chars)           |
+    |                        | ``lawyer_cases + case_memories``                                       |                | scoped)              |                                   |
+    | planner_brief          | planner decider output                                                 | turn           | only when non-empty  | variable (longer when attachments |
+    |                        |                                                                        |                | (empty is the        |  are present — see prompts.py)    |
+    |                        |                                                                        |                | expected default)    |                                   |
+    | prior_search_lessons   | orchestrator: prior ``kind=agent_search`` items rendered as            | conversation   | almost always (cheap | small                             |
+    |                        | ``{title, describe_query, confidence, summary}`` (summary =            |                | and small)           |                                   |
+    |                        | artifact_summarizer output, already includes gap analysis)             |                |                      |                                   |
+
+Note on attached artifacts: the router-curated ``attached_items`` reach the
+*planner decider only* — they are NOT forwarded to expanders / aggregator.
+When something in an attachment matters downstream, the planner distills it
+into ``planner_brief``. There is no ``attached_artifacts`` label.
 
 New labels require a doc update (this module's docstring + §4.2 of the redesign
 spec). Do NOT add labels ad-hoc — the planner system prompt enumerates the
-exact four strings above.
+exact three strings above.
 """
 from __future__ import annotations
 
@@ -40,7 +42,7 @@ class ContextBlock:
     """A single structured context block carried by the planner's bundle.
 
     ``label`` — one of the frozen vocabulary strings: ``"case_brief"``,
-    ``"planner_brief"``, ``"prior_search_lessons"``, ``"attached_artifacts"``.
+    ``"planner_brief"``, ``"prior_search_lessons"``.
     ``body`` — Arabic prose, rendered verbatim into the ``<context_blocks>`` XML
     block in the expander + aggregator user messages.
     ``persistence`` — lifetime classification for telemetry / future caching:

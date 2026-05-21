@@ -815,16 +815,18 @@ def _build_candidate_context_blocks(
     decision: Any,
     deps: PlannerDeps,
 ) -> dict[str, ContextBlock]:
-    """Build the 4 candidate ``ContextBlock`` objects from planner decision + deps.
+    """Build the candidate ``ContextBlock`` objects from planner decision + deps.
 
     Returns a dict keyed by label so the filter step in :func:`run_retrieval`
     can pick by label without scanning. A source is silently skipped when it
     would produce an empty body (e.g. ``deps.case_brief is None``,
-    ``decision.planner_brief`` blank, ``deps.prior_searches`` empty,
-    ``deps.attached_items`` empty).
+    ``decision.planner_brief`` blank, ``deps.prior_searches`` empty).
 
-    See §4.2 (vocabulary table) of the full_redesign spec for rendering
-    conventions per label. Note that ``recent_messages`` is NOT a context
+    Three labels are emitted: ``case_brief``, ``planner_brief``,
+    ``prior_search_lessons``. ``attached_artifacts`` is intentionally NOT
+    forwarded — the planner reads attachments in its decider phase and, when
+    relevant, distills them into ``planner_brief``. See §4.2 (vocabulary table)
+    of the full_redesign spec. Note that ``recent_messages`` is NOT a context
     block — it reaches the decider prompt only via dynamic instructions
     (handled by the planner in Wave 2), never downstream.
     """
@@ -868,21 +870,11 @@ def _build_candidate_context_blocks(
             persistence="conversation",
         )
 
-    # attached_artifacts — persistence="turn".
-    # Full content_md of each router-attached item. Bundled into one block; the
-    # individual item_id audit trail lives on workspace_items, not here.
-    if deps.attached_items:
-        rendered = []
-        for item in deps.attached_items:
-            rendered.append(
-                f"## {item.title}\n\n{item.content_md}".strip()
-            )
-        candidates["attached_artifacts"] = ContextBlock(
-            label="attached_artifacts",
-            body="\n\n---\n\n".join(rendered),
-            persistence="turn",
-            source_item_id=None,
-        )
+    # NOTE: attached_artifacts is intentionally NOT forwarded downstream.
+    # The planner decider reads ``deps.attached_items`` via its dynamic
+    # instructions and, when something in them matters for the search, the
+    # planner distills it into ``planner_brief``. Raw content_md never flows
+    # to expanders / aggregator.
 
     return candidates
 

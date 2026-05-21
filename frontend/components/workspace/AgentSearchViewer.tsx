@@ -1,7 +1,6 @@
 "use client";
 
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { ArtifactPreview } from "./ArtifactPreview";
 import { ReferencePanel } from "./ReferencePanel";
 import type { AgentSearchMetadata, WorkspaceItem } from "@/types";
 
@@ -19,10 +18,10 @@ interface AgentSearchViewerProps {
 /**
  * Read-only render for ``agent_search`` items.
  *
- * The synthesis body (``content_md``) renders as markdown; the reference list
- * renders below it as a JSON-driven ``ReferencePanel`` fed from
- * ``metadata.references`` — references live entirely on the artifact, never
- * in the chat.
+ * The synthesis body (``content_md``) renders via the shared ``ArtifactPreview``
+ * (markdown + copy button). The reference list renders inside the same scroll
+ * viewport as a JSON-driven ``ReferencePanel`` fed from ``metadata.references``
+ * — references live entirely on the artifact, never in the chat.
  *
  * deep_search produces immutable synthesis output -- if the user wants to
  * modify it, the writer pipeline produces a separate ``agent_writing`` row.
@@ -36,15 +35,15 @@ export function AgentSearchViewer({
   const references = metadata.references ?? [];
 
   return (
-    <ScrollArea className="flex-1">
-      <div className="p-6" dir="rtl">
-        <MarkdownRenderer content={item.content_md ?? ""} />
+    <ArtifactPreview
+      content={item.content_md ?? ""}
+      footer={
         <ReferencePanel
           references={references}
           focusedReferenceN={focusedReferenceN}
           onFlashDone={onFlashDone}
         />
-      </div>
-    </ScrollArea>
+      }
+    />
   );
 }

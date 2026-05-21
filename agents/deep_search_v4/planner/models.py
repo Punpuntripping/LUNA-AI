@@ -110,9 +110,13 @@ class PlannerDecision(BaseModel):
         description=(
             "Novel factual context the planner found that is NOT already "
             "carried by the user's query or by any other context block "
-            "(case_brief, prior_search_lessons, attached_artifacts). "
+            "(case_brief, prior_search_lessons). "
             "Empty is the EXPECTED default — non-empty only when the "
             "planner has genuinely new context to inject. "
+            "When the user attaches workspace_items (the planner sees them "
+            "as <attached_items> in its decider input but they are NOT "
+            "forwarded downstream), planner_brief is the sole channel for "
+            "any attachment-derived facts the search needs. "
             "Descriptive, not directive: state facts, do NOT propose angles "
             "or instruct downstream agents what to look for. The expanders "
             "and aggregator are designed to work from the raw query — the "
@@ -126,8 +130,10 @@ class PlannerDecision(BaseModel):
             "same set flows to all executor expanders AND the "
             "aggregator (the reranker never receives context). "
             "Vocabulary: 'case_brief', 'planner_brief', "
-            "'prior_search_lessons', 'attached_artifacts'. "
-            "Defaults include case_brief and planner_brief."
+            "'prior_search_lessons'. "
+            "Defaults include case_brief and planner_brief. "
+            "Attachments are NOT a label — they reach the planner decider "
+            "only; downstream-relevant facts go via planner_brief instead."
         ),
     )
 
