@@ -481,7 +481,7 @@ def finalize_document_upload(
     write_audit_log(
         supabase,
         user_id=user_id,
-        action="upload_finalize",
+        action="upload",
         resource_type="document",
         resource_id=document_id,
     )
@@ -563,7 +563,7 @@ def cancel_document_upload(
     write_audit_log(
         supabase,
         user_id=user_id,
-        action="upload_cancel",
+        action="delete",
         resource_type="document",
         resource_id=document_id,
     )
