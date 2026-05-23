@@ -33,6 +33,8 @@ from typing import AsyncGenerator
 from supabase import Client as SupabaseClient
 
 import agents.memory.agent as memory
+from agents.memory.ocr_extractor import run_ocr_extraction
+from agents.memory.summarize import summarize_workspace_item
 from agents.deep_search_v4.planner.models import PriorSearchSummary
 from agents.models import (
     ChatResponse,
@@ -799,6 +801,21 @@ async def handle_message(
         await memory.compact_conversation(supabase, conversation_id, user_id)
     except Exception:
         logger.warning("memory pre-hook failed", exc_info=True)
+
+    # 1b. OCR memory step — extract text from new PDF/image attachments so the
+    #     router (and any dispatched agent) can see document content.
+    ocr_item_ids: list[str] = []
+    try:
+        ocr_item_ids = await run_ocr_extraction(supabase, conversation_id, user_id)
+    except Exception:
+        logger.warning("OCR extraction step failed", exc_info=True)
+
+    # 1c. Summarize the freshly-OCR'd attachments inline (awaited) before routing.
+    for _ocr_item_id in ocr_item_ids:
+        try:
+            await summarize_workspace_item(supabase, _ocr_item_id)
+        except Exception:
+            logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
 
     async for ev in _route(
         question=question,

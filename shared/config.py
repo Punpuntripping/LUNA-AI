@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     # Mistral (document extraction)
     MISTRAL_API_KEY: Optional[str] = None
     MISTRAL_MODEL: str = "pixtral-large-latest"
+    MISTRAL_OCR_MODEL: str = "mistral-ocr-latest"
 
     # OpenAI (embeddings + agents)
     OPENAI_API_KEY: Optional[str] = None

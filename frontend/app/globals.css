@@ -60,6 +60,11 @@
     --error-bg:   #EFD8D5; --error-fg:   #6E2F2A;
     --info-bg:    #DDE0EA; --info-fg:    #2E3A55;
 
+    /* Destructive — bold red for error text, borders, delete buttons.
+       Saturated so `text-destructive` reads clearly on cream surfaces. */
+    --destructive:            oklch(57.7% 0.215 27);
+    --destructive-foreground: oklch(97% 0.005 265);
+
     /* ---------- Case-type pills (light) ---------- */
     --case-realestate-bg: #DDE0EA; --case-realestate-fg: #2E3A55;
     --case-commercial-bg: #E8E0EA; --case-commercial-fg: #3D2D45;
@@ -237,6 +242,10 @@
     --warning-bg: #3F341B; --warning-fg: #E8D6A8;
     --error-bg:   #3E1F1B; --error-fg:   #E8B5AC;
     --info-bg:    #1F2A40; --info-fg:    #B5C2DC;
+
+    /* Destructive — lifted red, readable on the dark canvas */
+    --destructive:            oklch(65% 0.21 27);
+    --destructive-foreground: oklch(98% 0 0);
 
     /* Single shadow token — production-grade depth (deeper than D1's 0.40) */
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);

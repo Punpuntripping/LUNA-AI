@@ -136,8 +136,8 @@ const config: Config = {
           foreground: "var(--text-primary)",
         },
         destructive: {
-          DEFAULT: "var(--error-bg)",
-          foreground: "var(--error-fg)",
+          DEFAULT: "var(--destructive)",
+          foreground: "var(--destructive-foreground)",
         },
         sidebar: {
           DEFAULT: "var(--surface-sidebar)",

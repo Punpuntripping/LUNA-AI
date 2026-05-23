@@ -12,10 +12,19 @@ from typing import Any
 
 from shared.observability import get_logfire
 
-from .agent import SUMMARIZER_LIMITS, create_artifact_summarizer
+from .agent import (
+    SUMMARIZER_LIMITS,
+    create_artifact_summarizer,
+    create_attachment_summarizer,
+)
 from .deps import ArtifactSummaryDeps
-from .models import ArtifactSummaryInput, ArtifactSummaryOutput
-from .prompts import build_user_message
+from .models import (
+    ArtifactSummaryInput,
+    ArtifactSummaryOutput,
+    AttachmentSummaryInput,
+    AttachmentSummaryOutput,
+)
+from .prompts import build_attachment_user_message, build_user_message
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -166,3 +175,143 @@ def _model_label_from_result(result: Any) -> str:
 
 # Public alias matching the spec in the planning doc.
 run_artifact_summary = handle_artifact_summary_turn
+
+
+# ---------------------------------------------------------------------------
+# Attachment flow — kind='attachment' (OCR-extracted uploaded documents).
+#
+# Same agent settings as the generic flow (see create_attachment_summarizer);
+# only the prompt + output type differ. This runner produces a grounded title
+# AND a context-aware summary. Best-effort, like the generic runner.
+# ---------------------------------------------------------------------------
+
+
+async def handle_attachment_summary_turn(
+    input: AttachmentSummaryInput,
+    deps: ArtifactSummaryDeps,
+) -> AttachmentSummaryOutput:
+    """Run one summarize-attachment LLM call.
+
+    Returns an ``AttachmentSummaryOutput``. On failure the title falls back to
+    the raw filename and the summary to a truncated copy of ``content_md`` —
+    the caller treats this as best-effort enrichment and never sees a raise.
+    """
+    t0 = time.perf_counter()
+
+    with _logfire.span(
+        "artifact_summarizer.run_attachment",
+        filename_chars=len(input.filename or ""),
+        conversation_context_chars=len(input.conversation_context or ""),
+        content_md_chars=len(input.content_md or ""),
+    ) as _ar_span:
+        if not (input.content_md or "").strip():
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "empty_content",
+                    "fallback_used": True,
+                })
+            except Exception:
+                pass
+            return AttachmentSummaryOutput(
+                title=(input.filename or "").strip(),
+                summary_md="",
+                fallback_used=True,
+            )
+
+        user_message = build_attachment_user_message(
+            filename=input.filename,
+            content_md=input.content_md,
+            conversation_context=input.conversation_context,
+        )
+
+        agent = create_attachment_summarizer()
+
+        try:
+            result = await agent.run(user_message, usage_limits=SUMMARIZER_LIMITS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "attachment_summarizer: LLM call failed (%s) — falling back to "
+                "filename + truncated content_md",
+                exc,
+            )
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "llm_failed",
+                    "fallback_used": True,
+                    "error": str(exc),
+                    "error.type": type(exc).__name__,
+                })
+            except Exception:
+                pass
+            return AttachmentSummaryOutput(
+                title=(input.filename or "").strip(),
+                summary_md=input.content_md[:_FALLBACK_LEN],
+                fallback_used=True,
+            )
+
+        title = (result.output.title or "").strip()
+        summary_md = (result.output.summary_md or "").strip()
+        context_link = (result.output.context_link or "").strip()
+        if not summary_md:
+            logger.warning("attachment_summarizer: empty summary — using fallback")
+            try:
+                _ar_span.set_attributes({
+                    "outcome": "empty_output",
+                    "fallback_used": True,
+                })
+            except Exception:
+                pass
+            return AttachmentSummaryOutput(
+                title=title or (input.filename or "").strip(),
+                summary_md=input.content_md[:_FALLBACK_LEN],
+                context_link=context_link,
+                fallback_used=True,
+            )
+
+        usage = result.usage()
+        details = dict(usage.details) if usage.details else {}
+        tokens_reasoning = int(details.get("reasoning_tokens", 0) or 0)
+
+        model_used = _model_label_from_result(result)
+
+        output = AttachmentSummaryOutput(
+            # Title falls back to the filename if the model emitted none —
+            # never overwrite a real filename with an empty string.
+            title=title or (input.filename or "").strip(),
+            summary_md=summary_md,
+            context_link=context_link,
+            tokens_in=int(usage.input_tokens or 0),
+            tokens_out=int(usage.output_tokens or 0),
+            tokens_reasoning=tokens_reasoning,
+            model_used=model_used,
+            fallback_used=False,
+        )
+
+        duration_s = time.perf_counter() - t0
+
+        try:
+            _ar_span.set_attributes({
+                "outcome": "ok",
+                "model_used": model_used,
+                "tokens_in": output.tokens_in,
+                "tokens_out": output.tokens_out,
+                "tokens_reasoning": tokens_reasoning,
+                "title_chars": len(output.title),
+                "summary_chars": len(summary_md),
+                "duration_s": round(duration_s, 3),
+                "fallback_used": False,
+            })
+        except Exception:
+            pass
+
+        if deps.logger is not None:
+            try:
+                deps.logger.write_run(input, output, duration_s)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("attachment_summarizer: logger failed: %s", exc)
+
+        return output
+
+
+# Public alias matching the generic flow's naming.
+run_attachment_summary = handle_attachment_summary_turn

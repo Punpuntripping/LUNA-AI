@@ -7,15 +7,23 @@ can read it without re-fetching the full ``content_md``.
 """
 from __future__ import annotations
 
-from .agent import create_artifact_summarizer
+from .agent import create_artifact_summarizer, create_attachment_summarizer
 from .deps import ArtifactSummaryDeps, build_artifact_summary_deps
 from .logger import ArtifactSummaryLogger
 from .models import (
     ArtifactSummaryInput,
     ArtifactSummaryLLMOutput,
     ArtifactSummaryOutput,
+    AttachmentSummaryInput,
+    AttachmentSummaryLLMOutput,
+    AttachmentSummaryOutput,
 )
-from .runner import handle_artifact_summary_turn, run_artifact_summary
+from .runner import (
+    handle_artifact_summary_turn,
+    handle_attachment_summary_turn,
+    run_artifact_summary,
+    run_attachment_summary,
+)
 
 __all__ = [
     "ArtifactSummaryDeps",
@@ -23,8 +31,14 @@ __all__ = [
     "ArtifactSummaryLLMOutput",
     "ArtifactSummaryLogger",
     "ArtifactSummaryOutput",
+    "AttachmentSummaryInput",
+    "AttachmentSummaryLLMOutput",
+    "AttachmentSummaryOutput",
     "build_artifact_summary_deps",
     "create_artifact_summarizer",
+    "create_attachment_summarizer",
     "handle_artifact_summary_turn",
+    "handle_attachment_summary_turn",
     "run_artifact_summary",
+    "run_attachment_summary",
 ]

@@ -18,6 +18,7 @@ from .artifact_summarizer import (
     handle_artifact_summary_turn,
     run_artifact_summary,
 )
+from .ocr_extractor import run_ocr_extraction
 
 __all__ = [
     "ArtifactSummaryDeps",
@@ -26,4 +27,5 @@ __all__ = [
     "build_artifact_summary_deps",
     "handle_artifact_summary_turn",
     "run_artifact_summary",
+    "run_ocr_extraction",
 ]

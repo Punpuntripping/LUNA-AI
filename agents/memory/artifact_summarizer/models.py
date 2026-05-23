@@ -63,3 +63,74 @@ class ArtifactSummaryOutput(BaseModel):
     tokens_reasoning: int = 0
     model_used: str = ""
     fallback_used: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Attachment flow — kind='attachment' (OCR-extracted uploaded documents).
+#
+# Same agent settings as the generic flow; only the system prompt and this
+# output type differ. The attachment flow produces a grounded title (the raw
+# filename is rarely descriptive) AND a context-aware summary.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AttachmentSummaryInput:
+    """Everything the attachment-flow summarizer needs.
+
+    - ``filename``             → ``workspace_items.title`` (raw upload name).
+    - ``content_md``           → ``workspace_items.content_md`` — the OCR text.
+    - ``conversation_context`` → a small pre-rendered blob of conversation
+      context (recent messages and/or the latest ``convo_context`` summary),
+      loaded by ``agents/memory/summarize.py``. Empty when unavailable.
+    """
+
+    filename: str
+    content_md: str
+    conversation_context: str = ""
+
+
+class AttachmentSummaryLLMOutput(BaseModel):
+    """Structured output the LLM produces for an attachment item.
+
+    Carries both a grounded ``title`` and a context-aware ``summary_md``.
+    ``context_link`` is an optional standalone restatement of how the
+    document relates to the conversation — when the model leaves it empty the
+    relation is expected to already live inside ``summary_md``.
+    """
+
+    title: str = Field(
+        description=(
+            "Short, grounded Arabic title derived from the document's actual "
+            "content — NOT the raw filename. Names the document's type and "
+            "subject (e.g. عقد إيجار تجاري، صحيفة دعوى، حكم ابتدائي)."
+        ),
+    )
+    summary_md: str = Field(
+        description=(
+            "Arabic markdown summary written for downstream AGENTS — describes "
+            "what the document contains AND how it relates to the user's / "
+            "conversation's context."
+        ),
+    )
+    context_link: str = Field(
+        default="",
+        description=(
+            "Optional standalone Arabic sentence on how the document relates "
+            "to the conversation. May be empty when the relation is already "
+            "covered inside summary_md."
+        ),
+    )
+
+
+class AttachmentSummaryOutput(BaseModel):
+    """Final attachment-flow output returned by the runner to callers."""
+
+    title: str
+    summary_md: str
+    context_link: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_reasoning: int = 0
+    model_used: str = ""
+    fallback_used: bool = False
