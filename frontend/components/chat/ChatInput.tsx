@@ -52,6 +52,7 @@ export function ChatInput({
   const addPendingFile = useChatStore((s) => s.addPendingFile);
   const removePendingFile = useChatStore((s) => s.removePendingFile);
   const updatePendingFile = useChatStore((s) => s.updatePendingFile);
+  const clearPendingFiles = useChatStore((s) => s.clearPendingFiles);
 
   // Block send while any attachment is still uploading. Failed / cancelled
   // files don't block — the user can either remove them or send anyway
@@ -60,11 +61,33 @@ export function ChatInput({
     (f) => f.uploadStatus === "queued" || f.uploadStatus === "uploading",
   );
 
+  // Only count files the user can actually send. Failed/cancelled files in
+  // the queue would otherwise let the send button activate with an empty
+  // textarea, then fire a send with zero attachment_ids and no text — which
+  // either no-ops or sends a blank message. Match the user's expectation:
+  // the queue counts only if at least one file is `completed`.
+  const sendableFileCount = pendingFiles.filter(
+    (f) => f.uploadStatus === "completed",
+  ).length;
+
   const canSend =
-    (content.trim().length > 0 || pendingFiles.length > 0) &&
+    (content.trim().length > 0 || sendableFileCount > 0) &&
     !isStreaming &&
     !disabled &&
     !hasInFlightUpload;
+
+  // When the user navigates from one conversation to another, the chat-store
+  // is a global singleton so its `pendingFiles` array would otherwise carry
+  // the previous conversation's attachments into the new one — visually
+  // "pinned" and incorrectly attributed. Abort any in-flight uploads tied
+  // to the prior conversation, drop the cancel handles, and clear the queue.
+  // Keyed on `conversationId` so the effect re-runs only on navigation.
+  useEffect(() => {
+    const handles = uploadHandlesRef.current;
+    handles.forEach((h) => h.cancel());
+    handles.clear();
+    clearPendingFiles();
+  }, [conversationId, clearPendingFiles]);
 
   // Abort any live tus uploads on unmount (e.g. user navigates away
   // mid-upload). Cancel handles also call the backend cancel endpoint
