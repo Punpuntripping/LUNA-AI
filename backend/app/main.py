@@ -16,12 +16,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import asyncio
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -30,6 +33,8 @@ from shared.config import get_settings
 from shared.db.client import get_supabase_client, get_supabase_anon_client
 from shared.cache.redis import get_async_redis_client
 from shared.observability import configure_logfire, instrument_fastapi_app
+from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
+from backend.app.services.upload_reconciler import reconcile_stuck_uploads
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,57 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Redis unavailable at startup — rate limiting disabled: {e}")
         app.state.redis = None
 
+    # 3. APScheduler — daily PDF-attachment cleanup sweep. Hard-deletes
+    #    workspace PDF attachments older than 24h (storage file + DB row).
+    #    Runs in-process; the backend is single-worker so the job fires
+    #    exactly once per day.
+    scheduler = AsyncIOScheduler()
+
+    async def _run_pdf_cleanup() -> None:
+        # cleanup_old_pdf_attachments uses the sync Supabase client and does
+        # network I/O — run it off the event loop so the scheduler tick never
+        # blocks request handling.
+        try:
+            await asyncio.to_thread(
+                cleanup_old_pdf_attachments, app.state.supabase
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PDF cleanup job failed: %s", e)
+
+    scheduler.add_job(
+        _run_pdf_cleanup,
+        trigger=CronTrigger(hour=3, minute=0),  # daily at 03:00 UTC
+        id="pdf_attachment_cleanup",
+        replace_existing=True,
+    )
+
+    # 4. APScheduler — daily upload reconciler. Sweeps case_documents +
+    #    workspace_items rows stuck in 'uploading' status for > 24h. For each
+    #    stuck row: HEADs storage, promotes to 'ready' if the bytes match
+    #    (auto-recovery for crashed-browser case), otherwise soft-deletes.
+    #    Offset 15 minutes after the PDF cleanup so the two jobs don't fight
+    #    for the same postgrest connection pool.
+    async def _run_upload_reconciler() -> None:
+        try:
+            await asyncio.to_thread(
+                reconcile_stuck_uploads, app.state.supabase
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Upload reconciler job failed: %s", e)
+
+    scheduler.add_job(
+        _run_upload_reconciler,
+        trigger=CronTrigger(hour=3, minute=15),  # daily at 03:15 UTC
+        id="upload_reconciler",
+        replace_existing=True,
+    )
+
+    scheduler.start()
+    app.state.scheduler = scheduler
+    logger.info(
+        "Scheduler started — PDF cleanup 03:00 UTC, upload reconciler 03:15 UTC"
+    )
+
     logger.info(
         "Backend started — env=%s port=%s",
         settings.ENVIRONMENT,
@@ -76,6 +132,10 @@ async def lifespan(app: FastAPI):
     yield  # ---- app is running ----
 
     # --- SHUTDOWN ---
+    if getattr(app.state, "scheduler", None) is not None:
+        app.state.scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped")
+
     if app.state.redis is not None:
         await app.state.redis.close()
         logger.info("Redis connection closed")

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -31,13 +32,15 @@ from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.errors import ErrorCode, LunaHTTPException
+from shared.observability import get_logfire
 from backend.app.models.responses import (
     DownloadResponse,
     SuccessResponse,
+    UploadInitResponse,
     WorkspaceItemListResponse,
     WorkspaceItemResponse,
 )
-from backend.app.models.requests import UpdateWorkspaceItemRequest
+from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
 from backend.app.services import workspace_service
 from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
@@ -49,6 +52,7 @@ from shared.storage.client import (
 )
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 router = APIRouter()
 
@@ -479,6 +483,132 @@ async def attach_from_case_document(
         metadata=metadata,
     )
     return _to_response(row)
+
+
+# ============================================
+# Resumable attachment upload (TUS) — init / finalize / cancel
+# ============================================
+# Browser uploads bytes directly to Supabase Storage and the backend only
+# brokers the session. The legacy multipart upload route above stays for the
+# 7-day deprecation soak. Frontend cuts over to these endpoints in Phase 2.
+
+
+@router.post(
+    "/conversations/{conversation_id}/workspace/attachments/init",
+    response_model=UploadInitResponse,
+    status_code=201,
+)
+async def init_workspace_attachment_upload(
+    conversation_id: str,
+    body: UploadInitRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Open a resumable-upload session for a chat-conversation attachment.
+
+    Creates a ``workspace_items`` row with ``kind='attachment'`` and
+    ``metadata.upload_status='uploading'``. The client uploads bytes to
+    ``upload_url`` (Supabase TUS) using its existing access token, then
+    calls ``/finalize``.
+    """
+    validate_uuid(conversation_id, "معرف المحادثة")
+    with _logfire.span(
+        "upload.init",
+        flow="attachment",
+        conversation_id=conversation_id,
+        mime_type=body.mime_type,
+        size_bytes=body.size_bytes,
+    ) as _span:
+        session = workspace_service.init_attachment_upload(
+            supabase,
+            current_user.auth_id,
+            conversation_id,
+            filename=body.filename,
+            mime_type=body.mime_type,
+            size_bytes=body.size_bytes,
+        )
+        try:
+            _span.set_attribute("item_id", session["item_id"])
+        except Exception:
+            pass
+        return UploadInitResponse(
+            item_id=session["item_id"],
+            storage_path=session["storage_path"],
+            bucket=session["bucket"],
+            upload_url=session["upload_url"],
+            expires_at=session["expires_at"],
+        )
+
+
+@router.post(
+    "/workspace/attachments/{item_id}/finalize",
+    response_model=WorkspaceItemResponse,
+)
+async def finalize_workspace_attachment_upload(
+    item_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Confirm a resumable chat-attachment upload landed in storage.
+
+    Same semantics as ``/documents/{id}/finalize``: HEAD + size match +
+    magic byte check. Flips ``metadata.upload_status='ready'``. Returns
+    409 ``UPLOAD_NOT_COMPLETE`` if the object isn't in storage yet.
+    """
+    validate_uuid(item_id, "معرف العنصر")
+    t0 = perf_counter()
+    with _logfire.span(
+        "upload.finalize",
+        flow="attachment",
+        item_id=item_id,
+    ) as _span:
+        result_code = "success"
+        try:
+            row = workspace_service.finalize_attachment_upload(
+                supabase, current_user.auth_id, item_id
+            )
+            return _to_response(row)
+        except LunaHTTPException as exc:
+            if exc.code == ErrorCode.UPLOAD_NOT_COMPLETE:
+                result_code = "not_complete"
+            elif exc.code == ErrorCode.UPLOAD_SIZE_MISMATCH:
+                result_code = "size_mismatch"
+            elif exc.code == ErrorCode.DOC_MAGIC_MISMATCH:
+                result_code = "magic_mismatch"
+            else:
+                result_code = "error"
+            raise
+        finally:
+            try:
+                _span.set_attributes({
+                    "duration_ms": int((perf_counter() - t0) * 1000),
+                    "result": result_code,
+                })
+            except Exception:
+                pass
+
+
+@router.post(
+    "/workspace/attachments/{item_id}/cancel",
+    response_model=SuccessResponse,
+)
+async def cancel_workspace_attachment_upload(
+    item_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Soft-delete a resumable chat-attachment row and best-effort wipe the
+    partial storage object. Idempotent."""
+    validate_uuid(item_id, "معرف العنصر")
+    with _logfire.span(
+        "upload.cancel",
+        flow="attachment",
+        item_id=item_id,
+    ):
+        workspace_service.cancel_attachment_upload(
+            supabase, current_user.auth_id, item_id
+        )
+        return SuccessResponse(success=True)
 
 
 # ============================================

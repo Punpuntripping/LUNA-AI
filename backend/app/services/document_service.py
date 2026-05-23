@@ -12,6 +12,7 @@ from fastapi import HTTPException, UploadFile
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services import upload_session_service
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from shared.config import get_settings
@@ -310,3 +311,263 @@ def delete_document(
     if storage_path:
         settings = get_settings()
         delete_file(settings.STORAGE_BUCKET_DOCUMENTS, storage_path, supabase=supabase)
+
+
+# ============================================
+# RESUMABLE UPLOAD — init / finalize / cancel
+# ============================================
+#
+# The browser uploads bytes directly to Supabase Storage over TUS; FastAPI
+# only mints the session and confirms the result. See
+# ``.claude/plans/upload_reliability.md`` for the full design.
+#
+# State tracking, given the existing ``extraction_status_enum`` has no
+# ``'uploading'`` value: we keep ``extraction_status='pending'`` from init
+# through finalize (matching the current meaning of "OCR pending") and use
+# ``extracted_data.upload_status`` ∈ {'uploading','ready','cancelled'} as
+# the marker the future reconciler keys on to find orphaned rows. The OCR
+# pipeline is event-driven (triggered when a message references the doc),
+# so no worker polls ``extraction_status`` — setting it to ``pending``
+# early does NOT cause premature OCR.
+
+
+def init_document_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    case_id: str,
+    *,
+    filename: str,
+    mime_type: str,
+    size_bytes: int,
+) -> dict:
+    """Phase 1 of the resumable flow: reserve a row and return the TUS URL.
+
+    Returns:
+        ``{"document_id": str, "storage_path": str, "bucket": str,
+           "upload_url": str, "expires_at": datetime}``
+    """
+    user_id = get_user_id(supabase, auth_id)
+    _verify_case_ownership(supabase, case_id, user_id)
+
+    session = upload_session_service.init_upload(
+        supabase,
+        user_id=user_id,
+        case_id=case_id,
+        conversation_id=None,
+        filename=filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc_payload = {
+        "case_id": case_id,
+        "document_name": filename,
+        "mime_type": mime_type,
+        "file_size_bytes": size_bytes,
+        "storage_path": session["path"],
+        # extraction_status_enum has no 'uploading' value; keep 'pending' and
+        # mark the in-flight state in extracted_data instead. The OCR
+        # pipeline is event-driven so this does NOT trigger premature OCR.
+        "extraction_status": "pending",
+        "extracted_data": {
+            "upload_status": "uploading",
+            "declared_size_bytes": size_bytes,
+            "declared_mime_type": mime_type,
+            "upload_url_expires_at": session["expires_at"].isoformat(),
+            "upload_init_at": now_iso,
+        },
+    }
+
+    try:
+        result = (
+            supabase.table("case_documents").insert(doc_payload).execute()
+        )
+    except Exception as e:
+        logger.exception("Error creating upload-session document row: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء بدء رفع الملف",
+        )
+    if not result.data:
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء بدء رفع الملف",
+        )
+
+    return {
+        "document_id": result.data[0]["document_id"],
+        "storage_path": session["path"],
+        "bucket": session["bucket"],
+        "upload_url": session["upload_url"],
+        "expires_at": session["expires_at"],
+    }
+
+
+def finalize_document_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    document_id: str,
+) -> dict:
+    """Phase 3 of the resumable flow: confirm bytes landed; clear the
+    ``uploading`` marker so the document is treated as a normal OCR-pending
+    file from here on. Returns the updated ``case_documents`` row.
+    """
+    user_id = get_user_id(supabase, auth_id)
+    doc = _verify_document_ownership(supabase, document_id, user_id)
+
+    extracted_data = dict(doc.get("extracted_data") or {})
+    upload_status = extracted_data.get("upload_status")
+
+    # Idempotent — finalize on an already-finalized doc just returns it.
+    if upload_status in (None, "ready"):
+        doc.pop("lawyer_cases", None)
+        return doc
+
+    if upload_status != "uploading":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.UPLOAD_INVALID_STATE,
+            detail="حالة الرفع غير صالحة لإتمام العملية",
+        )
+
+    expected_size = extracted_data.get("declared_size_bytes") or doc.get(
+        "file_size_bytes"
+    )
+    expected_mime = extracted_data.get("declared_mime_type") or doc.get(
+        "mime_type"
+    )
+    storage_path = doc.get("storage_path")
+    settings = get_settings()
+    bucket = settings.STORAGE_BUCKET_DOCUMENTS
+
+    upload_session_service.verify_finalize(
+        supabase,
+        bucket=bucket,
+        storage_path=storage_path,
+        expected_size=int(expected_size or 0),
+        expected_mime=expected_mime or "application/octet-stream",
+    )
+
+    # Clear the marker and bump updated_at. Leave extraction_status alone
+    # (already 'pending' — that is the existing "OCR pending" signal the
+    # extraction pipeline picks up automatically when the message is sent).
+    now_iso = datetime.now(timezone.utc).isoformat()
+    extracted_data["upload_status"] = "ready"
+    extracted_data["upload_finalized_at"] = now_iso
+
+    try:
+        update_result = (
+            supabase.table("case_documents")
+            .update(
+                {
+                    "extracted_data": extracted_data,
+                    "updated_at": now_iso,
+                }
+            )
+            .eq("document_id", document_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error finalizing document upload: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء إتمام رفع الملف",
+        )
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="upload_finalize",
+        resource_type="document",
+        resource_id=document_id,
+    )
+
+    row = (update_result.data[0] if update_result.data else doc)
+    row.pop("lawyer_cases", None)
+    return row
+
+
+def cancel_document_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    document_id: str,
+) -> None:
+    """Phase-3 alternative: user aborted the upload. Soft-delete the row and
+    best-effort remove the (possibly partial) storage object. Idempotent —
+    calling twice or after the row is already deleted is a no-op success."""
+    user_id = get_user_id(supabase, auth_id)
+
+    # Don't use _verify_document_ownership here because it 404s on
+    # deleted rows; cancel needs to be idempotent. Inline the ownership join
+    # without the deleted_at filter.
+    try:
+        result = (
+            supabase.table("case_documents")
+            .select("*, lawyer_cases!inner(lawyer_user_id)")
+            .eq("document_id", document_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error fetching doc for cancel: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ داخلي",
+        )
+
+    if result is None or result.data is None:
+        # Already gone — treat as success per idempotency contract.
+        return
+
+    if result.data.get("lawyer_cases", {}).get("lawyer_user_id") != user_id:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.DOC_NOT_FOUND,
+            detail="المستند غير موجود",
+        )
+
+    doc = result.data
+    if doc.get("deleted_at"):
+        return  # already soft-deleted
+
+    settings = get_settings()
+    bucket = settings.STORAGE_BUCKET_DOCUMENTS
+    storage_path = doc.get("storage_path")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    extracted_data = dict(doc.get("extracted_data") or {})
+    extracted_data["upload_status"] = "cancelled"
+    extracted_data["upload_cancelled_at"] = now_iso
+
+    try:
+        supabase.table("case_documents").update(
+            {
+                "deleted_at": now_iso,
+                "updated_at": now_iso,
+                "extracted_data": extracted_data,
+            }
+        ).eq("document_id", document_id).execute()
+    except Exception as e:
+        logger.exception("Error soft-deleting cancelled upload: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء إلغاء الرفع",
+        )
+
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action="upload_cancel",
+        resource_type="document",
+        resource_id=document_id,
+    )
+
+    upload_session_service.cancel_storage_object(
+        supabase, bucket=bucket, storage_path=storage_path
+    )

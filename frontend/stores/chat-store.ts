@@ -86,6 +86,13 @@ interface ChatState {
   addPendingFile: (file: PendingFile) => void;
   removePendingFile: (id: string) => void;
   clearPendingFiles: () => void;
+  /**
+   * Patch a pending file in place — used by the resumable-upload hook to
+   * report progress, status flips (queued → uploading → completed), the
+   * `itemId` once /init returns, and the Arabic `errorMessage` on failure.
+   * No-op when the file id is no longer in the list (race vs. user removal).
+   */
+  updatePendingFile: (id: string, partial: Partial<PendingFile>) => void;
   setAbortController: (controller: AbortController | null) => void;
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
@@ -222,6 +229,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       state.pendingFiles.forEach((f) => URL.revokeObjectURL(f.previewUrl));
       return { pendingFiles: [] };
     }),
+
+  updatePendingFile: (id, partial) =>
+    set((state) => ({
+      pendingFiles: state.pendingFiles.map((f) =>
+        f.id === id ? { ...f, ...partial } : f,
+      ),
+    })),
 
   setAbortController: (controller) => set({ abortController: controller }),
 

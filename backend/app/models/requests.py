@@ -137,3 +137,23 @@ class UpdateWorkspaceItemRequest(BaseModel):
 class UpdatePreferencesRequest(BaseModel):
     """PATCH /api/v1/preferences"""
     preferences: dict
+
+
+# ── Resumable uploads (TUS) ─────────────────────────────
+
+class UploadInitRequest(BaseModel):
+    """POST /api/v1/cases/{case_id}/documents/init
+       POST /api/v1/conversations/{conversation_id}/workspace/attachments/init
+
+    Body the client sends BEFORE pushing bytes via TUS. The server reserves
+    the storage path, creates a placeholder row, and returns the URL+expiry
+    the browser uses for the resumable upload.
+    """
+    filename: str = Field(..., min_length=1, max_length=500)
+    mime_type: str = Field(..., min_length=1, max_length=100)
+    size_bytes: int = Field(..., gt=0, le=50 * 1024 * 1024)
+
+    @field_validator("filename", mode="before")
+    @classmethod
+    def check_filename_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v

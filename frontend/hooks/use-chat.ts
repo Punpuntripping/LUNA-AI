@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { messagesApi, documentsApi } from "@/lib/api";
+import { messagesApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
@@ -75,7 +75,7 @@ export function useSendMessage(): UseSendMessageReturn {
   } = useChatStore.getState();
 
   const sendMessage = useCallback(
-    async ({ conversationId, content, caseId }: SendMessageParams) => {
+    async ({ conversationId, content }: SendMessageParams) => {
       // A new send supersedes any stream still in flight. The store tracks a
       // single global stream buffer, so abort + clear the previous stream
       // first — otherwise two conversations' tokens interleave into the same
@@ -83,33 +83,39 @@ export function useSendMessage(): UseSendMessageReturn {
       // this one guard covers every send path.
       storeStopStreaming();
 
-      // 0. Upload pending files (if any and conversation has a case)
+      // 0. Collect already-uploaded attachment ids.
+      //
+      // Phase 2 (upload reliability): files are uploaded the moment the
+      // user picks them via the resumable TUS flow in ChatInput. By the
+      // time send runs every kept pending file should be in status
+      // 'completed' with a valid item_id (ChatInput blocks send while
+      // any upload is in flight). Failed / cancelled files contribute
+      // no attachment_ids — we silently drop them so the message still
+      // sends with whatever made it through.
       const { pendingFiles, clearPendingFiles } = useChatStore.getState();
-      const attachmentIds: string[] = [];
+      const attachmentIds: string[] = pendingFiles
+        .filter((pf) => pf.uploadStatus === "completed" && pf.itemId)
+        .map((pf) => pf.itemId as string);
 
-      // Build optimistic attachment list from pending files (for UI display)
+      // Build optimistic attachment list from pending files (for UI display).
+      // We carry every pending file into the optimistic bubble so the user
+      // sees what they intended to attach; the server-side state of the row
+      // is the source of truth for what the agent actually receives.
       const optimisticAttachments = pendingFiles.map((pf) => ({
         id: pf.id,
-        document_id: pf.id,
-        attachment_type: (pf.mimeType === "application/pdf" ? "pdf" : pf.mimeType.startsWith("image/") ? "image" : "file") as "pdf" | "image" | "file",
+        document_id: pf.itemId ?? pf.id,
+        attachment_type: (pf.mimeType === "application/pdf"
+          ? "pdf"
+          : pf.mimeType.startsWith("image/")
+            ? "image"
+            : "file") as "pdf" | "image" | "file",
         filename: pf.name,
         file_size: pf.size,
       }));
 
-      if (pendingFiles.length > 0 && caseId) {
-        for (const pf of pendingFiles) {
-          try {
-            const doc = await documentsApi.upload(caseId, pf.file);
-            if (doc?.document_id) attachmentIds.push(doc.document_id);
-          } catch (err) {
-            console.error("File upload failed:", pf.name, err);
-          }
-        }
-        clearPendingFiles();
-      } else if (pendingFiles.length > 0) {
-        // General conversation — no case to upload to, clear files
-        clearPendingFiles();
-      }
+      // Clear pending files immediately after capture — the bytes already
+      // live on Supabase, the workspace cache will refresh on its own.
+      if (pendingFiles.length > 0) clearPendingFiles();
 
       // If no text but files are pending, use a default (backend requires min_length=1)
       const messageContent = content || (optimisticAttachments.length > 0 ? "مرفق" : "");

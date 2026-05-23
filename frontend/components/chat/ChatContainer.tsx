@@ -108,7 +108,12 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         onRetry={handleRetry}
       />
 
-      <ChatInput onSend={handleSend} onStop={stopStreaming} caseId={caseId} />
+      <ChatInput
+        onSend={handleSend}
+        onStop={stopStreaming}
+        caseId={caseId}
+        conversationId={conversationId}
+      />
     </div>
   );
 }

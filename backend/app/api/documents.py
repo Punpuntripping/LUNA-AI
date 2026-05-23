@@ -4,20 +4,27 @@ CRUD for case documents with file upload/download.
 """
 from __future__ import annotations
 
+from time import perf_counter
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
+from backend.app.errors import ErrorCode, LunaHTTPException
+from backend.app.models.requests import UploadInitRequest
 from backend.app.models.responses import (
     DocumentListResponse,
     DocumentResponse,
     DownloadResponse,
     SuccessResponse,
+    UploadInitResponse,
 )
 from shared.auth.jwt import AuthUser
+from shared.observability import get_logfire
 from backend.app.services import document_service
 
 router = APIRouter()
+_logfire = get_logfire()
 
 
 @router.get(
@@ -97,3 +104,129 @@ async def delete_document(
     validate_uuid(document_id, "معرف المستند")
     document_service.delete_document(supabase, user.auth_id, document_id)
     return {"success": True}
+
+
+# ============================================
+# Resumable upload (TUS) — init / finalize / cancel
+# ============================================
+# The legacy POST /cases/{id}/documents (multipart) route above stays for the
+# 7-day deprecation soak. Frontend cuts over to these endpoints in Phase 2.
+
+
+@router.post(
+    "/cases/{case_id}/documents/init",
+    response_model=UploadInitResponse,
+    status_code=201,
+)
+async def init_document_upload(
+    case_id: str,
+    body: UploadInitRequest,
+    user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Open a resumable-upload session for a case document.
+
+    The client then PATCHes bytes directly to ``upload_url`` (Supabase TUS)
+    using its existing Supabase access token, and calls ``/finalize`` when
+    done. Storage RLS (migration 045) restricts writes to the returned
+    ``storage_path`` prefix.
+    """
+    validate_uuid(case_id, "معرف القضية")
+    with _logfire.span(
+        "upload.init",
+        flow="document",
+        case_id=case_id,
+        mime_type=body.mime_type,
+        size_bytes=body.size_bytes,
+    ) as _span:
+        session = document_service.init_document_upload(
+            supabase,
+            user.auth_id,
+            case_id,
+            filename=body.filename,
+            mime_type=body.mime_type,
+            size_bytes=body.size_bytes,
+        )
+        try:
+            _span.set_attribute("document_id", session["document_id"])
+        except Exception:
+            pass
+        return UploadInitResponse(
+            document_id=session["document_id"],
+            storage_path=session["storage_path"],
+            bucket=session["bucket"],
+            upload_url=session["upload_url"],
+            expires_at=session["expires_at"],
+        )
+
+
+@router.post(
+    "/documents/{document_id}/finalize",
+    response_model=DocumentResponse,
+)
+async def finalize_document_upload(
+    document_id: str,
+    user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Confirm the bytes for a resumable upload landed in storage.
+
+    HEADs the object, compares size against the declared size, magic-byte-
+    checks the first 16 bytes. On success the upload marker flips to
+    ``ready`` and the document is treated as OCR-pending from here on.
+    Returns 409 ``UPLOAD_NOT_COMPLETE`` if storage doesn't have the object
+    yet — the client should retry the TUS upload.
+    """
+    validate_uuid(document_id, "معرف المستند")
+    t0 = perf_counter()
+    with _logfire.span(
+        "upload.finalize",
+        flow="document",
+        document_id=document_id,
+    ) as _span:
+        result_code = "success"
+        try:
+            row = document_service.finalize_document_upload(
+                supabase, user.auth_id, document_id
+            )
+            return row
+        except LunaHTTPException as exc:
+            if exc.code == ErrorCode.UPLOAD_NOT_COMPLETE:
+                result_code = "not_complete"
+            elif exc.code == ErrorCode.UPLOAD_SIZE_MISMATCH:
+                result_code = "size_mismatch"
+            elif exc.code == ErrorCode.DOC_MAGIC_MISMATCH:
+                result_code = "magic_mismatch"
+            else:
+                result_code = "error"
+            raise
+        finally:
+            try:
+                _span.set_attributes({
+                    "duration_ms": int((perf_counter() - t0) * 1000),
+                    "result": result_code,
+                })
+            except Exception:
+                pass
+
+
+@router.post(
+    "/documents/{document_id}/cancel",
+    response_model=SuccessResponse,
+)
+async def cancel_document_upload(
+    document_id: str,
+    user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Soft-delete a resumable-upload row and best-effort wipe its storage
+    object. Idempotent — safe to call after the row is already cancelled or
+    deleted."""
+    validate_uuid(document_id, "معرف المستند")
+    with _logfire.span(
+        "upload.cancel",
+        flow="document",
+        document_id=document_id,
+    ):
+        document_service.cancel_document_upload(supabase, user.auth_id, document_id)
+        return {"success": True}

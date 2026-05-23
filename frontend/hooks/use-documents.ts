@@ -35,16 +35,13 @@ export function useDownloadUrl(documentId: string | undefined) {
   });
 }
 
-export function useUploadDocument() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ caseId, file }: { caseId: string; file: File }) =>
-      documentsApi.upload(caseId, file),
-    onSuccess: (_data, variables) => {
-      void qc.invalidateQueries({ queryKey: documentKeys.list(variables.caseId) });
-    },
-  });
-}
+// `useUploadDocument` was removed in Phase 2 of the upload-reliability
+// rollout. The legacy multipart upload was replaced by direct-to-Supabase
+// TUS uploads orchestrated via `useResumableUpload` /
+// `runResumableUpload` (see `frontend/hooks/use-resumable-upload.ts`).
+// The legacy `documentsApi.upload()` POST route is still defined in
+// `lib/api.ts` for the 7-day rollback window, but no React surface calls
+// it anymore.
 
 export function useDeleteDocument() {
   const qc = useQueryClient();

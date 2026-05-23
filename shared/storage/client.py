@@ -147,3 +147,96 @@ def build_storage_path(
         return f"general/{user_id}/convos/{conversation_id}/{file_id}_{safe_name}"
     else:
         return f"general/{user_id}/{file_id}_{safe_name}"
+
+
+def head_object(
+    bucket: str,
+    path: str,
+    supabase: SupabaseClient | None = None,
+) -> dict | None:
+    """
+    Return ``{'size': int, 'content_type': str}`` if the object exists, else None.
+
+    Uses the supabase-py v2 ``info()`` endpoint which performs an authenticated
+    GET against ``/storage/v1/object/info/{bucket}/{path}``. Returns ``None`` on
+    any failure (404, network error, missing keys) so callers can treat absence
+    as the "upload not complete" case without try/except gymnastics.
+    """
+    client = supabase or get_supabase_client()
+
+    try:
+        info = client.storage.from_(bucket).info(path)
+    except Exception as e:
+        # 404 is the normal "object not yet uploaded" case during finalize.
+        # Log at debug level; INFO is too noisy when the client polls.
+        logger.debug("head_object: %s/%s missing or unreadable (%s)", bucket, path, e)
+        return None
+
+    if not isinstance(info, dict):
+        return None
+
+    # Supabase ``info`` returns a flat dict. Different supabase-py versions
+    # expose the size under either top-level ``size`` or a nested
+    # ``metadata.size`` — we tolerate both.
+    size = info.get("size")
+    if size is None:
+        metadata = info.get("metadata") or {}
+        size = metadata.get("size") or metadata.get("contentLength")
+
+    content_type = (
+        info.get("content_type")
+        or info.get("contentType")
+        or (info.get("metadata") or {}).get("mimetype")
+        or (info.get("metadata") or {}).get("mimeType")
+    )
+
+    if size is None:
+        # Object exists but we couldn't read its size — treat as missing so the
+        # caller falls into the UPLOAD_NOT_COMPLETE path and the client retries.
+        logger.warning("head_object: %s/%s exists but size is unreadable", bucket, path)
+        return None
+
+    try:
+        size_int = int(size)
+    except (TypeError, ValueError):
+        logger.warning("head_object: %s/%s size %r is not an int", bucket, path, size)
+        return None
+
+    return {
+        "size": size_int,
+        "content_type": content_type or "application/octet-stream",
+    }
+
+
+def download_head_bytes(
+    bucket: str,
+    path: str,
+    n: int = 16,
+    supabase: SupabaseClient | None = None,
+) -> bytes:
+    """
+    Download the first ``n`` bytes of an object for magic-byte checks.
+
+    Implemented via the supabase-py ``download()`` API which returns the full
+    object body; we slice locally. ``n`` is intentionally small (≤ 16 bytes in
+    practice) so the over-fetch is negligible for files we already accepted at
+    upload time (≤ 50 MB hard cap).
+    """
+    client = supabase or get_supabase_client()
+    body = client.storage.from_(bucket).download(path)
+    if not isinstance(body, (bytes, bytearray)):
+        # supabase-py v2 returns bytes; guard against future-shape drift.
+        raise TypeError(f"download() returned unexpected type {type(body)!r}")
+    return bytes(body[:n])
+
+
+def get_resumable_upload_url(supabase_url: str | None = None) -> str:
+    """
+    Return the Supabase TUS resumable upload endpoint URL.
+
+    Supabase routes both ``<project>.supabase.co/storage/v1/upload/resumable``
+    and ``<project>.storage.supabase.co/storage/v1/upload/resumable`` — we use
+    the former because that is what ``SUPABASE_URL`` already points at.
+    """
+    base = (supabase_url or get_settings().SUPABASE_URL).rstrip("/")
+    return f"{base}/storage/v1/upload/resumable"

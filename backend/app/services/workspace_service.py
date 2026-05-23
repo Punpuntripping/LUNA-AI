@@ -26,7 +26,9 @@ from typing import Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services import upload_session_service
 from backend.app.services.case_service import get_user_id
+from shared.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +400,237 @@ def delete_workspace_item(
         )
 
 
+# ============================================
+# RESUMABLE ATTACHMENT UPLOAD — init / finalize / cancel
+# ============================================
+#
+# Mirrors the case-document flow in ``document_service`` but writes into
+# ``workspace_items`` with ``kind='attachment'``. Upload state lives in the
+# ``metadata`` JSONB (``metadata.upload_status`` ∈ {'uploading','ready','cancelled'}).
+# See ``.claude/plans/upload_reliability.md`` for the full design.
+
+
+def init_attachment_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    conversation_id: str,
+    *,
+    filename: str,
+    mime_type: str,
+    size_bytes: int,
+) -> dict:
+    """Phase 1 of the resumable flow for chat attachments. Reserves a
+    ``workspace_items`` row with ``metadata.upload_status='uploading'`` and
+    returns the TUS URL the browser will PATCH bytes to.
+
+    Returns:
+        ``{"item_id": str, "storage_path": str, "bucket": str,
+           "upload_url": str, "expires_at": datetime}``
+    """
+    # Late import keeps the module import-graph acyclic; message_service
+    # owns the canonical conversation-ownership check.
+    from backend.app.services.message_service import verify_conversation_ownership
+
+    user_id = get_user_id(supabase, auth_id)
+    verify_conversation_ownership(supabase, conversation_id, user_id)
+
+    session = upload_session_service.init_upload(
+        supabase,
+        user_id=user_id,
+        case_id=None,
+        conversation_id=conversation_id,
+        filename=filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    metadata = {
+        "filename": filename,
+        "mime_type": mime_type,
+        "file_size_bytes": size_bytes,
+        "upload_status": "uploading",
+        "declared_size_bytes": size_bytes,
+        "declared_mime_type": mime_type,
+        "upload_url_expires_at": session["expires_at"].isoformat(),
+        "upload_init_at": now_iso,
+    }
+
+    row = create_workspace_item(
+        supabase,
+        user_id,
+        kind="attachment",
+        created_by="user",
+        title=filename,
+        conversation_id=conversation_id,
+        storage_path=session["path"],
+        metadata=metadata,
+    )
+
+    return {
+        "item_id": row["item_id"],
+        "storage_path": session["path"],
+        "bucket": session["bucket"],
+        "upload_url": session["upload_url"],
+        "expires_at": session["expires_at"],
+    }
+
+
+def finalize_attachment_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    item_id: str,
+) -> dict:
+    """Phase 3: confirm the bytes landed for a chat attachment. Flips
+    ``metadata.upload_status`` to ``'ready'``. Idempotent on already-ready
+    items.
+    """
+    user_id = get_user_id(supabase, auth_id)
+    item = get_workspace_item(supabase, auth_id, item_id)
+
+    if item.get("kind") != "attachment":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.UPLOAD_INVALID_STATE,
+            detail="هذا العنصر ليس مرفقاً",
+        )
+
+    metadata = dict(item.get("metadata") or {})
+    upload_status = metadata.get("upload_status")
+
+    if upload_status in (None, "ready"):
+        # Idempotent fast path.
+        return item
+
+    if upload_status != "uploading":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.UPLOAD_INVALID_STATE,
+            detail="حالة الرفع غير صالحة لإتمام العملية",
+        )
+
+    storage_path = item.get("storage_path")
+    if not storage_path:
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.UPLOAD_INVALID_STATE,
+            detail="مسار الملف غير محدد",
+        )
+
+    settings = get_settings()
+    bucket = settings.STORAGE_BUCKET_DOCUMENTS
+
+    expected_size = metadata.get("declared_size_bytes") or metadata.get(
+        "file_size_bytes"
+    )
+    expected_mime = metadata.get("declared_mime_type") or metadata.get(
+        "mime_type"
+    )
+
+    upload_session_service.verify_finalize(
+        supabase,
+        bucket=bucket,
+        storage_path=storage_path,
+        expected_size=int(expected_size or 0),
+        expected_mime=expected_mime or "application/octet-stream",
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    metadata["upload_status"] = "ready"
+    metadata["upload_finalized_at"] = now_iso
+
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .update({"metadata": metadata, "updated_at": now_iso})
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error finalizing attachment upload: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء إتمام رفع الملف",
+        )
+
+    return result.data[0] if result.data else {**item, "metadata": metadata}
+
+
+def cancel_attachment_upload(
+    supabase: SupabaseClient,
+    auth_id: str,
+    item_id: str,
+) -> None:
+    """Phase 3 alternative: user aborted. Soft-delete the workspace_items
+    row, mark ``metadata.upload_status='cancelled'``, and best-effort wipe
+    the partial storage object. Idempotent — already-deleted rows succeed
+    silently."""
+    user_id = get_user_id(supabase, auth_id)
+
+    # Inline ownership lookup (bypasses get_workspace_item's deleted_at
+    # filter so cancel is idempotent).
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .select("*")
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error fetching attachment for cancel: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ داخلي",
+        )
+
+    if result is None or result.data is None:
+        return  # already gone — success per idempotency contract
+
+    item = result.data
+    if item.get("kind") != "attachment":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.UPLOAD_INVALID_STATE,
+            detail="هذا العنصر ليس مرفقاً",
+        )
+    if item.get("deleted_at"):
+        return  # already soft-deleted
+
+    settings = get_settings()
+    bucket = settings.STORAGE_BUCKET_DOCUMENTS
+    storage_path = item.get("storage_path")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    metadata = dict(item.get("metadata") or {})
+    metadata["upload_status"] = "cancelled"
+    metadata["upload_cancelled_at"] = now_iso
+
+    try:
+        supabase.table("workspace_items").update(
+            {
+                "deleted_at": now_iso,
+                "updated_at": now_iso,
+                "metadata": metadata,
+            }
+        ).eq("item_id", item_id).eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.exception("Error soft-deleting cancelled attachment: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء إلغاء الرفع",
+        )
+
+    upload_session_service.cancel_storage_object(
+        supabase, bucket=bucket, storage_path=storage_path
+    )
+
+
 __all__ = [
     "USER_EDITABLE",
     "AGENT_LOCK_APPLIES",
@@ -408,4 +641,7 @@ __all__ = [
     "update_workspace_item",
     "update_visibility",
     "delete_workspace_item",
+    "init_attachment_upload",
+    "finalize_attachment_upload",
+    "cancel_attachment_upload",
 ]

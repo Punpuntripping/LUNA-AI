@@ -27,6 +27,9 @@ python-multipart>=0.0.18
 # Environment variables
 python-dotenv>=1.0.0,<2.0.0
 
+# Job scheduling — daily PDF-attachment cleanup sweep (in-process)
+APScheduler>=3.10.0,<4.0.0
+
 # HTTP client (used by supabase + general)
 httpx>=0.28.0,<1.0.0
 
@@ -51,3 +54,7 @@ google-genai>=1.0.0,<2.0.0
 
 # Token counting (memory compaction uses cl100k_base; len//4 fallback if absent)
 tiktoken>=0.7.0,<1.0.0
+
+# Mistral SDK — OCR text extraction from PDF/image attachments
+# (agents/memory/ocr_extractor uses client.ocr.process_async / mistral-ocr-latest).
+mistralai>=1.5.0,<2.0.0

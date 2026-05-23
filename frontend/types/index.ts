@@ -227,6 +227,23 @@ export interface MemoryListResponse {
 // PENDING FILES (upload preview)
 // ==========================================
 
+/**
+ * Upload lifecycle for a single pending file in the chat input.
+ *
+ *   queued    → file picked, waiting for an in-flight upload slot
+ *   uploading → tus PATCH chunks in progress (progress 0..1 valid)
+ *   completed → finalize call returned 200; ready to be sent with a message
+ *   failed    → init / tus / finalize errored; errorMessage carries the Arabic
+ *               reason; retry by re-adding the file
+ *   cancelled → user clicked cancel; backend row was soft-deleted
+ */
+export type AttachmentUploadStatus =
+  | "queued"
+  | "uploading"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
 export interface PendingFile {
   id: string;
   file: File;
@@ -234,6 +251,30 @@ export interface PendingFile {
   name: string;
   size: number;
   mimeType: string;
+  /** Lifecycle of the direct-to-Supabase TUS upload. */
+  uploadStatus: AttachmentUploadStatus;
+  /** Bytes uploaded / total bytes, 0..1. */
+  uploadProgress: number;
+  /** workspace_items.item_id once /init returns; null before that. */
+  itemId: string | null;
+  /** Arabic-language error message when uploadStatus === 'failed'. */
+  errorMessage: string | null;
+}
+
+// ==========================================
+// RESUMABLE UPLOADS
+// ==========================================
+
+/** Server response from `/cases/{id}/documents/init` and the workspace twin. */
+export interface UploadInitResponse {
+  /** Present on document init. */
+  document_id?: string;
+  /** Present on workspace-attachment init. */
+  item_id?: string;
+  storage_path: string;
+  bucket: string;
+  upload_url: string;
+  expires_at: string;
 }
 
 // ==========================================

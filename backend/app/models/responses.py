@@ -264,3 +264,27 @@ class PreferencesResponse(BaseModel):
     """GET/PATCH /api/v1/preferences"""
     user_id: str
     preferences: dict
+
+
+# ── Resumable uploads (TUS) ─────────────────────────────
+
+
+class UploadInitResponse(BaseModel):
+    """Response from the ``/init`` step of a resumable upload.
+
+    Exactly one of ``document_id`` / ``item_id`` is set:
+        * ``document_id`` — case-documents flow (POST /cases/{id}/documents/init)
+        * ``item_id``     — chat-attachment flow
+          (POST /conversations/{id}/workspace/attachments/init)
+
+    ``upload_url`` is the Supabase TUS endpoint; the browser PATCHes file
+    chunks there with its existing Supabase access token as Bearer. RLS
+    (migration 045) restricts writes to ``storage_path``'s prefix.
+    ``expires_at`` is a client-side sanity bound; storage allows ~24 h.
+    """
+    document_id: Optional[str] = None
+    item_id: Optional[str] = None
+    storage_path: str
+    bucket: str
+    upload_url: str
+    expires_at: datetime

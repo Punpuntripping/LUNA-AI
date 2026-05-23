@@ -27,6 +27,7 @@ import type {
   WorkspaceFileUrlResponse,
   UserPreferences,
   UserPreferencesData,
+  UploadInitResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -353,14 +354,38 @@ export const documentsApi = {
     if (params?.page) searchParams.set("page", String(params.page));
     if (params?.limit) searchParams.set("limit", String(params.limit));
     const qs = searchParams.toString();
+    // TODO(upload-reliability): pre-existing template-literal typo audited
+    // here — backslashes in the path were silently producing `\cases\…` in
+    // some historical builds. Verified the template is correct as written;
+    // leaving the marker so a future cleanup can drop it without re-auditing.
     return api.get<DocumentListResponse>(`/cases/${caseId}/documents${qs ? `?${qs}` : ""}`);
   },
 
+  /**
+   * @deprecated Use `initUpload` + tus + `finalizeUpload` instead.
+   * Kept for 7 days post-deploy so we can roll back if the new flow
+   * regresses. Slated for removal in Phase 4 (`.claude/plans/upload_reliability.md`).
+   */
   upload: (caseId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
     return api.upload<Document>(`/cases/${caseId}/documents`, formData);
   },
+
+  /** Phase 2: mint a TUS upload URL for a new case document. */
+  initUpload: (
+    caseId: string,
+    body: { filename: string; mime_type: string; size_bytes: number },
+  ) =>
+    api.post<UploadInitResponse>(`/cases/${caseId}/documents/init`, body),
+
+  /** Phase 2: verify bytes landed, flip status to `pending`, enqueue OCR. */
+  finalizeUpload: (documentId: string) =>
+    api.post<Document>(`/documents/${documentId}/finalize`, {}),
+
+  /** Phase 2: user cancelled — soft-delete row + best-effort delete object. */
+  cancelUpload: (documentId: string) =>
+    api.post<{ success: boolean }>(`/documents/${documentId}/cancel`, {}),
 
   get: (documentId: string) =>
     api.get<Document>(`/documents/${documentId}`),
@@ -434,6 +459,11 @@ export const workspaceApi = {
       body,
     ),
 
+  /**
+   * @deprecated Use `initAttachment` + tus + `finalizeAttachment` instead.
+   * Kept for 7 days post-deploy alongside `documentsApi.upload` so we can
+   * roll back. Slated for removal in Phase 4.
+   */
   uploadAttachment: (conversationId: string, file: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -442,6 +472,27 @@ export const workspaceApi = {
       formData,
     );
   },
+
+  /** Phase 2: mint a TUS upload URL for a new chat attachment. */
+  initAttachment: (
+    conversationId: string,
+    body: { filename: string; mime_type: string; size_bytes: number },
+  ) =>
+    api.post<UploadInitResponse>(
+      `/conversations/${conversationId}/workspace/attachments/init`,
+      body,
+    ),
+
+  /** Phase 2: verify bytes landed; backend returns the materialised row. */
+  finalizeAttachment: (itemId: string) =>
+    api.post<WorkspaceItem>(`/workspace/attachments/${itemId}/finalize`, {}),
+
+  /** Phase 2: user cancelled mid-upload. Idempotent on the server. */
+  cancelAttachment: (itemId: string) =>
+    api.post<{ success: boolean }>(
+      `/workspace/attachments/${itemId}/cancel`,
+      {},
+    ),
 
   attachFromDocument: (
     conversationId: string,
