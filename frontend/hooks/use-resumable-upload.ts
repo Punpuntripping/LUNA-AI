@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { documentsApi, workspaceApi, getAccessToken } from "@/lib/api";
+import { documentsApi, workspaceApi, getAccessToken, ApiClientError } from "@/lib/api";
 import { startTusUpload, type UploadHandle } from "@/lib/upload-client";
 import { documentKeys } from "@/hooks/use-documents";
 import { workspaceKeys } from "@/hooks/use-workspace";
@@ -57,11 +57,26 @@ const INITIAL_STATE: ResumableUploadState = {
 };
 
 function arabicErrorFromUnknown(err: unknown): string {
-  if (err instanceof Error) {
-    // Default to a generic Arabic message; surface backend Arabic detail
-    // when it came through `ApiClientError`.
-    const msg = err.message;
-    if (msg && /[؀-ۿ]/.test(msg)) return msg;
+  // Log the raw error to the console for debugging — never to the UI.
+  // Earlier this function returned `err.message` whenever it contained any
+  // Arabic codepoint, which leaked TUS error bodies like:
+  //   "...Invalid key: general/<user_uuid>/convos/<conv_uuid>/<arabic>.pdf"
+  // straight into the user-visible card. The previous check fired because
+  // the user's *filename* contained Arabic — not because it was a real
+  // backend message. Internal storage paths, UUIDs, URLs MUST NOT appear
+  // in user-facing surfaces.
+  if (typeof console !== "undefined") console.error("[upload]", err);
+
+  // Only surface a message if it came from our backend (ApiClientError),
+  // is short, and contains no obviously-leaky tokens. Anything else falls
+  // back to a generic Arabic message.
+  if (err instanceof ApiClientError) {
+    const msg = err.message ?? "";
+    const looksLikePath = /\b(https?:\/\/|cases\/|general\/|convos\/)/i.test(msg);
+    const hasUuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(msg);
+    if (msg && msg.length <= 200 && /[؀-ۿ]/.test(msg) && !looksLikePath && !hasUuid) {
+      return msg;
+    }
   }
   return "فشل رفع الملف. يرجى المحاولة مرة أخرى.";
 }

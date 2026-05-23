@@ -17,14 +17,36 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_filename(filename: str) -> str:
-    """Remove path separators, null bytes, and other unsafe characters."""
-    # Remove path separators and null bytes
-    sanitized = re.sub(r'[\x00/\\]', '', filename)
-    # Replace spaces with underscores
-    sanitized = sanitized.replace(' ', '_')
-    # Keep only safe characters
-    sanitized = re.sub(r'[^\w.\-]', '', sanitized)
-    return sanitized or "file"
+    """Strip a filename to ASCII-safe characters for the storage key.
+
+    Supabase Storage rejects non-ASCII characters in object keys with
+    HTTP 400 "Invalid key". Python's ``\\w`` is Unicode-aware so an
+    earlier version of this function silently kept Arabic letters,
+    which produced storage paths the storage API refused.
+
+    The user-visible filename is preserved separately on the DB row
+    (``case_documents.document_name``, ``workspace_items.metadata.filename``),
+    so it is safe to strip the filename here without losing display fidelity.
+    """
+    # Split on the LAST dot so multi-dot names keep their real extension.
+    if "." in filename:
+        base, ext = filename.rsplit(".", 1)
+    else:
+        base, ext = filename, ""
+
+    # Spaces -> underscores so the basename stays a single token.
+    base = base.replace(" ", "_")
+
+    # ASCII-only: alphanumerics, underscore, hyphen. Anything else is dropped.
+    safe_base = re.sub(r"[^A-Za-z0-9_\-]", "", base)
+    safe_ext = re.sub(r"[^A-Za-z0-9]", "", ext)
+
+    # If sanitisation stripped everything meaningful (e.g. pure-Arabic name),
+    # fall back to "file" so the storage key is still a valid identifier.
+    if not safe_base or all(c in "_-" for c in safe_base):
+        safe_base = "file"
+
+    return f"{safe_base}.{safe_ext}" if safe_ext else safe_base
 
 
 def upload_file(
