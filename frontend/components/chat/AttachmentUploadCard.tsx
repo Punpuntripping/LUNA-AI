@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { FileText, X, Check, AlertCircle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { generatePdfThumbnail } from "@/lib/pdf-thumbnail";
 import type { PendingFile } from "@/types";
 
 interface AttachmentUploadCardProps {
@@ -12,6 +14,10 @@ interface AttachmentUploadCardProps {
 
 function isImageType(mimeType: string): boolean {
   return mimeType.startsWith("image/");
+}
+
+function isPdfType(mimeType: string): boolean {
+  return mimeType === "application/pdf";
 }
 
 function getFileExtension(name: string): string {
@@ -41,6 +47,26 @@ export function AttachmentUploadCard({
   const isCompleted = file.uploadStatus === "completed";
   const isFailed = file.uploadStatus === "failed";
   const progressPct = Math.round((file.uploadProgress || 0) * 100);
+
+  // PDF preview: lazy-load pdfjs-dist + render page 1 to a data URL the moment
+  // the card mounts. Runs once per file via the [file.file] dep. Null result
+  // (encrypted PDF / render error) falls through to the FileText icon.
+  const [pdfThumb, setPdfThumb] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isPdfType(file.mimeType)) return;
+    let cancelled = false;
+    generatePdfThumbnail(file.file).then((url) => {
+      if (!cancelled) setPdfThumb(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file.file, file.mimeType]);
+
+  const hasVisualPreview =
+    (isImageType(file.mimeType) && !!file.previewUrl) ||
+    (isPdfType(file.mimeType) && !!pdfThumb);
+  const previewSrc = pdfThumb ?? file.previewUrl;
 
   return (
     <div
@@ -76,15 +102,19 @@ export function AttachmentUploadCard({
         </div>
       )}
 
-      {/* Visual area — image thumbnail or PDF icon. */}
-      {isImageType(file.mimeType) && file.previewUrl ? (
-        <div className="h-20 w-full relative">
+      {/* Visual area — image thumbnail, PDF first-page render, or icon. */}
+      {hasVisualPreview && previewSrc ? (
+        <div className="h-20 w-full relative bg-muted/40">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={file.previewUrl}
+            src={previewSrc}
             alt={file.name}
             className={cn(
-              "w-full h-full object-cover",
+              "w-full h-full",
+              // PDF thumbs are tall (A4 portrait) → `contain` so the page
+              // fits without cropping; photos use `cover` so the thumbnail
+              // strip stays full-bleed.
+              isPdfType(file.mimeType) ? "object-contain" : "object-cover",
               isUploading && "opacity-60",
             )}
           />
@@ -96,7 +126,7 @@ export function AttachmentUploadCard({
         </div>
       ) : (
         <div className="h-20 w-full flex items-center justify-center">
-          {isUploading ? (
+          {isUploading || (isPdfType(file.mimeType) && pdfThumb === null && !isFailed) ? (
             <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
           ) : (
             <FileText
