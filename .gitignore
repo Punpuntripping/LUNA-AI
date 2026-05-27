@@ -33,3 +33,9 @@ frontend/tsconfig.tsbuildinfo
 _run5_*.txt
 _run5_state.json
 rtl-*.png
+# Smoke / dev screenshot artifacts (ad-hoc local captures, not project assets)
+screenshots/
+.run-logs/
+full_redesign_*.png
+smoke_ui_*.png
+upload_smoke_*.png

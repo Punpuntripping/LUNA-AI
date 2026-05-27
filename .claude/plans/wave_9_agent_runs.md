@@ -55,19 +55,26 @@ We replace the lifecycle with three primitives:
 
 ## Agent Hierarchy
 
-| Tier | Members | Reads | Writes | Talks to user? |
+> **Vocabulary note (added post-rename):** This document uses **Layer 1–4** for the
+> agent's architectural position. The word "tier" elsewhere in the project
+> (e.g. `agents/utils/agent_models.py` `tier_1`/`tier_2`) refers to the
+> **model cost class** — a completely separate concept. See `CLAUDE.md` §
+> "Vocabulary". An agent has both a Layer (where it sits) and a Tier (which
+> model it bills against).
+
+| Layer | Members | Reads | Writes | Talks to user? |
 |---|---|---|---|---|
 | **1 — Conductor** | Router | Full convo (post-cutoff messages + compaction summary), per-item summaries (eager), case metadata + memories, full artifact `content_md` **on demand via `read_workspace_item` tool** (callable in parallel for multiple items) | Streams to chat (assistant `messages.content`); soft-deletes workspace items via the workspace API; never mutates `content_md` directly | Yes (chat) |
-| **2 — Major** | deep_search_v4 **planner**, agent_writer | `briefing` + `attached_items` (full content_md, router-selected) + `recent_messages` (last **N≥3**, configurable per agent) + user_id/conversation_id/case_id | One workspace_item per run (via publishers), one `agent_runs` row | Yes (via `ask_user` channel — pinned while awaiting reply, see Task 13) |
-| **3 — Task** | All deep_search_v4 sub-agents (reg/compliance/case expanders, search, rerankers, **aggregator**) | Only what the calling major agent injects via deps (URA, queries, vectors, prompt_key, detail_level) | Internal logs only — `agents/deep_search_v4/monitor/`, Logfire spans | No |
-| **4 — Memory** | `summarize_workspace_item`, `resummarize_dirty_items`, `compact_conversation` | Workspace items + messages | Per-item `summary` columns, `convo_context` items, `compacted_through_message_id`, `agent_runs` rows | No |
+| **2 — Major** | deep_search_v4 **planner**, writer_planner | `briefing` + `attached_items` (full content_md, router-selected) + `recent_messages` (last **N≥3**, configurable per agent) + user_id/conversation_id/case_id + (writer_planner only) prior_artifacts summaries + word_counts | One workspace_item per run (via publishers), one `agent_runs` row | Yes (via `ask_user` channel; writer_planner also via `present_plan_for_approval`) |
+| **3 — Task** | All deep_search_v4 sub-agents (reg/compliance/case expanders, search, rerankers, **aggregator**), **agent_writer** (post writer_planner introduction) | Only what the calling major agent injects via deps (URA, queries, vectors, prompt_key, detail_level; or — for agent_writer — a WriterPackage) | Internal logs only — `agents/deep_search_v4/monitor/`, Logfire spans | No |
+| **4 — Memory** | `summarize_workspace_item`, `resummarize_dirty_items`, `compact_conversation`, `item_analyzer` | Workspace items + messages | Per-item `summary` columns, `convo_context` items, `compacted_through_message_id`, `agent_runs` rows (item_analyzer writes only `agent_runs` — pure-read otherwise) | No |
 
 **Hard rules:**
-- **Only Tier 1 + Tier 2 may communicate with the user.** Tier 3 emits structured outputs that the major agent or orchestrator surfaces; Tier 4 is system-side.
-- **Only Tier 2 + Tier 4 write to `workspace_items`.** Major agents create/edit artifacts (via publishers); memory agents create `convo_context` items + update summary columns. Router never mutates `content_md`.
-- **Tier 3 writes nothing user-visible** — pure transformers (URA → markdown, queries → results).
-- **All tiers write `agent_runs`** when they perform an LLM-driven invocation.
-- **The aggregator is Tier 3** despite producing the artifact body. It's a transformer (URA → markdown); the planner makes decisions, the publishers persist, the aggregator just writes prose into a structured field.
+- **Only Layer 1 + Layer 2 may communicate with the user.** Layer 3 emits structured outputs that the major agent or orchestrator surfaces; Layer 4 is system-side.
+- **Only Layer 2 + Layer 4 write to `workspace_items`.** Major agents create/edit artifacts (via publishers); memory agents create `convo_context` items + update summary columns. Router never mutates `content_md`.
+- **Layer 3 writes nothing user-visible** — pure transformers (URA → markdown, queries → results, WriterPackage → drafted document).
+- **All layers write `agent_runs`** when they perform an LLM-driven invocation.
+- **The aggregator is Layer 3** despite producing the artifact body. It's a transformer (URA → markdown); the planner makes decisions, the publishers persist, the aggregator just writes prose into a structured field. **agent_writer follows the same pattern** under writer_planner (WriterPackage → WriterLLMOutput; writer_planner's runner invokes the publisher).
 
 **Editing is always a writer dispatch.** The router never mutates `content_md` directly. "Fix this paragraph" → router emits `DispatchAgent(agent_family='writing', target_item_id=X, briefing='...')`. The writer's edit-mode path is the lightweight path; one audit trail for all artifact mutations.
 
@@ -372,7 +379,7 @@ class WorkspaceItemSnapshot(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 class MajorAgentInput(BaseModel):
-    """Tier 2 input contract. Major agents NEVER read DB messages directly —
+    """Layer 2 input contract. Major agents NEVER read DB messages directly —
     they receive only what the orchestrator passes here."""
     briefing: str
     attached_items: list[WorkspaceItemSnapshot]    # router-selected, full content_md
@@ -420,7 +427,7 @@ async def _validate_summary_length(ctx, value: AggregatorOutput) -> AggregatorOu
 
 `ModelRetry` triggers a guided retry (model sees the error, regenerates) — better than a hard `Field(max_length=...)` rejection for prose-quality fields. Same validator pattern on `WriterOutput`.
 
-The aggregator stays **Tier 3** even though it now emits user-visible text — `chat_summary` is structured output, not direct user communication. The orchestrator (plumbing) is the one that streams it.
+The aggregator stays **Layer 3** even though it now emits user-visible text — `chat_summary` is structured output, not direct user communication. The orchestrator (plumbing) is the one that streams it.
 
 **Delete:**
 - `TaskContinue`, `TaskEnd` (no consumer left after Task 7)
@@ -1225,7 +1232,7 @@ Phase 7 (additive):  Task 13 (Tier-2 pause/resume — ask_user channel)
 - [ ] Memory invocations also write `agent_runs` rows (`agent_family='memory'`)
 - [ ] After deploy verification, `task_state` table dropped via migration 032
 - [ ] All Arabic error messages preserved (Absolute Rule #5)
-- [ ] Agent hierarchy table at top of plan reflects Tier 1–4 split with privilege rules
+- [ ] Agent hierarchy table at top of plan reflects Layer 1–4 split with privilege rules
 - [ ] Aggregator + Writer outputs gain `chat_summary` + `key_findings` structured fields
 - [ ] Router has `read_workspace_item` tool, callable in parallel for multiple item_ids
 - [ ] Tier-2 `recent_messages` floor = 3 (per-agent overridable upward, never lower)

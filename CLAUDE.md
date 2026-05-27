@@ -40,6 +40,19 @@ agents_reports/ Agent output reports (validation, security, integration)
 | Build | `cd frontend && npm run build` |
 | Lint | `cd frontend && npm run lint` |
 
+## Vocabulary — "Layer" vs "Tier" (do NOT confuse these)
+
+Two completely different concepts. Plans and discussions must keep them separate.
+
+| Word | Meaning | Where defined | Values |
+|---|---|---|---|
+| **Layer** (Layer 1–4) | Architectural position in the agent call graph. Determines who can talk to the user, who can write `workspace_items`, what context surface each agent gets. | `.claude/plans/wave_9_agent_runs.md` § "Agent Hierarchy" | Layer 1 Conductor (Router) · Layer 2 Major (planners, top-level user-facing agents) · Layer 3 Task (transformers, no user talk — aggregator, agent_writer) · Layer 4 Memory (summarize/compact/distill — system-side) |
+| **Tier** (tier_1, tier_2) | Model cost/capability bucket. Drives which family + provider chain `get_agent_model(slot)` returns. | `agents/utils/agent_models.py:32-45` (`Tier = Literal["tier_1", "tier_2"]`) | tier_1 = qwen3.6-plus / deepseek-v4-pro (capable) · tier_2 = qwen3.5-flash / deepseek-v4-flash (cheap/fast) |
+
+An agent has **both**: a Layer (where it sits) and a Tier (which model it bills against). Example: `item_analyzer` is **Layer 4 Memory** running on model **tier_2** (deepseek-flash). `writer_planner_decider` is **Layer 2 Major** running on model **tier_1** (qwen3.6-plus).
+
+If you find an older plan or report using "Tier 1–4" for the architectural concept, it's pre-rename — read it as "Layer 1–4".
+
 ## Absolute Rules
 
 1. **PyJWT**, NOT python-jose
