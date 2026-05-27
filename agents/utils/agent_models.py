@@ -91,6 +91,14 @@ AGENT_MODELS: dict[str, ModelPolicy] = {
     "planner_responder":          ModelPolicy("tier_1"),
     "aggregator":                 ModelPolicy("tier_1"),
     "agent_writer":               ModelPolicy("tier_1"),
+    # Tier_1 — Layer-2 Major planner that sits in front of writing_executor.
+    # Talks to the user (ask_user, present_plan_for_approval), calls
+    # item_analyzer for context distillation when prior-WI scope is wide, and
+    # hands a WriterPackage to the writing executor at the end. Multi-turn loop
+    # per user turn (capped at 3 present_plan_for_approval cycles). Output is a
+    # discriminated list[PlannerDecision | DeferredToolRequests]; same shape as
+    # the deep_search planner. See .claude/plans/writer_planner.md.
+    "writer_planner_decider":     ModelPolicy("tier_1"),
     "router":                     ModelPolicy("tier_1"),
     "reg_search_expander":        ModelPolicy("tier_1"),
     "reg_search_reranker":        ModelPolicy("tier_2"),
@@ -103,6 +111,17 @@ AGENT_MODELS: dict[str, ModelPolicy] = {
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.
     "artifact_summarizer":        ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — Layer-4 librarian that verdicts workspace_items
+    # against a caller's query. Two LLM calls max per analyze() invocation
+    # (one per family: refs vs meta). Short structured outputs — reasoning
+    # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
+    "item_analyzer":              ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — runs once per deep_search invocation, in parallel
+    # with the expanders, to pick the 2-5 sector AND-filter. Replaces the old
+    # planner_decider.sectors output (decider had no visibility into per-sector
+    # corpus contents — diagnosed in conv faa3b71e). DeepSeek-flash is fast and
+    # cheap; the call is short (two-field structured output).
+    "sector_picker":              ModelPolicy("tier_2", primary="deepseek"),
 }
 
 
@@ -169,6 +188,7 @@ _SUBAGENT_TIER: dict[str, Tier] = {
     "expander": "tier_1",
     "reranker": "tier_2",
     "aggregator": "tier_1",
+    "sector_picker": "tier_2",
 }
 
 

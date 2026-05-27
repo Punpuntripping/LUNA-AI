@@ -237,6 +237,12 @@ class LoopState:
     expander_prompt_key: str = "prompt_3"
     # Planner-supplied sector list applied at search time. None → no filter.
     sectors_override: list[str] | None = None
+    # Sector AND-filter as an in-flight future. Awaited at the case-search
+    # filter step so the search RPC overlaps with the ``sector_picker`` LLM
+    # call. ``None`` (default) means "no future spawned" → fall back to the
+    # static ``sectors_override``. A resolved value of ``None`` from the
+    # future means "picker said no filter" → run unfiltered.
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None
     thinking_effort: str | None = None
     model_override: str | None = None
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY

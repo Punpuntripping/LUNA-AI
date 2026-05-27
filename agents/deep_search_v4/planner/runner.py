@@ -23,7 +23,6 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from agents.deep_search_v4.shared.sector_vocab.regulations import canonicalize_sectors
 from shared.observability import get_logfire
 
 from .agent import (
@@ -98,7 +97,6 @@ def _default_decision(reason: str) -> PlannerDecision:
     return PlannerDecision(
         mode="reg_led",
         support=False,
-        sectors=None,
         rationale=f"planner_error_fallback: {reason}",
     )
 
@@ -144,18 +142,6 @@ def _minimal_response(reason: str) -> PlannerResponse:
 # ---------------------------------------------------------------------------
 # Phase helpers
 # ---------------------------------------------------------------------------
-
-
-def _canonicalize_decision_sectors(decision: PlannerDecision) -> None:
-    """Canonicalize ``decision.sectors`` against VALID_SECTORS in place."""
-    if not decision.sectors:
-        return
-    canonical = canonicalize_sectors(decision.sectors)
-    if canonical != decision.sectors:
-        logger.info(
-            "planner: canonicalized sectors %s -> %s", decision.sectors, canonical,
-        )
-    decision.sectors = canonical or None
 
 
 async def _resolve_run_retrieval(injected: Callable | None) -> Callable:
@@ -294,12 +280,10 @@ async def _run_planner_turn(
                 )
             # PlannerDecision in hand.
             decision = output
-            _canonicalize_decision_sectors(decision)
             _decided_payload = {
                 "event": EVENT_DECIDED,
                 "mode": decision.mode,
                 "support": decision.support,
-                "sectors": list(decision.sectors or []),
                 "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
                 "context_labels": list(getattr(decision, "context_labels", []) or []),
                 "workspace_reads_count": _count_workspace_reads(deps._events),
@@ -325,8 +309,8 @@ async def _run_planner_turn(
             except Exception:
                 pass
             logger.info(
-                "planner: decided mode=%s support=%s sectors=%s brief_chars=%d labels=%s reads=%d",
-                decision.mode, decision.support, decision.sectors,
+                "planner: decided mode=%s support=%s brief_chars=%d labels=%s reads=%d",
+                decision.mode, decision.support,
                 len(getattr(decision, "planner_brief", "") or ""),
                 list(getattr(decision, "context_labels", []) or []),
                 _count_workspace_reads(deps._events),
@@ -336,12 +320,10 @@ async def _run_planner_turn(
         # decider's read_workspace_item tool-call events (if any) lived on the
         # PRIOR turn's deps; this turn's deps._events is fresh, so the resume
         # read-back records 0 reads (correct — no new reads happened here).
-        _canonicalize_decision_sectors(decision)
         _decided_payload = {
             "event": EVENT_DECIDED,
             "mode": decision.mode,
             "support": decision.support,
-            "sectors": list(decision.sectors or []),
             "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
             "context_labels": list(getattr(decision, "context_labels", []) or []),
             "workspace_reads_count": _count_workspace_reads(deps._events),

@@ -21,6 +21,7 @@ This publisher turns the structured LLM output into:
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,11 @@ from .models import WriterInput, WriterLLMOutput, WriterOutput
 
 if TYPE_CHECKING:
     pass
+
+
+# Matches the LLM-facing WI-{seq} alias. Case-insensitive to tolerate models
+# that lowercase the prefix; the resolver canonicalises to upper internally.
+_WI_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)
 
 
 logger = logging.getLogger(__name__)
@@ -85,7 +91,7 @@ def _soft_delete_revising(supabase, item_id: str) -> None:
 
 # ``_set_lock_column`` is preserved as a thin alias for backwards compatibility
 # with any in-tree call sites; the canonical implementation lives in
-# ``agents.agent_writer.lock`` so streaming callers can use ``agent_lock_scope``
+# ``agents.writer.lock`` so streaming callers can use ``agent_lock_scope``
 # (Wave 8D) for heartbeat-style holds.
 _set_lock_column = write_lock_column
 
@@ -98,6 +104,181 @@ def _emit(deps: WriterDeps, event: dict) -> None:
             deps.emit_sse(event)
         except Exception:
             logger.debug("agent_writer: emit_sse failed", exc_info=True)
+
+
+def _persist_writer_references(
+    *,
+    deps: WriterDeps,
+    llm_output: WriterLLMOutput,
+    input: WriterInput,
+    new_item_id: str,
+    metadata: dict,
+) -> int:
+    """Project source-WI references into the new agent_writing WI's
+    ``workspace_item_references`` rows + ``metadata.references``.
+
+    Bug #1 fix (`agents_reports/convo_accbc49c_2/critical_bugs.md` §2).
+    Resolves each ``CitationRef(wi="WI-N", n=K)`` in
+    ``llm_output.citations_used`` to a source-WI ref row via
+    ``input.research_items`` (which the runner populated with
+    ``{item_id, wi_seq, ...}`` per research item), fetches the matching
+    source rows from ``workspace_item_references``, and inserts new rows
+    on the new WI numbered ``1..K`` in the order the writer emitted them.
+
+    The new WI's ``metadata["references"]`` is mutated in place with a
+    forensics-friendly view (``n``, ``source_wi``, ``source_n``,
+    ``ref_id``, ``domain``) so the frontend's ``ReferencePanel`` can
+    surface the disambiguation.
+
+    Returns:
+        Number of new ref rows persisted (0 if nothing matched or supabase
+        is unavailable).
+    """
+    if not deps.supabase or not llm_output.citations_used:
+        return 0
+
+    # Build {wi_seq: source_item_id} from the runner-supplied research_items.
+    source_alias_map: dict[int, str] = {}
+    for item in (input.research_items or []):
+        if not isinstance(item, dict):
+            continue
+        seq = item.get("wi_seq")
+        iid = item.get("item_id") or item.get("artifact_id")
+        if seq is not None and iid:
+            try:
+                source_alias_map[int(seq)] = str(iid)
+            except (TypeError, ValueError):
+                continue
+
+    # Resolve each CitationRef to (source_item_id, source_n) preserving order.
+    resolved_picks: list[tuple[str, int]] = []
+    for cr in (llm_output.citations_used or []):
+        wi_raw = (getattr(cr, "wi", "") or "").strip()
+        m = _WI_RE.match(wi_raw)
+        if not m:
+            logger.warning(
+                "writer.publisher: malformed CitationRef.wi=%r — skipping", wi_raw
+            )
+            continue
+        seq = int(m.group(1))
+        source_iid = source_alias_map.get(seq)
+        if not source_iid:
+            logger.warning(
+                "writer.publisher: CitationRef wi=%s not in source_alias_map "
+                "(known seqs=%s) — skipping",
+                wi_raw,
+                sorted(source_alias_map.keys()),
+            )
+            continue
+        try:
+            n_val = int(getattr(cr, "n", 0))
+        except (TypeError, ValueError):
+            logger.warning(
+                "writer.publisher: CitationRef.n is not an int (wi=%s) — skipping",
+                wi_raw,
+            )
+            continue
+        if n_val < 1:
+            logger.warning(
+                "writer.publisher: CitationRef.n=%d < 1 (wi=%s) — skipping",
+                n_val, wi_raw,
+            )
+            continue
+        resolved_picks.append((source_iid, n_val))
+
+    if not resolved_picks:
+        return 0
+
+    # Fetch source ref rows; batch by source_item_id to keep query count low.
+    needed: dict[str, set[int]] = {}
+    for sid, n in resolved_picks:
+        needed.setdefault(sid, set()).add(n)
+
+    source_refs: dict[tuple[str, int], dict] = {}
+    for sid, n_set in needed.items():
+        try:
+            resp = (
+                deps.supabase.table("workspace_item_references")
+                .select(
+                    "ref_id, item_id, domain, n, relevance, sub_queries, "
+                    "content_word_count"
+                )
+                .eq("wi_id", sid)
+                .in_("n", list(n_set))
+                .execute()
+            )
+            for row in (getattr(resp, "data", None) or []):
+                try:
+                    source_refs[(sid, int(row["n"]))] = row
+                except (KeyError, TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.warning(
+                "writer.publisher: failed to fetch refs for source %s: %s",
+                sid, exc,
+            )
+
+    # Build new workspace_item_references rows + the forensics view for metadata.
+    new_ref_rows: list[dict] = []
+    metadata_refs_view: list[dict] = []
+    new_n = 0
+    for (sid, source_n) in resolved_picks:
+        src_row = source_refs.get((sid, source_n))
+        if src_row is None:
+            logger.warning(
+                "writer.publisher: no source ref row for (%s, n=%d) — skipping",
+                sid, source_n,
+            )
+            continue
+        new_n += 1
+        new_ref_rows.append({
+            "wi_id": new_item_id,
+            "domain": src_row["domain"],
+            "n": new_n,
+            "relevance": src_row.get("relevance") or "high",
+            "used": True,
+            "sub_queries": src_row.get("sub_queries") or [],
+            "ref_id": src_row["ref_id"],
+            "item_id": src_row.get("item_id"),
+            "content_word_count": int(src_row.get("content_word_count") or 0),
+        })
+        reverse_alias = next(
+            (f"WI-{seq}" for seq, iid in source_alias_map.items() if iid == sid),
+            None,
+        )
+        metadata_refs_view.append({
+            "n": new_n,
+            "source_wi": reverse_alias,
+            "source_n": source_n,
+            "ref_id": src_row["ref_id"],
+            "domain": src_row["domain"],
+        })
+
+    if new_ref_rows:
+        try:
+            deps.supabase.table("workspace_item_references").insert(
+                new_ref_rows
+            ).execute()
+        except Exception as exc:
+            logger.warning(
+                "writer.publisher: workspace_item_references batch insert failed: %s",
+                exc, exc_info=True,
+            )
+
+    # Surface to the frontend's ReferencePanel via metadata.references.
+    if metadata_refs_view:
+        metadata["references"] = metadata_refs_view
+        try:
+            deps.supabase.table("workspace_items").update(
+                {"metadata": metadata}
+            ).eq("item_id", new_item_id).execute()
+        except Exception as exc:
+            logger.warning(
+                "writer.publisher: metadata update with references failed: %s",
+                exc,
+            )
+
+    return len(new_ref_rows)
 
 
 async def publish_writer_result(
@@ -156,11 +337,23 @@ async def publish_writer_result(
         ]
         research_item_ids = [r for r in research_item_ids if r]
 
+        # Bug #1 fix: serialize CitationRef objects to dicts for JSON storage in
+        # metadata. The LLM emits a list of {wi, n} pairs; we persist them as
+        # forensic record + use them below to project the new WI's
+        # workspace_item_references rows.
+        citations_used_serialized: list[dict] = []
+        for cr in (llm_output.citations_used or []):
+            try:
+                citations_used_serialized.append({"wi": cr.wi, "n": int(cr.n)})
+            except Exception:
+                # Defensive: tolerate odd shapes (legacy callers, tests).
+                continue
+
         metadata: dict = {
             "subtype": input.subtype,
             "model_used": deps.primary_model,
             "confidence": llm_output.confidence,
-            "citations_used": list(llm_output.citations_used or []),
+            "citations_used": citations_used_serialized,
             "notes": list(llm_output.notes_ar or []),
             "research_item_ids": research_item_ids,
             "detail_level": input.detail_level,
@@ -192,6 +385,25 @@ async def publish_writer_result(
         item_id = row.get("item_id") or row.get("artifact_id") or ""
         if not item_id:
             raise RuntimeError("agent_writer: publish returned no item_id")
+
+        # 3b. Project source-WI references into the new WI's
+        # workspace_item_references rows so the frontend's ReferencePanel
+        # can resolve every (n) marker in the body. This is Bug #1's fix —
+        # before this block the bypass-path writer turns landed (n) markers
+        # in content_md with no backing rows, leaving `ReferencePanel` empty.
+        references_persisted = _persist_writer_references(
+            deps=deps,
+            llm_output=llm_output,
+            input=input,
+            new_item_id=item_id,
+            metadata=metadata,
+        )
+        try:
+            _pub_span.set_attribute(
+                "references_persisted", int(references_persisted)
+            )
+        except Exception:
+            pass
 
         # 4. Acquire lock on the real column.
         locked_until_dt = datetime.now(timezone.utc) + timedelta(

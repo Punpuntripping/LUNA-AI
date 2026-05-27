@@ -109,7 +109,7 @@ def _load_attached_items(
         try:
             row = (
                 supabase.table("workspace_items")
-                .select("item_id, kind, title, content_md, metadata")
+                .select("item_id, wi_seq, kind, title, content_md, metadata")
                 .eq("item_id", item_id)
                 .eq("user_id", user_id)
                 .eq("conversation_id", conversation_id)
@@ -122,6 +122,7 @@ def _load_attached_items(
                 snapshots.append(
                     WorkspaceItemSnapshot(
                         item_id=d.get("item_id", item_id),
+                        wi_seq=d.get("wi_seq"),
                         kind=d.get("kind") or "unknown",
                         title=d.get("title") or "",
                         content_md=d.get("content_md") or "",
@@ -220,7 +221,7 @@ def _load_prior_search_summaries(
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id, title, describe_query, summary, metadata, created_at")
+            .select("item_id, wi_seq, title, describe_query, summary, metadata, created_at")
             .eq("user_id", user_id)
             .eq("conversation_id", conversation_id)
             .eq("kind", "agent_search")
@@ -252,6 +253,7 @@ def _load_prior_search_summaries(
             summaries.append(
                 PriorSearchSummary(
                     item_id=row.get("item_id") or "",
+                    wi_seq=row.get("wi_seq"),
                     title=row.get("title") or "",
                     describe_query=row.get("describe_query") or "",
                     summary=row.get("summary") or "",
@@ -345,11 +347,17 @@ async def _resume_major_agent(
     conversation_id: str,
     case_id: str | None,
     user_message_id: str | None,
+    assistant_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused agent run after the user has replied to an ask_user question.
 
     Only ``deep_search`` supports pause/resume in this release.  Any other
     agent_family is abandoned and re-routed fresh via the normal router path.
+
+    ``assistant_message_id`` is the FK of the assistant-message placeholder
+    for THIS resume turn (a new placeholder is created on every user reply
+    by message_service.py). Threaded to the downstream publish step so the
+    artifact produced on resume carries ``workspace_items.message_id``.
     """
     import base64
 
@@ -469,6 +477,17 @@ async def _resume_major_agent(
         _resume_recent_messages = _load_recent_messages(supabase, conversation_id)
         _resume_settings = _get_settings()
 
+        # Rebuild the WI alias map on resume — PlannerDeps is never persisted
+        # across pause, so the map has to be reconstructed from the same
+        # surfaces the original dispatch saw.
+        _resume_alias_map: dict[int, str] = {}
+        for _p in _resume_prior_searches:
+            if _p.wi_seq is not None and _p.item_id:
+                _resume_alias_map[int(_p.wi_seq)] = _p.item_id
+        for _s in _resume_attached_items:
+            if _s.wi_seq is not None and _s.item_id:
+                _resume_alias_map[int(_s.wi_seq)] = _s.item_id
+
         async with _httpx.AsyncClient(timeout=30.0) as _resume_http:
             _resume_deps = build_planner_deps(
                 supabase=supabase,
@@ -481,6 +500,7 @@ async def _resume_major_agent(
                 recent_messages=_resume_recent_messages,
                 prior_searches=_resume_prior_searches,
                 attached_items=_resume_attached_items,
+                wi_alias_map=_resume_alias_map,
             )
 
             planner_decider = create_planner_decider()
@@ -589,7 +609,8 @@ async def _resume_major_agent(
         # Phases 2–3 run via the same convergence point as fresh dispatch.
         # decision is supplied → phase 1 is skipped → cannot pause again.
         ds_outcome = await _run_deep_search(
-            major_input, supabase, decision=planner_output
+            major_input, supabase, decision=planner_output,
+            assistant_message_id=assistant_message_id,
         )
         run_result = ds_outcome.result
 
@@ -675,6 +696,7 @@ def _record_deferred(
     agent_family: str,
     describe_query: str,
     task_label: str | None = None,
+    pause_reason: str = "clarify",
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
 
@@ -685,6 +707,12 @@ def _record_deferred(
     ``task_label`` is the router-emitted short Arabic label for the dispatched
     task (Wave 1 redesign). Persisted to ``agent_runs.task_label`` so the
     resume path can recover it without re-running the router.
+
+    ``pause_reason`` (migration 053) distinguishes pause flavors:
+        'clarify'      — ask_user deferred (plain Arabic question)
+        'approve_plan' — present_plan_for_approval deferred (plan_md awaiting yes/no/edit)
+    Legacy ask_user callers (deep_search) accept the default 'clarify'. The
+    writer_planner runner derives the value from the deferred tool_name.
     """
     from typing import Any as _Any
 
@@ -692,7 +720,13 @@ def _record_deferred(
     # ToolCallPart.args is `str | dict | None` (JSON string when from streaming
     # providers, dict when synthesized locally); args_as_dict() normalizes both.
     pending_args = pending_call.args_as_dict()
-    question = pending_args.get("question", "")
+    # Pull the question text from whichever arg the deferred tool used:
+    # ask_user → 'question' ; present_plan_for_approval → 'plan_md'.
+    question = (
+        pending_args.get("question")
+        or pending_args.get("plan_md")
+        or ""
+    )
     now = _now_utc()
 
     run_id = record_agent_run(
@@ -706,6 +740,7 @@ def _record_deferred(
             task_label=task_label,
             input_summary=describe_query[:500],
             status="awaiting_user",
+            pause_reason=pause_reason,
             message_history=planner_result.all_messages_json(),
             deferred_payload={
                 "tool_call_id": pending_call.tool_call_id,
@@ -730,6 +765,7 @@ def _record_deferred(
                 "kind": "agent_question",
                 "run_id": run_id,
                 "agent_family": agent_family,
+                "pause_reason": pause_reason,
             },
         }).execute()
     except Exception as e:
@@ -762,6 +798,7 @@ async def handle_message(
     supabase: SupabaseClient,
     case_id: str | None = None,
     user_message_id: str | None = None,
+    assistant_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
@@ -769,8 +806,17 @@ async def handle_message(
     2. Run router which fans out to specialist agents.
 
     ``user_message_id`` is the FK of the persisted user message (inserted
-    before the AI call, per CLAUDE.md rule #7). Thread-through to
-    agent_runs.message_id so the audit row links to the triggering message.
+    before the AI call, per CLAUDE.md rule #7). Threaded to
+    ``agent_runs.message_id`` so the audit row links to the triggering
+    message.
+
+    ``assistant_message_id`` is the FK of the assistant-message placeholder
+    (allocated by ``backend/app/services/message_service.py`` before this
+    function is called). Threaded all the way to the publishers so any
+    workspace_item produced by this turn carries it as
+    ``workspace_items.message_id`` — the assistant message that produced
+    the artifact. Without this, agent-produced workspace_items end up with
+    a NULL message_id and the chat ↔ artifact linkage breaks.
     """
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
@@ -791,6 +837,7 @@ async def handle_message(
                 conversation_id=conversation_id,
                 case_id=case_id,
                 user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
             ):
                 yield ev
             return
@@ -824,6 +871,7 @@ async def handle_message(
         conversation_id=conversation_id,
         case_id=case_id,
         user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
     ):
         yield ev
 
@@ -840,6 +888,7 @@ async def _route(
     conversation_id: str,
     case_id: str | None,
     user_message_id: str | None = None,
+    assistant_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Run the router LLM; on ChatResponse stream tokens; on DispatchAgent call _dispatch."""
     from agents.router.context import load_router_context
@@ -889,6 +938,7 @@ async def _route(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -916,6 +966,7 @@ async def _dispatch(
     conversation_id: str,
     case_id: str | None,
     user_message_id: str | None = None,
+    assistant_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -1002,7 +1053,10 @@ async def _dispatch(
                 # The planner owns the loop: _run_deep_search → handle_planner_turn
                 # runs phase 1 (decide) → phase 2 (retrieve) → phase 3 (respond).
                 # A phase-1 ask_user pause comes back as kind="paused".
-                ds_outcome = await _run_deep_search(major_input, supabase)
+                ds_outcome = await _run_deep_search(
+                    major_input, supabase,
+                    assistant_message_id=assistant_message_id,
+                )
                 if ds_outcome.kind == "paused":
                     # Persist the awaiting_user row + question message, then skip
                     # the normal completed-run record (the run stays alive).
@@ -1021,7 +1075,32 @@ async def _dispatch(
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
             elif agent_family == "writing":
-                run_result = await _run_writer(major_input, subtype, supabase)
+                # The writer_planner owns the loop: it may pause for ask_user
+                # ('clarify') or present_plan_for_approval ('approve_plan'),
+                # then on resume drives writing_executor + publish.
+                wp_outcome = await _run_writer(
+                    major_input, subtype, supabase,
+                    assistant_message_id=assistant_message_id,
+                )
+                if wp_outcome.kind == "paused":
+                    # Persist the awaiting_user row with pause_reason
+                    # (migration 053). Same flow as the deep_search branch
+                    # above; just an additional pause_reason kwarg.
+                    _record_deferred(
+                        supabase=supabase,
+                        planner_result=wp_outcome.planner_result,
+                        planner_output=wp_outcome.deferred,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        case_id=case_id,
+                        user_message_id=user_message_id,
+                        agent_family=agent_family,
+                        describe_query=describe_query,
+                        task_label=task_label,
+                        pause_reason=wp_outcome.pause_reason or "clarify",
+                    )
+                    raise _SkipRunRecord()
+                run_result = wp_outcome.result
             elif agent_family == "memory":
                 run_result = await _run_memory(
                     describe_query=describe_query,
@@ -1063,12 +1142,16 @@ async def _dispatch(
             # + question message via _record_deferred. The run is alive; no
             # completed agent_runs row should be written and no error SSE.
             # Re-query the fresh row to emit the agent_question SSE event.
+            # pause_reason (migration 053) tells the frontend whether to render
+            # a plain question ('clarify') or a plan_md block with inline
+            # approve/reject affordances ('approve_plan').
             deferred_row = _find_awaiting_user(supabase, conversation_id, user_id)
             if deferred_row:
                 yield {
                     "type": "agent_question",
                     "run_id": str(deferred_row.get("run_id", "")),
                     "question": deferred_row.get("question_text", ""),
+                    "pause_reason": deferred_row.get("pause_reason", "clarify"),
                 }
             yield {"type": "done", "usage": _zero_usage("paused")}
             return  # skip finally record_agent_run
@@ -1159,6 +1242,8 @@ async def _run_deep_search(
     input: MajorAgentInput,
     supabase: SupabaseClient,
     decision: Any = None,
+    *,
+    assistant_message_id: str | None = None,
 ) -> _DeepSearchOutcome:
     """Run the planner-driven deep_search_v4 loop.
 
@@ -1225,6 +1310,18 @@ async def _run_deep_search(
         supabase, input.conversation_id, input.user_id
     )
 
+    # Migration 052 / agent communication protocol: build the seq → UUID
+    # alias map the planner's referenced_wi resolver and read_workspace_item
+    # tool consult. Includes every WI the planner could see in prompts —
+    # prior searches AND attached items.
+    wi_alias_map: dict[int, str] = {}
+    for prior in prior_searches:
+        if prior.wi_seq is not None and prior.item_id:
+            wi_alias_map[int(prior.wi_seq)] = prior.item_id
+    for snap in input.attached_items:
+        if snap.wi_seq is not None and snap.item_id:
+            wi_alias_map[int(snap.wi_seq)] = snap.item_id
+
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         deps = build_planner_deps(
             supabase=supabase,
@@ -1238,6 +1335,7 @@ async def _run_deep_search(
             recent_messages=list(input.recent_messages),
             prior_searches=prior_searches,
             attached_items=list(input.attached_items),
+            wi_alias_map=wi_alias_map,
         )
 
         # The planner owns the loop — decide → retrieve → respond. Never raises.
@@ -1278,7 +1376,7 @@ async def _run_deep_search(
                     user_id=input.user_id,
                     conversation_id=input.conversation_id,
                     case_id=input.case_id,
-                    message_id=None,
+                    message_id=assistant_message_id,
                     agg_output=agg_output,
                     original_query=input.describe_query,
                     detail_level=detail_level,
@@ -1317,8 +1415,19 @@ async def _run_deep_search(
                 referenced_item_id,
             )
 
-    # Aggregate token usage from per-executor stats (planner + aggregator tokens
-    # land in Logfire spans, not this dict — tracked as a follow-up).
+    # Aggregate token usage from per-executor stats. Every phase that runs
+    # an LLM populates ``deps._per_executor_stats[<phase>]`` with a
+    # ``per_tier`` breakdown — covered phases (Wave-N cost-ledger fix):
+    #   - ``reg_search`` / ``compliance_search`` / ``case_search`` (expander
+    #     tier_1 + reranker tier_2; written by each loop)
+    #   - ``planner`` (decider + responder, both tier_1; written by
+    #     ``_finalize_planner_stats`` in ``deep_search_v4/planner/runner.py``)
+    #   - ``aggregator`` (tier_1; written at the end of
+    #     ``deep_search_v4/orchestrator.run_full_loop``)
+    # ``estimate_run_cost`` walks ``per_tier`` first → prices each phase at
+    # its real tier. Without this aggregation the planner-decider /
+    # planner-responder / aggregator LLM calls were silently uncounted,
+    # producing the ~10× under-count observed in conv accbc49c.
     stats: dict = dict(getattr(deps, "_per_executor_stats", {}) or {})
     # §7 forensic surface — planner decisions on this turn. EVENT_DECIDED /
     # EVENT_RESPONDED already log these to Logfire for dashboards; this writes
@@ -1376,91 +1485,39 @@ async def _run_writer(
     input: MajorAgentInput,
     subtype: str | None,
     supabase: SupabaseClient,
-) -> SpecialistResult:
-    """Run the agent_writer pipeline and return a SpecialistResult.
+    assistant_message_id: str | None = None,
+):
+    """Run the writer_planner → writing_executor pipeline.
 
-    Extracted from the former _run_pydantic_ai_task writing branch.
-    Key changes:
-    - supabase passed explicitly (MajorAgentInput is DB-free by contract).
-    - Workspace context loading replaced by attached_items from MajorAgentInput.
-    - Full content_md NOT streamed to chat; chat_summary + key_findings used instead.
-    - WriterDeps built with describe_query + task_label + attached_items +
-      revising_item_id already set (Wave 1 redesign — was ``briefing`` field
-      pre-redesign), so _populate_deps_from_input in the runner fills any
-      remaining gaps.
+    Replaces the legacy direct-writer invocation per
+    ``.claude/plans/writer_planner.md`` § Orchestrator wiring change. The
+    writer_planner (Layer-2 Major) owns the loop: it may pause for
+    ``ask_user`` or ``present_plan_for_approval``, then on resume drives
+    the writing_executor (Layer-3 Task) and publishes the workspace_item.
+
+    ``assistant_message_id`` is the assistant-message FK that the publisher
+    stamps onto ``workspace_items.message_id`` so the chat ↔ artifact
+    linkage is queryable. Threaded through from message_service →
+    handle_message → _dispatch → here → handle_writer_planner_turn →
+    publish_input.
+
+    Returns:
+        ``WriterPlannerTurnResult`` (see ``agents.writer_planner.runner``).
+        Callers must branch on ``.kind``:
+          - ``'completed'`` → ``.result`` is the SpecialistResult to stream.
+          - ``'paused'``    → ``.planner_result`` + ``.deferred`` + ``.pause_reason``
+            feed ``_record_deferred``; the run stays alive.
+
+    ``subtype`` is forwarded as a hint but the planner derives the final
+    subtype from the user's intent — the router's hint is advisory only.
     """
-    import httpx
+    from agents.writer_planner import handle_writer_planner_turn
 
-    from agents.agent_writer import (
-        WorkspaceContextBlock,
-        WriterInput,
-        build_writer_deps,
-        handle_writer_turn,
-    )
-    from backend.app.services.preferences_service import get_detail_level
-
-    try:
-        detail_level = get_detail_level(supabase, input.user_id)
-    except Exception:
-        logger.warning("get_detail_level failed; defaulting to 'medium'", exc_info=True)
-        detail_level = "medium"
-
-    # Build research_items from attached_items: search-like kinds only.
-    research_items: list[dict] = []
-    for snap in input.attached_items:
-        kind_lower = (snap.kind or "").lower()
-        subtype_hint = (snap.metadata.get("subtype") or "").lower()
-        if kind_lower in {"agent_search"} or subtype_hint in {"legal_synthesis", "agent_search", "report"}:
-            research_items.append({
-                "item_id": snap.item_id,
-                "title": snap.title,
-                "content_md": snap.content_md,
-                "metadata": snap.metadata,
-            })
-
-    chosen_subtype = subtype or "memo"
-
-    writer_input = WriterInput(
-        user_id=input.user_id,
-        conversation_id=input.conversation_id,
-        case_id=input.case_id,
-        message_id=None,  # task 10 will pass user_message_id through MajorAgentInput
-        user_request=input.describe_query,
-        subtype=chosen_subtype,  # type: ignore[arg-type]
-        research_items=research_items,
-        workspace_context=WorkspaceContextBlock(
-            notes=[],
-            attachments=[],
-            convo_context=None,
-        ),
-        revising_item_id=input.target_item_id,
-        detail_level=detail_level,  # type: ignore[arg-type]
-        tone="formal",
-    )
-
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        writer_deps = build_writer_deps(
-            supabase=supabase,
-            http_client=http_client,
-            describe_query=input.describe_query,
-            task_label=input.task_label,
-            attached_items=list(input.attached_items),
-            revising_item_id=input.target_item_id,
-            detail_level=detail_level,
-            tone="formal",
-        )
-
-        writer_output = await handle_writer_turn(writer_input, writer_deps)
-
-    return SpecialistResult(
-        output_item_id=writer_output.item_id,
-        chat_summary=writer_output.chat_summary or "",
-        key_findings=list(writer_output.key_findings or []),
-        sse_events=list(writer_output.sse_events or []),
-        model_used=writer_output.metadata.get("model_used", "agent_writer"),
-        tokens_in=0,
-        tokens_out=0,
-        per_phase_stats={},
+    return await handle_writer_planner_turn(
+        major_input=input,
+        supabase=supabase,
+        subtype_hint=subtype,
+        assistant_message_id=assistant_message_id,
     )
 
 

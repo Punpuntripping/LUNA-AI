@@ -114,6 +114,12 @@ class AgentRunRecord:
     question_text: str | None = None
     asked_at: datetime | None = None
     expires_at: datetime | None = None
+    # Distinguishes pause flavors when status='awaiting_user' (migration 053).
+    # 'clarify'      — ask_user deferred tool (plain question rendering)
+    # 'approve_plan' — present_plan_for_approval deferred tool (plan_md
+    #                  rendering with inline approve/reject affordances)
+    # Defaults to 'clarify' so legacy callers (deep_search ask_user) need no change.
+    pause_reason: str = "clarify"
 
 
 def record_agent_run(supabase: SupabaseClient, rec: AgentRunRecord) -> str | None:
@@ -220,6 +226,9 @@ def _record_agent_run_inner(supabase: SupabaseClient, rec: AgentRunRecord) -> st
             payload["deferred_payload"] = rec.deferred_payload
         if rec.question_text is not None:
             payload["question_text"] = rec.question_text
+        # Migration 053 — only persist when paused so legacy rows stay clean.
+        if rec.status == "awaiting_user" and rec.pause_reason:
+            payload["pause_reason"] = rec.pause_reason
         if rec.asked_at is not None:
             payload["asked_at"] = rec.asked_at.isoformat()
         if rec.expires_at is not None:

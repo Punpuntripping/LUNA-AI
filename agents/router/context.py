@@ -155,7 +155,7 @@ def _load_workspace_item_summaries(
     try:
         resp = (
             supabase.table("workspace_items")
-            .select("item_id, kind, title, summary, content_md, created_at")
+            .select("item_id, wi_seq, kind, title, summary, content_md, created_at")
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=False)
@@ -184,6 +184,9 @@ def _load_workspace_item_summaries(
             continue
         summaries.append({
             "item_id": row.get("item_id"),
+            # Migration 052: wi_seq is the per-conversation integer alias
+            # ("WI-{wi_seq}") the router LLM emits in target_wi/attached_wis.
+            "wi_seq": row.get("wi_seq"),
             "kind": kind or "agent_search",
             "title": row.get("title") or "",
             "summary": row.get("summary"),  # may be NULL — renderer handles

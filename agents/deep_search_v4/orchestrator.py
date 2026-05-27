@@ -79,6 +79,7 @@ from agents.deep_search_v4.ura.merger import build_ura_from_phases
 from agents.deep_search_v4.ura.reg_adapter import reg_to_rqr
 from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
+from agents.deep_search_v4.sector_picker import run_sector_picker
 from agents.utils.agent_models import usage_by_tier
 from shared.observability import get_logfire
 
@@ -131,6 +132,16 @@ class FullLoopDeps:
     # fixed ``*_max_keep`` caps apply. See MODE_PROFILES.md §1.
     result_budget: dict[str, int] | None = None
     sectors_override: list[str] | None = None
+    # Sector AND-filter as an in-flight future, resolved by the sector_picker
+    # agent running in parallel with the executors. When set, the executors'
+    # filter steps ``await`` this future at the join point (post-RPC for reg/
+    # case; pre-RPC for compliance). When ``None``, executors fall back to the
+    # static ``sectors_override`` above. The future itself may resolve to
+    # ``None`` (picker timed out / errored / emitted an out-of-bound list) —
+    # the loops treat that as "no filter". Populated by ``run_retrieval``;
+    # left ``None`` by CLI / monitor paths that construct ``FullLoopDeps``
+    # directly without the planner-driven picker.
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None
     case_score_threshold: float | None = None
     # Phase 6 clarification hook — superseded by the deferred-tool path in
     # cut-2 (Task 13.7).  ask_user is now a @agent.tool_plain on the planner
@@ -282,6 +293,7 @@ async def _run_reg_phase(
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
+        sectors_future=deps.sectors_future,
         context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
     )
 
@@ -458,6 +470,7 @@ async def _run_compliance_phase(
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
+        sectors_future=deps.sectors_future,
         context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
         concurrency=deps.concurrency,
     )
@@ -607,6 +620,7 @@ async def _run_case_phase(
             concurrency=deps.concurrency,
             expander_max_queries=case_expander_cap,
             sectors_override=deps.sectors_override,
+            sectors_future=deps.sectors_future,
             score_threshold=deps.case_score_threshold,
             context_blocks=list(deps.context_blocks) if deps.context_blocks else None,
         )
@@ -713,9 +727,29 @@ async def run_full_loop(
     deps._comp_rqrs = list(comp_sqs or [])
     deps._case_rqrs = list(case_sqs or [])
 
-    # Sectors come from the planner only (the executors no longer pick).
-    sector_filter = list(deps.sectors_override) if deps.sectors_override else []
-    sector_source = "planner" if sector_filter else "none"
+    # Sector filter source: the sector_picker future (when wired via
+    # ``run_retrieval``) or the static ``sectors_override`` (CLI / monitor
+    # paths). By this point the gather above has finished, so the picker
+    # task — which fired concurrently with the executors — is already
+    # resolved; awaiting it here just reads the cached value.
+    sector_filter: list[str] = []
+    sector_source = "none"
+    if deps.sectors_future is not None:
+        try:
+            picked = await deps.sectors_future
+        except Exception as exc:
+            logger.warning(
+                "run_full_loop[%s]: sector_picker future raised %s; "
+                "treating as no filter",
+                query_id, type(exc).__name__,
+            )
+            picked = None
+        if picked:
+            sector_filter = list(picked)
+            sector_source = "picker"
+    elif deps.sectors_override:
+        sector_filter = list(deps.sectors_override)
+        sector_source = "override"
     logger.info(
         "run_full_loop[%s]: sector_filter source=%s value=%s",
         query_id, sector_source, sector_filter,
@@ -809,6 +843,57 @@ async def run_full_loop(
 # ---------------------------------------------------------------------------
 # Planner phase 2 — run_retrieval
 # ---------------------------------------------------------------------------
+
+
+def _spawn_sector_picker_task(
+    *,
+    query: str,
+    decision: Any,
+    deps: PlannerDeps,
+    config: RetrievalConfig,
+) -> "asyncio.Future[list[str] | None]":
+    """Spawn the sector_picker as a background task, return the future to await.
+
+    The picker runs in parallel with the executors. Each executor awaits this
+    future at its sector-filter join point (post-RPC for reg/case, pre-RPC
+    for compliance). The picker reads the assembled ``ContextBlock`` list the
+    aggregator + expanders will see, so its view of the question matches what
+    the rest of the pipeline gets.
+
+    Resolves to ``list[str]`` (2-5 canonical sector names) when the picker
+    emits a valid filter, or ``None`` for every failure mode (timeout, error,
+    null output, under-min / over-max). The loops treat ``None`` as
+    "no filter" and run unfiltered.
+    """
+    # Re-derive the context blocks the picker should see. We can't take the
+    # ``selected_blocks`` list from the caller because at picker-spawn time
+    # the local variable is in a different scope — recompute here. Cheap.
+    candidates = _build_candidate_context_blocks(decision, deps)
+    label_order = (decision.context_labels if decision is not None else []) or []
+    blocks = [candidates[label] for label in label_order if label in candidates]
+
+    planner_brief = ""
+    if decision is not None:
+        planner_brief = (getattr(decision, "planner_brief", "") or "").strip()
+
+    mode = (
+        config.mode
+        if getattr(config, "mode", None) is not None
+        else (getattr(decision, "mode", None) or "reg_led")
+    )
+
+    coro = run_sector_picker(
+        query=query,
+        mode=mode,
+        planner_brief=planner_brief,
+        context_blocks=blocks,
+        model_override=deps.model_override,
+        query_id=getattr(deps, "query_id", 0) or 0,
+        conversation_id=getattr(deps, "conversation_id", "") or "",
+    )
+    # asyncio.create_task wraps the coroutine into a Task (which is an
+    # awaitable Future). Multiple awaiters share the resolved value.
+    return asyncio.create_task(coro, name="deep_search.sector_picker")
 
 
 def _build_candidate_context_blocks(
@@ -913,6 +998,21 @@ async def run_retrieval(
             [b.label for b in selected_blocks],
         )
 
+    # Spawn the sector_picker in parallel with the executors. The picker reads
+    # the query + planner_brief + assembled context_blocks and emits a 2-5
+    # sector AND-filter (or null → unfiltered). Each executor awaits this
+    # future at its sector-filter join point:
+    #   - reg_search / case_search: post-RPC, before the reranker.
+    #   - compliance_search: pre-RPC (the RPC itself takes filter_sectors).
+    # The expander + embed + RPC chain in reg/case runs concurrently with the
+    # picker LLM call. Picker failure → future resolves to None → unfiltered.
+    sectors_future = _spawn_sector_picker_task(
+        query=query,
+        decision=decision,
+        deps=deps,
+        config=config,
+    )
+
     full_deps = FullLoopDeps(
         supabase=deps.supabase,
         embedding_fn=deps.embedding_fn,
@@ -927,9 +1027,12 @@ async def run_retrieval(
         detail_level=deps.detail_level,
         expander_max_queries=dict(config.expander_max_queries),
         result_budget=dict(config.result_budget),
-        sectors_override=(
-            list(config.sectors_override) if config.sectors_override else None
-        ),
+        # Wave A: ``sectors_override`` retained for non-picker callers (CLI,
+        # monitor, smoke tests that build FullLoopDeps directly). When the
+        # picker is wired (any planner-driven dispatch), ``sectors_future``
+        # is the live source and ``sectors_override`` is left ``None``.
+        sectors_override=None,
+        sectors_future=sectors_future,
         aggregator_logger=deps.aggregator_logger,
         enable_planner=False,
         context_blocks=selected_blocks,

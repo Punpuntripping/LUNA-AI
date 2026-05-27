@@ -25,8 +25,6 @@ from __future__ import annotations
 
 import html
 
-from agents.deep_search_v4.shared.sector_vocab.regulations import VALID_SECTORS
-
 from .models import Mode
 
 
@@ -39,11 +37,6 @@ def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
 
 
-_SECTOR_NUMBERED_LIST = "\n".join(
-    f"{i}. {name}" for i, name in enumerate(VALID_SECTORS, start=1)
-)
-
-
 # ===========================================================================
 # Phase 1 — the decider system prompt
 # ===========================================================================
@@ -51,7 +44,9 @@ _SECTOR_NUMBERED_LIST = "\n".join(
 PLANNER_DECIDER_SYSTEM_PROMPT = f"""\
 أنت مُخطِّط البحث القانوني العميق في منصة لونا للذكاء الاصطناعي القانوني السعودي.
 
-في هذه المرحلة مهمتك الوحيدة: قراءة استفسار المستخدم — غالباً بلهجة سعودية محلية وصياغة طبيعية متشعبة — واختيار **وضع بحث واحد** من أربعة يقود بقية المسار، مع تحديد منفّذ مساند وقطاع عند الحاجة. أنت لا تقرأ مستندات ولا مراجع، فقط النص.
+في هذه المرحلة مهمتك الوحيدة: قراءة استفسار المستخدم — غالباً بلهجة سعودية محلية وصياغة طبيعية متشعبة — واختيار **وضع بحث واحد** من أربعة يقود بقية المسار، مع تحديد منفّذ مساند عند الحاجة. أنت لا تقرأ مستندات ولا مراجع، فقط النص.
+
+ملاحظة: اختيار القطاع النظامي ليس من اختصاصك. وكيلٌ متخصِّص (`sector_picker`) يعمل بالتوازي مع المنفّذين ويُصدر قائمة 2-5 قطاعات لتصفية الحصيلة — لديه رؤية بالأمثلة الفعلية لكل قطاع وليست مجرد قائمة بالأسماء. ركّز أنت على الوضع و`support` و`planner_brief`.
 
 ## الأوضاع الأربعة — اختر واحداً
 
@@ -90,14 +85,6 @@ PLANNER_DECIDER_SYSTEM_PROMPT = f"""\
 
 الوجه «حقيقي» حين يطلبه المستخدم صراحةً أو ضمناً، لا حين يكون مجرد مجاورٍ للموضوع.
 
-## `sectors` — قطاع قانوني (اختياري)
-
-اختر بين 1 و4 قطاعات من القائمة التالية بالضبط (اسم مطابق حرفياً، لا اختراع)، أو `null` إن لم يكن السؤال قطاعياً صريحاً. إن وجدت أن المناسب 5 قطاعات أو أكثر فالسؤال أوسع من أن يُصفّى — أعِد `null`. القائمة لا تحوي قطاعاً باسم «أحوال شخصية»؛ للأسئلة الزوجية والحضانة استخدم الأقرب أو `null`.
-
-{_SECTOR_NUMBERED_LIST}
-
-`sectors` يجب أن يكون قائمة JSON حقيقية أو `null` — لا سلسلة نصية تحوي قائمة، ولا سلسلة فارغة.
-
 ## السياق المتاح — اقرأه قبل أن تُقرّر
 
 سيُحقن أدناه في تعليمات ديناميكية أربع كُتل سياقية حسب توفرها:
@@ -113,14 +100,14 @@ PLANNER_DECIDER_SYSTEM_PROMPT = f"""\
 
 ## أداة `read_workspace_item` — قراءة بطاقة عمل بعينها
 
-لديك أداة قراءة واحدة: `read_workspace_item(item_id: str)` تُعيد محتوى `content_md` الكامل لبطاقةٍ في المحادثة الحالية فقط.
+لديك أداة قراءة واحدة: `read_workspace_item(wi: str)` تُعيد محتوى `content_md` الكامل لبطاقةٍ في المحادثة الحالية فقط. مرّر رمز البطاقة بصيغة «WI-N» كما يظهر في `<prior_searches>` و`<attached_items>` (مثل `read_workspace_item("WI-3")`).
 
 **متى تستخدمها (نادراً):**
 - المستخدم يُحيل إلى «البحث السابق» أو «التقرير» ولم تكفِك «الخلاصة» في `<prior_searches>`.
 - بحث سابق ذو `confidence=low`، تحتاج رؤية ما فشل لتختار خطةً أحدّ.
 - المستخدم يُحيل إلى ملفٍ مرفقٍ بالمحادثة لم يصلك مضمونه كاملاً ضمن `<attached_items>`.
 
-**سقف ناعم: ≤ 3 استدعاءات في الدورة الواحدة.** اختر أهم 2-3 بطاقات لا أكثر، ولا تُجرّب `item_id` لا تعرفه — استخرج المُعرّفات من `<prior_searches>` أو `<attached_items>`.
+**سقف ناعم: ≤ 3 استدعاءات في الدورة الواحدة.** اختر أهم 2-3 بطاقات لا أكثر. **لا تستخدم معرّفات UUID** ولا تخترع رموزاً — استخدم رموز `WI-N` الموجودة في `<prior_searches>` أو `<attached_items>` فقط.
 
 تعيد سلسلة فارغة `""` صامتةً حين لا توجد البطاقة أو تخرج عن النطاق (لا تُعد المحاولة). تعيد سلسلة عربية «خطأ أثناء قراءة العنصر…» حين يقع خطأ تقني (يجوز عندئذٍ التنحّي عن القراءة والمضي بقرار).
 
@@ -182,7 +169,6 @@ PLANNER_DECIDER_SYSTEM_PROMPT = f"""\
 {{
   "mode": "case_led" | "reg_led" | "compliance_led" | "full",
   "support": true | false,
-  "sectors": ["..."] | null,
   "rationale": "<مبرّر عربي مختصر — جملة أو جملتان>",
   "planner_brief": "<فارغ في الأسئلة العادية؛ نص يحمل الحقائق اللازمة (بما فيها ما اقتطفته من <attached_items>) حين تكون هناك معلومات يحتاجها البحث ولن تصل إليه عبر السؤال الأصلي — اقرأ القسم أعلاه>",
   "context_labels": ["case_brief", "planner_brief", "prior_search_lessons"]
@@ -198,19 +184,19 @@ PLANNER_DECIDER_SYSTEM_PROMPT = f"""\
 ## أمثلة
 
 استفسار: <query>وش يقول نظام العمل عن فترة التجربة؟ كم مدتها؟</query>
-قرار: `{{"mode": "reg_led", "support": false, "sectors": ["العمل والتوظيف"], "rationale": "سؤال نظامي صرف عن مدة فترة التجربة؛ قاعدة بلا إجراء ولا سابقة."}}`
+قرار: `{{"mode": "reg_led", "support": false, "rationale": "سؤال نظامي صرف عن مدة فترة التجربة؛ قاعدة بلا إجراء ولا سابقة."}}`
 
 استفسار: <query>أبغى أرفع شكوى عمالية على صاحب العمل، وش حقي نظاماً وكيف أبدأ؟</query>
-قرار: `{{"mode": "reg_led", "support": true, "sectors": ["العمل والتوظيف"], "rationale": "محور القاعدة (حقي نظاماً) مهيمن، مع ذيل إجرائي واضح (كيف أبدأ) ← reg_led مع مساند compliance."}}`
+قرار: `{{"mode": "reg_led", "support": true, "rationale": "محور القاعدة (حقي نظاماً) مهيمن، مع ذيل إجرائي واضح (كيف أبدأ) ← reg_led مع مساند compliance."}}`
 
 استفسار: <query>أبغى سابقة قضائية في فسخ عقد إيجار تجاري بسبب تأخر المستأجر بالأجرة</query>
-قرار: `{{"mode": "case_led", "support": false, "sectors": null, "rationale": "طلب صريح لسابقة قضائية؛ المستخدم يريد الحكم لا المادة."}}`
+قرار: `{{"mode": "case_led", "support": false, "rationale": "طلب صريح لسابقة قضائية؛ المستخدم يريد الحكم لا المادة."}}`
 
 استفسار: <query>وش خطوات تسجيل وكالة شرعية في ناجز؟</query>
-قرار: `{{"mode": "compliance_led", "support": true, "sectors": null, "rationale": "إجراء عبر خدمة ناجز؛ يحتاج سنده النظامي (شروط صحة الوكالة ونطاقها) ← compliance_led مع مساند reg."}}`
+قرار: `{{"mode": "compliance_led", "support": true, "rationale": "إجراء عبر خدمة ناجز؛ يحتاج سنده النظامي (شروط صحة الوكالة ونطاقها) ← compliance_led مع مساند reg."}}`
 
 استفسار: <query>شركة فصلتني فجأة، النظام وش يقول عن الفصل التعسفي، ووين أرفع شكوى، وكم ممكن المحكمة تحكم لي تعويض؟</query>
-قرار: `{{"mode": "full", "support": false, "sectors": ["العمل والتوظيف"], "rationale": "ثلاثة أوجه صريحة: القاعدة (الفصل التعسفي)، الإجراء (وين أرفع)، السابقة (مقدار التعويض) ← full."}}`
+قرار: `{{"mode": "full", "support": false, "rationale": "ثلاثة أوجه صريحة: القاعدة (الفصل التعسفي)، الإجراء (وين أرفع)، السابقة (مقدار التعويض) ← full."}}`
 """
 
 
@@ -228,7 +214,7 @@ PLANNER_RESPONDER_SYSTEM_PROMPT = """\
 1. `chat_summary_md` — ملخّص عربي للحصيلة، موجّه للمستخدم مباشرةً.
 2. `suggestion_md` — اقتراح الخطوة التالية، أو نص فارغ إن لا جديد يُقترح.
 3. `build_artifact` — قيمة منطقية (`true`/`false`) تقرّر هل يُنشأ كرتٌ جديد في مساحة العمل أم لا.
-4. `referenced_item_id` — معرّف بطاقة سابقة عند `build_artifact=false`؛ `null` خلاف ذلك.
+4. `referenced_wi` — رمز بطاقة سابقة (مثل «WI-3») عند `build_artifact=false`؛ `null` خلاف ذلك. لا تكتب UUID — استخدم رموز WI-N من `<prior_searches>` فقط.
 
 ## قواعد `chat_summary_md`
 
@@ -251,13 +237,13 @@ PLANNER_RESPONDER_SYSTEM_PROMPT = """\
 
 `build_artifact` يقرّر هل تنشر منصة لونا بطاقةً جديدة في مساحة العمل لهذه الدورة أم لا. **الافتراض `true`**. اضبطه `false` في إحدى حالتين فقط:
 
-1. **حصيلة فارغة** — حين تعود الحصيلة بمؤشر «لا نتائج» (الـ`synthesis_md` يحوي رسالة «لا توجد نتائج قانونية كافية…»، و`references=[]`، و`gaps` يشمل `"no_references_after_reranker"`). في هذه الحالة لا فائدة من بطاقة فارغة — أخبِر المستخدم نصاً: «نتائج البحث غير كافية لإصدار بطاقة جديدة»، واترك `referenced_item_id` فارغاً (`null`).
+1. **حصيلة فارغة** — حين تعود الحصيلة بمؤشر «لا نتائج» (الـ`synthesis_md` يحوي رسالة «لا توجد نتائج قانونية كافية…»، و`references=[]`، و`gaps` يشمل `"no_references_after_reranker"`). في هذه الحالة لا فائدة من بطاقة فارغة — أخبِر المستخدم نصاً: «نتائج البحث غير كافية لإصدار بطاقة جديدة»، واترك `referenced_wi` فارغاً (`null`).
 
-2. **بحث سابق يغطّي السؤال** — حين تحوي `<prior_search_lessons>` بطاقةً سابقةً بـ`confidence=high` تُجيب فعلاً على هذا السؤال (لا تتشابه فقط في الموضوع — تجيب على الجوهر). عندئذٍ اضبط `build_artifact=false` و`referenced_item_id` على `item_id` تلك البطاقة، وأخبِر المستخدم نصاً: «تمت الإجابة على هذا السؤال سابقاً (انظر بطاقة …)».
+2. **بحث سابق يغطّي السؤال** — حين تحوي `<prior_searches>` بطاقةً سابقةً بـ`confidence=high` تُجيب فعلاً على هذا السؤال (لا تتشابه فقط في الموضوع — تجيب على الجوهر). عندئذٍ اضبط `build_artifact=false` و`referenced_wi` على رمز تلك البطاقة (مثل «WI-3»)، وأخبِر المستخدم نصاً: «تمت الإجابة على هذا السؤال سابقاً (انظر بطاقة …)».
 
 في كلتا الحالتين: **لا تصِف البطاقة كأنها موجودة** ولا تختم بـ«التفاصيل في البطاقة» — لا بطاقةَ تنشأ. لا تُحِل إلى «بطاقة البحث» باعتبارها مخرجاً لهذه الدورة.
 
-في الحالة العادية (`build_artifact=true`)، اترك `referenced_item_id=null`.
+في الحالة العادية (`build_artifact=true`)، اترك `referenced_wi=null`.
 
 التعليمات التالية تحمل حصيلة البحث وإطار الوضع الذي عليك الكتابة وفقه.\
 """
@@ -357,13 +343,21 @@ def _render_prior_searches(prior_searches) -> str | None:
         return None
     parts = ["<prior_searches>"]
     for prior in prior_searches:
-        item_id = _esc(getattr(prior, "item_id", ""))
+        # Migration 052: render the per-conversation alias (WI-{seq}) instead
+        # of the raw UUID so the LLM emits the alias in ``referenced_wi`` and
+        # ``read_workspace_item`` calls. ``wi_seq`` may be None on legacy
+        # rows — skip those rather than fall back to a UUID-shaped attr that
+        # would re-leak the UUID surface.
+        wi_seq = getattr(prior, "wi_seq", None)
+        if wi_seq is None:
+            continue
+        wi = f"WI-{wi_seq}"
         title = _esc(getattr(prior, "title", ""))
         describe_query = _esc(getattr(prior, "describe_query", ""))
         confidence = _esc(getattr(prior, "confidence", "medium"))
         summary = (getattr(prior, "summary", "") or "").strip()
         parts.append(
-            f'  <prior_search item_id="{item_id}" confidence="{confidence}">'
+            f'  <prior_search wi="{wi}" confidence="{confidence}">'
         )
         parts.append(f"    <title>{title}</title>")
         parts.append(f"    <describe_query>{describe_query}</describe_query>")
@@ -375,26 +369,40 @@ def _render_prior_searches(prior_searches) -> str | None:
             )
         parts.append("  </prior_search>")
     parts.append("</prior_searches>")
+    # If every prior entry was skipped for missing wi_seq, return None so
+    # the block isn't injected at all.
+    if len(parts) == 2:
+        return None
     return "\n".join(parts)
 
 
 def _render_attached_items(attached_items) -> str | None:
-    """Render the attached_items XML block when non-empty."""
+    """Render the attached_items XML block when non-empty.
+
+    Migration 052: ``wi="WI-{seq}"`` replaces the raw ``item_id`` attribute.
+    Snapshots without a ``wi_seq`` (rare — case-only items, legacy rows) are
+    skipped from the alias-rendered surface.
+    """
     if not attached_items:
         return None
     parts = ["<attached_items>"]
     for item in attached_items:
-        item_id = _esc(getattr(item, "item_id", ""))
+        wi_seq = getattr(item, "wi_seq", None)
+        if wi_seq is None:
+            continue
+        wi = f"WI-{wi_seq}"
         kind = _esc(getattr(item, "kind", ""))
         title = _esc(getattr(item, "title", ""))
         content_md = _esc(getattr(item, "content_md", "") or "")
         parts.append(
-            f'  <attached_item item_id="{item_id}" kind="{kind}">'
+            f'  <attached_item wi="{wi}" kind="{kind}">'
         )
         parts.append(f"    <title>{title}</title>")
         parts.append(f"    <content_md>{content_md}</content_md>")
         parts.append("  </attached_item>")
     parts.append("</attached_items>")
+    if len(parts) == 2:
+        return None
     return "\n".join(parts)
 
 
@@ -509,7 +517,7 @@ def build_responder_instructions(deps) -> str:
 ### مقتطف من التركيب التفصيلي
 {synthesis_slice}{truncated}
 
-اكتب الآن `chat_summary_md` و`suggestion_md` و`build_artifact` و`referenced_item_id` وفق إطار الوضع وقواعد النظام أعلاه. \
+اكتب الآن `chat_summary_md` و`suggestion_md` و`build_artifact` و`referenced_wi` وفق إطار الوضع وقواعد النظام أعلاه. \
 احترم مستوى الثقة والفجوات: إن كانت الثقة منخفضة أو ثمة فجوة مؤثّرة فاذكرها صراحةً.\
 """
 
@@ -521,5 +529,4 @@ __all__ = [
     "build_responder_user_message",
     "build_decider_instructions",
     "build_responder_instructions",
-    "VALID_SECTORS",
 ]

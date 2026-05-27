@@ -158,15 +158,40 @@ class CaseSourceView(BaseModel):
     title: str
     """Composite label: ``court | case_number | date_hijri`` (parts dropped if
     empty / pipe-separated)."""
+    content: str = ""
+    """Case body (``cases.content``) — full ruling text. Rendered as markdown
+    in the source-view popup."""
     details_url: str = ""
 
 
 class ServiceSourceView(BaseModel):
-    """Click-ready payload for a **government service**."""
+    """Click-ready payload for a **government service**.
+
+    Structured for the redesigned popup: four sections (intro, steps,
+    requirements, required documents) rendered as Arabic-labelled blocks
+    above the URL links. Each list element is a markdown-flavoured string
+    (e.g. ``"[فيديو توضيحي](https://...)"``) — the frontend renders them
+    through ``MarkdownRenderer``.
+    """
 
     source_type: Literal["gov_service"] = "gov_service"
     title: str
     """Service name in Arabic (``services.service_name_ar``)."""
+    intro_title: str = ""
+    """``services.intro_title`` — official long-form title shown as a heading
+    inside the popup body. Often redundant with ``title`` (the short
+    service_name); the renderer hides it when identical."""
+    intro_description: str = ""
+    """``services.intro_description`` — one-sentence description of what the
+    service does."""
+    steps: list[str] = []
+    """``services.steps`` — ordered list of procedural steps. Each entry may
+    contain inline markdown (links, emphasis)."""
+    requirements: list[str] = []
+    """``services.requirements`` — list of eligibility / pre-conditions."""
+    required_documents: list[str] = []
+    """``services.required_documents`` — list of documents the user must
+    submit."""
     national_platform_url: str = ""
     """``services.url`` -- shown as "المنصة الوطنية" in the UI."""
     service_url: str = ""
@@ -238,6 +263,11 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
     ``case_search/unfold_ura.py::_build_reranked_case_result`` where ``db_id``
     is set to ``full_row['case_ref']``). Filtering ``cases.id`` (uuid) with a
     ``case_ref`` value returns PostgREST 400. Always filter by ``case_ref``.
+
+    Selects ``content`` so the source-view popup can render the case body —
+    the URA result may or may not carry it (it does when produced by the
+    case_search adapter; it doesn't when ``references_service`` rebuilds the
+    shell from the relational refs table).
     """
     def _call() -> dict | None:
         try:
@@ -245,7 +275,7 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
                 supabase.table("cases")
                 .select(
                     "id, court, court_level, city, case_number, "
-                    "judgment_number, date_hijri, details_url"
+                    "judgment_number, date_hijri, details_url, content"
                 )
                 .eq("case_ref", case_ref)
                 .maybe_single()
@@ -262,11 +292,22 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
 async def _fetch_service_by_ref(
     supabase: SupabaseClient, service_ref: str
 ) -> dict | None:
+    """Fetch a service row by ``service_ref``.
+
+    Pulls the columns the source-view popup renders: the URL pair plus the
+    four structured sections (intro, steps, requirements, required_documents)
+    introduced in the redesigned popup. ARRAY columns come back as Python
+    lists.
+    """
     def _call() -> dict | None:
         try:
             resp = (
                 supabase.table("services")
-                .select("service_ref, service_name_ar, url, service_url")
+                .select(
+                    "service_ref, service_name_ar, url, service_url, "
+                    "intro_title, intro_description, steps, requirements, "
+                    "required_documents"
+                )
                 .eq("service_ref", service_ref)
                 .maybe_single()
                 .execute()
@@ -299,6 +340,24 @@ def _normalize_pdf_link(raw: Any) -> dict | None:
     return None
 
 
+def _strip_line_indent(text: str) -> str:
+    """Strip leading whitespace from every line.
+
+    chunks_v2 rows are PDF-extracted Arabic legal prose; the extractor often
+    preserves stray indentation that has no semantic meaning in our text but
+    triggers CommonMark's "indented code block" rule (4+ leading spaces) in
+    react-markdown. The popup then renders a list of articles inside a
+    ``<pre><code>`` box instead of as prose / bullets.
+
+    Stripping per-line leading whitespace is safe here because the corpus has
+    no nested-list semantics — bullets are flat ``- ...`` lines that markdown
+    parses correctly when they start at column 0.
+    """
+    if not text:
+        return text
+    return "\n".join(line.lstrip() for line in text.splitlines())
+
+
 async def _build_reg_view(
     supabase: SupabaseClient, ura: RegURAResult
 ) -> ChunkSourceView:
@@ -311,8 +370,8 @@ async def _build_reg_view(
     """
     _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 
-    chunk_content = (ura.chunk_content or "").strip()
-    chunk_context = (ura.chunk_context or "").strip()
+    chunk_content = _strip_line_indent((ura.chunk_content or "").strip())
+    chunk_context = _strip_line_indent((ura.chunk_context or "").strip())
     if chunk_content and chunk_context:
         content = f"{chunk_content}\n\n{chunk_context}"
     else:
@@ -348,10 +407,39 @@ async def _build_case_view(
     composite = " | ".join(p for p in (s.strip() for s in title_parts) if p)
     title = composite or ura.title or "قضية"
 
+    # Case body: prefer the just-fetched row, fall back to whatever the URA
+    # result already carries (set by the case_search adapter at retrieval
+    # time when this view is built from a live URA, not from references
+    # reconstruction).
+    case_body = (row.get("content") or ura.case_content or "").strip()
+
     return CaseSourceView(
         title=title,
+        content=case_body,
         details_url=row.get("details_url", "") or "",
     )
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    """Coerce a ``services.*`` ARRAY column into a clean ``list[str]``.
+
+    Postgres ARRAYs come through PostgREST as Python lists, but rows may
+    return ``None`` for unpopulated columns, and individual entries can be
+    ``None``/empty after upstream ingestion. Strip and drop blanks so the
+    frontend never has to render a stray empty bullet.
+    """
+    if not value:
+        return []
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[str] = []
+    for entry in value:
+        if entry is None:
+            continue
+        s = str(entry).strip()
+        if s:
+            out.append(s)
+    return out
 
 
 async def _build_service_view(
@@ -359,19 +447,24 @@ async def _build_service_view(
 ) -> ServiceSourceView:
     """Resolve a ``ComplianceURAResult`` -> ``ServiceSourceView``.
 
-    The URA already carries ``service_url``; only ``services.url`` (the
-    national platform link) needs a Supabase lookup -- and we look up by
-    ``service_ref``, not by the hashed ref_id.
+    Always fetches ``services`` by ``service_ref`` to pull the structured
+    intro / steps / requirements / required_documents columns the URA result
+    doesn't carry. Falls back to whatever the URA does have for the URL
+    fields when the lookup misses.
     """
-    national_platform_url = ""
+    row: dict = {}
     if ura.service_ref:
         row = await _fetch_service_by_ref(supabase, ura.service_ref) or {}
-        national_platform_url = row.get("url", "") or ""
 
     return ServiceSourceView(
-        title=ura.service_name or "",
-        national_platform_url=national_platform_url,
-        service_url=ura.service_url or ura.url or "",
+        title=row.get("service_name_ar") or ura.service_name or "",
+        intro_title=(row.get("intro_title") or "").strip(),
+        intro_description=(row.get("intro_description") or "").strip(),
+        steps=_coerce_str_list(row.get("steps")),
+        requirements=_coerce_str_list(row.get("requirements")),
+        required_documents=_coerce_str_list(row.get("required_documents")),
+        national_platform_url=(row.get("url") or "").strip(),
+        service_url=(row.get("service_url") or ura.service_url or ura.url or "").strip(),
     )
 
 

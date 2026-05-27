@@ -91,6 +91,13 @@ class PlannerDeps:
     prior_searches: list[PriorSearchSummary] = field(default_factory=list)
     attached_items: list[WorkspaceItemSnapshot] = field(default_factory=list)
 
+    # Migration 052 / agent communication protocol: per-conversation
+    # ``WI-{seq}`` alias → workspace_items.item_id lookup. Built once per
+    # turn from ``prior_searches`` + ``attached_items`` + any other WIs the
+    # orchestrator surfaces. The responder's referenced_wi resolver and
+    # the read_workspace_item tool both consult this map.
+    wi_alias_map: dict[int, str] = field(default_factory=dict)
+
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
@@ -133,6 +140,7 @@ def build_planner_deps(
     recent_messages: list[ChatMessageSnapshot] | None = None,
     prior_searches: list[PriorSearchSummary] | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
+    wi_alias_map: dict[int, str] | None = None,
 ) -> PlannerDeps:
     """Construct a fresh :class:`PlannerDeps`.
 
@@ -164,6 +172,7 @@ def build_planner_deps(
         recent_messages=list(recent_messages) if recent_messages else [],
         prior_searches=list(prior_searches) if prior_searches else [],
         attached_items=list(attached_items) if attached_items else [],
+        wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
     )
 
 

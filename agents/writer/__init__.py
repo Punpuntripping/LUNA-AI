@@ -18,7 +18,13 @@ from .models import (
     WriterSection,
     WriterSubtype,
 )
-from .prompts import WRITER_PROMPTS, build_writer_user_message, get_writer_prompt
+from .prompts import (
+    WRITER_PROMPTS,
+    build_writer_user_message,
+    build_writer_user_message_minimal,
+    get_writer_prompt,
+    render_package_for_system_prompt,
+)
 
 # Lazy imports -- agent.py + runner.py pull in pydantic_ai + supabase + the
 # backend service layer transitively. The lazy block lets unit tests that
@@ -52,6 +58,8 @@ __all__ = [
     "WRITER_PROMPTS",
     "get_writer_prompt",
     "build_writer_user_message",
+    "build_writer_user_message_minimal",
+    "render_package_for_system_prompt",
     "create_writer_agent",
     "publish_writer_result",
     "handle_writer_turn",

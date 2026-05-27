@@ -16,6 +16,8 @@ from typing import Any, Optional
 
 from agents.models import WorkspaceItemSnapshot
 
+from .models import WriterPackage
+
 
 PRIMARY_MODEL_DEFAULT = "qwen3.6-plus"
 FALLBACK_MODEL_DEFAULT = "gemini-3-flash"
@@ -65,7 +67,7 @@ class WriterDeps:
     model_registry: Any = None
     http_client: Any = None
     logger: logging.Logger = field(
-        default_factory=lambda: logging.getLogger("agents.agent_writer")
+        default_factory=lambda: logging.getLogger("agents.writer")
     )
     primary_model: str = PRIMARY_MODEL_DEFAULT
     fallback_model: str = FALLBACK_MODEL_DEFAULT
@@ -81,6 +83,12 @@ class WriterDeps:
     revising_item_id: Optional[str] = None
     detail_level: str = "standard"
     tone: str = "neutral"
+    # WriterPackage handed off by the planner. When set, the dynamic
+    # instruction callables (``package_content_block`` in agent.py) render
+    # the package content as a system block. When None, the legacy path's
+    # ``format_writer_context`` keeps firing instead. See
+    # .claude/plans/writer_redesign.md § Deps shape.
+    package: Optional[WriterPackage] = None
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
 
@@ -101,6 +109,7 @@ def build_writer_deps(
     revising_item_id: Optional[str] = None,
     detail_level: str = "standard",
     tone: str = "neutral",
+    package: Optional[WriterPackage] = None,
 ) -> WriterDeps:
     """Build deps with env override + kwarg precedence.
 
@@ -117,7 +126,7 @@ def build_writer_deps(
         supabase=supabase,
         model_registry=model_registry,
         http_client=http_client,
-        logger=logger or logging.getLogger("agents.agent_writer"),
+        logger=logger or logging.getLogger("agents.writer"),
         primary_model=(
             primary_model
             or os.getenv("LUNA_WRITER_PRIMARY_MODEL")
@@ -136,6 +145,7 @@ def build_writer_deps(
         revising_item_id=revising_item_id,
         detail_level=detail_level,
         tone=tone,
+        package=package,
     )
 
 

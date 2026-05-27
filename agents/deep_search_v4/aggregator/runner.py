@@ -171,6 +171,13 @@ async def handle_aggregator_turn(
         model_used=model_used,
         validation=validation,
         artifact=artifact,
+        # Migration 049: pass the preprocessor's mapping out so the publisher
+        # can populate workspace_item_references.sub_queries[]. Filter to refs
+        # that survived the citation post-filter so the persisted state
+        # matches the panel the user actually sees.
+        ref_to_sub_queries={
+            r.n: list(ref_to_sub_queries.get(r.n, [])) for r in final_references
+        },
     )
 
     duration_s = time.perf_counter() - t0

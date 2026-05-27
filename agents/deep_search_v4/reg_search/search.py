@@ -52,19 +52,26 @@ async def search_regulations_pipeline(
     filter_sectors: list[str] | None = None,
     precomputed_embedding: list[float] | None = None,
     semaphore: asyncio.Semaphore | None = None,
+    filter_sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> tuple[list[dict], int]:
     """Search the v2 chunk corpus for one sub-query.
 
     Args:
         query: Arabic search query.
         deps: RegSearchDeps with ``supabase`` and ``embedding_fn``.
-        filter_sectors: Optional list of sector names to narrow scope. If the
-            filter empties the result set, it is dropped and the unfiltered
-            set is used instead.
+        filter_sectors: Static sector list applied at step 6. Use this from
+            CLI / smoke-test paths that have no picker. Ignored when
+            ``filter_sectors_future`` is set.
         precomputed_embedding: Pre-computed 1024-dim embedding. Skips the embed
             step when provided (the loop.py batch path); ``deps.embedding_fn``
             is the single-query fallback.
         semaphore: Optional concurrency limiter for parallel pipeline calls.
+        filter_sectors_future: Optional ``asyncio.Future`` resolving to the
+            sector list emitted by the parallel ``sector_picker`` agent. When
+            present, the pipeline awaits it at step 6 (after the RPC + chunk
+            fetch, before the sector filter), so the embed + RPC + fetch
+            chain overlaps the picker LLM call. Resolved ``None`` means
+            "picker said no filter" — run unfiltered.
 
     Returns:
         ``(chunk_rows, result_count)``. Each ``chunk_row`` is a ``chunks_v2``
@@ -76,9 +83,11 @@ async def search_regulations_pipeline(
         async with semaphore:
             return await _search_regulations_pipeline_inner(
                 query, deps, filter_sectors, precomputed_embedding,
+                filter_sectors_future,
             )
     return await _search_regulations_pipeline_inner(
         query, deps, filter_sectors, precomputed_embedding,
+        filter_sectors_future,
     )
 
 
@@ -87,6 +96,7 @@ async def _search_regulations_pipeline_inner(
     deps: RegSearchDeps,
     filter_sectors: list[str] | None,
     precomputed_embedding: list[float] | None,
+    filter_sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> tuple[list[dict], int]:
     """Inner implementation of ``search_regulations_pipeline`` (§5 steps 1-8)."""
     events = deps._events
@@ -131,6 +141,22 @@ async def _search_regulations_pipeline_inner(
 
         # Step 5: Fetch chunks_v2 rows (CHUNK_SELECT) for the selected ids.
         chunk_map = await _fetch_chunks(deps.supabase, top_ids)
+
+        # Resolve the sector filter for step 6. When the parallel sector_picker
+        # is wired, its future was launched concurrently with the embed + RPC
+        # + chunk fetch above — by this point it is usually already resolved.
+        # Future ``None`` (picker said no filter / picker failed) → unfiltered.
+        if filter_sectors_future is not None:
+            try:
+                picked = await filter_sectors_future
+                filter_sectors = list(picked) if picked else None
+            except Exception as exc:
+                logger.warning(
+                    "search pipeline: sector_picker future raised %s; "
+                    "running unfiltered for query '%s'",
+                    type(exc).__name__, query[:60],
+                )
+                filter_sectors = None
 
         # Step 6: Optional sector filter — intersect parent regulation sectors[].
         # Applied before the rank-band cut; if it empties the set, retry without.

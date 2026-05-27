@@ -52,7 +52,16 @@ class ChatResponse(BaseModel):
 
 
 class DispatchAgent(BaseModel):
-    """Router dispatches a specialist agent (Tier 2)."""
+    """Router dispatches a specialist agent (Tier 2).
+
+    Migration 052 / agent communication protocol: the LLM emits ``target_wi``
+    and ``attached_wis`` (alias strings like ``"WI-3"``); the router's output
+    validator resolves them against ``RouterDeps.wi_alias_map`` and fills the
+    UUID fields (``target_item_id``, ``attached_item_ids``) the orchestrator
+    consumes. Both representations live on the model so consumers can keep
+    using the UUID fields without changes while telemetry / forensic readers
+    can also see the alias the model actually chose.
+    """
     type: Literal["dispatch"] = "dispatch"
     agent_family: Literal[
         "deep_search", "writing", "memory"
@@ -77,19 +86,43 @@ class DispatchAgent(BaseModel):
             "do X'."
         ),
     )
+    # -- LLM-emitted alias fields ------------------------------------------
+    target_wi: str | None = Field(
+        default=None,
+        description=(
+            'Alias of the workspace item to edit/extend (e.g. "WI-3"). '
+            "None for fresh outputs. Use the WI-{n} labels exposed in the "
+            "workspace summaries; never emit a raw UUID."
+        ),
+    )
+    attached_wis: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_ATTACHED_ITEMS,
+        description=(
+            'Aliases of workspace items to attach (e.g. ["WI-1", "WI-3"]). '
+            f"Hard cap of {MAX_ATTACHED_ITEMS}. Use the WI-{{n}} labels from "
+            "the workspace summaries; never emit raw UUIDs."
+        ),
+    )
+    # -- Resolver-filled UUID fields ---------------------------------------
+    # These are populated by the output validator from the alias fields. The
+    # LLM should NOT fill them (the prompt instructs it to use the WI-{n}
+    # alias fields instead); if it does, the validator overwrites them.
     target_item_id: str | None = Field(
         default=None,
-        description="If editing/extending an existing workspace item, its UUID. "
-        "None for fresh outputs."
+        description=(
+            "Resolved workspace_items.item_id UUID — populated by the router "
+            "output validator from target_wi. Do not emit directly; use "
+            "target_wi with a WI-{n} alias instead."
+        ),
     )
     attached_item_ids: list[str] = Field(
         default_factory=list,
         max_length=MAX_ATTACHED_ITEMS,
         description=(
-            "Workspace item IDs the router selected as input for the specialist. "
-            f"Hard cap of {MAX_ATTACHED_ITEMS} — pick the most relevant items. "
-            "The orchestrator hydrates these into WorkspaceItemSnapshot objects "
-            "before invoking the specialist."
+            "Resolved workspace_items.item_id UUIDs — populated by the "
+            "router output validator from attached_wis. Do not emit directly; "
+            "use attached_wis with WI-{n} aliases instead."
         ),
     )
     subtype: str | None = Field(
@@ -113,12 +146,28 @@ class ChatMessageSnapshot(BaseModel):
 
 
 class WorkspaceItemSnapshot(BaseModel):
-    """A workspace item frozen at dispatch time, with full content_md."""
+    """A workspace item frozen at dispatch time, with full content_md.
+
+    Migration 052: ``wi_seq`` is the conversation-scoped integer alias
+    (``WI-{wi_seq}``) the planner / writer LLMs use when referring to this
+    item. ``None`` for items without a conversation (case-only). The
+    orchestrator builds the alias map from these snapshots.
+
+    Migration 037 + 048: ``summary`` and ``word_count`` are populated by
+    the orchestrator's loader. The writer_planner core invariant (planner
+    LLM works from summaries only — see .claude/plans/writer_planner.md
+    § Core invariant) consumes these fields and never reads ``content_md``
+    directly. Default to empty string / 0 for forward-compat with callers
+    that haven't migrated yet.
+    """
     item_id: str
     kind: str
     title: str
     content_md: str
+    summary: str = ""
+    word_count: int = 0
     metadata: dict = Field(default_factory=dict)
+    wi_seq: int | None = None
 
 
 class MajorAgentInput(BaseModel):

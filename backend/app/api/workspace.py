@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
@@ -43,6 +43,7 @@ from backend.app.models.responses import (
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
 from backend.app.services import workspace_service
 from backend.app.services.case_service import get_user_id
+from backend.app.services.references_service import fetch_item_references
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.storage.client import (
@@ -177,6 +178,36 @@ async def get_workspace_item(
         supabase, current_user.auth_id, item_id,
     )
     return _to_response(data)
+
+
+@router.get(
+    "/workspace/{item_id}/references",
+)
+async def list_workspace_item_references(
+    item_id: str,
+    used: Optional[bool] = Query(
+        default=None,
+        description="When true, only return references the synthesis cited inline.",
+    ),
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """List the references attached to an ``agent_search`` workspace item.
+
+    Replaces the pre-migration-049 ``metadata.references`` JSONB read path.
+    The response shape is the same ``Reference`` list the frontend
+    ``ReferencePanel`` already consumes — the only change is where the data
+    lives. ``get_workspace_item`` is called first to enforce ownership; a
+    cross-user item_id surfaces as 404 before any references are exposed.
+    """
+    validate_uuid(item_id, "معرف العنصر")
+    # Ownership check via the existing service. Raises 404 if the item is
+    # not visible to this user — same envelope as get_workspace_item.
+    workspace_service.get_workspace_item(supabase, current_user.auth_id, item_id)
+    references = await fetch_item_references(
+        supabase, item_id, used_only=bool(used) if used is not None else False,
+    )
+    return {"references": [r.model_dump(mode="json") for r in references]}
 
 
 @router.patch(

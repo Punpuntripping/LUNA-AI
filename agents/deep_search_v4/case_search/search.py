@@ -318,6 +318,7 @@ async def search_case_section(
     precomputed_embedding: list[float] | None = None,
     match_count: int = SECTION_MATCH_COUNT,
     semaphore: asyncio.Semaphore | None = None,
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list["ChannelCandidate"]:
     """Retrieve case-sections for one channel-tagged query.
 
@@ -331,9 +332,16 @@ async def search_case_section(
         query: TypedQuery with `text` and `channel`.
         deps: CaseSearchDeps — embedding fn, supabase client, mocks.
         sectors: Canonicalized legal-domain names; None / empty = no filter.
+            Used when ``sectors_future`` is None (CLI / smoke paths).
         precomputed_embedding: Skip embedding if provided (batched upstream).
         match_count: Upper bound on RPC rows returned.
         semaphore: Concurrency limiter for the sectioned search node.
+        sectors_future: Optional ``asyncio.Future`` resolving to the sector
+            list emitted by the parallel ``sector_picker`` agent. When
+            present, awaited after the embed step and before the RPC call —
+            case_search applies sectors at the RPC layer (``p_sectors``), so
+            this must be resolved before the RPC fires. Resolved ``None`` =
+            picker said no filter → unfiltered.
 
     Returns:
         Ranked list of ChannelCandidate. Empty list on zero hits or error.
@@ -341,10 +349,12 @@ async def search_case_section(
     if semaphore:
         async with semaphore:
             return await _search_case_section_inner(
-                query, deps, sectors, precomputed_embedding, match_count
+                query, deps, sectors, precomputed_embedding, match_count,
+                sectors_future,
             )
     return await _search_case_section_inner(
-        query, deps, sectors, precomputed_embedding, match_count
+        query, deps, sectors, precomputed_embedding, match_count,
+        sectors_future,
     )
 
 
@@ -354,6 +364,7 @@ async def _search_case_section_inner(
     sectors: list[str] | None,
     precomputed_embedding: list[float] | None,
     match_count: int,
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list["ChannelCandidate"]:
     """Inner worker: embed → RPC → ChannelCandidate list."""
     from .models import ChannelCandidate
@@ -384,6 +395,23 @@ async def _search_case_section_inner(
     except Exception as e:
         logger.error("Embedding failed for [%s] %s: %s", query.channel, query.text[:60], e)
         return []
+
+    # Step 1b: resolve the sector filter. The picker future was launched
+    # concurrently with the executors back in ``run_retrieval`` — by this
+    # point it has been running alongside the expander + embed above and is
+    # usually already resolved. case_search bakes sectors into the RPC
+    # (``p_sectors``), so the resolution must happen BEFORE the RPC call.
+    if sectors_future is not None:
+        try:
+            picked = await sectors_future
+            sectors = list(picked) if picked else None
+        except Exception as exc:
+            logger.warning(
+                "search_case_section [%s]: sector_picker future raised %s; "
+                "running unfiltered",
+                query.channel, type(exc).__name__,
+            )
+            sectors = None
 
     # Step 2: RPC call
     rows = await _case_sections_rpc(

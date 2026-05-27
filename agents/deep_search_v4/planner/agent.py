@@ -24,8 +24,9 @@ responder writes Arabic prose — distinct slots allow separate tiers later.
 from __future__ import annotations
 
 import logging
+import re
 
-from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, RunContext
+from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import ModelPolicy, get_agent_model
@@ -38,6 +39,38 @@ from .prompts import (
     build_decider_instructions,
     build_responder_instructions,
 )
+
+
+# ── WI alias resolver (migration 052 / agent communication protocol) ──────────
+# Mirrors agents/router/router.py — kept inline here so the planner package
+# stays self-contained.
+
+_WI_ALIAS_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
+    """Resolve ``"WI-{seq}"`` → workspace_items.item_id UUID.
+
+    Accepts a raw UUID verbatim (defence-in-depth for older callers).
+    Returns ``None`` if the alias is malformed or unknown.
+    """
+    if not alias:
+        return None
+    s = alias.strip()
+    m = _WI_ALIAS_RE.match(s)
+    if m:
+        try:
+            seq = int(m.group(1))
+        except ValueError:
+            return None
+        return alias_map.get(seq)
+    if _UUID_RE.match(s):
+        return s
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +160,14 @@ def create_planner_decider(
 
     @agent.tool
     async def read_workspace_item(
-        ctx: RunContext[PlannerDeps], item_id: str
+        ctx: RunContext[PlannerDeps], wi: str
     ) -> str:
-        """Open a workspace item by id and return its full content_md.
+        """Open a workspace item by its ``WI-{n}`` alias and return content_md.
 
-        Returns the raw ``content_md`` string of one workspace_item.
+        Pass the ``WI-{n}`` label shown in ``<prior_searches>`` /
+        ``<attached_items>`` (e.g. ``"WI-3"``). A raw UUID is accepted
+        verbatim for backward compatibility but the planner should always
+        emit the alias form.
 
         Scope: ONLY items in the current conversation. Enforced explicitly by
         filtering on both ``user_id`` and ``conversation_id`` — RLS is the
@@ -146,9 +182,9 @@ def create_planner_decider(
         - User's question references «الملف» / «العقد» attached to the conversation.
 
         Returns: full ``content_md`` string on success; empty string ``""``
-        when the item is not found, deleted, or out of scope (silently — do
-        NOT retry); Arabic error string «خطأ أثناء قراءة العنصر» on actual DB
-        exceptions.
+        when the alias is unknown / item not found / out of scope (silently
+        — do NOT retry); Arabic error string «خطأ أثناء قراءة العنصر» on
+        actual DB exceptions.
 
         Hard cap: do not call this tool more than 3 times per turn. The decider
         should pick at most the 2–3 most relevant prior artifacts to read.
@@ -156,8 +192,15 @@ def create_planner_decider(
         ctx.deps._events.append({
             "type": "tool_call",
             "tool": "read_workspace_item",
-            "item_id": item_id,
+            "wi": wi,
         })
+        item_id = _resolve_wi_alias(wi, ctx.deps.wi_alias_map or {})
+        if not item_id:
+            logger.info(
+                "planner.read_workspace_item: alias %r not resolvable in conv %s",
+                wi, ctx.deps.conversation_id,
+            )
+            return ""
         try:
             result = (
                 ctx.deps.supabase.table("workspace_items")
@@ -172,18 +215,18 @@ def create_planner_decider(
             if result and getattr(result, "data", None):
                 content = result.data.get("content_md") or ""
                 logger.info(
-                    "planner.read_workspace_item: loaded %s in conv %s (%d chars)",
-                    item_id, ctx.deps.conversation_id, len(content),
+                    "planner.read_workspace_item: loaded %s (alias %s) in conv %s (%d chars)",
+                    item_id, wi, ctx.deps.conversation_id, len(content),
                 )
                 return content
             logger.info(
-                "planner.read_workspace_item: %s not found / out of scope in conv %s",
-                item_id, ctx.deps.conversation_id,
+                "planner.read_workspace_item: %s (alias %s) not found / out of scope in conv %s",
+                item_id, wi, ctx.deps.conversation_id,
             )
             return ""
         except Exception as exc:
             logger.warning(
-                "planner.read_workspace_item error for %s: %s", item_id, exc,
+                "planner.read_workspace_item error for %s (alias %s): %s", item_id, wi, exc,
             )
             return f"خطأ أثناء قراءة العنصر: {type(exc).__name__}"
 
@@ -218,6 +261,36 @@ def create_planner_responder(
     def _artifact_digest(ctx: RunContext[PlannerDeps]) -> str:
         """Inject the per-turn artifact digest + mode framing (see prompts.py)."""
         return build_responder_instructions(ctx.deps)
+
+    @agent.output_validator
+    def _resolve_referenced_wi(
+        ctx: RunContext[PlannerDeps], value: PlannerResponse,
+    ) -> PlannerResponse:
+        """Resolve ``referenced_wi`` (alias) → ``referenced_item_id`` (UUID).
+
+        Migration 052 / agent communication protocol: the LLM emits the
+        ``WI-{n}`` alias in ``referenced_wi``; this validator looks it up in
+        ``deps.wi_alias_map`` and fills ``referenced_item_id`` for downstream
+        orchestrator consumers. An unknown alias raises ``ModelRetry`` with
+        an Arabic error so the responder can self-correct.
+
+        Defence-in-depth: if the LLM mistakenly fills ``referenced_item_id``
+        directly (legacy schema bleed-through), the alias-derived value
+        overwrites it so the orchestrator always sees the canonical UUID.
+        """
+        if value.referenced_wi:
+            resolved = _resolve_wi_alias(value.referenced_wi, ctx.deps.wi_alias_map or {})
+            if resolved is None:
+                raise ModelRetry(
+                    f"العنصر {value.referenced_wi} غير موجود في هذه المحادثة. "
+                    f"استخدم رمزاً من <prior_searches> (WI-1, WI-2, ...)."
+                )
+            value.referenced_item_id = resolved
+        else:
+            # No alias emitted -- ensure the UUID field is also cleared so
+            # downstream code never sees a stale value.
+            value.referenced_item_id = None
+        return value
 
     return agent
 

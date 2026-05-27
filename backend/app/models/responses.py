@@ -35,12 +35,6 @@ class LoginResponse(BaseModel):
     user: UserProfile
 
 
-class RegisterResponse(BaseModel):
-    """POST /api/v1/auth/register"""
-    user: UserProfile
-    verification_sent: bool = True
-
-
 class TokenResponse(BaseModel):
     """POST /api/v1/auth/refresh"""
     access_token: str

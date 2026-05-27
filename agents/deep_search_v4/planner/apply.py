@@ -100,6 +100,11 @@ class RetrievalConfig:
     expander_max_queries: dict[str, int]
     result_budget: dict[str, int]
     aggregator_prompt_key: str
+    # ``sectors_override`` retained as a field for CLI / monitor smoke paths
+    # that pre-set a static sector filter on ``FullLoopDeps``. In the
+    # planner-driven loop the decider no longer picks sectors (Wave B —
+    # moved to the parallel ``sector_picker`` agent), so ``run_retrieval``
+    # always leaves this ``None`` and the picker future drives the filter.
     sectors_override: list[str] | None = None
     # Echoed for telemetry / logging — not consumed downstream.
     mode: Mode | None = None
@@ -149,7 +154,7 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
         expander_max_queries=expander_max_queries,
         result_budget=result_budget,
         aggregator_prompt_key=profile["aggregator_prompt_key"],
-        sectors_override=list(decision.sectors) if decision.sectors else None,
+        sectors_override=None,  # Wave B — picker future drives the filter
         mode=decision.mode,
         support=False if decision.mode == "full" else decision.support,
         # Phase C — pass through the planner's label selection. Phase D will

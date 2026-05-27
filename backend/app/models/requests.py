@@ -23,13 +23,6 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1)
 
 
-class RegisterRequest(BaseModel):
-    """POST /api/v1/auth/register"""
-    email: EmailStr
-    password: str = Field(..., min_length=8)
-    full_name_ar: str = Field(..., min_length=2, max_length=100)
-
-
 class RefreshRequest(BaseModel):
     """POST /api/v1/auth/refresh"""
     refresh_token: str = Field(..., min_length=1)

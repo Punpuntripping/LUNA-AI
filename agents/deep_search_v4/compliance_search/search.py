@@ -37,6 +37,7 @@ async def search_compliance_raw(
     sectors: list[str] | None = None,
     precomputed_embedding: list[float] | None = None,
     semaphore: asyncio.Semaphore | None = None,
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list[dict]:
     """Search government services and return raw candidate dicts.
 
@@ -54,6 +55,10 @@ async def search_compliance_raw(
             skips the per-query embed step — the loop batches all sub-queries
             into one API call upstream (parity with case_search / reg_search).
         semaphore: Optional concurrency limiter for parallel pipeline calls.
+        sectors_future: Optional ``asyncio.Future`` from the parallel
+            ``sector_picker`` agent. compliance applies sectors at the RPC
+            layer (``filter_sectors``), so this is awaited after embed but
+            before the RPC call. Resolved ``None`` → unfiltered.
 
     Returns:
         List of raw service row dicts with all fields from the RPC,
@@ -67,10 +72,10 @@ async def search_compliance_raw(
     if semaphore:
         async with semaphore:
             return await _search_compliance_raw_inner(
-                query, deps, sectors, precomputed_embedding,
+                query, deps, sectors, precomputed_embedding, sectors_future,
             )
     return await _search_compliance_raw_inner(
-        query, deps, sectors, precomputed_embedding,
+        query, deps, sectors, precomputed_embedding, sectors_future,
     )
 
 
@@ -79,6 +84,7 @@ async def _search_compliance_raw_inner(
     deps: "ComplianceSearchDeps",
     sectors: list[str] | None,
     precomputed_embedding: list[float] | None,
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list[dict]:
     """Inner worker: mock hook -> embed (or use precomputed) -> RPC."""
     # Mock check — only honour list mocks in raw mode
@@ -97,6 +103,23 @@ async def _search_compliance_raw_inner(
     try:
         # Step 1: Embed query (skip if pre-computed by the loop's batch path).
         embedding = precomputed_embedding or await deps.embedding_fn(query)
+
+        # Step 1b: resolve the picker's sector filter (when running under the
+        # planner). compliance applies sectors inside the RPC, so this must
+        # finish before step 2 fires. The picker was launched concurrently
+        # with the executors in ``run_retrieval`` — by this point it has been
+        # running alongside the expander + embed and is usually resolved.
+        if sectors_future is not None:
+            try:
+                picked = await sectors_future
+                sectors = list(picked) if picked else None
+            except Exception as exc:
+                logger.warning(
+                    "search_compliance_raw: sector_picker future raised %s; "
+                    "running unfiltered for query '%s'",
+                    type(exc).__name__, query[:60],
+                )
+                sectors = None
 
         # Step 2: Hybrid search via RPC
         candidates = await _hybrid_rpc_search(

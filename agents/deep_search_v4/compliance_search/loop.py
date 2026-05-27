@@ -197,18 +197,23 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
             return RerankerNode()
 
         logger.info("SearchNode: executing %d queries concurrently", len(queries))
+        # services.sectors[] and regulations_v2.sectors[] now share the unified
+        # 38-entry vocabulary (verified 2026-05-17 in shared.sector_vocab.unified
+        # docstring). The historical "log but don't apply" path for the static
+        # sectors_override stays — it preserved back-compat with legacy callers
+        # — but the picker future (which emits canonical names from VALID_SECTORS)
+        # is applied at the RPC layer via search_compliance_raw's sectors_future
+        # argument below.
         if state.sectors_override:
-            # hybrid_search_services now exposes a ``filter_sectors`` param
-            # (migration 035), but compliance still runs semantic-only here
-            # by design (D2 / Option A): the planner canonicalizes sectors
-            # against the regulations vocabulary, whose names differ from the
-            # unified vocab stored in services.sectors — passing them through
-            # raw would zero out every row. Wiring filter_sectors is gated on
-            # the planner-vocab unification (migration plan D2 / Option C).
             logger.info(
                 "compliance.search: sectors_override=%s — not applied as a "
-                "DB filter (planner/services vocab mismatch, D2)",
+                "DB filter (legacy back-compat path)",
                 state.sectors_override,
+            )
+        if state.sectors_future is not None:
+            logger.info(
+                "compliance.search: sectors_future present — picker output will "
+                "be applied as filter_sectors at the RPC layer",
             )
         state.sse_events.append({
             "type": "status",
@@ -240,6 +245,7 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
                 deps,
                 precomputed_embedding=emb,
                 semaphore=sem,
+                sectors_future=state.sectors_future,
             )
             for q, emb in zip(queries, embeddings)
         ]

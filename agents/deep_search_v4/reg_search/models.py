@@ -322,6 +322,14 @@ class LoopState:
     # reclassify and the sector filter is locked to this list (the LLM's
     # ``sectors`` output is ignored).
     sectors_override: list[str] | None = None
+    # Sector AND-filter as an in-flight future. When set, ``SearchNode`` awaits
+    # it inside the per-sub-query pipeline at the post-RPC filter step, so the
+    # expander + embed + RPC chain runs in true parallel with the
+    # ``sector_picker`` agent (see ``agents/deep_search_v4/sector_picker/``).
+    # ``None`` (the default) means "no future was spawned" — the loop falls
+    # back to the static ``sectors_override`` above. A resolved value of
+    # ``None`` from the future means "picker said no filter" → run unfiltered.
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None
     # Hard cap on number of sub-queries from the expander, plumbed from
     # the planner's focus profile via the orchestrator.
     expander_max_queries: int | None = None

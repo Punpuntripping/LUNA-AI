@@ -117,4 +117,70 @@ def format_writer_context(
     return "\n".join(lines)
 
 
-__all__ = ["format_writer_context"]
+def format_writer_envelope(
+    *,
+    describe_query: str,
+    task_label: str,
+    revising_item_id: str | None,
+    detail_level: str,
+    tone: str,
+) -> str:
+    """Render the per-turn *envelope* as an Arabic system-prompt block.
+
+    Used in the package path (when ``WriterDeps.package`` is set) — the
+    package itself already carries all attached-item content via
+    ``render_package_for_system_prompt``, so the envelope only needs to
+    surface the human frame: what the user actually asked for, what
+    kind of task this is, whether we're revising, and the style hints.
+
+    This is ``format_writer_context`` minus the ``attached_items`` block.
+    See ``.claude/plans/writer_redesign.md`` § Dynamic instructions.
+
+    Args:
+        describe_query: The router-emitted description of the user's query.
+        task_label: Short Arabic content-derived label (≤80 chars).
+        revising_item_id: item_id of the draft being revised, or None.
+        detail_level: "low" | "standard" | "medium" | "high".
+        tone: "formal" | "neutral" | "concise".
+
+    Returns:
+        A multi-line Arabic string. Always returns at least the section
+        header so the LLM call never receives an empty dynamic block.
+    """
+    lines: list[str] = []
+
+    lines.append("## سياق المهمة الحالية")
+    lines.append("")
+
+    # --- Query description ---------------------------------------------
+    lines.append("### الطلب")
+    lines.append((describe_query or "").strip() or "(لا يوجد طلب)")
+    lines.append("")
+
+    # --- Task label ----------------------------------------------------
+    if (task_label or "").strip():
+        lines.append("### وصف المهمّة")
+        lines.append(task_label.strip())
+        lines.append("")
+
+    # --- Revision marker ----------------------------------------------
+    if revising_item_id:
+        lines.append("### وضع المراجعة")
+        lines.append(
+            "هذه المهمّة مراجعة لمسوّدة سابقة — راجع <prior_draft> داخل <package> "
+            "بعناية قبل إعادة الصياغة."
+        )
+        lines.append("")
+
+    # --- Preferences ---------------------------------------------------
+    detail_label = _DETAIL_LABELS.get(detail_level, detail_level)
+    tone_label = _TONE_LABELS.get(tone, tone)
+    lines.append("### تفضيلات الأسلوب")
+    lines.append(f"- مستوى التفصيل: {detail_label}")
+    lines.append(f"- النبرة: {tone_label}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+__all__ = ["format_writer_context", "format_writer_envelope"]

@@ -256,7 +256,7 @@ async def send_message_stream(
             "conversation_id": conversation_id,
             "role": "assistant",
             "content": "",
-            "model": "mock-model",
+            "model": "ريحان",
         }).execute()
     except Exception as e:
         logger.exception("Error creating assistant placeholder: %s", e)
@@ -335,6 +335,7 @@ async def send_message_stream(
                 supabase=supabase,
                 case_id=conv.get("case_id"),
                 user_message_id=user_msg_id,
+                assistant_message_id=assistant_msg_id,
             ):
                 event_type = event.get("type")
 

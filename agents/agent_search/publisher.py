@@ -7,9 +7,11 @@ post-validation aggregator output produced by ``agents/deep_search_v4`` and:
      ``kind='agent_search'`` and ``created_by='agent'``. The original
      "legal_synthesis" descriptor lives on as ``metadata.subtype`` so the
      frontend chip color/icon survives the schema rename.
-  2. Best-effort persists the forensic backing rows
+  2. Inserts one row per ``Reference`` into ``workspace_item_references``
+     (migration 049). References no longer live on ``metadata.references``.
+  3. Best-effort persists the forensic backing rows
      (``retrieval_artifacts`` + ``reranker_runs``).
-  3. Returns the SSE events the orchestrator must forward -- both the new
+  4. Returns the SSE events the orchestrator must forward -- the
      ``workspace_item_created`` event.
 """
 from __future__ import annotations
@@ -23,6 +25,7 @@ from backend.app.services.retrieval_artifacts_service import (
     save_reranker_runs,
     save_retrieval_artifact,
 )
+from backend.app.services.references_service import persist_item_references
 from shared.observability import get_logfire
 
 _logfire = get_logfire()
@@ -53,25 +56,23 @@ def _build_content_md(input: SearchPublishInput) -> str:
 
 def _build_metadata(input: SearchPublishInput) -> dict:
     """Merge artifact metadata (if any) with the deep_search-specific keys
-    the frontend needs for chip color, citation popovers, and forensic joins.
+    the frontend needs for chip color and forensic joins.
 
     Sets ``subtype="legal_synthesis"`` so the frontend can keep treating
     deep_search outputs as a distinct chip style after migration 026 dropped
     the ``artifact_type`` column.
+
+    Migration 049: the ``references`` key is NO LONGER written here. The
+    reference list lives in the ``workspace_item_references`` table, fetched
+    by ``backend.app.services.references_service.fetch_item_references``.
     """
     artifact = getattr(input.agg_output, "artifact", None)
     metadata: dict = (
         dict(artifact.metadata) if artifact is not None and getattr(artifact, "metadata", None) else {}
     )
-    references = (
-        artifact.references_json
-        if artifact is not None and getattr(artifact, "references_json", None) is not None
-        else []
-    )
     metadata.update(
         {
             "subtype": "legal_synthesis",
-            "references": references,
             "confidence": getattr(input.agg_output, "confidence", None),
             "detail_level": input.detail_level,
             "ura_log_id": getattr(input.agg_output, "log_id", "") or "",
@@ -196,6 +197,35 @@ async def publish_search_result(
             })
         except Exception:
             pass
+
+        # Migration 049: persist the per-WI ref state. Best-effort -- a refs
+        # write hiccup must not crash the user-visible publish. ``input.ura``
+        # carries the URA results we need to recover ``service_ref`` for
+        # compliance refs (the ``Reference.ref_id`` only carries a hash).
+        try:
+            ura_results: list = []
+            if input.ura is not None:
+                ura_results = list(input.ura.high_results or []) + list(
+                    input.ura.medium_results or []
+                )
+            validation = getattr(input.agg_output, "validation", None)
+            cited_numbers = (
+                list(validation.cited_numbers) if validation is not None else []
+            )
+            persist_item_references(
+                deps.supabase,
+                wi_id=item_id,
+                references=list(input.agg_output.references or []),
+                ura_results=ura_results or None,
+                cited_numbers=cited_numbers,
+                ref_to_sub_queries=dict(
+                    getattr(input.agg_output, "ref_to_sub_queries", {}) or {}
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "workspace_item_references persist failed: %s", exc, exc_info=True,
+            )
 
         # Forensic persistence is best-effort -- failure here is logged but never
         # crashes the publish. Done AFTER the main insert so the user-visible

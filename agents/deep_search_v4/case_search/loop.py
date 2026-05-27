@@ -542,15 +542,20 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
             logger.warning("SectionedSearchNode: no queries to execute")
             return FusionNode()
 
-        # Sector filter: planner is the only source. ``state.sectors_override``
-        # is applied verbatim — already canonicalized upstream by the planner.
+        # Sector filter: either the parallel ``sector_picker`` future (planner
+        # path) or the static ``sectors_override`` (CLI / smoke paths). case
+        # search bakes sectors into the RPC, so per-query workers await the
+        # future inside ``_search_case_section_inner`` right before the RPC.
         sectors: list[str] | None = (
             list(state.sectors_override) if state.sectors_override else None
         )
 
         logger.info(
-            "SectionedSearchNode: %d queries, sectors=%s, concurrency=%d",
-            len(queries), sectors, state.concurrency,
+            "SectionedSearchNode: %d queries, sectors_source=%s, concurrency=%d",
+            len(queries),
+            "picker_future" if state.sectors_future is not None
+                else ("override" if sectors else "none"),
+            state.concurrency,
         )
         # Count DISTINCT channels — not query count — so the status reflects
         # actual channel coverage (principle/facts/basis ≤ 3).
@@ -572,6 +577,7 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
                 query=q,
                 deps=deps,
                 sectors=sectors,
+                sectors_future=state.sectors_future,
                 precomputed_embedding=emb,
                 semaphore=sem,
             )
@@ -977,6 +983,7 @@ async def run_case_search(
     # accepting them here unblocks the orchestrator call without a crash.
     expander_max_queries: int | None = None,
     sectors_override: list[str] | None = None,
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
     score_threshold: float | None = None,
     context_blocks: list[ContextBlock] | None = None,
 ) -> CaseSearchResult:
@@ -1029,6 +1036,7 @@ async def run_case_search(
         model_override=model_override,
         concurrency=concurrency,
         sectors_override=list(sectors_override) if sectors_override else None,
+        sectors_future=sectors_future,
         context_blocks=list(context_blocks) if context_blocks else [],
     )
 

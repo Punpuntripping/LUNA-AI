@@ -14,10 +14,9 @@ from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
-from backend.app.models.requests import LoginRequest, RegisterRequest, RefreshRequest
+from backend.app.models.requests import LoginRequest, RefreshRequest
 from backend.app.models.responses import (
     LoginResponse,
-    RegisterResponse,
     TokenResponse,
     UserProfile,
     UserProfileResponse,
@@ -95,72 +94,10 @@ async def login(
     )
 
 
-# ============================================
-# POST /register
-# ============================================
-
-@router.post("/register", response_model=RegisterResponse, status_code=201)
-async def register(
-    body: RegisterRequest,
-    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
-):
-    """
-    Register a new user with email, password, and Arabic full name.
-    Profile row is created automatically by DB trigger.
-    """
-    try:
-        response = supabase_auth.auth.sign_up(
-            {
-                "email": body.email,
-                "password": body.password,
-                "options": {
-                    "data": {
-                        "full_name_ar": body.full_name_ar,
-                    },
-                },
-            }
-        )
-    except Exception as e:
-        error_msg = str(e).lower()
-        if "already" in error_msg or "exists" in error_msg or "duplicate" in error_msg or "422" in error_msg:
-            raise LunaHTTPException(
-                status_code=409,
-                code=ErrorCode.VALIDATION_ERROR,
-                detail="البريد الإلكتروني مسجل مسبقاً",
-            )
-        if "rate limit" in error_msg or "429" in error_msg:
-            raise LunaHTTPException(
-                status_code=429,
-                code=ErrorCode.RATE_LIMITED,
-                detail="تم تجاوز الحد المسموح من الطلبات",
-            )
-        logger.exception("Registration error: %s", e)
-        raise LunaHTTPException(status_code=400, code=ErrorCode.VALIDATION_ERROR, detail="فشل إنشاء الحساب")
-
-    user = response.user
-    if user is None:
-        raise LunaHTTPException(status_code=400, code=ErrorCode.VALIDATION_ERROR, detail="فشل إنشاء الحساب")
-
-    # Check if user already existed (Supabase returns user but identities is empty)
-    if hasattr(user, "identities") and user.identities is not None and len(user.identities) == 0:
-        raise LunaHTTPException(
-            status_code=409,
-            code=ErrorCode.VALIDATION_ERROR,
-            detail="البريد الإلكتروني مسجل مسبقاً",
-        )
-
-    user_metadata = user.user_metadata or {}
-
-    return RegisterResponse(
-        user=UserProfile(
-            user_id=user.id,
-            email=user.email or "",
-            full_name_ar=user_metadata.get("full_name_ar", body.full_name_ar),
-            subscription_tier="free",
-            created_at=user.created_at if user.created_at else None,
-        ),
-        verification_sent=True,
-    )
+# Signup is performed in the browser via supabase.auth.signUp() (see
+# frontend/stores/auth-store.ts). Doing it client-side keeps the PKCE
+# code_verifier in the same browser that opens the email-confirmation link,
+# which is required for /auth/callback's exchangeCodeForSession() to succeed.
 
 
 # ============================================

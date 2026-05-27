@@ -4,12 +4,17 @@ The planner is a **two-phase** agent:
 
 - **Phase 1 — decide.** ``planner_decider`` emits a :class:`PlannerDecision`:
   one of four retrieval *modes*, an optional ``support`` flag (modes 1–3),
-  optional sector pre-filter, a logged rationale, AND the new comprehension
-  outputs (§3.1 of the redesign): ``planner_brief`` — novel factual context the
-  planner discovered that isn't already carried by the query or other context
-  blocks; and ``context_labels`` — which context blocks flow to the
-  expanders + aggregator. The decider may instead pause via the ``ask_user``
-  deferred tool when the query is too vague to plan.
+  a logged rationale, AND the comprehension outputs: ``planner_brief`` (novel
+  factual context the planner discovered that isn't already carried by the
+  query or other context blocks) and ``context_labels`` (which context blocks
+  flow to the expanders + aggregator). The decider may instead pause via the
+  ``ask_user`` deferred tool when the query is too vague to plan.
+  Sectors moved out in Wave B (2026-05-24): the dedicated
+  :mod:`~agents.deep_search_v4.sector_picker` agent runs in parallel with the
+  executors and emits a 2–5 sector AND-filter. The picker has visibility
+  into per-sector example regulations (see ``sector_picker/prompts.py``)
+  which the decider's flat 38-name list never did — diagnosed in conv
+  ``faa3b71e``.
 - **Phase 3 — respond.** ``planner_responder`` emits a :class:`PlannerResponse`:
   the user-facing Arabic chat summary, a plain-text next-step suggestion, AND
   the Phase E publish gate fields (``build_artifact`` + ``referenced_item_id``)
@@ -35,7 +40,6 @@ agent runtime installed.
 """
 from __future__ import annotations
 
-import json as _json
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -85,14 +89,6 @@ class PlannerDecision(BaseModel):
             "mode == 'full' — 'full' has no support role."
         ),
     )
-    sectors: list[str] | None = Field(
-        default=None,
-        description=(
-            "1–4 canonical sector names from "
-            "``agents.deep_search_v4.shared.sector_vocab.regulations.VALID_SECTORS``, "
-            "or ``null`` when the query isn't sector-specific."
-        ),
-    )
     rationale: str = Field(
         ...,
         description="Short Arabic justification for the mode + support choice (logged).",
@@ -137,40 +133,8 @@ class PlannerDecision(BaseModel):
         ),
     )
 
-    # ------------------------------------------------------------------
-    # Validators — sectors only (mode/support/aborted are constrained by type)
-    # ------------------------------------------------------------------
-
-    @field_validator("sectors", mode="before")
-    @classmethod
-    def _coerce_sectors(cls, v):
-        # Coerce LLM quirks before strict list[str] validation:
-        # - JSON-stringified arrays: '["x","y"]' -> ["x","y"]
-        # - empty string: ''  -> None
-        if isinstance(v, str):
-            if v.strip() == "":
-                return None
-            try:
-                parsed = _json.loads(v)
-                if isinstance(parsed, list):
-                    return parsed
-            except (_json.JSONDecodeError, TypeError):
-                pass
-        return v
-
-    @field_validator("sectors")
-    @classmethod
-    def _validate_sectors_size(cls, value: list[str] | None) -> list[str] | None:
-        if value is None:
-            return None
-        # Fallback rule: ≥5 entries means the query is too broad — drop the filter.
-        if len(value) >= 5:
-            return None
-        if len(value) < 1:
-            raise ValueError(
-                f"sectors must contain 1–4 entries or be null; got {len(value)}"
-            )
-        return value
+    # No field validators — mode/support/aborted are constrained by type, and
+    # sectors moved out to ``sector_picker`` in Wave B (see module docstring).
 
 
 class PriorSearchSummary(BaseModel):
@@ -192,6 +156,14 @@ class PriorSearchSummary(BaseModel):
     """
 
     item_id: str = Field(description="workspace_items.item_id (UUID).")
+    wi_seq: int | None = Field(
+        default=None,
+        description=(
+            "Per-conversation integer alias (migration 052). The planner XML "
+            "block renders this as ``wi=\"WI-{wi_seq}\"`` so the LLM can "
+            "refer to the WI without seeing the raw UUID."
+        ),
+    )
     title: str = Field(
         description="workspace_items.title — equals the router's task_label.",
     )
@@ -254,29 +226,43 @@ class PlannerResponse(BaseModel):
             "conversation covers the question. Otherwise True."
         ),
     )
+    # -- LLM-emitted alias field (migration 052 / agent communication protocol)
+    referenced_wi: str | None = Field(
+        default=None,
+        description=(
+            'Alias of a prior WI that already covers the question (e.g. '
+            '"WI-3"). Pair with ``build_artifact=False``. Use the WI-{n} '
+            "labels rendered inside ``<prior_searches>``; never emit a raw "
+            "UUID. The planner runner resolves the alias against the "
+            "conversation's WI map and fills ``referenced_item_id`` with "
+            "the resolved UUID."
+        ),
+    )
+    # -- Resolver-filled UUID field ----------------------------------------
+    # Populated by the planner runner from ``referenced_wi`` after the LLM
+    # returns. The LLM should NOT emit this directly — the prompt instructs
+    # it to use ``referenced_wi`` with a WI-{n} alias.
     referenced_item_id: str | None = Field(
         default=None,
         description=(
-            "When build_artifact=False because a prior artifact covers the "
-            "question, the item_id of that prior artifact. Used by the "
-            "orchestrator to emit a referenced_existing_item SSE event. Null "
-            "otherwise. May arrive as literal string 'None'/'null' from LLM "
-            "JSON output; the field validator coerces those to actual None."
+            "Resolved workspace_items.item_id UUID — populated by the "
+            "planner output validator from referenced_wi. Do not emit "
+            "directly; use referenced_wi with a WI-{n} alias instead."
         ),
     )
 
     # ------------------------------------------------------------------
-    # Validators — referenced_item_id (string-'None'/'null' coercion)
+    # Validators — referenced_item_id / referenced_wi normalisation
     # ------------------------------------------------------------------
 
-    @field_validator("referenced_item_id", mode="before")
+    @field_validator("referenced_item_id", "referenced_wi", mode="before")
     @classmethod
     def _coerce_none_strings(cls, v):
         """LLMs sometimes serialize None as the literal string 'None' or 'null'.
 
         Coerce those (and empty/whitespace) to actual None so downstream code
-        can rely on truthiness checks (``if response.referenced_item_id:`` etc.)
-        without having to second-guess the JSON shape the responder emitted.
+        can rely on truthiness checks without having to second-guess the JSON
+        shape the responder emitted.
         """
         if v is None:
             return None

@@ -222,22 +222,27 @@ class SearchNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             logger.warning("SearchNode: no queries to execute")
             return RerankerNode()
 
-        # Sector filter: planner is the only source. The LLM no longer picks
-        # sectors. ``state.sectors_override`` is applied verbatim (planner
-        # already canonicalized to the regulations vocab).
-        filter_sectors: list[str] | None = (
-            list(state.sectors_override) if state.sectors_override else None
-        )
-
-        if filter_sectors:
+        # Sector filter: either the parallel ``sector_picker`` future (planner
+        # path) or the static ``sectors_override`` (CLI / smoke paths). The
+        # future is awaited inside the per-query pipeline at step 6 so it
+        # overlaps the embed + RPC + fetch chain. The static path passes
+        # ``filter_sectors`` directly.
+        if state.sectors_future is not None:
             logger.info(
-                "SearchNode: sector filter active -- %s",
-                ", ".join(filter_sectors),
+                "SearchNode: sector filter source=picker (future, pending)",
+            )
+        elif state.sectors_override:
+            logger.info(
+                "SearchNode: sector filter source=override -- %s",
+                ", ".join(state.sectors_override),
             )
             state.sse_events.append({
                 "type": "status",
-                "text": f"تصفية حسب القطاعات: {' | '.join(filter_sectors)}",
+                "text": f"تصفية حسب القطاعات: {' | '.join(state.sectors_override)}",
             })
+        static_filter_sectors: list[str] | None = (
+            list(state.sectors_override) if state.sectors_override else None
+        )
 
         logger.info("SearchNode: executing %d queries (concurrency=%d)", len(queries), state.concurrency)
         state.sse_events.append({
@@ -250,11 +255,16 @@ class SearchNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
 
         embeddings = await embed_regulation_queries_alibaba(queries)
 
-        # Execute queries with concurrency limit and pre-computed embeddings
+        # Execute queries with concurrency limit and pre-computed embeddings.
+        # When the picker future is set, every parallel pipeline awaits the
+        # same future at its step-6 join point — they all read the resolved
+        # value once it lands.
         sem = asyncio.Semaphore(state.concurrency)
         tasks = [
             search_regulations_pipeline(
-                query=q, deps=deps, filter_sectors=filter_sectors,
+                query=q, deps=deps,
+                filter_sectors=static_filter_sectors,
+                filter_sectors_future=state.sectors_future,
                 precomputed_embedding=emb,
                 semaphore=sem,
             )

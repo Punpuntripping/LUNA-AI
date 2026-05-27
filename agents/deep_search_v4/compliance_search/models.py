@@ -172,6 +172,13 @@ class LoopState:
     # against the regulations vocabulary, whose names differ from the
     # unified vocab stored in services.sectors — see migration plan D2.
     sectors_override: list[str] | None = None
+    # Sector AND-filter as an in-flight future. ``compliance_search`` is the
+    # one executor where the RPC itself takes ``filter_sectors`` — so this
+    # future is awaited **before** the search RPC starts (not just before a
+    # post-RPC filter). ``None`` (default) means "no future spawned" → fall
+    # back to ``sectors_override``. A resolved value of ``None`` from the
+    # future means "picker said no filter" → run unfiltered.
+    sectors_future: "asyncio.Future[list[str] | None] | None" = None
     # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
     # the expander user message; the reranker is hardcoded to receive zero
     # blocks. Empty list → no <context_blocks> XML in the prompt.

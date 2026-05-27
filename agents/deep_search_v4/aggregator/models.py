@@ -182,6 +182,13 @@ class AggregatorOutput(BaseModel):
         default=None,
         description="Frontend artifact object (None if caller requested raw-only)",
     )
+    # Migration 049: per-WI ref state carried out of preprocess_references so
+    # the agent_search publisher can persist it to workspace_item_references.
+    # Empty default keeps legacy callers (replay tests, CLIs) working.
+    ref_to_sub_queries: dict[int, list[int]] = Field(
+        default_factory=dict,
+        description="Reference.n -> sorted list of 0-based sub_query indices that produced it",
+    )
 
 
 class ValidationReport(BaseModel):

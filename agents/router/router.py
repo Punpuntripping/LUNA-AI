@@ -18,6 +18,7 @@ Wave 9 changes:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, ModelRetry, RunContext, TextOutput
@@ -28,6 +29,43 @@ from supabase import Client as SupabaseClient
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.utils.agent_models import get_agent_model
 from shared.observability import get_logfire
+
+
+# ── Alias resolution (migration 052 / agent communication protocol) ───────────
+# The router LLM emits ``WI-{seq}`` aliases (e.g. ``"WI-3"``) instead of raw
+# UUIDs. The output validator resolves them against ``RouterDeps.wi_alias_map``
+# and fills the orchestrator-facing ``target_item_id`` / ``attached_item_ids``
+# fields. The read_workspace_item tool accepts either form for robustness.
+
+_WI_ALIAS_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
+    """Resolve ``"WI-{seq}"`` → workspace_items.item_id UUID.
+
+    Returns the UUID on success, ``None`` if the alias is malformed or its
+    seq is not in the conversation's alias map. Accepts a raw UUID
+    verbatim (defence-in-depth — older orchestrator paths may still pass
+    UUIDs directly).
+    """
+    if not alias:
+        return None
+    s = alias.strip()
+    m = _WI_ALIAS_RE.match(s)
+    if m:
+        try:
+            seq = int(m.group(1))
+        except ValueError:
+            return None
+        return alias_map.get(seq)
+    # Verbatim UUID — accept for backward compat.
+    if _UUID_RE.match(s):
+        return s
+    return None
 
 
 # ── Plain-text fallback ───────────────────────────────────────────────────────
@@ -70,10 +108,15 @@ class RouterDeps:
     case_metadata: dict | None
     user_preferences: dict | None
     # Eager context assembled by the loader before .run() — rendered into
-    # dynamic instructions. Lists hold compact (item_id, kind, title, summary)
-    # dicts; full content_md is fetched on demand via read_workspace_item.
+    # dynamic instructions. Lists hold compact (item_id, wi_seq, kind, title,
+    # summary) dicts; full content_md is fetched on demand via
+    # read_workspace_item.
     workspace_item_summaries: list[dict] = field(default_factory=list)
     compaction_summary_md: str | None = None
+    # Migration 052: ``WI-{seq}`` alias → item_id UUID lookup. Built by
+    # ``run_router`` from ``workspace_item_summaries`` so the output
+    # validator can resolve LLM-emitted aliases without re-querying.
+    wi_alias_map: dict[int, str] = field(default_factory=dict)
 
 
 # ── Usage limits ──────────────────────────────────────────────────────────────
@@ -107,7 +150,7 @@ SYSTEM_PROMPT = """\
 1. **الضرورة** — هل تحتاج هذه الرسالة فعلاً متخصصاً؟ إن أمكن الرد المباشر فردّ مباشرة.
 2. **النطاق** — هل الطلب ضمن المجال القانوني السعودي؟ إن لم يكن فاعتذر بأدب عبر ChatResponse.
 3. **الغموض** — إن كانت الرسالة غامضة، اطرح سؤالاً توضيحياً واحداً عبر ChatResponse قبل التوجيه.
-4. **اختيار العناصر المرفقة** — حدد attached_item_ids بناءً على ملخصات العناصر المتاحة في مساحة العمل.
+4. **اختيار العناصر المرفقة** — حدد attached_wis بناءً على ملخصات العناصر المتاحة في مساحة العمل.
 
 ## متى تجيب مباشرة (ChatResponse):
 - التحيات والمجاملات
@@ -134,7 +177,7 @@ SYSTEM_PROMPT = """\
   * "defense_brief" — عند طلب لائحة دفاع أو لائحة جوابية أمام محكمة
   * "letter" — عند طلب خطاب رسمي (إنذار، مطالبة، إشعار، خطاب موجَّه لجهة)
   * "summary" — عند طلب ملخّص لمستند مرفق أو لمحتوى محادثة
-- إذا أشار المستخدم لمستند موجود في مساحة العمل ("حدّث المذكرة السابقة"، "عدّل العقد") — حدّد item_id المقصود من ملخصات العناصر، ومرّره عبر target_item_id لفتح مهمة writing تحرير
+- إذا أشار المستخدم لمستند موجود في مساحة العمل ("حدّث المذكرة السابقة"، "عدّل العقد") — حدّد رمز العنصر المقصود (مثل «WI-3») من ملخصات العناصر، ومرّره عبر `target_wi` لفتح مهمة writing تحرير
 - إذا كان المستخدم يبحث عن معلومات قانونية لتدعيم الصياغة — وجّه deep_search أولاً، ثم writing لاحقاً
 
 ## متى توجّه إلى memory (هيكل أولي — قيد التطوير):
@@ -143,17 +186,18 @@ SYSTEM_PROMPT = """\
 - كلمات مفتاحية: "احفظ"، "تذكّر"، "أضف لذاكرة القضية"، "حدّث الذاكرة"
 - ملاحظة: هذا المسار ما زال هيكلاً أولياً؛ استخدمه فقط للطلبات الصريحة المتعلقة بإدارة الذاكرة، لا للأسئلة العامة.
 
-## اختيار attached_item_ids:
-- ملخصات عناصر مساحة العمل تُحقن لك في السياق (item_id, kind, title, summary).
-- اختر العناصر الأكثر صلة بالطلب الحالي فقط.
+## اختيار attached_wis:
+- ملخصات عناصر مساحة العمل تُحقن لك في السياق برموز قصيرة (WI-1, WI-2, ...). كل عنصر يحمل: الرمز، النوع (kind)، العنوان، الملخص.
+- اختر العناصر الأكثر صلة بالطلب الحالي فقط، واذكرها بأرقامها («WI-3»، «WI-7») في `attached_wis`.
 - الحد الأقصى الصارم: {MAX_ATTACHED_ITEMS} عناصر لكل توجيه. إن وجدت أكثر، اختر الأهم.
-- إن لم تكفك الملخصات، استدعِ read_workspace_item بمعرف العنصر للحصول على المحتوى الكامل (يمكن استدعاؤها على عدة عناصر بالتوازي).
-- إن لم يوجد عنصر مناسب، اترك attached_item_ids قائمة فارغة.
+- إن لم تكفك الملخصات، استدعِ `read_workspace_item` بالرمز (مثل «WI-3») للحصول على المحتوى الكامل (يمكن استدعاؤها على عدة عناصر بالتوازي).
+- إن لم يوجد عنصر مناسب، اترك `attached_wis` قائمة فارغة.
+- **لا تكتب معرّفات UUID مطلقاً** — استخدم رموز WI-N الموجودة في السياق فقط، ولا تخترع رموزاً جديدة.
 
 ## قواعد التعامل مع العناصر السابقة (workspace items):
-- سؤال عن محتوى العنصر (قراءة) → استخدم read_workspace_item وأجب مباشرة عبر ChatResponse
-- طلب تعديل أو تحرير العنصر → وجّه DispatchAgent مع target_item_id
-- عندما يشير المستخدم لعنصر دون تحديد → اذكر العناصر المتاحة (من الملخصات) واسأل أيها يقصد
+- سؤال عن محتوى العنصر (قراءة) → استخدم `read_workspace_item("WI-N")` وأجب مباشرة عبر ChatResponse
+- طلب تعديل أو تحرير العنصر → وجّه DispatchAgent مع `target_wi="WI-N"`
+- عندما يشير المستخدم لعنصر دون تحديد → اذكر العناصر المتاحة (برموزها وعناوينها من الملخصات) واسأل أيها يقصد
 
 ## قواعد task_label:
 - عبارة عربية قصيرة (30-60 حرفاً) **مشتقة من محتوى السؤال** لا من سير العمل.
@@ -202,33 +246,75 @@ router_agent = Agent(
 
 
 @router_agent.output_validator
-def _validate_attached_items_cap(
+def _validate_and_resolve_dispatch(
     ctx: RunContext[RouterDeps],
     value: ChatResponse | DispatchAgent,
 ) -> ChatResponse | DispatchAgent:
-    """Guard against the model overshooting MAX_ATTACHED_ITEMS and against
-    emitting an empty task_label.
+    """Validate the dispatch output AND resolve WI-{seq} aliases → UUIDs.
 
-    ``Field(max_length=MAX_ATTACHED_ITEMS)`` already rejects too many items
-    at parse time, but raising ``ModelRetry`` here gives the LLM a guided
-    retry with an instructive error rather than a hard validation failure.
+    Migration 052 / agent communication protocol:
 
-    ``task_label`` length is enforced by ``Field(max_length=80)``, but empty
-    strings would pass the Field constraint silently. We reject empty / pure
-    whitespace task_labels here so downstream uses (workspace_items.title,
-    agent_runs.task_label) always have non-empty content.
+    * Resolves ``target_wi`` (e.g. ``"WI-3"``) → ``target_item_id`` (UUID).
+      Raises :class:`ModelRetry` if the alias is malformed or not present in
+      the conversation's alias map.
+    * Resolves each ``attached_wis`` entry → an UUID into
+      ``attached_item_ids``. Same error contract on malformed/unknown aliases.
+    * Enforces the cap on ``attached_wis`` (the LLM-emitted field) and the
+      non-empty ``task_label`` invariant.
+
+    Defence-in-depth: if the LLM mistakenly fills the UUID fields directly
+    (legacy schema bleed-through), the aliases-derived values overwrite
+    them so the orchestrator always sees the canonical resolved UUIDs.
     """
-    if isinstance(value, DispatchAgent):
-        if len(value.attached_item_ids) > MAX_ATTACHED_ITEMS:
+    if not isinstance(value, DispatchAgent):
+        return value
+
+    if not (value.task_label or "").strip():
+        raise ModelRetry(
+            "task_label فارغ. أصدر عبارة عربية قصيرة (30-60 حرفاً) "
+            "مشتقة من محتوى السؤال — وصف الموضوع لا الفعل."
+        )
+
+    if len(value.attached_wis) > MAX_ATTACHED_ITEMS:
+        raise ModelRetry(
+            f"اخترت {len(value.attached_wis)} عناصر، والحد الأقصى "
+            f"{MAX_ATTACHED_ITEMS}. أعد الاختيار وأبقِ على الأكثر صلة فقط."
+        )
+
+    alias_map = ctx.deps.wi_alias_map or {}
+
+    # Resolve target_wi → target_item_id.
+    # Some LLM outputs serialize the absence of a target as the literal
+    # strings "None" / "null" / "" instead of an actual JSON null. Coerce
+    # those sentinels to Python None BEFORE the truthy check so we don't
+    # send the resolver looking for an alias that can never exist (the old
+    # behavior burned ~5.5k tokens × 2 retries per dispatch turn before
+    # eventually surrendering).
+    raw_target = (value.target_wi or "").strip()
+    if raw_target and raw_target.lower() not in {"none", "null"}:
+        resolved = _resolve_wi_alias(raw_target, alias_map)
+        if resolved is None:
             raise ModelRetry(
-                f"اخترت {len(value.attached_item_ids)} عناصر، والحد الأقصى "
-                f"{MAX_ATTACHED_ITEMS}. أعد الاختيار وأبقِ على الأكثر صلة فقط."
+                f"العنصر {raw_target} غير موجود في هذه المحادثة. "
+                f"استخدم رمزاً من الملخصات (WI-1, WI-2, ...)."
             )
-        if not (value.task_label or "").strip():
+        value.target_item_id = resolved
+    else:
+        value.target_wi = None       # canonicalize the field too
+        value.target_item_id = None
+
+    # Resolve each attached_wis → attached_item_ids.
+    resolved_attached: list[str] = []
+    for alias in value.attached_wis:
+        resolved = _resolve_wi_alias(alias, alias_map)
+        if resolved is None:
             raise ModelRetry(
-                "task_label فارغ. أصدر عبارة عربية قصيرة (30-60 حرفاً) "
-                "مشتقة من محتوى السؤال — وصف الموضوع لا الفعل."
+                f"العنصر {alias} غير موجود في هذه المحادثة. "
+                f"استخدم رموزاً من الملخصات (WI-1, WI-2, ...)."
             )
+        resolved_attached.append(resolved)
+    value.attached_item_ids = resolved_attached
+
     return value
 
 
@@ -265,27 +351,41 @@ def inject_user_preferences(ctx: RunContext[RouterDeps]) -> str:
 
 @router_agent.instructions
 def inject_workspace_summaries(ctx: RunContext[RouterDeps]) -> str:
-    """Render workspace item summaries (item_id, kind, title, summary).
+    """Render workspace item summaries with ``WI-{seq}`` aliases.
 
-    These are the candidate pool for ``attached_item_ids`` and the primary
-    way the router knows what artifacts exist in this conversation. Full
-    ``content_md`` stays out of the prompt — fetched on demand by the
-    ``read_workspace_item`` tool.
+    Migration 052: each item is rendered as ``WI-{wi_seq}`` instead of as a
+    raw UUID. These aliases are the candidate pool for ``attached_wis`` and
+    ``target_wi`` and are the **only** form the LLM should emit. The router
+    output validator resolves them back to UUIDs after the run.
+
+    Items without a ``wi_seq`` (rare — should never happen for items with a
+    conversation_id post-migration 052) are skipped from the alias prompt
+    surface to avoid handing the model an unresolvable label.
     """
     items = ctx.deps.workspace_item_summaries or []
     if not items:
         return ""
-    lines = ["عناصر مساحة العمل المتاحة (للاختيار في attached_item_ids):"]
+    lines = [
+        "عناصر مساحة العمل المتاحة في هذه المحادثة "
+        "(استخدم الرموز التالية فقط في attached_wis و target_wi):"
+    ]
     for item in items:
-        item_id = item.get("item_id", "")
+        wi_seq = item.get("wi_seq")
+        if wi_seq is None:
+            continue
+        alias = f"WI-{wi_seq}"
         kind = item.get("kind") or item.get("kind_hint") or "unknown"
         title = item.get("title") or "(بدون عنوان)"
         summary = item.get("summary")
         summary_text = summary if summary else "(لا يوجد ملخص بعد)"
-        lines.append(f"- item_id={item_id} | kind={kind} | title={title}\n  summary: {summary_text}")
+        lines.append(f"- {alias} | kind={kind} | title={title}\n  summary: {summary_text}")
+    if len(lines) == 1:
+        # All items lacked wi_seq — nothing to render.
+        return ""
     lines.append(
-        "للاطلاع على المحتوى الكامل لأي عنصر استدعِ أداة read_workspace_item بمعرّفه "
-        "(يمكن استدعاؤها على عدة عناصر بالتوازي)."
+        "للاطلاع على المحتوى الكامل لأي عنصر استدعِ `read_workspace_item(\"WI-N\")` "
+        "بالرمز نفسه (يمكن استدعاؤها على عدة عناصر بالتوازي). "
+        "لا تستخدم معرّفات UUID مطلقاً — استخدم رموز WI-N فقط."
     )
     return "\n" + "\n".join(lines) + "\n"
 
@@ -303,25 +403,35 @@ def inject_compaction_summary(ctx: RunContext[RouterDeps]) -> str:
 
 
 @router_agent.tool
-async def read_workspace_item(ctx: RunContext[RouterDeps], item_id: str) -> str:
-    """Return the full markdown content of a workspace item by id.
+async def read_workspace_item(ctx: RunContext[RouterDeps], wi: str) -> str:
+    """Return the full markdown content of a workspace item.
 
     Use this tool when the per-item ``summary`` provided in context is
     insufficient — for example, answering a direct question about an
-    artifact's contents, or picking ``attached_item_ids`` for a dispatch
-    where the summary leaves the item's relevance ambiguous.
+    artifact's contents, or picking ``attached_wis`` for a dispatch where
+    the summary leaves the item's relevance ambiguous.
 
-    The tool can be invoked in parallel for multiple item_ids in a single
-    turn (the Pydantic AI runtime surfaces parallel tool calls automatically),
-    so feel free to open several artifacts at once when cross-referencing.
+    Pass the ``WI-{n}`` alias shown in the workspace summaries (e.g.
+    ``"WI-3"``). The tool resolves the alias against the conversation's
+    workspace items. The tool can be invoked in parallel for multiple
+    items in a single turn — feel free to open several at once.
 
-    Returns the raw ``content_md`` string, or an empty string if the item
-    is not found / not accessible — in which case you should silently move
-    on without retrying.
+    Returns the raw ``content_md`` string, or an empty string if the alias
+    is unknown / not accessible — in which case silently move on without
+    retrying.
 
     Args:
-        item_id: The UUID of the workspace item to read.
+        wi: The ``WI-{n}`` alias of the workspace item to read. A raw UUID
+            is also accepted for backward compatibility but the LLM should
+            always emit the alias form.
     """
+    item_id = _resolve_wi_alias(wi, ctx.deps.wi_alias_map or {})
+    if not item_id:
+        logger.info(
+            "read_workspace_item: alias %r not resolvable for conversation %s",
+            wi, ctx.deps.conversation_id,
+        )
+        return ""
     try:
         result = (
             ctx.deps.supabase.table("workspace_items")
@@ -335,17 +445,17 @@ async def read_workspace_item(ctx: RunContext[RouterDeps], item_id: str) -> str:
         if result and getattr(result, "data", None):
             content = result.data.get("content_md") or ""
             logger.info(
-                "read_workspace_item: loaded %s for user %s (%d chars)",
-                item_id, ctx.deps.user_id, len(content),
+                "read_workspace_item: loaded %s (alias %s) for user %s (%d chars)",
+                item_id, wi, ctx.deps.user_id, len(content),
             )
             return content
         logger.info(
-            "read_workspace_item: %s not found for user %s",
-            item_id, ctx.deps.user_id,
+            "read_workspace_item: %s (alias %s) not found for user %s",
+            item_id, wi, ctx.deps.user_id,
         )
         return ""
     except Exception as e:
-        logger.warning("read_workspace_item error for %s: %s", item_id, e)
+        logger.warning("read_workspace_item error for %s (alias %s): %s", item_id, wi, e)
         return ""
 
 
@@ -358,13 +468,14 @@ async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
     or you need a fresh listing.
 
     Returns:
-        Compact list of {item_id, title, kind_hint, created_at} dicts.
+        Compact list of {wi, title, kind_hint, created_at} dicts where ``wi``
+        is the ``WI-{seq}`` alias for use in attached_wis / target_wi.
         Empty list on any error.
     """
     try:
         result = (
             ctx.deps.supabase.table("workspace_items")
-            .select("item_id, title, kind, metadata, created_at")
+            .select("item_id, wi_seq, title, kind, metadata, created_at")
             .eq("conversation_id", ctx.deps.conversation_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=True)
@@ -377,8 +488,10 @@ async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
             kind = row.get("kind") or "agent_search"
             metadata = row.get("metadata") or {}
             subtype = metadata.get("subtype") if isinstance(metadata, dict) else None
+            wi_seq = row.get("wi_seq")
             items.append({
-                "item_id": row.get("item_id"),
+                # Expose the alias to the LLM; never the raw UUID.
+                "wi": f"WI-{wi_seq}" if wi_seq is not None else None,
                 "title": row.get("title", ""),
                 "kind_hint": "agent_writing" if kind in ("note", "agent_writing") else "agent_search",
                 "artifact_type": subtype,
@@ -442,6 +555,16 @@ async def run_router(
         ChatResponse if the router answers directly,
         DispatchAgent if the router dispatches a specialist.
     """
+    # Migration 052: build the seq → item_id lookup from the loaded summaries
+    # so the output validator can resolve WI-{seq} aliases without a DB hit.
+    summary_list = list(workspace_item_summaries or [])
+    alias_map: dict[int, str] = {}
+    for item in summary_list:
+        seq = item.get("wi_seq")
+        iid = item.get("item_id")
+        if seq is not None and iid:
+            alias_map[int(seq)] = str(iid)
+
     deps = RouterDeps(
         supabase=supabase,
         user_id=user_id,
@@ -450,8 +573,9 @@ async def run_router(
         case_memory_md=case_memory_md,
         case_metadata=case_metadata,
         user_preferences=user_preferences,
-        workspace_item_summaries=list(workspace_item_summaries or []),
+        workspace_item_summaries=summary_list,
         compaction_summary_md=compaction_summary_md,
+        wi_alias_map=alias_map,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
