@@ -2,7 +2,6 @@ import type {
   AuthResponse,
   AuthTokens,
   User,
-  RegisterResponse,
   CaseListResponse,
   CaseDetailResponse,
   CreateCaseRequest,
@@ -17,6 +16,7 @@ import type {
   DownloadResponse,
   Memory,
   MemoryListResponse,
+  Reference,
   WorkspaceItem,
   WorkspaceItemListResponse,
   CreateNoteRequest,
@@ -57,8 +57,11 @@ let accessToken: string | null = null;
 
 export function setTokens(tokens: AuthTokens): void {
   accessToken = tokens.access_token;
-  // Refresh token is NOT stored here — Supabase SSR handles it
-  // via cookie-based session management automatically.
+  // The refresh token isn't kept here. The browser supabase client owns
+  // it — callers that obtain tokens from the backend MUST seed the client
+  // via supabase.auth.setSession(...) (see auth-store.login) so the
+  // sb-<ref>-auth-token cookie gets written. Without that, new tabs have
+  // no session to hydrate from and AuthGuard kicks the user to /login.
 }
 
 export function getAccessToken(): string | null {
@@ -213,11 +216,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post<AuthResponse>("/auth/login", { email, password }),
 
-  register: (data: {
-    email: string;
-    password: string;
-    full_name_ar: string;
-  }) => api.post<RegisterResponse>("/auth/register", data),
+  // Signup runs entirely in the browser via supabase.auth.signUp() — see
+  // stores/auth-store.ts. No backend endpoint to call here.
 
   refresh: () =>
     refreshAccessToken().then((token) => ({
@@ -502,6 +502,20 @@ export const workspaceApi = {
       `/conversations/${conversationId}/workspace/attachments/from-document`,
       body,
     ),
+
+  /**
+   * Migration 049: fetch the per-WI reference list. References used to live
+   * on ``metadata.references`` JSONB; they now live in a relational table
+   * and are reconstructed by the backend via JOINs to chunks_v2 / cases /
+   * services. Response shape matches the pre-049 ``Reference[]`` so the
+   * existing ReferencePanel renders identically.
+   */
+  listReferences: (itemId: string, opts?: { usedOnly?: boolean }) => {
+    const qs = opts?.usedOnly ? "?used=true" : "";
+    return api.get<{ references: Reference[] }>(
+      `/workspace/${itemId}/references${qs}`,
+    );
+  },
 };
 
 // -----------------------------------------------

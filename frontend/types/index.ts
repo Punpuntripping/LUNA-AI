@@ -21,11 +21,6 @@ export interface AuthResponse {
   user: User;
 }
 
-export interface RegisterResponse {
-  user: User;
-  verification_sent: boolean;
-}
-
 // ==========================================
 // CASES
 // ==========================================
@@ -370,9 +365,11 @@ export interface WorkspaceItemListResponse {
 // DEEP_SEARCH ARTIFACT REFERENCES (JSON render object)
 // ==========================================
 // Mirrors agents/deep_search_v4/aggregator/models.py::Reference and
-// agents/deep_search_v4/source_viewer.py::SourceView. Persisted on an
-// `agent_search` workspace item as `metadata.references` and rendered by
-// the workspace ReferencePanel.
+// agents/deep_search_v4/source_viewer.py::SourceView. Migration 049: refs
+// live in the relational `workspace_item_references` table; the backend
+// reconstructs this shape on read by joining to source tables. The
+// frontend fetches via `useWorkspaceItemReferences(item_id)` and the
+// workspace ReferencePanel renders the response.
 
 export type ReferenceDomain = 'regulations' | 'compliance' | 'cases';
 
@@ -407,11 +404,23 @@ export type SourceView =
   | {
       source_type: 'case';
       title: string;
+      /** Case body (markdown) — rendered above the details_url link. */
+      content: string;
       details_url: string;
     }
   | {
       source_type: 'gov_service';
       title: string;
+      /** Long-form service title (``services.intro_title``). Often redundant with ``title``. */
+      intro_title: string;
+      /** One-sentence description (``services.intro_description``). */
+      intro_description: string;
+      /** Procedural steps; each entry may contain inline markdown (links, emphasis). */
+      steps: string[];
+      /** Eligibility / pre-conditions. */
+      requirements: string[];
+      /** Documents the user must submit. */
+      required_documents: string[];
       national_platform_url: string;
       service_url: string;
     }
@@ -442,12 +451,54 @@ export interface Reference {
   entity_name: string;
   cross_refs: CrossRef[];
   source_view: SourceView | null;
+  /**
+   * Writer-publisher attribution: when this reference was projected onto an
+   * ``agent_writing`` workspace item from a source research WI, ``source_wi``
+   * carries the LLM-facing alias (e.g. ``"WI-1"``) of that source. Lives
+   * exclusively in ``workspace_items.metadata.references`` on the writer's
+   * output row — NOT in ``workspace_item_references`` rows — so callers that
+   * fetch references via ``/workspace/{id}/references`` must overlay it from
+   * the item's metadata blob to surface provenance to the lawyer.
+   *
+   * Always undefined for ``agent_search`` items (no source disambiguation
+   * applies — the search agent IS the source).
+   */
+  source_wi?: string | null;
+  /**
+   * Writer-publisher attribution: the ``n`` this ref had inside the source WI
+   * before the writer renumbered it 1..K in body order. Useful for forensic
+   * click-through ("which (n) on WI-1 produced this card?"); same overlay
+   * rules as ``source_wi``.
+   */
+  source_n?: number | null;
 }
 
-/** Typed view of `metadata` on an `agent_search` workspace item. */
+/**
+ * Entry shape inside ``workspace_items.metadata.references`` for an
+ * ``agent_writing`` item. Written by ``agents.writer.publisher`` to give the
+ * frontend a thin attribution view that maps the writer's body-order ``n``
+ * back to (source_wi alias, source ref n, ref_id, domain). The full Reference
+ * payload (title, snippet, source_view, …) still lives in the relational
+ * ``workspace_item_references`` table and is reconstructed by the existing
+ * ``/workspace/{id}/references`` endpoint.
+ */
+export interface WriterMetadataReferenceView {
+  n: number;
+  source_wi: string | null;
+  source_n: number;
+  ref_id: string;
+  domain: ReferenceDomain;
+}
+
+/**
+ * Typed view of `metadata` on an `agent_search` workspace item.
+ *
+ * Migration 049: ``references`` is NO LONGER carried on the metadata blob.
+ * It now lives in the relational ``workspace_item_references`` table and
+ * is fetched separately via ``useWorkspaceItemReferences(item_id)``.
+ */
 export interface AgentSearchMetadata {
   subtype?: string;
-  references?: Reference[];
   confidence?: 'high' | 'medium' | 'low';
   detail_level?: 'low' | 'medium' | 'high';
   ura_log_id?: string;

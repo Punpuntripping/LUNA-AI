@@ -119,16 +119,26 @@ export function MessageList({
   const isNearBottomRef = useRef(true);
   const rafIdRef = useRef<number | null>(null);
 
-  // Flatten pages into a single array, reversing since API returns newest-first
+  // Flatten pages into a single array, reversing since API returns newest-first.
+  // Dedupe by message_id — the SSE `done` handler optimistically prepends the
+  // assistant message into page 0 just before the post-stream invalidate
+  // refetches the list, so the same id can land in two pages until the next
+  // render settles. Skipping the second occurrence keeps React's keyed-children
+  // happy without losing the no-flash UX.
   const messages: Message[] = useMemo(() => {
     if (!data?.pages) return [];
+    const seen = new Set<string>();
     const all: Message[] = [];
     // Pages are in order [newest, older, oldest...]
     // We need oldest-first for display, so reverse pages then reverse messages within
     for (let i = data.pages.length - 1; i >= 0; i--) {
       const page = data.pages[i];
       // Messages within a page are newest-first, so reverse them
-      all.push(...[...page.messages].reverse());
+      for (const m of [...page.messages].reverse()) {
+        if (seen.has(m.message_id)) continue;
+        seen.add(m.message_id);
+        all.push(m);
+      }
     }
     return all;
   }, [data?.pages]);

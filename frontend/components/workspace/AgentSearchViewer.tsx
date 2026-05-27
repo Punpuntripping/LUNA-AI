@@ -3,7 +3,8 @@
 import { useCallback, useState } from "react";
 import { ArtifactPreview } from "./ArtifactPreview";
 import { ReferencePanel } from "./ReferencePanel";
-import type { AgentSearchMetadata, WorkspaceItem } from "@/types";
+import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import type { WorkspaceItem } from "@/types";
 
 interface AgentSearchViewerProps {
   item: WorkspaceItem;
@@ -21,9 +22,12 @@ interface AgentSearchViewerProps {
  *
  * The synthesis body (``content_md``) renders via the shared ``ArtifactPreview``
  * (markdown + copy button + intra-body citation clicks). The reference list
- * renders inside the same scroll viewport as a JSON-driven ``ReferencePanel``
- * fed from ``metadata.references`` — references live entirely on the
- * artifact, never in the chat.
+ * renders inside the same scroll viewport as a JSON-driven ``ReferencePanel``.
+ *
+ * Migration 049: references no longer live on ``metadata.references``. They
+ * are fetched on demand from the relational ``workspace_item_references``
+ * table via ``useWorkspaceItemReferences``. The response shape matches the
+ * pre-049 ``Reference[]`` so the panel renders identically.
  *
  * Two citation surfaces both target the SAME reference cards:
  * - Chat-bubble ``[n]`` → ``openWorkspaceItemAtReference`` (store-driven,
@@ -39,8 +43,8 @@ export function AgentSearchViewer({
   focusedReferenceN,
   onFlashDone,
 }: AgentSearchViewerProps) {
-  const metadata = (item.metadata ?? {}) as AgentSearchMetadata;
-  const references = metadata.references ?? [];
+  const { data: references = [], isLoading: isLoadingReferences } =
+    useWorkspaceItemReferences(item.item_id);
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
 
   // Intra-artifact citation click: when the user clicks ``[n]`` inside the
@@ -72,6 +76,7 @@ export function AgentSearchViewer({
           references={references}
           focusedReferenceN={focusedN}
           onFlashDone={handleFlashDone}
+          isLoading={isLoadingReferences}
         />
       }
     />

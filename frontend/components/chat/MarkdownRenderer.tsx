@@ -1,12 +1,13 @@
 "use client";
 
-import { memo, useMemo, type ReactNode } from "react";
+import { memo, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "@/components/chat/CodeBlock";
 import { CitationMarker } from "@/components/chat/CitationMarker";
+import { remarkCitations } from "@/lib/markdown/remark-citations";
 
 // Import highlight.js dark theme
 import "highlight.js/styles/github-dark.css";
@@ -23,64 +24,36 @@ interface MarkdownRendererProps {
   onCitationClick?: (n: number) => void;
 }
 
-// Matches `[12]`, `[3]`, etc. Capture group is the digits only.
-const CITATION_REGEX = /\[(\d+)\]/g;
-
-/**
- * Rewrite a string into a list of nodes where each ``[n]`` occurrence is
- * replaced with a ``<CitationMarker n={n} onClick={...} />`` button. Non-
- * matching segments stay as plain strings. Pure text-node transform — does
- * NOT receive code-block contents (those go through the ``code`` override
- * which renders raw children directly, bypassing this path).
- */
-function rewriteCitations(
-  text: string,
-  onCitationClick: ((n: number) => void) | undefined,
-): ReactNode[] {
-  const out: ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  // Reset the regex's stateful lastIndex (it's a /g regex).
-  CITATION_REGEX.lastIndex = 0;
-  let key = 0;
-  while ((match = CITATION_REGEX.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      out.push(text.slice(lastIndex, match.index));
-    }
-    const n = Number(match[1]);
-    if (Number.isFinite(n)) {
-      out.push(
-        <CitationMarker key={`cite-${key++}-${n}`} n={n} onClick={onCitationClick} />,
-      );
-    } else {
-      // Defensive: shouldn't happen since the regex captures digits only,
-      // but if it does, keep the original text.
-      out.push(match[0]);
-    }
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < text.length) {
-    out.push(text.slice(lastIndex));
-  }
-  return out.length > 0 ? out : [text];
-}
-
 function buildMarkdownComponents(
   onCitationClick: ((n: number) => void) | undefined,
 ): Components {
   return {
-    // --- Text nodes: intercept to rewrite [n] citations ---
-    // react-markdown v9 invokes this for each text node. Code-block contents
-    // do NOT reach here because the ``code`` override renders its string
-    // children directly without dispatching them back through the renderer.
-    text({ children }) {
-      if (typeof children !== "string") {
+    // --- Citation markers ([n] / [n,m,...]) ---
+    // The ``remarkCitations`` plugin (registered below) transforms the
+    // mdast text nodes that contain citation tokens into ``<cite data-n="n">``
+    // hast elements. react-markdown then dispatches each one here. This
+    // works inside paragraphs, list items, table cells, blockquotes, bold
+    // / italic / nested formatting — every container — because the
+    // interception happens at the AST level, not at the per-container
+    // component layer. Code-block contents are NOT touched (they live on
+    // ``code`` mdast nodes' ``value``, never as text children).
+    cite({ node, children }) {
+      // Hast properties are camelized for HTML attrs but data-* attrs land
+      // on ``properties`` keyed by the dash-cased form. Read defensively.
+      const props = (node as { properties?: Record<string, unknown> } | undefined)
+        ?.properties ?? {};
+      const raw = (props["data-n"] ?? (props as Record<string, unknown>).dataN) as
+        | string
+        | number
+        | undefined;
+      const n =
+        typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
+      if (!Number.isFinite(n) || n <= 0) {
+        // Defensive: malformed cite. Render the inner text (if any) so we
+        // don't blank-out user-visible content.
         return <>{children}</>;
       }
-      if (!children.includes("[")) {
-        return <>{children}</>;
-      }
-      return <>{rewriteCitations(children, onCitationClick)}</>;
+      return <CitationMarker n={n} onClick={onCitationClick} />;
     },
 
     // --- Code blocks & inline code ---
@@ -259,7 +232,10 @@ function buildMarkdownComponents(
   };
 }
 
-const remarkPlugins = [remarkGfm];
+// ``remarkCitations`` runs AFTER ``remarkGfm`` so any GFM-specific text node
+// shapes (e.g. inside table cells) are already in their final form before we
+// split them on ``[n]`` tokens.
+const remarkPlugins = [remarkGfm, remarkCitations];
 const rehypePlugins = [rehypeHighlight];
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({

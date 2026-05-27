@@ -34,6 +34,12 @@ interface ReferencePanelProps {
   focusedReferenceN?: number | null;
   /** Called after the flash animation completes. */
   onFlashDone?: () => void;
+  /**
+   * Migration 049: ``true`` while ``useWorkspaceItemReferences`` is fetching
+   * the relational ref list. Renders 3 skeleton cards so the pane doesn't
+   * layout-shift when the data arrives.
+   */
+  isLoading?: boolean;
 }
 
 const DOMAIN_META: Record<
@@ -52,7 +58,7 @@ const DOMAIN_META: Record<
 /**
  * JSON-driven reference list for a deep_search ``agent_search`` artifact.
  *
- * Renders one card per ``Reference`` (from ``metadata.references``), switching
+ * Renders one card per ``Reference`` (from useWorkspaceItemReferences), switching
  * on ``domain``. Each card exposes the primary external link and — when a
  * ``source_view`` payload is present — a popup with the full original source.
  *
@@ -64,6 +70,7 @@ export function ReferencePanel({
   references,
   focusedReferenceN,
   onFlashDone,
+  isLoading = false,
 }: ReferencePanelProps) {
   const [openView, setOpenView] = useState<Reference | null>(null);
   // Per-card refs so we can scrollIntoView the focused one without a global
@@ -98,6 +105,22 @@ export function ReferencePanel({
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.setAttribute("data-flash", "true");
   }, [focusedReferenceN, ordered]);
+
+  if ((!references || references.length === 0) && isLoading) {
+    return (
+      <div dir="rtl" className="mt-6 border-t pt-4" aria-busy="true">
+        <h3 className="mb-3 text-sm font-semibold text-foreground">المراجع</h3>
+        <ul className="flex flex-col gap-2">
+          {[0, 1, 2].map((i) => (
+            <li
+              key={i}
+              className="h-[78px] rounded-lg border bg-muted/40 animate-pulse"
+            />
+          ))}
+        </ul>
+      </div>
+    );
+  }
 
   if (!references || references.length === 0) return null;
 
@@ -199,6 +222,21 @@ function ReferenceCard({
               )}
               title={reference.relevance === "high" ? "صلة عالية" : "صلة متوسطة"}
             />
+            {/* Writer-publisher attribution: surfaces the source-WI alias when
+                this ref was projected onto an agent_writing item from a
+                research WI. Absent for agent_search items. */}
+            {reference.source_wi && (
+              <span
+                className="rounded-sm bg-muted px-1 py-px text-[10px] font-medium tabular-nums text-muted-foreground"
+                title={
+                  reference.source_n != null
+                    ? `المصدر: ${reference.source_wi} (مرجع ${reference.source_n})`
+                    : `المصدر: ${reference.source_wi}`
+                }
+              >
+                من {reference.source_wi}
+              </span>
+            )}
           </div>
 
           <p className="mt-0.5 text-sm font-medium leading-snug text-foreground">
@@ -362,15 +400,43 @@ function SourceViewContent({
   if (view.source_type === "case") {
     return (
       <div className="space-y-3">
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
         <SourceLink label="تفاصيل الحكم" url={view.details_url} />
       </div>
     );
   }
   if (view.source_type === "gov_service") {
+    // Hide intro_title when it duplicates the dialog title (services.service_name_ar
+    // and services.intro_title are often the same string). Trim before compare.
+    const introTitle = view.intro_title?.trim() ?? "";
+    const dialogTitle = view.title?.trim() ?? "";
+    const showIntroTitle = introTitle && introTitle !== dialogTitle;
+    const intro = view.intro_description?.trim() ?? "";
     return (
-      <div className="space-y-3">
-        <SourceLink label="المنصة الوطنية" url={view.national_platform_url} />
-        <SourceLink label="رابط الخدمة" url={view.service_url} />
+      <div className="space-y-4">
+        {(showIntroTitle || intro) && (
+          <div className="space-y-1.5">
+            {showIntroTitle && (
+              <h4 className="text-sm font-semibold text-foreground">
+                {introTitle}
+              </h4>
+            )}
+            {intro && (
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                {intro}
+              </p>
+            )}
+          </div>
+        )}
+
+        <ServiceSection title="الخطوات" items={view.steps} ordered />
+        <ServiceSection title="المتطلبات" items={view.requirements} />
+        <ServiceSection title="المستندات المطلوبة" items={view.required_documents} />
+
+        <div className="space-y-2 pt-1">
+          <SourceLink label="المنصة الوطنية" url={view.national_platform_url} />
+          <SourceLink label="رابط الخدمة" url={view.service_url} />
+        </div>
       </div>
     );
   }
@@ -394,6 +460,43 @@ function SourceLink({ label, url }: { label: string; url?: string }) {
       <Link2 className="h-3 w-3" />
       {label}
     </a>
+  );
+}
+
+/**
+ * One labelled section in the gov_service source-view (steps / requirements
+ * / required_documents). Skipped entirely when the items array is empty so
+ * the popup body stays compact for sparsely-populated services. Each item is
+ * rendered through ``MarkdownRenderer`` because the corpus stores
+ * markdown-flavoured strings (e.g. ``"[فيديو توضيحي](https://...)"``).
+ */
+function ServiceSection({
+  title,
+  items,
+  ordered = false,
+}: {
+  title: string;
+  items: string[];
+  ordered?: boolean;
+}) {
+  if (!items || items.length === 0) return null;
+  const ListTag = ordered ? "ol" : "ul";
+  return (
+    <div className="space-y-1.5">
+      <h4 className="text-sm font-semibold text-foreground">{title}</h4>
+      <ListTag
+        className={cn(
+          "space-y-1 pe-0 ps-0 me-5 ms-0",
+          ordered ? "list-decimal" : "list-disc",
+        )}
+      >
+        {items.map((item, i) => (
+          <li key={i} className="text-sm leading-relaxed">
+            <MarkdownRenderer content={item} />
+          </li>
+        ))}
+      </ListTag>
+    </div>
   );
 }
 

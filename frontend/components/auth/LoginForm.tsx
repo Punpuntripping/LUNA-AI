@@ -130,8 +130,12 @@ export function LoginForm() {
         await login(email, password);
         router.push("/chat");
       } else {
-        await register(email, password, fullNameAr);
-        setRegistrationSuccess(true);
+        const { needsVerification } = await register(email, password, fullNameAr);
+        if (needsVerification) {
+          setRegistrationSuccess(true);
+        } else {
+          router.push("/chat");
+        }
       }
     } catch (err) {
       if (err instanceof ApiClientError) {

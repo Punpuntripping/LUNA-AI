@@ -348,6 +348,18 @@ export function useSendMessage(): UseSendMessageReturn {
                   messageKeys.list(conversationId),
                   (old) => {
                     if (!old) return old;
+                    // Dedupe: the post-stream invalidate (around line 272) refetches
+                    // the messages list and the server now returns the persisted
+                    // assistant message. If that refetch lands before this `done`
+                    // handler, prepending again produces a duplicate `message_id`
+                    // (React keyed-children warning). Skip the prepend when the id
+                    // is already present anywhere in the cached pages.
+                    const alreadyPresent = old.pages.some((page) =>
+                      page.messages.some(
+                        (m) => m.message_id === assistantMessageId,
+                      ),
+                    );
+                    if (alreadyPresent) return old;
                     const newPages = [...old.pages];
                     newPages[0] = {
                       ...newPages[0],

@@ -9,7 +9,8 @@ import {
 } from "@/hooks/use-workspace";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
-import type { AgentSearchMetadata, WorkspaceItem } from "@/types";
+import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import type { WorkspaceItem } from "@/types";
 
 const USER_EDITABLE_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<
   WorkspaceItem["kind"]
@@ -35,6 +36,13 @@ interface WorkspaceItemViewerProps {
 export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const { data: item, isLoading, error } = useWorkspaceItem(itemId);
   const updateItem = useUpdateWorkspaceItem();
+  // Migration 049: refs come from workspace_item_references, not metadata.
+  // Only fetched when the item is an agent_search kind; ``enabled`` keeps
+  // us from spamming the endpoint on note / attachment / convo_context.
+  const { data: references = [], isLoading: isLoadingReferences } =
+    useWorkspaceItemReferences(itemId, {
+      enabled: item?.kind === "agent_search",
+    });
 
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -168,9 +176,8 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           footer={
             item.kind === "agent_search" ? (
               <ReferencePanel
-                references={
-                  ((item.metadata ?? {}) as AgentSearchMetadata).references ?? []
-                }
+                references={references}
+                isLoading={isLoadingReferences}
               />
             ) : null
           }
