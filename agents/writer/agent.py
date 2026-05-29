@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.structured_output import make_json_salvager
 
 from .context import format_writer_context, format_writer_envelope
 from .deps import WriterDeps
@@ -34,6 +35,15 @@ from .models import WriterLLMOutput
 from .prompts import get_writer_prompt, render_package_for_system_prompt
 
 logger = logging.getLogger(__name__)
+
+# flash-max sometimes finalises as text (``<thinking>…</thinking>{json}``)
+# instead of calling the output tool. Salvage the JSON rather than retrying the
+# whole (long) drafting prompt. See agents/utils/structured_output.py.
+_WRITER_RETRY_MSG = (
+    "أعد المخرَج ككائن JSON صالح وفق المخطط (title_ar, sections, citations_used, "
+    "confidence, notes_ar, chat_summary, key_findings) فقط — دون أي نص أو وسم "
+    "<thinking> خارج JSON."
+)
 
 
 WRITER_LIMITS = UsageLimits(
@@ -72,8 +82,12 @@ def create_writer_agent(
 
     agent: Agent[WriterDeps, WriterLLMOutput] = Agent(
         model,
+        name="writer_executor",
         deps_type=WriterDeps,
-        output_type=WriterLLMOutput,
+        output_type=[
+            WriterLLMOutput,
+            TextOutput(make_json_salvager(WriterLLMOutput, retry_msg=_WRITER_RETRY_MSG)),
+        ],
         instructions=system_prompt,
         retries=2,
     )

@@ -78,14 +78,10 @@ class DispatchAgent(BaseModel):
             "question."
         ),
     )
-    describe_query: str = Field(
-        description=(
-            "A description of the user's QUERY (not the workflow). What the "
-            "user is asking and the conversation context that informs the "
-            "question — ~50–150 words. Do NOT narrate 'the user wants me to "
-            "do X'."
-        ),
-    )
+    # NOTE: the router no longer paraphrases the query into a ``describe_query``
+    # field. The specialist receives the raw user message via
+    # ``MajorAgentInput.describe_query`` (filled by the orchestrator from the
+    # user's actual question) plus ``recent_messages`` for conversation context.
     # -- LLM-emitted alias fields ------------------------------------------
     target_wi: str | None = Field(
         default=None,
@@ -179,8 +175,9 @@ class MajorAgentInput(BaseModel):
     """
     describe_query: str = Field(
         description=(
-            "Router-emitted description of the user's query (50–150 words). "
-            "Forwarded from DispatchAgent.describe_query."
+            "The user's raw query text. The orchestrator fills this from the "
+            "user's actual message — the router no longer paraphrases it. "
+            "Conversation context comes from ``recent_messages``."
         ),
     )
     task_label: str = Field(

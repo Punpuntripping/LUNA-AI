@@ -124,6 +124,19 @@ class PlannerDecision(BaseModel):
         description="Short Arabic justification — logged + surfaced in telemetry.",
     )
 
+    def tracking_output(self) -> dict:
+        """Bounded telemetry view (agents/utils/tracking.py protocol) — keeps the
+        full plan_md text out of span attributes."""
+        return {
+            "subtype": self.subtype,
+            "edit_mode": self.edit_mode,
+            "plan_md_chars": len(self.plan_md or ""),
+            "selected_wis": list(self.selected_wis),
+            "analyzer_invoked": self.analyzer_invoked,
+            "aborted": self.aborted,
+            "intent_ar_chars": len(self.intent_ar or ""),
+        }
+
     @field_validator("selected_wis")
     @classmethod
     def _dedupe_preserving_order(cls, v: list[str]) -> list[str]:

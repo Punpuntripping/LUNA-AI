@@ -928,7 +928,9 @@ async def _route(
         yield {"type": "agent_selected", "agent_family": result.agent_family}
         async for ev in _dispatch(
             agent_family=result.agent_family,
-            describe_query=result.describe_query,
+            # The router no longer paraphrases the query; the specialist gets
+            # the user's raw message (plus recent_messages for context).
+            describe_query=question,
             task_label=result.task_label,
             target_item_id=result.target_item_id,
             attached_item_ids=list(result.attached_item_ids),
@@ -1370,6 +1372,14 @@ async def _run_deep_search(
             and response is not None
             and getattr(response, "build_artifact", True)
         )
+        # The planner's faithful, zero-bias restatement (when produced) is the
+        # canonical query for this turn — prefer it over the raw user message
+        # for the artifact's stored query so prior_searches comprehension in
+        # future turns reflects the corrected intent. Falls back to the raw
+        # query when the planner left it empty (query already clean).
+        effective_describe_query = (
+            getattr(turn.decision, "query_restatement", "") or ""
+        ).strip() or input.describe_query
         if should_publish:
             try:
                 publish_input = SearchPublishInput(
@@ -1378,7 +1388,7 @@ async def _run_deep_search(
                     case_id=input.case_id,
                     message_id=assistant_message_id,
                     agg_output=agg_output,
-                    original_query=input.describe_query,
+                    original_query=effective_describe_query,
                     detail_level=detail_level,
                     ura=getattr(deps, "_ura", None),
                     reg_rqrs=list(getattr(deps, "_reg_rqrs", []) or []),
@@ -1389,7 +1399,7 @@ async def _run_deep_search(
                     ),
                     # Wave 1 redesign: router-emitted title/query description.
                     task_label=input.task_label,
-                    describe_query=input.describe_query,
+                    describe_query=effective_describe_query,
                 )
                 publish_result = await publish_search_result(
                     publish_input,

@@ -6,12 +6,10 @@ Two agents, one per LLM phase (PLANNER_REDESIGN_PLAN.md §4):
   ``[PlannerDecision, DeferredToolRequests]``: a normal run yields a
   :class:`PlannerDecision`; calling the ``ask_user`` deferred tool ends the run
   with a :class:`~pydantic_ai.DeferredToolRequests` instead. ``deps_type`` is
-  :class:`PlannerDeps` (Phase C — flipped from ``None``): the decider now owns
-  the comprehension surface (case_brief, recent_messages, prior_searches,
-  attached_items rendered into dynamic instructions) AND a synchronously-
-  resolving ``read_workspace_item`` tool. ``ask_user``'s deferred-tool pause
-  semantics coexist with ``read_workspace_item``'s normal in-loop semantics on
-  the same agent — only ``ask_user`` raises ``CallDeferred``.
+  :class:`PlannerDeps`: the decider owns the comprehension surface (case_brief,
+  recent_messages, prior_searches, attached_items — including full
+  attachment ``content_md`` — rendered into dynamic instructions). ``ask_user``
+  is its only tool, raising ``CallDeferred`` to pause for a clarifying question.
 - :func:`create_planner_responder` — phase 3. ``deps_type`` is
   :class:`PlannerDeps`; a dynamic ``@instructions`` callback injects the trimmed
   artifact digest + mode framing. Output is :class:`PlannerResponse`.
@@ -85,10 +83,10 @@ PLANNER_DECIDER_LIMITS = UsageLimits(
     output_tokens_limit=40_000,
     # request_limit counts CUMULATIVE requests across pause/resume — the
     # rehydrated message_history carries the prior request count forward. The
-    # budget covers (Phase C / O6): 1 initial + up to 3 `read_workspace_item`
-    # tool calls + 1 `ask_user` → pause → 1 resume + 1–2 output_retries +
-    # headroom = 16. Bumped from 8 in Phase C to make room for the new tool.
-    # Do NOT lower it.
+    # budget covers: 1 initial + 1 `ask_user` → pause → 1 resume + a few
+    # output_retries + headroom. 16 leaves comfortable margin (request_limit
+    # counts CUMULATIVE requests across pause/resume — the rehydrated
+    # message_history carries the prior count forward). Do NOT lower it.
     request_limit=16,
 )
 
@@ -110,13 +108,11 @@ def create_planner_decider(
     caller resumes via ``agent.run(message_history=...,
     deferred_tool_results=DeferredToolResults({tool_call_id: reply}))``.
 
-    Phase C: ``deps_type`` is now :class:`PlannerDeps` (was ``None``). The
-    decider owns the comprehension surface (dynamic instructions render
-    ``case_brief`` / ``recent_messages`` / ``prior_searches`` / ``attached_items``
-    from deps) AND the ``read_workspace_item`` tool (a scoped, synchronously
-    resolving DB read of one ``workspace_items.content_md``). The deferred
-    ``ask_user`` and the normal ``read_workspace_item`` coexist on the same
-    agent — only ``ask_user`` raises ``CallDeferred``.
+    ``deps_type`` is :class:`PlannerDeps`. The decider owns the comprehension
+    surface (dynamic instructions render ``case_brief`` / ``recent_messages`` /
+    ``prior_searches`` / ``attached_items`` — with full attachment
+    ``content_md`` — from deps). Its only tool is the deferred ``ask_user``,
+    which raises ``CallDeferred`` to pause for a clarifying question.
 
     ``model_override`` is an optional tier override token / :class:`ModelPolicy`
     for the ``planner_decider`` slot (tier stays fixed).
@@ -157,78 +153,6 @@ def create_planner_decider(
             The user's reply text (delivered on resume via DeferredToolResults).
         """
         raise CallDeferred
-
-    @agent.tool
-    async def read_workspace_item(
-        ctx: RunContext[PlannerDeps], wi: str
-    ) -> str:
-        """Open a workspace item by its ``WI-{n}`` alias and return content_md.
-
-        Pass the ``WI-{n}`` label shown in ``<prior_searches>`` /
-        ``<attached_items>`` (e.g. ``"WI-3"``). A raw UUID is accepted
-        verbatim for backward compatibility but the planner should always
-        emit the alias form.
-
-        Scope: ONLY items in the current conversation. Enforced explicitly by
-        filtering on both ``user_id`` and ``conversation_id`` — RLS is the
-        second line of defense, not the first (the backend runs as service_role
-        and bypasses RLS, so the in-tool filter is load-bearing).
-
-        Use this BEFORE deciding mode / writing planner_brief when:
-        - The user references «التقرير السابق» / «البحث الماضي» and the prior
-          artifact's summary isn't enough.
-        - prior_searches shows a related search with low confidence — read its
-          full content to see what failed, then formulate a sharper plan.
-        - User's question references «الملف» / «العقد» attached to the conversation.
-
-        Returns: full ``content_md`` string on success; empty string ``""``
-        when the alias is unknown / item not found / out of scope (silently
-        — do NOT retry); Arabic error string «خطأ أثناء قراءة العنصر» on
-        actual DB exceptions.
-
-        Hard cap: do not call this tool more than 3 times per turn. The decider
-        should pick at most the 2–3 most relevant prior artifacts to read.
-        """
-        ctx.deps._events.append({
-            "type": "tool_call",
-            "tool": "read_workspace_item",
-            "wi": wi,
-        })
-        item_id = _resolve_wi_alias(wi, ctx.deps.wi_alias_map or {})
-        if not item_id:
-            logger.info(
-                "planner.read_workspace_item: alias %r not resolvable in conv %s",
-                wi, ctx.deps.conversation_id,
-            )
-            return ""
-        try:
-            result = (
-                ctx.deps.supabase.table("workspace_items")
-                .select("content_md")
-                .eq("item_id", item_id)
-                .eq("user_id", ctx.deps.user_id)
-                .eq("conversation_id", ctx.deps.conversation_id)   # explicit scope, not RLS hope
-                .is_("deleted_at", "null")
-                .maybe_single()
-                .execute()
-            )
-            if result and getattr(result, "data", None):
-                content = result.data.get("content_md") or ""
-                logger.info(
-                    "planner.read_workspace_item: loaded %s (alias %s) in conv %s (%d chars)",
-                    item_id, wi, ctx.deps.conversation_id, len(content),
-                )
-                return content
-            logger.info(
-                "planner.read_workspace_item: %s (alias %s) not found / out of scope in conv %s",
-                item_id, wi, ctx.deps.conversation_id,
-            )
-            return ""
-        except Exception as exc:
-            logger.warning(
-                "planner.read_workspace_item error for %s (alias %s): %s", item_id, wi, exc,
-            )
-            return f"خطأ أثناء قراءة العنصر: {type(exc).__name__}"
 
     return agent
 

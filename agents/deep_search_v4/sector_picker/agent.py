@@ -50,7 +50,11 @@ def create_sector_picker(
         output_type=SectorPickerOutput,
         instructions=SECTOR_PICKER_SYSTEM_PROMPT,
         retries=2,
-        output_retries=4,
+        # All-or-nothing schema validation (any invalid sector name fails the
+        # whole output). Give the model 2 retries to produce a fully-valid
+        # list; if it still cannot, the runner degrades the call to None
+        # (run unfiltered — the safe fallback).
+        output_retries=2,
     )
 
     return agent

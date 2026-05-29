@@ -10,6 +10,7 @@ import logging
 import time
 from typing import Any
 
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 from .agent import (
@@ -45,8 +46,10 @@ async def handle_artifact_summary_turn(
     """
     t0 = time.perf_counter()
 
-    with _logfire.span(
+    with track_stage(
         "artifact_summarizer.run",
+        conversation_id=getattr(input, "conversation_id", None),
+        agent_family="memory",
         kind=input.kind,
         title_chars=len(input.title or ""),
         describe_query_chars=len(input.describe_query or ""),
@@ -54,10 +57,8 @@ async def handle_artifact_summary_turn(
     ) as _ar_span:
         if not (input.content_md or "").strip():
             try:
-                _ar_span.set_attributes({
-                    "outcome": "empty_content",
-                    "fallback_used": True,
-                })
+                _ar_span.set_outcome("empty_content")
+                _ar_span.set(fallback_used=True)
             except Exception:
                 pass
             # Nothing to summarize. Return an empty fallback, no LLM call.
@@ -83,8 +84,8 @@ async def handle_artifact_summary_turn(
                 exc,
             )
             try:
-                _ar_span.set_attributes({
-                    "outcome": "llm_failed",
+                _ar_span.set_outcome("llm_failed")
+                _ar_span.set(**{
                     "fallback_used": True,
                     "error": str(exc),
                     "error.type": type(exc).__name__,
@@ -96,14 +97,14 @@ async def handle_artifact_summary_turn(
                 fallback_used=True,
             )
 
+        _ar_span.record_run(result, slot="artifact_summarizer")
+
         summary_md = (result.output.summary_md or "").strip()
         if not summary_md:
             logger.warning("artifact_summarizer: empty summary — using fallback")
             try:
-                _ar_span.set_attributes({
-                    "outcome": "empty_output",
-                    "fallback_used": True,
-                })
+                _ar_span.set_outcome("empty_output")
+                _ar_span.set(fallback_used=True)
             except Exception:
                 pass
             return ArtifactSummaryOutput(
@@ -114,6 +115,7 @@ async def handle_artifact_summary_turn(
         usage = result.usage()
         details = dict(usage.details) if usage.details else {}
         tokens_reasoning = int(details.get("reasoning_tokens", 0) or 0)
+        tokens_cached = int(getattr(usage, "cache_read_tokens", 0) or 0)
 
         model_used = _model_label_from_result(result)
 
@@ -122,6 +124,7 @@ async def handle_artifact_summary_turn(
             tokens_in=int(usage.input_tokens or 0),
             tokens_out=int(usage.output_tokens or 0),
             tokens_reasoning=tokens_reasoning,
+            tokens_cached=tokens_cached,
             model_used=model_used,
             fallback_used=False,
         )
@@ -129,8 +132,8 @@ async def handle_artifact_summary_turn(
         duration_s = time.perf_counter() - t0
 
         try:
-            _ar_span.set_attributes({
-                "outcome": "ok",
+            _ar_span.set_outcome("ok")
+            _ar_span.set(**{
                 "model_used": model_used,
                 "tokens_in": output.tokens_in,
                 "tokens_out": output.tokens_out,
@@ -198,18 +201,18 @@ async def handle_attachment_summary_turn(
     """
     t0 = time.perf_counter()
 
-    with _logfire.span(
+    with track_stage(
         "artifact_summarizer.run_attachment",
+        conversation_id=getattr(input, "conversation_id", None),
+        agent_family="memory",
         filename_chars=len(input.filename or ""),
         conversation_context_chars=len(input.conversation_context or ""),
         content_md_chars=len(input.content_md or ""),
     ) as _ar_span:
         if not (input.content_md or "").strip():
             try:
-                _ar_span.set_attributes({
-                    "outcome": "empty_content",
-                    "fallback_used": True,
-                })
+                _ar_span.set_outcome("empty_content")
+                _ar_span.set(fallback_used=True)
             except Exception:
                 pass
             return AttachmentSummaryOutput(
@@ -235,8 +238,8 @@ async def handle_attachment_summary_turn(
                 exc,
             )
             try:
-                _ar_span.set_attributes({
-                    "outcome": "llm_failed",
+                _ar_span.set_outcome("llm_failed")
+                _ar_span.set(**{
                     "fallback_used": True,
                     "error": str(exc),
                     "error.type": type(exc).__name__,
@@ -249,16 +252,16 @@ async def handle_attachment_summary_turn(
                 fallback_used=True,
             )
 
+        _ar_span.record_run(result, slot="artifact_summarizer")
+
         title = (result.output.title or "").strip()
         summary_md = (result.output.summary_md or "").strip()
         context_link = (result.output.context_link or "").strip()
         if not summary_md:
             logger.warning("attachment_summarizer: empty summary — using fallback")
             try:
-                _ar_span.set_attributes({
-                    "outcome": "empty_output",
-                    "fallback_used": True,
-                })
+                _ar_span.set_outcome("empty_output")
+                _ar_span.set(fallback_used=True)
             except Exception:
                 pass
             return AttachmentSummaryOutput(
@@ -271,6 +274,7 @@ async def handle_attachment_summary_turn(
         usage = result.usage()
         details = dict(usage.details) if usage.details else {}
         tokens_reasoning = int(details.get("reasoning_tokens", 0) or 0)
+        tokens_cached = int(getattr(usage, "cache_read_tokens", 0) or 0)
 
         model_used = _model_label_from_result(result)
 
@@ -283,6 +287,7 @@ async def handle_attachment_summary_turn(
             tokens_in=int(usage.input_tokens or 0),
             tokens_out=int(usage.output_tokens or 0),
             tokens_reasoning=tokens_reasoning,
+            tokens_cached=tokens_cached,
             model_used=model_used,
             fallback_used=False,
         )
@@ -290,8 +295,8 @@ async def handle_attachment_summary_turn(
         duration_s = time.perf_counter() - t0
 
         try:
-            _ar_span.set_attributes({
-                "outcome": "ok",
+            _ar_span.set_outcome("ok")
+            _ar_span.set(**{
                 "model_used": model_used,
                 "tokens_in": output.tokens_in,
                 "tokens_out": output.tokens_out,

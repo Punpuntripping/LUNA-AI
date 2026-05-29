@@ -15,15 +15,30 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.structured_output import make_json_salvager
 
 from .models import AggregatorLLMOutput
 from .prompts import get_aggregator_prompt
 
 logger = logging.getLogger(__name__)
+
+# flash-max occasionally finalises as text (``<thinking>…</thinking>{json}``)
+# instead of calling the output tool. This salvages the JSON instead of forcing
+# a retry that re-sends the whole (large) synthesis prompt. See
+# agents/utils/structured_output.py.
+_AGG_RETRY_MSG = (
+    "أعد المخرَج ككائن JSON صالح وفق المخطط (synthesis_md, used_refs, gaps, "
+    "confidence) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+)
+
+
+def _aggregator_text_output() -> TextOutput:
+    """``TextOutput`` salvage member for the aggregator's ``output_type`` union."""
+    return TextOutput(make_json_salvager(AggregatorLLMOutput, retry_msg=_AGG_RETRY_MSG))
 
 
 AGGREGATOR_LIMITS = UsageLimits(
@@ -60,7 +75,7 @@ def create_aggregator_agent(
     agent: Agent[None, AggregatorLLMOutput] = Agent(
         model,
         name="aggregator",
-        output_type=AggregatorLLMOutput,
+        output_type=[AggregatorLLMOutput, _aggregator_text_output()],
         instructions=system_prompt,
         retries=2,
     )
@@ -93,21 +108,21 @@ def create_dcr_agents(
     draft = Agent(
         get_agent_model("aggregator"),
         name="aggregator_draft",
-        output_type=AggregatorLLMOutput,
+        output_type=[AggregatorLLMOutput, _aggregator_text_output()],
         instructions=get_aggregator_prompt("prompt_3_draft"),
         retries=1,
     )
     critique = Agent(
         get_agent_model("aggregator"),
         name="aggregator_critique",
-        output_type=AggregatorLLMOutput,
+        output_type=[AggregatorLLMOutput, _aggregator_text_output()],
         instructions=get_aggregator_prompt("prompt_3_critique"),
         retries=1,
     )
     rewrite = Agent(
         get_agent_model("aggregator"),
         name="aggregator_rewrite",
-        output_type=AggregatorLLMOutput,
+        output_type=[AggregatorLLMOutput, _aggregator_text_output()],
         instructions=get_aggregator_prompt("prompt_3_rewrite"),
         retries=1,
     )

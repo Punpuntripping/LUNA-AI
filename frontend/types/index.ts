@@ -286,6 +286,19 @@ export interface SSEToken {
   text: string;
 }
 
+/**
+ * Emitted INSTEAD of message_start when a send is rejected because a pipeline
+ * is already running for this conversation (per-conversation in-flight dedup —
+ * backend message_service `_active_runs`). No new pipeline is started and no
+ * duplicate user message is saved. The client drops its optimistic duplicate
+ * and lets the existing in-flight assistant message surface on completion.
+ */
+export interface SSEDuplicate {
+  assistant_message_id: string;
+  conversation_id: string;
+  detail: string;
+}
+
 export interface SSEDone {
   message_id: string;
   usage: {
@@ -551,6 +564,38 @@ export interface UserPreferences {
 
 export interface UpdatePreferencesRequest {
   preferences: UserPreferencesData;
+}
+
+// ==========================================
+// USER TEMPLATES (قوالبي)
+// ==========================================
+// User-global markdown documents (not tied to any conversation or case).
+// Editable with the same UX as a `note` workspace item: edit/preview toggle
+// plus debounced autosave. Stored server-side via the /templates REST API.
+
+export interface UserTemplate {
+  template_id: string;
+  user_id: string;
+  title: string;
+  content_md: string;
+  created_by: WorkspaceCreator;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTemplateRequest {
+  title: string;
+  content_md?: string;
+}
+
+export interface UpdateTemplateRequest {
+  title?: string;
+  content_md?: string;
+}
+
+export interface TemplateListResponse {
+  templates: UserTemplate[];
 }
 
 // ==========================================

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type SidebarTab = "conversations" | "cases";
+export type SidebarTab = "conversations" | "cases" | "templates";
 
 interface SidebarState {
   isOpen: boolean;
@@ -9,6 +9,7 @@ interface SidebarState {
   selectedConversationId: string | null;
   selectedCaseId: string | null;
   isCreateCaseDialogOpen: boolean;
+  isCreateTemplateDialogOpen: boolean;
 
   toggle: () => void;
   setOpen: (open: boolean) => void;
@@ -17,6 +18,7 @@ interface SidebarState {
   setSelectedConversation: (id: string | null) => void;
   setSelectedCase: (id: string | null) => void;
   setCreateCaseDialogOpen: (open: boolean) => void;
+  setCreateTemplateDialogOpen: (open: boolean) => void;
 }
 
 export const useSidebarStore = create<SidebarState>((set) => ({
@@ -26,6 +28,7 @@ export const useSidebarStore = create<SidebarState>((set) => ({
   selectedConversationId: null,
   selectedCaseId: null,
   isCreateCaseDialogOpen: false,
+  isCreateTemplateDialogOpen: false,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   setOpen: (isOpen) => set({ isOpen }),
@@ -40,4 +43,6 @@ export const useSidebarStore = create<SidebarState>((set) => ({
   setSelectedConversation: (id) => set({ selectedConversationId: id }),
   setSelectedCase: (id) => set({ selectedCaseId: id }),
   setCreateCaseDialogOpen: (isCreateCaseDialogOpen) => set({ isCreateCaseDialogOpen }),
+  setCreateTemplateDialogOpen: (isCreateTemplateDialogOpen) =>
+    set({ isCreateTemplateDialogOpen }),
 }));

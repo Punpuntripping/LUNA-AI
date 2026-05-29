@@ -9,8 +9,7 @@ Three objects model the planner's runtime state — see PLANNER_REDESIGN_PLAN.md
   and the degraded fallback. Also holds the per-turn **comprehension inputs**
   (post Wave 2 / Phase C): ``case_brief``, ``recent_messages``,
   ``prior_searches``, ``attached_items``, plus ``user_id`` / ``conversation_id``
-  needed by the decider's ``read_workspace_item`` tool for explicit scope
-  enforcement.
+  (scope identifiers retained for telemetry + downstream retrieval).
 - :class:`~.apply.RetrievalConfig` — the mode-derived knobs (lives in ``apply.py``).
 - ``FullLoopDeps`` — the executor-config object assembled inside ``run_retrieval``.
 
@@ -22,10 +21,10 @@ the pause boundary. Per Phase C, the **comprehension fields** (``case_brief``,
 turn from the orchestrator's loaders — they are never persisted across a pause;
 on resume they are re-loaded fresh (per §6.3.1 of the redesign spec).
 
-The decider's ``deps_type`` flipped from ``None`` to :class:`PlannerDeps` in
-Phase C — phase 1 now needs infra (the ``read_workspace_item`` tool reads
-Supabase) and the comprehension inputs (the dynamic instructions render
-``recent_messages`` / ``prior_searches`` / etc.).
+The decider's ``deps_type`` is :class:`PlannerDeps` — phase 1 reads the
+comprehension inputs (the dynamic instructions render ``recent_messages`` /
+``prior_searches`` / ``attached_items`` / ``case_brief``). The attachment
+``content_md`` is rendered inline, so the decider needs no DB-read tool.
 
 Heavy types (Supabase, httpx, aggregator/URA models) are referenced under
 ``TYPE_CHECKING`` only, so importing this module stays cheap.
@@ -75,10 +74,11 @@ class PlannerDeps:
     unfold_mode: str = "precise"
     aggregator_logger: Any | None = None
 
-    # --- scope identifiers (Phase C — needed by read_workspace_item) -------
+    # --- scope identifiers -------------------------------------------------
     # Both default to empty string so the existing planner_deps test fixture
     # (which doesn't pass them) still constructs cleanly. The orchestrator
-    # always populates them in real dispatches.
+    # always populates them in real dispatches. ``conversation_id`` flows into
+    # telemetry + ``run_retrieval``; ``user_id`` is retained for parity.
     user_id: str = ""
     conversation_id: str = ""
 
@@ -94,8 +94,8 @@ class PlannerDeps:
     # Migration 052 / agent communication protocol: per-conversation
     # ``WI-{seq}`` alias → workspace_items.item_id lookup. Built once per
     # turn from ``prior_searches`` + ``attached_items`` + any other WIs the
-    # orchestrator surfaces. The responder's referenced_wi resolver and
-    # the read_workspace_item tool both consult this map.
+    # orchestrator surfaces. The responder's referenced_wi resolver consults
+    # this map to resolve a WI-{n} alias back to a workspace_items.item_id.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
 
     # --- SSE event sink ----------------------------------------------------

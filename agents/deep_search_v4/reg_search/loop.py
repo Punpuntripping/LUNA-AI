@@ -141,6 +141,7 @@ class ExpanderNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
                 "input_tokens": eu.input_tokens,
                 "output_tokens": eu.output_tokens,
                 "total_tokens": eu.total_tokens,
+                "cached_tokens": int(getattr(eu, "cache_read_tokens", 0) or 0),
             }
             if eu.details:
                 usage_entry["details"] = dict(eu.details)

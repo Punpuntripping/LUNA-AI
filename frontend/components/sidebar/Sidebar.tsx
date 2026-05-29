@@ -7,10 +7,12 @@ import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useConversations, useCreateConversation } from "@/hooks/use-conversations";
 import { useCases } from "@/hooks/use-cases";
+import { useTemplates } from "@/hooks/use-templates";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { ConversationList } from "@/components/sidebar/ConversationList";
 import { CaseList } from "@/components/sidebar/CaseList";
+import { TemplateList } from "@/components/sidebar/TemplateList";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -103,14 +105,17 @@ export function Sidebar() {
     setOpen,
     setSelectedConversation,
     setCreateCaseDialogOpen,
+    setCreateTemplateDialogOpen,
   } = useSidebarStore();
 
   const { data: convData } = useConversations(null);
   const { data: caseData } = useCases("active");
+  const { data: templateData } = useTemplates();
   const createConversation = useCreateConversation();
 
   const conversationCount = convData?.conversations?.length;
   const caseCount = caseData?.cases?.length;
+  const templateCount = templateData?.templates?.length;
 
   useEffect(() => {
     const handleResize = () => {
@@ -139,6 +144,11 @@ export function Sidebar() {
   const handleNewCase = () => {
     if (activeTab !== "cases") setActiveTab("cases");
     setCreateCaseDialogOpen(true);
+  };
+
+  const handleNewTemplate = () => {
+    if (activeTab !== "templates") setActiveTab("templates");
+    setCreateTemplateDialogOpen(true);
   };
 
   return (
@@ -188,11 +198,25 @@ export function Sidebar() {
             onCreate={handleNewCase}
             createTooltip="قضية جديدة"
           />
+          <NavPill
+            label="قوالبي"
+            count={templateCount}
+            active={activeTab === "templates"}
+            onSelect={() => setActiveTab("templates")}
+            onCreate={handleNewTemplate}
+            createTooltip="قالب جديد"
+          />
         </div>
 
         {/* Single panel — swaps content based on active tab */}
         <div className="flex-1 flex flex-col min-h-0">
-          {activeTab === "conversations" ? <ConversationList /> : <CaseList />}
+          {activeTab === "conversations" ? (
+            <ConversationList />
+          ) : activeTab === "cases" ? (
+            <CaseList />
+          ) : (
+            <TemplateList />
+          )}
         </div>
 
         <SidebarFooter />

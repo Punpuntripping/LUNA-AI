@@ -1,23 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Lock, Save, Loader2, AlertTriangle, Eye, Pencil } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Button } from "@/components/ui/button";
-import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
+import { useMemo, useState } from "react";
+import { Lock, AlertTriangle } from "lucide-react";
+import { MarkdownDocEditor } from "@/components/workspace/MarkdownDocEditor";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { useUpdateWorkspaceItem } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
-import { useDebounce } from "@/hooks/use-debounce";
 import { ApiClientError } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import type { Reference, WorkspaceItem, WriterMetadataReferenceView } from "@/types";
 
 interface NoteEditorProps {
   item: WorkspaceItem;
 }
-
-const AUTOSAVE_DELAY_MS = 800;
 
 function getLockedUntil(item: WorkspaceItem): number | null {
   const lockedColumn = (item as unknown as { locked_by_agent_until?: string })
@@ -113,39 +107,13 @@ function overlayWriterAttribution(
  */
 export function NoteEditor({ item }: NoteEditorProps) {
   const update = useUpdateWorkspaceItem();
-  const [title, setTitle] = useState(item.title);
-  const [content, setContent] = useState(item.content_md ?? "");
-  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
-  // Preview/edit toggle. Default: preview when there's existing content (so
-  // opening an existing note feels like a clean read), edit when the note is
-  // empty (so the user can start typing immediately). The same toggle covers
-  // ``note`` and ``agent_writing`` kinds — the markdown renderer doesn't care
-  // who authored the body.
-  const initialMode: "edit" | "preview" =
-    (item.content_md ?? "").trim().length > 0 ? "preview" : "edit";
-  const [mode, setMode] = useState<"edit" | "preview">(initialMode);
-  const lastSent = useRef<{ title: string; content: string }>({
-    title: item.title,
-    content: item.content_md ?? "",
-  });
-
-  // When the underlying item changes (e.g. user switches chip), reset state.
-  useEffect(() => {
-    setTitle(item.title);
-    setContent(item.content_md ?? "");
-    lastSent.current = { title: item.title, content: item.content_md ?? "" };
-    setSavedAt(null);
-    setConflict(null);
-    setMode((item.content_md ?? "").trim().length > 0 ? "preview" : "edit");
-  }, [item.item_id, item.title, item.content_md]);
-
-  const debouncedTitle = useDebounce(title, AUTOSAVE_DELAY_MS);
-  const debouncedContent = useDebounce(content, AUTOSAVE_DELAY_MS);
 
   const lockedUntilTs = getLockedUntil(item);
   const isLocked = lockedUntilTs !== null;
-  const titleEditable = item.kind === "note";
+  // ``note`` titles are user-editable; ``agent_writing`` titles come from the
+  // agent and are read-only here.
+  const titleReadOnly = item.kind !== "note";
 
   // Bug #1 (publisher-side fix): for ``agent_writing`` items the writer
   // publisher writes BOTH ``workspace_item_references`` rows AND a thin
@@ -166,42 +134,24 @@ export function NoteEditor({ item }: NoteEditorProps) {
     [rawReferences, metadataRefsView],
   );
 
-  useEffect(() => {
-    if (isLocked) return;
-    const titleChanged = debouncedTitle !== lastSent.current.title;
-    const contentChanged = debouncedContent !== lastSent.current.content;
-    if (!titleChanged && !contentChanged) return;
-    if (!debouncedTitle.trim()) return;
+  const handleSave = async (patch: { title?: string; content_md?: string }) => {
+    const updated = await update.mutateAsync({
+      itemId: item.item_id,
+      data: patch,
+    });
+    // Clear any stale conflict banner once a save lands cleanly.
+    setConflict(null);
+    return updated;
+  };
 
-    update.mutate(
-      {
-        itemId: item.item_id,
-        data: {
-          title: titleChanged ? debouncedTitle.trim() : undefined,
-          content_md: contentChanged ? debouncedContent : undefined,
-        },
-      },
-      {
-        onSuccess: () => {
-          lastSent.current = {
-            title: debouncedTitle,
-            content: debouncedContent,
-          };
-          setSavedAt(Date.now());
-          setConflict(null);
-        },
-        onError: (err) => {
-          if (err instanceof ApiClientError && err.status === 409) {
-            setConflict(err.message || "ريحان يحرر هذا الملف الآن، حاول مجدداً");
-          }
-        },
-      },
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedTitle, debouncedContent, isLocked, item.item_id]);
+  const handleSaveError = (err: unknown) => {
+    if (err instanceof ApiClientError && err.status === 409) {
+      setConflict(err.message || "ريحان يحرر هذا الملف الآن، حاول مجدداً");
+    }
+  };
 
-  return (
-    <div className="flex flex-1 flex-col min-h-0">
+  const headerSlot = (
+    <>
       {isLocked && (
         <div className="flex items-center gap-2 border-b bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
           <Lock className="h-3.5 w-3.5" />
@@ -222,105 +172,30 @@ export function NoteEditor({ item }: NoteEditorProps) {
           </button>
         </div>
       )}
+    </>
+  );
 
-      <div className="flex items-center gap-2 border-b px-4 py-3">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          readOnly={!titleEditable || isLocked}
-          dir="rtl"
-          className="flex-1 bg-transparent text-sm font-semibold text-foreground focus:outline-none disabled:cursor-not-allowed read-only:cursor-default"
-          placeholder="عنوان الملاحظة..."
-        />
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted/30 p-0.5",
-          )}
-          role="tablist"
-          aria-label="وضع العرض"
-        >
-          <Button
-            type="button"
-            variant={mode === "edit" ? "default" : "ghost"}
-            size="sm"
-            className="h-6 gap-1 px-2 text-[11px]"
-            role="tab"
-            aria-selected={mode === "edit"}
-            onClick={() => setMode("edit")}
-            disabled={isLocked && mode !== "edit"}
-          >
-            <Pencil className="h-3 w-3" />
-            تحرير
-          </Button>
-          <Button
-            type="button"
-            variant={mode === "preview" ? "default" : "ghost"}
-            size="sm"
-            className="h-6 gap-1 px-2 text-[11px]"
-            role="tab"
-            aria-selected={mode === "preview"}
-            onClick={() => setMode("preview")}
-          >
-            <Eye className="h-3 w-3" />
-            معاينة
-          </Button>
-        </div>
-      </div>
+  const footerSlot =
+    item.kind === "agent_writing" ? (
+      <ReferencePanel references={references} isLoading={isLoadingReferences} />
+    ) : null;
 
-      {mode === "edit" ? (
-        <ScrollArea className="flex-1">
-          <textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            readOnly={isLocked}
-            dir="rtl"
-            className="block h-full min-h-[400px] w-full resize-none border-0 bg-transparent p-4 text-sm leading-relaxed focus:outline-none read-only:cursor-default"
-            placeholder={
-              item.kind === "note"
-                ? "اكتب ملاحظاتك هنا..."
-                : "محتوى المسودة..."
-            }
-          />
-        </ScrollArea>
-      ) : (
-        <ArtifactPreview
-          content={content}
-          footer={
-            item.kind === "agent_writing" ? (
-              <ReferencePanel
-                references={references}
-                isLoading={isLoadingReferences}
-              />
-            ) : null
-          }
-        />
-      )}
-
-      <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
-        <span>
-          {update.isPending ? (
-            <span className="inline-flex items-center gap-1.5">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              جارٍ الحفظ
-            </span>
-          ) : savedAt ? (
-            <span className="inline-flex items-center gap-1.5">
-              <Save className="h-3 w-3" />
-              تم الحفظ تلقائياً
-            </span>
-          ) : (
-            <span>التغييرات تُحفظ تلقائياً</span>
-          )}
-        </span>
-        <span>
-          آخر تحديث:{" "}
-          {new Intl.DateTimeFormat("ar-SA", {
-            dateStyle: "medium",
-            timeStyle: "short",
-          }).format(new Date(item.updated_at))}
-        </span>
-      </div>
-    </div>
+  return (
+    <MarkdownDocEditor
+      docId={item.item_id}
+      initialTitle={item.title}
+      initialContent={item.content_md ?? ""}
+      updatedAt={item.updated_at}
+      onSave={handleSave}
+      onSaveError={handleSaveError}
+      readOnly={isLocked}
+      titleReadOnly={titleReadOnly}
+      titlePlaceholder="عنوان الملاحظة..."
+      bodyPlaceholder={
+        item.kind === "note" ? "اكتب ملاحظاتك هنا..." : "محتوى المسودة..."
+      }
+      headerSlot={headerSlot}
+      footerSlot={footerSlot}
+    />
   );
 }

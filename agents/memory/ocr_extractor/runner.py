@@ -15,6 +15,7 @@ import logging
 from supabase import Client as SupabaseClient
 
 from agents.runs import AgentRunRecord, record_agent_run
+from agents.utils.tracking import track_stage
 from shared.config import get_settings
 from shared.observability import get_logfire
 from shared.storage.client import get_signed_url
@@ -127,9 +128,10 @@ async def run_ocr_extraction(
         logger.warning("OCR: MISTRAL_API_KEY unset — skipping OCR extraction")
         return []
 
-    with _logfire.span(
+    with track_stage(
         "ocr_extraction.run",
         conversation_id=str(conversation_id),
+        agent_family="memory",
     ) as _span:
         try:
             filled = await _run_inner(supabase, conversation_id, user_id, stats, settings)
@@ -139,7 +141,7 @@ async def run_ocr_extraction(
             filled = stats.filled_item_ids
 
         try:
-            _span.set_attributes({
+            _span.set(**{
                 "candidates": stats.candidates,
                 "extracted": stats.extracted,
                 "skipped_unsupported": stats.skipped_unsupported,

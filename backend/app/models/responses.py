@@ -260,6 +260,25 @@ class PreferencesResponse(BaseModel):
     preferences: dict
 
 
+# ── Templates (قوالبي — per-user markdown templates) ────
+
+class TemplateResponse(BaseModel):
+    """Single per-user markdown template (user_templates row)."""
+    template_id: str
+    user_id: str
+    title: str
+    content_md: str = ""
+    created_by: str = "user"
+    metadata: dict = {}
+    created_at: datetime
+    updated_at: datetime
+
+
+class TemplateListResponse(BaseModel):
+    """GET /api/v1/templates"""
+    templates: list[TemplateResponse]
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 

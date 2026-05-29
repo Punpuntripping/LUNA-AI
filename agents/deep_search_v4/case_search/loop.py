@@ -131,6 +131,7 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
                 "input_tokens": eu.input_tokens,
                 "output_tokens": eu.output_tokens,
                 "total_tokens": eu.total_tokens,
+                "cached_tokens": int(getattr(eu, "cache_read_tokens", 0) or 0),
             }
             if eu.details:
                 usage_entry["details"] = dict(eu.details)
@@ -443,6 +444,7 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                 "input_tokens": eu.input_tokens,
                 "output_tokens": eu.output_tokens,
                 "total_tokens": eu.total_tokens,
+                "cached_tokens": int(getattr(eu, "cache_read_tokens", 0) or 0),
             }
             if eu.details:
                 usage_entry["details"] = dict(eu.details)
@@ -1187,6 +1189,7 @@ def _build_round_summaries(state: LoopState) -> list[dict]:
                 "input_tokens": sum(u.get("input_tokens", 0) for u in rer_usage),
                 "output_tokens": sum(u.get("output_tokens", 0) for u in rer_usage),
                 "total_tokens": sum(u.get("total_tokens", 0) for u in rer_usage),
+                "cached_tokens": sum(u.get("cached_tokens", 0) for u in rer_usage),
                 "call_count": len(rer_usage),
             }
             # Kept for backwards-compat with consumers that read this field directly.

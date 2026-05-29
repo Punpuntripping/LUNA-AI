@@ -3,9 +3,9 @@
 The whole point of this agent vs the old ``planner_decider.sectors`` field is
 **visibility**: the decider only saw a flat numbered list of 38 sector names
 and picked one by surface plausibility. Here we render each canonical sector
-**with 6 representative regulation titles** (pre-dumped at build time from
-``regulations_v2`` — see ``scripts/build_sector_examples.py``), so the model
-can distinguish e.g. ``المعاملات التجارية`` (commerce / commercial transactions
+**with its curated sub-scope items** (the sub-domains that define its scope,
+maintained in ``sectors.md`` — see ``.sector_examples``), so the model can
+distinguish e.g. ``المعاملات التجارية`` (commerce / commercial transactions
 code) from ``حوكمة الشركات والاستثمار`` (where ``نظام الشركات`` actually lives).
 
 Inclusivity over accuracy is the load-bearing instruction in the prompt body.
@@ -33,12 +33,12 @@ def _esc(value: object) -> str:
 
 
 def _render_sector_catalog() -> str:
-    """Render the 38 canonical sectors with their representative titles.
+    """Render the 38 canonical sectors with their sub-scope items.
 
     Format per sector:
 
         N. <name>
-           مثال: <title>؛ <title>؛ <title>؛ ...
+           يشمل: <item>؛ <item>؛ <item>؛ ...
 
     The same order as ``VALID_SECTORS`` (alphabetical) so the picker has a
     stable index it can reason about.
@@ -49,7 +49,7 @@ def _render_sector_catalog() -> str:
         lines.append(f"{i}. {sector}")
         if examples:
             joined = "؛ ".join(examples)
-            lines.append(f"   مثال: {joined}")
+            lines.append(f"   يشمل: {joined}")
     return "\n".join(lines)
 
 
@@ -77,7 +77,7 @@ SECTOR_PICKER_SYSTEM_PROMPT = f"""\
 
 ## مفردات القطاعات — {len(VALID_SECTORS)} قطاعاً (الاسم الحرفي إلزامي)
 
-لا تخترع اسماً. لا تختصر. لا تُجزّئ. كل قطاع مُتبوع بأمثلة من الأنظمة الفعلية المُسجَّلة تحته في القاعدة:
+لا تخترع اسماً. لا تختصر. لا تُجزّئ. كل قطاع مُتبوع بنطاقه الفرعي (المجالات التي يغطيها) ليوضّح حدوده:
 
 {_SECTOR_CATALOG}
 

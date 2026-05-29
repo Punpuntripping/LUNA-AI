@@ -301,6 +301,15 @@ def create_app() -> FastAPI:
         tags=["preferences"],
     )
 
+    # Templates router (قوالبي — per-user markdown templates)
+    from backend.app.api.templates import router as templates_router
+
+    application.include_router(
+        templates_router,
+        prefix="/api/v1",
+        tags=["templates"],
+    )
+
     # Internal webhooks — invoked by Supabase database triggers, NOT end users.
     # Auth via X-Webhook-Secret header. Lives under /internal/ to keep it
     # visually separate from /api/v1/.

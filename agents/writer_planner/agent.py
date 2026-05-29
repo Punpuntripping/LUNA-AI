@@ -20,6 +20,7 @@ import logging
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import UsageLimits
 
+from agents.tool_repository.add_user_template import register_add_user_template
 from agents.utils.agent_models import ModelPolicy, get_agent_model
 
 from .deps import WriterPlannerDeps
@@ -86,6 +87,12 @@ def create_writer_planner_decider(
     # Register the 4 tools (analyze_items, search_templates, ask_user,
     # present_plan_for_approval). See tools.py.
     register_tools(agent)
+
+    # Reusable cross-agent tool: save a markdown template to the user's
+    # personal "قوالبي" library. WriterPlannerDeps exposes both .supabase and
+    # .user_id, so it structurally satisfies HasUserContext. See
+    # agents/tool_repository/add_user_template.py.
+    register_add_user_template(agent)
 
     return agent
 

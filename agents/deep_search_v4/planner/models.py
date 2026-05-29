@@ -89,6 +89,26 @@ class PlannerDecision(BaseModel):
             "mode == 'full' — 'full' has no support role."
         ),
     )
+    query_restatement: str = Field(
+        default="",
+        description=(
+            "A faithful, NEUTRAL Arabic restatement of the user's actual "
+            "question and legal posture — what they are really asking and "
+            "their position in any dispute (who is suing whom, and in what "
+            "capacity). This is the canonical query text that flows downstream "
+            "to the sector_picker, the search executors, and the aggregator; "
+            "it replaces the raw (often colloquial / rambling) user message as "
+            "the retrieval query. "
+            "HARD CONSTRAINT — zero bias: do NOT introduce any law, article, "
+            "regulation, court, entity, or legal characterization the user did "
+            "NOT state. Restate only what is in the message — resolve dialect "
+            "and rambling into clear MSA, but invent no fact, party, or basis. "
+            "Leave EMPTY only when the user's message is already a clean, "
+            "unambiguous legal question (the raw query is then used as-is). "
+            "When the parties or intent cannot be identified confidently, do "
+            "NOT guess here — pause via ``ask_user`` instead."
+        ),
+    )
     rationale: str = Field(
         ...,
         description="Short Arabic justification for the mode + support choice (logged).",

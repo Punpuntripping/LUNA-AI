@@ -15,7 +15,8 @@ output-validation and tool-retry failures do NOT trigger provider fallback.
 There are two providers (Alibaba primary, OpenRouter fallback) and two model
 families per tier (Qwen primary, DeepSeek fallback). Each agent declares an
 intent via ``ModelPolicy``; ``AGENT_MODELS`` below is the single editable
-control surface.
+control surface. (Embeddings are NOT governed here — see
+``agents/utils/embeddings.py``, which stays on Alibaba DashScope.)
 """
 
 from __future__ import annotations
@@ -31,6 +32,10 @@ from agents.model_registry import create_model, get_model_config
 Provider = Literal["alibaba", "openrouter"]
 Tier = Literal["tier_1", "tier_2"]
 Family = Literal["qwen", "deepseek"]
+# Reasoning intent. "default" = leave thinking to the provider default (what
+# every agent used historically). "max" = push the cell to its provider-specific
+# reasoning ceiling (see _reasoning_settings); used for heavy-synthesis slots.
+Reasoning = Literal["default", "max"]
 
 # tier -> family -> provider -> model_registry key
 TIERS: dict[str, dict[str, dict[str, str]]] = {
@@ -63,6 +68,7 @@ class ModelPolicy:
     tier: Tier
     provider: Provider = "alibaba"
     primary: Family = "qwen"
+    reasoning: Reasoning = "default"
 
 
 def resolve_chain(policy: ModelPolicy) -> list[str]:
@@ -78,35 +84,103 @@ def resolve_chain(policy: ModelPolicy) -> list[str]:
     ]
 
 
+# Qwen-family thinking ceiling applied when reasoning="max". Qwen (and Kimi) are
+# the only DashScope families that honor ``thinking_budget``, and it is a CEILING
+# (max tokens the model MAY spend thinking), never a floor — no provider exposes
+# a reasoning floor. 24k gives ample room above a ~10k target without risking the
+# model's max-CoT length. DeepSeek-on-Alibaba ignores thinking_budget and instead
+# takes ``reasoning_effort`` (high|max; "xhigh" aliases to "max").
+_MAX_THINKING_BUDGET = 24_000
+
+
+def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
+    """Per-cell ``model_settings`` that push a FallbackModel cell to max reasoning.
+
+    Each provider/family exposes a DIFFERENT reasoning control, and a single
+    agent-level ``model_settings`` dict cannot serve all four cells — so the tier
+    system bakes the right ``extra_body`` onto each cell by resolved registry key:
+
+      * DeepSeek V4 on Alibaba  -> ``reasoning_effort="max"`` + ``thinking.type``
+        (OpenAI-compatible DashScope; "xhigh" aliases to "max" server-side).
+      * Qwen on Alibaba         -> ``enable_thinking`` + ``thinking_budget`` (ceiling).
+      * Any family on OpenRouter -> ``reasoning.effort="xhigh"``.
+
+    Returns ``None`` for ``reasoning="default"`` so non-flagged slots keep their
+    historical provider-default thinking behavior (no settings attached).
+    """
+    if reasoning != "max":
+        return None
+    cfg = get_model_config(key)
+    if cfg.provider == "openrouter":
+        return {"extra_body": {"reasoning": {"effort": "xhigh"}}}
+    # Alibaba DashScope (OpenAI-compatible).
+    if "deepseek" in key:
+        return {
+            "extra_body": {
+                "thinking": {"type": "enabled"},
+                "reasoning_effort": "max",
+            }
+        }
+    return {
+        "extra_body": {
+            "enable_thinking": True,
+            "thinking_budget": _MAX_THINKING_BUDGET,
+        }
+    }
+
+
 def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
-    """Build a Pydantic AI ``FallbackModel`` for a policy's 4-step chain."""
-    models = [create_model(key) for key in resolve_chain(policy)]
+    """Build a Pydantic AI ``FallbackModel`` for a policy's 4-step chain.
+
+    When ``policy.reasoning == "max"`` each cell is created with provider-specific
+    reasoning settings baked on (see :func:`_reasoning_settings`); pydantic_ai
+    merges those per-cell defaults under any agent/run-level ``model_settings``.
+    """
+    models = [
+        create_model(key, model_settings=_reasoning_settings(key, policy.reasoning))
+        for key in resolve_chain(policy)
+    ]
     return FallbackModel(models[0], *models[1:])
 
 
 # slot -> policy -- THE per-agent control surface. Edit tiers/providers here.
-# For now only the three rerankers use tier_2; everything else is tier_1.
+#
+# EXPERIMENT (2026-05-28): every former tier_1 qwen3.6-plus slot is temporarily
+# flipped to deepseek-v4-flash (tier_2, deepseek-primary) to A/B the cheap/fast
+# model across the pipeline. ONLY the router is left on tier_1 qwen3.6-plus.
+# Rerankers stay tier_2 qwen3.5-flash (never were 3.6-plus). Revert via git to
+# restore the all-tier_1 baseline.  Cost accounting: `_SUBAGENT_TIER` below is
+# flipped to match, so deep_search SEARCH-phase costs are accurate. But single-
+# model agents (writer, writer_planner) still bill via the flat tier_1 fallback
+# in `estimate_run_cost` — their costs read as a tier_1 *over*-estimate until
+# that path is made tier-aware. The planner + top-level aggregator are uncounted
+# either way (no per_tier writer exists), so the flip doesn't change them.
+_FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
+# Same flash head, but reasoning pushed to the provider ceiling (deepseek
+# reasoning_effort=max / qwen+openrouter equivalents). Used for the two heavy-
+# synthesis slots — the deep_search aggregator and the writing_executor.
+_FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
 AGENT_MODELS: dict[str, ModelPolicy] = {
-    "planner_decider":            ModelPolicy("tier_1"),
-    "planner_responder":          ModelPolicy("tier_1"),
-    "aggregator":                 ModelPolicy("tier_1"),
-    "agent_writer":               ModelPolicy("tier_1"),
-    # Tier_1 — Layer-2 Major planner that sits in front of writing_executor.
+    "planner_decider":            _FLASH,
+    "planner_responder":          _FLASH,
+    "aggregator":                 _FLASH_MAX,
+    "agent_writer":               _FLASH_MAX,
+    # Layer-2 Major planner that sits in front of writing_executor.
     # Talks to the user (ask_user, present_plan_for_approval), calls
     # item_analyzer for context distillation when prior-WI scope is wide, and
     # hands a WriterPackage to the writing executor at the end. Multi-turn loop
     # per user turn (capped at 3 present_plan_for_approval cycles). Output is a
     # discriminated list[PlannerDecision | DeferredToolRequests]; same shape as
     # the deep_search planner. See .claude/plans/writer_planner.md.
-    "writer_planner_decider":     ModelPolicy("tier_1"),
-    "router":                     ModelPolicy("tier_1"),
-    "reg_search_expander":        ModelPolicy("tier_1"),
+    "writer_planner_decider":     _FLASH,
+    "router":                     ModelPolicy("tier_1"),  # left on qwen3.6-plus
+    "reg_search_expander":        _FLASH,
     "reg_search_reranker":        ModelPolicy("tier_2"),
-    "reg_search_aggregator":      ModelPolicy("tier_1"),
-    "case_search_expander":       ModelPolicy("tier_1"),
+    "reg_search_aggregator":      _FLASH,
+    "case_search_expander":       _FLASH,
     "case_search_reranker":       ModelPolicy("tier_2"),
-    "case_search_aggregator":     ModelPolicy("tier_1"),
-    "compliance_search_expander": ModelPolicy("tier_1"),
+    "case_search_aggregator":     _FLASH,
+    "compliance_search_expander": _FLASH,
     "compliance_search_reranker": ModelPolicy("tier_2"),
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.
@@ -174,20 +248,24 @@ def get_agent_model(
 # COST ACCOUNTING
 # =============================================================================
 # Cost is tracked per *tier*, not per resolved model. Within a tier the qwen
-# and deepseek families (and Alibaba vs OpenRouter) price out roughly equal,
-# and ``FallbackModel`` only swaps off the qwen/Alibaba primary on a 4xx/5xx
-# API error. Billing every call at the tier's qwen/Alibaba primary rate is
-# therefore a correct *conservative ceiling* — the deepseek fallback and
-# OpenRouter are both cheaper. The registry is the single source of pricing
-# truth; tier rates are derived from it (no duplicated price tables).
+# and deepseek families (and OpenRouter vs Alibaba) price out roughly equal,
+# and ``FallbackModel`` only swaps off the Alibaba qwen primary on a 4xx/5xx
+# API error. Tier rates are read from the Alibaba qwen entry (the priciest cell
+# in the tier — OpenRouter list prices and the deepseek family are both ≤ it),
+# so billing every call at that rate is a correct *conservative ceiling*. The
+# registry is the single source of pricing truth; tier rates derive from it
+# (no duplicated price tables).
 
 # A deep_search sub-agent's role name (the ``agent`` field on inner_usage
-# entries) → its tier. Mirrors AGENT_MODELS: expanders/aggregators are tier_1,
-# rerankers tier_2. Unknown roles default to tier_1.
+# entries) → its tier. Mirrors AGENT_MODELS. Unknown roles default to tier_1.
+# EXPERIMENT (2026-05-28): expander + aggregator are flipped tier_1 → tier_2 to
+# match the deepseek-v4-flash flip in AGENT_MODELS, so deep_search search-phase
+# cost figures price at the real (cheap) rate. Revert alongside the AGENT_MODELS
+# flip to restore the baseline (expander/aggregator = tier_1).
 _SUBAGENT_TIER: dict[str, Tier] = {
-    "expander": "tier_1",
+    "expander": "tier_2",
     "reranker": "tier_2",
-    "aggregator": "tier_1",
+    "aggregator": "tier_2",
     "sector_picker": "tier_2",
 }
 
@@ -201,8 +279,10 @@ def tier_of_subagent(agent: str) -> Tier:
 def tier_rate(tier: Tier) -> tuple[float, float]:
     """``(input_price, output_price)`` per 1M tokens for a tier.
 
-    Read from the registry entry for the tier's qwen/Alibaba primary model —
-    keeping ``model_registry`` the sole source of pricing truth.
+    Read from the registry entry for the tier's Alibaba qwen cell — the
+    priciest cell in the tier, used as the conservative billing ceiling
+    (see COST ACCOUNTING note above) — keeping ``model_registry`` the sole
+    source of pricing truth.
     """
     key = TIERS[tier]["qwen"]["alibaba"]
     cfg = get_model_config(key)
@@ -239,18 +319,23 @@ def usage_by_tier(inner_usage: list[dict] | None) -> dict[str, dict[str, int]]:
     """Fold pydantic_ai usage entries into per-tier token totals.
 
     Each entry should carry ``agent`` (sub-agent role), ``input_tokens``,
-    ``output_tokens`` and optionally ``details.reasoning_tokens``. Returns
-    ``{tier: {"input": int, "output": int, "reasoning": int}}`` — the shape
-    stored under ``per_phase_stats[phase]["per_tier"]``.
+    ``output_tokens``, optionally ``cached_tokens`` (the prompt-cache-read
+    subset of ``input_tokens``, captured from ``usage.cache_read_tokens``) and
+    optionally ``details.reasoning_tokens``. Returns ``{tier: {"input": int,
+    "output": int, "reasoning": int, "cached": int}}`` — the shape stored under
+    ``per_phase_stats[phase]["per_tier"]``.
     """
     out: dict[str, dict[str, int]] = {}
     for u in inner_usage or []:
         if not isinstance(u, dict):
             continue
         tier = tier_of_subagent(str(u.get("agent", "")))
-        slot = out.setdefault(tier, {"input": 0, "output": 0, "reasoning": 0})
+        slot = out.setdefault(
+            tier, {"input": 0, "output": 0, "reasoning": 0, "cached": 0}
+        )
         slot["input"] += int(u.get("input_tokens", 0) or 0)
         slot["output"] += int(u.get("output_tokens", 0) or 0)
+        slot["cached"] += int(u.get("cached_tokens", 0) or 0)
         details = u.get("details") or {}
         slot["reasoning"] += int(details.get("reasoning_tokens", 0) or 0)
     return out
@@ -261,12 +346,15 @@ def estimate_run_cost(
     tokens_in: int | None = None,
     tokens_out: int | None = None,
     tokens_reasoning: int | None = None,
+    tokens_cached: int | None = None,
 ) -> tuple[float, int]:
     """Return ``(cost_usd, reasoning_tokens_total)`` for one agent run.
 
     Prefers a per-tier breakdown — deep_search phases each carry a ``per_tier``
     dict under ``per_phase_stats``. Falls back to flat tier_1 pricing on the
     aggregate token counts for single-model agents (writer, memory, router).
+    ``cached`` (per_tier) / ``tokens_cached`` (flat) is the prompt-cache-read
+    subset of input, billed at the discounted cached-input rate by ``cost_usd``.
     Never raises; returns ``(0.0, 0)`` on malformed input.
     """
     try:
@@ -290,12 +378,19 @@ def estimate_run_cost(
                     int(toks.get("input", 0) or 0),
                     int(toks.get("output", 0) or 0),
                     r,
+                    int(toks.get("cached", 0) or 0),
                 )
         if found:
             return round(total_cost, 6), total_reasoning
         # Single-model agent: bill aggregate tokens at tier_1.
         r = int(tokens_reasoning or 0)
-        cost = cost_usd("tier_1", int(tokens_in or 0), int(tokens_out or 0), r)
+        cost = cost_usd(
+            "tier_1",
+            int(tokens_in or 0),
+            int(tokens_out or 0),
+            r,
+            int(tokens_cached or 0),
+        )
         return round(cost, 6), r
     except Exception:
         return 0.0, 0

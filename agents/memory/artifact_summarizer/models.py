@@ -61,6 +61,7 @@ class ArtifactSummaryOutput(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_reasoning: int = 0
+    tokens_cached: int = 0
     model_used: str = ""
     fallback_used: bool = False
 
@@ -132,5 +133,6 @@ class AttachmentSummaryOutput(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_reasoning: int = 0
+    tokens_cached: int = 0
     model_used: str = ""
     fallback_used: bool = False

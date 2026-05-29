@@ -25,6 +25,7 @@ from typing import Any, Literal, Sequence
 from supabase import Client as SupabaseClient
 
 from agents.runs import AgentRunRecord, record_agent_run
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 from .agent import (
@@ -84,17 +85,18 @@ async def analyze(call: AnalyzerCall, deps: AnalyzerDeps) -> AnalyzeOutput:
     t0 = time.perf_counter()
     log = deps.logger or logger
 
-    with _logfire.span(
+    with track_stage(
         "item_analyzer.analyze",
+        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
+        agent_family="memory",
         caller_id=deps.caller_id,
         targeted_count=len(call.targeted_wi),
         query_chars=len(call.query or ""),
-        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
     ) as span:
         # --- Empty input → no SELECT, no LLM, no cost row --------------------
         if not call.targeted_wi:
             try:
-                span.set_attributes({
+                span.set(**{
                     "refs_count": 0,
                     "meta_count": 0,
                     "dropped_count": 0,
@@ -139,7 +141,7 @@ async def analyze(call: AnalyzerCall, deps: AnalyzerDeps) -> AnalyzeOutput:
             )
 
         try:
-            span.set_attributes({
+            span.set(**{
                 "refs_count": len(refs_wis),
                 "meta_count": len(meta_wis),
                 "dropped_count": len(dropped),
@@ -169,7 +171,7 @@ async def analyze(call: AnalyzerCall, deps: AnalyzerDeps) -> AnalyzeOutput:
 
         # --- Final span attrs ------------------------------------------------
         try:
-            span.set_attributes({
+            span.set(**{
                 "verdict_full_count": sum(1 for v in verdicts if v.need == "full"),
                 "verdict_partial_count": sum(1 for v in verdicts if v.need == "partial"),
                 "verdict_none_count": sum(1 for v in verdicts if v.need == "none"),
@@ -211,11 +213,12 @@ async def _run_refs_family(
 
     alias_to_item = _build_alias_map(wis, log=log, family="refs")
 
-    with _logfire.span(
+    with track_stage(
         "item_analyzer.refs",
+        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
+        agent_family="memory",
         caller_id=deps.caller_id,
         wi_count=len(wis),
-        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
     ) as span:
         try:
             agent = create_refs_analyzer(deps.caller_id)
@@ -258,6 +261,7 @@ async def _run_refs_family(
         out: _RefsAnalyzeOutputLLM = result.output
         duration_s = time.perf_counter() - t0
 
+        span.record_run(result, slot="item_analyzer")
         _record_run(deps, "item_analyzer.refs", call, result, wi_count=len(wis))
 
         # Resolve aliases → UUIDs before handing verdicts to the caller.
@@ -294,11 +298,12 @@ async def _run_meta_family(
 
     alias_to_item = _build_alias_map(wis, log=log, family="meta")
 
-    with _logfire.span(
+    with track_stage(
         "item_analyzer.meta",
+        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
+        agent_family="memory",
         caller_id=deps.caller_id,
         wi_count=len(wis),
-        conversation_id=str(deps.conversation_id) if deps.conversation_id else None,
     ) as span:
         try:
             agent = create_meta_analyzer(deps.caller_id)
@@ -338,6 +343,7 @@ async def _run_meta_family(
         out: _MetaAnalyzeOutputLLM = result.output
         duration_s = time.perf_counter() - t0
 
+        span.record_run(result, slot="item_analyzer")
         _record_run(deps, "item_analyzer.meta", call, result, wi_count=len(wis))
 
         resolved = _resolve_meta_verdicts(out.items, alias_to_item, log)
@@ -652,6 +658,7 @@ def _record_run(
                                 "input": usage["input"],
                                 "output": usage["output"],
                                 "reasoning": usage["reasoning"],
+                                "cached": usage.get("cached", 0),
                             },
                         },
                     },
@@ -685,9 +692,10 @@ def _safe_usage(result: Any) -> dict[str, int]:
             "input": int(getattr(usage, "input_tokens", 0) or 0),
             "output": int(getattr(usage, "output_tokens", 0) or 0),
             "reasoning": int(details.get("reasoning_tokens", 0) or 0),
+            "cached": int(getattr(usage, "cache_read_tokens", 0) or 0),
         }
     except Exception:
-        return {"input": 0, "output": 0, "reasoning": 0}
+        return {"input": 0, "output": 0, "reasoning": 0, "cached": 0}
 
 
 def _count_verdicts(result: Any) -> dict[str, int]:
@@ -725,8 +733,20 @@ def _model_label_from_result(result: Any) -> str:
 
 
 def _set_span_attrs(span: Any, attrs: dict[str, Any]) -> None:
-    """``span.set_attributes`` wrapper that never lets telemetry break a run."""
+    """``span.set`` wrapper that never lets telemetry break a run.
+
+    ``span`` is now the unified ``AgentSpan`` handle (``track_stage``), whose
+    ``set(**attrs)`` replaces the raw Logfire ``set_attributes(dict)``. An
+    ``"outcome"`` key is routed through ``set_outcome`` so the helper's exit
+    finalizer preserves the caller-recorded outcome instead of defaulting it
+    to ``"ok"`` (these family runners return normally rather than re-raising).
+    """
     try:
-        span.set_attributes(attrs)
+        attrs = dict(attrs)
+        outcome = attrs.pop("outcome", None)
+        if outcome is not None:
+            span.set_outcome(outcome)
+        if attrs:
+            span.set(**attrs)
     except Exception:
         pass

@@ -132,6 +132,48 @@ class UpdatePreferencesRequest(BaseModel):
     preferences: dict
 
 
+# ── Templates (قوالبي — per-user markdown templates) ────
+
+class CreateTemplateRequest(BaseModel):
+    """POST /api/v1/templates"""
+    title: str = Field(..., min_length=1, max_length=500)
+    content_md: str = Field(default="", max_length=200_000)
+
+    @field_validator("title", "content_md", mode="before")
+    @classmethod
+    def check_template_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, v: str) -> str:
+        # min_length=1 still admits whitespace-only — the title is mandatory.
+        if not v.strip():
+            raise ValueError("عنوان القالب مطلوب")
+        return v.strip()
+
+
+class UpdateTemplateRequest(BaseModel):
+    """PATCH /api/v1/templates/{template_id}"""
+    title: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    content_md: Optional[str] = Field(default=None, max_length=200_000)
+
+    @field_validator("title", "content_md", mode="before")
+    @classmethod
+    def check_template_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        # When provided, the title cannot be blanked out — it stays mandatory.
+        if v is None:
+            return v
+        if not v.strip():
+            raise ValueError("عنوان القالب مطلوب")
+        return v.strip()
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 class UploadInitRequest(BaseModel):

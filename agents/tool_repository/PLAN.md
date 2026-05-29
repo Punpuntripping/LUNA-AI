@@ -174,44 +174,111 @@ These belong in v2 as separate tools.
 
 ---
 
-## 7. Implementation Sketch (recommended path)
+## 7. Implementation — `edit_supabase_md.py` (BUILT)
+
+The tool is implemented in `agents/tool_repository/edit_supabase_md.py`. After
+working through the options, the **primary** strategy is **anchored exact-string
+replacement with a uniqueness check**, NOT AST/slug — because the agent quotes
+text it can already see (an LLM strength) instead of computing structure, and it
+works on any text at any granularity, not just well-formed markdown sections.
+
+Core shape (see the file for the full version):
 
 ```python
-# agents/tool_repository/markdown_editor.py
-from markdown_it import MarkdownIt
-from pydantic import BaseModel
-from pydantic_ai import Agent
+def locate(content: str, old_text: str) -> Match:
+    # 1. exact substring — must be unique (count == 1)
+    # 2. whitespace-normalized regex — must be unique
+    # 3. raise MatchError with the closest line (difflib) to guide a retry
 
-md = MarkdownIt()
-
-def slug_of(heading_text: str) -> str:
-    import re
-    s = re.sub(r"[^\w\s-]", "", heading_text.lower()).strip()
-    return re.sub(r"[\s_]+", "-", s)
-
-def locate_section(source: str, *, slug=None, heading=None) -> tuple[int, int]:
-    tokens = md.parse(source)
-    # 1. find heading_open whose inline content slug matches `slug` (or whose
-    #    raw text matches `heading` after uniqueness check)
-    # 2. walk forward until next heading_open with level <= current level
-    # 3. return (start_char_offset, end_char_offset) using token.map → line → offset
-    ...
+@agent.tool
+async def edit_supabase_md(ctx, item_id, old_text, new_text, dry_run=False) -> str:
+    content, version = _fetch(supabase, item_id)          # read + lock token
+    new_content, match = apply_edit(content, old_text, new_text)
+    if not _write(supabase, item_id, new_content, version):  # UPDATE ... WHERE version=
+        raise ModelRetry("changed since read — re-read and retry")
 ```
+
+Storage target: `workspace_items.content_md` (Arabic markdown). Concurrency:
+optimistic lock on `updated_at` because `agent_writing` artifacts are co-edited
+by the user in the UI.
 
 ---
 
 ## 8. Decision Summary
 
-**Primary strategy:** Markdown AST parsing (`markdown-it-py`) + slug-first targeting.
-**Fallback chain:** slug → heading path → exact heading match (with uniqueness check) → whitespace-normalized match.
-**Error policy:** fail loudly with the closest near-match included in the error.
-**Output:** structured `EditResult` with a unified diff.
+**Primary strategy (BUILT):** anchored exact-string replacement + mandatory
+uniqueness check — the LLM passes a verbatim `old_text` it copied from the
+artifact, the tool refuses if it isn't unique.
+**Fallback ladder:** exact match → whitespace-normalized regex → fail with the
+closest near-match (difflib) surfaced as a `ModelRetry` hint.
+**Concurrency:** optimistic lock (`updated_at` guard); lost-update → `ModelRetry`.
+**Error policy:** fail loudly via `ModelRetry` so the model self-corrects.
+**Output:** confirmation string + unified diff.
 
-This combines the **uniqueness discipline** of Claude Code's Edit tool, the **fault tolerance** of Aider's match ladder, and the **structural awareness** of AST-based code agents — applied to markdown's specific quirks.
+**AST/slug targeting** (Options D/E) is kept as a *future, optional* second tool
+(`replace_section`) for the specific "swap this whole section" ergonomic case —
+not the primary path.
+
+This combines the **uniqueness discipline** of Claude Code's Edit tool with the
+**fault tolerance** of Aider's match ladder, applied to Luna's Supabase-backed
+Arabic artifacts.
 
 ---
 
-## 9. Sources
+## 10. `add_user_template` tool (BUILT)
+
+A second reusable tool in this repository, implemented in
+`agents/tool_repository/add_user_template.py`. Unrelated to section editing —
+it lets an agent **save a markdown template to the current user's personal
+library** (the "قوالبي" library, backed by the `user_templates` table from
+migration 055).
+
+**Purpose.** When the user EXPLICITLY asks to save something as a template
+(«احفظ هذا كقالب»), the agent calls this tool to persist a reusable markdown
+template scoped to the current user. It is NOT for proactive saving — drafting
+a document is not the same as saving a template.
+
+**Signature.**
+```python
+@agent.tool
+async def add_user_template(ctx, title: str, content_md: str) -> str
+```
+Returns an Arabic confirmation string including the new `template_id`.
+
+**Implementation.** A single insert into `user_templates` via the sync
+service-role Supabase client on `ctx.deps`:
+```python
+ctx.deps.supabase.table("user_templates").insert({
+    "user_id": ctx.deps.user_id,   # ownership — never supplied by the model
+    "title": title,
+    "content_md": content_md,
+    "created_by": "agent",         # provenance — pinned, distinguishes from user-authored rows
+}).execute()
+```
+Empty result or any DB exception → `ModelRetry` with an actionable Arabic hint
+(e.g. empty title → ask for a title and retry). Provenance is always
+`created_by='agent'` so agent-saved templates are auditable.
+
+**Deps contract.** The agent's deps must structurally satisfy
+`HasUserContext` (Protocol with `.supabase` + `.user_id: str`). The
+service-role client BYPASSES RLS, so the `user_id` scoping is the only thing
+keeping the row owned by the correct user — the model never supplies it.
+
+**Registered on.**
+- `writer_planner` (`agents/writer_planner/agent.py`) — `WriterPlannerDeps`
+  exposes both `.supabase` and `.user_id`. The `register_add_user_template(agent)`
+  call sits right after `register_tools(agent)` in
+  `create_writer_planner_decider`.
+- **NOT registered on `writer`** — `WriterDeps`
+  (`agents/writer/deps.py`) exposes `.supabase` but has **no `user_id`**
+  field, and the writer agent is a single-shot LLM call with no tools by
+  design. Registering there would raise `AttributeError` on
+  `ctx.deps.user_id` at run time, so it was deliberately skipped. To enable it
+  later, add a `user_id: str` field to `WriterDeps` first.
+
+---
+
+## 11. Sources
 
 - Claude Code `Edit` tool reference — https://code.claude.com/docs/en/tools-reference
 - Claude Code Edit silent-fail bug — https://github.com/anthropics/claude-code/issues/52241

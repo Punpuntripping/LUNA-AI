@@ -28,6 +28,10 @@ import type {
   UserPreferences,
   UserPreferencesData,
   UploadInitResponse,
+  UserTemplate,
+  CreateTemplateRequest,
+  UpdateTemplateRequest,
+  TemplateListResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -527,4 +531,24 @@ export const preferencesApi = {
 
   update: (preferences: UserPreferencesData) =>
     api.patch<UserPreferences>("/preferences", { preferences }),
+};
+
+// -----------------------------------------------
+// Templates API (قوالبي) — user-global markdown docs
+// -----------------------------------------------
+
+export const templatesApi = {
+  list: () => api.get<TemplateListResponse>("/templates"),
+
+  get: (templateId: string) =>
+    api.get<UserTemplate>(`/templates/${templateId}`),
+
+  create: (body: CreateTemplateRequest) =>
+    api.post<UserTemplate>("/templates", body),
+
+  update: (templateId: string, body: UpdateTemplateRequest) =>
+    api.patch<UserTemplate>(`/templates/${templateId}`, body),
+
+  delete: (templateId: string) =>
+    api.delete<{ success: boolean }>(`/templates/${templateId}`),
 };

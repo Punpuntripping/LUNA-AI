@@ -117,6 +117,7 @@ class ExpanderNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                 "input_tokens": eu.input_tokens,
                 "output_tokens": eu.output_tokens,
                 "total_tokens": eu.total_tokens,
+                "cached_tokens": int(getattr(eu, "cache_read_tokens", 0) or 0),
             }
             state.inner_usage.append(usage_dict)
 
@@ -404,6 +405,7 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                 "input_tokens": ru.input_tokens,
                 "output_tokens": ru.output_tokens,
                 "total_tokens": ru.total_tokens,
+                "cached_tokens": int(getattr(ru, "cache_read_tokens", 0) or 0),
             }
             state.inner_usage.append(reranker_usage)
 

@@ -11,6 +11,7 @@ import type {
   SSEMessageStart,
   SSEToken,
   SSEDone,
+  SSEDuplicate,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
   SSEAgentQuestion,
@@ -333,6 +334,24 @@ export function useSendMessage(): UseSendMessageReturn {
                 .startStreaming(payload.assistant_message_id, conversationId);
               break;
             }
+            case "duplicate": {
+              // Backend rejected this send: a pipeline is already running for
+              // this conversation (per-conversation dedup). Drop our optimistic
+              // duplicate user message and refetch — the existing in-flight
+              // assistant message will fill in on completion. Do NOT mark the
+              // message failed or retry; this is expected, not an error.
+              const payload = data as SSEDuplicate;
+              removeOptimisticMessage(qc, conversationId, optimisticId);
+              useChatStore.getState().finishStreaming();
+              useChatStore.getState().resetReconnect();
+              void qc.invalidateQueries({
+                queryKey: messageKeys.list(conversationId),
+              });
+              // Surface a brief, non-error notice so the user understands the
+              // resend was absorbed rather than silently dropped.
+              useChatStore.getState().setError(payload.detail);
+              break;
+            }
             case "token": {
               const payload = data as SSEToken;
               useChatStore.getState().appendToken(payload.text);
@@ -603,6 +622,36 @@ function markOptimisticFailed(
               ? { ...msg, isFailed: true, isOptimistic: false }
               : msg
           ),
+        })),
+      };
+    }
+  );
+}
+
+// -----------------------------------------------
+// Helper: remove an optimistic message entirely
+// -----------------------------------------------
+
+/**
+ * Drop an optimistic user message from the cache. Used when a send is rejected
+ * as a duplicate (a pipeline is already running for the conversation): the
+ * optimistic bubble is a duplicate of the message that's already being
+ * answered, so we remove it rather than leaving it stuck or flagging it failed.
+ */
+function removeOptimisticMessage(
+  qc: ReturnType<typeof useQueryClient>,
+  conversationId: string,
+  optimisticId: string
+): void {
+  qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
+    messageKeys.list(conversationId),
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          messages: page.messages.filter((m) => m.message_id !== optimisticId),
         })),
       };
     }

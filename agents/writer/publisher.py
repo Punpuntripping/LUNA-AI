@@ -25,6 +25,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+from agents.utils.tracking import track_stage
 from backend.app.services.workspace_service import create_workspace_item
 from shared.observability import get_logfire
 
@@ -308,18 +309,17 @@ async def publish_writer_result(
     # PII note: user_id not on this span (recoverable via Supabase join).
     # router.classify + dispatch.specialist already carry the user identity
     # for this turn.
-    _pub_span = _logfire.span(
+    with track_stage(
         "publish.workspace_item",
-        kind="agent_writing",
         conversation_id=input.conversation_id,
         case_id=input.case_id,
+        agent_family="publish",
+        kind="agent_writing",
         message_id=input.message_id,
         subtype=input.subtype,
         revising_item_id=input.revising_item_id,
         confidence=getattr(llm_output, "confidence", None),
-    )
-    _pub_span.__enter__()
-    try:
+    ) as _pub_span:
         # 1. Revision: soft-delete the row being revised.
         if input.revising_item_id:
             _soft_delete_revising(deps.supabase, input.revising_item_id)
@@ -398,12 +398,7 @@ async def publish_writer_result(
             new_item_id=item_id,
             metadata=metadata,
         )
-        try:
-            _pub_span.set_attribute(
-                "references_persisted", int(references_persisted)
-            )
-        except Exception:
-            pass
+        _pub_span.set(references_persisted=int(references_persisted))
 
         # 4. Acquire lock on the real column.
         locked_until_dt = datetime.now(timezone.utc) + timedelta(
@@ -433,15 +428,12 @@ async def publish_writer_result(
         _set_lock_column(deps.supabase, item_id, None)
         _emit(deps, {"type": "workspace_item_unlocked", "item_id": item_id})
 
-        try:
-            _pub_span.set_attributes({
-                "item_id": item_id,
-                "title_chars": len(title or ""),
-                "content_md_chars": len(content_md or ""),
-                "outcome": "ok",
-            })
-        except Exception:
-            pass
+        _pub_span.set(
+            item_id=item_id,
+            title_chars=len(title or ""),
+            content_md_chars=len(content_md or ""),
+            outcome="ok",
+        )
 
         return WriterOutput(
             item_id=item_id,
@@ -457,18 +449,6 @@ async def publish_writer_result(
             chat_summary=llm_output.chat_summary or "",
             key_findings=list(llm_output.key_findings or []),
         )
-    except Exception as exc:
-        try:
-            _pub_span.set_attributes({
-                "outcome": "error",
-                "error": str(exc),
-                "error.type": type(exc).__name__,
-            })
-        except Exception:
-            pass
-        raise
-    finally:
-        _pub_span.__exit__(None, None, None)
 
 
 __all__ = [

@@ -32,6 +32,7 @@ from agents.memory.artifact_summarizer import (
     run_attachment_summary,
 )
 from agents.runs import AgentRunRecord, record_agent_run
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ def _record_cost(
                                 "input": summary.tokens_in,
                                 "output": summary.tokens_out,
                                 "reasoning": summary.tokens_reasoning,
+                                "cached": getattr(summary, "tokens_cached", 0),
                             },
                         },
                     },
@@ -303,6 +305,7 @@ def _record_attachment_cost(
                                 "input": summary.tokens_in,
                                 "output": summary.tokens_out,
                                 "reasoning": summary.tokens_reasoning,
+                                "cached": getattr(summary, "tokens_cached", 0),
                             },
                         },
                     },
@@ -350,7 +353,11 @@ async def summarize_workspace_item(
     Returns ``True`` only when a summary was actually generated and the persist
     path ran; ``False`` when a guard skipped it or an error was swallowed.
     """
-    with _logfire.span("summarize_workspace_item", item_id=item_id) as _span:
+    with track_stage(
+        "summarize_workspace_item",
+        agent_family="memory",
+        item_id=item_id,
+    ) as _span:
         try:
             # --- Fetch the row ---------------------------------------------
             try:
@@ -367,8 +374,8 @@ async def summarize_workspace_item(
                     item_id, exc,
                 )
                 try:
-                    _span.set_attributes({
-                        "outcome": "fetch_failed",
+                    _span.set_outcome("fetch_failed")
+                    _span.set(**{
                         "error.type": type(exc).__name__,
                         "error": str(exc),
                     })
@@ -379,7 +386,7 @@ async def summarize_workspace_item(
             row = (resp.data or {}) if resp else {}
             if not row:
                 try:
-                    _span.set_attribute("outcome", "not_found")
+                    _span.set_outcome("not_found")
                 except Exception:
                     pass
                 return False
@@ -388,8 +395,8 @@ async def summarize_workspace_item(
             # paths surface conversation_id. PII note: user_id deliberately
             # not surfaced — recoverable via Supabase join from item_id.
             try:
-                _span.set_attributes({
-                    "conversation_id": str(row.get("conversation_id") or ""),
+                _span.set(**{
+                    "conversation_id": str(row.get("conversation_id") or "") or None,
                     "case_id": str(row.get("case_id") or "") or None,
                     "kind": str(row.get("kind") or ""),
                     "content_md_chars": len((row.get("content_md") or "")),
@@ -407,7 +414,7 @@ async def summarize_workspace_item(
             # Idempotency: skip if already summarized (unless forced).
             if not force and (row.get("summary") or "").strip():
                 try:
-                    _span.set_attribute("outcome", "already_summarized")
+                    _span.set_outcome("already_summarized")
                 except Exception:
                     pass
                 return False
@@ -416,7 +423,7 @@ async def summarize_workspace_item(
             if not content_md:
                 # Attachment / empty-body kinds: nothing to summarize.
                 try:
-                    _span.set_attribute("outcome", "empty_content_md")
+                    _span.set_outcome("empty_content_md")
                 except Exception:
                     pass
                 return False
@@ -424,7 +431,7 @@ async def summarize_workspace_item(
                 # Below the threshold the LLM call is wasteful — short blurbs
                 # don't need an agent-facing summary.
                 try:
-                    _span.set_attribute("outcome", "below_min_length")
+                    _span.set_outcome("below_min_length")
                 except Exception:
                     pass
                 return False
@@ -445,8 +452,8 @@ async def summarize_workspace_item(
                     str(row.get("conversation_id") or ""),
                 )
                 try:
-                    _span.set_attribute(
-                        "attachment_context_chars", len(conversation_context)
+                    _span.set(
+                        attachment_context_chars=len(conversation_context)
                     )
                 except Exception:
                     pass
@@ -470,11 +477,11 @@ async def summarize_workspace_item(
                 _record_attachment_cost(supabase, row, att_summary)
 
                 try:
-                    _span.set_attributes({
+                    _span.set_outcome(
+                        "ok_fallback" if att_summary.fallback_used else "ok"
+                    )
+                    _span.set(**{
                         "flow": "attachment",
-                        "outcome": (
-                            "ok_fallback" if att_summary.fallback_used else "ok"
-                        ),
                         "model_used": att_summary.model_used,
                         "tokens_in": att_summary.tokens_in,
                         "tokens_out": att_summary.tokens_out,
@@ -514,9 +521,11 @@ async def summarize_workspace_item(
             _record_cost(supabase, row, summary)
 
             try:
-                _span.set_attributes({
+                _span.set_outcome(
+                    "ok_fallback" if summary.fallback_used else "ok"
+                )
+                _span.set(**{
                     "flow": "generic",
-                    "outcome": "ok_fallback" if summary.fallback_used else "ok",
                     "model_used": summary.model_used,
                     "tokens_in": summary.tokens_in,
                     "tokens_out": summary.tokens_out,
@@ -535,8 +544,8 @@ async def summarize_workspace_item(
                 item_id, exc, exc_info=True,
             )
             try:
-                _span.set_attributes({
-                    "outcome": "error",
+                _span.set_outcome("error")
+                _span.set(**{
                     "error.type": type(exc).__name__,
                     "error": str(exc),
                 })

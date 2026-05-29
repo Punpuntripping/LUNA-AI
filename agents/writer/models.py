@@ -102,6 +102,18 @@ class WriterLLMOutput(BaseModel):
         ),
     )
 
+    def tracking_output(self) -> dict:
+        """Bounded telemetry view (agents/utils/tracking.py protocol) — keeps the
+        full document body (sections/body_md) out of span attributes."""
+        return {
+            "title_chars": len(self.title_ar or ""),
+            "sections": len(self.sections),
+            "citations": len(self.citations_used),
+            "confidence": self.confidence,
+            "notes": len(self.notes_ar),
+            "key_findings": len(self.key_findings),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator-facing dataclasses

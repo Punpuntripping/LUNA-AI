@@ -81,6 +81,7 @@ from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
 from agents.deep_search_v4.sector_picker import run_sector_picker
 from agents.utils.agent_models import usage_by_tier
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -252,154 +253,154 @@ async def _run_reg_phase(
         else datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     )
     create_run_dir(log_id)
-    _phase_span = _logfire.span(
+    with track_stage(
         "deep_search.phase.reg",
-        query_id=query_id,
         conversation_id=deps.conversation_id or None,
+        agent_family="deep_search",
+        query_id=query_id,
         log_id=log_id,
         expander_prompt_key=deps.expander_prompt_key,
         unfold_mode=deps.unfold_mode,
         concurrency=deps.concurrency,
         reg_max_keep=deps.reg_max_keep,
-    )
-    _phase_span.__enter__()
+    ) as _phase_span:
+        reg_deps = RegSearchDeps(
+            supabase=deps.supabase,
+            embedding_fn=deps.embedding_fn,
+            _query_id=query_id,
+        )
+        reg_deps._log_id = log_id
 
-    reg_deps = RegSearchDeps(
-        supabase=deps.supabase,
-        embedding_fn=deps.embedding_fn,
-        _query_id=query_id,
-    )
-    reg_deps._log_id = log_id
+        reg_expander_cap: int | None = None
+        if deps.expander_max_queries:
+            reg_expander_cap = deps.expander_max_queries.get("reg")
 
-    reg_expander_cap: int | None = None
-    if deps.expander_max_queries:
-        reg_expander_cap = deps.expander_max_queries.get("reg")
+        reg_budget: int | None = None
+        if deps.result_budget:
+            reg_budget = deps.result_budget.get("reg")
 
-    reg_budget: int | None = None
-    if deps.result_budget:
-        reg_budget = deps.result_budget.get("reg")
-
-    state = RegLoopState(
-        focus_instruction=query,
-        user_context="",
-        expander_prompt_key=deps.expander_prompt_key,
-        model_override=deps.model_override,
-        unfold_mode=deps.unfold_mode,
-        concurrency=deps.concurrency,
-        skip_aggregator=True,
-        reranker_max_keep=deps.reg_max_keep,
-        result_budget=reg_budget,
-        expander_max_queries=reg_expander_cap,
-        sectors_override=(
-            list(deps.sectors_override) if deps.sectors_override else None
-        ),
-        sectors_future=deps.sectors_future,
-        context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
-    )
-
-    t0 = _time.perf_counter()
-    error_msg: str | None = None
-    try:
-        await reg_search_graph.run(ExpanderNode(), state=state, deps=reg_deps)
-    except Exception as exc:
-        logger.error("reg_search phase failed: %s", exc, exc_info=True)
-        error_msg = str(exc)
-
-    duration = _time.perf_counter() - t0
-    deps._events.extend(reg_deps._events + state.sse_events)
-
-    reranker_results = list(state.reranker_results)
-    logger.info(
-        "_run_reg_phase: log_id=%s, %d reranker sub-queries, duration=%.2fs",
-        log_id, len(reranker_results), duration,
-    )
-
-    total_in = sum(int(u.get("input_tokens", 0) or 0) for u in state.inner_usage)
-    total_out = sum(int(u.get("output_tokens", 0) or 0) for u in state.inner_usage)
-    deps._per_executor_stats["reg_search"] = {
-        "duration_ms": int(duration * 1000),
-        "total_tokens_in": total_in,
-        "total_tokens_out": total_out,
-        # Per-tier token split (expander=tier_1, reranker=tier_2) — drives the
-        # cost estimate in agent_runs.cost_usd. See utils/agent_models.py.
-        "per_tier": usage_by_tier(state.inner_usage),
-    }
-
-    placeholder = RegSearchResult(
-        quality="pending",
-        summary_md=(
-            "URA pipeline: reg_search phase completed; aggregator runs downstream."
-        ),
-        citations=[],
-        domain="regulations",
-        queries_used=list(state.all_queries_used),
-        rounds_used=state.round_count,
-        expander_prompt_key=deps.expander_prompt_key,
-        aggregator_prompt_key="prompt_1",
-    )
-    try:
-        save_run_overview_md(
-            log_id=log_id,
+        state = RegLoopState(
             focus_instruction=query,
             user_context="",
             expander_prompt_key=deps.expander_prompt_key,
-            aggregator_prompt_key="prompt_1",
-            duration_s=duration,
-            result=placeholder,
-            round_summaries=[],
+            model_override=deps.model_override,
+            unfold_mode=deps.unfold_mode,
+            concurrency=deps.concurrency,
+            skip_aggregator=True,
+            reranker_max_keep=deps.reg_max_keep,
+            result_budget=reg_budget,
+            expander_max_queries=reg_expander_cap,
+            sectors_override=(
+                list(deps.sectors_override) if deps.sectors_override else None
+            ),
+            sectors_future=deps.sectors_future,
+            context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
         )
-        save_run_json(
-            log_id=log_id,
-            focus_instruction=query,
-            user_context="",
+
+        t0 = _time.perf_counter()
+        error_msg: str | None = None
+        try:
+            await reg_search_graph.run(ExpanderNode(), state=state, deps=reg_deps)
+        except Exception as exc:
+            logger.error("reg_search phase failed: %s", exc, exc_info=True)
+            error_msg = str(exc)
+
+        duration = _time.perf_counter() - t0
+        deps._events.extend(reg_deps._events + state.sse_events)
+
+        reranker_results = list(state.reranker_results)
+        logger.info(
+            "_run_reg_phase: log_id=%s, %d reranker sub-queries, duration=%.2fs",
+            log_id, len(reranker_results), duration,
+        )
+
+        total_in = sum(int(u.get("input_tokens", 0) or 0) for u in state.inner_usage)
+        total_out = sum(int(u.get("output_tokens", 0) or 0) for u in state.inner_usage)
+        total_cached = sum(int(u.get("cached_tokens", 0) or 0) for u in state.inner_usage)
+        deps._per_executor_stats["reg_search"] = {
+            "duration_ms": int(duration * 1000),
+            "total_tokens_in": total_in,
+            "total_tokens_out": total_out,
+            # Prompt-cache-read subset of total_tokens_in (per-query visibility).
+            "total_tokens_cached": total_cached,
+            # Per-tier token split (expander=tier_1, reranker=tier_2) — drives the
+            # cost estimate in agent_runs.cost_usd. See utils/agent_models.py.
+            "per_tier": usage_by_tier(state.inner_usage),
+        }
+
+        placeholder = RegSearchResult(
+            quality="pending",
+            summary_md=(
+                "URA pipeline: reg_search phase completed; aggregator runs downstream."
+            ),
+            citations=[],
+            domain="regulations",
+            queries_used=list(state.all_queries_used),
+            rounds_used=state.round_count,
             expander_prompt_key=deps.expander_prompt_key,
             aggregator_prompt_key="prompt_1",
-            duration_s=duration,
-            result=placeholder,
-            events=list(reg_deps._events),
-            round_summaries=[],
-            search_results_log=list(state.search_results_log),
-            inner_usage=list(state.inner_usage),
-            error=error_msg,
-            query_id=query_id,
-            models={},
-            thinking_effort=None,
-            step_timings=dict(state.step_timings),
         )
-    except Exception as exc:
-        logger.debug("reg_search phase: log write failed: %s", exc)
+        try:
+            save_run_overview_md(
+                log_id=log_id,
+                focus_instruction=query,
+                user_context="",
+                expander_prompt_key=deps.expander_prompt_key,
+                aggregator_prompt_key="prompt_1",
+                duration_s=duration,
+                result=placeholder,
+                round_summaries=[],
+            )
+            save_run_json(
+                log_id=log_id,
+                focus_instruction=query,
+                user_context="",
+                expander_prompt_key=deps.expander_prompt_key,
+                aggregator_prompt_key="prompt_1",
+                duration_s=duration,
+                result=placeholder,
+                events=list(reg_deps._events),
+                round_summaries=[],
+                search_results_log=list(state.search_results_log),
+                inner_usage=list(state.inner_usage),
+                error=error_msg,
+                query_id=query_id,
+                models={},
+                thinking_effort=None,
+                step_timings=dict(state.step_timings),
+            )
+        except Exception as exc:
+            logger.debug("reg_search phase: log write failed: %s", exc)
 
-    # Reg expander no longer picks sectors (planner is the sole source).
-    # The phase still returns this slot for backward compat — always empty.
-    sectors: list[str] = []
+        # Reg expander no longer picks sectors (planner is the sole source).
+        # The phase still returns this slot for backward compat — always empty.
+        sectors: list[str] = []
 
-    # Hand the per-phase log dir back to the monitor (best-effort path -- the
-    # writer above stamps `reg_search/reports/query_{id}/{log_id}/`).
-    try:
-        from agents.deep_search_v4.reg_search.logger import LOGS_DIR as _REG_LOGS
-        deps._reg_log_dir = str(_REG_LOGS / log_id)
-    except Exception:
-        pass
+        # Hand the per-phase log dir back to the monitor (best-effort path -- the
+        # writer above stamps `reg_search/reports/query_{id}/{log_id}/`).
+        try:
+            from agents.deep_search_v4.reg_search.logger import LOGS_DIR as _REG_LOGS
+            deps._reg_log_dir = str(_REG_LOGS / log_id)
+        except Exception:
+            pass
 
-    try:
-        _phase_span.set_attribute("duration_ms", int(duration * 1000))
-        _phase_span.set_attribute("total_tokens_in", total_in)
-        _phase_span.set_attribute("total_tokens_out", total_out)
-        _phase_span.set_attribute("rqr_count", len(reranker_results))
-        _phase_span.set_attribute("sectors", sectors)
-        _phase_span.set_attribute("rounds_used", state.round_count)
+        _phase_span.set(
+            duration_ms=int(duration * 1000),
+            total_tokens_in=total_in,
+            total_tokens_out=total_out,
+            rqr_count=len(reranker_results),
+            sectors=sectors,
+            rounds_used=state.round_count,
+        )
         if error_msg:
-            _phase_span.set_attribute("error", error_msg)
-    except Exception:
-        pass
-    _phase_span.__exit__(None, None, None)
+            _phase_span.set(error=error_msg)
 
-    if error_msg and not reranker_results:
-        # Graph crashed before producing anything; surface an empty phase so
-        # the orchestrator can still assemble the URA from the other two.
-        return ([], log_id, sectors)
+        if error_msg and not reranker_results:
+            # Graph crashed before producing anything; surface an empty phase so
+            # the orchestrator can still assemble the URA from the other two.
+            return ([], log_id, sectors)
 
-    return (reg_to_rqr(reranker_results), log_id, sectors)
+        return (reg_to_rqr(reranker_results), log_id, sectors)
 
 
 async def _run_compliance_phase(
@@ -495,6 +496,7 @@ async def _run_compliance_phase(
         "duration_ms": int(duration * 1000),
         "total_tokens_in": sum(int(u.get("input_tokens", 0) or 0) for u in state.inner_usage),
         "total_tokens_out": sum(int(u.get("output_tokens", 0) or 0) for u in state.inner_usage),
+        "total_tokens_cached": sum(int(u.get("cached_tokens", 0) or 0) for u in state.inner_usage),
         "per_tier": usage_by_tier(state.inner_usage),
     }
 
@@ -639,10 +641,12 @@ async def _run_case_phase(
     # returning, so we can total tokens here the same way the reg phase does.
     total_in = sum(int(u.get("input_tokens", 0) or 0) for u in result.inner_usage)
     total_out = sum(int(u.get("output_tokens", 0) or 0) for u in result.inner_usage)
+    total_cached = sum(int(u.get("cached_tokens", 0) or 0) for u in result.inner_usage)
     deps._per_executor_stats["case_search"] = {
         "duration_ms": int((_time.perf_counter() - t0) * 1000),
         "total_tokens_in": total_in,
         "total_tokens_out": total_out,
+        "total_tokens_cached": total_cached,
         "per_tier": usage_by_tier(result.inner_usage),
     }
     try:
@@ -685,10 +689,11 @@ async def run_full_loop(
     ``UnifiedRetrievalArtifact`` via :func:`build_ura_from_phases`, then
     invokes the aggregator with URA + ``detail_level`` threaded through.
     """
-    _full_span = _logfire.span(
+    with track_stage(
         "deep_search.run_full_loop",
-        query_id=query_id,
         conversation_id=deps.conversation_id or None,
+        agent_family="deep_search",
+        query_id=query_id,
         query_length=len(query),
         detail_level=deps.detail_level,
         include_reg=deps.include_reg,
@@ -697,147 +702,145 @@ async def run_full_loop(
         enable_planner=deps.enable_planner,
         prompt_key=prompt_key,
         concurrency=deps.concurrency,
-    )
-    _full_span.__enter__()
+    ) as _full_span:
+        # No planner branch here. The planner redesign moved planning into the
+        # planner-owned loop: the planner derives a RetrievalConfig and calls
+        # ``run_retrieval``, which assembles a populated ``FullLoopDeps`` (executor
+        # toggles, caps, budgets, ``prompt_key``) before invoking ``run_full_loop``.
+        # ``run_full_loop`` is now a thin gather → merge → aggregator pass.
 
-    # No planner branch here. The planner redesign moved planning into the
-    # planner-owned loop: the planner derives a RetrievalConfig and calls
-    # ``run_retrieval``, which assembles a populated ``FullLoopDeps`` (executor
-    # toggles, caps, budgets, ``prompt_key``) before invoking ``run_full_loop``.
-    # ``run_full_loop`` is now a thin gather → merge → aggregator pass.
+        logger.info(
+            "run_full_loop[%s]: launching reg + compliance + case in parallel "
+            "(include_reg=%s include_compliance=%s include_cases=%s)",
+            query_id,
+            deps.include_reg,
+            deps.include_compliance,
+            deps.include_cases,
+        )
 
-    logger.info(
-        "run_full_loop[%s]: launching reg + compliance + case in parallel "
-        "(include_reg=%s include_compliance=%s include_cases=%s)",
-        query_id,
-        deps.include_reg,
-        deps.include_compliance,
-        deps.include_cases,
-    )
+        (reg_sqs, reg_log_id, sectors), comp_sqs, case_sqs = await asyncio.gather(
+            _run_reg_phase(query, query_id, deps),
+            _run_compliance_phase(query, query_id, deps),
+            _run_case_phase(query, query_id, deps),
+        )
 
-    (reg_sqs, reg_log_id, sectors), comp_sqs, case_sqs = await asyncio.gather(
-        _run_reg_phase(query, query_id, deps),
-        _run_compliance_phase(query, query_id, deps),
-        _run_case_phase(query, query_id, deps),
-    )
+        # Stash raw RQR lists on deps so the orchestrator layer can persist
+        # pre-merge reranker_runs without re-invoking the phases.
+        deps._reg_rqrs = list(reg_sqs or [])
+        deps._comp_rqrs = list(comp_sqs or [])
+        deps._case_rqrs = list(case_sqs or [])
 
-    # Stash raw RQR lists on deps so the orchestrator layer can persist
-    # pre-merge reranker_runs without re-invoking the phases.
-    deps._reg_rqrs = list(reg_sqs or [])
-    deps._comp_rqrs = list(comp_sqs or [])
-    deps._case_rqrs = list(case_sqs or [])
+        # Sector filter source: the sector_picker future (when wired via
+        # ``run_retrieval``) or the static ``sectors_override`` (CLI / monitor
+        # paths). By this point the gather above has finished, so the picker
+        # task — which fired concurrently with the executors — is already
+        # resolved; awaiting it here just reads the cached value.
+        sector_filter: list[str] = []
+        sector_source = "none"
+        if deps.sectors_future is not None:
+            try:
+                picked = await deps.sectors_future
+            except Exception as exc:
+                logger.warning(
+                    "run_full_loop[%s]: sector_picker future raised %s; "
+                    "treating as no filter",
+                    query_id, type(exc).__name__,
+                )
+                picked = None
+            if picked:
+                sector_filter = list(picked)
+                sector_source = "picker"
+        elif deps.sectors_override:
+            sector_filter = list(deps.sectors_override)
+            sector_source = "override"
+        logger.info(
+            "run_full_loop[%s]: sector_filter source=%s value=%s",
+            query_id, sector_source, sector_filter,
+        )
 
-    # Sector filter source: the sector_picker future (when wired via
-    # ``run_retrieval``) or the static ``sectors_override`` (CLI / monitor
-    # paths). By this point the gather above has finished, so the picker
-    # task — which fired concurrently with the executors — is already
-    # resolved; awaiting it here just reads the cached value.
-    sector_filter: list[str] = []
-    sector_source = "none"
-    if deps.sectors_future is not None:
-        try:
-            picked = await deps.sectors_future
-        except Exception as exc:
-            logger.warning(
-                "run_full_loop[%s]: sector_picker future raised %s; "
-                "treating as no filter",
-                query_id, type(exc).__name__,
+        ura = build_ura_from_phases(
+            reg_rqrs=reg_sqs,
+            compliance_rqrs=comp_sqs,
+            case_rqrs=case_sqs,
+            original_query=query,
+            query_id=query_id,
+            log_id=reg_log_id,
+            sector_filter=sector_filter,
+        )
+        # v3.0 two-view URA: post-merge enrichment fills the heavy fields (full
+        # chunk content, cross-refs, landing urls, entity names) for the surviving
+        # deduped results, and drops empty-content reg results. Best-effort.
+        await enrich_ura(ura, deps.supabase)
+        deps._ura = ura
+        logger.info(
+            "run_full_loop[%s]: URA built -- high=%d medium=%d "
+            "(reg=%s comp=%s cases=%s)",
+            query_id,
+            len(ura.high_results),
+            len(ura.medium_results),
+            ura.produced_by.get("reg_search"),
+            ura.produced_by.get("compliance_search"),
+            ura.produced_by.get("case_search"),
+        )
+
+        agg_input = AggregatorInput.from_ura(
+            ura,
+            prompt_key=prompt_key,
+            detail_level=deps.detail_level,
+        )
+        # Thread the planner-curated context bundle into the aggregator user
+        # message (rendered before <references> by build_aggregator_user_message).
+        # SAME filtered list the executors received -- §3.6 (run_retrieval changes).
+        # ``AggregatorInput.context_blocks`` defaults to []; setting it after
+        # ``from_ura`` avoids touching the classmethod (out of scope per Phase D).
+        if deps.context_blocks:
+            agg_input.context_blocks = list(deps.context_blocks)
+        deps._aggregator_input = agg_input
+        agg_deps = build_aggregator_deps(
+            detail_level=deps.detail_level,
+            supabase=deps.supabase,
+            logger=deps.aggregator_logger,
+        )
+        with track_stage(
+            "deep_search.aggregator",
+            conversation_id=deps.conversation_id or None,
+            agent_family="deep_search",
+            query_id=query_id,
+            prompt_key=prompt_key,
+            detail_level=deps.detail_level,
+            ura_high=len(ura.high_results),
+            ura_medium=len(ura.medium_results),
+        ) as _agg_span:
+            agg_output = await handle_aggregator_turn(agg_input, agg_deps)
+            _agg_span.set(
+                references=len(agg_output.references),
+                confidence=agg_output.confidence,
+                model_used=getattr(agg_output, "model_used", None),
             )
-            picked = None
-        if picked:
-            sector_filter = list(picked)
-            sector_source = "picker"
-    elif deps.sectors_override:
-        sector_filter = list(deps.sectors_override)
-        sector_source = "override"
-    logger.info(
-        "run_full_loop[%s]: sector_filter source=%s value=%s",
-        query_id, sector_source, sector_filter,
-    )
+        deps._events.extend(agg_deps._events)
 
-    ura = build_ura_from_phases(
-        reg_rqrs=reg_sqs,
-        compliance_rqrs=comp_sqs,
-        case_rqrs=case_sqs,
-        original_query=query,
-        query_id=query_id,
-        log_id=reg_log_id,
-        sector_filter=sector_filter,
-    )
-    # v3.0 two-view URA: post-merge enrichment fills the heavy fields (full
-    # chunk content, cross-refs, landing urls, entity names) for the surviving
-    # deduped results, and drops empty-content reg results. Best-effort.
-    await enrich_ura(ura, deps.supabase)
-    deps._ura = ura
-    logger.info(
-        "run_full_loop[%s]: URA built -- high=%d medium=%d "
-        "(reg=%s comp=%s cases=%s)",
-        query_id,
-        len(ura.high_results),
-        len(ura.medium_results),
-        ura.produced_by.get("reg_search"),
-        ura.produced_by.get("compliance_search"),
-        ura.produced_by.get("case_search"),
-    )
+        logger.info(
+            "run_full_loop[%s]: done -- %d references, confidence=%s",
+            query_id,
+            len(agg_output.references),
+            agg_output.confidence,
+        )
 
-    agg_input = AggregatorInput.from_ura(
-        ura,
-        prompt_key=prompt_key,
-        detail_level=deps.detail_level,
-    )
-    # Thread the planner-curated context bundle into the aggregator user
-    # message (rendered before <references> by build_aggregator_user_message).
-    # SAME filtered list the executors received -- §3.6 (run_retrieval changes).
-    # ``AggregatorInput.context_blocks`` defaults to []; setting it after
-    # ``from_ura`` avoids touching the classmethod (out of scope per Phase D).
-    if deps.context_blocks:
-        agg_input.context_blocks = list(deps.context_blocks)
-    deps._aggregator_input = agg_input
-    agg_deps = build_aggregator_deps(
-        detail_level=deps.detail_level,
-        supabase=deps.supabase,
-        logger=deps.aggregator_logger,
-    )
-    with _logfire.span(
-        "deep_search.aggregator",
-        query_id=query_id,
-        conversation_id=deps.conversation_id or None,
-        prompt_key=prompt_key,
-        detail_level=deps.detail_level,
-        ura_high=len(ura.high_results),
-        ura_medium=len(ura.medium_results),
-    ) as _agg_span:
-        agg_output = await handle_aggregator_turn(agg_input, agg_deps)
-        try:
-            _agg_span.set_attribute("references", len(agg_output.references))
-            _agg_span.set_attribute("confidence", agg_output.confidence)
-            _agg_span.set_attribute("model_used", getattr(agg_output, "model_used", None))
-        except Exception:
-            pass
-    deps._events.extend(agg_deps._events)
-
-    logger.info(
-        "run_full_loop[%s]: done -- %d references, confidence=%s",
-        query_id,
-        len(agg_output.references),
-        agg_output.confidence,
-    )
-
-    try:
-        _full_span.set_attribute("references", len(agg_output.references))
-        _full_span.set_attribute("confidence", agg_output.confidence)
-        _full_span.set_attribute("ura_high", len(ura.high_results))
-        _full_span.set_attribute("ura_medium", len(ura.medium_results))
-        _full_span.set_attribute("sector_source", sector_source)
-        _full_span.set_attribute("sector_filter", sector_filter)
+        _full_span.set(
+            references=len(agg_output.references),
+            confidence=agg_output.confidence,
+            ura_high=len(ura.high_results),
+            ura_medium=len(ura.medium_results),
+            sector_source=sector_source,
+            sector_filter=sector_filter,
+        )
         for _phase, _stats in (deps._per_executor_stats or {}).items():
-            _full_span.set_attribute(f"phase.{_phase}.duration_ms", _stats.get("duration_ms"))
-            _full_span.set_attribute(f"phase.{_phase}.tokens_in", _stats.get("total_tokens_in"))
-            _full_span.set_attribute(f"phase.{_phase}.tokens_out", _stats.get("total_tokens_out"))
-    except Exception:
-        pass
-    _full_span.__exit__(None, None, None)
-    return agg_output
+            _full_span.set(**{
+                f"phase.{_phase}.duration_ms": _stats.get("duration_ms"),
+                f"phase.{_phase}.tokens_in": _stats.get("total_tokens_in"),
+                f"phase.{_phase}.tokens_out": _stats.get("total_tokens_out"),
+            })
+        return agg_output
 
 
 # ---------------------------------------------------------------------------

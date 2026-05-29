@@ -125,6 +125,37 @@ class WriterPlannerDeps:
             return s
         return None
 
+    # -- tracking hooks (agents/utils/tracking.py protocol) ------------------
+    def tracking_input(self) -> dict[str, Any]:
+        """Bounded view of what the planner saw — span attrs ``input.*``."""
+        return {
+            "intent_chars": len(self.intent or ""),
+            "attached_items": [s.item_id for s in self.attached_items],
+            "prior_artifacts": len(self.prior_artifacts),
+            "recent_messages": len(self.recent_messages),
+            "case_brief_present": self.case_brief is not None,
+            "detail_level": self.style.detail_level,
+            "present_count": self.present_count,
+        }
+
+    def tracking_input_full(self) -> dict[str, Any]:
+        """Verbatim view — env-gated span event only."""
+        return {
+            "intent": self.intent,
+            "recent_messages": [getattr(m, "text", str(m)) for m in self.recent_messages],
+            "attached_items": [
+                {
+                    "item_id": s.item_id,
+                    "kind": getattr(s, "kind", None),
+                    "title": getattr(s, "title", None),
+                    "summary": getattr(s, "summary", None),
+                }
+                for s in self.attached_items
+            ],
+            "prior_artifacts": [getattr(a, "summary", str(a)) for a in self.prior_artifacts],
+            "case_brief": self.case_brief,
+        }
+
 
 # Compiled at module level so they don't get rebuilt on every call.
 _WI_ALIAS_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)

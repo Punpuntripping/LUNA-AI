@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 
 from agents.models import MajorAgentInput, SpecialistResult
+from agents.utils.tracking import track_stage
 from agents.writer import (
     WriterInput,
     build_writer_deps,
@@ -347,26 +348,40 @@ async def handle_writer_planner_turn(
         # Fresh dispatch sends the user prompt; resume relies on history.
         user_prompt = major_input.describe_query if message_history is None else None
 
-        try:
-            result = await agent.run(user_prompt, **run_kwargs) if user_prompt else await agent.run(**run_kwargs)
-        except Exception as exc:
-            logger.exception("writer_planner: agent.run() raised — %s", exc)
-            # Degraded fallback: surface a chat-level error instead of crashing.
-            return WriterPlannerTurnResult(
-                kind="completed",
-                result=SpecialistResult(
-                    output_item_id=None,
-                    chat_summary=(
-                        "حدث خطأ أثناء التخطيط للكتابة. حاول إعادة الطلب بعد قليل."
+        # writer.plan span covers ONLY the planner-decider run; the executor
+        # (writer.execute) and publish (publish.workspace_item) get their own
+        # spans downstream.
+        with track_stage(
+            "writer.plan",
+            conversation_id=major_input.conversation_id,
+            case_id=major_input.case_id,
+            agent_family="writing",
+            input_obj=deps,
+            resumed=message_history is not None,
+        ) as _t:
+            try:
+                result = await agent.run(user_prompt, **run_kwargs) if user_prompt else await agent.run(**run_kwargs)
+            except Exception as exc:
+                logger.exception("writer_planner: agent.run() raised — %s", exc)
+                _t.set(error=str(exc))
+                _t.set_outcome("error")
+                # Degraded fallback: surface a chat-level error instead of crashing.
+                return WriterPlannerTurnResult(
+                    kind="completed",
+                    result=SpecialistResult(
+                        output_item_id=None,
+                        chat_summary=(
+                            "حدث خطأ أثناء التخطيط للكتابة. حاول إعادة الطلب بعد قليل."
+                        ),
+                        key_findings=[],
+                        sse_events=[],
+                        model_used="writer_planner_decider",
+                        tokens_in=0,
+                        tokens_out=0,
+                        per_phase_stats={"error": str(exc)},
                     ),
-                    key_findings=[],
-                    sse_events=[],
-                    model_used="writer_planner_decider",
-                    tokens_in=0,
-                    tokens_out=0,
-                    per_phase_stats={"error": str(exc)},
-                ),
-            )
+                )
+            _t.record_run(result, slot="writer_planner_decider")
 
         output = result.output
 
@@ -451,6 +466,8 @@ async def handle_writer_planner_turn(
         exec_deps = build_writer_deps(
             supabase=supabase,
             http_client=http_client,
+            conversation_id=major_input.conversation_id,
+            case_id=major_input.case_id,
             describe_query=decision.intent_ar,
             task_label=major_input.task_label,
             attached_items=list(major_input.attached_items),

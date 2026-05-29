@@ -75,6 +75,11 @@ class WriterDeps:
     lock_ttl_seconds: int = LOCK_TTL_SECONDS_DEFAULT
     lock_heartbeat_seconds: int = LOCK_HEARTBEAT_SECONDS_DEFAULT
     emit_sse: Optional[Callable[[dict], None]] = None
+    # Scope identifiers — used by the tracking layer (writer.execute span) for
+    # the conversation_id pivot. Optional so legacy/standalone callers still
+    # build deps without them (the span then just lacks the id, as before).
+    conversation_id: str = ""
+    case_id: Optional[str] = None
     # Workspace context fields — populated from MajorAgentInput by the runner.
     # All default to empty/None so existing callers require no changes.
     describe_query: str = ""
@@ -92,6 +97,32 @@ class WriterDeps:
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
 
+    # -- tracking hooks (agents/utils/tracking.py protocol) ------------------
+    def tracking_input(self) -> dict[str, Any]:
+        """Bounded view of what the executor saw — span attrs ``input.*``."""
+        return {
+            "subtype": getattr(self.package, "subtype", None),
+            "describe_query_chars": len(self.describe_query or ""),
+            "attached_items": len(self.attached_items),
+            "package_items": len(self.package.analyzed_items) if self.package else 0,
+            "revising": self.revising_item_id is not None,
+            "detail_level": self.detail_level,
+            "tone": self.tone,
+        }
+
+    def tracking_input_full(self) -> dict[str, Any]:
+        """Verbatim view — env-gated span event only."""
+        return {
+            "describe_query": self.describe_query,
+            "task_label": self.task_label,
+            "revising_item_id": self.revising_item_id,
+            "attached_items": [
+                {"item_id": s.item_id, "kind": s.kind, "title": s.title}
+                for s in self.attached_items
+            ],
+            "package_intent_ar": getattr(self.package, "intent_ar", None),
+        }
+
 
 def build_writer_deps(
     supabase: Any = None,
@@ -102,6 +133,8 @@ def build_writer_deps(
     http_client: Any = None,
     model_registry: Any = None,
     logger: Optional[logging.Logger] = None,
+    conversation_id: str = "",
+    case_id: Optional[str] = None,
     # Workspace context fields (Task 5b) ------------------------------------
     describe_query: str = "",
     task_label: str = "",
@@ -139,6 +172,8 @@ def build_writer_deps(
         ),
         temperature=temperature if temperature is not None else TEMPERATURE_DEFAULT,
         emit_sse=emit_sse,
+        conversation_id=conversation_id,
+        case_id=case_id,
         describe_query=describe_query,
         task_label=task_label,
         attached_items=attached_items if attached_items is not None else [],

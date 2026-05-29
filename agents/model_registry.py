@@ -925,12 +925,17 @@ def get_api_key(provider: str) -> str:
     return key_map.get(provider, "")
 
 
-def create_model(model_name: str):
+def create_model(model_name: str, model_settings: Any = None):
     """
     Create a Pydantic AI model instance with auto-configuration.
 
     Args:
         model_name: Model name from registry (e.g., "gpt-5.4-mini", "claude-sonnet-4-6")
+        settings: Optional per-model ``ModelSettings`` baked onto the instance.
+            pydantic_ai merges these (as the base layer) with any agent/run-level
+            ``model_settings`` via ``merge_model_settings``. Used by the tier
+            system to attach provider-specific reasoning controls per FallbackModel
+            cell (see ``agents/utils/agent_models.py``).
 
     Returns:
         Pydantic AI Model instance (OpenAIChatModel, AnthropicModel, GoogleModel)
@@ -959,6 +964,7 @@ def create_model(model_name: str):
         return OpenAIChatModel(
             config.model_id,
             provider=OpenAIProvider(api_key=api_key),
+            settings=model_settings,
         )
 
     elif config.provider == "anthropic":
@@ -967,6 +973,7 @@ def create_model(model_name: str):
         return AnthropicModel(
             config.model_id,
             provider=AnthropicProvider(api_key=api_key),
+            settings=model_settings,
         )
 
     elif config.provider == "google":
@@ -975,6 +982,7 @@ def create_model(model_name: str):
         return GoogleModel(
             config.model_id,
             provider=GoogleProvider(api_key=api_key),
+            settings=model_settings,
         )
 
     elif config.provider == "deepseek":
@@ -983,6 +991,7 @@ def create_model(model_name: str):
         return OpenAIChatModel(
             config.model_id,
             provider=DeepSeekProvider(api_key=api_key),
+            settings=model_settings,
         )
 
     elif config.provider == "minimax":
@@ -994,6 +1003,7 @@ def create_model(model_name: str):
                 base_url="https://api.minimax.io/v1",
                 api_key=api_key,
             ),
+            settings=model_settings,
         )
 
     elif config.provider == "openrouter":
@@ -1002,6 +1012,7 @@ def create_model(model_name: str):
 
         kwargs: Dict[str, Any] = {
             "provider": OpenRouterProvider(api_key=api_key),
+            "settings": model_settings,
         }
 
         # Models that don't support tool_choice="required" (only auto/none)
@@ -1025,6 +1036,7 @@ def create_model(model_name: str):
             profile=OpenAIModelProfile(
                 openai_supports_tool_choice_required=False,
             ),
+            settings=model_settings,
         )
 
     else:

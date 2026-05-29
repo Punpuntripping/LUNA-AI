@@ -56,6 +56,10 @@ class ErrorCode(str, Enum):
     # Preferences
     PREFERENCES_FAILED = "PREFERENCES_FAILED"
 
+    # Templates
+    TEMPLATE_NOT_FOUND = "TEMPLATE_NOT_FOUND"
+    TEMPLATE_FAILED = "TEMPLATE_FAILED"
+
     # User
     USER_NOT_FOUND = "USER_NOT_FOUND"
 

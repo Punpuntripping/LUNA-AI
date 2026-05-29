@@ -44,6 +44,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 from agents.utils.agent_models import OVERRIDE_TOKENS  # noqa: E402
+from agents.utils.tracking import track_stage  # noqa: E402
 
 # Load .env + configure logfire so the planner / orchestrator spans phone home
 # (same wiring backend/app/main.py uses). The logfire-run-monitor depends on
@@ -479,12 +480,16 @@ async def main(argv: list[str]) -> None:
 
     try:
         if _logfire is not None:
-            with _logfire.span("deep_search.cli.turn", query_id=query_id) as span:
+            with track_stage(
+                "deep_search.cli.turn",
+                agent_family="deep_search",
+                query_id=query_id,
+            ) as span:
                 turn = await handle_planner_turn(query, deps)
                 try:
-                    span.set_attribute("kind", turn.kind)
-                    span.set_attribute(
-                        "mode", turn.decision.mode if turn.decision else "(none)"
+                    span.set(kind=turn.kind)
+                    span.set(
+                        mode=turn.decision.mode if turn.decision else "(none)"
                     )
                 except Exception:
                     pass

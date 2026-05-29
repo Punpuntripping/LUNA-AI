@@ -10,6 +10,18 @@ unchanged.
 """
 from __future__ import annotations
 
-from .unified import SECTORS_PROMPT_LIST, VALID_SECTORS, canonicalize_sectors
+from .unified import (
+    SECTOR_ALIASES,
+    SECTORS_PROMPT_LIST,
+    VALID_SECTORS,
+    canonicalize_sectors,
+    resolve_sector,
+)
 
-__all__ = ["VALID_SECTORS", "SECTORS_PROMPT_LIST", "canonicalize_sectors"]
+__all__ = [
+    "VALID_SECTORS",
+    "SECTORS_PROMPT_LIST",
+    "SECTOR_ALIASES",
+    "resolve_sector",
+    "canonicalize_sectors",
+]

@@ -40,6 +40,8 @@ import logging
 import time
 from typing import Any, overload
 
+from agents.utils.tracking import track_stage
+
 from .agent import WRITER_LIMITS, create_writer_agent
 from .deps import WriterDeps
 from .models import (
@@ -75,6 +77,12 @@ def _populate_deps_from_input(input: WriterInput, deps: WriterDeps) -> None:
     # describe_query: user_request is the canonical task statement.
     if not deps.describe_query:
         deps.describe_query = input.user_request or ""
+
+    # Scope ids for the writer.execute tracking span (legacy path).
+    if not deps.conversation_id and getattr(input, "conversation_id", None):
+        deps.conversation_id = input.conversation_id
+    if deps.case_id is None and getattr(input, "case_id", None):
+        deps.case_id = input.case_id
 
     # attached_items: WriterInput does not carry WorkspaceItemSnapshot objects
     # directly (that is Wave 10+ via MajorAgentInput).  Leave deps.attached_items
@@ -271,36 +279,50 @@ async def _run_writer(
     primary_model = deps.primary_model
     fallback_model = deps.fallback_model
 
-    try:
-        agent = create_writer_agent(deps, subtype=subtype, model_name=primary_model)
-        result = await agent.run(user_message, deps=deps, usage_limits=WRITER_LIMITS)
-        return _coerce_output(result), primary_model
-    except Exception as exc:
-        logger.warning(
-            "agent_writer: primary model %s failed (%s); falling back to %s",
-            primary_model, exc, fallback_model,
-        )
+    with track_stage(
+        "writer.execute",
+        conversation_id=deps.conversation_id or None,
+        case_id=deps.case_id,
+        agent_family="writing",
+        subtype=subtype,
+        input_obj=deps,
+    ) as _t:
         try:
-            agent = create_writer_agent(deps, subtype=subtype, model_name=fallback_model)
+            agent = create_writer_agent(deps, subtype=subtype, model_name=primary_model)
             result = await agent.run(user_message, deps=deps, usage_limits=WRITER_LIMITS)
-            return _coerce_output(result), fallback_model
-        except Exception as exc2:
-            logger.error(
-                "agent_writer: fallback also failed: %s", exc2, exc_info=True
+            _t.record_run(result, slot="agent_writer")
+            return _coerce_output(result), primary_model
+        except Exception as exc:
+            logger.warning(
+                "agent_writer: primary model %s failed (%s); falling back to %s",
+                primary_model, exc, fallback_model,
             )
-            placeholder = WriterLLMOutput(
-                title_ar="مسوّدة غير مكتملة",
-                sections=[
-                    {
-                        "heading_ar": "## ملاحظة",
-                        "body_md": "تعذّر توليد المستند. يرجى إعادة المحاولة لاحقاً.",
-                    }
-                ],
-                citations_used=[],
-                confidence="low",
-                notes_ar=[f"model_failure: {exc2.__class__.__name__}"],
-            )
-            return placeholder, fallback_model
+            _t.set(primary_failed=True, primary_error=str(exc))
+            try:
+                agent = create_writer_agent(deps, subtype=subtype, model_name=fallback_model)
+                result = await agent.run(user_message, deps=deps, usage_limits=WRITER_LIMITS)
+                _t.record_run(result, slot="agent_writer")
+                _t.set(fallback_used=True)
+                return _coerce_output(result), fallback_model
+            except Exception as exc2:
+                logger.error(
+                    "agent_writer: fallback also failed: %s", exc2, exc_info=True
+                )
+                _t.set(fallback_failed=True, error=str(exc2))
+                _t.set_outcome("error")
+                placeholder = WriterLLMOutput(
+                    title_ar="مسوّدة غير مكتملة",
+                    sections=[
+                        {
+                            "heading_ar": "## ملاحظة",
+                            "body_md": "تعذّر توليد المستند. يرجى إعادة المحاولة لاحقاً.",
+                        }
+                    ],
+                    citations_used=[],
+                    confidence="low",
+                    notes_ar=[f"model_failure: {exc2.__class__.__name__}"],
+                )
+                return placeholder, fallback_model
 
 
 def _coerce_output(result: Any) -> WriterLLMOutput:

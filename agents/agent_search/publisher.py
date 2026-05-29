@@ -26,6 +26,7 @@ from backend.app.services.retrieval_artifacts_service import (
     save_retrieval_artifact,
 )
 from backend.app.services.references_service import persist_item_references
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 _logfire = get_logfire()
@@ -154,11 +155,12 @@ async def publish_search_result(
     # PII note: user_id not on this span (recoverable via Supabase join).
     # router.classify + dispatch.specialist already carry the user identity
     # for this turn.
-    with _logfire.span(
+    with track_stage(
         "publish.workspace_item",
-        kind="agent_search",
         conversation_id=input.conversation_id,
         case_id=input.case_id,
+        agent_family="publish",
+        kind="agent_search",
         message_id=input.message_id,
         title_chars=len(title or ""),
         content_md_chars=len(content_md or ""),
@@ -184,19 +186,10 @@ async def publish_search_result(
         # tests that stub create_workspace_item with the old shape keep working.
         item_id = row.get("item_id") or row.get("artifact_id") or ""
         if not item_id:
-            try:
-                _pub_span.set_attribute("outcome", "no_item_id")
-            except Exception:
-                pass
+            _pub_span.set(outcome="no_item_id")
             raise RuntimeError("agent_search: publish returned no item_id")
 
-        try:
-            _pub_span.set_attributes({
-                "item_id": item_id,
-                "outcome": "ok",
-            })
-        except Exception:
-            pass
+        _pub_span.set(item_id=item_id, outcome="ok")
 
         # Migration 049: persist the per-WI ref state. Best-effort -- a refs
         # write hiccup must not crash the user-visible publish. ``input.ura``

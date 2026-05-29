@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
 
@@ -35,6 +36,31 @@ _logfire = get_logfire()
 # is pending" warning. The add_done_callback (registered at the detach site)
 # discards the reference once the task naturally completes.
 _inflight_pipelines: set[asyncio.Task] = set()
+
+
+@dataclass
+class _ActiveRun:
+    """One in-flight turn for a conversation.
+
+    ``task`` is None only during the brief synchronous window between reserving
+    the slot (right after the assistant placeholder is created) and the pipeline
+    task actually being spawned — there is no ``await`` in that window, so a
+    concurrent send for the same conversation cannot interleave into it.
+    """
+
+    assistant_msg_id: str
+    task: asyncio.Task | None = None
+
+
+# Per-conversation in-flight registry, keyed by conversation_id. An entry lives
+# from the moment a turn reserves its slot until that turn's pipeline task
+# completes — INCLUDING background completion after an SSE detach. A second send
+# for a conversation that already has a live entry is rejected (see the dedup
+# guard at the top of send_message_stream) so one question can't bill two full
+# pipeline runs. Keyed per conversation: other conversations stream freely in
+# parallel. This is distinct from `_inflight_pipelines` (a GC-keepalive set for
+# detached tasks); both can hold the same task.
+_active_runs: dict[str, _ActiveRun] = {}
 
 
 def _is_valid_uuid(value: str) -> bool:
@@ -215,6 +241,31 @@ async def send_message_stream(
     8. Yield done event
     """
 
+    # 0. In-flight dedup guard (per conversation). If a pipeline is already
+    # running for THIS conversation — because the user resent after the first
+    # SSE stream silently dropped, or the frontend auto-reconnect re-POSTed —
+    # do NOT start a second pipeline. That would re-run the whole deep_search
+    # for the same question and bill it twice (forensics: convo cb348fe6, ~2×
+    # cost). Point the client at the existing in-flight assistant message and
+    # return without saving a duplicate user message. The detach-to-background
+    # policy keeps the first run alive, so its answer still surfaces on
+    # completion. The check is keyed on conversation_id: other conversations
+    # are unaffected. ``task.done()`` lets a finished-but-not-yet-cleaned slot
+    # fall through (the done_callback clears it asynchronously).
+    existing = _active_runs.get(conversation_id)
+    if existing is not None and (existing.task is None or not existing.task.done()):
+        _logfire.warning(
+            "message.stream.duplicate_send_rejected",
+            conversation_id=conversation_id,
+            existing_assistant_message_id=existing.assistant_msg_id,
+        )
+        yield _sse_event("duplicate", {
+            "assistant_message_id": existing.assistant_msg_id,
+            "conversation_id": conversation_id,
+            "detail": "ما زال يتم إنشاء الرد على رسالتك السابقة وسيظهر هنا حال اكتماله.",
+        })
+        return
+
     # 1. Save user message BEFORE AI call (Absolute Rule #7)
     user_msg_id = str(uuid.uuid4())
     try:
@@ -262,6 +313,13 @@ async def send_message_stream(
         logger.exception("Error creating assistant placeholder: %s", e)
         yield _sse_event("error", {"detail": "حدث خطأ داخلي"})
         return
+
+    # 2b. Reserve the per-conversation in-flight slot NOW (task filled in once
+    # spawned below). This must happen before the `yield message_start` so a
+    # concurrent resend that resumes during that yield already sees the slot
+    # taken. There is no `await` between the dedup check above and here, so two
+    # near-simultaneous sends cannot both pass the check.
+    _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=assistant_msg_id)
 
     # 3. Yield message_start
     yield _sse_event("message_start", {
@@ -520,6 +578,23 @@ async def send_message_stream(
 
     heartbeat_task = asyncio.create_task(heartbeat_producer())
     pipeline_task = asyncio.create_task(pipeline_producer())
+
+    # Bind the spawned task to the reserved in-flight slot and arrange cleanup.
+    # The done-callback clears the slot when the pipeline finishes — whether it
+    # completes while the consumer is attached OR in the background after a
+    # detach — so a later send for this conversation is allowed once the run is
+    # truly over. The identity guard avoids a stale callback clobbering a newer
+    # run that legitimately took the slot.
+    _slot = _active_runs.get(conversation_id)
+    if _slot is not None and _slot.assistant_msg_id == assistant_msg_id:
+        _slot.task = pipeline_task
+
+    def _clear_active_run(_done: asyncio.Task) -> None:
+        cur = _active_runs.get(conversation_id)
+        if cur is not None and cur.task is _done:
+            _active_runs.pop(conversation_id, None)
+
+    pipeline_task.add_done_callback(_clear_active_run)
 
     try:
         while True:

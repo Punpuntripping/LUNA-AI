@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 from .agent import (
@@ -179,20 +180,19 @@ async def handle_planner_turn(
     ``describe_query`` is the router-emitted query description (Wave 1/Phase B
     redesign — renamed from positional ``briefing`` in Phase C).
     """
-    with _logfire.span(
+    with track_stage(
         "deep_search.planner",
-        query_id=getattr(deps, "query_id", None),
         conversation_id=getattr(deps, "conversation_id", "") or None,
+        agent_family="deep_search",
+        query_id=getattr(deps, "query_id", None),
         resumed=decision is not None,
     ) as span:
         result = await _run_planner_turn(
             describe_query, deps, decision, run_retrieval=run_retrieval,
         )
-        span.set_attribute("kind", result.kind)
-        span.set_attribute("degraded", result.degraded)
+        span.set(kind=result.kind, degraded=result.degraded)
         if result.decision is not None:
-            span.set_attribute("mode", result.decision.mode)
-            span.set_attribute("support", result.decision.support)
+            span.set(mode=result.decision.mode, support=result.decision.support)
         return result
 
 
@@ -285,6 +285,7 @@ async def _run_planner_turn(
                 "mode": decision.mode,
                 "support": decision.support,
                 "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
+                "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
                 "context_labels": list(getattr(decision, "context_labels", []) or []),
                 "workspace_reads_count": _count_workspace_reads(deps._events),
                 "ask_user_invoked": False,  # paused-branch returned above
@@ -325,6 +326,7 @@ async def _run_planner_turn(
             "mode": decision.mode,
             "support": decision.support,
             "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
+            "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
             "context_labels": list(getattr(decision, "context_labels", []) or []),
             "workspace_reads_count": _count_workspace_reads(deps._events),
             "ask_user_invoked": _ask_user_was_invoked(deps._events),
@@ -351,12 +353,21 @@ async def _run_planner_turn(
 
     # ── PHASE 2 — retrieve ─────────────────────────────────────────────────
     config = build_retrieval_config(decision)
+    # The planner's faithful, zero-bias restatement (when produced) is the
+    # canonical retrieval query — it resolves colloquial / rambling phrasing
+    # into a clean statement of the user's real question and legal posture,
+    # WITHOUT injecting any law or entity the user didn't name. This is what
+    # flows to the sector_picker, the executors, and the aggregator. Falls back
+    # to the raw query when the planner left it empty (query already clean).
+    retrieval_query = (
+        getattr(decision, "query_restatement", "") or ""
+    ).strip() or query
     agg_output: "AggregatorOutput | None" = None
     degraded = False
     t1 = time.perf_counter()
     try:
         retrieval_fn = await _resolve_run_retrieval(run_retrieval)
-        agg_output = await retrieval_fn(query, config, deps)
+        agg_output = await retrieval_fn(retrieval_query, config, deps)
         deps._agg_output = agg_output
         emit(deps, {
             "event": EVENT_RETRIEVAL_DONE,

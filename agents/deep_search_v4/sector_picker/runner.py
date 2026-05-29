@@ -7,9 +7,16 @@
    first-class stage in the trace tree.
 2. A hard timeout (``SECTOR_PICKER_TIMEOUT_S``) — picker is on the critical
    path of every deep_search invocation, so we cannot let it hang.
-3. Post-validation: canonicalize sector names against ``VALID_SECTORS``,
-   re-check the ``[MIN_SECTORS, MAX_SECTORS]`` bound, and downgrade to ``None``
-   on any failure (which the executor filter steps interpret as "no filter").
+3. A bound check on the ``[MIN_SECTORS, MAX_SECTORS]`` count, downgrading to
+   ``None`` (no filter) when the list is too short or too long.
+
+Sector-*name* validity is enforced upstream in the output schema
+(``SectorPickerOutput.sectors`` is ``list[Literal[*VALID_SECTORS]]``): a single
+invalid name fails the whole output and triggers a Pydantic AI output-retry.
+When the model exhausts its retry budget without producing a fully-valid list,
+Pydantic AI raises — caught here by the generic exception handler and degraded
+to ``None``. So by the time we read ``result.output`` the names are guaranteed
+canonical and deduplicated, and the runner only has to police the count.
 
 The runner **never raises** — every failure mode degrades to ``None``. The
 sector filter is a coarse pre-filter on top of semantic retrieval; running
@@ -22,8 +29,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from agents.deep_search_v4.shared.sector_vocab.regulations import canonicalize_sectors
 from agents.utils.agent_models import ModelPolicy, cost_usd
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 from .agent import SECTOR_PICKER_LIMITS, create_sector_picker
@@ -77,10 +84,11 @@ async def run_sector_picker(
     """
     blocks = list(context_blocks or [])
 
-    with _logfire.span(
+    with track_stage(
         "deep_search.sector_picker",
-        query_id=query_id,
         conversation_id=conversation_id or None,
+        agent_family="deep_search",
+        query_id=query_id,
         mode=mode,
     ) as span:
         t0 = time.perf_counter()
@@ -111,17 +119,18 @@ async def run_sector_picker(
                 "sector_picker: timed out after %.1fs (query_id=%s)",
                 timeout_s, query_id,
             )
-            span.set_attribute("kind", "timeout")
-            span.set_attribute("duration_s", round(time.perf_counter() - t0, 3))
+            span.set(kind="timeout", duration_s=round(time.perf_counter() - t0, 3))
             return None
         except Exception as exc:
             logger.warning(
                 "sector_picker: raised %s (query_id=%s); running unfiltered",
                 type(exc).__name__, query_id, exc_info=True,
             )
-            span.set_attribute("kind", "error")
-            span.set_attribute("error", repr(exc))
-            span.set_attribute("duration_s", round(time.perf_counter() - t0, 3))
+            span.set(
+                kind="error",
+                error=repr(exc),
+                duration_s=round(time.perf_counter() - t0, 3),
+            )
             return None
 
         output: SectorPickerOutput = result.output
@@ -130,63 +139,61 @@ async def run_sector_picker(
         # Usage + cost — same shape as the other tier_2 agents.
         try:
             usage = result.usage()
-            span.set_attribute("input_tokens", int(usage.input_tokens or 0))
-            span.set_attribute("output_tokens", int(usage.output_tokens or 0))
+            span.set(
+                input_tokens=int(usage.input_tokens or 0),
+                output_tokens=int(usage.output_tokens or 0),
+            )
             details = usage.details or {}
             reasoning = int(details.get("reasoning_tokens", 0) or 0)
-            span.set_attribute("reasoning_tokens", reasoning)
+            cached = int(getattr(usage, "cache_read_tokens", 0) or 0)
+            span.set(reasoning_tokens=reasoning, cached_tokens=cached)
             cost = cost_usd(
                 tier="tier_2",
                 input_tokens=int(usage.input_tokens or 0),
                 output_tokens=int(usage.output_tokens or 0),
                 reasoning_tokens=reasoning,
-                cached_tokens=int(details.get("cached_tokens", 0) or 0),
+                cached_tokens=cached,
             )
-            span.set_attribute("cost_usd", round(cost, 6))
+            span.set(cost_usd=round(cost, 6))
         except Exception:
             pass
 
         rationale = (output.rationale or "").strip()
-        span.set_attribute("rationale_chars", len(rationale))
-        span.set_attribute("duration_s", duration_s)
+        span.set(rationale_chars=len(rationale), duration_s=duration_s)
 
         if output.sectors is None:
             logger.info(
                 "sector_picker: emitted null (too broad). rationale=%r",
                 rationale[:120],
             )
-            span.set_attribute("kind", "null")
-            span.set_attribute("sectors", [])
+            span.set(kind="null", sectors=[])
             return None
 
-        canonical = canonicalize_sectors(list(output.sectors))
-        n = len(canonical)
+        # Names are already canonical + deduped (enforced by the output schema).
+        # The runner only polices the count.
+        picked = list(output.sectors)
+        n = len(picked)
         if n < MIN_SECTORS:
             logger.info(
-                "sector_picker: %d canonical sector(s) below MIN=%d -> null. "
-                "raw=%s canonical=%s",
-                n, MIN_SECTORS, output.sectors, canonical,
+                "sector_picker: %d sector(s) below MIN=%d -> null. picked=%s",
+                n, MIN_SECTORS, picked,
             )
-            span.set_attribute("kind", "under_min")
-            span.set_attribute("sectors", canonical)
+            span.set(kind="under_min", sectors=picked)
             return None
         if n > MAX_SECTORS:
             logger.info(
-                "sector_picker: %d canonical sector(s) above MAX=%d -> null. "
-                "raw=%s canonical=%s",
-                n, MAX_SECTORS, output.sectors, canonical,
+                "sector_picker: %d sector(s) above MAX=%d -> null. picked=%s",
+                n, MAX_SECTORS, picked,
             )
-            span.set_attribute("kind", "over_max")
-            span.set_attribute("sectors", canonical)
+            span.set(kind="over_max", sectors=picked)
             return None
 
         logger.info(
             "sector_picker: picked %s (n=%d) in %.2fs. rationale=%r",
-            canonical, n, duration_s, rationale[:120],
+            picked, n, duration_s, rationale[:120],
         )
-        span.set_attribute("kind", "ok")
-        span.set_attribute("sectors", canonical)
-        return canonical
+        span.set(kind="ok", sectors=picked)
+        return picked
 
 
 __all__ = ["SECTOR_PICKER_TIMEOUT_S", "run_sector_picker"]

@@ -2,8 +2,10 @@
 
 Classifies user intent and either responds directly (ChatResponse) or
 dispatches a specialist agent (DispatchAgent) with a content-derived
-task_label + a tight describe_query plus the workspace items the
-specialist should see as input.
+task_label plus the workspace items the specialist should see as input.
+The router no longer paraphrases the query — the specialist receives the
+raw user message (orchestrator-filled MajorAgentInput.describe_query) and
+recent_messages for context.
 
 Wave 9 changes:
 - ``OpenTask`` → ``DispatchAgent`` (renamed fields ``task_type`` →
@@ -28,6 +30,7 @@ from supabase import Client as SupabaseClient
 
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.utils.agent_models import get_agent_model
+from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
 
@@ -206,13 +209,10 @@ SYSTEM_PROMPT = """\
 - يجب أن يكون مستقراً عبر إعادات الصياغة — نفس السؤال يُنتج نفس العنوان.
 - يُستخدم كعنوان لبطاقة العنصر في مساحة العمل وكمعرّف في سجل المهام.
 
-## قواعد describe_query:
-- **يَصِفُ السؤال** لا سير العمل ولا ما سيفعله المتخصص.
-- سيّئ: «يطلب المستخدم البحث عن أحكام الفصل التعسفي…».
-- جيّد: «س: ما حكم الفصل التعسفي في النظام السعودي؟ السياق: المستخدم سبق أن أشار إلى عقد محدد المدة بسنة وذكر إنذارين كتابيين خلال الشهر الماضي».
-- يحمل سياق المحادثة الذي يعتمد عليه السؤال — لا إعادة لصياغة السؤال نفسه.
-- الحد الأقصى ~150 كلمة. كن مُختزلاً.
-- لا توجّه إذا كنت غير متأكد مما يريده المستخدم — اسأله أولاً.
+## وصف السؤال — ليس من مهامك:
+- **لا تَصِفْ السؤال ولا تُعِد صياغته**. المتخصص يستلم رسالة المستخدم الأصلية وسياق المحادثة مباشرةً.
+- مهمتك التوجيه فقط: اختيار `agent_family` و`task_label` والعناصر المرفقة.
+- لا توجّه إذا كنت غير متأكد مما يريده المستخدم — اسأله أولاً عبر ChatResponse.
 
 ## قواعد عامة:
 - كن منحازاً نحو التوجيه بدلاً من إعطاء إجابات قانونية بدون مصادر
@@ -329,7 +329,7 @@ def inject_case_context(ctx: RunContext[RouterDeps]) -> str:
 سياق القضية الحالية:
 {ctx.deps.case_memory_md}
 
-استخدم هذا السياق لفهم أسئلة المستخدم. إذا طلب بحثاً أو صياغة، ضمّن المعلومات ذات الصلة في describe_query.
+استخدم هذا السياق لفهم أسئلة المستخدم وتصنيفها وتوجيهها بدقة.
 """
     return ""
 
@@ -583,10 +583,11 @@ async def run_router(
     # conversations tables — all carry user_id as a column). Keeping user_id
     # out of Logfire span attributes narrows the PII surface area across the
     # 30-day retention window.
-    with _logfire.span(
+    with track_stage(
         "router.classify",
         conversation_id=conversation_id,
         case_id=case_id,
+        agent_family="router",
         question_length=len(question),
         history_turns=len(message_history),
         workspace_item_count=len(deps.workspace_item_summaries),
@@ -599,6 +600,7 @@ async def run_router(
                 message_history=message_history,
                 usage_limits=ROUTER_LIMITS,
             )
+            span.record_run(result, slot="router")
 
             usage = result.usage()
             decision_type = getattr(result.output, "type", None)
@@ -612,14 +614,11 @@ async def run_router(
                 if isinstance(result.output, DispatchAgent)
                 else 0
             )
-            try:
-                span.set_attribute("decision", decision_type)
-                span.set_attribute("agent_family", agent_family)
-                span.set_attribute("attached_item_count", attached_count)
-                span.set_attribute("requests", usage.requests)
-                span.set_attribute("output_tokens", usage.output_tokens)
-            except Exception:
-                pass
+            span.set(
+                decision=decision_type,
+                agent_family=agent_family,
+                attached_item_count=attached_count,
+            )
 
             logger.info(
                 "Router decision — type=%s, agent_family=%s, attached=%d, requests=%s, output_tokens=%s",
@@ -634,11 +633,8 @@ async def run_router(
 
         except Exception as e:
             logger.error("خطأ في الموجه: %s", e, exc_info=True)
-            try:
-                span.set_attribute("decision", "error")
-                span.set_attribute("error", str(e))
-            except Exception:
-                pass
+            span.set(decision="error", error=str(e))
+            span.set_outcome("error")
             # Fallback: return a safe ChatResponse so the user sees something
             return ChatResponse(
                 message="عذراً، حدث خطأ أثناء معالجة رسالتك. يرجى المحاولة مرة أخرى."
