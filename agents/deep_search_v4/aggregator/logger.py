@@ -186,9 +186,12 @@ class AggregatorLogger:
     ) -> Path:
         """Write the exact system prompt + rendered user message to prompt_{stage}.md.
 
-        One file per LLM call — for DCR chains, call this with
-        stage='draft' | 'critique' | 'rewrite'. Single-shot uses 'single'.
-        Fallback calls use 'fallback_single'.
+        One file per LLM call. Stage names in use:
+            'single'         — single-shot primary call (most common)
+            'draft' | 'critique' | 'rewrite' — DCR chain stages (prompt_3)
+            'dcr_fallback'   — DCR exception-recovery single-shot
+            'correction'     — self-correction turn (2026-06+) when the
+                               primary fails a hard validator gate
 
         The content captures every byte sent to the model so runs are exactly
         reproducible from the log alone.

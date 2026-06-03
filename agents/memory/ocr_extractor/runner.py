@@ -14,8 +14,8 @@ import logging
 
 from supabase import Client as SupabaseClient
 
-from agents.runs import AgentRunRecord, record_agent_run
 from agents.utils.tracking import track_stage
+from agents.utils.usage_sink import record_call
 from shared.config import get_settings
 from shared.observability import get_logfire
 from shared.storage.client import get_signed_url
@@ -72,19 +72,19 @@ def _mark_status(
 
 
 def _count_prior_ocr_runs(supabase: SupabaseClient, user_id: str) -> int:
-    """Lifetime count of this user's successful OCR ``agent_runs`` rows.
+    """Lifetime count of this user's successful OCR extractions.
 
-    On query failure, returns 0 (fail-open: a transient telemetry-table error
-    must not block document extraction).
+    Counts ``llm_calls`` ledger rows for the OCR agent (migration 058 — the
+    per-call ledger replaced agent_runs for cost/pages telemetry). On query
+    failure returns 0 (fail-open: a transient telemetry-table error must not
+    block document extraction).
     """
     try:
         result = (
-            supabase.table("agent_runs")
-            .select("run_id", count="exact")
+            supabase.table("llm_calls")
+            .select("call_id", count="exact")
             .eq("user_id", user_id)
-            .eq("agent_family", "memory")
-            .eq("subtype", "ocr_extraction")
-            .eq("status", "ok")
+            .eq("agent", "memory.ocr_extraction")
             .execute()
         )
         count = getattr(result, "count", None)
@@ -300,24 +300,20 @@ async def _run_inner(
             )
             continue
 
-        # --- Record agent_runs row (telemetry — never blocking) ----------
-        try:
-            record_agent_run(
-                supabase,
-                AgentRunRecord(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    agent_family="memory",
-                    subtype="ocr_extraction",
-                    output_item_id=item_id,
-                    model_used=ocr_result.model,
-                    per_phase_stats={"pages": ocr_result.page_count},
-                    cost_usd=ocr_result.page_count / 1000.0,
-                    status="ok",
-                ),
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("OCR: agent_runs record failed for item %s", item_id, exc_info=True)
+        # --- Cost/pages ledger (source of truth + OCR quota settle/count) -
+        # OCR is a direct Mistral call (not a pydantic-ai agent), so the
+        # tracking.py sink hook can't see it — feed the ledger explicitly.
+        # Runs inside the handle_message capture scope; flushed + settled there.
+        # This row is also what _count_prior_ocr_runs counts for lifetime quota.
+        _ocr_pages = int(ocr_result.page_count or 0)
+        record_call(
+            agent="memory.ocr_extraction",
+            model=ocr_result.model,
+            agent_family="memory",
+            subtype="ocr_extraction",
+            pages_used=_ocr_pages,
+            cost_usd=_ocr_pages / 1000.0,
+        )
 
         stats.extracted += 1
         stats.filled_item_ids.append(item_id)

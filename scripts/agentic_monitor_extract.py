@@ -128,7 +128,7 @@ try:
 
     def cost(model, ti, to, rz=0):
         try:
-            return round(_cost_usd(MODEL_TIER.get(model, "tier_1"), ti, to, rz, 0), 6)
+            return round(_cost_usd(model, ti, to, rz, 0), 6)
         except Exception:
             return 0.0
     COST_SRC = "agents.utils.agent_models.cost_usd"

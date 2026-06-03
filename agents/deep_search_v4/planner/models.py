@@ -8,7 +8,9 @@ The planner is a **two-phase** agent:
   factual context the planner discovered that isn't already carried by the
   query or other context blocks) and ``context_labels`` (which context blocks
   flow to the expanders + aggregator). The decider may instead pause via the
-  ``ask_user`` deferred tool when the query is too vague to plan.
+  ``ask_user`` deferred tool when the query is too vague to plan, when the
+  parties / intent are unclear, or to reflect its understanding back for
+  confirmation on a long, multi-aspect question.
   Sectors moved out in Wave B (2026-05-24): the dedicated
   :mod:`~agents.deep_search_v4.sector_picker` agent runs in parallel with the
   executors and emits a 2–5 sector AND-filter. The picker has visibility

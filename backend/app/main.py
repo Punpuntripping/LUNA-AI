@@ -29,10 +29,15 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from shared import pricing
 from shared.config import get_settings
 from shared.db.client import get_supabase_client, get_supabase_anon_client
 from shared.cache.redis import get_async_redis_client
-from shared.observability import configure_logfire, instrument_fastapi_app
+from shared.observability import (
+    configure_logfire,
+    instrument_fastapi_app,
+    observability_status,
+)
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
 from backend.app.services.upload_reconciler import reconcile_stuck_uploads
 
@@ -61,6 +66,16 @@ async def lifespan(app: FastAPI):
     app.state.supabase = get_supabase_client()
     app.state.supabase_auth = get_supabase_anon_client()
     logger.info("Supabase clients ready")
+
+    # 1b. LLM pricing — load model_pricing rows into an in-memory cache so
+    #     cost_usd(model_name, ...) is a sub-µs dict lookup on the hot path.
+    #     Failures leave the cache empty; cost_usd then returns 0.0 silently
+    #     (cost accounting is best-effort and must not block user runs).
+    try:
+        loaded = pricing.load_pricing(app.state.supabase)
+        logger.info("Pricing cache ready (%d models)", loaded)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Pricing cache load failed (cost_usd → 0): %s", e)
 
     # 2. Redis async client (singleton via lru_cache)
     try:
@@ -224,10 +239,26 @@ def create_app() -> FastAPI:
     # Routes
     # ------------------------------------------
 
-    # Health check (no auth required)
+    # Health check (no auth required). Returns the resolved environment label
+    # so a `curl /api/v1/health` from any environment instantly proves which
+    # backend you're actually talking to — the localhost/Railway routing
+    # ambiguity that triggered Wave-9 tracking-reliability work.
     @application.get("/api/v1/health", tags=["health"])
     async def health_check():
-        return {"status": "ok"}
+        status = observability_status()
+        return {
+            "status": "ok",
+            "service": status["service_name"],
+            "version": status["service_version"],
+            "environment": status["environment"],
+        }
+
+    # Observability self-check — exposes the live Logfire wiring so a
+    # silently-broken deploy (no token, failed SDK instrument) shows up as
+    # `configured: false` instead of as a quiet zero-span deploy. No secrets.
+    @application.get("/api/v1/_meta/observability", tags=["health"])
+    async def observability_check():
+        return observability_status()
 
     # Auth router
     from backend.app.api.auth import router as auth_router
@@ -299,6 +330,15 @@ def create_app() -> FastAPI:
         preferences_router,
         prefix="/api/v1",
         tags=["preferences"],
+    )
+
+    # Usage limits — read-only snapshot for the Settings → حدود الاستخدام dialog.
+    from backend.app.api.usage import router as usage_router
+
+    application.include_router(
+        usage_router,
+        prefix="/api/v1",
+        tags=["usage"],
     )
 
     # Templates router (قوالبي — per-user markdown templates)

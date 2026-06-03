@@ -10,10 +10,11 @@ Currently:
   ``summarize_artifact_on_insert`` trigger after a row is inserted into
   ``workspace_items``. Delegates to
   :func:`agents.memory.summarize.summarize_workspace_item`, which fetches the
-  row, runs the artifact_summarizer agent, writes the result back to
-  ``workspace_items.summary`` + ``metadata.artifact_summary``, and records a
-  tier_2 ``agent_runs`` row. The summarize-and-persist logic lives in that
-  module so the same code path can be invoked inline (non-webhook callers).
+  row, runs the artifact_summarizer agent, and writes the result back to
+  ``workspace_items.summary`` + ``metadata.artifact_summary``. Cost is captured
+  per-call into the ``llm_calls`` ledger via the tracking hook. The
+  summarize-and-persist logic lives in that module so the same code path can be
+  invoked inline (non-webhook callers).
 """
 from __future__ import annotations
 

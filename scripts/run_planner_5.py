@@ -99,10 +99,16 @@ async def _run_one(query_id: int, query_text: str, http_client: httpx.AsyncClien
         "chat_summary": (getattr(resp, "chat_summary_md", "") or "")[:280],
         "suggestion": (getattr(resp, "suggestion_md", "") or "")[:180],
         "events": [e.get("event") for e in getattr(deps, "_events", []) or []],
-        "fallback_reasons": [
-            e.get("reason")
+        # 2026-06: ``fallback_triggered`` was replaced by ``correction_triggered``
+        # when the aggregator switched from prompt+model swap to self-correction
+        # with message_history. Each entry holds the failing gates + notes.
+        "correction_events": [
+            {
+                "failing_gates": e.get("failing_gates"),
+                "notes": e.get("notes"),
+            }
             for e in getattr(deps, "_events", []) or []
-            if e.get("event") == "fallback_triggered"
+            if e.get("event") == "correction_triggered"
         ],
         "error": err,
     }
@@ -129,10 +135,10 @@ async def main() -> None:
               f"key_findings={r['key_findings']}  gaps={r['gaps']}  "
               f"suggested_action={r['suggested_action']}")
         print(f"  events={r['events']}")
-        if r["fallback_reasons"]:
-            print(f"  >> AGGREGATOR fallback_triggered — validation notes:")
-            for reason in r["fallback_reasons"]:
-                print(f"     {reason}")
+        if r["correction_events"]:
+            print(f"  >> AGGREGATOR correction_triggered — failing gates + notes:")
+            for ev in r["correction_events"]:
+                print(f"     gates={ev['failing_gates']}  notes={ev['notes']}")
         if r["error"]:
             print(f"  ERROR: {r['error']}")
         print(f"  chat_summary: {r['chat_summary']}")

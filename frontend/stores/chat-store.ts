@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PendingFile } from "@/types";
+import type { PendingFile, SSEQuotaExceeded } from "@/types";
 
 const DEFAULT_SPLIT_RATIO = 50;
 const SPLIT_RATIO_KEY = "luna.workspace.splitRatio";
@@ -77,6 +77,13 @@ interface ChatState {
   reconnectAttempts: number;
   maxReconnectAttempts: number;
   isReconnecting: boolean;
+  /**
+   * Set when the backend rejects a send via the per-user quota gate (SSE
+   * ``quota_exceeded`` event). The chat layout renders ``QuotaBanner`` while
+   * this is non-null. Cleared by the banner's dismiss button OR by the next
+   * successful send (``startStreaming`` clears it).
+   */
+  quotaInfo: SSEQuotaExceeded | null;
 
   startStreaming: (messageId: string, conversationId: string) => void;
   appendToken: (text: string) => void;
@@ -137,6 +144,7 @@ interface ChatState {
   finishAgentRun: () => void;
   startReconnect: () => void;
   resetReconnect: () => void;
+  setQuotaInfo: (info: SSEQuotaExceeded | null) => void;
   reset: () => void;
 }
 
@@ -172,6 +180,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   reconnectAttempts: 0,
   maxReconnectAttempts: 5,
   isReconnecting: false,
+  quotaInfo: null,
 
   startStreaming: (messageId, conversationId) =>
     set({
@@ -180,6 +189,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingConversationId: conversationId,
       streamingContent: "",
       error: null,
+      // A new stream means the gate let this send through — drop any stale
+      // banner from a previous rejection.
+      quotaInfo: null,
     }),
 
   appendToken: (text) =>
@@ -411,6 +423,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   resetReconnect: () =>
     set({ reconnectAttempts: 0, isReconnecting: false }),
 
+  setQuotaInfo: (info) => set({ quotaInfo: info }),
+
   reset: () =>
     // splitRatio is intentionally preserved — it is a global layout preference.
     set({
@@ -430,5 +444,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       reconnectAttempts: 0,
       maxReconnectAttempts: 5,
       isReconnecting: false,
+      quotaInfo: null,
     }),
 }));

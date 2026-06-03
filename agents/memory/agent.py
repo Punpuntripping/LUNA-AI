@@ -13,8 +13,6 @@ from typing import Any
 
 from supabase import Client as SupabaseClient
 
-from agents.runs import AgentRunRecord, record_agent_run
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -256,8 +254,8 @@ async def compact_conversation(
     8. Insert a ``convo_context`` workspace_item with the summary.
     9. Update ``conversations.compacted_through_message_id`` to the last
        summarized message's id.
-    10. Record an agent_runs row via ``record_agent_run``.
-    11. Return the new ``convo_context`` item_id.
+    10. Return the new ``convo_context`` item_id. (No cost row: compaction is
+        still a mock summary — Wave 10 will route it through run_tracked.)
 
     Returns None if compaction was not triggered.
     Fixed-window: one compaction per threshold breach (does not loop).
@@ -394,27 +392,11 @@ async def compact_conversation(
         new_item_id,
     )
 
-    # ------------------------------------------------------------------
-    # 10. Record agent_runs row (fire-and-forget; never raises)
-    # ------------------------------------------------------------------
-    record_agent_run(
-        supabase,
-        AgentRunRecord(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            agent_family="memory",
-            subtype="compact",
-            output_item_id=new_item_id,
-            input_summary=(
-                f"Compacted {len(batch)}/{len(messages)} messages "
-                f"({total_tokens} tokens total)"
-            ),
-            tokens_in=total_tokens,
-            status="ok",
-        ),
-    )
+    # Compaction currently produces a mock summary (Wave 10 pending) — no real
+    # LLM call, so no llm_calls ledger row. When it becomes a real model call it
+    # will route through run_tracked and be captured automatically.
 
     # ------------------------------------------------------------------
-    # 11. Return new item id
+    # 10. Return new item id
     # ------------------------------------------------------------------
     return new_item_id

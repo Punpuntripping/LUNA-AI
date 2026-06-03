@@ -299,6 +299,41 @@ export interface SSEDuplicate {
   detail: string;
 }
 
+/**
+ * Emitted INSTEAD of message_start when the per-user quota gate rejects the
+ * send (shared/quota gate fires before OCR + router). The user message is
+ * already persisted; no assistant placeholder is created and the stream ends
+ * immediately. ``meter`` is which counter tripped, ``period`` is daily or
+ * weekly, ``resets_at`` is ISO-8601 UTC. ``message_ar`` is a pre-rendered
+ * Arabic string the banner can show verbatim.
+ */
+export interface SSEQuotaExceeded {
+  meter: "ocr" | "ord" | "web";
+  period: "daily" | "weekly" | "monthly";
+  used: number;
+  limit: number;
+  resets_at: string;
+  message_ar: string;
+}
+
+/** One progress bar in the Settings → حدود الاستخدام dialog. */
+export interface UsageBar {
+  used: number;
+  limit: number;
+  pct: number;
+  resets_at: string;
+}
+
+/**
+ * GET /api/v1/usage payload. ord is gated on daily + rolling-7-day weekly;
+ * ocr and web are gated on a rolling-30-day monthly window only.
+ */
+export interface UsageReport {
+  ord: { daily: UsageBar; weekly: UsageBar };
+  ocr: { monthly: UsageBar };
+  web: { monthly: UsageBar };
+}
+
 export interface SSEDone {
   message_id: string;
   usage: {

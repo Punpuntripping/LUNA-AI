@@ -144,8 +144,8 @@ def accumulate_usage(
         "output_tokens": ru.output_tokens,
         "total_tokens": ru.total_tokens,
         # Prompt-cache-read subset of input_tokens (pydantic_ai 1.39 first-class
-        # field). usage_by_tier folds this into per_tier["cached"] → cost_usd
-        # bills it at the discounted cached-input rate.
+        # field). usage_by_model folds this into per_model[...]["cached"] →
+        # cost_usd bills it at the model's cached-input rate.
         "cached_tokens": int(getattr(ru, "cache_read_tokens", 0) or 0),
         "details": dict(ru.details) if ru.details else {},
     }

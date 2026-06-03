@@ -194,7 +194,17 @@ class AggregatorOutput(BaseModel):
 class ValidationReport(BaseModel):
     """Post-validator findings — attached to AggregatorOutput for debugging/A-B."""
 
-    passed: bool
+    passed: bool = Field(
+        description=(
+            "True iff the two HARD gates pass: ``citation_ok`` (no dangling "
+            "[N] citations) AND ``gap_honesty_ok`` (insufficient sub-queries "
+            "are surfaced in gaps[]). ``arabic_only_ok`` and ``structure_ok`` "
+            "are surfaced individually below but do NOT block this flag — "
+            "they are observational signals only. Narrowed from a 4-gate to "
+            "a 2-gate definition in 2026-06; older logs may carry the wider "
+            "interpretation."
+        ),
+    )
     cited_numbers: list[int] = Field(default_factory=list)
     dangling_citations: list[int] = Field(
         default_factory=list,

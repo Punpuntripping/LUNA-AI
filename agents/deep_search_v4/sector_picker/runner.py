@@ -29,7 +29,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from agents.utils.agent_models import ModelPolicy, cost_usd
+from agents.utils.agent_models import AGENT_MODELS, ModelPolicy, cost_usd, resolve_chain
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
@@ -147,14 +147,27 @@ async def run_sector_picker(
             reasoning = int(details.get("reasoning_tokens", 0) or 0)
             cached = int(getattr(usage, "cache_read_tokens", 0) or 0)
             span.set(reasoning_tokens=reasoning, cached_tokens=cached)
+            _picker_model = resolve_chain(AGENT_MODELS["sector_picker"])[0]
             cost = cost_usd(
-                tier="tier_2",
+                model_name=_picker_model,
                 input_tokens=int(usage.input_tokens or 0),
                 output_tokens=int(usage.output_tokens or 0),
                 reasoning_tokens=reasoning,
                 cached_tokens=cached,
             )
             span.set(cost_usd=round(cost, 6))
+            # Per-call cost ledger. Runs inside the dispatch's capture scope
+            # (this task inherits the bound run_id + buffer at creation time).
+            from agents.utils.usage_sink import record_call
+            record_call(
+                agent="deep_search.sector_picker",
+                model=_picker_model,
+                agent_family="deep_search",
+                tokens_in=int(usage.input_tokens or 0),
+                tokens_out=int(usage.output_tokens or 0),
+                tokens_reasoning=reasoning,
+                tokens_cached=cached,
+            )
         except Exception:
             pass
 

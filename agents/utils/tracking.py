@@ -349,20 +349,35 @@ def _usage_attrs(result: Any, *, slot: str | None) -> dict[str, Any]:
     req = getattr(usage, "requests", None)
     if req is not None:
         out["requests"] = int(req)
-    out["cost_usd"] = _cost(slot, ti, to, reasoning, cached)
     model = _model_from_result(result)
+    out["cost_usd"] = _cost(slot, model, ti, to, reasoning, cached)
     if model:
         out["model_used"] = model
     return out
 
 
-def _cost(slot: str | None, ti: int, to: int, reasoning: int, cached: int) -> float:
-    """Tier-accurate cost. Resolves the slot's tier from the registry; falls back
-    to tier_1 when the slot is unknown."""
+def _cost(
+    slot: str | None,
+    model_used: str | None,
+    ti: int,
+    to: int,
+    reasoning: int,
+    cached: int,
+) -> float:
+    """Per-model cost. Bills at the actually-fired ``model_used`` when it is a
+    known pricing key (FallbackModel can swap off the slot's primary on a
+    4xx/5xx — ``or-`` prefixes normalise to the same canonical row). When the
+    fired name is absent or unknown to the registry — provider echo names like
+    ``qwen-plus`` / ``qwen/qwen-...`` don't match our canonical keys
+    (``qwen3.6-plus``) — fall back to the slot's declared primary, the reliable
+    bridge. Without this fallback the echo-name mismatch silently bills $0."""
     try:
-        from agents.utils.agent_models import AGENT_MODELS, cost_usd
-        tier = AGENT_MODELS[slot].tier if (slot and slot in AGENT_MODELS) else "tier_1"
-        return round(cost_usd(tier, ti, to, reasoning, cached), 6)
+        from agents.utils.agent_models import AGENT_MODELS, cost_usd, resolve_chain
+        from shared import pricing
+        model = model_used
+        if (not model or pricing.get_price(model) is None) and slot and slot in AGENT_MODELS:
+            model = resolve_chain(AGENT_MODELS[slot])[0]
+        return round(cost_usd(model, ti, to, reasoning, cached), 6)
     except Exception:
         return 0.0
 
@@ -382,6 +397,47 @@ def _model_from_result(result: Any) -> str | None:
     return model
 
 
+def _feed_sink(
+    stage: str,
+    usage: dict[str, Any] | None,
+    *,
+    agent_family: str | None,
+    subtype: str | None,
+    duration_ms: int | None = None,
+    outcome: str = "ok",
+) -> None:
+    """Emit one ``llm_calls`` ledger row from a computed usage dict.
+
+    Single integration point between the Logfire-span layer and the per-call
+    cost ledger (``agents/utils/usage_sink``). No-op outside a capture scope and
+    for no-op calls (no tokens, no cost). Never raises — telemetry is
+    best-effort and must not perturb the run.
+    """
+    if not usage:
+        return
+    if not usage.get("tokens_in") and not usage.get("tokens_out") and not usage.get("cost_usd"):
+        return
+    try:
+        from agents.utils.usage_sink import record_call
+
+        record_call(
+            agent=stage,
+            model=usage.get("model_used"),
+            agent_family=agent_family,
+            subtype=subtype,
+            tokens_in=usage.get("tokens_in", 0) or 0,
+            tokens_out=usage.get("tokens_out", 0) or 0,
+            tokens_reasoning=usage.get("tokens_reasoning", 0) or 0,
+            tokens_cached=usage.get("cache_hit_tokens", 0) or 0,
+            cost_usd=usage.get("cost_usd"),
+            requests=usage.get("requests", 1) or 1,
+            duration_ms=duration_ms,
+            outcome=outcome,
+        )
+    except Exception:
+        logger.debug("usage sink feed failed for %s", stage, exc_info=True)
+
+
 def _classify_outcome(output: Any) -> str:
     try:
         from pydantic_ai import DeferredToolRequests
@@ -398,9 +454,18 @@ def _classify_outcome(output: Any) -> str:
 class AgentSpan:
     """Handle over the active Logfire span. Caller stamps extra attrs + output."""
 
-    def __init__(self, span: Any, stage: str) -> None:
+    def __init__(
+        self,
+        span: Any,
+        stage: str,
+        *,
+        agent_family: str | None = None,
+        subtype: str | None = None,
+    ) -> None:
         self._span = span
         self.stage = stage
+        self._agent_family = agent_family
+        self._subtype = subtype
         self._outcome: str | None = None
         self._finalized = False
 
@@ -425,10 +490,17 @@ class AgentSpan:
         output dump + schema ref + outcome. For callers that own the span (the
         ``track_stage`` form) so they can also stamp their own ``set(...)`` attrs
         before/after, or swallow errors with their own fallback."""
+        usage = _usage_attrs(result, slot=slot)
         try:
-            self._span.set_attributes(_usage_attrs(result, slot=slot))
+            self._span.set_attributes(usage)
         except Exception:
             pass
+        _feed_sink(
+            self.stage,
+            usage,
+            agent_family=self._agent_family,
+            subtype=self._subtype,
+        )
         self.record_output(getattr(result, "output", None))
 
     def set_outcome(self, outcome: str) -> None:
@@ -491,7 +563,7 @@ async def run_tracked(
     identity = _identity_from_deps(deps, stage=stage, agent_family=agent_family, subtype=subtype)
     t0 = time.perf_counter()
     with _logfire.span(stage, **identity) as span:
-        handle = AgentSpan(span, stage)
+        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype)
         try:
             span.set_attributes(_bounded_snapshot(deps))
         except Exception:
@@ -506,12 +578,22 @@ async def run_tracked(
             handle._finalize(t0, "error", e)
             raise
         output = getattr(result, "output", None)
+        usage = _usage_attrs(result, slot=slot)
         try:
-            span.set_attributes(_usage_attrs(result, slot=slot))
+            span.set_attributes(usage)
             span.set_attributes(_output_attrs(stage, output))
         except Exception:
             logger.debug("run_tracked: post-run attr capture failed for %s", stage, exc_info=True)
-        handle._finalize(t0, _classify_outcome(output))
+        outcome = _classify_outcome(output)
+        _feed_sink(
+            stage,
+            usage,
+            agent_family=agent_family,
+            subtype=subtype,
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            outcome=outcome,
+        )
+        handle._finalize(t0, outcome)
         return result
 
 
@@ -544,7 +626,7 @@ def track_stage(
     )
     t0 = time.perf_counter()
     with _logfire.span(stage, **identity) as span:
-        handle = AgentSpan(span, stage)
+        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype)
         if extra:
             handle.set(**extra)
         if input_obj is not None:

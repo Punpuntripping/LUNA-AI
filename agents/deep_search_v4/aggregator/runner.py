@@ -3,15 +3,22 @@
 handle_aggregator_turn pipeline:
 
     preprocess → LLM (primary) → postvalidate
-              ↓ on failure
-              LLM (fallback) → postvalidate
+              ↓ on hard-gate failure (citation_ok / gap_honesty_ok)
+              LLM (self-correction with message_history) → postvalidate
               ↓
            strip <thinking> → build artifact → log → return
 
+Self-correction (2026-06) — when the primary output fails one of the two hard
+post-validator gates, the runner re-invokes the SAME agent (same prompt mode,
+same model) with the prior message history threaded through, plus a targeted
+Arabic instruction listing only the gate-specific violations. The model patches
+its own previous output surgically instead of regenerating on a different
+prompt/model. Capped at one corrective turn; if the corrected output still
+fails, ships primary with ``validation.passed=False`` for observability.
+
 For prompt_3 (Draft-Critique-Rewrite), the primary path runs three LLM calls
-sequentially on the primary model. If ANY stage fails (validation or exception),
-the whole chain falls back to single-shot synthesis on the fallback model —
-mid-chain switching produces inconsistent output.
+sequentially on the primary model. Self-correction is SKIPPED for DCR (the
+DCR chain has its own exception fallback at ``_run_primary_path``).
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from typing import Any
 
 from .agent import create_aggregator_agent, create_dcr_agents
 from .artifact_builder import build_artifact, render_reference_block
+from .correction import build_correction_prompt, failing_gate_names
 from .deps import AggregatorDeps
 from .models import (
     AggregatorInput,
@@ -42,6 +50,69 @@ from .preprocessor import (
 from .prompts import build_aggregator_user_message, get_aggregator_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _accrue_agg_usage(deps: Any, result: Any) -> None:
+    """Append one aggregator LLM call's usage to ``deps._usage_entries``.
+    Best-effort; the aggregator's many call paths each call this so the final
+    ledger row sums them all.
+
+    Captures the ACTUALLY-FIRED model from the result (last ModelResponse's
+    model_name) — NOT ``deps.primary_model``, which is a vestigial provenance
+    label ("qwen3.6-plus") that does not select the model. The real model is the
+    ``aggregator`` tier FallbackModel (``AGENT_MODELS['aggregator']`` →
+    deepseek-v4-flash, or its fallback). usage_by_model prices off this.
+    """
+    try:
+        u = result.usage()
+        model = None
+        try:
+            for m in (result.all_messages() or []):
+                mn = getattr(m, "model_name", None)
+                if mn:
+                    model = mn
+        except Exception:
+            pass
+        deps._usage_entries.append({
+            "agent": "aggregator",
+            "model": model,  # actual fired model; None → usage_by_model uses the slot default
+            "input_tokens": int(getattr(u, "input_tokens", 0) or 0),
+            "output_tokens": int(getattr(u, "output_tokens", 0) or 0),
+            "cached_tokens": int(getattr(u, "cache_read_tokens", 0) or 0),
+            "details": {"reasoning_tokens": int((getattr(u, "details", None) or {}).get("reasoning_tokens", 0) or 0)},
+        })
+    except Exception:
+        pass
+
+
+def _emit_aggregator_ledger(deps: Any, model_used: str | None = None) -> None:
+    """Emit ``deep_search.aggregator`` ledger rows summing every LLM call this
+    turn made (single-shot / correction / DCR draft+critique+rewrite), priced per
+    ACTUAL fired model via usage_by_model. ``model_used`` (the vestigial
+    provenance label) is intentionally ignored. Runs inside the dispatch capture
+    scope; no-op outside it. Never raises."""
+    try:
+        from agents.utils.usage_sink import record_call
+        from agents.utils.agent_models import usage_by_model
+        ents = deps._usage_entries or []
+        if not ents:
+            return
+        for model, toks in usage_by_model(ents).items():
+            ti = int(toks.get("input", 0) or 0)
+            to = int(toks.get("output", 0) or 0)
+            if not ti and not to:
+                continue
+            record_call(
+                agent="deep_search.aggregator",
+                model=model,
+                agent_family="deep_search",
+                tokens_in=ti,
+                tokens_out=to,
+                tokens_reasoning=int(toks.get("reasoning", 0) or 0),
+                tokens_cached=int(toks.get("cached", 0) or 0),
+            )
+    except Exception:
+        logger.debug("aggregator ledger emit failed", exc_info=True)
 
 
 async def handle_aggregator_turn(
@@ -91,51 +162,89 @@ async def handle_aggregator_turn(
 
     user_message = build_aggregator_user_message(agg_input, references)
 
-    # 2. Primary path — per-prompt routing.
-    llm_output, model_used, raw_logs = await _run_primary_path(
+    # 2. Primary path — per-prompt routing. ``primary_result`` is the
+    # AgentRunResult from the single-shot path (carries message_history for
+    # self-correction); None for DCR / DCR-exception-fallback paths.
+    llm_output, model_used, raw_logs, primary_result = await _run_primary_path(
         agg_input, deps, user_message, references
     )
 
-    # 3. Validate. If primary failed, try fallback.
+    # 3. Validate primary output.
     primary_final_refs = _compute_final_references(llm_output, references)
     validation = _validate(llm_output, references, agg_input, ref_to_sub_queries,
                            agg_input.prompt_key,
                            final_references=primary_final_refs)
 
-    if not validation.passed and model_used == deps.primary_model:
-        logger.info(
-            "aggregator: primary validation failed (%s) — falling back to %s",
-            "; ".join(validation.notes) or "unspecified",
-            deps.fallback_model,
+    # 4. Self-correct on hard-gate failure (one bounded turn).
+    #
+    # Hard gates after 2026-06: ``citation_ok`` (no dangling [N]) AND
+    # ``gap_honesty_ok`` (insufficient sub-queries surfaced in gaps[]).
+    # ``arabic_only_ok`` and ``structure_ok`` ride along in
+    # ``validation.notes`` but never trigger correction.
+    #
+    # Correction uses the SAME prompt mode + SAME model + the prior
+    # message history so the model patches its own output surgically.
+    # If the corrected output still fails, we ship it with
+    # ``validation.passed=False`` for observability (no infinite loop).
+    if not validation.passed and primary_result is not None:
+        correction_msg = build_correction_prompt(
+            validation, agg_input, llm_output, references,
         )
-        _emit(deps, {"event": "fallback_triggered", "reason": validation.notes})
-        # Preserve primary raw output under a distinct key so we can diff primary
-        # vs fallback after the fact. Without this, the fallback's raw_logs
-        # dict replaces the primary's and we lose all debugging evidence.
-        primary_logs = {f"primary_{k}": v for k, v in raw_logs.items()}
-        primary_validation_notes = list(validation.notes)
-        llm_output, model_used, fallback_raw = await _run_single_shot(
-            agg_input, deps, user_message, stage_key="fallback_single",
-            model_name=deps.fallback_model,
-            prompt_key="prompt_1",  # Fallback always uses CRAC
-        )
-        raw_logs = {**primary_logs, **fallback_raw}
-        if primary_validation_notes:
-            raw_logs["primary_validation_notes"] = "\n".join(primary_validation_notes)
-        fallback_final_refs = _compute_final_references(llm_output, references)
-        validation = _validate(
-            llm_output, references, agg_input, ref_to_sub_queries, "prompt_1",
-            final_references=fallback_final_refs,
-        )
+        if correction_msg is not None:
+            _emit(deps, {
+                "event": "correction_triggered",
+                "failing_gates": failing_gate_names(validation),
+                "notes": validation.notes,
+            })
+            try:
+                corrected_output, corrected_raw = await _run_correction(
+                    deps,
+                    model_name=model_used,
+                    prompt_key=agg_input.prompt_key,
+                    prior_messages=primary_result.new_messages(),
+                    correction_msg=correction_msg,
+                )
+                # Preserve primary raw output under a distinct prefix so the
+                # log diff between primary and corrected output is auditable.
+                primary_logs = {f"primary_{k}": v for k, v in raw_logs.items()}
+                raw_logs = {
+                    **primary_logs,
+                    "correction": corrected_raw,
+                    "correction_notes": "\n".join(validation.notes),
+                }
+                llm_output = corrected_output
+                corrected_final_refs = _compute_final_references(
+                    llm_output, references,
+                )
+                validation = _validate(
+                    llm_output, references, agg_input, ref_to_sub_queries,
+                    agg_input.prompt_key,  # KEEP planner-chosen mode
+                    final_references=corrected_final_refs,
+                )
+                _emit(deps, {
+                    "event": "correction_done",
+                    "passed": validation.passed,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "aggregator: self-correction failed (%s) — shipping primary",
+                    exc,
+                )
+                _emit(deps, {
+                    "event": "correction_failed",
+                    "error": str(exc),
+                })
+                # validation stays the failing report; raw_logs unchanged.
 
-    # 4. Strip thinking, assemble output, build artifact.
+    # 5. Strip thinking, assemble output, build artifact.
     clean_synthesis = strip_thinking_block(llm_output.synthesis_md).strip()
     thinking_block = _extract_thinking(llm_output.synthesis_md)
 
-    final_prompt_key = (
-        "prompt_1" if (not validation.passed or model_used == deps.fallback_model)
-        else agg_input.prompt_key
-    )
+    # ``final_prompt_key`` always reflects the planner's chosen mode now.
+    # Pre-2026-06 this collapsed to ``prompt_1`` on validation failure
+    # because the fallback always ran on CRAC; self-correction preserves
+    # the original mode so the metadata stays accurate.
+    final_prompt_key = agg_input.prompt_key
 
     # H1 — filter references[] to those the LLM actually cited.
     # Aggregator picks (used_refs); runner enforces. Take the union of
@@ -207,6 +316,9 @@ async def handle_aggregator_turn(
         "cited": len(validation.cited_numbers),
     })
 
+    # One deep_search.aggregator ledger row summing every LLM call above.
+    _emit_aggregator_ledger(deps, model_used)
+
     return output
 
 
@@ -220,8 +332,17 @@ async def _run_primary_path(
     deps: AggregatorDeps,
     user_message: str,
     references: list[Reference],
-) -> tuple[AggregatorLLMOutput, str, dict[str, str]]:
-    """Dispatch to single-shot or DCR based on prompt_key / enable_dcr."""
+) -> tuple[AggregatorLLMOutput, str, dict[str, str], Any]:
+    """Dispatch to single-shot or DCR based on prompt_key / enable_dcr.
+
+    Returns ``(llm_output, model_used, raw_logs, primary_result)``.
+
+    ``primary_result`` is the Pydantic AI ``AgentRunResult`` from the
+    single-shot run when self-correction is allowed; ``None`` for DCR paths
+    (DCR has its own internal exception fallback and self-correction is
+    skipped for it), for DCR's exception-fallback path (same reason), and
+    on LLM exceptions in the single-shot path (no usable history to thread).
+    """
     use_dcr = (
         agg_input.enable_dcr
         or agg_input.prompt_key.startswith("prompt_3")
@@ -229,18 +350,25 @@ async def _run_primary_path(
 
     if use_dcr:
         try:
-            return await _run_dcr_chain(agg_input, deps, user_message, references)
+            output, model, raw = await _run_dcr_chain(
+                agg_input, deps, user_message, references,
+            )
+            return output, model, raw, None  # DCR skips self-correction
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "aggregator: DCR chain failed (%s) — falling back to single-shot %s",
                 exc, deps.fallback_model,
             )
-            return await _run_single_shot(
+            output, model, raw, _ = await _run_single_shot(
                 agg_input, deps, user_message,
                 stage_key="dcr_fallback",
                 model_name=deps.fallback_model,
                 prompt_key="prompt_1",
             )
+            # DCR exception-fallback also skips self-correction — already a
+            # mode-collapse path, layering correction on top adds complexity
+            # without clear benefit.
+            return output, model, raw, None
 
     return await _run_single_shot(
         agg_input, deps, user_message,
@@ -257,16 +385,22 @@ async def _run_single_shot(
     stage_key: str,
     model_name: str,
     prompt_key: str,
-) -> tuple[AggregatorLLMOutput, str, dict[str, str]]:
-    """Run one LLM call with the given model + prompt. Always returns a valid
-    AggregatorLLMOutput (on hard failure, a degraded placeholder so the pipeline
-    can still produce *something*)."""
+) -> tuple[AggregatorLLMOutput, str, dict[str, str], Any]:
+    """Run one LLM call with the given model + prompt.
+
+    Returns ``(llm_output, model_name, raw_logs, agent_run_result)``.
+
+    On hard failure (LLM call raises) returns a degraded placeholder and
+    ``agent_run_result=None`` — there's no usable message history to thread
+    into a correction turn.
+    """
     agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
     _log_prompt(deps, prompt_key, user_message, stage_key)
     try:
         result = await agent.run(user_message)
+        _accrue_agg_usage(deps, result)
         raw = _stringify_result(result)
-        return result.output, model_name, {stage_key: raw}
+        return result.output, model_name, {stage_key: raw}, result
     except Exception as exc:  # noqa: BLE001
         logger.error("aggregator: %s LLM call failed: %s", stage_key, exc)
         placeholder = AggregatorLLMOutput(
@@ -277,7 +411,39 @@ async def _run_single_shot(
             gaps=[f"model_failure: {exc.__class__.__name__}"],
             confidence="low",
         )
-        return placeholder, model_name, {stage_key: f"ERROR: {exc!r}"}
+        return placeholder, model_name, {stage_key: f"ERROR: {exc!r}"}, None
+
+
+async def _run_correction(
+    deps: AggregatorDeps,
+    *,
+    model_name: str,
+    prompt_key: str,
+    prior_messages: Any,
+    correction_msg: str,
+) -> tuple[AggregatorLLMOutput, str]:
+    """One bounded corrective turn that threads the primary's message history.
+
+    The agent is recreated with the SAME prompt and SAME model as the primary
+    call so the planner-chosen mode and model billing are preserved. The
+    Pydantic AI ``message_history`` parameter carries the prior user prompt
+    and the model's prior assistant turn (with its ``final_result`` tool
+    call / text output) — the model then sees its own previous output and
+    can patch it surgically.
+
+    The ``correction_msg`` is the per-gate Arabic instruction emitted by
+    :func:`aggregator.correction.build_correction_prompt`.
+
+    Note: ``agent.instructions=`` (not ``system_prompt=``) means the system
+    instructions are injected fresh by the framework each call and are NOT
+    stored in message history — there is no duplication when re-running.
+    """
+    agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
+    _log_prompt(deps, prompt_key, correction_msg, stage="correction")
+    result = await agent.run(correction_msg, message_history=prior_messages)
+    _accrue_agg_usage(deps, result)
+    raw = _stringify_result(result)
+    return result.output, raw
 
 
 async def _run_dcr_chain(
@@ -299,6 +465,7 @@ async def _run_dcr_chain(
     _emit(deps, {"event": "dcr_draft_start"})
     _log_prompt(deps, "prompt_3_draft", user_message, "draft")
     draft_result = await draft_agent.run(user_message)
+    _accrue_agg_usage(deps, draft_result)
     raw_logs["draft"] = _stringify_result(draft_result)
     draft_output = draft_result.output
 
@@ -311,6 +478,7 @@ async def _run_dcr_chain(
     _emit(deps, {"event": "dcr_critique_start"})
     _log_prompt(deps, "prompt_3_critique", critique_msg, "critique")
     critique_result = await critique_agent.run(critique_msg)
+    _accrue_agg_usage(deps, critique_result)
     raw_logs["critique"] = _stringify_result(critique_result)
     critique_output = critique_result.output
 
@@ -324,6 +492,7 @@ async def _run_dcr_chain(
     _emit(deps, {"event": "dcr_rewrite_start"})
     _log_prompt(deps, "prompt_3_rewrite", rewrite_msg, "rewrite")
     rewrite_result = await rewrite_agent.run(rewrite_msg)
+    _accrue_agg_usage(deps, rewrite_result)
     raw_logs["rewrite"] = _stringify_result(rewrite_result)
 
     return rewrite_result.output, deps.primary_model, raw_logs

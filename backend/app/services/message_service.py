@@ -19,6 +19,7 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from agents.orchestrator import handle_message
+from shared import quota
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -298,6 +299,36 @@ async def send_message_stream(
             supabase.table("message_attachments").insert(rows).execute()
         except Exception as e:
             logger.warning("Error linking attachments: %s", e)
+
+    # 1c. Quota gate — fires once per message, before OCR + router. Three
+    # independent meters (ocr / ord / web): if any (meter, period) is over
+    # limit, emit a quota_exceeded SSE event and end the stream without
+    # spawning the pipeline. The user message is already saved (kept in
+    # history); no assistant placeholder is created.
+    try:
+        await quota.check(
+            getattr(request.app.state, "redis", None),
+            supabase,
+            user_id,
+            # 1 page minimum per attachment — coarse upfront projection. The
+            # real page count lands on settle after OCR runs; the next
+            # message's gate sees the true cumulative use.
+            needs_ocr=bool(attachment_ids),
+            est_ocr_pages=len(attachment_ids or []),
+            needs_ord=True,
+            needs_web=False,  # future skill
+        )
+    except quota.QuotaExceeded as qe:
+        _logfire.info(
+            "message.quota_exceeded",
+            conversation_id=conversation_id,
+            meter=qe.meter,
+            period=qe.period,
+            used=float(qe.used),
+            limit=float(qe.limit),
+        )
+        yield _sse_event("quota_exceeded", qe.to_event_payload())
+        return
 
     # 2. Create assistant message placeholder
     assistant_msg_id = str(uuid.uuid4())

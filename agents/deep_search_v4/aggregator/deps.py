@@ -50,6 +50,9 @@ class AggregatorDeps:
     supabase: Any | None = None       # Sync supabase-py client; powers source_view lookup
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
+    # Usage accrued across this turn's LLM calls (single-shot / correction / DCR
+    # draft+critique+rewrite). Summed into ONE deep_search.aggregator ledger row.
+    _usage_entries: list[dict] = field(default_factory=list)
 
 
 def build_aggregator_deps(

@@ -80,7 +80,7 @@ from agents.deep_search_v4.ura.reg_adapter import reg_to_rqr
 from agents.deep_search_v4.ura.schema import UnifiedRetrievalArtifact
 from agents.deep_search_v4.planner import PlannerDeps, RetrievalConfig
 from agents.deep_search_v4.sector_picker import run_sector_picker
-from agents.utils.agent_models import usage_by_tier
+from agents.utils.agent_models import usage_by_model
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
@@ -208,6 +208,49 @@ class FullLoopDeps:
 
 
 # ---------------------------------------------------------------------------
+# Per-call cost ledger (llm_calls) — per-stage emission
+# ---------------------------------------------------------------------------
+
+# inner_usage `agent` role → ledger stage label. Rerankers collapse to one
+# "reranker" row per executor (all rounds summed); anything unmapped keeps its
+# own role so cost is never silently dropped.
+_STAGE_LABELS = {"expander": "expansion", "reranker": "reranker"}
+
+
+def _emit_executor_ledger(executor_short: str, inner_usage: list[dict]) -> None:
+    """Emit per-stage ``llm_calls`` rows for one executor.
+
+    Splits ``inner_usage`` by sub-agent role → ``deep_search.expansion.{exec}``
+    and ``deep_search.reranker.{exec}`` (reranker rounds summed), each priced per
+    model. Runs inside the dispatch's capture scope; a no-op outside it. Never
+    raises — telemetry must not perturb retrieval.
+    """
+    try:
+        from agents.utils.usage_sink import record_call
+        buckets: dict[str, list[dict]] = {}
+        for u in inner_usage or []:
+            role = str(u.get("agent") or "")
+            stage = _STAGE_LABELS.get(role, role or "unknown")
+            buckets.setdefault(stage, []).append(u)
+        for stage, entries in buckets.items():
+            for model, toks in usage_by_model(entries).items():
+                ti, to = int(toks.get("input", 0) or 0), int(toks.get("output", 0) or 0)
+                if not ti and not to:
+                    continue
+                record_call(
+                    agent=f"deep_search.{stage}.{executor_short}",
+                    model=model,
+                    agent_family="deep_search",
+                    tokens_in=ti,
+                    tokens_out=to,
+                    tokens_reasoning=int(toks.get("reasoning", 0) or 0),
+                    tokens_cached=int(toks.get("cached", 0) or 0),
+                )
+    except Exception:
+        logger.debug("executor ledger emit failed for %s", executor_short, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Phase wrappers
 # ---------------------------------------------------------------------------
 
@@ -323,10 +366,10 @@ async def _run_reg_phase(
             "total_tokens_out": total_out,
             # Prompt-cache-read subset of total_tokens_in (per-query visibility).
             "total_tokens_cached": total_cached,
-            # Per-tier token split (expander=tier_1, reranker=tier_2) — drives the
-            # cost estimate in agent_runs.cost_usd. See utils/agent_models.py.
-            "per_tier": usage_by_tier(state.inner_usage),
+            # Per-model token split — kept for the monitor / per_phase_stats.
+            "per_model": usage_by_model(state.inner_usage),
         }
+        _emit_executor_ledger("reg", state.inner_usage)
 
         placeholder = RegSearchResult(
             quality="pending",
@@ -497,8 +540,9 @@ async def _run_compliance_phase(
         "total_tokens_in": sum(int(u.get("input_tokens", 0) or 0) for u in state.inner_usage),
         "total_tokens_out": sum(int(u.get("output_tokens", 0) or 0) for u in state.inner_usage),
         "total_tokens_cached": sum(int(u.get("cached_tokens", 0) or 0) for u in state.inner_usage),
-        "per_tier": usage_by_tier(state.inner_usage),
+        "per_model": usage_by_model(state.inner_usage),
     }
+    _emit_executor_ledger("compliance", state.inner_usage)
 
     # Best-effort run overview write so the compliance log directory is as
     # complete as reg_search's. Failures here must never fail the phase --
@@ -647,8 +691,9 @@ async def _run_case_phase(
         "total_tokens_in": total_in,
         "total_tokens_out": total_out,
         "total_tokens_cached": total_cached,
-        "per_tier": usage_by_tier(result.inner_usage),
+        "per_model": usage_by_model(result.inner_usage),
     }
+    _emit_executor_ledger("case", result.inner_usage)
     try:
         from agents.deep_search_v4.case_search.logger import LOGS_DIR as _CASE_LOGS
         if case_deps._log_id:

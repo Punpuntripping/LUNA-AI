@@ -102,6 +102,37 @@ def _default_decision(reason: str) -> PlannerDecision:
     )
 
 
+def _emit_planner_ledger(*results: Any) -> None:
+    """Emit ONE ``deep_search.planner`` cost-ledger row summing the given
+    decider/responder ``AgentRunResult``s. Runs inside the dispatch capture
+    scope; no-op outside it. Both planner sub-agents share a tier/model, so a
+    single combined row priced at the planner model is accurate. Never raises."""
+    try:
+        from agents.utils.usage_sink import record_call
+        from agents.utils.agent_models import AGENT_MODELS, resolve_chain
+        ti = to = re_ = ca = 0
+        for r in results:
+            if r is None:
+                continue
+            try:
+                u = r.usage()
+            except Exception:
+                continue
+            ti += int(getattr(u, "input_tokens", 0) or 0)
+            to += int(getattr(u, "output_tokens", 0) or 0)
+            re_ += int((getattr(u, "details", None) or {}).get("reasoning_tokens", 0) or 0)
+            ca += int(getattr(u, "cache_read_tokens", 0) or 0)
+        if not ti and not to:
+            return
+        model = resolve_chain(AGENT_MODELS["planner_decider"])[0]
+        record_call(
+            agent="deep_search.planner", model=model, agent_family="deep_search",
+            tokens_in=ti, tokens_out=to, tokens_reasoning=re_, tokens_cached=ca,
+        )
+    except Exception:
+        logger.debug("planner ledger emit failed", exc_info=True)
+
+
 _DEGRADED_SYNTHESIS_DIGEST_CHARS = 500
 
 
@@ -246,6 +277,7 @@ async def _run_planner_turn(
         Never raises.
     """
     query = describe_query or ""
+    _decider_result: Any = None  # captured in phase 1 for the planner ledger row
 
     # ── PHASE 1 — decide ───────────────────────────────────────────────────
     if decision is None:
@@ -275,11 +307,16 @@ async def _run_planner_turn(
                 # Normal pause — NOT a failure. Hand back to the orchestrator.
                 emit(deps, {"event": EVENT_PAUSED})
                 logger.info("planner: phase-1 paused via ask_user")
+                # Bill the decider call that asked the question. (The orchestrator
+                # also emits on the pause path for the resume-decider case; this
+                # covers the fresh phase-1 pause. Same label → sums in SQL.)
+                _emit_planner_ledger(result)
                 return PlannerTurnResult(
                     kind="paused", planner_result=result, deferred=output,
                 )
             # PlannerDecision in hand.
             decision = output
+            _decider_result = result
             _decided_payload = {
                 "event": EVENT_DECIDED,
                 "mode": decision.mode,
@@ -400,6 +437,10 @@ async def _run_planner_turn(
             usage_limits=PLANNER_RESPONDER_LIMITS,
         )
         response: PlannerResponse = result.output
+        # One combined planner ledger row: decider (this call's fresh phase 1)
+        # + responder. On resume, _decider_result is None (the resume decider
+        # ran in the orchestrator and is billed there) → responder only.
+        _emit_planner_ledger(_decider_result, result)
         emit(deps, {
             "event": EVENT_RESPONDED,
             # Phase E (§3.8): publish-gate fields replace the dropped
@@ -431,6 +472,8 @@ async def _run_planner_turn(
             "planner: phase-3 responder raised (%s); response from artifact",
             exc, exc_info=True,
         )
+        # Responder failed, but the decider ran — still bill it.
+        _emit_planner_ledger(_decider_result)
         emit(deps, {"event": EVENT_ERROR, "phase": "respond", "error": str(exc)})
         response = (
             _response_from_artifact(agg_output)

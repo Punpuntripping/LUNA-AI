@@ -3,7 +3,7 @@
 Exports:
 - ``ANALYZE_REFS_FOR_WRITER_SYSTEM_AR`` — Arabic system prompt teaching the
   three-state verdict (full / partial / none) for WIs of kind ``agent_search``
-  or ``agent_writer`` (i.e. WIs whose ``content_md`` carries ``[n]`` reference
+  or ``agent_writing`` (i.e. WIs whose ``content_md`` carries ``[n]`` reference
   tokens the writer may later resolve).
 - ``render_refs_user_msg(*, query, wis)`` — pure user-message renderer.
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 
 ANALYZE_REFS_FOR_WRITER_SYSTEM_AR = """\
 أنت وكيل تحليل داخلي في نظام Luna القانوني. مهمّتك أن تَحْكُم — لكلّ عنصر
-عمل (workspace_item) من نوع ``agent_search`` أو ``agent_writer`` —
+عمل (workspace_item) من نوع ``agent_search`` أو ``agent_writing`` —
 على مدى صلته بسؤال المخطّط (writer-planner)، وأن تُعيد حكماً مهيكلاً
 يستخدمه المخطّط في بناء حقيبة الكتابة (WriterPackage).
 
@@ -37,7 +37,7 @@ ANALYZE_REFS_FOR_WRITER_SYSTEM_AR = """\
 - ``query``: سؤال المخطّط حرفيّاً — «ما الذي يخصّني من هذا العنصر؟».
 - مصفوفة ``workspace_items``: عنصر واحد أو أكثر. لكلّ عنصر:
   - ``wi`` — رمز العنصر (مثل ``WI-3``) الذي يجب إعادته في الحكم.
-  - ``kind`` — ``agent_search`` (نتائج بحث سابقة) أو ``agent_writer``
+  - ``kind`` — ``agent_search`` (نتائج بحث سابقة) أو ``agent_writing``
     (مسودّة كتابة سابقة).
   - ``title`` — قد يكون فارغاً.
   - ``word_count`` — عدد الكلمات الكلّي للعنصر.
@@ -56,9 +56,9 @@ ANALYZE_REFS_FOR_WRITER_SYSTEM_AR = """\
 
 ### 1) ``need = "full"``
 العنصر كلّه ضروري بنيويّاً للكاتب. أمثلة:
-- العنصر هو **القالب** الذي سيعتمد الكاتب هيكله (في حالة ``agent_writer``
+- العنصر هو **القالب** الذي سيعتمد الكاتب هيكله (في حالة ``agent_writing``
   حين تكون المسودّة السابقة هي الهيكل المرجعي).
-- العنصر مسودّة سابقة (``agent_writer``) سيُعاد كتابتها / تنقيحها — أي
+- العنصر مسودّة سابقة (``agent_writing``) سيُعاد كتابتها / تنقيحها — أي
   «وضع المراجعة» (revision mode).
 - بحث (``agent_search``) كلّ فصوله على صلة مباشرة بالسؤال، ولا فائدة من
   تقطيعه.
@@ -94,7 +94,7 @@ ANALYZE_REFS_FOR_WRITER_SYSTEM_AR = """\
 
 ## كيف تختار بين الحالات الثلاث (إرشاد قرار)
 
-- **``agent_writer``** عادةً:
+- **``agent_writing``** عادةً:
   - ``full`` ⇐ المسودّة بأكملها هي موضوع المراجعة (تنقيح شامل، تغيير نبرة،
     إعادة هيكلة).
   - ``partial`` ⇐ التركيز على بند/فقرة محدّدة (تعديل شرط دفع، إعادة صياغة
@@ -167,7 +167,7 @@ def render_refs_user_msg(
         wis: a sequence of WorkspaceItemRow-like objects with attributes
             ``item_id``, ``kind``, ``title``, ``content_md``, ``word_count``,
             ``wi_seq``. Only items in the refs family (``agent_search`` /
-            ``agent_writer``) should be passed in — the runner partitions
+            ``agent_writing``) should be passed in — the runner partitions
             before calling.
     """
     q = (query or "").strip() or "(لم يُحدَّد)"

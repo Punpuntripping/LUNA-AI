@@ -12,6 +12,7 @@ import type {
   SSEToken,
   SSEDone,
   SSEDuplicate,
+  SSEQuotaExceeded,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
   SSEAgentQuestion,
@@ -350,6 +351,21 @@ export function useSendMessage(): UseSendMessageReturn {
               // Surface a brief, non-error notice so the user understands the
               // resend was absorbed rather than silently dropped.
               useChatStore.getState().setError(payload.detail);
+              break;
+            }
+            case "quota_exceeded": {
+              // Per-user quota gate (shared/quota) rejected this send. The
+              // user message is saved server-side; no assistant placeholder
+              // exists. Refetch so the message list catches up, surface the
+              // banner via quotaInfo, end streaming. Don't mark failed —
+              // the message itself is fine; the request just couldn't run.
+              const payload = data as SSEQuotaExceeded;
+              useChatStore.getState().finishStreaming();
+              useChatStore.getState().resetReconnect();
+              useChatStore.getState().setQuotaInfo(payload);
+              void qc.invalidateQueries({
+                queryKey: messageKeys.list(conversationId),
+              });
               break;
             }
             case "token": {

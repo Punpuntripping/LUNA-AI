@@ -9,6 +9,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useConversationDetail } from "@/hooks/use-conversations";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { QuotaBanner } from "@/components/chat/QuotaBanner";
 
 interface ChatContainerProps {
   conversationId: string;
@@ -80,6 +81,8 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
           <span className="hidden sm:inline">المخرجات</span>
         </Button>
       </div>
+
+      <QuotaBanner />
 
       {error && (
         <div

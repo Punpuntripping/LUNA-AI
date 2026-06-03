@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 # Module-level guard so repeat calls are cheap. Logfire itself is also
 # idempotent on configure(), but instrument_*() helpers are not always.
 _CONFIGURED = False
+# Live wiring state, mutated by configure_logfire() and read by
+# observability_status() for the /api/v1/_meta/observability endpoint.
+_LOGFIRE_AVAILABLE = False
+_BOOT_SPAN_EMITTED = False
+_SERVICE_VERSION: str | None = None
+_INSTRUMENTED: dict[str, bool] = {}
 
 
 # ── PII patterns ──────────────────────────────────────────────────────────
@@ -87,19 +93,73 @@ def _resolve_environment() -> str:
     )
 
 
+def _is_production_env(env_label: str) -> bool:
+    """The list of labels we treat as 'production' for fail-loud purposes."""
+    return env_label.lower() in {"production", "prod"}
+
+
+def observability_status() -> dict[str, Any]:
+    """Public snapshot of the current Logfire wiring.
+
+    Exposed via ``/api/v1/_meta/observability`` so it can be verified from
+    anywhere (curl, smoke test, browser DevTools) without trusting deployment
+    config alone. Safe to expose — contains no secrets, only booleans and
+    short labels.
+    """
+    return {
+        "configured": _CONFIGURED,
+        "sdk_installed": _LOGFIRE_AVAILABLE,
+        "token_present": bool(os.getenv("LOGFIRE_TOKEN")),
+        "environment": _resolve_environment(),
+        "service_name": os.getenv("LOGFIRE_SERVICE_NAME", "luna-backend"),
+        "service_version": _SERVICE_VERSION,
+        "boot_span_emitted": _BOOT_SPAN_EMITTED,
+        "instrumented": dict(_INSTRUMENTED),
+        "railway_env": os.getenv("RAILWAY_ENVIRONMENT"),
+        "railway_service": os.getenv("RAILWAY_SERVICE_NAME"),
+        "railway_deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID"),
+        "railway_git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+    }
+
+
 def configure_logfire(service_version: str | None = None) -> bool:
     """Configure Logfire and instrument SDKs that are already imported.
 
     Returns ``True`` once configured (or when Logfire is genuinely active),
     ``False`` when the SDK is missing or configuration failed. ``main.py``
     does not gate on the return value — failures must never block startup.
+
+    Side effects beyond `logfire.configure`:
+    - Emits a one-shot ``luna.boot`` span so the deploy is always visible in
+      Logfire even before the first request, with env/version/has_token. If
+      the boot span never appears in the dashboard, observability is broken.
+    - In production (``RAILWAY_ENVIRONMENT=production`` or
+      ``LOGFIRE_ENVIRONMENT=production``) without a token, raises ``RuntimeError``
+      unless ``LUNA_ALLOW_PROD_NO_LOGFIRE=1`` — silent telemetry loss in prod
+      is the failure mode we are explicitly trying to prevent.
     """
-    global _CONFIGURED
+    global _CONFIGURED, _LOGFIRE_AVAILABLE, _BOOT_SPAN_EMITTED, _SERVICE_VERSION
     if _CONFIGURED:
         return True
 
+    _SERVICE_VERSION = service_version
+    env_label = _resolve_environment()
+    has_token = bool(os.getenv("LOGFIRE_TOKEN"))
+
+    if _is_production_env(env_label) and not has_token:
+        if os.getenv("LUNA_ALLOW_PROD_NO_LOGFIRE") != "1":
+            raise RuntimeError(
+                "LOGFIRE_TOKEN missing in production environment "
+                f"(resolved env={env_label!r}). Telemetry would silently drop. "
+                "Set LOGFIRE_TOKEN or LUNA_ALLOW_PROD_NO_LOGFIRE=1 to override."
+            )
+        logger.error(
+            "Production boot WITHOUT LOGFIRE_TOKEN — observability disabled by override."
+        )
+
     try:
         import logfire
+        _LOGFIRE_AVAILABLE = True
     except ImportError:
         logger.info("logfire not installed — observability disabled")
         return False
@@ -111,7 +171,7 @@ def configure_logfire(service_version: str | None = None) -> bool:
         logfire.configure(
             service_name=os.getenv("LOGFIRE_SERVICE_NAME", "luna-backend"),
             service_version=service_version,
-            environment=_resolve_environment(),
+            environment=env_label,
             send_to_logfire="if-token-present",
             scrubbing=logfire.ScrubbingOptions(
                 extra_patterns=_PII_EXTRA_PATTERNS,
@@ -123,17 +183,36 @@ def configure_logfire(service_version: str | None = None) -> bool:
         return False
 
     # Instrument SDKs we actually use. Each instrument_* call is wrapped so
-    # one failure does not block the others.
-    _safe_instrument(logfire, "instrument_pydantic_ai")
-    _safe_instrument(logfire, "instrument_httpx")  # captures Anthropic / OpenRouter / Alibaba
-    _safe_instrument(logfire, "instrument_redis")  # async client used by rate limiting
+    # one failure does not block the others. Result recorded for the status
+    # endpoint so we can spot a partial wiring (e.g. httpx OK but redis dead).
+    _INSTRUMENTED["pydantic_ai"] = _safe_instrument(logfire, "instrument_pydantic_ai")
+    _INSTRUMENTED["httpx"] = _safe_instrument(logfire, "instrument_httpx")
+    _INSTRUMENTED["redis"] = _safe_instrument(logfire, "instrument_redis")
 
     _CONFIGURED = True
-    has_token = bool(os.getenv("LOGFIRE_TOKEN"))
     logger.info(
         "logfire configured (token_present=%s, environment=%s)",
-        has_token, _resolve_environment(),
+        has_token, env_label,
     )
+
+    # Emit the boot sentinel. Without this, a misconfigured deploy looks
+    # identical to an idle deploy in the Logfire dashboard.
+    try:
+        logfire.info(
+            "luna.boot",
+            environment=env_label,
+            service_version=service_version,
+            token_present=has_token,
+            railway_env=os.getenv("RAILWAY_ENVIRONMENT"),
+            railway_service=os.getenv("RAILWAY_SERVICE_NAME"),
+            railway_deployment_id=os.getenv("RAILWAY_DEPLOYMENT_ID"),
+            railway_git_sha=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+            instrumented=dict(_INSTRUMENTED),
+        )
+        _BOOT_SPAN_EMITTED = True
+    except Exception as exc:
+        logger.warning("luna.boot sentinel span failed: %s", exc)
+
     return True
 
 
@@ -149,18 +228,20 @@ def instrument_fastapi_app(app: "FastAPI") -> None:
         logger.warning("logfire.instrument_fastapi failed: %s", exc)
 
 
-def _safe_instrument(logfire_mod: Any, name: str) -> None:
+def _safe_instrument(logfire_mod: Any, name: str) -> bool:
     fn = getattr(logfire_mod, name, None)
     if fn is None:
-        return
+        return False
     try:
         fn()
+        return True
     except Exception as exc:
         # Surfaced at WARNING — a silently-dead instrument_*() call (e.g. a
         # logfire/pydantic-ai version skew) otherwise drops whole span
         # families with no visible signal. instrument_redis raising because
         # redis isn't installed is the one benign case in dev.
         logger.warning("logfire.%s failed: %s — spans from this SDK disabled", name, exc)
+        return False
 
 
 # ── Lazy-imported logfire helper for non-critical call sites ──────────────
@@ -212,6 +293,7 @@ __all__ = [
     "configure_logfire",
     "instrument_fastapi_app",
     "get_logfire",
+    "observability_status",
 ]
 
 

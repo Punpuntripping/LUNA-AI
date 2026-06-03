@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut, Settings, User } from "lucide-react";
+import { useState } from "react";
+import { Gauge, LogOut, Settings, User } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
@@ -17,10 +18,12 @@ import {
 } from "@/components/ui/popover";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { DetailLevelToggle } from "@/components/Settings/DetailLevelToggle";
+import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
+  const [usageOpen, setUsageOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -73,9 +76,23 @@ export function SidebarFooter() {
                   مستوى التفصيل
                 </h3>
                 <DetailLevelToggle />
+                <Separator />
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setUsageOpen(true)}
+                  data-testid="sidebar-settings-usage-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <Gauge className="h-4 w-4" />
+                    حدود الاستخدام
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
               </div>
             </PopoverContent>
           </Popover>
+          <UsageLimitsDialog open={usageOpen} onOpenChange={setUsageOpen} />
           <ThemeToggle />
           <Tooltip>
             <TooltipTrigger asChild>

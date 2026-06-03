@@ -2,7 +2,7 @@
 
 Two modules, one per output family:
 
-- ``refs_kinds`` — refs-family prompt + renderer (kinds: agent_search, agent_writer).
+- ``refs_kinds`` — refs-family prompt + renderer (kinds: agent_search, agent_writing).
   These WIs carry ``[n]`` reference tokens in their ``content_md``.
 - ``meta_kinds`` — meta-family prompt + renderer (kinds: attachment, notes).
   Prose / OCR-extracted text; no inline ref tokens.

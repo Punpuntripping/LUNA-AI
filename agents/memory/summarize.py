@@ -18,6 +18,7 @@ broken by a summarize hiccup.
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from datetime import datetime, timezone
 
 from supabase import Client as SupabaseClient
@@ -31,8 +32,8 @@ from agents.memory.artifact_summarizer import (
     run_artifact_summary,
     run_attachment_summary,
 )
-from agents.runs import AgentRunRecord, record_agent_run
 from agents.utils.tracking import track_stage
+from agents.utils.usage_sink import collect_llm_calls, in_scope
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -93,49 +94,6 @@ def _persist_summary(
         logger.warning(
             "summarize_workspace_item: UPDATE failed for item_id=%s: %s",
             item_id, exc, exc_info=True,
-        )
-
-
-def _record_cost(
-    supabase: SupabaseClient,
-    row: dict,
-    summary: ArtifactSummaryOutput,
-) -> None:
-    """Record a tier_2 agent_runs row. Skipped if the LLM never ran."""
-    if summary.fallback_used:
-        return
-    try:
-        record_agent_run(
-            supabase,
-            AgentRunRecord(
-                user_id=str(row.get("user_id") or ""),
-                conversation_id=str(row.get("conversation_id") or ""),
-                case_id=row.get("case_id") and str(row["case_id"]) or None,
-                agent_family="memory",
-                subtype="summarize_artifact",
-                output_item_id=str(row.get("item_id") or ""),
-                tokens_in=summary.tokens_in,
-                tokens_out=summary.tokens_out,
-                tokens_reasoning=summary.tokens_reasoning,
-                model_used=summary.model_used or None,
-                per_phase_stats={
-                    "summarize": {
-                        "per_tier": {
-                            "tier_2": {
-                                "input": summary.tokens_in,
-                                "output": summary.tokens_out,
-                                "reasoning": summary.tokens_reasoning,
-                                "cached": getattr(summary, "tokens_cached", 0),
-                            },
-                        },
-                    },
-                },
-                status="ok",
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "summarize_workspace_item: record_agent_run failed: %s", exc,
         )
 
 
@@ -272,52 +230,24 @@ def _persist_attachment_summary(
         )
 
 
-def _record_attachment_cost(
-    supabase: SupabaseClient,
-    row: dict,
-    summary: AttachmentSummaryOutput,
-) -> None:
-    """Record a tier_2 agent_runs row for the attachment flow.
+def _maybe_scope(supabase: SupabaseClient, row: dict):
+    """Open a token/cost capture scope only when one isn't already active.
 
-    Skipped when the LLM never ran (fallback). Subtype ``summarize_attachment``
-    distinguishes it from the generic ``summarize_artifact`` runs.
+    Inline callers (the chat turn) already run inside ``handle_message``'s
+    ``collect_llm_calls`` scope, so the artifact_summarizer's ``run_tracked``
+    usage flows to that buffer. The standalone webhook caller has no scope —
+    open one keyed to this row's conversation/user so the summarizer cost lands
+    in ``llm_calls`` (and the OCR/ORD quota settles) there too.
     """
-    if summary.fallback_used:
-        return
-    try:
-        record_agent_run(
-            supabase,
-            AgentRunRecord(
-                user_id=str(row.get("user_id") or ""),
-                conversation_id=str(row.get("conversation_id") or ""),
-                case_id=row.get("case_id") and str(row["case_id"]) or None,
-                agent_family="memory",
-                subtype="summarize_attachment",
-                output_item_id=str(row.get("item_id") or ""),
-                tokens_in=summary.tokens_in,
-                tokens_out=summary.tokens_out,
-                tokens_reasoning=summary.tokens_reasoning,
-                model_used=summary.model_used or None,
-                per_phase_stats={
-                    "summarize": {
-                        "per_tier": {
-                            "tier_2": {
-                                "input": summary.tokens_in,
-                                "output": summary.tokens_out,
-                                "reasoning": summary.tokens_reasoning,
-                                "cached": getattr(summary, "tokens_cached", 0),
-                            },
-                        },
-                    },
-                },
-                status="ok",
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "summarize_workspace_item: attachment record_agent_run failed: %s",
-            exc,
-        )
+    if in_scope():
+        return nullcontext()
+    return collect_llm_calls(
+        supabase,
+        conversation_id=row.get("conversation_id"),
+        user_id=row.get("user_id"),
+        message_id=None,
+        case_id=row.get("case_id"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -458,14 +388,15 @@ async def summarize_workspace_item(
                 except Exception:
                     pass
 
-                att_summary = await run_attachment_summary(
-                    AttachmentSummaryInput(
-                        filename=str(row.get("title") or ""),
-                        content_md=content_md,
-                        conversation_context=conversation_context,
-                    ),
-                    build_artifact_summary_deps(),
-                )
+                with _maybe_scope(supabase, row):
+                    att_summary = await run_attachment_summary(
+                        AttachmentSummaryInput(
+                            filename=str(row.get("title") or ""),
+                            content_md=content_md,
+                            conversation_context=conversation_context,
+                        ),
+                        build_artifact_summary_deps(),
+                    )
 
                 _persist_attachment_summary(
                     supabase,
@@ -474,7 +405,8 @@ async def summarize_workspace_item(
                     source_length=len(content_md),
                     existing_metadata=row.get("metadata") or {},
                 )
-                _record_attachment_cost(supabase, row, att_summary)
+                # Cost is captured per-call by the tracking hook (run_attachment_summary
+                # → run_tracked → llm_calls); no agent_runs row needed.
 
                 try:
                     _span.set_outcome(
@@ -500,15 +432,16 @@ async def summarize_workspace_item(
             # query description, migration 038), and content_md. NULL
             # describe_query is fine: the prompt falls back to describing
             # content without a query anchor.
-            summary = await run_artifact_summary(
-                ArtifactSummaryInput(
-                    describe_query=str(row.get("describe_query") or ""),
-                    content_md=content_md,
-                    title=str(row.get("title") or ""),
-                    kind=kind,
-                ),
-                build_artifact_summary_deps(),
-            )
+            with _maybe_scope(supabase, row):
+                summary = await run_artifact_summary(
+                    ArtifactSummaryInput(
+                        describe_query=str(row.get("describe_query") or ""),
+                        content_md=content_md,
+                        title=str(row.get("title") or ""),
+                        kind=kind,
+                    ),
+                    build_artifact_summary_deps(),
+                )
 
             # --- Persist + record cost (best-effort) ------------------------
             _persist_summary(
@@ -518,7 +451,8 @@ async def summarize_workspace_item(
                 source_length=len(content_md),
                 existing_metadata=row.get("metadata") or {},
             )
-            _record_cost(supabase, row, summary)
+            # Cost is captured per-call by the tracking hook (run_artifact_summary
+            # → run_tracked → llm_calls); no agent_runs row needed.
 
             try:
                 _span.set_outcome(

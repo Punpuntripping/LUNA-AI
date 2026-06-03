@@ -5,17 +5,22 @@ Wave 9 rewrite (Task 7):
 - agents.state imports → gone.
 - Full specialist body NEVER streamed to chat; only chat_summary + key_findings.
 - Pre-router memory hook: resummarize_dirty_items + compact_conversation.
-- Dispatch records an agent_runs row in the finally block (fire-and-forget).
 - Cap pre-flight: refuse deep_search / writing dispatch when workspace_items >= 15.
-- Logfire span wraps _dispatch; trace_id / span_id populated on AgentRunRecord.
+- Token/cost: handle_message opens a collect_llm_calls scope; every model call
+  in the turn lands one row in the llm_calls ledger (deep_search fed from its
+  per_phase_stats), flushed + quota-settled once at turn end. No completed-run
+  agent_runs row is written — cost lives in llm_calls, outcome on the Logfire span.
+- Pause/resume state lives in paused_runs (migration 060), written via
+  agents/paused_runs.py and deleted on resolve. run_id (migration 061) ties a
+  run's llm_calls across the pause boundary.
 
 Planner-redesign rewiring:
 - The planner owns the loop. _run_deep_search builds PlannerDeps and calls
   handle_planner_turn (phase 1 decide → phase 2 retrieve → phase 3 respond),
   returning a _DeepSearchOutcome (kind="completed" | "paused").
 - Pre-route pause check: _find_awaiting_user / _expired / _resume_major_agent.
-- A phase-1 ask_user pause comes back as kind="paused"; _dispatch records the
-  'awaiting_user' agent_runs row + agent_question message and skips the run row.
+- A phase-1 ask_user pause comes back as kind="paused"; _dispatch writes the
+  paused_runs row + agent_question message and keeps the run alive.
 - _run_deep_search accepts an optional `decision`: on resume, _resume_major_agent
   resumes planner_decider itself, then passes the PlannerDecision so phases 2–3
   run through the same convergence point as a fresh dispatch.
@@ -44,7 +49,14 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
-from agents.runs import AgentRunRecord, record_agent_run, update_run_status
+from agents.paused_runs import (
+    PauseRecord,
+    find_open_pause,
+    is_expired,
+    record_pause,
+    resolve_pause,
+)
+from agents.utils.usage_sink import bind_run_id, collect_llm_calls, record_call
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -269,18 +281,35 @@ def _load_prior_search_summaries(
     return summaries
 
 
-def _extract_logfire_ids() -> tuple[str | None, str | None]:
-    """Best-effort extraction of trace_id and span_id from the active Logfire span."""
+def _feed_resume_decider(planner_result: Any) -> None:
+    """Emit one ``deep_search.planner`` ledger row for the RESUME decider.
+
+    Every other deep_search stage now self-emits at its own boundary (executors,
+    sector_picker, aggregator in deep_search_v4; the fresh planner decide+respond
+    in planner/runner.py). The one exception is the resume decider, which runs
+    raw in ``_resume_major_agent_inner`` outside ``handle_planner_turn`` — feed it
+    here. Best-effort; appends to the active scope and inherits the bound run_id.
+    """
     try:
-        span = _logfire.current_span()  # type: ignore[attr-defined]
-        ctx = getattr(span, "context", None)
-        if ctx is None:
-            return None, None
-        trace_id = format(ctx.trace_id, "032x") if ctx.trace_id else None
-        span_id = format(ctx.span_id, "016x") if ctx.span_id else None
-        return trace_id, span_id
+        usage = planner_result.usage()
+        ti = int(getattr(usage, "input_tokens", 0) or 0)
+        to = int(getattr(usage, "output_tokens", 0) or 0)
+        if not ti and not to:
+            return
+        details = getattr(usage, "details", None) or {}
+        from agents.utils.agent_models import AGENT_MODELS, resolve_chain
+        model = resolve_chain(AGENT_MODELS["planner_decider"])[0] if "planner_decider" in AGENT_MODELS else None
+        record_call(
+            agent="deep_search.planner",
+            model=model,
+            agent_family="deep_search",
+            tokens_in=ti,
+            tokens_out=to,
+            tokens_reasoning=int(details.get("reasoning_tokens", 0) or 0),
+            tokens_cached=int(getattr(usage, "cache_read_tokens", 0) or 0),
+        )
     except Exception:
-        return None, None
+        logger.debug("resume decider ledger feed failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -297,49 +326,47 @@ def _find_awaiting_user(
     conversation_id: str,
     user_id: str,
 ) -> dict | None:
-    """Return the most-recent awaiting_user agent_run for this conversation, or None."""
-    try:
-        result = (
-            supabase.table("agent_runs")
-            .select("*")
-            .eq("conversation_id", conversation_id)
-            .eq("user_id", user_id)
-            .eq("status", "awaiting_user")
-            .order("asked_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        data = getattr(result, "data", None) or []
-        return data[0] if data else None
-    except Exception as e:
-        logger.warning("_find_awaiting_user failed: %s", e)
-        return None
+    """Return the most-recent open pause for this conversation, or None.
+
+    Thin delegate to ``paused_runs.find_open_pause`` (migration 060 moved
+    pause state out of agent_runs into its own delete-on-resolve table)."""
+    return find_open_pause(supabase, conversation_id, user_id)
 
 
 def _expired(pending: dict) -> bool:
-    """Return True when the pause window has passed."""
-    expires_raw = pending.get("expires_at")
-    if not expires_raw:
-        return False
-    try:
-        if isinstance(expires_raw, str):
-            # ISO-8601; ensure tz-aware
-            expires = datetime.fromisoformat(expires_raw)
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-        elif isinstance(expires_raw, datetime):
-            expires = expires_raw
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-        else:
-            return False
-        return expires < _now_utc()
-    except Exception as e:
-        logger.warning("_expired: could not parse expires_at=%r: %s", expires_raw, e)
-        return False
+    """Return True when the pause window has passed.
+
+    Thin delegate to ``paused_runs.is_expired``."""
+    return is_expired(pending)
 
 
 async def _resume_major_agent(
+    pending: dict,
+    user_reply: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+    assistant_message_id: str | None = None,
+) -> AsyncGenerator[dict, None]:
+    """Resume a paused agent run — binds the original run's id so the resume
+    leg's LLM calls share it (migration 061), then delegates to the body."""
+    with bind_run_id(str(pending.get("run_id", ""))):
+        async for ev in _resume_major_agent_inner(
+            pending=pending,
+            user_reply=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+        ):
+            yield ev
+
+
+async def _resume_major_agent_inner(
     pending: dict,
     user_reply: str,
     supabase: SupabaseClient,
@@ -387,7 +414,7 @@ async def _resume_major_agent(
             "_resume_major_agent: agent_family=%s does not support resume; abandoning run_id=%s",
             agent_family, run_id,
         )
-        update_run_status(supabase, run_id, "abandoned")
+        resolve_pause(supabase, run_id)
         # Re-route the user reply through the normal router.
         async for ev in _route(
             question=user_reply,
@@ -428,7 +455,7 @@ async def _resume_major_agent(
             "_resume_major_agent: failed to rehydrate state for run_id=%s: %s",
             run_id, exc, exc_info=True,
         )
-        update_run_status(supabase, run_id, "error")
+        resolve_pause(supabase, run_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -512,12 +539,16 @@ async def _resume_major_agent(
                 usage_limits=PLANNER_DECIDER_LIMITS,
             )
             planner_output = planner_result.output
+            # The resume decider runs raw (not run_tracked) and outside
+            # handle_planner_turn's stats, so feed its cost to the ledger
+            # (run_id already bound by the wrapper).
+            _feed_resume_decider(planner_result)
     except Exception as exc:
         logger.error(
             "_resume_major_agent: planner resume failed for run_id=%s: %s",
             run_id, exc, exc_info=True,
         )
-        update_run_status(supabase, run_id, "error")
+        resolve_pause(supabase, run_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -546,7 +577,7 @@ async def _resume_major_agent(
             task_label=(pending.get("task_label") if pending else None),
         )
         # Close out the previous run row (it's superseded by the new one).
-        update_run_status(supabase, run_id, "abandoned")
+        resolve_pause(supabase, run_id)
         yield {"type": "agent_question", "run_id": new_run_id or "", "question": new_question}
         yield {"type": "done", "usage": _zero_usage("paused")}
         return
@@ -557,7 +588,7 @@ async def _resume_major_agent(
             "_resume_major_agent: planner aborted run_id=%s; re-routing via router",
             run_id,
         )
-        update_run_status(supabase, run_id, "abandoned")
+        resolve_pause(supabase, run_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -575,7 +606,7 @@ async def _resume_major_agent(
             "_resume_major_agent: unexpected planner output type=%s for run_id=%s",
             type(planner_output), run_id,
         )
-        update_run_status(supabase, run_id, "error")
+        resolve_pause(supabase, run_id)
         yield {"type": "token", "text": "حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى."}
         yield {"type": "done", "usage": _zero_usage("error")}
         return
@@ -661,25 +692,14 @@ async def _resume_major_agent(
         yield {"type": "done", "usage": _zero_usage("error")}
 
     finally:
-        duration_ms = int((perf_counter() - t0) * 1000)
-        # Embed the user's reply into deferred_payload so the agent_runs row
-        # carries both the question_text AND the answer side-by-side without a
-        # join through the messages table.
-        merged_payload = dict(pending.get("deferred_payload") or {})
-        merged_payload["user_reply"] = user_reply
-        update_run_status(
-            supabase,
-            run_id,
-            status,
-            duration_ms=duration_ms,
-            tokens_in=getattr(run_result, "tokens_in", None),
-            tokens_out=getattr(run_result, "tokens_out", None),
-            model_used=getattr(run_result, "model_used", None),
-            output_item_id=getattr(run_result, "output_item_id", None),
-            per_phase_stats=getattr(run_result, "per_phase_stats", {}) or {},
-            deferred_payload=merged_payload,
-            error=err_payload,
-        )
+        # Cost self-emits at each stage's boundary (executors / sector_picker /
+        # aggregator in deep_search_v4, planner respond in planner/runner.py;
+        # the resume decider fed above) — all inside the capture scope. Nothing
+        # to feed here.
+        # The pause is consumed (resumed to completion / error / cancel) — drop
+        # the paused_runs row so it can't be resumed again. status / err_payload
+        # are surfaced via the Logfire span + SSE; no DB row to flip.
+        resolve_pause(supabase, run_id)
 
     yield {"type": "agent_run_finished", "agent_family": "deep_search"}
 
@@ -697,15 +717,16 @@ def _record_deferred(
     describe_query: str,
     task_label: str | None = None,
     pause_reason: str = "clarify",
+    run_id: str | None = None,
 ) -> tuple[str, str | None]:
     """Persist pause state for a DeferredToolRequests planner output.
 
-    Inserts the agent_runs row and the agent_question message row.
-    Returns (question_text, run_id).  Both are best-effort; run_id may be None
-    on DB failure.
+    Inserts the paused_runs row (migration 060) and the agent_question message
+    row. Returns (question_text, run_id).  Both are best-effort; run_id may be
+    None on DB failure.
 
     ``task_label`` is the router-emitted short Arabic label for the dispatched
-    task (Wave 1 redesign). Persisted to ``agent_runs.task_label`` so the
+    task (Wave 1 redesign). Persisted to ``paused_runs.task_label`` so the
     resume path can recover it without re-running the router.
 
     ``pause_reason`` (migration 053) distinguishes pause flavors:
@@ -729,17 +750,14 @@ def _record_deferred(
     )
     now = _now_utc()
 
-    run_id = record_agent_run(
+    run_id = record_pause(
         supabase,
-        AgentRunRecord(
+        PauseRecord(
             user_id=user_id,
             conversation_id=conversation_id,
             case_id=case_id,
             agent_family=agent_family,
-            message_id=user_message_id,
             task_label=task_label,
-            input_summary=describe_query[:500],
-            status="awaiting_user",
             pause_reason=pause_reason,
             message_history=planner_result.all_messages_json(),
             deferred_payload={
@@ -752,6 +770,7 @@ def _record_deferred(
             asked_at=now,
             expires_at=now + timedelta(hours=24),
         ),
+        run_id=run_id,
     )
 
     # Insert the question as an assistant message so it appears in chat history.
@@ -800,6 +819,43 @@ async def handle_message(
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
+    """Public entry point for all chat turns.
+
+    Thin wrapper that opens the per-turn token/cost capture scope
+    (``collect_llm_calls``) around the whole turn — OCR, memory pre-hook,
+    router, dispatch, and the resume path. Every LLM call inside accrues to one
+    ``llm_calls`` buffer attributed to ``user_message_id`` and flushed (+ quota
+    settled) once when this generator finishes or is closed (SSE disconnect /
+    gateway timeout included). See ``agents/utils/usage_sink.py``.
+    """
+    with collect_llm_calls(
+        supabase,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        message_id=user_message_id,
+        case_id=case_id,
+    ):
+        async for ev in _handle_message_inner(
+            question=question,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            supabase=supabase,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+        ):
+            yield ev
+
+
+async def _handle_message_inner(
+    question: str,
+    user_id: str,
+    conversation_id: str,
+    supabase: SupabaseClient,
+    case_id: str | None = None,
+    user_message_id: str | None = None,
+    assistant_message_id: str | None = None,
+) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
     1. Pre-router memory hook (best-effort).
@@ -826,7 +882,7 @@ async def handle_message(
                 "handle_message: run_id=%s expired; marking timeout and proceeding normally",
                 pending.get("run_id"),
             )
-            update_run_status(supabase, str(pending.get("run_id", "")), "timeout")
+            resolve_pause(supabase, str(pending.get("run_id", "")))
             # fall through to normal flow
         else:
             async for ev in _resume_major_agent(
@@ -1002,12 +1058,17 @@ async def _dispatch(
     err_payload: dict | None = None
     status = "ok"
 
+    # One logical run id for this dispatch. Allocated up front so every LLM call
+    # in the run — and, if it pauses, the paused_runs row + the resume leg —
+    # share it on their llm_calls rows (migration 061). bind_run_id tags rows
+    # nested in this block; pass the same id to _record_deferred on pause.
+    run_id = str(uuid.uuid4())
+
     # PII note: user_id intentionally NOT on this span. The monitor recovers
     # user_id via Supabase join on conversation_id — every persisted row
-    # (agent_runs, messages, conversations, workspace_items) carries user_id
-    # as a column. Keeping user_id off Logfire spans narrows the PII surface
-    # area across the 30-day retention window.
-    with _logfire.span(
+    # (messages, conversations, workspace_items, llm_calls) carries user_id as a
+    # column. Keeping user_id off Logfire spans narrows the PII surface area.
+    with bind_run_id(run_id), _logfire.span(
         "dispatch.specialist",
         agent_family=agent_family,
         subtype=subtype,
@@ -1060,8 +1121,11 @@ async def _dispatch(
                     assistant_message_id=assistant_message_id,
                 )
                 if ds_outcome.kind == "paused":
-                    # Persist the awaiting_user row + question message, then skip
-                    # the normal completed-run record (the run stays alive).
+                    # The pause-triggering decider's cost is emitted by
+                    # handle_planner_turn (phase-1 pause path → deep_search.planner).
+                    # Persist the pause row + question message, then skip the
+                    # normal completed path (the run stays alive). Pass run_id so
+                    # the paused_runs row + resume leg share this run's id.
                     _record_deferred(
                         supabase=supabase,
                         planner_result=ds_outcome.planner_result,
@@ -1073,6 +1137,7 @@ async def _dispatch(
                         agent_family=agent_family,
                         describe_query=describe_query,
                         task_label=task_label,
+                        run_id=run_id,
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
@@ -1085,9 +1150,12 @@ async def _dispatch(
                     assistant_message_id=assistant_message_id,
                 )
                 if wp_outcome.kind == "paused":
-                    # Persist the awaiting_user row with pause_reason
-                    # (migration 053). Same flow as the deep_search branch
-                    # above; just an additional pause_reason kwarg.
+                    # The writer_planner decider self-captures via the tracking
+                    # hook (track_stage.record_run → llm_calls), so no explicit
+                    # feed here (that would double-count).
+                    # Persist the pause row with pause_reason (migration 053).
+                    # Same flow as the deep_search branch above; pass run_id so
+                    # the resume leg shares this run's id.
                     _record_deferred(
                         supabase=supabase,
                         planner_result=wp_outcome.planner_result,
@@ -1100,6 +1168,7 @@ async def _dispatch(
                         describe_query=describe_query,
                         task_label=task_label,
                         pause_reason=wp_outcome.pause_reason or "clarify",
+                        run_id=run_id,
                     )
                     raise _SkipRunRecord()
                 run_result = wp_outcome.result
@@ -1156,7 +1225,7 @@ async def _dispatch(
                     "pause_reason": deferred_row.get("pause_reason", "clarify"),
                 }
             yield {"type": "done", "usage": _zero_usage("paused")}
-            return  # skip finally record_agent_run
+            return  # run stays alive (paused_runs row written); just emit SSE
 
         except asyncio.CancelledError:
             # Convo-1 forensics bug #2: SSE consumer / Railway gateway / explicit
@@ -1190,31 +1259,23 @@ async def _dispatch(
             yield {"type": "done", "usage": _zero_usage("error")}
 
         finally:
-            duration_ms = int((perf_counter() - t0) * 1000)
-            trace_id, span_id = _extract_logfire_ids()
-            record_agent_run(
-                supabase,
-                AgentRunRecord(
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    case_id=case_id,
-                    agent_family=agent_family,
-                    subtype=subtype,
-                    message_id=user_message_id,
-                    task_label=task_label,
-                    input_summary=describe_query[:500],
-                    output_item_id=getattr(run_result, "output_item_id", None),
-                    duration_ms=duration_ms,
-                    tokens_in=getattr(run_result, "tokens_in", None),
-                    tokens_out=getattr(run_result, "tokens_out", None),
-                    model_used=getattr(run_result, "model_used", None),
-                    per_phase_stats=getattr(run_result, "per_phase_stats", {}) or {},
-                    status=status,
-                    error=err_payload,
-                    trace_id=trace_id,
-                    span_id=span_id,
-                ),
-            )
+            # deep_search cost self-emits per stage inside deep_search_v4
+            # (expansion/reranker per executor, sector_picker, aggregator) and in
+            # planner/runner.py (planner) — all inside this capture scope. Every
+            # other family is captured per-call by the tracking hook. Nothing to
+            # feed here.
+            # No completed-run DB row is written anymore: cost lives in llm_calls
+            # and nothing reads completed agent_runs rows. The run's outcome still
+            # matters for forensics, so stamp it onto the dispatch Logfire span.
+            try:
+                _dispatch_span.set_attributes({
+                    "dispatch.status": status,
+                    "dispatch.duration_ms": int((perf_counter() - t0) * 1000),
+                    "dispatch.error": (err_payload or {}).get("message") if err_payload else None,
+                    "dispatch.output_item_id": getattr(run_result, "output_item_id", None),
+                })
+            except Exception:
+                pass
 
     yield {"type": "agent_run_finished", "agent_family": agent_family}
 

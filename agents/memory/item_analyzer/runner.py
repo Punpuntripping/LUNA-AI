@@ -24,8 +24,8 @@ from typing import Any, Literal, Sequence
 
 from supabase import Client as SupabaseClient
 
-from agents.runs import AgentRunRecord, record_agent_run
 from agents.utils.tracking import track_stage
+from agents.utils.usage_sink import record_call
 from shared.observability import get_logfire
 
 from .agent import (
@@ -61,7 +61,7 @@ _logfire = get_logfire()
 # Kind taxonomy — keep in lock-step with the family literals in models.py.
 # ---------------------------------------------------------------------------
 
-REFS_KINDS: set[str] = {"agent_search", "agent_writer"}
+REFS_KINDS: set[str] = {"agent_search", "agent_writing"}
 META_KINDS: set[str] = {"attachment", "notes"}
 
 
@@ -620,51 +620,30 @@ def _record_run(
     *,
     wi_count: int,
 ) -> None:
-    """Write one tier_2 ``agent_runs`` row per family LLM call.
+    """Feed one per-call row to the llm_calls ledger per family LLM call.
 
-    Mirrors ``memory/summarize.py::_record_cost`` — same shared
-    ``record_agent_run`` writer, same ``per_phase_stats`` shape (one
-    ``per_tier`` block under the family name so cost dashboards split
-    refs vs meta and per caller).
+    The analyzer captures usage manually (``_safe_usage``) rather than via the
+    tracking.py ``run_tracked`` hook, so emit the ledger row explicitly (like
+    deep_search does from its per_phase_stats). Runs inside the handle_message
+    capture scope; cost is priced from the fired model.
 
     Best-effort: any failure is logged and swallowed; the analyzer's
     contract is to return a verdict, not to be a reliable bookkeeper.
     """
     try:
         usage = _safe_usage(result)
-        verdict_counts = _count_verdicts(result)
         phase_key = subtype.split(".", 1)[-1]  # "refs" or "meta"
+        model_label = _model_label_from_result(result)
 
-        record_agent_run(
-            deps.supabase,
-            AgentRunRecord(
-                user_id=str(deps.user_id),
-                conversation_id=str(deps.conversation_id),
-                agent_family="memory",
-                subtype=subtype,
-                input_summary=(call.query or "")[:300],
-                tokens_in=usage["input"],
-                tokens_out=usage["output"],
-                tokens_reasoning=usage["reasoning"],
-                model_used=_model_label_from_result(result),
-                per_phase_stats={
-                    phase_key: {
-                        "caller_id": deps.caller_id,
-                        "family": phase_key,
-                        "wi_count": wi_count,
-                        "verdict_counts": verdict_counts,
-                        "per_tier": {
-                            "tier_2": {
-                                "input": usage["input"],
-                                "output": usage["output"],
-                                "reasoning": usage["reasoning"],
-                                "cached": usage.get("cached", 0),
-                            },
-                        },
-                    },
-                },
-                status="ok",
-            ),
+        record_call(
+            agent=f"memory.item_analyzer.{phase_key}",
+            model=model_label,
+            agent_family="memory",
+            subtype=subtype,
+            tokens_in=usage["input"],
+            tokens_out=usage["output"],
+            tokens_reasoning=usage["reasoning"],
+            tokens_cached=usage.get("cached", 0),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(

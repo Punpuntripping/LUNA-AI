@@ -12,7 +12,7 @@ Design notes:
   two families:
 
     * REFS family — kinds whose ``content_md`` carries numbered ``[n]``
-      reference tokens (``agent_search``, ``agent_writer``).
+      reference tokens (``agent_search``, ``agent_writing``).
     * META family — kinds whose ``content_md`` is plain prose / markdown
       with no ``[n]`` refs (``attachment``, ``notes``).
 
@@ -115,7 +115,7 @@ class AnalyzerError(Exception):
 
 # ===========================================================================
 # REFS family — content carries ``[n]`` reference tokens.
-# Kinds: ``agent_search`` (deep-search artifacts) and ``agent_writer``
+# Kinds: ``agent_search`` (deep-search artifacts) and ``agent_writing``
 # (long-form writing artifacts). Refs are unfolded caller-side via the
 # existing ``references_service.fetch_item_references``.
 # ===========================================================================
@@ -131,7 +131,7 @@ class RefsVerdictFull(BaseModel):
 
     need: Literal["full"]
     item_id: str
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     rational: str  # Arabic — explains why the whole WI is on-topic.
 
 
@@ -147,7 +147,7 @@ class RefsVerdictPartial(BaseModel):
 
     need: Literal["partial"]
     item_id: str
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     distilled: str  # Arabic, analyzer-written slice of the on-topic content.
     refs_needed: list[int] = Field(default_factory=list)
     rational: str
@@ -163,7 +163,7 @@ class RefsVerdictNone(BaseModel):
 
     need: Literal["none"]
     item_id: str
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     rational: str
 
 
@@ -257,7 +257,7 @@ class MetaAnalyzeOutput(BaseModel):
 # ``WIVerdict`` uses a TWO-LEVEL discriminator:
 #
 #   * Outer discriminator = ``kind``. Each ``kind`` literal value
-#     (``"agent_search"`` / ``"agent_writer"`` vs ``"attachment"`` / ``"notes"``)
+#     (``"agent_search"`` / ``"agent_writing"`` vs ``"attachment"`` / ``"notes"``)
 #     uniquely identifies the family branch — Pydantic picks ``RefsVerdict``
 #     for the first two and ``MetaVerdict`` for the second two.
 #   * Inner discriminator (inside each family) = ``need``. Already configured
@@ -331,7 +331,7 @@ class _RefsVerdictFullLLM(BaseModel):
 
     need: Literal["full"]
     wi: str  # "WI-{seq}" — runner resolves to item_id UUID.
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     rational: str
 
 
@@ -340,7 +340,7 @@ class _RefsVerdictPartialLLM(BaseModel):
 
     need: Literal["partial"]
     wi: str
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     distilled: str
     refs_needed: list[int] = Field(default_factory=list)
     rational: str
@@ -351,7 +351,7 @@ class _RefsVerdictNoneLLM(BaseModel):
 
     need: Literal["none"]
     wi: str
-    kind: Literal["agent_search", "agent_writer"]
+    kind: Literal["agent_search", "agent_writing"]
     rational: str
 
 

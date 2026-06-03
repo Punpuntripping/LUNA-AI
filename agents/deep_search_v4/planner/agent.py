@@ -136,18 +136,34 @@ def create_planner_decider(
 
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
-        """Ask the user one clarifying question; pauses the run until they reply.
+        """Ask one clarifying question — or reflect your understanding back for
+        confirmation — pausing the run until the user replies.
 
-        Use this ONLY when the query names a corpus/domain but no concrete legal
-        question, so no useful retrieval can be derived (e.g. «ابحث في القضايا
-        البنكية»). Do NOT use it for anything you can plan around or research.
+        Use it WHENEVER planning genuinely needs the user's input — whenever a
+        sharper search or a truer reading of their situation depends on it.
+        Don't hesitate when it serves the user. Common situations:
+          1. The query names a corpus/domain but no concrete legal question, so
+             no useful retrieval can be derived (e.g. «ابحث في القضايا البنكية»).
+          2. The parties or legal intent are unclear, so a faithful
+             ``query_restatement`` would require guessing (who is suing whom,
+             in what capacity).
+          3. The message is long and bundles several distinct legal aspects
+             such that there is risk you have misread the situation — reflect a
+             brief restatement of your understanding and the aspects you will
+             cover, and ask the user to confirm or correct before launching a
+             full search.
+        These are examples, not a closed list — any other point where planning
+        needs user input to be more accurate is fair game. No need to ask about
+        things you can confidently infer or that don't change the plan (e.g.
+        tone).
 
         When raised, the run terminates with a ``DeferredToolRequests`` output.
         The caller resumes via ``agent.run(message_history=...,
         deferred_tool_results=DeferredToolResults({tool_call_id: user_reply}))``.
 
         Args:
-            question: A single concise Arabic question for the user.
+            question: A single concise Arabic message — a clarifying question,
+                or a brief restatement-for-confirmation of the user's situation.
 
         Returns:
             The user's reply text (delivered on resume via DeferredToolResults).

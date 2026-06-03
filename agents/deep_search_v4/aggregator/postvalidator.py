@@ -533,8 +533,18 @@ def validate_llm_output(
     if not anchoring_ok:
         notes.append("query anchoring weak: original query terms missing from intro")
 
-    # Passed iff all HARD checks pass
-    passed = bool(citation_ok and arabic_ok and structure_ok and gap_honesty_ok)
+    # Passed iff the two HARD gates pass.
+    #
+    # 2026-06: narrowed from four gates to two. ``arabic_only_ok`` and
+    # ``structure_ok`` remain individually surfaced on the report (for
+    # observability + monitor dashboards) but no longer block. Rationale +
+    # audit at ``agents_reports/aggregator_validation_audit/audit_2026-06-01.md``:
+    # ``arabic_only_ok`` was firing on cosmetic Latin parentheticals
+    # (``(Privacy by Design)`` / URLs) 100% of the time; ``structure_ok`` is
+    # silent-pass for 95% of production traffic because the planner emits
+    # ``prompt_mode_*`` keys not in ``check_structure``'s recognized list,
+    # and the prompts themselves request flexible structure.
+    passed = bool(citation_ok and gap_honesty_ok)
 
     return ValidationReport(
         passed=passed,

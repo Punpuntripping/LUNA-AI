@@ -32,6 +32,7 @@ import type {
   CreateTemplateRequest,
   UpdateTemplateRequest,
   TemplateListResponse,
+  UsageReport,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -50,6 +51,24 @@ interface ApiErrorBody {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const API_PREFIX = "/api/v1";
+
+// Expose the resolved API base so UI badges (and curious devs in DevTools)
+// can confirm which backend the bundle is wired to. Without this it's easy
+// to think you're on Railway while actually hitting localhost (the trap
+// that surfaced during conv 79970da4 monitoring on 2026-06-01).
+export function getApiBase(): string {
+  return API_BASE;
+}
+
+// Print the wiring once on first browser load so a DevTools console glance
+// always answers "which backend is this?". Server-side renders skip it.
+if (typeof window !== "undefined") {
+  // eslint-disable-next-line no-console
+  console.info(
+    `%c[Luna] API base: ${API_BASE}`,
+    "color:#9b5c8a;font-weight:600",
+  );
+}
 
 // -----------------------------------------------
 // Token management (access token in MEMORY only)
@@ -536,6 +555,14 @@ export const preferencesApi = {
 // -----------------------------------------------
 // Templates API (قوالبي) — user-global markdown docs
 // -----------------------------------------------
+
+// -----------------------------------------------
+// Usage limits API — read-only snapshot for the Settings dialog
+// -----------------------------------------------
+
+export const usageApi = {
+  get: () => api.get<UsageReport>("/usage"),
+};
 
 export const templatesApi = {
   list: () => api.get<TemplateListResponse>("/templates"),
