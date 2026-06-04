@@ -47,8 +47,10 @@ _AR_STOPWORDS: frozenset[str] = frozenset(
 # Allow ASCII comma OR Arabic comma U+060C as separator.
 _CITATION_RE = re.compile(r"\[(\d+(?:\s*[,\u060C]\s*\d+)*)\]")
 
-# Thinking block: <thinking>...</thinking> (case-insensitive, dotall)
-_THINKING_RE = re.compile(r"<thinking\b[^>]*>.*?</thinking\s*>", re.IGNORECASE | re.DOTALL)
+# Thinking block: <think>...</think> OR <thinking>...</thinking> (case-insensitive,
+# dotall). Matches both forms — DeepSeek's native tag is <think>, while our prompt
+# historically asked for <thinking>; a defensive strip must catch either.
+_THINKING_RE = re.compile(r"<think(?:ing)?\b[^>]*>.*?</think(?:ing)?\s*>", re.IGNORECASE | re.DOTALL)
 
 # Code fence block: ``` ... ```
 _CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)

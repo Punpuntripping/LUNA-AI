@@ -8,8 +8,7 @@ Shared design invariants (all four prompts rely on these):
   The square-bracket form `[n]` is reserved for reference citations; article/system
   numbers are written bare in prose («المادة 81») so they never collide with a citation.
 - All input is wrapped in XML-like blocks: <original_query>, <sub_query>, <reference>.
-- Visible four-step CoT inside a <thinking>...</thinking> block. The post-processor
-  strips the thinking block from the final artifact but keeps it in logs.
+- The model returns valid JSON.
 - Grounding rules live at the END of the prompt (attention-bias research).
 - Output is plain text matching AggregatorLLMOutput schema — Pydantic AI enforces it.
 """
@@ -73,16 +72,7 @@ _SHARED_ROLE_AR = """\
 # ---------------------------------------------------------------------------
 
 _COT_TEMPLATE_AR = """\
-## خطوات التفكير (chain-of-thought)
-
-ابدأ ردّك بكتلة `<thinking>` تحتوي أربع خطوات مُرقّمة، ثم تبدأ الإجابة الفعلية بعد الكتلة مباشرةً:
-
-<thinking>
-1. إعادة صياغة السؤال الأصلي بكلماتك (سطر أو اثنان).
-2. تجميع المراجع حول محاور قانونية (nafaqa / إثبات / إجراءات / فسخ ... حسب طبيعة السؤال). اذكر أرقام المراجع ضمن كل محور.
-3. الهيكل المقترح للإجابة (عناوين، ترتيب، المحاور التي ستُعالَج).
-4. مسودة سريعة جدّاً (3-5 نقاط) لمحتوى الإجابة.
-</thinking>
+أعِد كائن JSON واحداً صالحاً مطابقاً للمخطط.
 """
 
 
@@ -105,7 +95,7 @@ _CITATION_RULES_AR = """\
 
 ```
 {
-  "synthesis_md": "<كتلة thinking> ثم جسم الإجابة بالماركداون العربي>",
+  "synthesis_md": "جسم الإجابة",
   "used_refs": [1, 2, 3],
   "gaps": ["...", "..."],
   "confidence": "high | medium | low"

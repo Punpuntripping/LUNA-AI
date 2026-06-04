@@ -1007,22 +1007,34 @@ def create_model(model_name: str, model_settings: Any = None):
         )
 
     elif config.provider == "openrouter":
+        import dataclasses
         from pydantic_ai.models.openrouter import OpenRouterModel
         from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-        kwargs: Dict[str, Any] = {
-            "provider": OpenRouterProvider(api_key=api_key),
-            "settings": model_settings,
-        }
+        provider = OpenRouterProvider(api_key=api_key)
 
-        # Models that don't support tool_choice="required" (only auto/none)
-        if config.extra_kwargs.get("no_tool_choice_required"):
-            from pydantic_ai.models.openai import OpenAIModelProfile
-            kwargs["profile"] = OpenAIModelProfile(
-                openai_supports_tool_choice_required=False,
-            )
+        # OpenRouter routes each call to an underlying provider; many endpoints
+        # 404 on tool_choice="required" ("No endpoints found that support the
+        # provided 'tool_choice' value"). Disable forced tool_choice on the
+        # model's OWN default profile (via dataclasses.replace) so its
+        # json-schema transformer — InlineDefs, which inlines $defs/$ref that
+        # several OR providers reject — is PRESERVED. (A bare OpenAIModelProfile
+        # would drop that transformer.) Mirrors the Alibaba primary, which
+        # already runs with forced tool_choice OFF.
+        base_profile = provider.model_profile(config.model_id)
+        if base_profile is None:
+            from pydantic_ai.profiles.openai import OpenAIModelProfile
+            base_profile = OpenAIModelProfile()
+        profile = dataclasses.replace(
+            base_profile, openai_supports_tool_choice_required=False,
+        )
 
-        return OpenRouterModel(config.model_id, **kwargs)
+        return OpenRouterModel(
+            config.model_id,
+            provider=provider,
+            settings=model_settings,
+            profile=profile,
+        )
 
     elif config.provider == "alibaba":
         from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile

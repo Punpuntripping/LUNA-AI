@@ -71,16 +71,30 @@ class ModelPolicy:
     reasoning: Reasoning = "default"
 
 
+#: The single cross-provider safety net for every chain. One cheap, fast,
+#: reliable OpenRouter model — used instead of walking the OpenRouter family
+#: matrix (the old 2×2 chain's OR cells caused tool_choice/availability
+#: failures and added no value over a single dependable fallback).
+_CROSS_PROVIDER_FALLBACK: dict[Provider, str] = {
+    "alibaba": "or-deepseek-v4-flash",   # normal case: Alibaba primary → OR net
+    "openrouter": "deepseek-v4-flash",   # override: OR primary → Alibaba net
+}
+
+
 def resolve_chain(policy: ModelPolicy) -> list[str]:
-    """Return the ordered ``model_registry`` keys for a policy's 4-step chain."""
-    fb_provider = _OTHER_PROVIDER[policy.provider]
+    """Return the ordered ``model_registry`` keys for a policy's fallback chain.
+
+    Two same-provider cells (primary family, then the other family) for local
+    resilience, then a SINGLE cross-provider net. For the normal case (Alibaba
+    primary — every agent today) that net is always ``or-deepseek-v4-flash``,
+    regardless of the slot's tier or family. Replaces the old 4-cell 2×2 chain.
+    """
     fb_family = _OTHER_FAMILY[policy.primary]
     cells = TIERS[policy.tier]
     return [
         cells[policy.primary][policy.provider],
         cells[fb_family][policy.provider],
-        cells[policy.primary][fb_provider],
-        cells[fb_family][fb_provider],
+        _CROSS_PROVIDER_FALLBACK[policy.provider],
     ]
 
 

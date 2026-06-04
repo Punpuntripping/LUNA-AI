@@ -428,11 +428,20 @@ async def _run_planner_turn(
         )
 
     # ── PHASE 3 — respond ──────────────────────────────────────────────────
+    # Frame the chat summary around `retrieval_query` (the restatement when the
+    # planner produced one, else the raw query) — the SAME text retrieval ran
+    # on — NOT the raw `query`. On the resume path `query` is the bare user
+    # reply to an ask_user question (e.g. «نعم، الاثنين»), which is meaningless
+    # in isolation: the responder would see a terse <query> that contradicts a
+    # rich retrieval digest and wrongly conclude "couldn't understand / no
+    # results for this question" and apologise. Anchoring on `retrieval_query`
+    # keeps the responder aligned with what was actually searched. Fresh
+    # dispatch is unchanged: there `retrieval_query` falls back to `query`.
     t2 = time.perf_counter()
     try:
         responder = create_planner_responder(model_override=deps.model_override)
         result = await responder.run(
-            build_responder_user_message(query),
+            build_responder_user_message(retrieval_query),
             deps=deps,
             usage_limits=PLANNER_RESPONDER_LIMITS,
         )
