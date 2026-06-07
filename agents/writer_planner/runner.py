@@ -43,6 +43,7 @@ from agents.writer.models import (
 )
 from backend.app.services.preferences_service import get_detail_level
 from backend.app.services.writer_planner_context import (
+    load_user_template_titles,
     load_writer_planner_context,
 )
 
@@ -197,6 +198,13 @@ async def _build_writer_planner_deps_from_input(
         conversation_id=major_input.conversation_id,
     )
 
+    # قوالبي titles — passive context the planner may draft FROM (titles only;
+    # the runner fetches the chosen body later). Never raises (returns []).
+    user_templates = await load_user_template_titles(
+        supabase=supabase,
+        user_id=major_input.user_id,
+    )
+
     return build_writer_planner_deps(
         supabase=supabase,
         http_client=http_client,
@@ -209,7 +217,46 @@ async def _build_writer_planner_deps_from_input(
         case_brief=None,  # v1 — placeholder; case_brief loader is in a separate plan
         attached_items=list(major_input.attached_items),
         prior_artifacts=prior_artifacts,
+        user_templates=user_templates,
         style=style,
+    )
+
+
+async def _fetch_chosen_template(
+    deps: WriterPlannerDeps,
+    template_id: str,
+) -> "TemplateRef | None":
+    """Fetch a قوالبي row's body + title → TemplateRef (scoped to deps.user_id).
+
+    Returns None on any miss / error — the executor's prompt covers the
+    no-template path, so a failed fetch degrades to "draft without a template"
+    rather than failing the turn.
+    """
+    try:
+        res = (
+            deps.supabase
+            .table("user_templates")
+            .select("template_id, title, content_md")
+            .eq("template_id", template_id)
+            .eq("user_id", deps.user_id)
+            .is_("deleted_at", None)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        logger.warning(
+            "writer_planner: fetch chosen template failed id=%s",
+            template_id, exc_info=True,
+        )
+        return None
+    rows = getattr(res, "data", None) or []
+    if not rows:
+        return None
+    row = rows[0]
+    return TemplateRef(
+        template_id=str(row.get("template_id") or template_id),
+        title=str(row.get("title") or ""),
+        body_md=str(row.get("content_md") or ""),
     )
 
 
@@ -219,7 +266,7 @@ async def _build_package_from_decision(
     *,
     selected_uuids: list[str],
     role_assignments_by_uuid: dict[str, PlannerRole],
-    system_templates: list[TemplateRef] | None = None,
+    templates: list[TemplateRef] | None = None,
 ) -> WriterPackage:
     """Assemble a WriterPackage from a finalized PlannerDecision + deps.
 
@@ -235,13 +282,10 @@ async def _build_package_from_decision(
     emitted in ``decision.selected_wis`` are decoupled from the walker
     surface at this seam.
 
-    system_templates: optional pre-fetched TemplateRef list (the planner
-    may have called search_templates during its run; the tool returns the
-    refs but doesn't stash them on deps because there's no need — the
-    runner re-fetches once at package-build time if the decider didn't
-    surface a user template). For v1 we always pass an empty list; the
-    plan ships with system_templates having zero ingested rows so this
-    won't hurt.
+    templates: optional pre-fetched TemplateRef list — the قوالبي template the
+    planner chose (resolved from a ``TPL-{n}`` alias and fetched by the caller).
+    Empty when the planner picked no template, or when the user attached a
+    role='template' item this turn (that rides in analyzed_items instead).
     """
     if decision.analyzer_invoked:
         analyzed = await build_analyzed_items_from_verdicts(
@@ -263,7 +307,7 @@ async def _build_package_from_decision(
         edit_mode=decision.edit_mode,
         plan_md=decision.plan_md,
         analyzed_items=analyzed,
-        system_templates=list(system_templates or []),
+        templates=list(templates or []),
         style=deps.style,
     )
 
@@ -453,13 +497,42 @@ async def handle_writer_planner_turn(
             len(selected_uuids), len(decision.selected_wis),
         )
 
+        # --- 5b. Resolve chosen قوالبي template (A2: attached template wins) --
+        # When the user attached a role='template' item THIS turn it rides in
+        # analyzed_items and takes precedence — ignore any chosen_template.
+        chosen_template_ref: TemplateRef | None = None
+        has_attached_template = any(
+            r == "template" for r in role_map_by_uuid.values()
+        )
+        if decision.chosen_template and has_attached_template:
+            logger.info(
+                "writer_planner: ignoring chosen_template (user attached a "
+                "role='template' item this turn — attached wins)"
+            )
+        elif decision.chosen_template:
+            tpl_id = deps.resolve_tpl_alias(decision.chosen_template)
+            if tpl_id is None:
+                logger.warning(
+                    "writer_planner: chosen_template alias %r unresolvable — "
+                    "drafting without a library template",
+                    decision.chosen_template,
+                )
+            else:
+                chosen_template_ref = await _fetch_chosen_template(deps, tpl_id)
+                if chosen_template_ref is None:
+                    logger.warning(
+                        "writer_planner: chosen_template %s → %s but fetch "
+                        "returned nothing — drafting without a library template",
+                        decision.chosen_template, tpl_id,
+                    )
+
         # --- 6. Build WriterPackage from decision ------------------------
         package = await _build_package_from_decision(
             decision,
             deps,
             selected_uuids=selected_uuids,
             role_assignments_by_uuid=role_map_by_uuid,
-            system_templates=None,
+            templates=[chosen_template_ref] if chosen_template_ref else None,
         )
 
         # --- 7. Run the writing executor on the package ------------------
@@ -511,13 +584,44 @@ async def handle_writer_planner_turn(
             duration,
         )
 
+        # Non-blocking save-as-template offer (Wave E): after a SUCCESSFUL
+        # publish, surface an «احفظ كقالب؟» chip in chat. Decided by the planner
+        # (offer_save + offer_item_id WI-alias); emitted here as an SSE event the
+        # frontend renders on the assistant message and POSTs to /templates/ingest.
+        sse_events = list(writer_output.sse_events or [])
+        if decision.offer_save and decision.offer_item_id:
+            offer_uuid = deps.resolve_wi_alias(decision.offer_item_id)
+            if offer_uuid:
+                title_hint = ""
+                for snap in deps.attached_items:
+                    if getattr(snap, "item_id", "") == offer_uuid:
+                        title_hint = getattr(snap, "title", "") or ""
+                        break
+                sse_events.append(
+                    {
+                        "type": "template_save_offer",
+                        "item_id": offer_uuid,
+                        "title_hint": title_hint,
+                    }
+                )
+                logger.info(
+                    "writer_planner: emitted template_save_offer for item=%s",
+                    offer_uuid,
+                )
+            else:
+                logger.warning(
+                    "writer_planner: offer_save set but offer_item_id %r "
+                    "unresolvable — skipping chip",
+                    decision.offer_item_id,
+                )
+
         return WriterPlannerTurnResult(
             kind="completed",
             result=SpecialistResult(
                 output_item_id=writer_output.item_id,
                 chat_summary=writer_output.chat_summary or "",
                 key_findings=list(writer_output.key_findings or []),
-                sse_events=list(writer_output.sse_events or []),
+                sse_events=sse_events,
                 model_used=writer_output.metadata.get(
                     "model_used", "writer_planner_decider"
                 ),

@@ -199,6 +199,12 @@ AGENT_MODELS: dict[str, ModelPolicy] = {
     # (one per family: refs vs meta). Short structured outputs — reasoning
     # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
     "item_analyzer":              ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — Layer-4 transformer that cleans ONE raw legal
+    # document into a reusable, placeholder'd, uniquely-titled template saved to
+    # user_templates. One LLM call per ingestion; deepseek-flash can emit the
+    # two-field output as text → a TextOutput JSON salvager avoids the retry.
+    # See .claude/plans/writer_planner_user_templates.md §Wave D.
+    "template_ingester":          ModelPolicy("tier_2", primary="deepseek"),
     # Tier_2 DeepSeek-primary — runs once per deep_search invocation, in parallel
     # with the expanders, to pick the 2-5 sector AND-filter. Replaces the old
     # planner_decider.sectors output (decider had no visibility into per-sector

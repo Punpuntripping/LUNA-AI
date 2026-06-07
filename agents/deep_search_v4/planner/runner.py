@@ -228,16 +228,19 @@ async def handle_planner_turn(
 
 
 def _count_workspace_reads(events: list[dict]) -> int:
-    """Count ``read_workspace_item`` tool_call events emitted onto ``deps._events``.
+    """Count workspace-unfold tool_call events emitted onto ``deps._events``.
 
     Used by the logger payload (§3.8) to record how many prior artifacts the
     decider opened during phase 1 — split from ``ask_user_invoked`` so a
     pathological «planner keeps reading» pattern is distinguishable from a
-    «planner asked one clarifying question» pattern.
+    «planner asked one clarifying question» pattern. Counts the current
+    ``unfold_workspace_item`` tool plus the legacy ``read_workspace_item``
+    name so historical events still tally.
     """
     return sum(
         1 for e in events
-        if e.get("type") == "tool_call" and e.get("tool") == "read_workspace_item"
+        if e.get("type") == "tool_call"
+        and e.get("tool") in ("unfold_workspace_item", "read_workspace_item")
     )
 
 
@@ -288,7 +291,7 @@ async def _run_planner_turn(
             decider = create_planner_decider(model_override=deps.model_override)
             # Phase C: decider's deps_type flipped from None → PlannerDeps.
             # Pass deps so the dynamic instructions render comprehension blocks
-            # AND read_workspace_item has supabase/user_id/conversation_id.
+            # AND unfold_workspace_item has supabase/user_id/conversation_id.
             result = await decider.run(
                 build_decider_user_message(query),
                 deps=deps,
@@ -355,7 +358,7 @@ async def _run_planner_turn(
             )
     else:
         # Resume path — decision already resolved by the orchestrator. The
-        # decider's read_workspace_item tool-call events (if any) lived on the
+        # decider's unfold_workspace_item tool-call events (if any) lived on the
         # PRIOR turn's deps; this turn's deps._events is fresh, so the resume
         # read-back records 0 reads (correct — no new reads happened here).
         _decided_payload = {

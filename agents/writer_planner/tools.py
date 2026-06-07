@@ -1,17 +1,21 @@
-"""The 4 tools the writer_planner decider can call.
+"""The 3 tools the writer_planner decider can call.
 
 Tools are registered on the Pydantic AI agent via :func:`register_tools`.
 Splitting them out of ``agent.py`` keeps the agent factory short and lets
 unit tests import individual tool functions without instantiating the agent.
 
-The 4 tools:
+The 3 tools:
 
 | Tool                          | Layer    | Deferred? | Purpose |
 |-------------------------------|----------|-----------|---------|
 | ``analyze_items``             | calls L4 | no        | Verdict per-WI (full/partial/none) via the shared item_analyzer. Stashes the result on ``deps.last_analyzer_output``. |
-| ``search_templates``          | non-LLM  | no        | pgvector cosine over ``system_templates``. Empty until ingestion lands. |
 | ``ask_user``                  | -        | YES       | Pauses with ``pause_reason='clarify'``. Use only when something critical is missing. |
 | ``present_plan_for_approval`` | -        | YES       | Pauses with ``pause_reason='approve_plan'``. Tracks ``present_count`` for the 3-cap. |
+
+The user's قوالبي templates are NOT fetched via a tool — their titles are
+injected into the planner's context as a ``<my_templates>`` block (see
+``prompts.py``), so the planner reads them passively and picks one by its
+``TPL-{n}`` alias on the final ``PlannerDecision``.
 
 Both deferred tools raise ``CallDeferred`` to end the run with a
 ``DeferredToolRequests`` output. The orchestrator distinguishes them by the
@@ -30,8 +34,6 @@ from agents.memory.item_analyzer import (
     analyze,
     build_analyzer_deps,
 )
-from agents.writer.models import TemplateRef, WriterSubtype
-from agents.writer_planner.distill import search_templates as _do_search_templates
 
 # Runtime import (NOT TYPE_CHECKING) — Pydantic AI resolves tool function
 # type hints at registration time via _function_schema.function_schema, and
@@ -51,7 +53,7 @@ MAX_PRESENT_CYCLES: int = 3
 def register_tools(
     agent: Agent[WriterPlannerDeps, list],
 ) -> None:
-    """Register the 4 planner tools on the given Pydantic AI agent.
+    """Register the 3 planner tools on the given Pydantic AI agent.
 
     Called once from ``agent.py::create_writer_planner_decider`` right after
     the ``Agent(...)`` constructor. Splits out so the registration list is
@@ -150,53 +152,7 @@ def register_tools(
         return result
 
     # -----------------------------------------------------------------------
-    # 2. search_templates — pgvector over system_templates. No LLM.
-    # -----------------------------------------------------------------------
-    @agent.tool
-    async def search_templates(
-        ctx: RunContext[WriterPlannerDeps],
-        subtype: WriterSubtype,
-        intent: str,
-        top_n: int = 5,
-    ) -> list[TemplateRef]:
-        """Search the system_templates library by semantic similarity.
-
-        Returns up to ``top_n`` TemplateRef rows ordered by cosine similarity
-        to ``intent``, filtered to the Arabic enum mapping of ``subtype``.
-
-        Skip this tool entirely when the user has supplied their own template
-        (i.e. when you'd label any WI with role='template'). The user's
-        template wins over the system library.
-
-        Returns an empty list when:
-          - subtype maps to no template type (e.g. summary)
-          - the system_templates table has no ingested rows (v1 default —
-            ingestion is a separate follow-up plan)
-          - the embedding service fails (logged WARN)
-
-        Treat an empty list as the normal case for v1, not an error. Your
-        system prompt has the no-template fallback («إن لم توجد قوالب،
-        أنشئ هيكلاً مناسباً للنوع»).
-
-        Args:
-            subtype: The drafting subtype you're heading toward.
-            intent: A short Arabic description of what the user wants drafted —
-                typically your draft of ``intent_ar``.
-            top_n: Maximum templates to return. Default 5.
-
-        Returns:
-            List of TemplateRef (best match first). Empty list when no rows
-            match — that is the v1 default state.
-        """
-        return await _do_search_templates(
-            supabase=ctx.deps.supabase,
-            subtype=subtype,
-            intent=intent,
-            top_n=top_n,
-        )
-
-    # -----------------------------------------------------------------------
-    # 3. ask_user — deferred. Pauses with pause_reason='clarify'.
+    # 2. ask_user — deferred. Pauses with pause_reason='clarify'.
     # -----------------------------------------------------------------------
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
@@ -228,7 +184,7 @@ def register_tools(
         raise CallDeferred
 
     # -----------------------------------------------------------------------
-    # 4. present_plan_for_approval — deferred. pause_reason='approve_plan'.
+    # 3. present_plan_for_approval — deferred. pause_reason='approve_plan'.
     #    Increments deps.present_count; 4th call auto-approves (no pause).
     # -----------------------------------------------------------------------
     @agent.tool
@@ -246,6 +202,9 @@ def register_tools(
         The plan_md should be short Arabic markdown:
           1. ## النوع: what kind of document you'll draft.
           2. ## المرجع: which item plays which role (template, source, ...).
+             If you will draft from one of the user's قوالبي templates, NAME it
+             here («القالب: <العنوان>») — and when two titles plausibly fit,
+             list both and ask the user to choose one.
           3. ## المعطيات: parties, dates, amounts you'll fill in.
           4. ## الإخراج: a 2-3 line summary of what the output will look like.
 

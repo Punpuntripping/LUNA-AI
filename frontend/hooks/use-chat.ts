@@ -22,6 +22,7 @@ import type {
   SSEWorkspaceItemLocked,
   SSEWorkspaceItemUnlocked,
   SSEReferencedExistingItem,
+  SSETemplateSaveOffer,
   WorkspaceItem,
   WorkspaceItemListResponse,
 } from "@/types";
@@ -499,6 +500,27 @@ export function useSendMessage(): UseSendMessageReturn {
                 useChatStore
                   .getState()
                   .recordReferencedItem(assistantMessageId, payload.item_id);
+              }
+              break;
+            }
+            case "template_save_offer": {
+              // Wave E (writer_planner_user_templates §D6): the writer
+              // pipeline judged an attached doc template-worthy and offered to
+              // save it (non-blocking, emitted after publish). Stash the offer
+              // against the in-flight assistant message so MessageBubble can
+              // render the «احفظ المرفق كقالب؟ [نعم]» chip. Like
+              // ``referenced_existing_item`` this lives on the store (keyed by
+              // message_id) so it survives the post-stream messages-cache
+              // invalidate. Ephemeral — not persisted across reload.
+              const payload = data as SSETemplateSaveOffer;
+              if (assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .recordTemplateOffer(
+                    assistantMessageId,
+                    payload.item_id,
+                    payload.title_hint,
+                  );
               }
               break;
             }

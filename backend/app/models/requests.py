@@ -174,6 +174,16 @@ class UpdateTemplateRequest(BaseModel):
         return v.strip()
 
 
+class IngestTemplateRequest(BaseModel):
+    """POST /api/v1/templates/ingest
+
+    Asks the ingester agent to clean ONE attached workspace item into a
+    reusable template and save it to قوالبي. Only the item_id is supplied —
+    ownership + provenance are set server-side.
+    """
+    item_id: str = Field(..., min_length=1, max_length=100)
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 class UploadInitRequest(BaseModel):

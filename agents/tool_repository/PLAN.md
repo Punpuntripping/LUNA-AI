@@ -278,7 +278,82 @@ keeping the row owned by the correct user — the model never supplies it.
 
 ---
 
-## 11. Sources
+## 11. `unfold_workspace_item` tool (BUILT)
+
+A third reusable tool, implemented in
+`agents/tool_repository/unfold_workspace_item.py`. It **replaces the old
+`read_workspace_item`** tool (router) and adds the same read capability to the
+**deep_search planner decider** and the **writer_planner** — the three
+WI-consuming agents.
+
+**The problem it fixes.** `read_workspace_item` returned only `content_md`. A
+deep_search artifact's body cites its sources as `[n]` markers, but the names
+behind those numbers (the actual regulations / rulings / services) lived only
+in `workspace_item_references` + the source tables — invisible to the agent
+reading the item. So when a user pointed at a *specific named regulation* that
+appeared inside a prior search (e.g. «نظام اشتراطات المطاعم»), the router/planner
+couldn't connect the name to the cited source and kept re-running generic
+searches (diagnosed in convo `6b0c5915`).
+
+**What it returns.** The item's `content_md`, followed by a used-only,
+`[n]`-keyed manifest whose numbers match the `[n]` markers in the body:
+
+```
+[1] {regulation clean_title} — {chunk title}     (regulations)
+[2] [{case_number}] {case summary}                (cases)
+[3] {service_name_ar}                             (compliance)
+```
+
+so the agent can map any `[n]` in the body to the exact named source.
+
+**Design (per the user's spec).**
+- **Deterministic, no LLM** — distinct from the `item_analyzer` (the LLM
+  full/partial/none distiller). This is a plain read+manifest primitive.
+- **Used-only** — only references with `workspace_item_references.used = true`
+  appear; unused ones are omitted entirely. This also bounds the size.
+- **`n`-keyed, not deduped** — one line per cited `n` (the citation index),
+  ordered ascending across all domains.
+- **Lean resolver** — reads `workspace_item_references` (used rows), then
+  batched per-domain title/summary joins. It does NOT call the heavy
+  `references_service.fetch_item_references` (which also builds `source_view`,
+  snippets, cross-refs — overkill for a title manifest). Mirrors how the
+  item_analyzer's callers unfold refs, but title-only.
+
+**Data sources (live-verified columns).**
+- regulations: `workspace_item_references.item_id` → `chunks_v2.id`
+  (`reg:<uuid>` ref_id fallback for legacy NULL item_id) → `chunks_v2.title`
+  + `chunks_v2.regulation_id` → `regulations_v2.clean_title` (fallback `title`).
+- cases: `item_id` → `cases.id` → `cases.case_number` + `cases.summary`.
+- compliance: `item_id` → `services.id` → `services.service_name_ar`.
+
+Unresolvable sources degrade to a `(مصدر غير متوفر)` stub line so an `[n]` is
+never silently dropped. A missing / out-of-scope item returns `""` — the same
+silent-skip contract as the old tool.
+
+**Pure surface (unit-testable without a DB):** `render_unfold_md(content_md,
+lines)`, `SourceLine`, `resolve_used_sources(supabase, wi_id)`,
+`unfold_item(supabase, item_id, user_id)`, `_resolve_wi_alias(...)`.
+
+**Registration.**
+```python
+from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
+register_unfold_workspace_item(agent)   # deps: .supabase + .user_id + .wi_alias_map
+```
+Registered on `router_agent` (replacing `read_workspace_item`),
+`create_planner_decider` (re-introduces a read tool, richer), and
+`create_writer_planner_decider` (alongside `analyze_items`). All three deps
+classes (`RouterDeps`, `PlannerDeps`, `WriterPlannerDeps`) structurally satisfy
+`HasWorkspaceContext`. The planner runner's `_count_workspace_reads` counts the
+new tool name (and the legacy one, for historical events).
+
+**Deps contract.** `HasWorkspaceContext` (Protocol): `.supabase` +
+`.user_id: str` + `.wi_alias_map: dict[int, str]`. The service-role client
+bypasses RLS, so `.eq("user_id", user_id)` on the item fetch is load-bearing
+scope enforcement.
+
+---
+
+## 12. Sources
 
 - Claude Code `Edit` tool reference — https://code.claude.com/docs/en/tools-reference
 - Claude Code Edit silent-fail bug — https://github.com/anthropics/claude-code/issues/52241

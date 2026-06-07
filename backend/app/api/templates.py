@@ -19,8 +19,16 @@ from fastapi import APIRouter, Depends, Response
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
-from backend.app.models.requests import CreateTemplateRequest, UpdateTemplateRequest
-from backend.app.models.responses import TemplateListResponse, TemplateResponse
+from backend.app.models.requests import (
+    CreateTemplateRequest,
+    IngestTemplateRequest,
+    UpdateTemplateRequest,
+)
+from backend.app.models.responses import (
+    IngestTemplateResponse,
+    TemplateListResponse,
+    TemplateResponse,
+)
 from backend.app.services import templates_service
 from shared.auth.jwt import AuthUser
 
@@ -77,6 +85,27 @@ async def create_template(
         content_md=body.content_md,
     )
     return _to_response(row)
+
+
+@router.post("/templates/ingest", response_model=IngestTemplateResponse)
+async def ingest_template(
+    body: IngestTemplateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Clean an attached workspace item into a reusable قوالبي template.
+
+    Runs the dedicated ingester pipeline directly (NO router/orchestrator).
+    Returns ``{ok: true, template_id, title}`` on success, or
+    ``{ok: false, error}`` (Arabic) on failure — failures do NOT raise a 5xx so
+    the frontend chip can render the Arabic message in place.
+    """
+    result = await templates_service.ingest_template(
+        supabase,
+        current_user.auth_id,
+        item_id=body.item_id,
+    )
+    return IngestTemplateResponse(**result)
 
 
 @router.get("/templates/{template_id}", response_model=TemplateResponse)

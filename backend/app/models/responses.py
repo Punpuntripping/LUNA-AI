@@ -279,6 +279,18 @@ class TemplateListResponse(BaseModel):
     templates: list[TemplateResponse]
 
 
+class IngestTemplateResponse(BaseModel):
+    """POST /api/v1/templates/ingest
+
+    ``ok=True`` carries the new template_id + title. ``ok=False`` carries the
+    Arabic ``error`` message (the failure path never raises a 5xx for the
+    frontend chip — it renders ``error`` in place)."""
+    ok: bool
+    template_id: str | None = None
+    title: str | None = None
+    error: str | None = None
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 

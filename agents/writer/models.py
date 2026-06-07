@@ -287,21 +287,26 @@ class AnalyzedItem(BaseModel):
 
 
 class TemplateRef(BaseModel):
-    """A system_templates row surfaced by the planner's search_templates tool.
+    """A template the planner chose for the executor to mimic.
 
-    Empty in v1 since system_templates currently has zero ingested rows. The
-    planner's prompt covers the no-template path («إن لم توجد قوالب، أنشئ
-    هيكلاً مناسباً للنوع دون الاعتماد على قالب»).
+    Carries one of the user's قوالبي (``user_templates``) rows the planner
+    picked to draft from. ``template_type`` and ``score`` are optional —
+    قوالبي rows have no type enum and no similarity score (titles are picked
+    directly, not semantically ranked). The planner's prompt covers the
+    no-template path («إن لم توجد قوالب، أنشئ هيكلاً مناسباً للنوع دون
+    الاعتماد على قالب»).
     """
 
     template_id: str
-    template_type: str = Field(
-        description="Arabic enum value from system_templates.template_type (عقد, مذكرة, ...)."
+    template_type: str | None = Field(
+        default=None,
+        description="Optional category label; None for قوالبي rows (no type enum).",
     )
     title: str
     body_md: str = Field(description="The full template content, ready to mimic.")
-    score: float = Field(
-        description="pgvector cosine similarity score (debug / telemetry only)."
+    score: float | None = Field(
+        default=None,
+        description="Optional similarity score (telemetry only); None for قوالبي picks.",
     )
 
 
@@ -356,9 +361,13 @@ class WriterPackage(BaseModel):
             "below to project by role."
         ),
     )
-    system_templates: list[TemplateRef] = Field(
+    templates: list[TemplateRef] = Field(
         default_factory=list,
-        description="Top-N system templates from pgvector search; empty if user supplied a role='template' item or if no rows match.",
+        description=(
+            "Chosen قوالبي template(s) for the executor to mimic (usually 0 or 1), "
+            "as TemplateRef. Empty when the user attached a role='template' item "
+            "(that rides in analyzed_items) or chose no template."
+        ),
     )
     style: WriterStyle = Field(default_factory=WriterStyle)
 
@@ -403,7 +412,7 @@ def _from_package(
     — the runner branches on type. This adapter exists for callers that still
     expect the older flat-input shape (legacy tests, ad-hoc CLI smoke runs).
 
-    Lossy conversion: drops `plan_md`, `system_templates`, the structured
+    Lossy conversion: drops `plan_md`, `templates`, the structured
     `analyzed_items` (flattens to a research_items dict list), and role
     information. The full-fidelity path is the WriterPackage runner branch.
     """

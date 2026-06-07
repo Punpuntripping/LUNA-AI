@@ -27,6 +27,7 @@ import re
 from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
+from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
 
 from .deps import PlannerDeps
@@ -169,6 +170,14 @@ def create_planner_decider(
             The user's reply text (delivered on resume via DeferredToolResults).
         """
         raise CallDeferred
+
+    # Deterministic read tool: unfold a prior search / attached item into its
+    # content_md + a used-only, [n]-keyed manifest of the named sources it
+    # cites. Lets the decider anchor query_restatement / planner_brief on a
+    # specific named regulation/ruling/service the user points at, instead of
+    # re-running a generic search. PlannerDeps exposes
+    # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
+    register_unfold_workspace_item(agent)
 
     return agent
 

@@ -410,10 +410,12 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
         lines.append("  </plan>")
         lines.append("")
 
-    # 2. <templates> — user-supplied (role='template' AnalyzedItems) + system templates.
+    # 2. <templates> — user-attached this turn (role='template' AnalyzedItems,
+    #    source="user") + قوالبي library picks (TemplateRef from
+    #    package.templates, source="library").
     user_templates = package.user_templates()
-    system_templates = package.system_templates
-    if user_templates or system_templates:
+    library_templates = package.templates
+    if user_templates or library_templates:
         lines.append("  <templates>")
         for tmpl in user_templates:
             # User-attached template: stored as an AnalyzedItem with role='template'.
@@ -423,14 +425,19 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
                     tmpl, outer_tag="template", extra_attrs=attrs, indent="    "
                 )
             )
-        for sys_tmpl in system_templates:
-            # System template: stored as a TemplateRef (no need/role concept).
-            lines.append(
-                f'    <template source="system" template_id="{_esc(sys_tmpl.template_id)}" '
-                f'type="{_esc(sys_tmpl.template_type)}" title="{_esc(sys_tmpl.title)}">'
+        for lib_tmpl in library_templates:
+            # قوالبي pick: stored as a TemplateRef (no need/role concept; optional type).
+            type_attr = (
+                f' type="{_esc(lib_tmpl.template_type)}"'
+                if lib_tmpl.template_type
+                else ""
             )
-            if sys_tmpl.body_md.strip():
-                lines.append(_esc(sys_tmpl.body_md.strip()))
+            lines.append(
+                f'    <template source="library" template_id="{_esc(lib_tmpl.template_id)}"'
+                f'{type_attr} title="{_esc(lib_tmpl.title)}">'
+            )
+            if lib_tmpl.body_md.strip():
+                lines.append(_esc(lib_tmpl.body_md.strip()))
             lines.append("    </template>")
         lines.append("  </templates>")
         lines.append("")

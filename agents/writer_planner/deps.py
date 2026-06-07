@@ -27,7 +27,10 @@ from typing import TYPE_CHECKING, Any
 
 from agents.models import ChatMessageSnapshot, WorkspaceItemSnapshot
 from agents.writer.models import WriterStyle
-from backend.app.services.writer_planner_context import ArtifactSummaryView
+from backend.app.services.writer_planner_context import (
+    ArtifactSummaryView,
+    UserTemplateTitle,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import httpx
@@ -87,6 +90,15 @@ class WriterPlannerDeps:
     # absent from the map — they are unreachable from the planner anyway.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
 
+    # قوالبي (user_templates) titles the planner may draft FROM — injected as a
+    # passive <my_templates> context block (titles only, no body). The planner
+    # picks one by its TPL-{n} alias on the final PlannerDecision; the runner
+    # resolves the alias → template_id and fetches the body at package-build time.
+    user_templates: list[UserTemplateTitle] = field(default_factory=list)
+    # TPL-{n} → user_templates.template_id, built 1-based from `user_templates`
+    # load order. Re-derived fresh each turn (incl. resume) — same order.
+    tpl_alias_map: dict[int, str] = field(default_factory=dict)
+
     # --- mutable loop state ---------------------------------------------
     # Incremented by the present_plan_for_approval tool. Hard cap = 3; the
     # 4th call auto-approves with the most recent plan_md without pausing.
@@ -125,6 +137,26 @@ class WriterPlannerDeps:
             return s
         return None
 
+    def resolve_tpl_alias(self, alias: str) -> str | None:
+        """Resolve a ``"TPL-{n}"`` alias → user_templates.template_id UUID.
+
+        Accepts a raw UUID verbatim (defence-in-depth). Returns ``None`` when
+        the alias is empty / malformed / unknown.
+        """
+        if not alias:
+            return None
+        s = alias.strip()
+        m = _TPL_ALIAS_RE.match(s)
+        if m:
+            try:
+                n = int(m.group(1))
+            except ValueError:
+                return None
+            return self.tpl_alias_map.get(n)
+        if _UUID_RE.match(s):
+            return s
+        return None
+
     # -- tracking hooks (agents/utils/tracking.py protocol) ------------------
     def tracking_input(self) -> dict[str, Any]:
         """Bounded view of what the planner saw — span attrs ``input.*``."""
@@ -159,6 +191,7 @@ class WriterPlannerDeps:
 
 # Compiled at module level so they don't get rebuilt on every call.
 _WI_ALIAS_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)
+_TPL_ALIAS_RE = re.compile(r"^TPL-(\d+)$", re.IGNORECASE)
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -192,6 +225,17 @@ def _compute_wi_alias_map(
     return out
 
 
+def _compute_tpl_alias_map(
+    user_templates: list[UserTemplateTitle],
+) -> dict[int, str]:
+    """Assign ``TPL-{n}`` aliases (1-based, in load order) → template_id."""
+    return {
+        i: t.template_id
+        for i, t in enumerate(user_templates, start=1)
+        if t.template_id
+    }
+
+
 def build_writer_planner_deps(
     *,
     supabase: "SupabaseClient",
@@ -205,6 +249,7 @@ def build_writer_planner_deps(
     case_brief: str | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     prior_artifacts: list[ArtifactSummaryView] | None = None,
+    user_templates: list[UserTemplateTitle] | None = None,
     style: WriterStyle | None = None,
     emit_sse: Callable[[dict], None] | None = None,
 ) -> WriterPlannerDeps:
@@ -216,6 +261,7 @@ def build_writer_planner_deps(
     """
     attached_list = list(attached_items or [])
     prior_list = list(prior_artifacts or [])
+    template_list = list(user_templates or [])
     return WriterPlannerDeps(
         supabase=supabase,
         http_client=http_client,
@@ -229,6 +275,8 @@ def build_writer_planner_deps(
         attached_items=attached_list,
         prior_artifacts=prior_list,
         wi_alias_map=_compute_wi_alias_map(attached_list, prior_list),
+        user_templates=template_list,
+        tpl_alias_map=_compute_tpl_alias_map(template_list),
         style=style or WriterStyle(),
         emit_sse=emit_sse,
     )

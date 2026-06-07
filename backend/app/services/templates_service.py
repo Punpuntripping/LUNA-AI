@@ -194,6 +194,59 @@ def update_template(
     return result.data[0]
 
 
+async def ingest_template(
+    supabase: SupabaseClient,
+    auth_id: str,
+    item_id: str,
+) -> dict:
+    """Clean ONE attached workspace item into a reusable قوالبي template.
+
+    Resolves the internal ``user_id`` from ``auth_id``, builds the ingester
+    deps (with a short-lived httpx client like the other agent entry points),
+    opens a ``collect_llm_calls`` scope so the ``template.ingest`` cost lands in
+    the ``llm_calls`` ledger, and runs the dedicated ingester pipeline directly
+    (NO router/orchestrator).
+
+    Returns a plain dict ready for ``IngestTemplateResponse``:
+        success → ``{"ok": True, "template_id": ..., "title": ...}``
+        failure → ``{"ok": False, "error": "<Arabic>"}``
+
+    Never raises for the ingester's own failures — those collapse into the
+    Arabic ``error`` so the frontend chip can render it in place.
+    """
+    import httpx
+
+    from agents.memory.template_ingester import (
+        build_ingester_deps,
+        handle_template_ingestion,
+    )
+    from agents.utils.usage_sink import collect_llm_calls
+
+    user_id = get_user_id(supabase, auth_id)
+
+    async with httpx.AsyncClient(timeout=30.0) as http_client:
+        deps = build_ingester_deps(
+            supabase=supabase,
+            http_client=http_client,
+            user_id=user_id,
+        )
+        # Capture the ingest LLM call into the per-call cost ledger.
+        with collect_llm_calls(
+            supabase,
+            conversation_id=None,
+            user_id=user_id,
+        ):
+            result = await handle_template_ingestion(item_id, deps)
+
+    if result.ok:
+        return {
+            "ok": True,
+            "template_id": result.template_id,
+            "title": result.title,
+        }
+    return {"ok": False, "error": result.error_ar}
+
+
 def delete_template(
     supabase: SupabaseClient,
     auth_id: str,
@@ -234,4 +287,5 @@ __all__ = [
     "create_template",
     "update_template",
     "delete_template",
+    "ingest_template",
 ]

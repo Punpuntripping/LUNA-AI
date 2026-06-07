@@ -5,7 +5,7 @@ The router needs four pieces of context every turn:
 1. Case metadata + case memories (when ``case_id`` is set)
 2. Workspace item summaries — compact ``(item_id, kind, title, summary)``
    dicts used to populate ``DispatchAgent.attached_item_ids``. The full
-   ``content_md`` is fetched on demand via the ``read_workspace_item`` tool.
+   ``content_md`` is fetched on demand via the ``unfold_workspace_item`` tool.
 3. Compaction summary — full ``content_md`` of the latest ``convo_context``
    workspace item, when one exists.
 4. Recent messages — strictly after ``conversations.compacted_through_message_id``

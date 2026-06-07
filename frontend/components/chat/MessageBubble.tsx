@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { getRelativeTimeAr } from "@/lib/utils";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
 import type { Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
@@ -71,6 +72,15 @@ interface MessageBubbleProps {
   referencedItemIds?: string[];
   /** Open + highlight a referenced workspace_item (chip click). */
   onJumpToReferencedItem?: (itemId: string) => void;
+  /**
+   * Wave E (writer_planner_user_templates §D6): the "save attachment as
+   * template" offer the writer pipeline emitted at the end of this assistant
+   * turn. When present an inline «احفظ المرفق كقالب؟ [نعم]» chip renders below
+   * the bubble body. Sourced from ``chat-store.templateOffersByMessage`` so it
+   * survives the post-stream messages-cache invalidate. Undefined for user /
+   * streaming / non-writing bubbles.
+   */
+  templateOffer?: { itemId: string; titleHint: string };
 }
 
 export function MessageBubble({
@@ -85,6 +95,7 @@ export function MessageBubble({
   onCitationClick,
   referencedItemIds,
   onJumpToReferencedItem,
+  templateOffer,
 }: MessageBubbleProps) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>("none");
@@ -115,6 +126,13 @@ export function MessageBubble({
     !isAgentQuestion &&
     Array.isArray(referencedItemIds) &&
     referencedItemIds.length > 0;
+  // Wave E: writer pipeline offered to save an attached doc as a قوالبي
+  // template. Assistant bubbles only, and never on the agent-question bubble.
+  const hasTemplateOffer =
+    !isUser &&
+    !isAgentQuestion &&
+    templateOffer !== undefined &&
+    !!templateOffer.itemId;
 
   // Focus the textarea when entering edit mode
   useEffect(() => {
@@ -434,6 +452,20 @@ export function MessageBubble({
                   onJump={onJumpToReferencedItem}
                 />
               ))}
+            </div>
+          )}
+
+          {/* Wave E (writer_planner_user_templates §D6): "save attachment as
+              template" chip. Like the referenced-items chip it stays hidden
+              during streaming and appears once the turn settles — the SSE
+              ``template_save_offer`` event attaches the offer to the assistant
+              message_id and the bubble re-renders with the chip visible. */}
+          {!isCurrentlyStreaming && hasTemplateOffer && (
+            <div className="flex flex-wrap gap-1.5 mt-2.5">
+              <TemplateSaveOfferChip
+                itemId={templateOffer!.itemId}
+                titleHint={templateOffer!.titleHint}
+              />
             </div>
           )}
 

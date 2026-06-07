@@ -9,7 +9,7 @@ Two input contracts:
    moved to the WriterPackage / writer_planner handoff yet.
 
 2. **WriterPackage** (planner handoff) — structured shape with intent_ar +
-   analyzed_items (full/partial verdicts) + plan_md + system_templates +
+   analyzed_items (full/partial verdicts) + plan_md + templates +
    style. The runner stashes the package on ``deps`` (so the agent's
    ``package_content_block`` dynamic instruction renders it as a system
    block), builds a *minimal* user message (intent + directive only) via

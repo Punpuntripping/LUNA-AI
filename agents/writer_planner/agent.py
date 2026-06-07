@@ -6,7 +6,7 @@ Builds an ``Agent[WriterPlannerDeps, list[PlannerDecision | DeferredToolRequests
 - Pause emission → ``DeferredToolRequests`` (from ``ask_user`` or
   ``present_plan_for_approval``).
 
-The four tools (``analyze_items``, ``search_templates``, ``ask_user``,
+The three tools (``analyze_items``, ``ask_user``,
 ``present_plan_for_approval``) are registered via
 :func:`agents.writer_planner.tools.register_tools` so this factory
 stays focused on model + output_type wiring + dynamic instructions.
@@ -21,6 +21,7 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.usage import UsageLimits
 
 from agents.tool_repository.add_user_template import register_add_user_template
+from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
 
 from .deps import WriterPlannerDeps
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Per-turn usage budget. Sized for the worst-case planner turn:
 #   1 initial call
-#   + up to 2 same-turn parallel tool calls (analyze_items ∥ search_templates)
+#   + 1 analyze_items call (item triage)
 #   + 1 present_plan_for_approval → pause → resume
 #   + 2 re-plan rounds (if user rejects + reshapes)
 #   + 1-2 output_retries
@@ -84,7 +85,7 @@ def create_writer_planner_decider(
         """Render the per-turn dynamic instruction block (summary-only — see § Core invariant)."""
         return build_writer_planner_instructions(ctx.deps)
 
-    # Register the 4 tools (analyze_items, search_templates, ask_user,
+    # Register the 3 tools (analyze_items, ask_user,
     # present_plan_for_approval). See tools.py.
     register_tools(agent)
 
@@ -93,6 +94,14 @@ def create_writer_planner_decider(
     # .user_id, so it structurally satisfies HasUserContext. See
     # agents/tool_repository/add_user_template.py.
     register_add_user_template(agent)
+
+    # Deterministic full read of one workspace item + a used-only, [n]-keyed
+    # manifest of the named sources it cites. Complements analyze_items
+    # (the item_analyzer triage path): use unfold when the user points at a
+    # specific named regulation/ruling/service inside a prior item and you need
+    # its exact content + citations. WriterPlannerDeps exposes
+    # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
+    register_unfold_workspace_item(agent)
 
     return agent
 

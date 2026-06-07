@@ -18,7 +18,7 @@ event-name constants):
     * ``sectors`` (list[str])
     * ``planner_brief_chars`` (int) — Phase C: length of decision.planner_brief
     * ``context_labels`` (list[str]) — Phase C: decision.context_labels
-    * ``workspace_reads_count`` (int) — Phase C: count of `read_workspace_item`
+    * ``workspace_reads_count`` (int) — Phase C: count of `unfold_workspace_item`
       tool_call events emitted onto deps._events during this turn
     * ``ask_user_invoked`` (bool) — Phase C: True iff the decider called
       ask_user (the run paused; this branch is reachable only on resume)
@@ -41,10 +41,11 @@ event-name constants):
   ``PlannerResponse``.
 - ``EVENT_ERROR`` — emitted on any phase exception.
 
-The ``read_workspace_item`` tool itself emits ``{"type": "tool_call", "tool":
-"read_workspace_item", "item_id": …}`` items onto ``deps._events`` (NOT a
+The ``unfold_workspace_item`` tool itself emits ``{"type": "tool_call", "tool":
+"unfold_workspace_item", "item_id": …}`` items onto ``deps._events`` (NOT a
 lifecycle event — a tool-call audit record). The runner counts these to derive
-``workspace_reads_count``.
+``workspace_reads_count`` (the legacy ``read_workspace_item`` name is still
+tallied for historical events).
 """
 from __future__ import annotations
 

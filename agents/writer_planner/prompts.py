@@ -113,7 +113,7 @@ verdict. Never ask for raw content.
 
 | Job | Tool | Skip when |
 |---|---|---|
-| **1. Strategy alignment** | `ask_user` / `present_plan_for_approval` | Subtype is stated or clearly implied + a template is supplied (user-attached OR system-searchable) + the critical drafting parameters are already in the user's message |
+| **1. Strategy alignment** | `ask_user` / `present_plan_for_approval` | Subtype is stated or clearly implied + a template is supplied (user-attached OR a clear single match in قوالبي) + the critical drafting parameters are already in the user's message |
 | **2. Context distillation** | `analyze_items` | The relevant items are unambiguous: the user attached them this turn, OR named specific artifacts ("use the contract template", "from the prior search") that you can identify from title + summary |
 
 **Default posture = skip both.** Only invoke a phase when your inspection
@@ -157,8 +157,9 @@ item; that wastes tokens.
 
 ## When to SKIP `present_plan_for_approval`
 
-- **Clean turn**: subtype set, template supplied or findable, parameters
-  present → emit a final `PlannerDecision` directly. Example: user attaches
+- **Clean turn**: subtype set, template supplied (attached or a single clear
+  قوالبي match), parameters present → emit a final `PlannerDecision` directly.
+  Example: user attaches
   a contract template + 2 image sources (offer + commercial registry) +
   writes "draft the contract with these numbers: 40K split 20+20 over
   6 months, date 1447/1/18" — zero clarification, zero plan presentation.
@@ -195,22 +196,48 @@ user anything that can be inferred from what's already on screen:
 Going directly to a final `PlannerDecision` (with or without
 `present_plan_for_approval`) is the correct path.
 
-# Parallel tool emission
+# قوالبي — drafting from one of the user's saved templates
 
-When you need BOTH `analyze_items` and `search_templates` in the same
-turn, **emit both calls in the same response** so they run concurrently.
-Do not wait for one before issuing the other — they are independent
-(one is an LLM call, the other is a pgvector lookup). Same-turn emission
-saves seconds.
+The user's saved templates ("قوالبي") appear in the `<my_templates>` block as
+`TPL-{n} | title` (titles only — you never see the body). When the user wants a
+document and one of these fits, draft FROM it:
+
+- Set `chosen_template` on your final `PlannerDecision` to the `TPL-{n}` alias
+  (e.g. `"TPL-2"`) — never a raw id. The runner fetches that template's body and
+  hands it to the executor.
+- **Precedence:** if the user ATTACHED a template this turn (you'd label a WI
+  with role='template'), use THAT and leave `chosen_template` null — an attached
+  template always wins over the saved library.
+- **One clear fit → just use it.** Don't ask.
+- **Two or more plausibly fit → ask in the plan.** Call
+  `present_plan_for_approval` and list the candidate titles so the user picks one
+  («اختر القالب: ١) … ٢) …»). Never silently guess between them.
+- **Whenever you present a plan AND will use a قالب, NAME it** in the plan's
+  `## المرجع` section («القالب: <العنوان>») so the user knows before approving.
+- No fitting قالب (or `<my_templates>` is empty) → build a suitable structure
+  for the document type without a template.
+
+# Offering to save a new template
+
+When the user ATTACHES a document this turn that looks like a reusable template
+(a clean contract/letter skeleton) AND they did NOT already ask to save it, you
+may offer — non-blocking — to add it to قوالبي:
+
+- Set `offer_save=true` and `offer_item_id` to that attached item's `WI-{seq}`
+  alias on your final `PlannerDecision`.
+- This does NOT pause and does NOT change your draft — it surfaces an
+  «احفظ كقالب؟» chip in chat AFTER the draft is delivered; the user decides.
+- Only offer for genuinely reusable documents. A one-off contract the user just
+  wants drafted (filled with real names/numbers) is not automatically a template.
 
 # Tools available
 
 | Tool | When to use |
 |---|---|
 | `analyze_items(query, targeted_wi)` | Triage / distill prior items when there are many or the relevance is ambiguous. Returns per-WI verdicts (`full` / `partial` / `none`). |
-| `search_templates(subtype, intent)` | Search the system template library by semantic similarity. Skip if the user has supplied a `role='template'` item — user templates win over system ones. |
+| `unfold_workspace_item("WI-N")` | Deterministic full read of ONE item: its content plus a used-only, `[n]`-keyed list of the named sources it cites (regulation+chunk titles, case summaries, service names). Use when the user points at a **specific named** regulation/ruling/service that may sit inside a prior item and you need its exact content + citations — not for bulk triage (use `analyze_items` for that). |
 | `ask_user(question)` | One clarifying question (pauses the run). Only when something critical is missing AND cannot be inferred. Compose the question in the user's language (Arabic by default). |
-| `present_plan_for_approval(plan_md)` | Surface a markdown plan to the user for approval (pauses the run). Strategic decisions only. plan_md is in the user's language. |
+| `present_plan_for_approval(plan_md)` | Surface a markdown plan to the user for approval (pauses the run). Strategic decisions only — including قوالبي disambiguation. plan_md is in the user's language. |
 
 # Final output
 
@@ -234,6 +261,11 @@ When you finish planning, emit a `PlannerDecision` with:
 - `analyzer_invoked` — `true` if you called `analyze_items` this turn,
   `false` otherwise. Drives the runner's package-assembly branch
   (verdict-walk vs bypass).
+- `chosen_template` — `TPL-{n}` alias of a قوالبي template to draft from, or
+  null. See the قوالبي section above for the precedence + disambiguation rules.
+- `offer_save` / `offer_item_id` — set both to offer (non-blocking) to save an
+  attached document as a قالب: `offer_save=true` and `offer_item_id` = the
+  attached item's `WI-{seq}` alias. Leave default when not offering.
 - `rationale` — short note explaining your choices (for logs). In the
   user's language.
 
@@ -341,6 +373,23 @@ def _render_prior_artifacts(views: list[ArtifactSummaryView]) -> str:
     return "\n".join(lines)
 
 
+def _render_my_templates(templates: list) -> str:
+    """Render the user's قوالبي titles as ``TPL-{n} | title`` lines (titles only).
+
+    The planner picks ONE by its ``TPL-{n}`` alias on
+    ``PlannerDecision.chosen_template`` when drafting from a saved template.
+    Bodies are NEVER shown here — the runner fetches the chosen body after the
+    decision (same summary-only discipline as workspace items).
+    """
+    if not templates:
+        return "(none)"
+    lines = []
+    for i, t in enumerate(templates, start=1):
+        title = _truncate(getattr(t, "title", "") or "", max_chars=120)
+        lines.append(f"  - TPL-{i} | title={title!r}")
+    return "\n".join(lines)
+
+
 def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
     """Render the per-turn dynamic instruction block.
 
@@ -386,6 +435,12 @@ def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
     parts.append("<prior_artifacts>")
     parts.append(prior)
     parts.append("</prior_artifacts>")
+    parts.append("")
+    parts.append("# قوالبي — the user's saved templates (titles only)")
+    parts.append("")
+    parts.append("<my_templates>")
+    parts.append(_render_my_templates(deps.user_templates))
+    parts.append("</my_templates>")
     parts.append("")
     parts.append("# Writing preferences")
     parts.append("")

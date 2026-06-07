@@ -12,7 +12,9 @@ Wave 9 changes:
   ``agent_family``, ``artifact_id`` → ``target_item_id``, plus
   ``attached_item_ids`` capped at ``MAX_ATTACHED_ITEMS``).
 - ``output_type`` uses Pydantic AI list syntax for per-member output tools.
-- ``read_workspace_item`` tool exposes full ``content_md`` on demand.
+- ``unfold_workspace_item`` tool exposes full ``content_md`` plus a used-only
+  ``[n]``-keyed manifest of the item's cited sources on demand (replaces the
+  former ``read_workspace_item``).
 - Eager context (workspace items summaries + compaction summary + filtered
   messages) is assembled by ``agents.router.context.load_router_context``
   and rendered as dynamic instructions on the agent.
@@ -29,6 +31,7 @@ from pydantic_ai.usage import UsageLimits
 from supabase import Client as SupabaseClient
 
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
+from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import get_agent_model
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
@@ -38,7 +41,7 @@ from shared.observability import get_logfire
 # The router LLM emits ``WI-{seq}`` aliases (e.g. ``"WI-3"``) instead of raw
 # UUIDs. The output validator resolves them against ``RouterDeps.wi_alias_map``
 # and fills the orchestrator-facing ``target_item_id`` / ``attached_item_ids``
-# fields. The read_workspace_item tool accepts either form for robustness.
+# fields. The unfold_workspace_item tool accepts either form for robustness.
 
 _WI_ALIAS_RE = re.compile(r"^WI-(\d+)$", re.IGNORECASE)
 _UUID_RE = re.compile(
@@ -112,8 +115,8 @@ class RouterDeps:
     user_preferences: dict | None
     # Eager context assembled by the loader before .run() — rendered into
     # dynamic instructions. Lists hold compact (item_id, wi_seq, kind, title,
-    # summary) dicts; full content_md is fetched on demand via
-    # read_workspace_item.
+    # summary) dicts; full content_md (+ cited-source manifest) is fetched on
+    # demand via unfold_workspace_item.
     workspace_item_summaries: list[dict] = field(default_factory=list)
     compaction_summary_md: str | None = None
     # Migration 052: ``WI-{seq}`` alias → item_id UUID lookup. Built by
@@ -160,7 +163,7 @@ SYSTEM_PROMPT = """\
 - الأسئلة البسيطة التي يمكنك الإجابة عنها بثقة عالية
 - أسئلة التوضيح — عندما تحتاج مزيداً من المعلومات من المستخدم
 - أسئلة عن ريحان ووظائفه
-- أسئلة عن محتوى تقرير أو مستند سابق — استخدم أداة read_workspace_item لقراءة المحتوى والإجابة مباشرة
+- أسئلة عن محتوى تقرير أو مستند سابق — استخدم أداة unfold_workspace_item لقراءة المحتوى ومصادره المذكورة بالاسم والإجابة مباشرة
 - الرسائل الغامضة — اسأل المستخدم قبل التوجيه
 
 ## متى توجّه إلى deep_search (DispatchAgent):
@@ -193,14 +196,15 @@ SYSTEM_PROMPT = """\
 - ملخصات عناصر مساحة العمل تُحقن لك في السياق برموز قصيرة (WI-1, WI-2, ...). كل عنصر يحمل: الرمز، النوع (kind)، العنوان، الملخص.
 - اختر العناصر الأكثر صلة بالطلب الحالي فقط، واذكرها بأرقامها («WI-3»، «WI-7») في `attached_wis`.
 - الحد الأقصى الصارم: {MAX_ATTACHED_ITEMS} عناصر لكل توجيه. إن وجدت أكثر، اختر الأهم.
-- إن لم تكفك الملخصات، استدعِ `read_workspace_item` بالرمز (مثل «WI-3») للحصول على المحتوى الكامل (يمكن استدعاؤها على عدة عناصر بالتوازي).
+- إن لم تكفك الملخصات، استدعِ `unfold_workspace_item` بالرمز (مثل «WI-3») للحصول على المحتوى الكامل مع قائمة المصادر المُستشهَد بها بالاسم (يمكن استدعاؤها على عدة عناصر بالتوازي).
 - إن لم يوجد عنصر مناسب، اترك `attached_wis` قائمة فارغة.
 - **لا تكتب معرّفات UUID مطلقاً** — استخدم رموز WI-N الموجودة في السياق فقط، ولا تخترع رموزاً جديدة.
 
 ## قواعد التعامل مع العناصر السابقة (workspace items):
-- سؤال عن محتوى العنصر (قراءة) → استخدم `read_workspace_item("WI-N")` وأجب مباشرة عبر ChatResponse
+- سؤال عن محتوى العنصر (قراءة) → استخدم `unfold_workspace_item("WI-N")` وأجب مباشرة عبر ChatResponse
 - طلب تعديل أو تحرير العنصر → وجّه DispatchAgent مع `target_wi="WI-N"`
 - عندما يشير المستخدم لعنصر دون تحديد → اذكر العناصر المتاحة (برموزها وعناوينها من الملخصات) واسأل أيها يقصد
+- عندما يشير المستخدم إلى **نظام أو حكم أو خدمة باسمٍ محدد** قد يكون مذكوراً داخل بحثٍ سابق → استدعِ `unfold_workspace_item("WI-N")` لرؤية المصادر المُستشهَد بها بالاسم (الأنظمة والمقاطع والأحكام والخدمات مرقّمةً بنفس أرقام [n] في النص)؛ إن طابق أحدها ما يقصده المستخدم فأجب عنه مباشرةً أو وجّه deep_search ببحثٍ مركّز على ذلك المصدر بالاسم.
 
 ## قواعد task_label:
 - عبارة عربية قصيرة (30-60 حرفاً) **مشتقة من محتوى السؤال** لا من سير العمل.
@@ -383,9 +387,9 @@ def inject_workspace_summaries(ctx: RunContext[RouterDeps]) -> str:
         # All items lacked wi_seq — nothing to render.
         return ""
     lines.append(
-        "للاطلاع على المحتوى الكامل لأي عنصر استدعِ `read_workspace_item(\"WI-N\")` "
-        "بالرمز نفسه (يمكن استدعاؤها على عدة عناصر بالتوازي). "
-        "لا تستخدم معرّفات UUID مطلقاً — استخدم رموز WI-N فقط."
+        "للاطلاع على المحتوى الكامل لأي عنصر ومصادره المُستشهَد بها بالاسم استدعِ "
+        "`unfold_workspace_item(\"WI-N\")` بالرمز نفسه (يمكن استدعاؤها على عدة "
+        "عناصر بالتوازي). لا تستخدم معرّفات UUID مطلقاً — استخدم رموز WI-N فقط."
     )
     return "\n" + "\n".join(lines) + "\n"
 
@@ -402,61 +406,14 @@ def inject_compaction_summary(ctx: RunContext[RouterDeps]) -> str:
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 
-@router_agent.tool
-async def read_workspace_item(ctx: RunContext[RouterDeps], wi: str) -> str:
-    """Return the full markdown content of a workspace item.
-
-    Use this tool when the per-item ``summary`` provided in context is
-    insufficient — for example, answering a direct question about an
-    artifact's contents, or picking ``attached_wis`` for a dispatch where
-    the summary leaves the item's relevance ambiguous.
-
-    Pass the ``WI-{n}`` alias shown in the workspace summaries (e.g.
-    ``"WI-3"``). The tool resolves the alias against the conversation's
-    workspace items. The tool can be invoked in parallel for multiple
-    items in a single turn — feel free to open several at once.
-
-    Returns the raw ``content_md`` string, or an empty string if the alias
-    is unknown / not accessible — in which case silently move on without
-    retrying.
-
-    Args:
-        wi: The ``WI-{n}`` alias of the workspace item to read. A raw UUID
-            is also accepted for backward compatibility but the LLM should
-            always emit the alias form.
-    """
-    item_id = _resolve_wi_alias(wi, ctx.deps.wi_alias_map or {})
-    if not item_id:
-        logger.info(
-            "read_workspace_item: alias %r not resolvable for conversation %s",
-            wi, ctx.deps.conversation_id,
-        )
-        return ""
-    try:
-        result = (
-            ctx.deps.supabase.table("workspace_items")
-            .select("content_md")
-            .eq("item_id", item_id)
-            .eq("user_id", ctx.deps.user_id)
-            .is_("deleted_at", "null")
-            .maybe_single()
-            .execute()
-        )
-        if result and getattr(result, "data", None):
-            content = result.data.get("content_md") or ""
-            logger.info(
-                "read_workspace_item: loaded %s (alias %s) for user %s (%d chars)",
-                item_id, wi, ctx.deps.user_id, len(content),
-            )
-            return content
-        logger.info(
-            "read_workspace_item: %s (alias %s) not found for user %s",
-            item_id, wi, ctx.deps.user_id,
-        )
-        return ""
-    except Exception as e:
-        logger.warning("read_workspace_item error for %s (alias %s): %s", item_id, wi, e)
-        return ""
+# Replaces the former ``read_workspace_item`` tool. ``unfold_workspace_item``
+# returns the item's content_md PLUS a used-only, [n]-keyed manifest of the
+# named sources it cites (regulation+chunk titles, case summaries, service
+# names) so the router can recognise a user's reference to a specific named
+# regulation/ruling/service that lives inside a prior search result. RouterDeps
+# exposes .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
+# See agents/tool_repository/unfold_workspace_item.py.
+register_unfold_workspace_item(router_agent)
 
 
 @router_agent.tool

@@ -142,4 +142,71 @@ async def load_writer_planner_context(
     return views
 
 
-__all__ = ["ArtifactSummaryView", "load_writer_planner_context"]
+@dataclass(frozen=True)
+class UserTemplateTitle:
+    """One قوالبي (user_templates) row as the planner sees it — title only.
+
+    The planner reads these passively from its ``<my_templates>`` context block
+    and picks one by its ``TPL-{n}`` alias. The body (``content_md``) is NOT
+    loaded here — the runner fetches it only after the planner commits to a
+    ``chosen_template`` (same summary-only discipline as workspace items).
+    """
+
+    template_id: str
+    title: str
+
+
+async def load_user_template_titles(
+    supabase: Any,
+    user_id: str,
+    *,
+    limit: int = 50,
+) -> list[UserTemplateTitle]:
+    """Load the user's active قوالبي template titles (newest-updated first).
+
+    Scoped to ``user_templates.user_id = user_id`` (the internal users.user_id —
+    the same value the planner carries on ``deps.user_id``). Titles only; the
+    body is fetched later by the runner for the one template the planner picks.
+
+    Capped at ``limit`` (default 50) so the planner's context stays bounded even
+    for users with large libraries. Never raises — any DB error returns ``[]``.
+    """
+    try:
+        result = (
+            supabase
+            .table("user_templates")
+            .select("template_id, title")
+            .eq("user_id", user_id)
+            .is_("deleted_at", None)
+            .order("updated_at", desc=True)
+            .limit(max(int(limit), 1))
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning(
+            "writer_planner_context: load_user_template_titles failed for "
+            "user=%s (%s) → []",
+            user_id, exc,
+        )
+        return []
+
+    rows = getattr(result, "data", None) or []
+    out: list[UserTemplateTitle] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("template_id")
+        if tid is None:
+            continue
+        out.append(
+            UserTemplateTitle(template_id=str(tid), title=str(row.get("title") or ""))
+        )
+    return out
+
+
+__all__ = [
+    "ArtifactSummaryView",
+    "load_writer_planner_context",
+    "UserTemplateTitle",
+    "load_user_template_titles",
+]

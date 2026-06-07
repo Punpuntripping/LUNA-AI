@@ -1,10 +1,10 @@
 """writer_planner — the conversational planner phase in front of writing_executor.
 
 Layer-2 Major agent that examines what the user provided, optionally calls
-``item_analyzer`` for context distillation, optionally searches the system
-template library, presents a plan to the user (when strategy is unclear),
-iterates on feedback, and finally hands a ``WriterPackage`` to the
-writing_executor.
+``item_analyzer`` for context distillation, may draft from one of the user's
+قوالبي templates (injected as context), presents a plan to the user (when
+strategy is unclear), iterates on feedback, and finally hands a
+``WriterPackage`` to the writing_executor.
 
 Public surface:
     handle_writer_planner_turn / WriterPlannerTurnResult   (runner.py)

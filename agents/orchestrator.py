@@ -378,8 +378,9 @@ async def _resume_major_agent_inner(
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused agent run after the user has replied to an ask_user question.
 
-    Only ``deep_search`` supports pause/resume in this release.  Any other
-    agent_family is abandoned and re-routed fresh via the normal router path.
+    ``deep_search`` and ``writing`` support pause/resume. Any other
+    agent_family (memory, etc.) is abandoned and re-routed fresh via the
+    normal router path.
 
     ``assistant_message_id`` is the FK of the assistant-message placeholder
     for THIS resume turn (a new placeholder is created on every user reply
@@ -408,8 +409,8 @@ async def _resume_major_agent_inner(
 
     yield {"type": "agent_resumed", "run_id": run_id, "agent_family": agent_family}
 
-    # ── Only deep_search supports resume; abandon everything else. ──────────
-    if agent_family != "deep_search":
+    # ── Only deep_search + writing support resume; abandon everything else. ──
+    if agent_family not in ("deep_search", "writing"):
         logger.info(
             "_resume_major_agent: agent_family=%s does not support resume; abandoning run_id=%s",
             agent_family, run_id,
@@ -428,6 +429,10 @@ async def _resume_major_agent_inner(
         return
 
     # ── Rehydrate message history + build DeferredToolResults ───────────────
+    # Shared by both resume families: the pause row's serialized
+    # ``message_history`` bytes (written by _record_deferred via
+    # planner_result.all_messages_json()) + the user's reply wrapped in a
+    # DeferredToolResults keyed by the stored tool_call_id.
     try:
         raw_history = pending.get("message_history")
         if isinstance(raw_history, bytes):
@@ -465,6 +470,123 @@ async def _resume_major_agent_inner(
             user_message_id=user_message_id,
         ):
             yield ev
+        return
+
+    # ── writing resume ──────────────────────────────────────────────────────
+    # The writer_planner owns its own loop; on resume we hand it the rehydrated
+    # history + the user's reply and it drives writing_executor + publish (or
+    # pauses again on a 2nd present_plan round). Mirrors the fresh-dispatch
+    # writing branch in _dispatch (~line 1144): completed → stream the
+    # SpecialistResult; paused → re-record the pause and keep the run alive.
+    if agent_family == "writing":
+        yield {"type": "agent_run_started", "agent_family": "writing", "subtype": None}
+        # Set when the planner pauses AGAIN and we re-record a NEW pause row on
+        # the SAME run_id — the finally must then NOT resolve_pause (that would
+        # delete the row we just wrote and kill the chained pause).
+        _rewrote_pause = False
+        try:
+            attached_items = _load_attached_items(supabase, [], user_id, conversation_id)
+            recent_messages = _load_recent_messages(supabase, conversation_id)
+            resumed_task_label = (
+                (pending.get("task_label") or "").strip() or "متابعة المحادثة"
+            )
+            major_input = MajorAgentInput(
+                describe_query=user_reply,
+                task_label=resumed_task_label,
+                attached_items=attached_items,
+                recent_messages=recent_messages,
+                target_item_id=None,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+            )
+
+            wp_outcome = await _run_writer(
+                major_input,
+                None,  # subtype hint — advisory only, planner re-derives
+                supabase,
+                assistant_message_id=assistant_message_id,
+                message_history=history,
+                deferred_results=results,
+            )
+
+            if wp_outcome.kind == "paused":
+                # The planner paused AGAIN (e.g. a 2nd present_plan round).
+                # Mirror the deep_search chained-pause path (~line 565): mint a
+                # FRESH run_id for the new pause (paused_runs.run_id is the PK —
+                # reusing this leg's id would collide on INSERT and silently drop
+                # the new row), then resolve THIS leg's consumed row. Keep the run
+                # alive — do NOT abandon. The decider self-captures its cost via
+                # the tracking hook, so no explicit feed here. _rewrote_pause
+                # stops the finally from resolving the (already-resolved) old id.
+                _rewrote_pause = True
+                new_question, new_run_id = _record_deferred(
+                    supabase=supabase,
+                    planner_result=wp_outcome.planner_result,
+                    planner_output=wp_outcome.deferred,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    user_message_id=user_message_id,
+                    agent_family="writing",
+                    describe_query=user_reply,
+                    # Inherit the original task_label (router did not re-run).
+                    task_label=(pending.get("task_label") if pending else None),
+                    pause_reason=wp_outcome.pause_reason or "clarify",
+                )
+                # Close out the previous run row (superseded by the new one).
+                resolve_pause(supabase, run_id)
+                yield {
+                    "type": "agent_question",
+                    "run_id": new_run_id or "",
+                    "question": new_question,
+                }
+                yield {"type": "done", "usage": _zero_usage("paused")}
+                yield {"type": "agent_run_finished", "agent_family": "writing"}
+                return
+
+            # completed — stream the SpecialistResult (mirror fresh dispatch).
+            run_result = wp_outcome.result
+            for ev in run_result.sse_events:
+                yield ev
+            if run_result.chat_summary:
+                yield {"type": "token", "text": run_result.chat_summary}
+            if run_result.key_findings:
+                bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
+                yield {"type": "token", "text": bullets}
+            yield {
+                "type": "done",
+                "usage": {
+                    "prompt_tokens": run_result.tokens_in or 0,
+                    "completion_tokens": run_result.tokens_out or 0,
+                    "model": run_result.model_used or "writer_planner_decider",
+                },
+            }
+        except asyncio.CancelledError:
+            logger.info(
+                "_resume_major_agent: writing run cancelled mid-resume run_id=%s",
+                run_id,
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "_resume_major_agent: writing run failed for run_id=%s: %s",
+                run_id, exc, exc_info=True,
+            )
+            yield {
+                "type": "token",
+                "text": "عذراً، حدث خطأ أثناء استئناف الكتابة. يرجى المحاولة مرة أخرى.",
+            }
+            yield {"type": "done", "usage": _zero_usage("error")}
+        finally:
+            # The pause is consumed (resumed to completion / error / cancel) —
+            # drop the row so it can't be resumed again. Skip when we re-wrote a
+            # chained pause: that branch already resolved THIS leg's row and
+            # persisted a NEW row under a fresh run_id which must survive.
+            if not _rewrote_pause:
+                resolve_pause(supabase, run_id)
+
+        yield {"type": "agent_run_finished", "agent_family": "writing"}
         return
 
     # ── Resume the planner_decider (phase 1) with the user's answer ──────────
@@ -1374,7 +1496,7 @@ async def _run_deep_search(
     )
 
     # Migration 052 / agent communication protocol: build the seq → UUID
-    # alias map the planner's referenced_wi resolver and read_workspace_item
+    # alias map the planner's referenced_wi resolver and unfold_workspace_item
     # tool consult. Includes every WI the planner could see in prompts —
     # prior searches AND attached items.
     wi_alias_map: dict[int, str] = {}
@@ -1557,6 +1679,9 @@ async def _run_writer(
     subtype: str | None,
     supabase: SupabaseClient,
     assistant_message_id: str | None = None,
+    *,
+    message_history: Any = None,
+    deferred_results: Any = None,
 ):
     """Run the writer_planner → writing_executor pipeline.
 
@@ -1571,6 +1696,14 @@ async def _run_writer(
     linkage is queryable. Threaded through from message_service →
     handle_message → _dispatch → here → handle_writer_planner_turn →
     publish_input.
+
+    ``message_history`` + ``deferred_results`` are set ONLY on resume (see
+    ``_resume_major_agent_inner``): the rehydrated pydantic-ai
+    ``list[ModelMessage]`` and the ``DeferredToolResults({tool_call_id:
+    user_reply})``. On fresh dispatch both are ``None`` and the planner runs
+    from the user prompt. Forwarded verbatim to ``handle_writer_planner_turn``
+    (the writer_planner runner is resume-ready — it branches on whether
+    ``message_history`` is set).
 
     Returns:
         ``WriterPlannerTurnResult`` (see ``agents.writer_planner.runner``).
@@ -1589,6 +1722,8 @@ async def _run_writer(
         supabase=supabase,
         subtype_hint=subtype,
         assistant_message_id=assistant_message_id,
+        message_history=message_history,
+        deferred_results=deferred_results,
     )
 
 

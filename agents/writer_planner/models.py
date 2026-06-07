@@ -102,6 +102,16 @@ class PlannerDecision(BaseModel):
             "warning."
         ),
     )
+    chosen_template: str | None = Field(
+        default=None,
+        description=(
+            "A قوالبي template to draft FROM, as a ``TPL-{n}`` alias (e.g. "
+            '"TPL-2") drawn from the <my_templates> block — never a raw UUID. '
+            "None when no library template applies (the user attached their own "
+            "role='template' item, or no قوالب fit). The runner resolves the "
+            "alias → template_id and fetches the body into the WriterPackage."
+        ),
+    )
     analyzer_invoked: bool = Field(
         default=False,
         description=(
@@ -119,6 +129,24 @@ class PlannerDecision(BaseModel):
             "chat message without invoking the executor."
         ),
     )
+    offer_save: bool = Field(
+        default=False,
+        description=(
+            "Set True to offer the user (non-blocking) to save an attached "
+            "document as a reusable قوالبي template. Surfaces an «احفظ كقالب؟» "
+            "chip in chat AFTER the draft publishes — it NEVER pauses. Only set "
+            "when a document attached THIS turn looks reusable AND the user "
+            "did not already ask to save it."
+        ),
+    )
+    offer_item_id: str | None = Field(
+        default=None,
+        description=(
+            "The ``WI-{seq}`` alias of the attached item to offer for saving "
+            "(required when offer_save=True). The runner resolves it to the "
+            "workspace_item UUID it puts in the template_save_offer SSE event."
+        ),
+    )
     rationale: str = Field(
         default="",
         description="Short Arabic justification — logged + surfaced in telemetry.",
@@ -132,8 +160,10 @@ class PlannerDecision(BaseModel):
             "edit_mode": self.edit_mode,
             "plan_md_chars": len(self.plan_md or ""),
             "selected_wis": list(self.selected_wis),
+            "chosen_template": self.chosen_template,
             "analyzer_invoked": self.analyzer_invoked,
             "aborted": self.aborted,
+            "offer_save": self.offer_save,
             "intent_ar_chars": len(self.intent_ar or ""),
         }
 

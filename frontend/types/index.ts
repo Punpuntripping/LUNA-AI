@@ -633,6 +633,20 @@ export interface TemplateListResponse {
   templates: UserTemplate[];
 }
 
+/**
+ * Response from ``POST /api/v1/templates/ingest`` — the dedicated endpoint
+ * that turns an attached workspace_item into a cleaned, placeholder'd
+ * قوالبي template (writer_planner_user_templates plan, Wave E / D8).
+ *
+ * The backend returns HTTP 200 with this body for BOTH outcomes:
+ *   success → ``{ ok: true, template_id, title }``
+ *   failure → ``{ ok: false, error }`` (Arabic message)
+ * so the caller branches on ``ok`` rather than catching an HTTP error.
+ */
+export type TemplateIngestResponse =
+  | { ok: true; template_id: string; title: string }
+  | { ok: false; error: string };
+
 // ==========================================
 // SSE EVENTS (Agent)
 // ==========================================
@@ -694,6 +708,25 @@ export interface SSEWorkspaceItemUnlocked {
 export interface SSEReferencedExistingItem {
   type: "referenced_existing_item";
   item_id: string;
+}
+
+/**
+ * writer_planner_user_templates plan, Wave E (D6):
+ *
+ * Emitted by the writer pipeline at the END of a writing turn (after the
+ * draft is published) when the planner judged an attached document to be
+ * template-worthy and the user didn't already ask to save it. Non-blocking
+ * — no pause. The frontend surfaces an inline "احفظ المرفق كقالب؟" chip on
+ * the assistant bubble; clicking it POSTs ``item_id`` to
+ * ``/templates/ingest`` which runs the template_ingester agent directly
+ * (no router/planner) and inserts a قوالبي row.
+ */
+export interface SSETemplateSaveOffer {
+  type: "template_save_offer";
+  /** The attached workspace_item to ingest as a template. */
+  item_id: string;
+  /** The attached document's title, used as the chip's context hint. */
+  title_hint: string;
 }
 
 // ==========================================

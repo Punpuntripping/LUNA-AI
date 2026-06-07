@@ -73,6 +73,14 @@ export function MessageList({
   const referencedItemsByMessage = useChatStore(
     (s) => s.referencedItemsByMessage,
   );
+  // Wave E (writer_planner_user_templates §D6): the "save attachment as
+  // template" offer for each assistant message in this conversation, keyed by
+  // message_id. Same rationale as ``referencedItemsByMessage`` — store-keyed
+  // so the chip survives the post-stream messages-cache invalidate. Ephemeral
+  // (live session only), so it's read solely from the store.
+  const templateOffersByMessage = useChatStore(
+    (s) => s.templateOffersByMessage,
+  );
 
   const handleOpenArtifact = useCallback(
     (itemId: string) => {
@@ -352,6 +360,7 @@ export function MessageList({
               onCitationClick={buildCitationHandler(ids)}
               referencedItemIds={referencedIds}
               onJumpToReferencedItem={handleJumpToReferencedItem}
+              templateOffer={templateOffersByMessage[msg.message_id]}
             />
           );
         })}

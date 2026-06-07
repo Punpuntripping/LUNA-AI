@@ -32,6 +32,7 @@ import type {
   CreateTemplateRequest,
   UpdateTemplateRequest,
   TemplateListResponse,
+  TemplateIngestResponse,
   UsageReport,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
@@ -578,4 +579,12 @@ export const templatesApi = {
 
   delete: (templateId: string) =>
     api.delete<{ success: boolean }>(`/templates/${templateId}`),
+
+  // Wave E (writer_planner_user_templates): ingest an attached
+  // workspace_item into a cleaned قوالبي template via the dedicated
+  // template_ingester endpoint. The backend returns HTTP 200 with
+  // ``{ ok: true | false }`` for both outcomes, so apiFetch does NOT throw
+  // on a logical failure — the caller branches on ``result.ok``.
+  ingest: (itemId: string) =>
+    api.post<TemplateIngestResponse>("/templates/ingest", { item_id: itemId }),
 };

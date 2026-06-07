@@ -69,6 +69,22 @@ interface ChatState {
    * conversation, this map is keyed by message_id and lives on the store).
    */
   referencedItemsByMessage: Record<string, string[]>;
+  /**
+   * writer_planner_user_templates plan, Wave E (D6): the "save attachment as
+   * template" offer the writer pipeline emitted at the end of a writing turn,
+   * keyed by ``assistant_message_id``. The MessageBubble for that message
+   * renders an inline «احفظ المرفق كقالب؟ [نعم]» chip; clicking it ingests the
+   * attached item via ``/templates/ingest``. Mirrors
+   * ``referencedItemsByMessage``: keyed by message_id and living on the store
+   * so it survives the messages-cache invalidate at stream completion.
+   *
+   * Ephemeral (v1): live session only — not persisted to the message row, so
+   * a page reload drops the offer. The save itself is durable once clicked.
+   */
+  templateOffersByMessage: Record<
+    string,
+    { itemId: string; titleHint: string }
+  >;
   // Global layout preference (persisted to localStorage) — NOT per-conversation.
   splitRatio: number;
   isAgentRunning: boolean;
@@ -123,6 +139,17 @@ interface ChatState {
    */
   recordReferencedItem: (messageId: string, itemId: string) => void;
   /**
+   * Wave E (writer_planner_user_templates): record the "save attachment as
+   * template" offer for the assistant message ``messageId``. Idempotent —
+   * a repeat call for the same message overwrites with the latest payload.
+   * Called by the ``template_save_offer`` SSE handler.
+   */
+  recordTemplateOffer: (
+    messageId: string,
+    itemId: string,
+    titleHint: string,
+  ) => void;
+  /**
    * Phase E (§9 O5): open the workspace pane to ``itemId`` AND briefly
    * highlight the matching ``WorkspaceCard`` so the user sees which prior
    * card the planner referred to. The highlight clears itself after ~2.5s
@@ -173,6 +200,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   workspaceByConversation: {},
   referencedItemsByMessage: {},
+  templateOffersByMessage: {},
   splitRatio: loadInitialSplitRatio(),
   isAgentRunning: false,
   runningAgentFamily: null,
@@ -312,6 +340,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
     }),
 
+  recordTemplateOffer: (messageId, itemId, titleHint) =>
+    set((state) => ({
+      templateOffersByMessage: {
+        ...state.templateOffersByMessage,
+        [messageId]: { itemId, titleHint },
+      },
+    })),
+
   highlightWorkspaceItem: (conversationId, itemId) => {
     set((state) => ({
       workspaceByConversation: {
@@ -438,6 +474,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       error: null,
       workspaceByConversation: {},
       referencedItemsByMessage: {},
+      templateOffersByMessage: {},
       isAgentRunning: false,
       runningAgentFamily: null,
       runningAgentSubtype: null,
