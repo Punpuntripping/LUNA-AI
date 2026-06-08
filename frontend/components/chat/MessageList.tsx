@@ -11,6 +11,21 @@ import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
 import type { Message, WorkspaceItemKind } from "@/types";
 
+/**
+ * Layer 1: an assistant row with no content yet is an in-flight placeholder —
+ * the backend inserts the assistant message empty at run start and only fills
+ * it when the pipeline completes. It must never render as a finished (blank)
+ * card; the list shows a thinking indicator for it instead.
+ */
+function isEmptyAssistantRow(m: Message): boolean {
+  return (
+    m.role === "assistant" &&
+    !m.isOptimistic &&
+    (m.content ?? "").trim() === "" &&
+    !(m.artifact_ids && m.artifact_ids.length > 0)
+  );
+}
+
 /** Pixel threshold: user is considered "near bottom" if within this distance. */
 const NEAR_BOTTOM_THRESHOLD = 100;
 
@@ -306,6 +321,10 @@ export function MessageList({
     );
   }
 
+  // Layer 1: if an empty placeholder is already in the list it renders its own
+  // thinking indicator above — don't also show the standalone one (avoids two).
+  const hasIncompletePlaceholder = messages.some(isEmptyAssistantRow);
+
   return (
     <div
       ref={scrollContainerRef}
@@ -332,6 +351,25 @@ export function MessageList({
             (msg.isStreaming ||
               (streamingMessageId !== null &&
                 msg.message_id === streamingMessageId));
+          // Layer 1: never render an empty assistant placeholder as a finished
+          // card. Show the thinking state until content lands — independent of
+          // `isStreaming`, so it survives a dropped stream, reconnect, or a
+          // page refresh while the run is still in flight.
+          const liveContent = isStreamingThis
+            ? (streamingContent ?? "")
+            : msg.content;
+          if (
+            msg.role === "assistant" &&
+            !msg.isOptimistic &&
+            (liveContent ?? "").trim() === "" &&
+            !(msg.artifact_ids && msg.artifact_ids.length > 0)
+          ) {
+            return (
+              <div key={msg.message_id} className="flex justify-end mb-4">
+                <TypingIndicator />
+              </div>
+            );
+          }
           const ids = msg.artifact_ids;
           // Window B Tasks 5–7: prefer the persisted row value over the
           // store-only entry. The store is populated live by the
@@ -365,8 +403,9 @@ export function MessageList({
           );
         })}
 
-        {/* Typing indicator: streaming started but no content yet */}
-        {isStreaming && streamingContent === "" && (
+        {/* Typing indicator: streaming started but no content yet — unless an
+            empty placeholder row is already showing its own (Layer 1). */}
+        {isStreaming && streamingContent === "" && !hasIncompletePlaceholder && (
           <div className="flex justify-end mb-4">
             <TypingIndicator />
           </div>

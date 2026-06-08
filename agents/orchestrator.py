@@ -49,6 +49,7 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
+from agents.tool_repository.save_memo import MEMO_SUBTYPE, NOTE_KIND
 from agents.paused_runs import (
     PauseRecord,
     find_open_pause,
@@ -66,8 +67,13 @@ _logfire = get_logfire()
 _CAP_KINDS = ("agent_search", "agent_writing", "note")
 _WORKSPACE_CAP = 15
 
-# Number of recent messages to load for MajorAgentInput.
-_RECENT_MESSAGES_N = 3
+# Number of recent messages to load for MajorAgentInput (the planners'
+# conversation window). Bumped 3→5 so the planners see enough turns to follow
+# multi-step exchanges (e.g. ask_user round-trips + the original request).
+_RECENT_MESSAGES_N = 5
+# Over-fetch buffer so empty placeholder rows (the assistant row inserted before
+# the agent runs) can be dropped without shrinking the real window below N.
+_RECENT_MESSAGES_BUFFER = 5
 
 
 # ---------------------------------------------------------------------------
@@ -80,20 +86,36 @@ def _zero_usage(model: str) -> dict:
 
 
 def _count_artifact_kinds(supabase: SupabaseClient, conversation_id: str) -> int:
-    """Count non-deleted workspace_items in the capped kinds for this conversation."""
+    """Count non-deleted workspace_items in the capped kinds for this conversation.
+
+    Pinned core-message memos (``kind='note'``, ``metadata.subtype='memo'``) are
+    EXCLUDED from the count: they're durable context the router saves to prevent
+    information loss, not generated artifacts, so they must never consume a slot
+    in the per-conversation cap. The count is done Python-side (no ``count=exact``)
+    because the memo exclusion keys on a JSON field whose NULL semantics make a
+    PostgREST ``neq`` filter unsafe (NULL <> 'memo' is NULL, not true).
+    """
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id", count="exact")
+            .select("item_id, kind, metadata")
             .eq("conversation_id", conversation_id)
             .in_("kind", list(_CAP_KINDS))
             .is_("deleted_at", "null")
             .execute()
         )
-        return getattr(result, "count", None) or len(result.data or [])
+        rows = result.data or []
     except Exception as e:
         logger.warning("_count_artifact_kinds failed: %s", e)
         return 0
+
+    count = 0
+    for row in rows:
+        md = row.get("metadata") or {}
+        if row.get("kind") == NOTE_KIND and isinstance(md, dict) and md.get("subtype") == MEMO_SUBTYPE:
+            continue  # pinned memo — exempt from the cap
+        count += 1
+    return count
 
 
 def _load_attached_items(
@@ -146,38 +168,95 @@ def _load_attached_items(
     return snapshots
 
 
+def _load_wi_provenance(
+    supabase: SupabaseClient, conversation_id: str
+) -> dict[str, tuple[int | None, str, str]]:
+    """Map ``item_id → (wi_seq, kind, title)`` for this conversation's items.
+
+    Feeds the provenance tag prepended to assistant turns in
+    :func:`_load_recent_messages` — same marker the router sees, so the
+    planners know which agent produced a past turn, which WI it created, and
+    what that WI is about. Never raises — ``{}`` on any error (turns then
+    render untagged).
+    """
+    try:
+        resp = (
+            supabase.table("workspace_items")
+            .select("item_id, wi_seq, kind, title")
+            .eq("conversation_id", conversation_id)
+            .is_("deleted_at", "null")
+            .execute()
+        )
+        rows = (resp.data if resp and getattr(resp, "data", None) else []) or []
+    except Exception as e:
+        logger.warning("_load_wi_provenance failed: %s", e)
+        return {}
+    out: dict[str, tuple[int | None, str, str]] = {}
+    for row in rows:
+        iid = row.get("item_id")
+        if iid:
+            out[str(iid)] = (row.get("wi_seq"), row.get("kind") or "", row.get("title") or "")
+    return out
+
+
 def _load_recent_messages(
     supabase: SupabaseClient,
     conversation_id: str,
     n: int = _RECENT_MESSAGES_N,
 ) -> list[ChatMessageSnapshot]:
-    """Load the last N messages for the conversation as ChatMessageSnapshot objects."""
+    """Load the last N messages for the conversation as ChatMessageSnapshot objects.
+
+    Assistant turns that published a workspace item get a provenance tag
+    prepended to their content (which agent produced the turn + which WI it
+    created) — the SAME marker the router sees via ``messages_to_history``.
+    This lets the planners follow multi-step exchanges and recognise a
+    refinement of a prior output instead of re-planning from scratch.
+
+    Empty-content rows are dropped BEFORE taking the last ``n`` — the assistant
+    placeholder that ``message_service`` inserts before the agent runs is
+    empty, and counting it would silently shrink the real window (pushing the
+    foundational first message out). A small fetch buffer covers it.
+    """
+    from agents.utils.history import build_provenance_tag  # pure util — no import cycle
+
     try:
         result = (
             supabase.table("messages")
-            .select("role, content, created_at")
+            .select("role, content, artifact_ids, created_at")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=True)
-            .limit(n)
+            .limit(n + _RECENT_MESSAGES_BUFFER)
             .execute()
         )
-        rows = list(reversed(result.data or []))
-        snapshots = []
-        for row in rows:
-            role = row.get("role") or "user"
-            if role not in ("user", "assistant"):
-                role = "user"
-            snapshots.append(
-                ChatMessageSnapshot(
-                    role=role,
-                    content=row.get("content") or "",
-                    created_at=row.get("created_at") or "",
-                )
-            )
-        return snapshots
+        # Newest-first → chronological; drop empty placeholder rows, keep last n.
+        ordered = list(reversed(result.data or []))
+        rows = [r for r in ordered if (r.get("content") or "").strip()][-n:]
     except Exception as e:
         logger.warning("_load_recent_messages failed: %s", e)
         return []
+
+    wi_provenance = _load_wi_provenance(supabase, conversation_id)
+
+    snapshots = []
+    for row in rows:
+        role = row.get("role") or "user"
+        if role not in ("user", "assistant"):
+            role = "user"
+        content = row.get("content") or ""
+        if role == "assistant" and wi_provenance:
+            artifact_ids = row.get("artifact_ids") or []
+            if artifact_ids:
+                tag = build_provenance_tag(list(artifact_ids), wi_provenance)
+                if tag:
+                    content = f"{tag}\n{content}"
+        snapshots.append(
+            ChatMessageSnapshot(
+                role=role,
+                content=content,
+                created_at=row.get("created_at") or "",
+            )
+        )
+    return snapshots
 
 
 # Cap on how many prior agent_search items to surface to the planner. Bounded
@@ -1074,7 +1153,7 @@ async def _route(
 
     ctx = load_router_context(supabase, user_id, conversation_id, case_id)
 
-    result = await run_router(
+    router_result = await run_router(
         question=question,
         supabase=supabase,
         user_id=user_id,
@@ -1087,6 +1166,14 @@ async def _route(
         workspace_item_summaries=ctx.workspace_item_summaries,
         compaction_summary_md=ctx.compaction_summary_md,
     )
+
+    # Drain any save_memo side effects FIRST so the pinned-memo chip appears
+    # whether the router answered directly or dispatched. force_attach holds the
+    # memo item_id(s) to merge into a dispatch's attached items below.
+    for ev in router_result.sse_events:
+        yield ev
+    result = router_result.output
+    force_attach_item_ids = list(router_result.force_attach_item_ids)
 
     if isinstance(result, ChatResponse):
         # Fake-stream word-by-word — no agent_runs row for direct chat responses.
@@ -1104,6 +1191,15 @@ async def _route(
 
     if isinstance(result, DispatchAgent):
         yield {"type": "agent_selected", "agent_family": result.agent_family}
+        # Merge any save_memo force-attach id(s) into the LLM-selected attachments
+        # (deduped) so the specialist always sees the pinned core message even if
+        # the LLM forgot to attach it. The memo is included unconditionally — it's
+        # the conversation's anchor — so this may exceed MAX_ATTACHED_ITEMS; that
+        # cap binds the LLM's attached_wis, not this orchestrator-side merge.
+        attached_item_ids = list(result.attached_item_ids)
+        for _iid in force_attach_item_ids:
+            if _iid and _iid not in attached_item_ids:
+                attached_item_ids.append(_iid)
         async for ev in _dispatch(
             agent_family=result.agent_family,
             # The router no longer paraphrases the query; the specialist gets
@@ -1111,7 +1207,7 @@ async def _route(
             describe_query=question,
             task_label=result.task_label,
             target_item_id=result.target_item_id,
-            attached_item_ids=list(result.attached_item_ids),
+            attached_item_ids=attached_item_ids,
             subtype=result.subtype,
             supabase=supabase,
             user_id=user_id,

@@ -43,6 +43,9 @@ _SHARED_ROLE_AR = """\
 - إن طلب المستخدم صياغة عقد، ضمِّن الأطراف، الموضوع، الالتزامات، البنود، التوقيع.
 - إن طلب صياغة مذكّرة، اتبع نمط IRAC أو CRAC حسب طبيعة الطلب.
 - لا تُدرج إخلاء المسؤولية القانونية داخل المستند -- يُضاف برمجياً.
+- إن وُجدت كتلة `<parties>` في `<package>`، استخدم الأسماء والأدوار المذكورة
+  فيها **حرفياً** في جميع أنحاء المستند. لا تكتب `[اسم الطرف]` أو
+  `[اسم المدعي]` حين يكون الاسم الحقيقي متاحاً في `<parties>`.
 - استخدم الاستشهاد الرقمي `(n)` داخل `body_md` فقط حين يوجد مرجع
   مطابق فعلاً داخل `<refs>` تابع لأحد عناصر `<source>`/`<reference>` في
   حقيبة الكتابة. هذا ما يقرؤه المحامي مباشرةً.
@@ -402,6 +405,14 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
     lines: list[str] = []
     lines.append(_PACKAGE_PREAMBLE_AR)
     lines.append("<package>")
+
+    # 0. <parties> — confirmed case parties (name + role), validated by the planner.
+    if package.parties:
+        lines.append("  <parties>")
+        for p in package.parties:
+            lines.append(f"    <party name=\"{_esc(p.name)}\" role=\"{_esc(p.role)}\" />")
+        lines.append("  </parties>")
+        lines.append("")
 
     # 1. <plan> — the user-approved plan (or planner-committed plan in clean-turn path).
     if package.plan_md.strip():

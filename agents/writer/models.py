@@ -317,6 +317,18 @@ class WriterStyle(BaseModel):
     tone: Literal["formal", "neutral", "concise"] = "formal"
 
 
+class CaseParty(BaseModel):
+    """One confirmed party in the case, validated by the planner before drafting."""
+
+    name: str = Field(description="الاسم الكامل للطرف أو مسمّى الجهة")
+    role: str = Field(
+        description=(
+            "دور الطرف في القضية — مثل: موكّل المحامي، المدعي، المدعى عليه، "
+            "القاضي، الشاهد، الطرف الأول، الطرف الثاني، الجهة الحكومية …"
+        )
+    )
+
+
 class WriterPackage(BaseModel):
     """The planner's payload to the writing executor.
 
@@ -353,6 +365,16 @@ class WriterPackage(BaseModel):
             "<plan>...</plan> block so the executor knows the chosen scaffold."
         ),
     )
+    parties: list[CaseParty] = Field(
+        default_factory=list,
+        description=(
+            "Confirmed parties and their roles, validated by the planner "
+            "(via ask_user or explicit statement). The executor receives "
+            "these in a <parties> block and MUST use the exact names and "
+            "roles throughout the document. Empty only when the document "
+            "involves no named persons."
+        ),
+    )
     analyzed_items: list[AnalyzedItem] = Field(
         default_factory=list,
         description=(
@@ -372,6 +394,7 @@ class WriterPackage(BaseModel):
     style: WriterStyle = Field(default_factory=WriterStyle)
 
     # ---- Convenience views (computed; not separate fields) ----
+
 
     def user_templates(self) -> list[AnalyzedItem]:
         """analyzed_items the planner labeled as `role='template'` (user-supplied)."""
@@ -459,5 +482,6 @@ __all__ = [
     "AnalyzedItem",
     "TemplateRef",
     "WriterStyle",
+    "CaseParty",
     "WriterPackage",
 ]

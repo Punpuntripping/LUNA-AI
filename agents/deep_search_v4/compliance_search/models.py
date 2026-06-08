@@ -164,6 +164,13 @@ class LoopState:
     search_results_log: list[dict] = field(default_factory=list)
     round_summaries: list[dict] = field(default_factory=list)
     per_query_service_refs: dict[str, list[str]] = field(default_factory=dict)
+    # Per-sub-query retrieved rows, retained so the RerankerNode can run ONE
+    # reranker call per sub-query (parity with reg_search / case_search) instead
+    # of a single fused call over ``all_results_flat``. Each entry:
+    # ``{"round": int, "query": str, "rationale": str, "rows": list[dict]}``.
+    # ``all_results_flat`` is still built (dedup pool) for logging, the
+    # no-results guard, and round summaries.
+    per_query_rows: list[dict] = field(default_factory=list)
     # Planner-supplied caps (cap defaults match orchestrator FullLoopDeps).
     expander_max_queries: int | None = None
     # Planner-supplied sector list. Forwarded by SearchNode to

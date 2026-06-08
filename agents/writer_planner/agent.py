@@ -6,10 +6,11 @@ Builds an ``Agent[WriterPlannerDeps, list[PlannerDecision | DeferredToolRequests
 - Pause emission → ``DeferredToolRequests`` (from ``ask_user`` or
   ``present_plan_for_approval``).
 
-The three tools (``analyze_items``, ``ask_user``,
-``present_plan_for_approval``) are registered via
-:func:`agents.writer_planner.tools.register_tools` so this factory
-stays focused on model + output_type wiring + dynamic instructions.
+The two deferred tools (``ask_user``, ``present_plan_for_approval``) are
+registered via :func:`agents.writer_planner.tools.register_tools`; the
+deterministic ``unfold_workspace_item`` reader is registered separately
+below. This factory stays focused on model + output_type wiring + dynamic
+instructions.
 
 See `.claude/plans/writer_planner.md` § Decider construction.
 """
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Per-turn usage budget. Sized for the worst-case planner turn:
 #   1 initial call
-#   + 1 analyze_items call (item triage)
+#   + 1-2 unfold_workspace_item calls (inspect content when summaries are thin)
 #   + 1 present_plan_for_approval → pause → resume
 #   + 2 re-plan rounds (if user rejects + reshapes)
 #   + 1-2 output_retries
@@ -85,7 +86,7 @@ def create_writer_planner_decider(
         """Render the per-turn dynamic instruction block (summary-only — see § Core invariant)."""
         return build_writer_planner_instructions(ctx.deps)
 
-    # Register the 3 tools (analyze_items, ask_user,
+    # Register the 2 deferred tools (ask_user,
     # present_plan_for_approval). See tools.py.
     register_tools(agent)
 
@@ -96,10 +97,11 @@ def create_writer_planner_decider(
     register_add_user_template(agent)
 
     # Deterministic full read of one workspace item + a used-only, [n]-keyed
-    # manifest of the named sources it cites. Complements analyze_items
-    # (the item_analyzer triage path): use unfold when the user points at a
-    # specific named regulation/ruling/service inside a prior item and you need
-    # its exact content + citations. WriterPlannerDeps exposes
+    # manifest of the named sources it cites. This is the planner's ONLY
+    # content-inspection tool (it replaced the item_analyzer triage path):
+    # call it when a summary is too thin to judge relevance, or when the user
+    # points at a specific named regulation/ruling/service inside a prior item
+    # and you need its exact content + citations. WriterPlannerDeps exposes
     # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
     register_unfold_workspace_item(agent)
 

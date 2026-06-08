@@ -237,7 +237,7 @@ def _load_filtered_messages(
     try:
         q = (
             supabase.table("messages")
-            .select("role, content, metadata, created_at")
+            .select("role, content, metadata, artifact_ids, created_at")
             .eq("conversation_id", conversation_id)
         )
         if cutoff_created_at:
@@ -285,7 +285,17 @@ def load_router_context(
     )
 
     msg_rows = _load_filtered_messages(supabase, conversation_id)
-    message_history = messages_to_history(msg_rows)
+    # Provenance map (item_id → (wi_seq, kind)) so messages_to_history can tag
+    # each assistant turn with which agent produced it + which WI it created.
+    # Built from the already-loaded summaries — no extra DB hit. Lets the router
+    # route a follow-up ("elaborate that letter") back to the SAME family with
+    # target_wi instead of mis-firing a fresh deep_search.
+    wi_provenance: dict[str, tuple[int | None, str, str]] = {
+        str(s["item_id"]): (s.get("wi_seq"), s.get("kind") or "", s.get("title") or "")
+        for s in workspace_item_summaries
+        if s.get("item_id")
+    }
+    message_history = messages_to_history(msg_rows, wi_provenance)
 
     return RouterContext(
         case_memory_md=case_memory_md,

@@ -1,16 +1,23 @@
-"""The 3 tools the writer_planner decider can call.
+"""The 2 tools the writer_planner decider can call.
 
 Tools are registered on the Pydantic AI agent via :func:`register_tools`.
 Splitting them out of ``agent.py`` keeps the agent factory short and lets
 unit tests import individual tool functions without instantiating the agent.
 
-The 3 tools:
+The 2 tools:
 
-| Tool                          | Layer    | Deferred? | Purpose |
-|-------------------------------|----------|-----------|---------|
-| ``analyze_items``             | calls L4 | no        | Verdict per-WI (full/partial/none) via the shared item_analyzer. Stashes the result on ``deps.last_analyzer_output``. |
-| ``ask_user``                  | -        | YES       | Pauses with ``pause_reason='clarify'``. Use only when something critical is missing. |
-| ``present_plan_for_approval`` | -        | YES       | Pauses with ``pause_reason='approve_plan'``. Tracks ``present_count`` for the 3-cap. |
+| Tool                          | Deferred? | Purpose |
+|-------------------------------|-----------|---------|
+| ``ask_user``                  | YES       | Pauses with ``pause_reason='clarify'``. Use only when something critical is missing. |
+| ``present_plan_for_approval`` | YES       | Pauses with ``pause_reason='approve_plan'``. Tracks ``present_count`` for the 3-cap. |
+
+Plus the shared, cross-agent ``unfold_workspace_item`` (registered in
+``agent.py``): a deterministic full read of ONE workspace item + its
+used-only ``[n]``-keyed cited-source manifest. The planner calls it to
+inspect content when a summary is too thin to judge relevance — it replaced
+the old item_analyzer triage path entirely. Selected items are inlined into
+the WriterPackage by the runner (full content), so there is no LLM triage
+step on the writer_planner anymore.
 
 The user's قوالبي templates are NOT fetched via a tool — their titles are
 injected into the planner's context as a ``<my_templates>`` block (see
@@ -26,14 +33,7 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent, CallDeferred, ModelRetry, RunContext
-
-from agents.memory.item_analyzer import (
-    AnalyzeOutput,
-    AnalyzerCall,
-    analyze,
-    build_analyzer_deps,
-)
+from pydantic_ai import Agent, CallDeferred, RunContext
 
 # Runtime import (NOT TYPE_CHECKING) — Pydantic AI resolves tool function
 # type hints at registration time via _function_schema.function_schema, and
@@ -53,106 +53,18 @@ MAX_PRESENT_CYCLES: int = 3
 def register_tools(
     agent: Agent[WriterPlannerDeps, list],
 ) -> None:
-    """Register the 3 planner tools on the given Pydantic AI agent.
+    """Register the 2 deferred planner tools on the given Pydantic AI agent.
 
     Called once from ``agent.py::create_writer_planner_decider`` right after
     the ``Agent(...)`` constructor. Splits out so the registration list is
     one place; the agent factory stays focused on model + output_type wiring.
+
+    ``unfold_workspace_item`` (the deterministic content reader) is registered
+    separately in ``agent.py`` via the shared tool_repository helper.
     """
 
     # -----------------------------------------------------------------------
-    # 1. analyze_items — calls the shared item_analyzer (Layer-4 Memory).
-    # -----------------------------------------------------------------------
-    @agent.tool
-    async def analyze_items(
-        ctx: RunContext[WriterPlannerDeps],
-        query: str,
-        targeted_wi: list[str],
-    ) -> AnalyzeOutput:
-        """Ask the item analyzer to verdict each workspace_item against this query.
-
-        Returns one verdict per resolvable WI:
-          - need='full'    → the entire content_md is on-topic; the runner will
-                             unfold it into the WriterPackage.
-          - need='partial' → only a slice is on-topic; the analyzer's
-                             `distilled` field carries it. For refs-family WIs
-                             the runner resolves `refs_needed` via
-                             references_service; for meta-family WIs it uses
-                             `extracted_metadata` verbatim.
-          - need='none'    → irrelevant; drop the WI from the package.
-
-        Make ONE call per turn with all WIs you want triaged (mixed kinds are
-        fine — the analyzer's runner partitions internally). Calling it once
-        per kind or once per item wastes tokens.
-
-        rational / overall_rational are PLANNER-FACING — use them to shape
-        your plan_md and your final rationale. They are NOT passed to the
-        writing executor.
-
-        Args:
-            query: Your question for the analyzer, verbatim Arabic. Frame it
-                from the writing executor's perspective — what would the
-                executor want to know about these WIs to draft well?
-            targeted_wi: One or more ``WI-{seq}`` aliases (e.g.
-                ``["WI-1", "WI-3"]``) drawn from the labels rendered in
-                <attached_items> / <prior_artifacts>. Raw UUIDs are NOT
-                accepted on this surface — use the aliases shown in your
-                context. An unknown alias raises a retry asking you to
-                pick from the available labels.
-
-        Returns:
-            AnalyzeOutput with one WIVerdict per resolvable id (ordered to
-            match the input). The result is also stashed on
-            ``ctx.deps.last_analyzer_output`` so the runner can walk verdicts
-            after you emit your final PlannerDecision.
-        """
-        deps = ctx.deps
-        if not targeted_wi:
-            empty = AnalyzeOutput(query_echo=query, items=[], overall_rational=None)
-            deps.last_analyzer_output = empty
-            return empty
-
-        # Resolve every WI-{seq} alias → workspace_items.item_id UUID before
-        # invoking the analyzer (analyzer is a Layer-4 sibling — its API
-        # operates on raw UUIDs). Unknown aliases raise ModelRetry so the
-        # LLM sees an Arabic error and can self-correct with a valid label.
-        resolved_ids: list[str] = []
-        for alias in targeted_wi:
-            resolved = deps.resolve_wi_alias(alias)
-            if resolved is None:
-                raise ModelRetry(
-                    f"العنصر {alias} غير موجود في هذه المحادثة. "
-                    f"استخدم رمزاً من <attached_items> أو <prior_artifacts> "
-                    f"(WI-1, WI-2, ...)."
-                )
-            resolved_ids.append(resolved)
-
-        analyzer_deps = build_analyzer_deps(
-            supabase=deps.supabase,
-            http_client=deps.http_client,
-            user_id=deps.user_id,
-            conversation_id=deps.conversation_id,
-            caller_id="writer_planner",
-        )
-        try:
-            result = await analyze(
-                AnalyzerCall(query=query, targeted_wi=resolved_ids),
-                analyzer_deps,
-            )
-        except Exception as exc:
-            logger.warning(
-                "writer_planner.analyze_items: analyzer failed (%s) — "
-                "returning empty AnalyzeOutput so the planner can proceed",
-                exc,
-            )
-            result = AnalyzeOutput(query_echo=query, items=[], overall_rational=None)
-
-        # Stash for the runner's verdict-walk after the LLM emits PlannerDecision.
-        deps.last_analyzer_output = result
-        return result
-
-    # -----------------------------------------------------------------------
-    # 2. ask_user — deferred. Pauses with pause_reason='clarify'.
+    # 1. ask_user — deferred. Pauses with pause_reason='clarify'.
     # -----------------------------------------------------------------------
     @agent.tool_plain
     async def ask_user(question: str) -> str:  # noqa: RUF029
@@ -184,7 +96,7 @@ def register_tools(
         raise CallDeferred
 
     # -----------------------------------------------------------------------
-    # 3. present_plan_for_approval — deferred. pause_reason='approve_plan'.
+    # 2. present_plan_for_approval — deferred. pause_reason='approve_plan'.
     #    Increments deps.present_count; 4th call auto-approves (no pause).
     # -----------------------------------------------------------------------
     @agent.tool

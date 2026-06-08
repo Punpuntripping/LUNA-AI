@@ -3,20 +3,20 @@
 Mirrors ``agents/deep_search_v4/planner/deps.py`` — Pydantic AI-style
 dataclass carrying infra (Supabase, http_client) plus per-turn comprehension
 inputs (intent, recent messages, attached items, prior artifacts as summary
-views) plus mutable loop state (present_count, last_analyzer_output).
+views) plus mutable loop state (present_count).
 
 **Invariant — ``WriterPlannerDeps`` is never persisted and never survives a
 pause.** It is rebuilt fresh by :func:`build_writer_planner_deps` on every
 entry, including the resume path. Only ``agent_runs.message_history`` (the
 decider's bytes) crosses the pause boundary. On resume, the orchestrator
-re-loads attached_items + prior_artifacts + recent_messages, and
-``last_analyzer_output`` starts fresh — the planner re-issues analyze_items
-calls if needed.
+re-loads attached_items + prior_artifacts + recent_messages.
 
 **Core invariant — see writer_planner.md § Core invariant** — this deps shape
 intentionally does NOT expose any ``content_md`` field. The planner LLM
-works from summaries only; raw content reads go through the item_analyzer
-(verdict path) or are fetched by the runner post-LLM (bypass path).
+works from summaries only; to inspect an item's content it calls the
+``unfold_workspace_item`` tool, and the runner fetches the full content of
+every selected item post-LLM (the deterministic package-assembly path). The
+old item_analyzer triage step was removed — see writer_planner.md.
 """
 from __future__ import annotations
 
@@ -36,17 +36,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     import httpx
     from supabase import Client as SupabaseClient
 
-    from agents.memory.item_analyzer import AnalyzeOutput
-
 
 @dataclass
 class WriterPlannerDeps:
     """Per-turn state for the writer_planner decider.
 
     Built fresh every turn by :func:`build_writer_planner_deps`. The
-    ``last_analyzer_output`` / ``present_count`` fields are mutable loop state
-    populated by the tools during the agent's run; they exist on deps because
-    tools need somewhere to stash structured side-effects that the runner
+    ``present_count`` field is mutable loop state incremented by the
+    ``present_plan_for_approval`` tool during the agent's run; it lives on
+    deps because the tool needs somewhere to track cycles that the runner
     consults after the LLM emits its final ``PlannerDecision``.
     """
 
@@ -84,8 +82,8 @@ class WriterPlannerDeps:
     # ``WI-{seq} → item_id`` alias map. Built once per turn from
     # ``attached_items`` + ``prior_artifacts`` after both are hydrated. The
     # planner LLM emits WI-{seq} aliases everywhere (selected_wis,
-    # role_assignments keys, analyze_items targeted_wi); the runner resolves
-    # them back to UUIDs before invoking walkers / the analyzer. Items
+    # role_assignments keys, unfold_workspace_item arg); the runner resolves
+    # them back to UUIDs before invoking the walker / DB reads. Items
     # without a ``wi_seq`` (case-only / system items) are intentionally
     # absent from the map — they are unreachable from the planner anyway.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
@@ -103,10 +101,6 @@ class WriterPlannerDeps:
     # Incremented by the present_plan_for_approval tool. Hard cap = 3; the
     # 4th call auto-approves with the most recent plan_md without pausing.
     present_count: int = 0
-    # Stash set by the analyze_items tool on each call. The runner reads
-    # the LAST value when the planner emits PlannerDecision(analyzer_invoked=True)
-    # and walks verdicts to build AnalyzedItems.
-    last_analyzer_output: "AnalyzeOutput | None" = None
 
     # --- SSE event sink --------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None

@@ -3,10 +3,10 @@
 The decider's ``output_type`` is the discriminated list
 ``[PlannerDecision, DeferredToolRequests]``:
 
-- Normal final emission → :class:`PlannerDecision`. The runner walks
-  the analyzer verdicts (from ``deps.last_analyzer_output``) OR runs the
-  bypass path (when the analyzer wasn't invoked) and assembles a
-  ``WriterPackage`` from this decision.
+- Normal final emission → :class:`PlannerDecision`. The runner fetches the
+  full ``content_md`` (plus the used-reference manifest) for every WI in
+  ``selected_wis`` and assembles a ``WriterPackage`` from this decision —
+  one deterministic path, no LLM triage.
 - Pause emission → ``pydantic_ai.DeferredToolRequests``. The orchestrator
   persists the agent_runs row in ``status='awaiting_user'`` with
   ``pause_reason`` derived from the tool name (``ask_user`` → 'clarify',
@@ -22,7 +22,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from agents.writer.models import WriterSubtype
+from agents.writer.models import CaseParty, WriterSubtype
 
 
 PlannerRole = Literal["template", "source", "reference", "prior_draft"]
@@ -32,19 +32,15 @@ EditMode = Literal["fresh", "revise", "instruct"]
 class PlannerDecision(BaseModel):
     """Final decision the writer_planner-decider emits when planning is done.
 
-    The runner consumes this to assemble the ``WriterPackage``:
+    The runner consumes this to assemble the ``WriterPackage``: it takes
+    ``selected_wis``, fetches each WI's ``content_md`` from Supabase (plus the
+    used-reference manifest for refs-family items), and builds ``AnalyzedItem``
+    records with ``need='full'`` and the raw content as ``body_md``. One
+    deterministic path — the old item_analyzer triage step was removed; the
+    planner inspects content live via ``unfold_workspace_item`` instead.
 
-    - When ``analyzer_invoked=True`` the runner reads
-      ``deps.last_analyzer_output`` and walks verdicts; ``selected_wis``
-      restricts which WIs survive into the package (the analyzer may have
-      returned more verdicts than the planner ultimately wants).
-    - When ``analyzer_invoked=False`` the runner takes ``selected_wis``
-      directly, fetches each WI's ``content_md`` from Supabase, and builds
-      ``AnalyzedItem`` records with ``need='full'`` and the raw content as
-      ``body_md``. This is the bypass path — see § Two skippable phases.
-
-    ``role_assignments`` maps ``WI-{seq}`` alias → role for both paths. The
-    decider is responsible for assigning a role to every alias it puts in
+    ``role_assignments`` maps ``WI-{seq}`` alias → role. The decider is
+    responsible for assigning a role to every alias it puts in
     ``selected_wis``; the runner falls back to ``'source'`` if a mapping is
     missing (lenient, but logged).
 
@@ -55,6 +51,17 @@ class PlannerDecision(BaseModel):
     UUID-based against the DB.
     """
 
+    parties: list[CaseParty] = Field(
+        default_factory=list,
+        description=(
+            "Confirmed case parties extracted or validated this turn "
+            "(via ask_user or explicit user statement). Each entry has "
+            "name + role (Arabic). Populated ONLY after the party-validation "
+            "check; left empty when the document involves no named persons. "
+            "Passed verbatim to WriterPackage.parties and rendered as a "
+            "<parties> block for the executor — it MUST use these names."
+        ),
+    )
     intent_ar: str = Field(
         ...,
         description=(
@@ -112,15 +119,6 @@ class PlannerDecision(BaseModel):
             "alias → template_id and fetches the body into the WriterPackage."
         ),
     )
-    analyzer_invoked: bool = Field(
-        default=False,
-        description=(
-            "True iff the planner called analyze_items during this turn. "
-            "Drives the runner's package-assembly branch: True → verdict-walk "
-            "from deps.last_analyzer_output; False → bypass path (need='full' "
-            "with raw content_md). See § Two skippable phases."
-        ),
-    )
     aborted: bool = Field(
         default=False,
         description=(
@@ -161,10 +159,10 @@ class PlannerDecision(BaseModel):
             "plan_md_chars": len(self.plan_md or ""),
             "selected_wis": list(self.selected_wis),
             "chosen_template": self.chosen_template,
-            "analyzer_invoked": self.analyzer_invoked,
             "aborted": self.aborted,
             "offer_save": self.offer_save,
             "intent_ar_chars": len(self.intent_ar or ""),
+            "parties_count": len(self.parties),
         }
 
     @field_validator("selected_wis")
@@ -180,4 +178,4 @@ class PlannerDecision(BaseModel):
         return out
 
 
-__all__ = ["PlannerDecision", "PlannerRole", "EditMode"]
+__all__ = ["PlannerDecision", "PlannerRole", "EditMode", "CaseParty"]

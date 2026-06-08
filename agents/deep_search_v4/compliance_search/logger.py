@@ -309,15 +309,32 @@ def save_reranker_md(
     all_results_flat: list[dict],
     usage: dict,
     messages_json: bytes | None = None,
+    query_index: int | None = None,
+    query: str = "",
 ) -> None:
-    path = LOGS_DIR / log_id / "reranker" / f"round_{round_num}.md"
+    """Write one reranker decision MD.
+
+    When ``query_index`` is given (per-sub-query reranking — the v2 layout),
+    the file is ``reranker/round_{N}_q{i}_{slug}.md`` and the decision
+    ``position`` values index into that sub-query's ``all_results_flat`` rows.
+    Without it, the legacy fused layout ``reranker/round_{N}.md`` is used.
+    """
+    if query_index is not None:
+        slug = _slugify(query) if query else "query"
+        path = LOGS_DIR / log_id / "reranker" / f"round_{round_num}_q{query_index}_{slug}.md"
+        header = f"# Reranker — Round {round_num}, Query {query_index}"
+    else:
+        path = LOGS_DIR / log_id / "reranker" / f"round_{round_num}.md"
+        header = f"# Reranker — Round {round_num}"
 
     kept = [d for d in output.decisions if d.action == "keep"]
     dropped = [d for d in output.decisions if d.action == "drop"]
 
     lines: list[str] = []
-    lines.append(f"# Reranker — Round {round_num}")
+    lines.append(header)
     lines.append("")
+    if query:
+        lines.append(f"**Query:** {query}")
     lines.append(f"**Sufficient:** {output.sufficient}")
     lines.append(f"**Kept:** {len(kept)} | **Dropped:** {len(dropped)}")
     if output.summary_note:

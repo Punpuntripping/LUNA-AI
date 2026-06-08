@@ -31,6 +31,7 @@ from pydantic_ai.usage import UsageLimits
 from supabase import Client as SupabaseClient
 
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
+from agents.tool_repository.save_memo import register_save_memo
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import get_agent_model
 from agents.utils.tracking import track_stage
@@ -121,8 +122,42 @@ class RouterDeps:
     compaction_summary_md: str | None = None
     # Migration 052: ``WI-{seq}`` alias → item_id UUID lookup. Built by
     # ``run_router`` from ``workspace_item_summaries`` so the output
-    # validator can resolve LLM-emitted aliases without re-querying.
+    # validator can resolve LLM-emitted aliases without re-querying. The
+    # ``save_memo`` tool ALSO injects the alias of any memo it creates mid-run
+    # so the validator can resolve the memo's ``WI-{seq}`` if the LLM attaches it.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
+    # The raw user message for this turn — fed to the ``save_memo`` tool so it
+    # pins the message verbatim (the LLM never re-types the body). Set by
+    # ``run_router`` from its ``question`` argument.
+    user_message: str = ""
+    # Mutable sinks the ``save_memo`` tool appends to during the run. The tool
+    # can't yield SSE or guarantee attachment from inside the agent loop, so it
+    # stashes the ``workspace_item_created`` event(s) + the created item_id(s)
+    # here; ``run_router`` returns them and ``_route`` drains them (emit chip +
+    # force-attach the memo to the dispatch).
+    pending_sse_events: list[dict] = field(default_factory=list)
+    force_attach_item_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RouterRunResult:
+    """What :func:`run_router` returns to the orchestrator's ``_route``.
+
+    Wraps the router's structured ``output`` (``ChatResponse`` | ``DispatchAgent``)
+    together with side effects the ``save_memo`` tool produced during the run:
+
+    * ``sse_events`` — ``workspace_item_created`` events for any memo(s) pinned
+      this turn. ``_route`` yields them first so the chip appears whether the
+      router answered directly or dispatched.
+    * ``force_attach_item_ids`` — memo item_id(s) ``_route`` merges into the
+      dispatch's ``attached_item_ids`` (deduped) so the specialist always sees
+      the pinned core message, independent of whether the LLM remembered to
+      attach it.
+    """
+
+    output: ChatResponse | DispatchAgent
+    sse_events: list[dict] = field(default_factory=list)
+    force_attach_item_ids: list[str] = field(default_factory=list)
 
 
 # ── Usage limits ──────────────────────────────────────────────────────────────
@@ -186,11 +221,25 @@ SYSTEM_PROMPT = """\
 - إذا أشار المستخدم لمستند موجود في مساحة العمل ("حدّث المذكرة السابقة"، "عدّل العقد") — حدّد رمز العنصر المقصود (مثل «WI-3») من ملخصات العناصر، ومرّره عبر `target_wi` لفتح مهمة writing تحرير
 - إذا كان المستخدم يبحث عن معلومات قانونية لتدعيم الصياغة — وجّه deep_search أولاً، ثم writing لاحقاً
 
+## إرشاد سير العمل: البحث ثم الكتابة
+سير العمل القياسي للمستندات القانونية هو **البحث ثم الكتابة**. عندما يطلب المستخدم **صياغة مستند قانوني يحتاج إلى سند نظامي دقيق** (مذكرة دعوى، لائحة، مذكرة جوابية، أو عقد يستند إلى مواد نظامية محددة)، أو حين يلصق **مسودة مستند** قانوني لتحسينه:
+- إن **لم يوجد** في مساحة العمل عنصر بحث سابق ذو صلة (`kind=agent_search`) → **لا توجّه إلى الكتابة مباشرة**. بدلاً من ذلك أصدر `ChatResponse` تقترح فيه سير العمل، مثل: «لكي تكون الصياغة مؤسَّسة على نصوص نظامية دقيقة، أقترح أن أبحث أولاً في الأنظمة والسوابق ذات الصلة ثم أصيغ المستند بناءً على النتائج. هل أبدأ بالبحث؟» — اقترِح وانتظر موافقة المستخدم؛ لا تشغّل البحث والكتابة معاً في ردٍّ واحد.
+- إن **وُجد** عنصر بحث سابق ذو صلة (أو كان المستخدم قد بدأ المحادثة ببحث) → **لا تكرّر اقتراح البحث**؛ وجّه إلى الكتابة مباشرةً (DispatchAgent إلى writing) وأرفق عنصر البحث عبر attached_wis.
+- ينطبق هذا على المستندات التي تحتاج دقّة نظامية فقط؛ الطلبات البسيطة (خطاب عادي، تلخيص مرفق) لا تحتاج اقتراح بحث.
+
 ## متى توجّه إلى memory (هيكل أولي — قيد التطوير):
 - طلب صريح لحفظ معلومة أو واقعة في ذاكرة القضية
 - طلب استرجاع أو تحديث ذاكرة سابقة مرتبطة بالقضية الحالية
 - كلمات مفتاحية: "احفظ"، "تذكّر"، "أضف لذاكرة القضية"، "حدّث الذاكرة"
 - ملاحظة: هذا المسار ما زال هيكلاً أولياً؛ استخدمه فقط للطلبات الصريحة المتعلقة بإدارة الذاكرة، لا للأسئلة العامة.
+
+## حفظ الرسالة الأساسية (أداة save_memo):
+عندما يشارك المستخدم **صراحةً طلباً جوهرياً أو قالباً طويلاً** يتضمن تفاصيل لا يصح فقدانها — مثل لصق مسودة أو نموذج كامل، أو رسالة طويلة تحمل جوهر الطلب الذي ستُبنى عليه بقية المحادثة — فأول خطوة لك هي حفظها.
+- **استدعِ `save_memo` وحدها أولاً، في استجابة منفصلة** — لا تُصدر ردّك النهائي (`ChatResponse` أو `DispatchAgent`) في نفس استجابة استدعاء الأداة. انتظر تأكيد الحفظ.
+- الأداة تحفظ نص رسالة المستخدم **كما هو حرفياً** كعنصر مثبّت في مساحة العمل، فلا يضيع عند ضغط المحادثة لاحقاً. أنت تزوّدها فقط بعنوان عربي قصير (title) مشتق من محتوى الرسالة.
+- بعد أن يصلك تأكيد الحفظ (يتضمن رمز العنصر الجديد «WI-N»)، أصدر في **الاستجابة التالية** قرارك: إمّا اقتراح سير العمل (بحث ثم كتابة) عبر `ChatResponse`، أو التوجيه عبر `DispatchAgent` مع إرفاق «WI-N» في `attached_wis` لتصل الرسالة الأساسية إلى المتخصص.
+- يمكنك أن تذكر للمستخدم بإيجاز أنك ثبّتّ طلبه الأساسي (اختياري — سيراه أصلاً كبطاقة في مساحة العمل).
+- **لا تستدعِ** الأداة للرسائل القصيرة العادية ولا للأسئلة البسيطة ولا للتحيات؛ هي للطلبات/القوالب الجوهرية فقط.
 
 ## اختيار attached_wis:
 - ملخصات عناصر مساحة العمل تُحقن لك في السياق برموز قصيرة (WI-1, WI-2, ...). كل عنصر يحمل: الرمز، النوع (kind)، العنوان، الملخص.
@@ -205,6 +254,14 @@ SYSTEM_PROMPT = """\
 - طلب تعديل أو تحرير العنصر → وجّه DispatchAgent مع `target_wi="WI-N"`
 - عندما يشير المستخدم لعنصر دون تحديد → اذكر العناصر المتاحة (برموزها وعناوينها من الملخصات) واسأل أيها يقصد
 - عندما يشير المستخدم إلى **نظام أو حكم أو خدمة باسمٍ محدد** قد يكون مذكوراً داخل بحثٍ سابق → استدعِ `unfold_workspace_item("WI-N")` لرؤية المصادر المُستشهَد بها بالاسم (الأنظمة والمقاطع والأحكام والخدمات مرقّمةً بنفس أرقام [n] في النص)؛ إن طابق أحدها ما يقصده المستخدم فأجب عنه مباشرةً أو وجّه deep_search ببحثٍ مركّز على ذلك المصدر بالاسم.
+
+## وسوم المصدر في سجل المحادثة (provenance) — متابعة آخر مُخرَج:
+- قد يبدأ بعض ردود المساعد السابقة في السجل بوسمٍ من النظام بالشكل:
+  `〔[نظام] أنتج هذا الردّ متخصصٌ (agent_family=writing) وأنشأ العنصر WI-3〕`
+  هذا الوسم يخبرك **أيُّ متخصص أنتج ذلك الردّ وأيَّ عنصر (WI-N) أنشأ**. الردود بلا وسم هي إجابات مباشرة منك (لم ينتجها متخصص). الوسم إشارة نظامية للسياق فقط — **لا تكتبه أنت في ردودك مطلقاً**.
+- إذا كان طلب المستخدم الحالي **تحسيناً أو توسعةً أو تعديلاً لآخر مُخرَجٍ موسوم** (مثل: «فصّل أكثر»، «أضف فقرة»، «اختصر»، «عدّل البند»، «حسّن الصياغة»، «اشرح المواد أكثر»، «طوّل» أو «قصّر») → وجّه `DispatchAgent` إلى **نفس** `agent_family` المذكور في الوسم، مع `target_wi` = رمز العنصر في الوسم (WI-N).
+  - مثال: آخر ردٍّ موسوم بـ (agent_family=writing، WI-3) والمستخدم يقول «فصّل أكثر في المواد» ⟵ وجّه `DispatchAgent(agent_family="writing", target_wi="WI-3")` — **لا** تفتح بحثاً جديداً (deep_search) لأن الطلب تحسينٌ للمستند نفسه.
+- الاستثناء الوحيد: إذا كان التحسين يحتاج فعلاً **مصادر أو معلومات جديدة غير موجودة** في ذلك العنصر، فعندئذٍ فقط وجّه deep_search (وأرفق العنصر عبر attached_wis) ثم writing لاحقاً.
 
 ## قواعد task_label:
 - عبارة عربية قصيرة (30-60 حرفاً) **مشتقة من محتوى السؤال** لا من سير العمل.
@@ -242,7 +299,16 @@ router_agent = Agent(
     instructions=SYSTEM_PROMPT,
     retries=2,
     output_retries=4,
-    end_strategy="early",
+    # ``exhaustive`` (not ``early``) is LOAD-BEARING for save_memo: the model
+    # frequently batches a ``save_memo`` tool call together with the final
+    # ``ChatResponse``/``DispatchAgent`` output in ONE response. ``early`` ends
+    # the run the moment it sees the output tool and SKIPS the sibling
+    # save_memo call — so the memo is never persisted (observed in convo
+    # eb33b098: save_memo emitted but no note row written). ``exhaustive`` runs
+    # all tool calls in the response, including the batched save_memo, before
+    # finalizing. The other router tools (unfold/list) run in their own turns,
+    # so this only changes the batched-with-output case.
+    end_strategy="exhaustive",
 )
 
 
@@ -416,6 +482,15 @@ def inject_compaction_summary(ctx: RunContext[RouterDeps]) -> str:
 register_unfold_workspace_item(router_agent)
 
 
+# Pins a pivotal user message (full request / pasted template) as a durable
+# ``kind='note'`` workspace item (``metadata.subtype='memo'``) so it survives
+# conversation compaction and is auto-attached to the turn's dispatch. RouterDeps
+# exposes the four sinks (wi_alias_map / workspace_item_summaries /
+# pending_sse_events / force_attach_item_ids) the tool mutates. See
+# agents/tool_repository/save_memo.py.
+register_save_memo(router_agent)
+
+
 @router_agent.tool
 async def list_workspace_items(ctx: RunContext[RouterDeps]) -> list[dict]:
     """List existing workspace items (artifacts/chips) for the current conversation.
@@ -482,7 +557,7 @@ async def run_router(
     message_history: list[ModelMessage],
     workspace_item_summaries: list[dict] | None = None,
     compaction_summary_md: str | None = None,
-) -> ChatResponse | DispatchAgent:
+) -> RouterRunResult:
     """Run the router agent to classify user intent and respond or dispatch.
 
     Called by the orchestrator's ``_route()`` method. Constructs RouterDeps
@@ -509,8 +584,10 @@ async def run_router(
             compacted yet.
 
     Returns:
-        ChatResponse if the router answers directly,
-        DispatchAgent if the router dispatches a specialist.
+        A ``RouterRunResult`` wrapping the structured output (ChatResponse if
+        the router answers directly, DispatchAgent if it dispatches) plus any
+        ``save_memo`` side effects (workspace_item_created SSE events +
+        force-attach item_ids) for ``_route`` to drain.
     """
     # Migration 052: build the seq → item_id lookup from the loaded summaries
     # so the output validator can resolve WI-{seq} aliases without a DB hit.
@@ -533,6 +610,7 @@ async def run_router(
         workspace_item_summaries=summary_list,
         compaction_summary_md=compaction_summary_md,
         wi_alias_map=alias_map,
+        user_message=question,
     )
 
     # PII note: user_id intentionally NOT on this span. The monitor recovers
@@ -586,13 +664,23 @@ async def run_router(
                 usage.output_tokens,
             )
 
-            return result.output
+            return RouterRunResult(
+                output=result.output,
+                sse_events=list(deps.pending_sse_events),
+                force_attach_item_ids=list(deps.force_attach_item_ids),
+            )
 
         except Exception as e:
             logger.error("خطأ في الموجه: %s", e, exc_info=True)
             span.set(decision="error", error=str(e))
             span.set_outcome("error")
-            # Fallback: return a safe ChatResponse so the user sees something
-            return ChatResponse(
-                message="عذراً، حدث خطأ أثناء معالجة رسالتك. يرجى المحاولة مرة أخرى."
+            # Fallback: return a safe ChatResponse so the user sees something.
+            # Still surface any memo SSE/force-attach the save_memo tool produced
+            # before the failure — a successfully-pinned memo's chip must appear.
+            return RouterRunResult(
+                output=ChatResponse(
+                    message="عذراً، حدث خطأ أثناء معالجة رسالتك. يرجى المحاولة مرة أخرى."
+                ),
+                sse_events=list(deps.pending_sse_events),
+                force_attach_item_ids=list(deps.force_attach_item_ids),
             )

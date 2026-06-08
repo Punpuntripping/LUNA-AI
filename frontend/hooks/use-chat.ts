@@ -1,11 +1,12 @@
 import { useCallback } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { messagesApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import type {
+  Attachment,
   Message,
   MessageListResponse,
   SSEMessageStart,
@@ -163,6 +164,11 @@ export function useSendMessage(): UseSendMessageReturn {
       );
 
       let assistantMessageId: string | null = null;
+      // Layer 2: flips true once the backend confirms the run is committed
+      // (message_start arrives → user row saved, placeholder created, slot
+      // reserved). After that, a dropped stream must NOT re-POST — the run
+      // finishes in the background, so we recover it with a read-only poll.
+      let messageStartSeen = false;
 
       const sendOptions = {
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
@@ -283,6 +289,19 @@ export function useSendMessage(): UseSendMessageReturn {
             return;
           }
 
+          // Layer 2: the run is already committed server-side (we received
+          // message_start). The backend keeps it alive in the background after
+          // a disconnect (detach-to-background), so re-POSTing would only
+          // collide with it (dedup-rejected) and never surface the answer.
+          // Instead, recover read-only: refresh so the placeholder shows as
+          // "thinking" (Layer 1); useMessages.refetchInterval then polls until
+          // the background run fills it. The running pipeline is never touched.
+          if (messageStartSeen) {
+            void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
+            useChatStore.getState().finishStreaming();
+            return;
+          }
+
           // Determine if the error is retryable:
           //   - TypeError means fetch itself failed (network unreachable, DNS, etc.)
           //   - An object with a status >= 500 is a server error
@@ -327,8 +346,20 @@ export function useSendMessage(): UseSendMessageReturn {
             case "message_start": {
               const payload = data as SSEMessageStart;
               assistantMessageId = payload.assistant_message_id;
-              // Replace optimistic user message ID with real one
-              replaceOptimisticId(qc, conversationId, optimisticId, payload.user_message_id);
+              messageStartSeen = true;
+              // Re-assert the user message from the real id. The normal path
+              // swaps the optimistic row in place; but a brand-new
+              // conversation's initial messages-fetch can land empty (before
+              // the user row is persisted) and wipe the optimistic bubble — in
+              // that case this re-adds it so the message never disappears.
+              reinstateUserMessage(
+                qc,
+                conversationId,
+                optimisticId,
+                payload.user_message_id,
+                messageContent,
+                optimisticAttachments,
+              );
               // Start streaming the assistant message, tagged with the
               // conversation so other conversations don't render this stream.
               useChatStore
@@ -350,7 +381,9 @@ export function useSendMessage(): UseSendMessageReturn {
                 queryKey: messageKeys.list(conversationId),
               });
               // Surface a brief, non-error notice so the user understands the
-              // resend was absorbed rather than silently dropped.
+              // resend was absorbed rather than silently dropped. The in-flight
+              // run fills the card via useMessages.refetchInterval (Layer 2) —
+              // we never re-POST, so the running pipeline is untouched.
               useChatStore.getState().setError(payload.detail);
               break;
             }
@@ -738,27 +771,60 @@ function patchWorkspaceItemLock(
   );
 }
 
-function replaceOptimisticId(
-  qc: ReturnType<typeof useQueryClient>,
+/**
+ * Upsert the user message into the cache once the server confirms it
+ * (message_start). Normally this just swaps the optimistic row's id in place.
+ * But the initial messages-fetch for a brand-new conversation can resolve
+ * empty (before the user row is persisted) and wipe the optimistic bubble — in
+ * that case the optimistic id is gone, so we re-add the user message from the
+ * real id + content so it never disappears mid-run.
+ */
+function reinstateUserMessage(
+  qc: QueryClient,
   conversationId: string,
   optimisticId: string,
-  realId: string
+  realId: string,
+  content: string,
+  attachments: Attachment[],
 ): void {
   qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
     messageKeys.list(conversationId),
     (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.map((msg) =>
-            msg.message_id === optimisticId
-              ? { ...msg, message_id: realId, isOptimistic: false }
-              : msg
-          ),
-        })),
+      const base =
+        old ?? { pages: [{ messages: [], has_more: false }], pageParams: [undefined] };
+      const present = base.pages.some((p) =>
+        p.messages.some(
+          (m) => m.message_id === optimisticId || m.message_id === realId,
+        ),
+      );
+      if (present) {
+        // Optimistic (or real) row still in cache → swap the id in place.
+        return {
+          ...base,
+          pages: base.pages.map((page) => ({
+            ...page,
+            messages: page.messages.map((msg) =>
+              msg.message_id === optimisticId
+                ? { ...msg, message_id: realId, isOptimistic: false }
+                : msg,
+            ),
+          })),
+        };
+      }
+      // Optimistic row was clobbered by an empty fetch → re-add it.
+      const restored: Message = {
+        message_id: realId,
+        conversation_id: conversationId,
+        role: "user",
+        content,
+        attachments,
+        created_at: new Date().toISOString(),
+        artifact_ids: undefined,
       };
-    }
+      const pages = base.pages.length ? base.pages : [{ messages: [], has_more: false }];
+      const newPages = [...pages];
+      newPages[0] = { ...newPages[0], messages: [restored, ...newPages[0].messages] };
+      return { ...base, pages: newPages };
+    },
   );
 }

@@ -550,6 +550,16 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     # Prices below are provider list prices (USD per 1M tokens), May 2026.
     # Note: OpenRouter shows temporary promos (qwen ~35% off, deepseek-v4-pro
     # 75% off until 2026-05-31) — list prices kept here for stable cost tracking.
+    "or-qwen3.7-plus": ModelConfig(
+        model_id="qwen/qwen3.7-plus",
+        provider="openrouter",
+        display_name="Qwen3.7 Plus (OpenRouter)",
+        supports_vision=True,
+        max_tokens=65536,
+        context_length=1000000,
+        input_price=0.40,
+        output_price=1.60,
+    ),
     "or-qwen3.6-plus": ModelConfig(
         model_id="qwen/qwen3.6-plus",
         provider="openrouter",
@@ -683,7 +693,19 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
     # Pricing: International region, base tier (USD per 1M tokens)
     # =========================================================================
 
-    # --- Qwen3.6 series (Latest - April 2026) ---
+    # --- Qwen3.7 series (June 2026) ---
+    "qwen3.7-plus": ModelConfig(
+        model_id="qwen3.7-plus",
+        provider="alibaba",
+        display_name="Qwen3.7 Plus",
+        supports_vision=True,
+        max_tokens=65536,
+        context_length=1000000,
+        input_price=0.4,
+        output_price=1.6,
+    ),
+
+    # --- Qwen3.6 series (April 2026) ---
     "qwen3.6-plus": ModelConfig(
         model_id="qwen3.6-plus",
         provider="alibaba",

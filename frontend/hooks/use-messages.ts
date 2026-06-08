@@ -23,6 +23,20 @@ export function useMessages(conversationId: string | undefined) {
       return lastPage.messages[lastPage.messages.length - 1].message_id;
     },
     enabled: !!conversationId,
+    // Layer 2 (read-only recovery): while the newest message is an empty
+    // assistant placeholder, a run is in flight (or was interrupted and is
+    // finishing in the background — the backend detaches it, never cancels).
+    // Poll until it fills so the card never stays blank after a dropped stream,
+    // a dedup-rejected resend, or a page refresh mid-run. Read-only — it never
+    // touches the running pipeline. Stops once content lands or the placeholder
+    // is too old to still be running.
+    refetchInterval: (query) => {
+      const newest = query.state.data?.pages?.[0]?.messages?.[0];
+      if (!newest || newest.role !== "assistant") return false;
+      if ((newest.content ?? "").trim() !== "") return false;
+      const ageMs = Date.now() - new Date(newest.created_at).getTime();
+      return ageMs < 7 * 60 * 1000 ? 4000 : false;
+    },
     // Messages are ordered newest-first from the API; we reverse in the UI
   });
 }

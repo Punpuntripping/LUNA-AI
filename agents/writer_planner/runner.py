@@ -50,10 +50,7 @@ from backend.app.services.writer_planner_context import (
 from .agent import WRITER_PLANNER_LIMITS, create_writer_planner_decider
 from .deps import WriterPlannerDeps, build_writer_planner_deps
 from .models import PlannerDecision, PlannerRole
-from .walkers import (
-    build_analyzed_items_direct,
-    build_analyzed_items_from_verdicts,
-)
+from .walkers import build_analyzed_items_direct
 
 if TYPE_CHECKING:  # pragma: no cover
     from pydantic_ai import DeferredToolRequests
@@ -117,10 +114,9 @@ def _resolve_decision_aliases(
       - Resolves each alias in ``decision.selected_wis`` via
         ``deps.resolve_wi_alias``.
       - Unknown aliases are dropped from the selection with a warning
-        (defense-in-depth — the analyze_items tool already raises
-        ModelRetry during the agent run for the same condition, but a
-        decider that bypassed analyze_items can still produce a stale
-        alias on the final emission).
+        (defense-in-depth — the decider speaks aliases drawn from its
+        context, but a stale or hallucinated alias on the final emission
+        is dropped here rather than failing the turn).
       - The role map is re-keyed alias → UUID. Aliases without a UUID
         resolution are dropped silently; aliases that resolved to a UUID
         already present in the map (collision) keep the first role seen.
@@ -270,42 +266,35 @@ async def _build_package_from_decision(
 ) -> WriterPackage:
     """Assemble a WriterPackage from a finalized PlannerDecision + deps.
 
-    Branches on ``decision.analyzer_invoked``:
-      - True  → walker reads ``deps.last_analyzer_output`` and builds
-        AnalyzedItems from verdicts.
-      - False → walker bypass: fetches content_md for each selected id and
-        builds need='full' items directly.
+    One deterministic path: ``build_analyzed_items_direct`` fetches the full
+    ``content_md`` (plus the used-reference manifest for refs-family items)
+    for every selected WI and builds ``need='full'`` AnalyzedItems. The old
+    analyzer verdict-walk branch was removed — the planner inspects content
+    live via ``unfold_workspace_item`` during its run, so no triage state has
+    to survive the pause boundary.
 
     ``selected_uuids`` and ``role_assignments_by_uuid`` are the
-    alias-resolver's outputs — walkers operate on UUIDs end-to-end (DB
-    queries, last_analyzer_output verdict keys). The aliases the planner
-    emitted in ``decision.selected_wis`` are decoupled from the walker
-    surface at this seam.
+    alias-resolver's outputs — the walker operates on UUIDs end-to-end (DB
+    queries). The aliases the planner emitted in ``decision.selected_wis``
+    are decoupled from the walker surface at this seam.
 
     templates: optional pre-fetched TemplateRef list — the قوالبي template the
     planner chose (resolved from a ``TPL-{n}`` alias and fetched by the caller).
     Empty when the planner picked no template, or when the user attached a
     role='template' item this turn (that rides in analyzed_items instead).
     """
-    if decision.analyzer_invoked:
-        analyzed = await build_analyzed_items_from_verdicts(
-            analyzer_output=deps.last_analyzer_output,
-            selected_ids=selected_uuids,
-            role_assignments=role_assignments_by_uuid,
-            deps=deps,
-        )
-    else:
-        analyzed = await build_analyzed_items_direct(
-            selected_ids=selected_uuids,
-            role_assignments=role_assignments_by_uuid,
-            deps=deps,
-        )
+    analyzed = await build_analyzed_items_direct(
+        selected_ids=selected_uuids,
+        role_assignments=role_assignments_by_uuid,
+        deps=deps,
+    )
 
     return WriterPackage(
         intent_ar=decision.intent_ar,
         subtype=decision.subtype,
         edit_mode=decision.edit_mode,
         plan_md=decision.plan_md,
+        parties=list(decision.parties),
         analyzed_items=analyzed,
         templates=list(templates or []),
         style=deps.style,
@@ -486,9 +475,9 @@ async def handle_writer_planner_turn(
         # --- 5. Resolve WI-{seq} aliases → UUIDs (alias protocol) --------
         # The decider speaks aliases (selected_wis is list[WI-{seq}],
         # role_assignments is dict[WI-{seq}, role]); walkers + DB queries
-        # speak UUIDs. Defensive resolution at this seam — analyze_items
-        # already rejects unknown aliases via ModelRetry during the run,
-        # so this rarely drops anything in practice.
+        # speak UUIDs. Defensive resolution at this seam — a stale or
+        # hallucinated alias on the final emission is dropped here rather
+        # than failing the turn.
         selected_uuids, role_map_by_uuid = _resolve_decision_aliases(
             decision, deps
         )
@@ -575,10 +564,9 @@ async def handle_writer_planner_turn(
 
         duration = time.perf_counter() - t0
         logger.info(
-            "writer_planner: completed turn item_id=%s analyzer=%s "
+            "writer_planner: completed turn item_id=%s "
             "present=%d items=%d duration=%.2fs",
             writer_output.item_id,
-            decision.analyzer_invoked,
             deps.present_count,
             len(package.analyzed_items),
             duration,
@@ -592,11 +580,19 @@ async def handle_writer_planner_turn(
         if decision.offer_save and decision.offer_item_id:
             offer_uuid = deps.resolve_wi_alias(decision.offer_item_id)
             if offer_uuid:
+                # title_hint: prefer this-turn attachments, fall back to
+                # prior_artifacts (the attachment survives a pause/resume there,
+                # since the resume turn carries no fresh attached_items).
                 title_hint = ""
                 for snap in deps.attached_items:
                     if getattr(snap, "item_id", "") == offer_uuid:
                         title_hint = getattr(snap, "title", "") or ""
                         break
+                if not title_hint:
+                    for art in deps.prior_artifacts:
+                        if getattr(art, "item_id", "") == offer_uuid:
+                            title_hint = getattr(art, "title", "") or ""
+                            break
                 sse_events.append(
                     {
                         "type": "template_save_offer",
@@ -628,7 +624,6 @@ async def handle_writer_planner_turn(
                 tokens_in=0,
                 tokens_out=0,
                 per_phase_stats={
-                    "analyzer_invoked": decision.analyzer_invoked,
                     "present_count": deps.present_count,
                     "selected_aliases": len(decision.selected_wis),
                     "selected_uuids": len(selected_uuids),

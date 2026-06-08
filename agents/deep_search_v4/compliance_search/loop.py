@@ -7,7 +7,7 @@ Three nodes forming the expand-search-rerank loop:
 
 Retry loop: when RerankerNode returns sufficient=False and retries remain,
 weak_axes are fed back to ExpanderNode as dynamic instructions.
-Max 3 rounds (1 initial + 2 retries).
+Max 1 round (single pass, no retries).
 """
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ from .expander import EXPANDER_LIMITS, create_expander_agent
 from .logger import (
     save_expander_md,
     save_reranker_md,
-    save_reranker_per_query_mds,
     save_search_query_md,
 )
 from .models import (
@@ -42,19 +41,19 @@ from .models import (
     LoopState,
     RerankedServiceResult,
     ServiceRerankerOutput,
+    WeakAxis,
 )
 from .prompts import (
     EXPANDER_SYSTEM_PROMPT,
     build_expander_dynamic_instructions,
     build_expander_user_message,
 )
-from .reranker import RERANKER_LIMITS, create_reranker_agent
-from .unfold_reranker import build_reranker_user_message
+from .reranker import run_reranker_for_query
 from .search import search_compliance_raw
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS = 3
+MAX_ROUNDS = 1
 
 
 # -- ExpanderNode --------------------------------------------------------------
@@ -288,6 +287,35 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
                 except Exception as le:
                     logger.warning("save_search_query_md failed: %s", le)
 
+        # Retain per-sub-query rows so RerankerNode can issue ONE reranker call
+        # per sub-query (parity with reg_search / case_search). Dedup WITHIN the
+        # query by service_ref (keep highest score) so a single sub-query never
+        # shows the LLM the same service twice; cross-query overlap is resolved
+        # after the per-query gather, in the node.
+        for qi, (query, results) in enumerate(zip(queries, results_per_query)):
+            within: dict[str, dict] = {}
+            for row in results:
+                ref = row.get("service_ref", "") or ""
+                if not ref:
+                    continue
+                existing = within.get(ref)
+                if existing is None or row.get("score", 0.0) > existing.get("score", 0.0):
+                    within[ref] = row
+            rows_sorted = sorted(
+                within.values(), key=lambda r: r.get("score", 0.0), reverse=True
+            )
+            rationale = (
+                state.expander_output.rationales[qi]
+                if state.expander_output and qi < len(state.expander_output.rationales)
+                else ""
+            )
+            state.per_query_rows.append({
+                "round": state.round_count,
+                "query": query,
+                "rationale": rationale,
+                "rows": rows_sorted,
+            })
+
         # Dedup by service_ref within this batch — keep row with highest score
         service_map: dict[str, dict] = {}
         for results in results_per_query:
@@ -325,11 +353,17 @@ class SearchNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResul
 
 
 class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchResult]):
-    """Runs ServiceReranker agent -- classifies all results as keep/drop.
+    """Runs the ServiceReranker ONCE PER EXPANDER SUB-QUERY, in parallel.
 
-    Receives the full flat list of unique services (state.all_results_flat),
-    classifies each as keep or drop, accumulates kept results across rounds,
-    and gates the retry loop via the sufficient flag.
+    Mirrors reg_search / case_search: each sub-query's retrieved pool
+    (``state.per_query_rows``) is reranked by its own ``run_reranker_for_query``
+    call, all launched concurrently via ``asyncio.gather``. After the gather the
+    node merges every sub-query's kept services — deduping by ``service_ref``
+    (high relevance beats medium, ties by RRF score), applies the global keep
+    cap, and aggregates the per-query ``sufficient`` / ``weak_axes`` signals.
+
+    The external contract is unchanged: ``state.kept_results`` is the same typed
+    ``RerankedServiceResult`` list the orchestrator + URA adapter consume.
 
     Routes to ExpanderNode (loop back) or End(ComplianceSearchResult).
     """
@@ -339,14 +373,20 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
         ctx: GraphRunContext[LoopState, ComplianceSearchDeps],
     ) -> Union[ExpanderNode, End[ComplianceSearchResult]]:
         state = ctx.state
+        deps = ctx.deps
+
+        # Per-sub-query rows captured by SearchNode for the current round.
+        current_round = [
+            e for e in state.per_query_rows if e.get("round") == state.round_count
+        ]
 
         logger.info(
-            "RerankerNode round %d -- %d flat results to classify",
-            state.round_count,
-            len(state.all_results_flat),
+            "RerankerNode round %d -- %d sub-queries (1 reranker call each), "
+            "%d unique services in pool",
+            state.round_count, len(current_round), len(state.all_results_flat),
         )
 
-        if not state.all_results_flat:
+        if not current_round or not state.all_results_flat:
             # Nothing to classify — exit with weak quality
             logger.warning("RerankerNode: no results to classify, exiting with weak quality")
             state.sse_events.append({
@@ -354,206 +394,220 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
                 "text": "لم يتم العثور على خدمات حكومية ذات صلة.",
             })
             return End(ComplianceSearchResult(
-                kept_results=[],
+                kept_results=list(state.kept_results),
                 quality="weak",
                 queries_used=list(state.queries_used),
                 rounds_used=state.round_count,
             ))
 
-        deps = ctx.deps
-        reranker = create_reranker_agent(model_override=deps.model_override)
-        n_queries = len(state.expander_output.queries) if state.expander_output else 1
+        n_queries = len(current_round)
 
         # Dynamic result-budget model (MODE_PROFILES.md §1). When the planner
-        # passes a ``result_budget``, derive the keep cap from the expander's
-        # ACTUAL emitted query count N. When None (CLI / monitor path), fall
+        # passes a ``result_budget``, derive the PER-SUB-QUERY keep cap from the
+        # actual emitted query count N. When None (CLI / monitor path), fall
         # back to the fixed ``reranker_max_keep``.
         if deps.result_budget is not None:
             max_keep = math.ceil(
                 deps.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR)
             )
             logger.info(
-                "RerankerNode: dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
+                "RerankerNode: dynamic keep — result_budget=%d, N=%d -> "
+                "per-query max_keep=%d",
                 deps.result_budget, n_queries, max_keep,
             )
         else:
             max_keep = deps.reranker_max_keep
-        user_message = build_reranker_user_message(
-            state.focus_instruction,
-            state.all_results_flat,
-            state.round_count,
-            n_queries,
-            max_keep=max_keep,
-        )
 
         state.sse_events.append({
             "type": "status",
-            "text": f"جاري تصنيف {len(state.all_results_flat)} خدمة...",
+            "text": f"جاري تصنيف النتائج عبر {n_queries} استعلام بالتوازي...",
         })
 
-        try:
-            result = await reranker.run(user_message, usage_limits=RERANKER_LIMITS)
-            output: ServiceRerankerOutput = result.output
-            state.reranker_output = output
-
-            # Track usage
-            ru = result.usage()
-            reranker_usage = {
-                "agent": "reranker",
-                "round": state.round_count,
-                "requests": ru.requests,
-                "input_tokens": ru.input_tokens,
-                "output_tokens": ru.output_tokens,
-                "total_tokens": ru.total_tokens,
-                "cached_tokens": int(getattr(ru, "cache_read_tokens", 0) or 0),
-            }
-            state.inner_usage.append(reranker_usage)
-
-            # Accumulate kept results as typed RerankedServiceResult (dedup by service_ref)
-            kept_refs = {r.service_ref for r in state.kept_results}
-            for dec in output.decisions:
-                if dec.action == "keep":
-                    idx = dec.position - 1
-                    if 0 <= idx < len(state.all_results_flat):
-                        row = state.all_results_flat[idx]
-                        ref = row.get("service_ref", "") or ""
-                        if ref and ref not in kept_refs:
-                            typed = RerankedServiceResult(
-                                service_ref=ref,
-                                title=row.get("service_name_ar", "") or "",
-                                content=row.get("service_context", "") or "",
-                                provider_name=row.get("provider_name", "") or "",
-                                service_url=(
-                                    row.get("service_url") or row.get("url", "") or ""
-                                ),
-                                sectors=row.get("sectors") or [],
-                                is_proactive=bool(row.get("is_proactive", False)),
-                                score=float(row.get("score", 0.0) or 0.0),
-                                relevance=dec.relevance or "medium",
-                                reasoning=dec.reasoning or "",
-                            )
-                            state.kept_results.append(typed)
-                            kept_refs.add(ref)
-
-            # Apply a single flat cap to the total kept pool. High-relevance
-            # results are ordered ahead of medium; ties broken by score desc.
-            high_kept = sorted(
-                [r for r in state.kept_results if r.relevance == "high"],
-                key=lambda r: -r.score,
-            )
-            med_kept = sorted(
-                [r for r in state.kept_results if r.relevance != "high"],
-                key=lambda r: -r.score,
-            )
-            ordered = high_kept + med_kept
-            cap_truncated = max(0, len(ordered) - max_keep)
-            state.kept_results = ordered[:max_keep]
-            if cap_truncated > 0:
-                logger.info(
-                    "RerankerNode: cap truncated %d results (max_keep=%d)",
-                    cap_truncated, max_keep,
+        # -- One reranker call per sub-query, concurrently --------------------
+        async def _process_one(qi: int, entry: dict):
+            query = entry.get("query", "")
+            rationale = entry.get("rationale", "")
+            rows = entry.get("rows", []) or []
+            try:
+                output, kept, usage, user_message, messages_json = (
+                    await run_reranker_for_query(
+                        query=query,
+                        rationale=rationale,
+                        rows=rows,
+                        max_keep=max_keep,
+                        round_count=state.round_count,
+                        model_override=deps.model_override,
+                    )
                 )
+            except Exception as e:
+                logger.error("RerankerNode q%d error: %s", qi + 1, e, exc_info=True)
+                return None
 
-            kept_count = len(state.kept_results)
-            logger.info(
-                "RerankerNode: sufficient=%s, kept=%d, weak_axes=%d",
-                output.sufficient,
-                kept_count,
-                len(output.weak_axes),
-            )
-            state.sse_events.append({
-                "type": "status",
-                "text": (
-                    f"تم الاحتفاظ بـ {kept_count} خدمة ذات صلة — "
-                    f"الجودة: {'كافية' if output.sufficient else 'غير كافية'}"
-                ),
-            })
+            usage["round"] = state.round_count
+            usage["query_index"] = qi + 1
+            state.inner_usage.append(usage)
 
-            # Track round summary
-            state.round_summaries.append({
-                "round": state.round_count,
-                "expander_queries": list(state.expander_output.queries) if state.expander_output else [],
-                "search_total": len(state.all_results_flat),
-                "reranker_kept": kept_count,
-                "reranker_sufficient": output.sufficient,
-                "weak_axes_count": len(output.weak_axes),
-            })
-
-            # Log reranker to file
-            if state.log_id:
+            if state.log_id and rows:
                 try:
                     save_reranker_md(
                         log_id=state.log_id,
                         round_num=state.round_count,
                         user_message=user_message,
                         output=output,
-                        all_results_flat=state.all_results_flat,
-                        usage=reranker_usage,
-                        messages_json=result.all_messages_json(),
+                        all_results_flat=rows,
+                        usage=usage,
+                        messages_json=messages_json,
+                        query_index=qi + 1,
+                        query=query,
                     )
                 except Exception as le:
                     logger.warning("save_reranker_md failed: %s", le)
-                try:
-                    queries = state.expander_output.queries if state.expander_output else []
-                    rationales = state.expander_output.rationales if state.expander_output else []
-                    save_reranker_per_query_mds(
-                        log_id=state.log_id,
-                        round_num=state.round_count,
-                        queries=queries,
-                        rationales=rationales,
-                        per_query_service_refs=state.per_query_service_refs,
-                        all_results_flat=state.all_results_flat,
-                        output=output,
-                    )
-                except Exception as le:
-                    logger.warning("save_reranker_per_query_mds failed: %s", le)
 
-            # Route: loop back if not sufficient and rounds remain
-            if not output.sufficient and state.round_count < MAX_ROUNDS:
-                state.weak_axes = output.weak_axes
-                state.sse_events.append({
-                    "type": "status",
-                    "text": f"جاري إعادة البحث (الجولة {state.round_count + 1})...",
-                })
-                logger.info(
-                    "RerankerNode: looping back -- %d weak axes",
-                    len(output.weak_axes),
-                )
-                return ExpanderNode()
+            return output, kept
 
-            # Sufficient or max rounds reached — determine quality
-            if output.sufficient and state.round_count == 1:
-                quality = "strong"
-            elif output.sufficient:
-                quality = "moderate"
-            else:
-                quality = "weak"
+        gathered = await asyncio.gather(
+            *[_process_one(qi, e) for qi, e in enumerate(current_round)]
+        )
+        per_query = [g for g in gathered if g is not None]
 
-            state.sse_events.append({
-                "type": "status",
-                "text": f"اكتمل البحث — الجودة: {quality}",
-            })
-
-            return End(ComplianceSearchResult(
-                kept_results=list(state.kept_results),
-                quality=quality,
-                queries_used=list(state.queries_used),
-                rounds_used=state.round_count,
-            ))
-
-        except Exception as e:
-            logger.error("RerankerNode error: %s", e, exc_info=True)
+        if not per_query:
+            # Every sub-query reranker failed.
+            logger.warning("RerankerNode: all per-query rerankers failed")
             state.sse_events.append({
                 "type": "status",
                 "text": "حدث خطأ أثناء تصنيف النتائج.",
             })
-
             return End(ComplianceSearchResult(
                 kept_results=list(state.kept_results),
                 quality="weak",
                 queries_used=list(state.queries_used),
                 rounds_used=state.round_count,
             ))
+
+        # -- Merge across sub-queries -----------------------------------------
+        # A service surfaced (and kept) by two sub-queries is judged twice; keep
+        # the better verdict (high beats medium, ties by score). Seed with any
+        # results already kept in earlier rounds.
+        _RANK = {"high": 1, "medium": 0}
+
+        def _better(
+            a: RerankedServiceResult, b: RerankedServiceResult
+        ) -> RerankedServiceResult:
+            if _RANK.get(a.relevance, 0) != _RANK.get(b.relevance, 0):
+                return a if _RANK.get(a.relevance, 0) > _RANK.get(b.relevance, 0) else b
+            return a if a.score >= b.score else b
+
+        best_by_ref: dict[str, RerankedServiceResult] = {
+            r.service_ref: r for r in state.kept_results if r.service_ref
+        }
+        sufficient_all = True
+        merged_weak_axes: list[WeakAxis] = []
+        notes: list[str] = []
+        for output, kept in per_query:
+            if not output.sufficient:
+                sufficient_all = False
+            merged_weak_axes.extend(output.weak_axes)
+            if output.summary_note:
+                notes.append(output.summary_note)
+            for r in kept:
+                if not r.service_ref:
+                    continue
+                existing = best_by_ref.get(r.service_ref)
+                best_by_ref[r.service_ref] = (
+                    r if existing is None else _better(r, existing)
+                )
+
+        merged = list(best_by_ref.values())
+        high_kept = sorted(
+            [r for r in merged if r.relevance == "high"], key=lambda r: -r.score
+        )
+        med_kept = sorted(
+            [r for r in merged if r.relevance != "high"], key=lambda r: -r.score
+        )
+        ordered = high_kept + med_kept
+
+        # Global cap over the merged pool. With a planner budget the union is
+        # capped at the total budget; otherwise allow up to N×per-query keep
+        # (effectively the full deduped union — parity with reg/case, which do
+        # not re-trim across sub-queries).
+        global_cap = (
+            deps.result_budget
+            if deps.result_budget is not None
+            else n_queries * max_keep
+        )
+        cap_truncated = max(0, len(ordered) - global_cap)
+        state.kept_results = ordered[:global_cap]
+        if cap_truncated > 0:
+            logger.info(
+                "RerankerNode: global cap truncated %d results (cap=%d)",
+                cap_truncated, global_cap,
+            )
+
+        # Merged round-level output (state + summaries + routing signal).
+        merged_output = ServiceRerankerOutput(
+            sufficient=sufficient_all,
+            decisions=[],
+            weak_axes=merged_weak_axes,
+            summary_note=" | ".join(notes)[:500],
+        )
+        state.reranker_output = merged_output
+
+        kept_count = len(state.kept_results)
+        logger.info(
+            "RerankerNode: merged kept=%d across %d sub-queries, sufficient=%s, "
+            "weak_axes=%d",
+            kept_count, len(per_query), sufficient_all, len(merged_weak_axes),
+        )
+        state.sse_events.append({
+            "type": "status",
+            "text": (
+                f"تم الاحتفاظ بـ {kept_count} خدمة ذات صلة — "
+                f"الجودة: {'كافية' if sufficient_all else 'غير كافية'}"
+            ),
+        })
+
+        # Track round summary
+        state.round_summaries.append({
+            "round": state.round_count,
+            "expander_queries": list(state.expander_output.queries) if state.expander_output else [],
+            "search_total": len(state.all_results_flat),
+            "reranker_kept": kept_count,
+            "reranker_sufficient": sufficient_all,
+            "weak_axes_count": len(merged_weak_axes),
+        })
+
+        # Route: loop back if not sufficient and rounds remain
+        if not sufficient_all and state.round_count < MAX_ROUNDS:
+            state.weak_axes = merged_weak_axes
+            state.sse_events.append({
+                "type": "status",
+                "text": f"جاري إعادة البحث (الجولة {state.round_count + 1})...",
+            })
+            logger.info(
+                "RerankerNode: looping back -- %d weak axes",
+                len(merged_weak_axes),
+            )
+            return ExpanderNode()
+
+        # Sufficient or max rounds reached — determine quality
+        if sufficient_all and state.round_count == 1:
+            quality = "strong"
+        elif sufficient_all:
+            quality = "moderate"
+        else:
+            quality = "weak"
+
+        state.sse_events.append({
+            "type": "status",
+            "text": f"اكتمل البحث — الجودة: {quality}",
+        })
+
+        return End(ComplianceSearchResult(
+            kept_results=list(state.kept_results),
+            quality=quality,
+            queries_used=list(state.queries_used),
+            rounds_used=state.round_count,
+        ))
 
 
 # -- Graph assembly and entry point --------------------------------------------

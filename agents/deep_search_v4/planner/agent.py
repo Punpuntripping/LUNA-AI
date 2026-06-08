@@ -145,9 +145,17 @@ def create_planner_decider(
         Don't hesitate when it serves the user. Common situations:
           1. The query names a corpus/domain but no concrete legal question, so
              no useful retrieval can be derived (e.g. «ابحث في القضايا البنكية»).
-          2. The parties or legal intent are unclear, so a faithful
-             ``query_restatement`` would require guessing (who is suing whom,
-             in what capacity).
+          2. A named entity OR person whose role/relation to the question you
+             are *assuming* rather than being told — reflect your reading back
+             for the user to correct, or ask. This covers: **any** named
+             company / brand / app (what is it to them — opponent, lessor,
+             seller, insurer, employer, platform?); a government body that
+             isn't clearly identifiable or whose role here is unclear (unlike
+             a well-known service such as ناجز whose role is obvious); a named
+             individual whose relation is unclear; and plain who-is-suing-whom
+             ambiguity. Skip only when the relation is stated, the body is
+             well-known and unambiguous here, or the mention is incidental and
+             doesn't affect the search.
           3. The message is long and bundles several distinct legal aspects
              such that there is risk you have misread the situation — reflect a
              brief restatement of your understanding and the aspects you will

@@ -22,7 +22,7 @@ control surface. (Embeddings are NOT governed here — see
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, Union
 
 from pydantic_ai.models.fallback import FallbackModel
 
@@ -161,7 +161,7 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
 #
 # EXPERIMENT (2026-05-28): every former tier_1 qwen3.6-plus slot is temporarily
 # flipped to deepseek-v4-flash (tier_2, deepseek-primary) to A/B the cheap/fast
-# model across the pipeline. ONLY the router is left on tier_1 qwen3.6-plus.
+# model across the pipeline. ONLY the router is left on tier_1.
 # Rerankers stay tier_2 qwen3.5-flash (never were 3.6-plus). Revert via git to
 # restore the all-tier_1 baseline.
 _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
@@ -169,20 +169,31 @@ _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
 # reasoning_effort=max / qwen+openrouter equivalents). Used for the two heavy-
 # synthesis slots — the deep_search aggregator and the writing_executor.
 _FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
-AGENT_MODELS: dict[str, ModelPolicy] = {
+
+# Router uses a custom 4-cell chain: qwen3.7-plus → qwen3.6-plus (fallback) →
+# deepseek-v4-pro → or-deepseek-v4-flash. Pre-built because the standard
+# resolve_chain 3-cell structure has no slot for a same-family version fallback.
+_ROUTER_MODEL = FallbackModel(
+    create_model("qwen3.7-plus"),
+    create_model("qwen3.6-plus"),
+    create_model("deepseek-v4-pro"),
+    create_model("or-deepseek-v4-flash"),
+)
+
+AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
     "planner_responder":          _FLASH,
     "aggregator":                 _FLASH_MAX,
     "agent_writer":               _FLASH_MAX,
     # Layer-2 Major planner that sits in front of writing_executor.
-    # Talks to the user (ask_user, present_plan_for_approval), calls
-    # item_analyzer for context distillation when prior-WI scope is wide, and
-    # hands a WriterPackage to the writing executor at the end. Multi-turn loop
-    # per user turn (capped at 3 present_plan_for_approval cycles). Output is a
-    # discriminated list[PlannerDecision | DeferredToolRequests]; same shape as
-    # the deep_search planner. See .claude/plans/writer_planner.md.
+    # Talks to the user (ask_user, present_plan_for_approval), inspects prior-WI
+    # content on demand via unfold_workspace_item, and hands a WriterPackage to
+    # the writing executor at the end. Multi-turn loop per user turn (capped at
+    # 3 present_plan_for_approval cycles). Output is a discriminated
+    # list[PlannerDecision | DeferredToolRequests]; same shape as the
+    # deep_search planner. See .claude/plans/writer_planner.md.
     "writer_planner_decider":     _FLASH,
-    "router":                     ModelPolicy("tier_1"),  # left on qwen3.6-plus
+    "router":                     _ROUTER_MODEL,  # qwen3.7-plus → qwen3.6-plus → deepseek-v4-pro → or-deepseek-v4-flash
     "reg_search_expander":        _FLASH,
     "reg_search_reranker":        ModelPolicy("tier_2"),
     "reg_search_aggregator":      _FLASH,
@@ -242,9 +253,17 @@ def get_agent_model(
 
     ``override`` may be a :class:`ModelPolicy` or a CLI token string. A
     ``ModelPolicy`` whose tier differs from the slot's declared tier is rejected
-    - agents are locked to their tier.
+    - agents are locked to their tier. Slots that store a pre-built
+    ``FallbackModel`` (e.g. ``router``) do not support overrides.
     """
     base = AGENT_MODELS[slot]
+    if isinstance(base, FallbackModel):
+        if override is not None:
+            raise ValueError(
+                f"Slot '{slot}' uses a pre-built FallbackModel and does not "
+                f"support model overrides."
+            )
+        return base
     if override is None:
         policy = base
     elif isinstance(override, str):
@@ -283,7 +302,7 @@ _SUBAGENT_MODEL: dict[str, str] = {
     "sector_picker": "deepseek-v4-flash",
 }
 
-_DEFAULT_MODEL = "qwen3.6-plus"  # tier_1 qwen primary; used when no slot match
+_DEFAULT_MODEL = "qwen3.7-plus"  # tier_1 qwen primary; used when no slot match
 
 
 def model_of_subagent(agent: str) -> str:
