@@ -29,6 +29,7 @@ from backend.app.models.responses import (
 )
 from backend.app.services import case_service
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ async def list_cases(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List all cases for the authenticated user with pagination."""
-    data = case_service.list_cases(
+    data = await run_db(
+        case_service.list_cases,
         supabase,
         current_user.auth_id,
         status=status,
@@ -75,7 +77,8 @@ async def create_case(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Create a new case with an initial conversation."""
-    data = case_service.create_case(
+    data = await run_db(
+        case_service.create_case,
         supabase,
         current_user.auth_id,
         case_name=body.case_name,
@@ -104,7 +107,8 @@ async def get_case_detail(
 ):
     """Get full case detail with conversations and stats."""
     validate_uuid(case_id, "معرف القضية")
-    data = case_service.get_case_detail(
+    data = await run_db(
+        case_service.get_case_detail,
         supabase,
         current_user.auth_id,
         case_id,
@@ -130,7 +134,8 @@ async def update_case(
 ):
     """Update case fields (only provided fields are changed)."""
     validate_uuid(case_id, "معرف القضية")
-    data = case_service.update_case(
+    data = await run_db(
+        case_service.update_case,
         supabase,
         current_user.auth_id,
         case_id,
@@ -158,7 +163,8 @@ async def update_case_status(
 ):
     """Update case status (active, closed, archived)."""
     validate_uuid(case_id, "معرف القضية")
-    data = case_service.update_case_status(
+    data = await run_db(
+        case_service.update_case_status,
         supabase,
         current_user.auth_id,
         case_id,
@@ -180,7 +186,8 @@ async def delete_case(
 ):
     """Soft-delete a case and all its conversations."""
     validate_uuid(case_id, "معرف القضية")
-    case_service.delete_case(
+    await run_db(
+        case_service.delete_case,
         supabase,
         current_user.auth_id,
         case_id,

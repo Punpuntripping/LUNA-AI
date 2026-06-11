@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
@@ -116,20 +116,38 @@ def list_documents(
     }
 
 
-def upload_document(
+def upload_document_bytes(
     supabase: SupabaseClient,
     auth_id: str,
     case_id: str,
     *,
-    file: UploadFile,
+    file_bytes: bytes,
+    filename: str,
+    content_type: str,
     conversation_id: Optional[str] = None,
 ) -> dict:
-    """Upload a document to storage and create a DB record."""
+    """Legacy single-shot upload, reordered insert-first so the daily
+    reconciler covers the crash window (mirrors the resumable flow).
+
+    Takes already-read bytes — the async chunked read + 50 MB cap lives in the
+    route handler (``api/documents.upload_document``). All content validation
+    (MIME, size, empty, magic bytes) is preserved here and operates on
+    ``file_bytes`` so non-route callers stay safe too.
+
+    Ordering: insert the row marked ``extracted_data.upload_status='uploading'``
+    FIRST (reconciler-visible), then write to storage (best-effort cancel on
+    failure), then promote to ``ready``. Failure modes collapse to:
+      (a) insert fails → nothing written anywhere;
+      (b) storage write fails → best-effort soft-delete the row, reconciler
+          is the backstop if even that fails;
+      (c) promote fails → row stays ``uploading``; reconciler verifies the
+          (good) bytes within 24 h and promotes.
+    """
     user_id = get_user_id(supabase, auth_id)
     _verify_case_ownership(supabase, case_id, user_id)
 
     # Validate MIME type from header
-    content_type = file.content_type or "application/octet-stream"
+    content_type = content_type or "application/octet-stream"
     if content_type not in _ALLOWED_MIME_TYPES:
         raise LunaHTTPException(
             status_code=400,
@@ -137,35 +155,15 @@ def upload_document(
             detail="نوع الملف غير مسموح. الأنواع المسموحة: PDF, PNG, JPG",
         )
 
-    # Check file size before reading full content (if available)
-    if hasattr(file, "size") and file.size and file.size > _MAX_FILE_SIZE:
+    file_size = len(file_bytes)
+    if file_size == 0:
+        raise LunaHTTPException(status_code=400, code=ErrorCode.DOC_EMPTY, detail="الملف فارغ")
+    if file_size > _MAX_FILE_SIZE:
         raise LunaHTTPException(
             status_code=400,
             code=ErrorCode.DOC_TOO_LARGE,
             detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
         )
-
-    # Read file bytes with chunked size guard
-    chunks = []
-    total = 0
-    chunk_size = 1024 * 1024  # 1MB chunks
-    while True:
-        chunk = file.file.read(chunk_size)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > _MAX_FILE_SIZE:
-            raise LunaHTTPException(
-                status_code=400,
-                code=ErrorCode.DOC_TOO_LARGE,
-                detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
-            )
-        chunks.append(chunk)
-    file_bytes = b"".join(chunks)
-    file_size = total
-
-    if file_size == 0:
-        raise LunaHTTPException(status_code=400, code=ErrorCode.DOC_EMPTY, detail="الملف فارغ")
 
     # Server-side magic-byte validation
     expected_magic = _MAGIC_BYTES.get(content_type)
@@ -176,21 +174,16 @@ def upload_document(
             detail="محتوى الملف لا يتطابق مع نوعه المعلن",
         )
 
-    # Build storage path and upload
+    filename = filename or "document"
     settings = get_settings()
     bucket = settings.STORAGE_BUCKET_DOCUMENTS
-    filename = file.filename or "document"
     storage_path = build_storage_path(case_id, user_id, conversation_id, filename)
 
-    try:
-        upload_file(bucket, storage_path, file_bytes, content_type, supabase=supabase)
-    except (HTTPException, LunaHTTPException):
-        raise
-    except Exception as e:
-        logger.exception("Storage upload failed: %s", e)
-        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء رفع الملف")
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-    # Create DB record
+    # 1. Insert the row FIRST, marked uploading (reconciler-visible). The
+    #    marker field paths match upload_reconciler exactly:
+    #    extracted_data.upload_status == 'uploading'.
     doc_data = {
         "case_id": case_id,
         "document_name": filename,
@@ -198,36 +191,100 @@ def upload_document(
         "file_size_bytes": file_size,
         "storage_path": storage_path,
         "extraction_status": "pending",
+        "extracted_data": {
+            "upload_status": "uploading",
+            "declared_size_bytes": file_size,
+            "declared_mime_type": content_type,
+            "upload_init_at": now_iso,
+            "legacy_single_shot": True,
+        },
     }
     if conversation_id:
         doc_data["conversation_id"] = conversation_id
 
     try:
-        result = (
-            supabase.table("case_documents")
-            .insert(doc_data)
-            .execute()
-        )
+        result = supabase.table("case_documents").insert(doc_data).execute()
     except (HTTPException, LunaHTTPException):
         raise
     except Exception as e:
         logger.exception("Error creating document record: %s", e)
-        # Try to clean up the uploaded file
-        delete_file(bucket, storage_path, supabase=supabase)
-        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء حفظ بيانات المستند")
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء حفظ بيانات المستند",
+        )
 
     if not result.data:
-        raise LunaHTTPException(status_code=500, code=ErrorCode.DOC_UPLOAD_FAILED, detail="حدث خطأ أثناء حفظ بيانات المستند")
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء حفظ بيانات المستند",
+        )
+
+    doc = result.data[0]
+    document_id = doc["document_id"]
+
+    # 2. Storage write. On failure: best-effort cancel (soft-delete row);
+    #    the reconciler is the backstop if even that fails.
+    try:
+        upload_file(bucket, storage_path, file_bytes, content_type, supabase=supabase)
+    except (HTTPException, LunaHTTPException):
+        raise
+    except Exception as e:
+        logger.exception("Storage upload failed: %s", e)
+        try:
+            cancel_document_upload(supabase, auth_id, document_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "legacy upload: cancel after storage failure also failed for "
+                "%s — reconciler will sweep",
+                document_id,
+            )
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء رفع الملف",
+        )
+
+    # 3. Promote to ready. On failure: leave as 'uploading' — the reconciler
+    #    verifies the (good) bytes within 24 h and promotes.
+    extracted = dict(doc.get("extracted_data") or {})
+    extracted["upload_status"] = "ready"
+    extracted["upload_finalized_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        update = (
+            supabase.table("case_documents")
+            .update(
+                {
+                    "extracted_data": extracted,
+                    "updated_at": extracted["upload_finalized_at"],
+                }
+            )
+            .eq("document_id", document_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(
+            "legacy upload: promote-to-ready failed for %s: %s — reconciler "
+            "will promote within %dh",
+            document_id,
+            e,
+            24,
+        )
+        update = None
 
     write_audit_log(
         supabase,
         user_id=user_id,
         action="upload",
         resource_type="document",
-        resource_id=result.data[0]["document_id"],
+        resource_id=document_id,
     )
 
-    return result.data[0]
+    if update is not None and update.data:
+        return update.data[0]
+    return {**doc, "extracted_data": extracted}
 
 
 def get_document(

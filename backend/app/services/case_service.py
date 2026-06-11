@@ -135,19 +135,28 @@ def list_cases(
     total = result.count or 0
     cases = result.data or []
 
-    # Enrich each case with conversation_count and document_count
-    enriched = []
-    for case in cases:
-        cid = case["case_id"]
+    # Batch-fetch conversation + document counts in ONE round-trip (RPC
+    # case_counts, migration 065) instead of the old 1+2N per-case loop.
+    counts: dict[str, dict] = {}
+    if cases:
+        try:
+            counts_result = supabase.rpc(
+                "case_counts",
+                {"p_case_ids": [c["case_id"] for c in cases]},
+            ).execute()
+            counts = {row["case_id"]: row for row in (counts_result.data or [])}
+        except Exception as e:
+            logger.exception("Error fetching case counts: %s", e)
+            raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب القضايا")
 
-        conv_count = _count_conversations(supabase, cid)
-        doc_count = _count_documents(supabase, cid)
-
-        enriched.append({
+    enriched = [
+        {
             **case,
-            "conversation_count": conv_count,
-            "document_count": doc_count,
-        })
+            "conversation_count": counts.get(case["case_id"], {}).get("conversation_count", 0),
+            "document_count": counts.get(case["case_id"], {}).get("document_count", 0),
+        }
+        for case in cases
+    ]
 
     return {
         "cases": enriched,
@@ -176,53 +185,34 @@ def create_case(
     _validate_case_type(case_type)
     _validate_priority(priority)
 
-    # Build insert payload (only include non-None fields)
-    case_data = {
-        "lawyer_user_id": user_id,
-        "case_name": case_name,
-        "case_type": case_type,
-        "priority": priority,
-        "status": "active",
-    }
-    if description is not None:
-        case_data["description"] = description
-    if case_number is not None:
-        case_data["case_number"] = case_number
-    if court_name is not None:
-        case_data["court_name"] = court_name
-
+    # Atomic insert of the case + its first conversation in one transaction
+    # (RPC, migration 065). A failure between the two writes can no longer
+    # leave an orphaned case with zero conversations.
     try:
-        case_result = (
-            supabase.table("lawyer_cases")
-            .insert(case_data)
-            .execute()
-        )
+        result = supabase.rpc(
+            "create_case_with_conversation",
+            {
+                "p_user_id": user_id,
+                "p_case_name": case_name,
+                "p_case_type": case_type,
+                "p_description": description,
+                "p_case_number": case_number,
+                "p_court_name": court_name,
+                "p_priority": priority,
+            },
+        ).execute()
     except Exception as e:
         logger.exception("Error creating case: %s", e)
         raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القضية")
 
-    if not case_result.data:
+    payload = result.data
+    if not payload or not payload.get("case"):
         raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء القضية")
 
-    case = case_result.data[0]
+    case = payload["case"]
+    first_conversation_id = payload.get("first_conversation_id")
 
-    # Create the first conversation for this case
-    try:
-        conv_result = (
-            supabase.table("conversations")
-            .insert({
-                "user_id": user_id,
-                "case_id": case["case_id"],
-                "title_ar": f"محادثة - {case_name}",
-            })
-            .execute()
-        )
-    except Exception as e:
-        logger.exception("Error creating initial conversation for case: %s", e)
-        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء إنشاء المحادثة الأولى")
-
-    first_conversation_id = conv_result.data[0]["conversation_id"] if conv_result.data else None
-
+    # Audit log stays OUTSIDE the transaction (best-effort by design).
     write_audit_log(
         supabase,
         user_id=user_id,
@@ -283,14 +273,17 @@ def get_case_detail(
             .execute()
         )
     except Exception as e:
+        # A detail page with fabricated stats is worse than a retryable error.
         logger.exception("Error fetching case conversations: %s", e)
-        conv_result_data = []
-    else:
-        conv_result_data = conv_result.data or []
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب تفاصيل القضية")
 
-    # Build stats
+    conv_result_data = conv_result.data or []
+
+    # Build stats. Document count comes from the batched case_counts RPC
+    # (migration 065); conversation count is exact from the fetched rows.
     total_conversations = len(conv_result_data)
-    total_documents = _count_documents(supabase, case_id)
+    counts = _case_counts(supabase, case_id)
+    total_documents = counts.get("document_count", 0)
     total_memories = _count_memories(supabase, case_id)
 
     # Enrich conversations with is_active field
@@ -376,13 +369,12 @@ def update_case(
 
     case = result.data[0]
 
-    conv_count = _count_conversations(supabase, case_id)
-    doc_count = _count_documents(supabase, case_id)
+    counts = _case_counts(supabase, case_id)
 
     return {
         **case,
-        "conversation_count": conv_count,
-        "document_count": doc_count,
+        "conversation_count": counts.get("conversation_count", 0),
+        "document_count": counts.get("document_count", 0),
     }
 
 
@@ -420,13 +412,12 @@ def update_case_status(
 
     case = result.data[0]
 
-    conv_count = _count_conversations(supabase, case_id)
-    doc_count = _count_documents(supabase, case_id)
+    counts = _case_counts(supabase, case_id)
 
     return {
         **case,
-        "conversation_count": conv_count,
-        "document_count": doc_count,
+        "conversation_count": counts.get("conversation_count", 0),
+        "document_count": counts.get("document_count", 0),
     }
 
 
@@ -442,24 +433,27 @@ def delete_case(
     user_id = get_user_id(supabase, auth_id)
     _verify_case_ownership(supabase, case_id, user_id)
 
-    now = datetime.now(timezone.utc).isoformat()
-
+    # Atomic cascade soft-delete (RPC soft_delete_case_cascade, migration
+    # 065). The case + all its live conversations are soft-deleted in one
+    # transaction, closing the verify→delete TOCTOU window. The RPC returns
+    # -1 when the case was not found/owned (e.g. deleted concurrently between
+    # the ownership check and this call) → map to 404.
     try:
-        # Soft-delete the case
-        supabase.table("lawyer_cases").update({
-            "deleted_at": now,
-            "updated_at": now,
-        }).eq("case_id", case_id).eq("lawyer_user_id", user_id).execute()
-
-        # Soft-delete all conversations under this case
-        supabase.table("conversations").update({
-            "deleted_at": now,
-            "updated_at": now,
-        }).eq("case_id", case_id).eq("user_id", user_id).is_("deleted_at", "null").execute()
-
+        result = supabase.rpc(
+            "soft_delete_case_cascade",
+            {"p_case_id": case_id, "p_user_id": user_id},
+        ).execute()
     except Exception as e:
         logger.exception("Error deleting case: %s", e)
         raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء حذف القضية")
+
+    # PostgREST returns the scalar INT either bare or list-wrapped depending
+    # on the function shape — normalize defensively before the -1 check.
+    data = result.data
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if data == -1:
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CASE_NOT_FOUND, detail="القضية غير موجودة")
 
     write_audit_log(
         supabase,
@@ -499,38 +493,31 @@ def _verify_case_ownership(supabase: SupabaseClient, case_id: str, user_id: str)
     return result.data
 
 
-def _count_conversations(supabase: SupabaseClient, case_id: str) -> int:
-    """Count non-deleted conversations for a case."""
-    try:
-        result = (
-            supabase.table("conversations")
-            .select("conversation_id", count="exact")
-            .eq("case_id", case_id)
-            .is_("deleted_at", "null")
-            .execute()
-        )
-        return result.count or 0
-    except Exception:
-        return 0
+def _case_counts(supabase: SupabaseClient, case_id: str) -> dict:
+    """Fetch the non-deleted conversation + document counts for one case.
 
-
-def _count_documents(supabase: SupabaseClient, case_id: str) -> int:
-    """Count non-deleted documents for a case."""
+    Uses the batched ``case_counts`` RPC (migration 065) — one round-trip.
+    Returns a dict with ``conversation_count`` and ``document_count`` keys.
+    On RPC failure, propagates a 500 (no more silent fake-zero counts).
+    """
     try:
-        result = (
-            supabase.table("case_documents")
-            .select("document_id", count="exact")
-            .eq("case_id", case_id)
-            .is_("deleted_at", "null")
-            .execute()
-        )
-        return result.count or 0
-    except Exception:
-        return 0
+        result = supabase.rpc("case_counts", {"p_case_ids": [case_id]}).execute()
+    except Exception as e:
+        logger.exception("Error fetching case counts: %s", e)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب تفاصيل القضية")
+
+    rows = result.data or []
+    if rows:
+        return rows[0]
+    return {"conversation_count": 0, "document_count": 0}
 
 
 def _count_memories(supabase: SupabaseClient, case_id: str) -> int:
-    """Count non-deleted memories for a case."""
+    """Count non-deleted memories for a case.
+
+    Propagates errors as a 500 (no silent fake-zero) so a detail page never
+    serves a fabricated memory stat as truth.
+    """
     try:
         result = (
             supabase.table("case_memories")
@@ -539,6 +526,8 @@ def _count_memories(supabase: SupabaseClient, case_id: str) -> int:
             .is_("deleted_at", "null")
             .execute()
         )
-        return result.count or 0
-    except Exception:
-        return 0
+    except Exception as e:
+        logger.exception("Error counting memories for case_id=%s: %s", case_id, e)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب تفاصيل القضية")
+
+    return result.count or 0

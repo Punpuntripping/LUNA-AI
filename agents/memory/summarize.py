@@ -56,6 +56,48 @@ ATTACHMENT_CONTEXT_COMPACTION_CLIP_CHARS = 1500
 # the inline OCR path).
 MIN_CONTENT_LENGTH_CHARS = 300
 
+# A summarize attempt stamps ``metadata.summary_attempt.at`` BEFORE the LLM
+# fires. A second invocation that arrives within this window — an in-flight
+# duplicate, or a retry right after a failed persist — is skipped instead of
+# re-billing the LLM. Comfortably longer than a single summarize call; the
+# 24h-cadence sweep heals anything that stays NULL past the window.
+ATTEMPT_RECENT_WINDOW_S = 3600
+
+
+# ---------------------------------------------------------------------------
+# Attempt marker
+# ---------------------------------------------------------------------------
+
+
+def _mark_attempt(
+    supabase: SupabaseClient,
+    item_id: str,
+    existing_metadata: dict,
+) -> dict:
+    """Stamp ``metadata.summary_attempt.at`` BEFORE the LLM fires, so a retry
+    that arrives while we're in flight (or right after a failed persist) is
+    skipped instead of re-billing.
+
+    Best-effort: a failed marker write proceeds anyway. Returns the updated
+    metadata dict so the success-path persist writes it back (and does not
+    clobber the marker by writing the stale pre-marker metadata).
+    """
+    md = dict(existing_metadata or {})
+    md["summary_attempt"] = {"at": datetime.now(timezone.utc).isoformat()}
+    try:
+        (
+            supabase.table("workspace_items")
+            .update({"metadata": md})
+            .eq("item_id", item_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "summarize: attempt-marker write failed item_id=%s: %s",
+            item_id, exc,
+        )
+    return md
+
 
 # ---------------------------------------------------------------------------
 # Persistence helpers
@@ -349,6 +391,25 @@ async def summarize_workspace_item(
                     pass
                 return False
 
+            # Double-bill guard: skip if another attempt stamped the marker
+            # within ATTEMPT_RECENT_WINDOW_S — an in-flight duplicate or a retry
+            # right after a failed persist. An unparseable / future marker is
+            # ignored (proceed). ``force`` bypasses this entirely.
+            attempt = (row.get("metadata") or {}).get("summary_attempt") or {}
+            attempted_raw = attempt.get("at")
+            if not force and attempted_raw:
+                try:
+                    ts = datetime.fromisoformat(str(attempted_raw))
+                    age = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if 0 <= age < ATTEMPT_RECENT_WINDOW_S:
+                        try:
+                            _span.set_outcome("recently_attempted")
+                        except Exception:
+                            pass
+                        return False
+                except Exception:
+                    pass   # unparseable marker → proceed
+
             content_md = (row.get("content_md") or "").strip()
             if not content_md:
                 # Attachment / empty-body kinds: nothing to summarize.
@@ -388,6 +449,13 @@ async def summarize_workspace_item(
                 except Exception:
                     pass
 
+                # Stamp the attempt marker BEFORE the LLM fires so a concurrent
+                # retry is skipped instead of re-billing. Returned md carries
+                # the marker forward into the persist write.
+                marked_md = _mark_attempt(
+                    supabase, item_id, row.get("metadata") or {}
+                )
+
                 with _maybe_scope(supabase, row):
                     att_summary = await run_attachment_summary(
                         AttachmentSummaryInput(
@@ -403,7 +471,7 @@ async def summarize_workspace_item(
                     item_id,
                     att_summary,
                     source_length=len(content_md),
-                    existing_metadata=row.get("metadata") or {},
+                    existing_metadata=marked_md,
                 )
                 # Cost is captured per-call by the tracking hook (run_attachment_summary
                 # → run_tracked → llm_calls); no agent_runs row needed.
@@ -432,6 +500,13 @@ async def summarize_workspace_item(
             # query description, migration 038), and content_md. NULL
             # describe_query is fine: the prompt falls back to describing
             # content without a query anchor.
+            # Stamp the attempt marker BEFORE the LLM fires so a concurrent
+            # retry is skipped instead of re-billing. Returned md carries the
+            # marker forward into the persist write.
+            marked_md = _mark_attempt(
+                supabase, item_id, row.get("metadata") or {}
+            )
+
             with _maybe_scope(supabase, row):
                 summary = await run_artifact_summary(
                     ArtifactSummaryInput(
@@ -449,7 +524,7 @@ async def summarize_workspace_item(
                 item_id,
                 summary,
                 source_length=len(content_md),
-                existing_metadata=row.get("metadata") or {},
+                existing_metadata=marked_md,
             )
             # Cost is captured per-call by the tracking hook (run_artifact_summary
             # → run_tracked → llm_calls); no agent_runs row needed.

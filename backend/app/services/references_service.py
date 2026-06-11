@@ -34,6 +34,7 @@ from typing import Any, Sequence
 
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import LunaHTTPException, ErrorCode
 from agents.deep_search_v4.aggregator.models import Reference
 from agents.deep_search_v4.aggregator.preprocessor import (
     _reference_from_ura,
@@ -64,6 +65,9 @@ _ID_BATCH = 150
 
 # Fallback stub label when the source row is gone / unresolvable.
 _STUB_TITLE = "[المصدر غير متوفر]"
+
+# Max concurrent build_source_view lookups per fetch_item_references call.
+_SOURCE_VIEW_CONCURRENCY = 5
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +181,18 @@ def _select_reference_rows(
         resp = q.execute()
         return list(resp.data or [])
     except Exception as exc:  # noqa: BLE001
+        # The primary row-select must NOT lie: a DB failure here previously
+        # rendered as "no references" (empty panel). Re-raise as a 500 so the
+        # client sees a retryable error, not fabricated emptiness. (Enrichment
+        # failures downstream stay best-effort — degraded cards beat a failed
+        # response.) Raised here in the service layer since the route handler
+        # is out of scope.
         logger.exception("references_service: select rows failed for wi_id=%s: %s", wi_id, exc)
-        return []
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب المراجع",
+        ) from exc
 
 
 def _reg_chunk_id_from_row(row: dict) -> str:
@@ -388,20 +402,30 @@ async def _attach_source_views(
     supabase: SupabaseClient,
     pending: list[tuple[Reference, URAResultBase]],
 ) -> None:
-    """Parallel ``build_source_view`` resolution; failures leave source_view=None."""
+    """Parallel ``build_source_view`` resolution; failures leave source_view=None.
+
+    The fan-out is bounded by a per-call semaphore so a panel with many refs
+    can't open an unbounded number of concurrent source-table reads against a
+    sync Supabase client. The semaphore is created here (not module-level) so
+    it binds to the running event loop — important because this codebase mixes
+    loops via ``asyncio.to_thread``.
+    """
     if not pending:
         return
 
+    sem = asyncio.Semaphore(_SOURCE_VIEW_CONCURRENCY)
+
     async def _one(shell: URAResultBase) -> Any:
-        try:
-            return await build_source_view(supabase, shell)  # type: ignore[arg-type]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "references_service: build_source_view(%s) failed: %s",
-                getattr(shell, "ref_id", "?"),
-                exc,
-            )
-            return None
+        async with sem:
+            try:
+                return await build_source_view(supabase, shell)  # type: ignore[arg-type]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "references_service: build_source_view(%s) failed: %s",
+                    getattr(shell, "ref_id", "?"),
+                    exc,
+                )
+                return None
 
     views = await asyncio.gather(*(_one(shell) for _, shell in pending))
     for (ref, _), view in zip(pending, views):

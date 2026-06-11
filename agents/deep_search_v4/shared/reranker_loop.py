@@ -215,8 +215,8 @@ class RerankerLoopBase:
             kept: (block, dec_dict) pairs marked "keep" this round.
             to_act: (block, dec_dict) pairs marked "unfold" (reg) or
                 carrying weak_axes (compliance).
-            classification: The raw pydantic_ai ``RerankerClassification``
-                output for this round.
+            classification: The raw pydantic_ai domain reranker classification
+                output for this round (Case/Reg/Service).
             round_num: Current round number (1-based).
             **kwargs: Domain-specific extras (e.g. ``supabase``).
         """

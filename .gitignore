@@ -28,6 +28,8 @@ agents/archive/*/logs/
 agents/archive/*/comparison/
 agents/_archive/
 cli_smoke_err.log
+.backend.err.log
+.backend.out.log
 luna-*.png
 frontend/tsconfig.tsbuildinfo
 _run5_*.txt

@@ -83,48 +83,26 @@ def update_preferences(
     auth_id: str,
     preferences: dict,
 ) -> dict:
-    """Upsert user preferences (merge with existing JSONB)."""
+    """Atomically merge a partial preferences patch (RPC merge_preferences).
+
+    The frontend sends PARTIAL patches; the shallow merge (patch keys win)
+    happens inside one INSERT..ON CONFLICT statement (migration 066), so two
+    concurrent partial PATCHes can no longer silently drop one another.
+    """
     user_id = get_user_id(supabase, auth_id)
 
-    # Try to get existing
     try:
-        existing = (
-            supabase.table("user_preferences")
-            .select("*")
-            .eq("user_id", user_id)
-            .maybe_single()
-            .execute()
-        )
+        result = supabase.rpc(
+            "merge_preferences",
+            {"p_user_id": user_id, "p_patch": preferences},
+        ).execute()
     except Exception as e:
-        logger.exception("Error checking existing preferences: %s", e)
+        logger.exception("Error merging preferences: %s", e)
         raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
-
-    if existing is not None and existing.data is not None:
-        # Merge with existing preferences
-        merged = {**existing.data.get("preferences", {}), **preferences}
-        try:
-            result = (
-                supabase.table("user_preferences")
-                .update({"preferences": merged})
-                .eq("user_id", user_id)
-                .execute()
-            )
-        except Exception as e:
-            logger.exception("Error updating preferences: %s", e)
-            raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
-    else:
-        # Insert new preferences row
-        try:
-            result = (
-                supabase.table("user_preferences")
-                .insert({"user_id": user_id, "preferences": preferences})
-                .execute()
-            )
-        except Exception as e:
-            logger.exception("Error inserting preferences: %s", e)
-            raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
 
     if not result.data:
         raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
 
-    return result.data[0]
+    # The RPC returns {"user_id": ..., "preferences": ...} matching
+    # PreferencesResponse — no contract change.
+    return result.data

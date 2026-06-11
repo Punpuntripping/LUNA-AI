@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -62,16 +62,35 @@ class ServiceDecision(BaseModel):
     position: int
     action: Literal["keep", "drop"]
     relevance: Literal["high", "medium"] | None = None
-    reasoning: str = ""
+    reasoning: str = Field(
+        description="Short Arabic note justifying the decision (required)",
+    )
+    satisfies_axes: list[int] = Field(
+        default_factory=list,
+        description="Indices into query_axes that this service covers (keep only)",
+    )
+
+    @model_validator(mode="after")
+    def _relevance_only_on_keep(self) -> "ServiceDecision":
+        # Coherence: a dropped service has no relevance tier.
+        if self.action != "keep":
+            self.relevance = None
+        return self
 
 
 class ServiceRerankerOutput(BaseModel):
     """Output from the ServiceReranker agent — classification only, no synthesis."""
 
     sufficient: bool = False
+    query_axes: list[str] = Field(
+        default_factory=list,
+        description="1-3 executive-need axes restated from the sub-query (advisory)",
+    )
     decisions: list[ServiceDecision]
     weak_axes: list[WeakAxis] = []
-    summary_note: str = ""
+    summary_note: str = Field(
+        description="Brief Arabic note on the collective assessment (required)",
+    )
 
 
 class RerankedServiceResult(BaseModel):

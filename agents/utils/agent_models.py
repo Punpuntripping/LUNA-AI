@@ -33,9 +33,11 @@ Provider = Literal["alibaba", "openrouter"]
 Tier = Literal["tier_1", "tier_2"]
 Family = Literal["qwen", "deepseek"]
 # Reasoning intent. "default" = leave thinking to the provider default (what
-# every agent used historically). "max" = push the cell to its provider-specific
-# reasoning ceiling (see _reasoning_settings); used for heavy-synthesis slots.
-Reasoning = Literal["default", "max"]
+# every agent used historically). "medium" = explicit mid-effort thinking
+# (cheaper/faster than max; used for slots that need real reasoning without
+# ceiling latency). "max" = push the cell to its provider-specific reasoning
+# ceiling (see _reasoning_settings); used for heavy-synthesis slots.
+Reasoning = Literal["default", "medium", "max"]
 
 # tier -> family -> provider -> model_registry key
 TIERS: dict[str, dict[str, dict[str, str]]] = {
@@ -105,40 +107,46 @@ def resolve_chain(policy: ModelPolicy) -> list[str]:
 # model's max-CoT length. DeepSeek-on-Alibaba ignores thinking_budget and instead
 # takes ``reasoning_effort`` (high|max; "xhigh" aliases to "max").
 _MAX_THINKING_BUDGET = 24_000
+# Mid-effort Qwen thinking ceiling for reasoning="medium" — enough for grammar/
+# agreement reasoning without max-effort latency.
+_MEDIUM_THINKING_BUDGET = 8_000
 
 
 def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
-    """Per-cell ``model_settings`` that push a FallbackModel cell to max reasoning.
+    """Per-cell ``model_settings`` that set a FallbackModel cell's reasoning level.
 
     Each provider/family exposes a DIFFERENT reasoning control, and a single
     agent-level ``model_settings`` dict cannot serve all four cells — so the tier
-    system bakes the right ``extra_body`` onto each cell by resolved registry key:
+    system bakes the right ``extra_body`` onto each cell by resolved registry key
+    (value depends on the level — max vs medium):
 
-      * DeepSeek V4 on Alibaba  -> ``reasoning_effort="max"`` + ``thinking.type``
+      * DeepSeek V4 on Alibaba  -> ``reasoning_effort="max"|"medium"`` + ``thinking.type``
         (OpenAI-compatible DashScope; "xhigh" aliases to "max" server-side).
-      * Qwen on Alibaba         -> ``enable_thinking`` + ``thinking_budget`` (ceiling).
-      * Any family on OpenRouter -> ``reasoning.effort="xhigh"``.
+      * Qwen on Alibaba         -> ``enable_thinking`` + ``thinking_budget``
+        (ceiling: 24k for max, 8k for medium).
+      * Any family on OpenRouter -> ``reasoning.effort="xhigh"|"medium"``.
 
     Returns ``None`` for ``reasoning="default"`` so non-flagged slots keep their
     historical provider-default thinking behavior (no settings attached).
     """
-    if reasoning != "max":
+    if reasoning == "default":
         return None
+    is_max = reasoning == "max"
     cfg = get_model_config(key)
     if cfg.provider == "openrouter":
-        return {"extra_body": {"reasoning": {"effort": "xhigh"}}}
+        return {"extra_body": {"reasoning": {"effort": "xhigh" if is_max else "medium"}}}
     # Alibaba DashScope (OpenAI-compatible).
     if "deepseek" in key:
         return {
             "extra_body": {
                 "thinking": {"type": "enabled"},
-                "reasoning_effort": "max",
+                "reasoning_effort": "max" if is_max else "medium",
             }
         }
     return {
         "extra_body": {
             "enable_thinking": True,
-            "thinking_budget": _MAX_THINKING_BUDGET,
+            "thinking_budget": _MAX_THINKING_BUDGET if is_max else _MEDIUM_THINKING_BUDGET,
         }
     }
 
@@ -169,6 +177,8 @@ _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
 # reasoning_effort=max / qwen+openrouter equivalents). Used for the two heavy-
 # synthesis slots — the deep_search aggregator and the writing_executor.
 _FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
+# Flash head with mid-effort reasoning — used by the artifact_editor slot.
+_FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium")
 
 # Router uses a custom 4-cell chain: qwen3.7-plus → qwen3.6-plus (fallback) →
 # deepseek-v4-pro → or-deepseek-v4-flash. Pre-built because the standard
@@ -222,6 +232,11 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # corpus contents — diagnosed in conv faa3b71e). DeepSeek-flash is fast and
     # cheap; the call is short (two-field structured output).
     "sector_picker":              ModelPolicy("tier_2", primary="deepseek"),
+    # Layer-3 task agent invoked as a router tool (edit_artifact) — one flash
+    # call over a full injected artifact emitting a batched surgical-edit tool
+    # call. reasoning=medium gives the Arabic grammar-agreement reasoning the
+    # edits need without max-effort latency. See .claude/plans/artifact_editor.md.
+    "artifact_editor":            _FLASH_MEDIUM,
 }
 
 

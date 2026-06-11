@@ -17,6 +17,7 @@ from backend.app.deps import get_current_user, get_redis, get_supabase
 from backend.app.services.case_service import get_user_id
 from shared import quota
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
@@ -40,5 +41,5 @@ async def get_usage(
           "web": {"monthly": {...}}
         }
     """
-    user_id = get_user_id(supabase, current_user.auth_id)
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     return await quota.current_usage_report(redis, supabase, user_id)

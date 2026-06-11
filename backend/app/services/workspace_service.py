@@ -29,8 +29,19 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import upload_session_service
 from backend.app.services.case_service import get_user_id
 from shared.config import get_settings
+from shared.storage.client import build_storage_path, upload_file
 
 logger = logging.getLogger(__name__)
+
+# Content validation rules for the legacy single-shot attachment upload —
+# mirror the case_documents rules so workspace attachments behave identically.
+_ALLOWED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
+_MAGIC_BYTES = {
+    "application/pdf": b"%PDF",
+    "image/png": b"\x89PNG",
+    "image/jpeg": b"\xff\xd8\xff",
+}
+_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
 # ============================================
@@ -171,18 +182,30 @@ def list_workspace_items_by_conversation(
     supabase: SupabaseClient,
     auth_id: str,
     conversation_id: str,
-) -> list[dict]:
-    """List workspace items for a conversation. Ownership verified via user_id."""
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """List workspace items for a conversation. Ownership verified via user_id.
+
+    Returns ``(items, total)`` where ``total`` is the true non-deleted count
+    via ``count="exact"`` so clients can detect truncation. ``limit`` defaults
+    to 100 (preserving the previous one-page behaviour for normal users) and is
+    clamped to ``[1, 200]``; ``offset`` is clamped to ``>= 0``.
+    """
     user_id = get_user_id(supabase, auth_id)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
 
     try:
         result = (
             supabase.table("workspace_items")
-            .select("*")
+            .select("*", count="exact")
             .eq("user_id", user_id)
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
             .execute()
         )
     except Exception as e:
@@ -193,25 +216,35 @@ def list_workspace_items_by_conversation(
             detail="حدث خطأ أثناء جلب عناصر مساحة العمل",
         )
 
-    return result.data or []
+    return result.data or [], result.count or 0
 
 
 def list_workspace_items_by_case(
     supabase: SupabaseClient,
     auth_id: str,
     case_id: str,
-) -> list[dict]:
-    """List workspace items for a case. Ownership verified via user_id."""
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """List workspace items for a case. Ownership verified via user_id.
+
+    Returns ``(items, total)`` — see
+    ``list_workspace_items_by_conversation`` for the pagination contract.
+    """
     user_id = get_user_id(supabase, auth_id)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
 
     try:
         result = (
             supabase.table("workspace_items")
-            .select("*")
+            .select("*", count="exact")
             .eq("user_id", user_id)
             .eq("case_id", case_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
             .execute()
         )
     except Exception as e:
@@ -222,7 +255,7 @@ def list_workspace_items_by_case(
             detail="حدث خطأ أثناء جلب عناصر مساحة العمل",
         )
 
-    return result.data or []
+    return result.data or [], result.count or 0
 
 
 def get_workspace_item(
@@ -371,10 +404,19 @@ def delete_workspace_item(
     auth_id: str,
     item_id: str,
 ) -> None:
-    """Soft delete (set deleted_at)."""
+    """Soft delete (set ``deleted_at``), then best-effort cleanup of the
+    storage object (attachments) and ``workspace_item_references`` rows.
+
+    Cleanup failure NEVER fails the request — the soft-delete is the
+    user-visible contract. Note: the references hard-delete makes this
+    soft-delete effectively irreversible for agent_search items, and there is
+    no restore endpoint; the rows only exist to render the WI.
+    """
     user_id = get_user_id(supabase, auth_id)
     now = datetime.now(timezone.utc).isoformat()
 
+    # The UPDATE returns the full row representation, so read storage_path off
+    # it directly — no extra pre-fetch needed.
     try:
         result = (
             supabase.table("workspace_items")
@@ -399,6 +441,37 @@ def delete_workspace_item(
             detail="العنصر غير موجود",
         )
 
+    row = result.data[0]
+
+    # --- best-effort cleanup: NEVER raises past this point ------------------
+    storage_path = row.get("storage_path")
+    if storage_path:
+        # cancel_storage_object logs WARNING and never raises.
+        settings = get_settings()
+        upload_session_service.cancel_storage_object(
+            supabase,
+            bucket=settings.STORAGE_BUCKET_DOCUMENTS,
+            storage_path=storage_path,
+        )
+
+    # References rows: FK wi_id → workspace_items(item_id) has ON DELETE
+    # CASCADE (migration 049) but that only fires on a HARD delete; this is a
+    # soft delete, so the refs would leak otherwise. Safe to drop — refs only
+    # exist to render the WI and there is no un-delete endpoint.
+    try:
+        (
+            supabase.table("workspace_item_references")
+            .delete()
+            .eq("wi_id", item_id)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001 — best effort
+        logger.warning(
+            "delete_workspace_item: reference cleanup failed for %s: %s",
+            item_id,
+            e,
+        )
+
 
 # ============================================
 # RESUMABLE ATTACHMENT UPLOAD — init / finalize / cancel
@@ -408,6 +481,145 @@ def delete_workspace_item(
 # ``workspace_items`` with ``kind='attachment'``. Upload state lives in the
 # ``metadata`` JSONB (``metadata.upload_status`` ∈ {'uploading','ready','cancelled'}).
 # See ``.claude/plans/upload_reliability.md`` for the full design.
+
+
+def upload_attachment_bytes(
+    supabase: SupabaseClient,
+    auth_id: str,
+    conversation_id: str,
+    *,
+    file_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> dict:
+    """Legacy single-shot chat-attachment upload, reordered insert-first so the
+    daily reconciler covers the crash window (mirrors ``init_attachment_upload``
+    → finalize).
+
+    Takes already-read bytes — the async chunked read + 50 MB cap lives in the
+    route handler. All content validation (MIME, size, empty, magic bytes) is
+    preserved here and operates on ``file_bytes``.
+
+    Ordering: insert the ``kind='attachment'`` row with
+    ``metadata.upload_status='uploading'`` FIRST (reconciler-visible), then
+    write to storage (best-effort cancel on failure), then promote the marker
+    to ``'ready'``. The marker field paths match upload_reconciler exactly:
+    ``metadata.upload_status`` on a ``kind='attachment'`` row.
+    """
+    from backend.app.services.message_service import verify_conversation_ownership
+
+    user_id = get_user_id(supabase, auth_id)
+    verify_conversation_ownership(supabase, conversation_id, user_id)
+
+    content_type = content_type or "application/octet-stream"
+    if content_type not in _ALLOWED_MIME_TYPES:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.DOC_INVALID_TYPE,
+            detail="نوع الملف غير مسموح. الأنواع المسموحة: PDF, PNG, JPG",
+        )
+
+    file_size = len(file_bytes)
+    if file_size == 0:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.DOC_EMPTY,
+            detail="الملف فارغ",
+        )
+    if file_size > _MAX_FILE_SIZE:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.DOC_TOO_LARGE,
+            detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
+        )
+
+    expected_magic = _MAGIC_BYTES.get(content_type)
+    if expected_magic and not file_bytes[: len(expected_magic)].startswith(expected_magic):
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.DOC_MAGIC_MISMATCH,
+            detail="محتوى الملف لا يتطابق مع نوعه المعلن",
+        )
+
+    filename = filename or "attachment"
+    settings = get_settings()
+    bucket = settings.STORAGE_BUCKET_DOCUMENTS
+    # Per-conversation prefix (general/{user_id}/convos/{conversation_id}/...).
+    storage_path = build_storage_path(None, user_id, conversation_id, filename)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Insert the row FIRST, marked uploading (reconciler-visible).
+    metadata = {
+        "filename": filename,
+        "mime_type": content_type,
+        "file_size_bytes": file_size,
+        "upload_status": "uploading",
+        "declared_size_bytes": file_size,
+        "declared_mime_type": content_type,
+        "upload_init_at": now_iso,
+        "legacy_single_shot": True,
+    }
+    row = create_workspace_item(
+        supabase,
+        user_id,
+        kind="attachment",
+        created_by="user",
+        title=filename,
+        conversation_id=conversation_id,
+        storage_path=storage_path,
+        metadata=metadata,
+    )
+    item_id = row["item_id"]
+
+    # 2. Storage write. On failure: best-effort cancel (soft-delete row);
+    #    the reconciler is the backstop if even that fails.
+    try:
+        upload_file(bucket, storage_path, file_bytes, content_type, supabase=supabase)
+    except (LunaHTTPException,):
+        raise
+    except Exception as e:
+        logger.exception("Workspace attachment upload failed: %s", e)
+        try:
+            cancel_attachment_upload(supabase, auth_id, item_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "legacy attachment upload: cancel after storage failure also "
+                "failed for %s — reconciler will sweep",
+                item_id,
+            )
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.DOC_UPLOAD_FAILED,
+            detail="حدث خطأ أثناء رفع الملف",
+        )
+
+    # 3. Promote the marker to ready. On failure: leave 'uploading' — the
+    #    reconciler verifies the (good) bytes within 24 h and promotes.
+    new_meta = dict(row.get("metadata") or {})
+    new_meta["upload_status"] = "ready"
+    new_meta["upload_finalized_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        update = (
+            supabase.table("workspace_items")
+            .update({"metadata": new_meta, "updated_at": new_meta["upload_finalized_at"]})
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning(
+            "legacy attachment upload: promote-to-ready failed for %s: %s — "
+            "reconciler will promote",
+            item_id,
+            e,
+        )
+        update = None
+
+    if update is not None and update.data:
+        return update.data[0]
+    return {**row, "metadata": new_meta}
 
 
 def init_attachment_upload(
@@ -641,6 +853,7 @@ __all__ = [
     "update_workspace_item",
     "update_visibility",
     "delete_workspace_item",
+    "upload_attachment_bytes",
     "init_attachment_upload",
     "finalize_attachment_upload",
     "cancel_attachment_upload",

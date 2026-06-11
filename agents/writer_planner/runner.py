@@ -47,6 +47,8 @@ from backend.app.services.writer_planner_context import (
     load_writer_planner_context,
 )
 
+from shared.observability import get_logfire
+
 from .agent import WRITER_PLANNER_LIMITS, create_writer_planner_decider
 from .deps import WriterPlannerDeps, build_writer_planner_deps
 from .models import PlannerDecision, PlannerRole
@@ -59,6 +61,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +561,36 @@ async def handle_writer_planner_turn(
             revising_item_id=exec_deps.revising_item_id,
         )
 
-        writer_output = await publish_writer_result(
-            llm_output, publish_input, exec_deps
-        )
+        try:
+            writer_output = await publish_writer_result(
+                llm_output, publish_input, exec_deps
+            )
+        except Exception:
+            # The draft completed but persistence failed. Surface a status event
+            # + a chat note instead of raising (which would lose the work behind
+            # a generic error token). The early return cleanly skips the
+            # template_save_offer block below (it reads writer_output).
+            logger.error("writer publish failed", exc_info=True)
+            _logfire.error(
+                "writer.publish_failed",
+                conversation_id=major_input.conversation_id,
+            )
+            return WriterPlannerTurnResult(
+                kind="completed",
+                result=SpecialistResult(
+                    output_item_id=None,
+                    chat_summary="تعذّر حفظ المسودة في مساحة العمل. يرجى إعادة المحاولة.",
+                    key_findings=[],
+                    sse_events=[{
+                        "type": "status",
+                        "text": "تعذّر حفظ المسودة في مساحة العمل بعد اكتمال الكتابة.",
+                    }],
+                    model_used="writer_planner_decider",
+                    tokens_in=0,
+                    tokens_out=0,
+                    per_phase_stats={},
+                ),
+            )
 
         duration = time.perf_counter() - t0
         logger.info(

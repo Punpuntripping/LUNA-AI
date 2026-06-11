@@ -18,6 +18,7 @@ are Arabic.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -28,6 +29,84 @@ from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services.case_service import get_user_id
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================
+# INGEST CONCURRENCY LIMITER
+# ============================================
+
+# An attached document can be large; the ingester LLM call takes seconds. Cap
+# how many ingests a single user can have in flight so a fat-fingered burst (or
+# a buggy retry loop) can't fan out N expensive pipeline runs at once.
+INGEST_CONCURRENCY_LIMIT = 2
+_INGEST_CONC_TTL_S = 120          # > 45s LLM timeout: a leaked slot self-heals
+_INGEST_CONC_KEY = "ingest:conc:{user_id}"
+
+_local_counts: dict[str, int] = {}          # single-worker in-memory fallback
+_local_lock = asyncio.Lock()
+
+# Arabic message surfaced (NOT a 429 — this endpoint's contract is never-5xx;
+# the chip renders this in place via {ok: false, error}).
+INGEST_TOO_MANY_AR = (
+    "لديك عمليات تحويل قوالب قيد التنفيذ بالفعل. "
+    "يرجى الانتظار حتى تكتمل ثم المحاولة مجددًا."
+)
+
+
+class IngestConcurrencyExceeded(Exception):
+    """Raised when the per-user in-flight ingest limit is already reached."""
+
+
+async def _acquire_ingest_slot(redis, user_id: str) -> str:
+    """Reserve one in-flight ingest slot for ``user_id``.
+
+    Returns ``'redis'`` | ``'local'`` (the mode ``_release_ingest_slot`` needs).
+    Raises :class:`IngestConcurrencyExceeded` at the limit. Redis is the shared
+    counter across workers; a Redis hiccup degrades to a single-worker in-memory
+    fallback rather than blocking the user.
+    """
+    if redis is not None:
+        try:
+            key = _INGEST_CONC_KEY.format(user_id=user_id)
+            pipe = redis.pipeline()
+            pipe.incr(key)
+            pipe.expire(key, _INGEST_CONC_TTL_S)
+            n, _ = await pipe.execute()
+            if int(n) > INGEST_CONCURRENCY_LIMIT:
+                try:
+                    await redis.decr(key)
+                except Exception:
+                    pass     # TTL self-heals
+                raise IngestConcurrencyExceeded()
+            return "redis"
+        except IngestConcurrencyExceeded:
+            raise
+        except Exception as e:             # Redis hiccup → degrade, don't block
+            logger.warning(
+                "ingest limiter: redis failed, in-memory fallback: %s", e
+            )
+    async with _local_lock:
+        if _local_counts.get(user_id, 0) >= INGEST_CONCURRENCY_LIMIT:
+            raise IngestConcurrencyExceeded()
+        _local_counts[user_id] = _local_counts.get(user_id, 0) + 1
+    return "local"
+
+
+async def _release_ingest_slot(redis, user_id: str, mode: str) -> None:
+    """Release the slot acquired in ``mode``. Best-effort: a Redis leak is
+    healed by the key's TTL; the in-memory path is decremented under lock."""
+    if mode == "redis" and redis is not None:
+        try:
+            await redis.decr(_INGEST_CONC_KEY.format(user_id=user_id))
+        except Exception:
+            pass             # TTL self-heals the leak
+        return
+    async with _local_lock:
+        n = _local_counts.get(user_id, 0) - 1
+        if n <= 0:
+            _local_counts.pop(user_id, None)
+        else:
+            _local_counts[user_id] = n
 
 
 # ============================================
@@ -198,10 +277,12 @@ async def ingest_template(
     supabase: SupabaseClient,
     auth_id: str,
     item_id: str,
+    redis=None,
 ) -> dict:
     """Clean ONE attached workspace item into a reusable قوالبي template.
 
-    Resolves the internal ``user_id`` from ``auth_id``, builds the ingester
+    Resolves the internal ``user_id`` from ``auth_id``, reserves a per-user
+    in-flight ingest slot (``INGEST_CONCURRENCY_LIMIT``), builds the ingester
     deps (with a short-lived httpx client like the other agent entry points),
     opens a ``collect_llm_calls`` scope so the ``template.ingest`` cost lands in
     the ``llm_calls`` ledger, and runs the dedicated ingester pipeline directly
@@ -210,9 +291,11 @@ async def ingest_template(
     Returns a plain dict ready for ``IngestTemplateResponse``:
         success → ``{"ok": True, "template_id": ..., "title": ...}``
         failure → ``{"ok": False, "error": "<Arabic>"}``
+        at limit → ``{"ok": False, "error": INGEST_TOO_MANY_AR}``
 
-    Never raises for the ingester's own failures — those collapse into the
-    Arabic ``error`` so the frontend chip can render it in place.
+    Never raises for the ingester's own failures (or the concurrency cap) —
+    those collapse into the Arabic ``error`` so the frontend chip can render it
+    in place, preserving this endpoint's never-5xx contract.
     """
     import httpx
 
@@ -224,19 +307,27 @@ async def ingest_template(
 
     user_id = get_user_id(supabase, auth_id)
 
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
-        deps = build_ingester_deps(
-            supabase=supabase,
-            http_client=http_client,
-            user_id=user_id,
-        )
-        # Capture the ingest LLM call into the per-call cost ledger.
-        with collect_llm_calls(
-            supabase,
-            conversation_id=None,
-            user_id=user_id,
-        ):
-            result = await handle_template_ingestion(item_id, deps)
+    try:
+        mode = await _acquire_ingest_slot(redis, user_id)
+    except IngestConcurrencyExceeded:
+        return {"ok": False, "error": INGEST_TOO_MANY_AR}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            deps = build_ingester_deps(
+                supabase=supabase,
+                http_client=http_client,
+                user_id=user_id,
+            )
+            # Capture the ingest LLM call into the per-call cost ledger.
+            with collect_llm_calls(
+                supabase,
+                conversation_id=None,
+                user_id=user_id,
+            ):
+                result = await handle_template_ingestion(item_id, deps)
+    finally:
+        await _release_ingest_slot(redis, user_id, mode)
 
     if result.ok:
         return {
@@ -288,4 +379,7 @@ __all__ = [
     "update_template",
     "delete_template",
     "ingest_template",
+    "IngestConcurrencyExceeded",
+    "INGEST_TOO_MANY_AR",
+    "INGEST_CONCURRENCY_LIMIT",
 ]

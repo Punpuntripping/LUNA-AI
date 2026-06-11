@@ -4,17 +4,25 @@ Used with Depends() in route handlers.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from shared.auth.jwt import AuthUser, AuthError, extract_user, TokenExpiredError, TokenInvalidError
+from shared.auth.jwt import (
+    AuthUser,
+    AuthError,
+    AuthUnavailableError,
+    extract_user,
+    TokenExpiredError,
+    TokenInvalidError,
+)
 from supabase import Client as SupabaseClient
 from redis.asyncio import Redis as AsyncRedis
 
-from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.errors import LunaHTTPException, ErrorCode, MSG_SERVICE_UNAVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +55,8 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        user = extract_user(token)
+        # JWKS fetch is sync urllib with a 5s timeout — run off the event loop.
+        user = await asyncio.to_thread(extract_user, token)
     except TokenExpiredError:
         logger.warning("JWT expired")
         raise LunaHTTPException(
@@ -55,6 +64,17 @@ async def get_current_user(
             code=ErrorCode.AUTH_EXPIRED,
             detail="انتهت صلاحية الجلسة",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    except AuthUnavailableError as e:
+        # Must precede the AuthError catch (AuthUnavailableError subclasses it).
+        # JWKS unreachable with no cached keys → retryable outage, not a bad token.
+        # Construct per-raise: a shared instance would share a mutable headers dict.
+        logger.error("Auth dependency unavailable: %s", e)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "5"},
         )
     except (TokenInvalidError, AuthError) as e:
         logger.warning("Auth verification failed: %s", e)

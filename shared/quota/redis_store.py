@@ -17,7 +17,9 @@ source of truth) and write it back so the next read hits Redis again.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
@@ -67,46 +69,78 @@ def day_key(meter: Meter, user_id: str, day: date) -> str:
     return f"quota:{user_id}:{meter}:day:{day.isoformat()}"
 
 
+# ── window usage result ─────────────────────────────────────────────────────
+
+@dataclass
+class WindowUsage:
+    """Outcome of a usage_window read.
+
+    ``total`` is the sum over days whose value is KNOWN (hot Redis bucket or a
+    successful PG rehydrate). ``missing_days`` is the count of days whose value
+    could not be determined — cold key AND the PG fallback failed. The gate
+    treats ``missing_days > 0`` as "unknowable → fail closed"; the UI report
+    renders ``total`` with an ``approximate`` flag and never raises.
+    """
+
+    total: float        # sum over days whose value is KNOWN
+    missing_days: int   # days whose value could not be determined
+
+    @property
+    def complete(self) -> bool:
+        return self.missing_days == 0
+
+
 # ── PG rehydration ──────────────────────────────────────────────────────────
 
-def rehydrate_from_pg(
+def rehydrate_window_from_pg(
     supabase: SupabaseClient,
     user_id: str,
     meter: Meter,
-    day: date,
-) -> float:
-    """Sum the PG value for one (user, meter, day). Returns 0.0 on error or
-    when the meter has no PG-backed source (e.g. web — future skill)."""
-    # PG source of truth = the per-call llm_calls ledger (migration 058). Cost
-    # and OCR pages both live there now; agent_runs no longer carries them.
+    dates: list[date],
+) -> dict[date, float] | None:
+    """ONE PG query for all requested days.
+
+    Returns ``{day: value}`` zero-filled for days with no rows, or ``None``
+    when the query failed (the caller treats ``None`` as "unknown" — never as
+    zero). Sync; callers wrap it in ``asyncio.to_thread``.
+
+    PG source of truth = the per-call llm_calls ledger (migration 058). Cost
+    (``cost_usd``) and OCR pages (``pages_used``) both live there now; agent_runs
+    no longer carries them. The ``web`` meter has no PG backing yet (future
+    skill) so it returns a known-zero dict rather than ``None``.
+    """
+    if not dates:
+        return {}
+    if meter == "web":                      # no PG backing yet — known zero
+        return {d: 0.0 for d in dates}
+    col = "cost_usd" if meter == "ord" else "pages_used"
+    start, end = min(dates), max(dates) + timedelta(days=1)
     try:
-        if meter == "ord":
-            result = (
-                supabase.table("llm_calls")
-                .select("cost_usd")
-                .eq("user_id", user_id)
-                .gte("created_at", f"{day.isoformat()}T00:00:00Z")
-                .lt("created_at", f"{(day + timedelta(days=1)).isoformat()}T00:00:00Z")
-                .execute()
-            )
-            rows = getattr(result, "data", None) or []
-            return float(sum((r.get("cost_usd") or 0) for r in rows))
-        if meter == "ocr":
-            result = (
-                supabase.table("llm_calls")
-                .select("pages_used")
-                .eq("user_id", user_id)
-                .gte("created_at", f"{day.isoformat()}T00:00:00Z")
-                .lt("created_at", f"{(day + timedelta(days=1)).isoformat()}T00:00:00Z")
-                .execute()
-            )
-            rows = getattr(result, "data", None) or []
-            return float(sum((r.get("pages_used") or 0) for r in rows))
-        # web: no PG backing yet (future skill). Treat as zero.
-        return 0.0
+        result = (
+            supabase.table("llm_calls")
+            .select(f"created_at,{col}")
+            .eq("user_id", user_id)
+            .gte("created_at", f"{start.isoformat()}T00:00:00Z")
+            .lt("created_at", f"{end.isoformat()}T00:00:00Z")
+            .execute()
+        )
     except Exception as e:
-        logger.warning("quota.rehydrate_from_pg(meter=%s, day=%s) failed: %s", meter, day, e)
-        return 0.0
+        logger.warning(
+            "quota.rehydrate_window_from_pg(meter=%s, %s..%s) failed: %s",
+            meter, start, end, e,
+        )
+        return None
+    out = {d: 0.0 for d in dates}
+    for r in (getattr(result, "data", None) or []):
+        try:
+            day = datetime.fromisoformat(
+                str(r["created_at"]).replace("Z", "+00:00")
+            ).date()
+        except Exception:
+            continue
+        if day in out:                       # span may cover non-requested days
+            out[day] += float(r.get(col) or 0)
+    return out
 
 
 # ── counter reads ──────────────────────────────────────────────────────────
@@ -117,45 +151,68 @@ async def usage_window(
     user_id: str,
     meter: Meter,
     days: int,
-) -> float:
-    """Returns the meter's total usage over the last ``days`` UTC days
-    (including today). ``days=1`` → today only; ``days=7`` → rolling weekly;
-    ``days=30`` → rolling monthly.
+) -> WindowUsage:
+    """Returns the meter's usage over the last ``days`` UTC days (including
+    today). ``days=1`` → today only; ``days=7`` → rolling weekly; ``days=30`` →
+    rolling monthly.
 
-    Redis is the source of truth; missing buckets are rehydrated from PG and
-    written back. If Redis is unavailable the whole window is read from PG.
+    Redis is the source of truth; cold buckets are rehydrated from PG in ONE
+    batched query (off the event loop via ``to_thread``) and written back. If
+    Redis is unavailable the whole window is read from PG.
+
+    Returns a :class:`WindowUsage`: ``total`` over the days we could determine,
+    plus ``missing_days`` for cold days whose PG rehydrate ALSO failed — those
+    are reported as unknown (``None`` sentinel from the PG helper), never folded
+    in as zero. The gate fails closed on ``missing_days > 0``; the report renders
+    the partial ``total`` with an ``approximate`` flag.
     """
     if days < 1:
-        return 0.0
+        return WindowUsage(0.0, 0)
     dates = last_n_days_utc(days)
     keys = [day_key(meter, user_id, d) for d in dates]
 
-    if redis is None:
-        return float(sum(rehydrate_from_pg(supabase, user_id, meter, d) for d in dates))
+    raw: list | None = None
+    if redis is not None:
+        try:
+            raw = await redis.mget(keys)
+        except Exception as e:
+            logger.warning("quota.usage_window MGET failed (PG fallback): %s", e)
 
-    try:
-        raw = await redis.mget(keys)
-    except Exception as e:
-        logger.warning("quota.usage_window MGET failed (PG fallback): %s", e)
-        return float(sum(rehydrate_from_pg(supabase, user_id, meter, d) for d in dates))
+    if raw is None:  # Redis absent or MGET failed → whole window from PG
+        per_day = await asyncio.to_thread(
+            rehydrate_window_from_pg, supabase, user_id, meter, dates
+        )
+        if per_day is None:
+            return WindowUsage(0.0, len(dates))          # ← sentinel, not 0
+        return WindowUsage(float(sum(per_day.values())), 0)
 
-    ttl = _ttl_for(meter)
-    total = 0.0
+    total, cold = 0.0, []
     for i, v in enumerate(raw):
         if v is None:
-            pg_val = rehydrate_from_pg(supabase, user_id, meter, dates[i])
-            try:
-                await redis.set(keys[i], pg_val, ex=ttl)
-            except Exception as e:
-                logger.debug("quota.usage_window backfill SET failed: %s", e)
-            total += float(pg_val)
+            cold.append(i)
         else:
             try:
                 total += float(v)
             except (TypeError, ValueError):
-                pass
+                cold.append(i)
 
-    return total
+    if cold:
+        per_day = await asyncio.to_thread(
+            rehydrate_window_from_pg, supabase, user_id, meter,
+            [dates[i] for i in cold],
+        )
+        if per_day is None:
+            # Cold key + PG failure → these days are UNKNOWN, not zero.
+            return WindowUsage(total, len(cold))
+        ttl = _ttl_for(meter)
+        for i in cold:
+            val = per_day.get(dates[i], 0.0)
+            total += val
+            try:
+                await redis.set(keys[i], val, ex=ttl)    # backfill, best-effort
+            except Exception:
+                pass
+    return WindowUsage(total, 0)
 
 
 # ── counter writes ──────────────────────────────────────────────────────────

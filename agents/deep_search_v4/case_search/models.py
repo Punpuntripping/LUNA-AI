@@ -12,7 +12,7 @@ Models:
 - ExpanderOutput: legacy LLM query expansion result (flat list of strings)
 - ExpanderOutputV2: sectioned — typed queries (channel-tagged)
 - TypedQuery: one channel-tagged Arabic query
-- RerankerDecision / RerankerClassification: per-query LLM reranker output
+- CaseRerankerDecision / CaseRerankerClassification: per-query LLM reranker output
 - RerankedCaseResult: assembled kept case (code, not LLM)
 - RerankerQueryResult: per-query reranker summary (dataclass)
 - CaseSearchResult: final result returned to caller
@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -106,12 +106,72 @@ class ExpanderOutputV2(BaseModel):
         return v
 
 
-# Re-export from shared so all three domains share one definition.
-# Case reranker treats action="unfold" as "drop" (no DB hierarchy for cases).
-from agents.deep_search_v4.shared.reranker_models import (  # noqa: E402
-    RerankerClassification,
-    RerankerDecision,
-)
+# -- Case-local reranker models (bespoke — no shared-schema field leakage) -----
+# Cases are flat documents: binary keep/drop (no `unfold`/`unfold_mode`), and no
+# `weak_axes` (compliance-only). `reasoning`/`summary_note` are REQUIRED so the
+# model can't silently drop them; `query_axes`/`satisfies_axes` carry the axis
+# decomposition (#3). The salvager on the reranker agent rescues a text-finalised
+# but schema-complete JSON without a retry.
+
+
+class CaseRerankerDecision(BaseModel):
+    """One reranker decision for a case result (position-indexed)."""
+
+    position: int = Field(
+        description="1-based position matching [N] in the result header",
+    )
+    action: Literal["keep", "drop"] = Field(
+        description=(
+            "keep: relevant to the sub-query; "
+            "drop: not relevant / wrong jurisdiction / procedural-only ruling"
+        ),
+    )
+    relevance: Optional[Literal["high", "medium"]] = Field(
+        default=None,
+        description="Relevance tier — set ONLY when action='keep' (nulled otherwise)",
+    )
+    reasoning: str = Field(
+        description=(
+            "Short Arabic note justifying the decision; on a partial keep, "
+            "name the uncovered axis. Never assert an axis the result lacks."
+        ),
+    )
+    satisfies_axes: list[int] = Field(
+        default_factory=list,
+        description="Indices into query_axes that this result covers (keep only)",
+    )
+
+    @model_validator(mode="after")
+    def _relevance_only_on_keep(self) -> "CaseRerankerDecision":
+        # Coherence: a dropped result has no relevance tier.
+        if self.action != "keep":
+            self.relevance = None
+        return self
+
+
+class CaseRerankerClassification(BaseModel):
+    """Output of one case_search reranker LLM call — decisions + axis coverage."""
+
+    sufficient: bool = Field(
+        description=(
+            "True ONLY if the kept set covers EVERY axis in query_axes; "
+            "any uncovered axis => False"
+        ),
+    )
+    query_axes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "2-4 discriminating legal axes restated from the sub-query before "
+            "classifying (e.g. dispute type, procedural issue, statutory basis)"
+        ),
+    )
+    decisions: list[CaseRerankerDecision] = Field(
+        default_factory=list,
+        description="Per-result classification decisions",
+    )
+    summary_note: str = Field(
+        description="Arabic note naming covered axes and any uncovered axis",
+    )
 
 
 class RerankedCaseResult(BaseModel):

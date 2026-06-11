@@ -4,6 +4,7 @@ CRUD for case documents with file upload/download.
 """
 from __future__ import annotations
 
+import asyncio
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
@@ -20,6 +21,7 @@ from backend.app.models.responses import (
     UploadInitResponse,
 )
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 from shared.observability import get_logfire
 from backend.app.services import document_service
 
@@ -40,7 +42,8 @@ async def list_documents(
 ):
     """List documents for a case."""
     validate_uuid(case_id, "معرف القضية")
-    return document_service.list_documents(
+    return await run_db(
+        document_service.list_documents,
         supabase, user.auth_id, case_id, page=page, limit=limit
     )
 
@@ -55,10 +58,36 @@ async def upload_document(
     user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Upload a document to a case."""
+    """Upload a document to a case (legacy single-shot multipart)."""
     validate_uuid(case_id, "معرف القضية")
-    doc = document_service.upload_document(
-        supabase, user.auth_id, case_id, file=file
+
+    # Async chunked read — never blocks the loop, enforces the 50 MB cap.
+    # ``_MAX_FILE_SIZE`` lives in document_service so the cap has one home.
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > document_service._MAX_FILE_SIZE:
+            raise LunaHTTPException(
+                status_code=400,
+                code=ErrorCode.DOC_TOO_LARGE,
+                detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
+            )
+        chunks.append(chunk)
+    file_bytes = b"".join(chunks)
+
+    # All sync Supabase/storage round-trips run off the event loop.
+    doc = await asyncio.to_thread(
+        document_service.upload_document_bytes,
+        supabase,
+        user.auth_id,
+        case_id,
+        file_bytes=file_bytes,
+        filename=file.filename or "document",
+        content_type=file.content_type or "application/octet-stream",
     )
     return doc
 
@@ -74,7 +103,7 @@ async def get_document(
 ):
     """Get document details."""
     validate_uuid(document_id, "معرف المستند")
-    return document_service.get_document(supabase, user.auth_id, document_id)
+    return await run_db(document_service.get_document, supabase, user.auth_id, document_id)
 
 
 @router.get(
@@ -88,7 +117,7 @@ async def download_document(
 ):
     """Get a signed download URL for a document."""
     validate_uuid(document_id, "معرف المستند")
-    return document_service.get_download_url(supabase, user.auth_id, document_id)
+    return await run_db(document_service.get_download_url, supabase, user.auth_id, document_id)
 
 
 @router.delete(
@@ -102,7 +131,7 @@ async def delete_document(
 ):
     """Soft-delete a document."""
     validate_uuid(document_id, "معرف المستند")
-    document_service.delete_document(supabase, user.auth_id, document_id)
+    await run_db(document_service.delete_document, supabase, user.auth_id, document_id)
     return {"success": True}
 
 
@@ -139,7 +168,8 @@ async def init_document_upload(
         mime_type=body.mime_type,
         size_bytes=body.size_bytes,
     ) as _span:
-        session = document_service.init_document_upload(
+        session = await run_db(
+            document_service.init_document_upload,
             supabase,
             user.auth_id,
             case_id,
@@ -186,7 +216,8 @@ async def finalize_document_upload(
     ) as _span:
         result_code = "success"
         try:
-            row = document_service.finalize_document_upload(
+            row = await run_db(
+                document_service.finalize_document_upload,
                 supabase, user.auth_id, document_id
             )
             return row
@@ -228,5 +259,5 @@ async def cancel_document_upload(
         flow="document",
         document_id=document_id,
     ):
-        document_service.cancel_document_upload(supabase, user.auth_id, document_id)
+        await run_db(document_service.cancel_document_upload, supabase, user.auth_id, document_id)
         return {"success": True}

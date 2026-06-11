@@ -27,10 +27,11 @@ import asyncio
 import logging
 from typing import Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.structured_output import make_json_salvager
 from supabase import Client as SupabaseClient
 
 from .models import (
@@ -67,6 +68,23 @@ _NEIGHBOUR_RRF_DECAY = 0.5
 
 # -- Agent factory -------------------------------------------------------------
 
+# qwen3.5-flash with enable_thinking sometimes finalises as text
+# (``<thinking>…</thinking>{json}``) instead of calling the output tool. The
+# salvager rescues a schema-complete JSON without a (large) retry; a genuine
+# omission still raises ModelRetry. See agents/utils/structured_output.py.
+_REG_RERANKER_RETRY_MSG = (
+    "أعد المخرَج ككائن JSON صالح وفق المخطط (sufficient, query_axes, "
+    "decisions[label, action, direction, relevance, reasoning, satisfies_axes], "
+    "summary_note) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+)
+
+
+def _reg_text_output() -> TextOutput:
+    """``TextOutput`` salvage member for the reranker's ``output_type`` union."""
+    return TextOutput(
+        make_json_salvager(RegRerankerClassification, retry_msg=_REG_RERANKER_RETRY_MSG)
+    )
+
 
 def create_reranker_agent(
     prompt_key: str = "prompt_1",
@@ -83,7 +101,7 @@ def create_reranker_agent(
     return Agent(
         model,
         name="reg_search_reranker",
-        output_type=RegRerankerClassification,
+        output_type=[RegRerankerClassification, _reg_text_output()],
         instructions=system_prompt,
         retries=2,
         # Cap reasoning at 15k — DashScope thinking on qwen3.5-flash is otherwise

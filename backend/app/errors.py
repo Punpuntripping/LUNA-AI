@@ -71,8 +71,16 @@ class ErrorCode(str, Enum):
     # Rate limiting
     RATE_LIMITED = "RATE_LIMITED"
 
+    # Service availability (dependency failure ≠ user error)
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+# Canonical Arabic outage string — used by auth, deps, the DbDeadlineExceeded
+# handler, and storage 503s. Defined module-level so every 503 path reuses it.
+MSG_SERVICE_UNAVAILABLE = "الخدمة غير متاحة مؤقتاً، حاول مجدداً"
 
 
 class LunaHTTPException(HTTPException):

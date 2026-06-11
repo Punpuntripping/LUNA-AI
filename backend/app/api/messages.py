@@ -17,6 +17,7 @@ from backend.app.models.responses import MessageListResponse
 from shared.auth.jwt import AuthUser
 from backend.app.services import message_service
 from backend.app.services.case_service import get_user_id
+from shared.db.run import run_db
 
 router = APIRouter()
 
@@ -33,7 +34,8 @@ async def list_messages(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List messages for a conversation (newest first, cursor-based pagination)."""
-    return message_service.list_messages(
+    return await run_db(
+        message_service.list_messages,
         supabase,
         user.auth_id,
         conversation_id,
@@ -52,8 +54,10 @@ async def send_message(
 ):
     """Send a message and receive SSE stream response."""
     # Pre-flight ownership check — BEFORE StreamingResponse (security fix)
-    user_id = get_user_id(supabase, user.auth_id)
-    conv = message_service.verify_conversation_ownership(supabase, conversation_id, user_id)
+    user_id = await run_db(get_user_id, supabase, user.auth_id)
+    conv = await run_db(
+        message_service.verify_conversation_ownership, supabase, conversation_id, user_id
+    )
 
     return StreamingResponse(
         message_service.send_message_stream(

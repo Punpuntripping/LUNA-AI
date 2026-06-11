@@ -14,11 +14,13 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Response
+from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase, validate_uuid
+from backend.app.deps import get_current_user, get_redis, get_supabase, validate_uuid
 from backend.app.models.requests import (
     CreateTemplateRequest,
     IngestTemplateRequest,
@@ -31,6 +33,7 @@ from backend.app.models.responses import (
 )
 from backend.app.services import templates_service
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +70,7 @@ async def list_templates(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List the current user's markdown templates."""
-    rows = templates_service.list_templates(supabase, current_user.auth_id)
+    rows = await run_db(templates_service.list_templates, supabase, current_user.auth_id)
     return TemplateListResponse(templates=[_to_response(r) for r in rows])
 
 
@@ -78,7 +81,8 @@ async def create_template(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Create a new user-authored markdown template."""
-    row = templates_service.create_template(
+    row = await run_db(
+        templates_service.create_template,
         supabase,
         current_user.auth_id,
         title=body.title,
@@ -92,18 +96,21 @@ async def ingest_template(
     body: IngestTemplateRequest,
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """Clean an attached workspace item into a reusable قوالبي template.
 
     Runs the dedicated ingester pipeline directly (NO router/orchestrator).
     Returns ``{ok: true, template_id, title}`` on success, or
     ``{ok: false, error}`` (Arabic) on failure — failures do NOT raise a 5xx so
-    the frontend chip can render the Arabic message in place.
+    the frontend chip can render the Arabic message in place. ``redis`` backs
+    the per-user in-flight ingest concurrency cap.
     """
     result = await templates_service.ingest_template(
         supabase,
         current_user.auth_id,
         item_id=body.item_id,
+        redis=redis,
     )
     return IngestTemplateResponse(**result)
 
@@ -116,7 +123,8 @@ async def get_template(
 ):
     """Get a single template by id."""
     validate_uuid(template_id, "معرف القالب")
-    row = templates_service.get_template(
+    row = await run_db(
+        templates_service.get_template,
         supabase, current_user.auth_id, template_id,
     )
     return _to_response(row)
@@ -131,7 +139,8 @@ async def update_template(
 ):
     """Update a template's title and/or content."""
     validate_uuid(template_id, "معرف القالب")
-    row = templates_service.update_template(
+    row = await run_db(
+        templates_service.update_template,
         supabase,
         current_user.auth_id,
         template_id,
@@ -149,7 +158,8 @@ async def delete_template(
 ):
     """Soft-delete a template."""
     validate_uuid(template_id, "معرف القالب")
-    templates_service.delete_template(
+    await run_db(
+        templates_service.delete_template,
         supabase, current_user.auth_id, template_id,
     )
     return Response(status_code=204)

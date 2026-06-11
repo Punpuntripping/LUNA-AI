@@ -21,6 +21,7 @@ Endpoints (new):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
@@ -46,11 +47,8 @@ from backend.app.services.case_service import get_user_id
 from backend.app.services.references_service import fetch_item_references
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
-from shared.storage.client import (
-    build_storage_path,
-    get_signed_url,
-    upload_file,
-)
+from shared.db.run import run_db
+from shared.storage.client import get_signed_url
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -124,17 +122,21 @@ def _to_response(data: dict) -> WorkspaceItemResponse:
 )
 async def list_conversation_workspace(
     conversation_id: str,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List workspace items for a conversation."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    items = workspace_service.list_workspace_items_by_conversation(
+    items, total = await run_db(
+        workspace_service.list_workspace_items_by_conversation,
         supabase, current_user.auth_id, conversation_id,
+        limit=limit, offset=offset,
     )
     return WorkspaceItemListResponse(
         items=[_to_response(i) for i in items],
-        total=len(items),
+        total=total,
     )
 
 
@@ -144,17 +146,21 @@ async def list_conversation_workspace(
 )
 async def list_case_workspace(
     case_id: str,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List workspace items for a case."""
     validate_uuid(case_id, "معرف القضية")
-    items = workspace_service.list_workspace_items_by_case(
+    items, total = await run_db(
+        workspace_service.list_workspace_items_by_case,
         supabase, current_user.auth_id, case_id,
+        limit=limit, offset=offset,
     )
     return WorkspaceItemListResponse(
         items=[_to_response(i) for i in items],
-        total=len(items),
+        total=total,
     )
 
 
@@ -174,7 +180,8 @@ async def get_workspace_item(
 ):
     """Get a single workspace item."""
     validate_uuid(item_id, "معرف العنصر")
-    data = workspace_service.get_workspace_item(
+    data = await run_db(
+        workspace_service.get_workspace_item,
         supabase, current_user.auth_id, item_id,
     )
     return _to_response(data)
@@ -203,7 +210,7 @@ async def list_workspace_item_references(
     validate_uuid(item_id, "معرف العنصر")
     # Ownership check via the existing service. Raises 404 if the item is
     # not visible to this user — same envelope as get_workspace_item.
-    workspace_service.get_workspace_item(supabase, current_user.auth_id, item_id)
+    await run_db(workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id)
     references = await fetch_item_references(
         supabase, item_id, used_only=bool(used) if used is not None else False,
     )
@@ -222,7 +229,8 @@ async def update_workspace_item(
 ):
     """Update workspace item title/content. Permission keyed on ``kind``."""
     validate_uuid(item_id, "معرف العنصر")
-    data = workspace_service.update_workspace_item(
+    data = await run_db(
+        workspace_service.update_workspace_item,
         supabase,
         current_user.auth_id,
         item_id,
@@ -243,7 +251,8 @@ async def delete_workspace_item(
 ):
     """Soft-delete a workspace item."""
     validate_uuid(item_id, "معرف العنصر")
-    workspace_service.delete_workspace_item(
+    await run_db(
+        workspace_service.delete_workspace_item,
         supabase, current_user.auth_id, item_id,
     )
     return SuccessResponse(success=True)
@@ -261,7 +270,8 @@ async def update_workspace_visibility(
 ):
     """Toggle ``is_visible`` (works on any kind, including non-editable ones)."""
     validate_uuid(item_id, "معرف العنصر")
-    data = workspace_service.update_visibility(
+    data = await run_db(
+        workspace_service.update_visibility,
         supabase,
         current_user.auth_id,
         item_id,
@@ -288,8 +298,9 @@ async def create_note(
 ):
     """Create a user-authored note inside the conversation workspace."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    user_id = get_user_id(supabase, current_user.auth_id)
-    row = workspace_service.create_workspace_item(
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    row = await run_db(
+        workspace_service.create_workspace_item,
         supabase,
         user_id,
         kind="note",
@@ -314,8 +325,9 @@ async def create_reference(
 ):
     """Create a placeholder ``references`` workspace item."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    user_id = get_user_id(supabase, current_user.auth_id)
-    row = workspace_service.create_workspace_item(
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    row = await run_db(
+        workspace_service.create_workspace_item,
         supabase,
         user_id,
         kind="references",
@@ -330,17 +342,10 @@ async def create_reference(
 # ============================================
 # CREATE: attachments
 # ============================================
-
-
-# Reuse the document validation rules so workspace attachments behave
-# identically to case_documents uploads.
-_ALLOWED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
-_MAGIC_BYTES = {
-    "application/pdf": b"%PDF",
-    "image/png": b"\x89PNG",
-    "image/jpeg": b"\xff\xd8\xff",
-}
-_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+#
+# Content validation rules (MIME / size / magic bytes) live in
+# ``workspace_service.upload_attachment_bytes`` now — the legacy upload route
+# only does the async chunked read and delegates the rest off the event loop.
 
 
 @router.post(
@@ -354,41 +359,24 @@ async def upload_workspace_attachment(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Upload a file attachment into the conversation workspace.
+    """Upload a file attachment into the conversation workspace (legacy
+    single-shot multipart).
 
     The file is stored in the same bucket as case_documents but under a
     ``conversations/{conversation_id}/`` prefix so it is conceptually
     scoped to the conversation, not the case.
     """
     validate_uuid(conversation_id, "معرف المحادثة")
-    user_id = get_user_id(supabase, current_user.auth_id)
 
-    content_type = file.content_type or "application/octet-stream"
-    if content_type not in _ALLOWED_MIME_TYPES:
-        raise LunaHTTPException(
-            status_code=400,
-            code=ErrorCode.DOC_INVALID_TYPE,
-            detail="نوع الملف غير مسموح. الأنواع المسموحة: PDF, PNG, JPG",
-        )
-
-    # Pre-flight size check if the client supplied Content-Length.
-    if hasattr(file, "size") and file.size and file.size > _MAX_FILE_SIZE:
-        raise LunaHTTPException(
-            status_code=400,
-            code=ErrorCode.DOC_TOO_LARGE,
-            detail="حجم الملف يتجاوز الحد الأقصى (50 ميغابايت)",
-        )
-
-    # Chunked read so we don't load oversized files into memory.
+    # Async chunked read — never blocks the loop, enforces the 50 MB cap.
     chunks: list[bytes] = []
     total = 0
-    chunk_size = 1024 * 1024
     while True:
-        chunk = file.file.read(chunk_size)
+        chunk = await file.read(1024 * 1024)
         if not chunk:
             break
         total += len(chunk)
-        if total > _MAX_FILE_SIZE:
+        if total > workspace_service._MAX_FILE_SIZE:
             raise LunaHTTPException(
                 status_code=400,
                 code=ErrorCode.DOC_TOO_LARGE,
@@ -396,52 +384,17 @@ async def upload_workspace_attachment(
             )
         chunks.append(chunk)
     file_bytes = b"".join(chunks)
-    if total == 0:
-        raise LunaHTTPException(
-            status_code=400,
-            code=ErrorCode.DOC_EMPTY,
-            detail="الملف فارغ",
-        )
 
-    expected_magic = _MAGIC_BYTES.get(content_type)
-    if expected_magic and not file_bytes[: len(expected_magic)].startswith(expected_magic):
-        raise LunaHTTPException(
-            status_code=400,
-            code=ErrorCode.DOC_MAGIC_MISMATCH,
-            detail="محتوى الملف لا يتطابق مع نوعه المعلن",
-        )
-
-    settings = get_settings()
-    bucket = settings.STORAGE_BUCKET_DOCUMENTS
-    filename = file.filename or "attachment"
-    # build_storage_path produces a per-conversation prefix when only
-    # conversation_id is supplied (general/{user_id}/convos/{conversation_id}/...).
-    storage_path = build_storage_path(None, user_id, conversation_id, filename)
-
-    try:
-        upload_file(bucket, storage_path, file_bytes, content_type, supabase=supabase)
-    except Exception as e:
-        logger.exception("Workspace attachment upload failed: %s", e)
-        raise LunaHTTPException(
-            status_code=500,
-            code=ErrorCode.DOC_UPLOAD_FAILED,
-            detail="حدث خطأ أثناء رفع الملف",
-        )
-
-    metadata = {
-        "filename": filename,
-        "mime_type": content_type,
-        "file_size_bytes": total,
-    }
-    row = workspace_service.create_workspace_item(
+    # All sync Supabase/storage round-trips (validation, insert-first, storage
+    # write, promote) run off the event loop.
+    row = await asyncio.to_thread(
+        workspace_service.upload_attachment_bytes,
         supabase,
-        user_id,
-        kind="attachment",
-        created_by="user",
-        title=filename,
-        conversation_id=conversation_id,
-        storage_path=storage_path,
-        metadata=metadata,
+        current_user.auth_id,
+        conversation_id,
+        file_bytes=file_bytes,
+        filename=file.filename or "attachment",
+        content_type=file.content_type or "application/octet-stream",
     )
     return _to_response(row)
 
@@ -464,11 +417,11 @@ async def attach_from_case_document(
     """
     validate_uuid(conversation_id, "معرف المحادثة")
     validate_uuid(body.document_id, "معرف المستند")
-    user_id = get_user_id(supabase, current_user.auth_id)
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
 
     # Verify the document is owned by this user (joins back to lawyer_cases).
-    try:
-        doc_row = (
+    def _fetch_doc_row():
+        return (
             supabase.table("case_documents")
             .select("document_name, mime_type, file_size_bytes, lawyer_cases!inner(lawyer_user_id)")
             .eq("document_id", body.document_id)
@@ -476,6 +429,9 @@ async def attach_from_case_document(
             .maybe_single()
             .execute()
         )
+
+    try:
+        doc_row = await run_db(_fetch_doc_row)
     except Exception as e:
         logger.exception("Error verifying document ownership: %s", e)
         raise LunaHTTPException(
@@ -503,7 +459,8 @@ async def attach_from_case_document(
         "file_size_bytes": doc_row.data.get("file_size_bytes"),
         "linked_from_case_documents": True,
     }
-    row = workspace_service.create_workspace_item(
+    row = await run_db(
+        workspace_service.create_workspace_item,
         supabase,
         user_id,
         kind="attachment",
@@ -550,7 +507,8 @@ async def init_workspace_attachment_upload(
         mime_type=body.mime_type,
         size_bytes=body.size_bytes,
     ) as _span:
-        session = workspace_service.init_attachment_upload(
+        session = await run_db(
+            workspace_service.init_attachment_upload,
             supabase,
             current_user.auth_id,
             conversation_id,
@@ -595,7 +553,8 @@ async def finalize_workspace_attachment_upload(
     ) as _span:
         result_code = "success"
         try:
-            row = workspace_service.finalize_attachment_upload(
+            row = await run_db(
+                workspace_service.finalize_attachment_upload,
                 supabase, current_user.auth_id, item_id
             )
             return _to_response(row)
@@ -636,7 +595,8 @@ async def cancel_workspace_attachment_upload(
         flow="attachment",
         item_id=item_id,
     ):
-        workspace_service.cancel_attachment_upload(
+        await run_db(
+            workspace_service.cancel_attachment_upload,
             supabase, current_user.auth_id, item_id
         )
         return SuccessResponse(success=True)
@@ -666,7 +626,8 @@ async def get_workspace_file_url(
           underlying object with the case library.)
     """
     validate_uuid(item_id, "معرف العنصر")
-    item = workspace_service.get_workspace_item(
+    item = await run_db(
+        workspace_service.get_workspace_item,
         supabase, current_user.auth_id, item_id,
     )
 
@@ -683,8 +644,8 @@ async def get_workspace_file_url(
     storage_path = item.get("storage_path")
     if not storage_path and item.get("document_id"):
         # Resolve the linked case_documents path.
-        try:
-            doc_row = (
+        def _fetch_storage_path():
+            return (
                 supabase.table("case_documents")
                 .select("storage_path")
                 .eq("document_id", item["document_id"])
@@ -692,6 +653,9 @@ async def get_workspace_file_url(
                 .maybe_single()
                 .execute()
             )
+
+        try:
+            doc_row = await run_db(_fetch_storage_path)
         except Exception as e:
             logger.exception("Error resolving linked case_document: %s", e)
             raise LunaHTTPException(
@@ -715,7 +679,9 @@ async def get_workspace_file_url(
         )
 
     try:
-        url = get_signed_url(bucket, storage_path, expires_in=3600, supabase=supabase)
+        url = await run_db(
+            get_signed_url, bucket, storage_path, expires_in=3600, supabase=supabase
+        )
     except Exception as e:
         logger.exception("Error generating signed URL for workspace file: %s", e)
         raise LunaHTTPException(

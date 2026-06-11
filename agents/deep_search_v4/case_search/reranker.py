@@ -9,14 +9,15 @@ import logging
 import re
 from typing import Any
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.structured_output import make_json_salvager
 
 from .models import (
+    CaseRerankerClassification,
     RerankedCaseResult,
-    RerankerClassification,
     RerankerQueryResult,
 )
 from .prompts import build_reranker_user_message, get_reranker_prompt
@@ -32,11 +33,28 @@ RERANKER_LIMITS = UsageLimits(
     request_limit=3,
 )
 
+# qwen3.5-flash with enable_thinking sometimes finalises as text
+# (``<thinking>…</thinking>{json}``) instead of calling the output tool. The
+# salvager rescues a schema-complete JSON without a (large) retry; a genuine
+# omission still raises ModelRetry. See agents/utils/structured_output.py.
+_CASE_RERANKER_RETRY_MSG = (
+    "أعد المخرَج ككائن JSON صالح وفق المخطط (sufficient, query_axes, "
+    "decisions[position, action, relevance, reasoning, satisfies_axes], "
+    "summary_note) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+)
+
+
+def _case_text_output() -> TextOutput:
+    """``TextOutput`` salvage member for the reranker's ``output_type`` union."""
+    return TextOutput(
+        make_json_salvager(CaseRerankerClassification, retry_msg=_CASE_RERANKER_RETRY_MSG)
+    )
+
 
 def create_reranker_agent(
     prompt_key: str = "prompt_1",
     model_override: str | None = None,
-) -> Agent[None, RerankerClassification]:
+) -> Agent[None, CaseRerankerClassification]:
     """Create a per-query classification reranker agent. No tools, no deps.
 
     ``model_override`` is a tier override token (``qwen``/``deepseek``/
@@ -48,7 +66,7 @@ def create_reranker_agent(
     return Agent(
         model,
         name="case_search_reranker",
-        output_type=RerankerClassification,
+        output_type=[CaseRerankerClassification, _case_text_output()],
         instructions=system_prompt,
         retries=2,
         # Cap reasoning at 15k — same rationale as reg_search reranker.

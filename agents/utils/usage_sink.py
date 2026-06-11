@@ -25,6 +25,7 @@ A ``record_call`` outside any ``collect_llm_calls`` scope is silently dropped.
 """
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -178,20 +179,48 @@ def _compute_cost(
 
 
 def _flush(supabase: Any, buf: list[dict[str, Any]] | None) -> int:
-    """Insert buffered rows and settle quota once. Returns rows written.
+    """Insert buffered rows; settle quota ONLY if the insert landed.
 
-    Never raises. A DB failure drops the batch (best-effort telemetry); quota
-    settle still proceeds off the in-memory totals so billing is not lost to a
-    transient insert error.
+    Never raises. Insert gets one immediate retry. If both attempts fail,
+    the full row payload is logged at ERROR so cost can be backfilled into
+    ``llm_calls`` manually, and settle is SKIPPED — ledger and quota stay
+    consistent (both missing the turn) rather than drifting apart.
+
+    Why skip settle on insert failure: the ledger is the rehydration source of
+    truth. Settling Redis without a ledger row creates drift that resurfaces
+    forever — every Redis key expiry recomputes a smaller number than was
+    settled. Skipping keeps both stores consistently missing the same turn; the
+    ERROR payload allows manual backfill, after which the next cold-key
+    rehydrate heals quota automatically. Exposure: one free turn per insert
+    outage — bounded and loud.
     """
     if not buf:
         return 0
-    try:
-        supabase.table("llm_calls").insert(buf).execute()
-        written = len(buf)
-    except Exception as exc:
-        logger.warning("llm_calls insert failed (non-blocking, %d rows): %s", len(buf), exc)
-        written = 0
+
+    insert_ok = False
+    for attempt in (1, 2):
+        try:
+            supabase.table("llm_calls").insert(buf).execute()
+            insert_ok = True
+            break
+        except Exception as exc:
+            if attempt == 1:
+                logger.warning(
+                    "llm_calls insert failed (attempt 1/2, %d rows), retrying: %s",
+                    len(buf), exc,
+                )
+            else:
+                try:
+                    payload = json.dumps(buf, ensure_ascii=False, default=str)
+                except Exception:
+                    payload = repr(buf)
+                logger.error(
+                    "llm_calls insert FAILED after retry — quota settle SKIPPED "
+                    "(backfill these rows manually): error=%s rows=%s", exc, payload,
+                )
+
+    if not insert_ok:
+        return 0  # no ledger row ⇒ no settle ⇒ no drift
 
     # Quota settle — single point. All rows in a scope share one user_id.
     user_id = buf[0].get("user_id")
@@ -207,7 +236,7 @@ def _flush(supabase: Any, buf: list[dict[str, Any]] | None) -> int:
                 settle_ocr_sync(str(user_id), total_pages)
         except Exception as exc:
             logger.debug("quota settle skipped: %s", exc)
-    return written
+    return len(buf)
 
 
 __all__ = ["collect_llm_calls", "record_call", "in_scope", "bind_run_id"]

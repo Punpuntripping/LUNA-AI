@@ -18,6 +18,7 @@ from backend.app.models.responses import (
 )
 from shared.auth.jwt import AuthUser
 from backend.app.services import memory_service
+from shared.db.run import run_db
 
 router = APIRouter()
 
@@ -36,7 +37,8 @@ async def list_memories(
 ):
     """List memories for a case, optionally filtered by type."""
     validate_uuid(case_id, "معرف القضية")
-    return memory_service.list_memories(
+    return await run_db(
+        memory_service.list_memories,
         supabase, user.auth_id, case_id,
         memory_type=type, page=page, limit=limit,
     )
@@ -55,7 +57,8 @@ async def create_memory(
 ):
     """Create a new memory for a case."""
     validate_uuid(case_id, "معرف القضية")
-    return memory_service.create_memory(
+    return await run_db(
+        memory_service.create_memory,
         supabase, user.auth_id, case_id,
         memory_type=body.memory_type,
         content_ar=body.content_ar,
@@ -74,7 +77,8 @@ async def update_memory(
 ):
     """Update a memory's content or type."""
     validate_uuid(memory_id, "معرف الذاكرة")
-    return memory_service.update_memory(
+    return await run_db(
+        memory_service.update_memory,
         supabase, user.auth_id, memory_id,
         content_ar=body.content_ar,
         memory_type=body.memory_type,
@@ -92,5 +96,5 @@ async def delete_memory(
 ):
     """Soft-delete a memory."""
     validate_uuid(memory_id, "معرف الذاكرة")
-    memory_service.delete_memory(supabase, user.auth_id, memory_id)
+    await run_db(memory_service.delete_memory, supabase, user.auth_id, memory_id)
     return {"success": True}

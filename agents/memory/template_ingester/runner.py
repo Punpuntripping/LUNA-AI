@@ -21,6 +21,7 @@ actually flushed (the endpoint does).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -42,6 +43,11 @@ from .models import INGEST_FAILED_AR, CleanedTemplate, IngestResult
 from .prompts import render_ingest_user_msg
 
 logger = logging.getLogger(__name__)
+
+# Wall-clock ceiling on the ingester LLM call. A wedged provider connection must
+# not pin a request worker (and its concurrency slot) indefinitely — 45s is the
+# upper bound here, comfortably under the limiter's 120s slot TTL.
+INGEST_LLM_TIMEOUT_S = 45.0
 
 
 # ===========================================================================
@@ -127,7 +133,24 @@ async def _run_ingester(
             return None
 
         try:
-            result = await agent.run(user_msg, usage_limits=INGESTER_LIMITS)
+            result = await asyncio.wait_for(
+                agent.run(user_msg, usage_limits=INGESTER_LIMITS),
+                timeout=INGEST_LLM_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            # Billed-partial-cost note: on timeout the agent.run task is
+            # cancelled, so record_run never executes — the provider may charge
+            # for tokens generated up to cancellation that produce NO ledger row.
+            # Bounded by INGESTER_LIMITS, acceptable (we under-bill, never
+            # over-bill). Surfaces in validate-calls as provider chat spans with
+            # no matching ledger row; the span's outcome=llm_timeout is the
+            # disambiguator — tag it reliably.
+            log.warning(
+                "template_ingester: LLM call timed out after %.0fs",
+                INGEST_LLM_TIMEOUT_S,
+            )
+            _set_outcome(span, "llm_timeout")
+            return None
         except Exception as exc:  # noqa: BLE001
             log.warning("template_ingester: LLM call failed (%s)", exc)
             _set_outcome(span, "llm_failed", exc)

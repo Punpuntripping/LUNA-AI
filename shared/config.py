@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     FEATURE_AUDIT_LOGGING: bool = True
     FEATURE_RATE_LIMITING: bool = True
 
+    # Overall pipeline timeout (seconds) for a single message turn. Bounds the
+    # whole handle_message run inside pipeline_producer — even when the client
+    # disconnects and the pipeline is detached to the background. 7 min = ~1.75×
+    # the ~4-min worst-case legitimate path (OCR + memory + router + deep_search
+    # + aggregator + publish). Env-overridable for tests.
+    LUNA_PIPELINE_TIMEOUT_S: float = 420.0
+
     # ========================================
     # RATE LIMITING
     # ========================================

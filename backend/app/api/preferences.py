@@ -14,6 +14,7 @@ from backend.app.models.requests import UpdatePreferencesRequest
 from backend.app.models.responses import PreferencesResponse
 from backend.app.services import preferences_service
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ async def get_preferences(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Get user preferences."""
-    data = preferences_service.get_preferences(
+    data = await run_db(
+        preferences_service.get_preferences,
         supabase, current_user.auth_id,
     )
     return PreferencesResponse(
@@ -42,7 +44,8 @@ async def update_preferences(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Update user preferences (merge with existing)."""
-    data = preferences_service.update_preferences(
+    data = await run_db(
+        preferences_service.update_preferences,
         supabase, current_user.auth_id, body.preferences,
     )
     return PreferencesResponse(

@@ -9,6 +9,7 @@ not a chat model, so it bypasses the tier / FallbackModel system entirely.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from mistralai import Mistral
@@ -20,6 +21,11 @@ logger = logging.getLogger(__name__)
 # Page cap handed to Mistral. The first ``OCR_MAX_PAGES`` pages are extracted;
 # the rest of an over-long document are ignored (never rejected).
 OCR_MAX_PAGES = 30
+
+# Per-attachment OCR call timeout (seconds). On expiry ``asyncio.wait_for``
+# cancels the SDK call → TimeoutError escapes ocr_document → the runner marks
+# the row ``failed`` (never retried) and the turn continues without it.
+OCR_TIMEOUT_S = 60.0
 
 # MIME types Mistral OCR accepts in this module.
 _PDF_MIME = "application/pdf"
@@ -60,10 +66,13 @@ async def ocr_document(file_url: str, mime_type: str) -> OcrDocumentResult:
 
     client = Mistral(api_key=settings.MISTRAL_API_KEY)
     try:
-        response = await client.ocr.process_async(
-            model=model,
-            document=document,
-            pages=list(range(OCR_MAX_PAGES)),
+        response = await asyncio.wait_for(
+            client.ocr.process_async(
+                model=model,
+                document=document,
+                pages=list(range(OCR_MAX_PAGES)),
+            ),
+            timeout=OCR_TIMEOUT_S,
         )
     finally:
         # The SDK holds an httpx client; close it so we don't leak sockets.

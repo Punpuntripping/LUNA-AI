@@ -7,13 +7,29 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from urllib.parse import quote
 
+import httpx
 from supabase import Client as SupabaseClient
 
 from shared.config import get_settings
 from shared.db.client import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+# Tight ceiling for the magic-byte range read — 16 bytes should never take
+# longer than a few seconds even on a cold connection. Keeps a hung storage
+# endpoint from wedging the finalize/reconcile path.
+STORAGE_HEAD_TIMEOUT = 5.0  # seconds
+
+
+class _RangeUnsupported(Exception):
+    """Server rejected the Range request (416/501) — fall back to a full
+    download. Module-private: callers never see this exception type."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"range unsupported (HTTP {status})")
+        self.status = status
 
 
 def _sanitize_filename(filename: str) -> str:
@@ -236,13 +252,74 @@ def download_head_bytes(
     n: int = 16,
     supabase: SupabaseClient | None = None,
 ) -> bytes:
-    """
-    Download the first ``n`` bytes of an object for magic-byte checks.
+    """Read the first ``n`` bytes of an object via an HTTP Range request.
 
-    Implemented via the supabase-py ``download()`` API which returns the full
-    object body; we slice locally. ``n`` is intentionally small (≤ 16 bytes in
-    practice) so the over-fetch is negligible for files we already accepted at
-    upload time (≤ 50 MB hard cap).
+    Issues a raw httpx ``GET`` against the storage REST endpoint with
+    service-role auth and a ``Range: bytes=0-(n-1)`` header — Supabase
+    storage-api supports byte-range on authenticated object GETs. This avoids
+    pulling a whole (up to 50 MB) object into RAM just to magic-byte-check its
+    header, which is what the previous ``download()`` implementation did.
+
+    Falls back to a bounded streamed read if the server rejects ranges
+    (416/501) or replies 200 with the whole body. Other exceptions (timeout,
+    transport error, non-range HTTP error) propagate — the caller
+    (``upload_session_service.verify_finalize``) already maps any failure to
+    ``UPLOAD_NOT_COMPLETE`` so the client retries, which is the right outcome
+    for a timeout too.
+    """
+    settings = get_settings()
+    base = settings.SUPABASE_URL.rstrip("/")
+    url = f"{base}/storage/v1/object/{bucket}/{quote(path)}"
+    headers = {
+        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+        "apikey": settings.SUPABASE_SERVICE_KEY,
+        "Range": f"bytes=0-{n - 1}",
+    }
+    try:
+        with httpx.Client(timeout=STORAGE_HEAD_TIMEOUT) as client:
+            with client.stream("GET", url, headers=headers) as resp:
+                if resp.status_code in (200, 206):
+                    # 206 = ranged body; 200 = server ignored Range — either
+                    # way read at most ``n`` bytes and bail out of the stream
+                    # so even a misbehaving 200 cannot force a 50 MB buffer.
+                    buf = b""
+                    for chunk in resp.iter_bytes(chunk_size=n):
+                        buf += chunk
+                        if len(buf) >= n:
+                            break
+                    return buf[:n]
+                if resp.status_code in (416, 501):
+                    raise _RangeUnsupported(resp.status_code)
+                # Some other HTTP error — read the (small) body so
+                # raise_for_status reports cleanly, then raise.
+                resp.read()
+                resp.raise_for_status()
+                # raise_for_status only raises on >=400; a 3xx slipping through
+                # here is unexpected, so fall back rather than return garbage.
+                raise _RangeUnsupported(resp.status_code)
+    except _RangeUnsupported as exc:
+        logger.warning(
+            "download_head_bytes: range unsupported (%s) for %s/%s — "
+            "falling back to full download",
+            exc.status,
+            bucket,
+            path,
+        )
+        return _download_head_bytes_legacy(bucket, path, n, supabase=supabase)
+
+
+def _download_head_bytes_legacy(
+    bucket: str,
+    path: str,
+    n: int = 16,
+    supabase: SupabaseClient | None = None,
+) -> bytes:
+    """Fallback for ``download_head_bytes``: pull the full object via the
+    supabase-py ``download()`` API and slice locally.
+
+    Only reached when the storage server rejects Range requests (416/501).
+    ``n`` is small (≤ 16 bytes in practice) so the over-fetch is the cost of
+    correctness for files we already accepted at upload time (≤ 50 MB cap).
     """
     client = supabase or get_supabase_client()
     body = client.storage.from_(bucket).download(path)

@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.structured_output import make_json_salvager
 
 from .models import RerankedServiceResult, ServiceDecision, ServiceRerankerOutput
 from .prompts import RERANKER_SYSTEM_PROMPT
@@ -40,6 +41,24 @@ RERANKER_LIMITS = UsageLimits(
     output_tokens_limit=25_000,
     request_limit=3,
 )
+
+
+# qwen3.5-flash with enable_thinking sometimes finalises as text
+# (``<thinking>…</thinking>{json}``) instead of calling the output tool. The
+# salvager rescues a schema-complete JSON without a (large) retry; a genuine
+# omission still raises ModelRetry. See agents/utils/structured_output.py.
+_COMPLIANCE_RERANKER_RETRY_MSG = (
+    "أعد المخرَج ككائن JSON صالح وفق المخطط (sufficient, query_axes, "
+    "decisions[position, action, relevance, reasoning, satisfies_axes], "
+    "weak_axes, summary_note) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+)
+
+
+def _compliance_text_output() -> TextOutput:
+    """``TextOutput`` salvage member for the reranker's ``output_type`` union."""
+    return TextOutput(
+        make_json_salvager(ServiceRerankerOutput, retry_msg=_COMPLIANCE_RERANKER_RETRY_MSG)
+    )
 
 
 def create_reranker_agent(
@@ -57,7 +76,7 @@ def create_reranker_agent(
     return Agent(
         model,
         name="compliance_search_reranker",
-        output_type=ServiceRerankerOutput,
+        output_type=[ServiceRerankerOutput, _compliance_text_output()],
         instructions=RERANKER_SYSTEM_PROMPT,
         retries=2,
         # Cap reasoning at 15k — same rationale as reg_search reranker.

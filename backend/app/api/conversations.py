@@ -24,6 +24,7 @@ from backend.app.models.responses import (
 )
 from backend.app.services import conversation_service
 from shared.auth.jwt import AuthUser
+from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,8 @@ async def list_conversations(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List conversations for the authenticated user, optionally filtered by case."""
-    data = conversation_service.list_conversations(
+    data = await run_db(
+        conversation_service.list_conversations,
         supabase,
         current_user.auth_id,
         case_id=case_id,
@@ -69,7 +71,8 @@ async def create_conversation(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """Create a new conversation, optionally linked to a case."""
-    data = conversation_service.create_conversation(
+    data = await run_db(
+        conversation_service.create_conversation,
         supabase,
         current_user.auth_id,
         case_id=body.case_id,
@@ -90,7 +93,8 @@ async def get_conversation(
 ):
     """Get a single conversation by ID."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    data = conversation_service.get_conversation(
+    data = await run_db(
+        conversation_service.get_conversation,
         supabase,
         current_user.auth_id,
         conversation_id,
@@ -112,7 +116,8 @@ async def update_conversation(
 ):
     """Update conversation title."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    data = conversation_service.update_conversation(
+    data = await run_db(
+        conversation_service.update_conversation,
         supabase,
         current_user.auth_id,
         conversation_id,
@@ -134,7 +139,8 @@ async def delete_conversation(
 ):
     """Soft-delete a conversation."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    conversation_service.delete_conversation(
+    await run_db(
+        conversation_service.delete_conversation,
         supabase,
         current_user.auth_id,
         conversation_id,
@@ -155,7 +161,8 @@ async def end_session(
 ):
     """End a conversation session (sets ended_at timestamp)."""
     validate_uuid(conversation_id, "معرف المحادثة")
-    data = conversation_service.end_session(
+    data = await run_db(
+        conversation_service.end_session,
         supabase,
         current_user.auth_id,
         conversation_id,

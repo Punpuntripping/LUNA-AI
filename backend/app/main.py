@@ -17,19 +17,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
+import contextlib
 import logging
 import os
+import random
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from shared import pricing
+from shared.auth.jwt import prewarm_jwks
 from shared.config import get_settings
 from shared.db.client import get_supabase_client, get_supabase_anon_client
 from shared.cache.redis import get_async_redis_client
@@ -39,6 +43,7 @@ from shared.observability import (
     observability_status,
 )
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
+from backend.app.services.summary_sweeper import sweep_missing_summaries
 from backend.app.services.upload_reconciler import reconcile_stuck_uploads
 
 logger = logging.getLogger(__name__)
@@ -56,7 +61,32 @@ configure_logfire(service_version="0.1.0")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle: init clients on startup, cleanup on shutdown."""
+    # Resize the default executor FIRST — every route now offloads its sync
+    # Supabase service call via asyncio.to_thread (run_db), which uses ONLY the
+    # default executor. The stdlib default is min(32, cpu_count + 4) → 6 threads
+    # on a 2-vCPU Railway box, which would become the concurrency ceiling. 40
+    # workers < httpx max_connections=50, so threads never block on the pool;
+    # this pool is also shared by the deep_search to_thread fan-out.
+    from concurrent.futures import ThreadPoolExecutor
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(
+        ThreadPoolExecutor(max_workers=40, thread_name_prefix="luna-db")
+    )
+
     settings = get_settings()
+
+    # Dedup invariant — message_service._active_runs is in-PROCESS memory.
+    # uvicorn honors WEB_CONCURRENCY when --workers is absent (our Dockerfile
+    # passes none). >1 worker = duplicate sends pass the dedup guard on the
+    # other worker = double-billed pipelines. Hard-fail rather than run wrong.
+    _workers = int(os.getenv("WEB_CONCURRENCY", "1") or "1")
+    if _workers > 1:
+        logger.critical(
+            "WEB_CONCURRENCY=%d: in-flight send dedup is per-process; refusing "
+            "to start multi-worker until Redis SET NX dedup ships (see "
+            "message_service._active_runs).", _workers)
+        raise RuntimeError("multi-worker boot blocked: in-process send dedup")
 
     # --- STARTUP ---
     # 1. Supabase clients (sync, singleton via lru_cache)
@@ -77,15 +107,45 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         logger.warning("Pricing cache load failed (cost_usd → 0): %s", e)
 
-    # 2. Redis async client (singleton via lru_cache)
-    try:
-        redis = get_async_redis_client()
-        await redis.ping()
-        app.state.redis = redis
-        logger.info("Redis client ready")
-    except Exception as e:
-        logger.warning(f"Redis unavailable at startup — rate limiting disabled: {e}")
-        app.state.redis = None
+    # 1c. JWKS pre-warm — non-blocking, best-effort. A slow/down JWKS endpoint
+    #     must add zero cold-start latency, so fire-and-forget in a thread. Keep
+    #     the task reference to prevent GC; it self-completes in ≤5s.
+    app.state.jwks_prewarm_task = asyncio.create_task(asyncio.to_thread(prewarm_jwks))
+
+    # 2. Redis — supervised. app.state.redis is the singleton client when
+    #    healthy, None when down. A background task owns the transitions, so
+    #    startup is NOT gated on Redis at all (a dead Redis no longer blocks
+    #    boot). Per-request fail-open covers the ≤~45s detection window.
+    app.state.redis = None
+    redis_client = get_async_redis_client()   # singleton; auto-reconnects per command
+
+    async def _redis_supervisor() -> None:
+        backoff, was_down_logged, failures = 1.0, False, 0
+        while True:
+            try:
+                await redis_client.ping()
+                if app.state.redis is None:
+                    app.state.redis = redis_client
+                    logger.info("Redis %s — rate limiting enabled",
+                                "recovered" if was_down_logged else "client ready")
+                    was_down_logged = False
+                failures, backoff = 0, 1.0
+                await asyncio.sleep(15)            # healthy: poll every 15s
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:                 # noqa: BLE001
+                failures += 1
+                if app.state.redis is not None and failures >= 3:
+                    app.state.redis = None         # stop per-request hammering
+                if not was_down_logged:
+                    logger.warning("Redis unavailable (failure %d): %s — "
+                                   "rate limiting disabled, reconnecting with backoff",
+                                   failures, e)
+                    was_down_logged = True
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+
+    app.state.redis_supervisor = asyncio.create_task(_redis_supervisor())
 
     # 3. APScheduler — daily PDF-attachment cleanup sweep. Hard-deletes
     #    workspace PDF attachments older than 24h (storage file + DB row).
@@ -132,10 +192,46 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # 5. APScheduler — daily summary-NULL sweep. Re-runs the summarizer on
+    #    workspace items left with summary IS NULL (dropped pg_net webhook or a
+    #    persist that failed after the LLM call). Bounded at SWEEP_CAP/day.
+    #    Offset 30 min after the PDF/upload jobs so the three never contend for
+    #    the same postgrest connection pool.
+    async def _run_summary_sweep() -> None:
+        try:
+            stats = await sweep_missing_summaries(app.state.supabase)
+            logger.info("Summary NULL sweep complete: %s", stats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Summary NULL sweep failed: %s", e)
+
+    scheduler.add_job(
+        _run_summary_sweep,
+        trigger=CronTrigger(hour=3, minute=30),  # daily at 03:30 UTC
+        id="summary_null_sweep",
+        replace_existing=True,
+    )
+
+    # 6. APScheduler — one-shot startup catch-up for the upload reconciler. The
+    #    03:15 cron silently skips a day whenever the process restarts across
+    #    it; the reconciler is idempotent and cheap, so run it once shortly
+    #    after every boot. The 60s base delay lets the app warm; the 0–30s
+    #    jitter avoids a thundering herd if replicas ever exist. Reuses the same
+    #    _run_upload_reconciler wrapper (to_thread + swallow).
+    scheduler.add_job(
+        _run_upload_reconciler,
+        trigger=DateTrigger(
+            run_date=datetime.now(timezone.utc)
+            + timedelta(seconds=60 + random.uniform(0, 30))
+        ),
+        id="upload_reconciler_startup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info(
-        "Scheduler started — PDF cleanup 03:00 UTC, upload reconciler 03:15 UTC"
+        "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
+        "summary sweep 03:30 UTC, + one-shot upload-reconciler catch-up on boot"
     )
 
     logger.info(
@@ -151,9 +247,23 @@ async def lifespan(app: FastAPI):
         app.state.scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped")
 
-    if app.state.redis is not None:
-        await app.state.redis.close()
+    # Stop the Redis supervisor, then close the SINGLETON client — NOT
+    # app.state.redis, which is None mid-outage even though the client object
+    # still exists and holds open connections.
+    supervisor = getattr(app.state, "redis_supervisor", None)
+    if supervisor is not None:
+        supervisor.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await supervisor
+    try:
+        await redis_client.close()
         logger.info("Redis connection closed")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Redis close failed during shutdown: %s", e)
+
+    # The JWKS pre-warm task self-completes in ≤5s; nothing to await. Don't
+    # crash if it is somehow still pending — it holds no resources worth
+    # blocking shutdown on.
 
     logger.info("Backend shutdown complete")
 
@@ -220,8 +330,32 @@ def create_app() -> FastAPI:
     # Exception handlers
     # ------------------------------------------
 
-    from backend.app.errors import LunaHTTPException, luna_exception_handler
+    from backend.app.errors import (
+        LunaHTTPException,
+        luna_exception_handler,
+        MSG_SERVICE_UNAVAILABLE,
+    )
     application.add_exception_handler(LunaHTTPException, luna_exception_handler)
+
+    # DbDeadlineExceeded → 503 SERVICE_UNAVAILABLE. A dependency failure (DB
+    # outage / pool exhaustion) is NOT a user error — surface it as a transient
+    # 503 with the canonical Arabic outage string. shared/db/run.py raises this
+    # but cannot import backend.app.errors, so the mapping lives here.
+    from shared.db.run import DbDeadlineExceeded
+
+    @application.exception_handler(DbDeadlineExceeded)
+    async def db_deadline_handler(request: Request, exc: DbDeadlineExceeded):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "code": "SERVICE_UNAVAILABLE",
+                    "message": MSG_SERVICE_UNAVAILABLE,
+                    "status": 503,
+                },
+                "detail": MSG_SERVICE_UNAVAILABLE,
+            },
+        )
 
     @application.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):

@@ -419,6 +419,59 @@ def _expired(pending: dict) -> bool:
     return is_expired(pending)
 
 
+def _resolve_pause_loud(supabase: SupabaseClient, run_id: str, *, where: str) -> bool:
+    """resolve_pause + Logfire alarm on failure.
+
+    A failed DELETE means the next message will re-attach to a consumed pause —
+    the stale-pause guard in ``_handle_message_inner`` (``_pause_is_current``)
+    is the recovery path; this event is the alert."""
+    ok = resolve_pause(supabase, run_id)
+    if not ok:
+        _logfire.warning("paused_runs.resolve_failed", run_id=str(run_id), where=where)
+    return ok
+
+
+def _pause_is_current(
+    supabase: SupabaseClient,
+    pending: dict,
+    conversation_id: str,
+    current_placeholder_id: str | None,
+) -> bool:
+    """True when the pause's question is still the conversation's last real
+    assistant turn.
+
+    A *live* pause's question message (inserted by ``_record_deferred`` with
+    ``metadata.kind="agent_question"`` and ``metadata.run_id``) is the most
+    recent assistant message — EXCLUDING this turn's empty placeholder, which
+    message_service inserts BEFORE handle_message runs (critical edge: without
+    the exclusion every legitimate resume looks stale).
+
+    Fail-OPEN on read errors (never drop a live pause on a flaky query)."""
+    try:
+        rows = (
+            supabase.table("messages")
+            .select("message_id, content, metadata")
+            .eq("conversation_id", conversation_id)
+            .eq("role", "assistant")
+            .order("created_at", desc=True)
+            .limit(3)
+            .execute()
+        ).data or []
+    except Exception:
+        return True
+    for row in rows:
+        if current_placeholder_id and row.get("message_id") == current_placeholder_id:
+            continue  # this turn's own empty placeholder
+        if not (row.get("content") or "").strip() and not (row.get("metadata") or {}):
+            continue  # orphaned empty placeholder from a failed pause-cleanup delete
+        meta = row.get("metadata") or {}
+        return (
+            meta.get("kind") == "agent_question"
+            and str(meta.get("run_id") or "") == str(pending.get("run_id") or "")
+        )
+    return True  # nothing visible to judge by — fail open
+
+
 async def _resume_major_agent(
     pending: dict,
     user_reply: str,
@@ -494,7 +547,7 @@ async def _resume_major_agent_inner(
             "_resume_major_agent: agent_family=%s does not support resume; abandoning run_id=%s",
             agent_family, run_id,
         )
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="abandon_unsupported_family")
         # Re-route the user reply through the normal router.
         async for ev in _route(
             question=user_reply,
@@ -539,7 +592,7 @@ async def _resume_major_agent_inner(
             "_resume_major_agent: failed to rehydrate state for run_id=%s: %s",
             run_id, exc, exc_info=True,
         )
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="rehydrate_failed")
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -614,7 +667,9 @@ async def _resume_major_agent_inner(
                     pause_reason=wp_outcome.pause_reason or "clarify",
                 )
                 # Close out the previous run row (superseded by the new one).
-                resolve_pause(supabase, run_id)
+                _resolve_pause_loud(
+                    supabase, run_id, where="writing_chained_pause_supersede"
+                )
                 yield {
                     "type": "agent_question",
                     "run_id": new_run_id or "",
@@ -663,7 +718,7 @@ async def _resume_major_agent_inner(
             # chained pause: that branch already resolved THIS leg's row and
             # persisted a NEW row under a fresh run_id which must survive.
             if not _rewrote_pause:
-                resolve_pause(supabase, run_id)
+                _resolve_pause_loud(supabase, run_id, where="writing_resume_finally")
 
         yield {"type": "agent_run_finished", "agent_family": "writing"}
         return
@@ -749,7 +804,7 @@ async def _resume_major_agent_inner(
             "_resume_major_agent: planner resume failed for run_id=%s: %s",
             run_id, exc, exc_info=True,
         )
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="planner_resume_failed")
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -778,7 +833,7 @@ async def _resume_major_agent_inner(
             task_label=(pending.get("task_label") if pending else None),
         )
         # Close out the previous run row (it's superseded by the new one).
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="ds_chained_pause_supersede")
         yield {"type": "agent_question", "run_id": new_run_id or "", "question": new_question}
         yield {"type": "done", "usage": _zero_usage("paused")}
         return
@@ -789,7 +844,7 @@ async def _resume_major_agent_inner(
             "_resume_major_agent: planner aborted run_id=%s; re-routing via router",
             run_id,
         )
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="planner_aborted")
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -807,7 +862,7 @@ async def _resume_major_agent_inner(
             "_resume_major_agent: unexpected planner output type=%s for run_id=%s",
             type(planner_output), run_id,
         )
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="unexpected_planner_output")
         yield {"type": "token", "text": "حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى."}
         yield {"type": "done", "usage": _zero_usage("error")}
         return
@@ -900,7 +955,7 @@ async def _resume_major_agent_inner(
         # The pause is consumed (resumed to completion / error / cancel) — drop
         # the paused_runs row so it can't be resumed again. status / err_payload
         # are surfaced via the Logfire span + SSE; no DB row to flip.
-        resolve_pause(supabase, run_id)
+        _resolve_pause_loud(supabase, run_id, where="ds_resume_finally")
 
     yield {"type": "agent_run_finished", "agent_family": "deep_search"}
 
@@ -1077,13 +1132,31 @@ async def _handle_message_inner(
     """
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
+    # Defensive stale check: a pause whose resolve DELETE silently failed (or
+    # whose question never surfaced) must not re-attach. _pause_is_current is
+    # fail-open and excludes THIS turn's empty placeholder so legitimate resumes
+    # still fire.
+    if pending and not _expired(pending) and not _pause_is_current(
+        supabase, pending, conversation_id, assistant_message_id
+    ):
+        _logfire.warning(
+            "paused_runs.stale_pause_dropped",
+            run_id=str(pending.get("run_id", "")),
+            conversation_id=conversation_id,
+        )
+        _resolve_pause_loud(
+            supabase, str(pending.get("run_id", "")), where="stale_pause_guard"
+        )
+        pending = None  # fall through to normal routing
     if pending:
         if _expired(pending):
             logger.info(
                 "handle_message: run_id=%s expired; marking timeout and proceeding normally",
                 pending.get("run_id"),
             )
-            resolve_pause(supabase, str(pending.get("run_id", "")))
+            _resolve_pause_loud(
+                supabase, str(pending.get("run_id", "")), where="pause_expired"
+            )
             # fall through to normal flow
         else:
             async for ev in _resume_major_agent(
@@ -1109,10 +1182,27 @@ async def _handle_message_inner(
     # 1b. OCR memory step — extract text from new PDF/image attachments so the
     #     router (and any dispatched agent) can see document content.
     ocr_item_ids: list[str] = []
+    _ocr_failed = 0
     try:
-        ocr_item_ids = await run_ocr_extraction(supabase, conversation_id, user_id)
-    except Exception:
+        # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
+        # eat the overall pipeline budget. Caps the worst case of k×60s.
+        ocr_stats = await asyncio.wait_for(
+            run_ocr_extraction(supabase, conversation_id, user_id),
+            timeout=180.0,
+        )
+        ocr_item_ids = ocr_stats.filled_item_ids
+        _ocr_failed = ocr_stats.failed
+    except (asyncio.TimeoutError, Exception):
         logger.warning("OCR extraction step failed", exc_info=True)
+        _ocr_failed = 1
+    if _ocr_failed:
+        yield {
+            "type": "status",
+            "text": (
+                "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
+                "الاستناد إلى محتواها."
+            ),
+        }
 
     # 1c. Summarize the freshly-OCR'd attachments inline (awaited) before routing.
     for _ocr_item_id in ocr_item_ids:
@@ -1688,6 +1778,18 @@ async def _run_deep_search(
                 output_item_id = publish_result.item_id
             except Exception as exc:
                 logger.warning("deep_search artifact persist failed: %s", exc, exc_info=True)
+                _logfire.error(
+                    "deep_search.publish_failed",
+                    conversation_id=input.conversation_id,
+                    error=str(exc)[:300],
+                )
+                sse_events.append({
+                    "type": "status",
+                    "text": (
+                        "تعذّر حفظ نتيجة البحث كبطاقة في مساحة العمل — "
+                        "الإجابة معروضة في المحادثة لكنها لن تظهر ضمن المستندات."
+                    ),
+                })
         elif response is not None and not getattr(response, "build_artifact", True):
             # Phase E build_artifact=False branch: no new card, no publish.
             # When the responder identified a prior covering artifact, emit a

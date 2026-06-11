@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -109,19 +109,14 @@ class AggregatorOutput(BaseModel):
     )
 
 
-# -- Reranker models (v2: classification-only, no content in LLM output) ------
-# Re-export from shared so all three domains share one definition.
-from agents.deep_search_v4.shared.reranker_models import (  # noqa: E402
-    RerankerClassification,
-    RerankerDecision,
-)
-
-
 # -- Reg-local reranker models (v2: chunk corpus, label-addressed) ------------
-# The v2 reg_search reranker diverges from the shared RerankerDecision — chunks
-# are addressed by a stable label (not a per-round position), and `unfold`
-# targets a prev/next neighbour. The shared `reranker_models.py` stays untouched
-# because case_search / compliance_search still depend on it.
+# Bespoke (no shared-schema dependency). Chunks are addressed by a stable label
+# (not a per-round position), and `unfold` targets a prev/next neighbour.
+# `reasoning`/`summary_note` are REQUIRED so the model can't silently drop them
+# (the salvager on the reranker agent rescues a text-finalised but complete JSON
+# without a retry). `query_axes`/`satisfies_axes` carry light axis annotation
+# (#3); they are advisory here and do NOT gate keep/unfold or the live unfold-loop
+# sufficiency terminator.
 
 
 class RegRerankerDecision(BaseModel):
@@ -139,12 +134,22 @@ class RegRerankerDecision(BaseModel):
     )
     relevance: Optional[Literal["high", "medium"]] = Field(
         default=None,
-        description="Relevance tier — set only when action='keep'",
+        description="Relevance tier — set only when action='keep' (nulled otherwise)",
     )
     reasoning: str = Field(
-        default="",
         description="Short Arabic note; states the regulation-scope-applicability verdict",
     )
+    satisfies_axes: list[int] = Field(
+        default_factory=list,
+        description="Indices into query_axes that this chunk covers (keep only)",
+    )
+
+    @model_validator(mode="after")
+    def _relevance_only_on_keep(self) -> "RegRerankerDecision":
+        # Coherence: relevance is meaningful only on a keep.
+        if self.action != "keep":
+            self.relevance = None
+        return self
 
 
 class RegRerankerClassification(BaseModel):
@@ -153,12 +158,15 @@ class RegRerankerClassification(BaseModel):
     sufficient: bool = Field(
         description="True if the kept chunks are >=80% sufficient to answer the sub-query",
     )
+    query_axes: list[str] = Field(
+        default_factory=list,
+        description="2-3 discriminating axes restated from the sub-query (advisory)",
+    )
     decisions: list[RegRerankerDecision] = Field(
         default_factory=list,
         description="Per-chunk classification decisions",
     )
     summary_note: str = Field(
-        default="",
         description="Brief Arabic note on collective sufficiency",
     )
 

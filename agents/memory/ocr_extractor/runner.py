@@ -100,7 +100,7 @@ async def run_ocr_extraction(
     supabase: SupabaseClient,
     conversation_id: str,
     user_id: str,
-) -> list[str]:
+) -> OcrExtractionStats:
     """Extract text from new PDF/image attachments on a conversation.
 
     Loads ``kind='attachment'`` workspace items for the conversation, OCRs each
@@ -115,8 +115,11 @@ async def run_ocr_extraction(
         user_id: The ``users.user_id`` of the conversation owner (drives quota).
 
     Returns:
-        The list of attachment ``item_id``s whose ``content_md`` was filled this
-        run. Empty list on any global failure (dev-safe no-op).
+        The run's ``OcrExtractionStats`` — ``filled_item_ids`` lists the
+        attachments whose ``content_md`` was filled this run, and ``failed``
+        counts attachments that errored (the orchestrator surfaces a status
+        event to the user when ``failed`` > 0). On a global failure the stats
+        carry whatever succeeded (dev-safe no-op).
 
     Never raises — every failure path is caught and logged.
     """
@@ -126,7 +129,7 @@ async def run_ocr_extraction(
     # Dev-safe no-op: with no API key there is nothing to call.
     if not (settings.MISTRAL_API_KEY or "").strip():
         logger.warning("OCR: MISTRAL_API_KEY unset — skipping OCR extraction")
-        return []
+        return stats
 
     with track_stage(
         "ocr_extraction.run",
@@ -134,11 +137,10 @@ async def run_ocr_extraction(
         agent_family="memory",
     ) as _span:
         try:
-            filled = await _run_inner(supabase, conversation_id, user_id, stats, settings)
+            await _run_inner(supabase, conversation_id, user_id, stats, settings)
         except Exception:  # noqa: BLE001
             # Belt-and-braces: the whole step is best-effort.
             logger.warning("OCR: extraction step failed", exc_info=True)
-            filled = stats.filled_item_ids
 
         try:
             _span.set(**{
@@ -166,7 +168,7 @@ async def run_ocr_extraction(
                 stats.failed,
                 stats.empty,
             )
-        return filled
+        return stats
 
 
 async def _run_inner(

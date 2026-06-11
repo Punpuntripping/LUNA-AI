@@ -75,6 +75,36 @@ def _arabic_message(meter: Meter, period: Period) -> str:
     return f"تم تجاوز الحد {p} لـ{m}."
 
 
+# ── fail-closed "unknown" exception ──────────────────────────────────────────
+
+QUOTA_UNAVAILABLE_AR = (
+    "تعذّر التحقق من حدود الاستخدام مؤقتًا. الرجاء المحاولة مرة أخرى بعد قليل."
+)
+
+
+@dataclass
+class QuotaUnavailable(Exception):
+    """Raised by ``check`` when the usage window is genuinely unknowable —
+    a cold Redis bucket AND the PG rehydrate fallback failed — and the known
+    partial sum does NOT already exceed the limit. The gate fails CLOSED here:
+    blocking new spend on an unknowable answer is the gate's entire job. The
+    read-only report NEVER raises this (it degrades to an ``approximate`` bar).
+    """
+
+    meter: Meter
+    period: Period
+
+    def __post_init__(self) -> None:
+        super().__init__(f"quota_unavailable: {self.meter} {self.period}")
+
+    def to_event_payload(self) -> dict:
+        return {
+            "meter": self.meter,
+            "period": self.period,
+            "message_ar": QUOTA_UNAVAILABLE_AR,
+        }
+
+
 # ── user limits ─────────────────────────────────────────────────────────────
 
 _DEFAULT_LIMITS = {
@@ -121,12 +151,19 @@ async def check(
     needs_web: bool = False,
     est_web_calls: int = 0,
 ) -> None:
-    """Raises ``QuotaExceeded`` on the first failing (meter, period).
+    """Raises ``QuotaExceeded`` on the first failing (meter, period), or
+    ``QuotaUnavailable`` when a window is genuinely unknowable and the known
+    partial sum is still under the limit (fail closed on the unknowable answer).
 
     OCR + web checks are *projected* (``current + est > limit``) because the
     cost is known up front (page count, call count). The ordinary meter is
     checked against current spend only (``current >= limit``) — LLM token
     cost can't be forecast before the call fires.
+
+    Policy: a partial sum that ALREADY exceeds the limit is a valid rejection
+    (we know enough → ``QuotaExceeded``); a partial sum that is under the limit
+    but incomplete is unknowable → ``QuotaUnavailable``. Both wins are taken
+    before the completeness check so a known overage is never masked by a 503.
     """
     limits = _user_limits(supabase, user_id)
     resets = redis_store.next_utc_midnight()
@@ -136,22 +173,28 @@ async def check(
         w = await redis_store.usage_window(redis, supabase, user_id, "ord", 7)
         d_limit = float(limits.get("ord_cost_daily_limit_usd") or 0)
         w_limit = float(limits.get("ord_cost_weekly_limit_usd") or 0)
-        if d >= d_limit:
-            raise QuotaExceeded("ord", "daily", d, d_limit, resets)
-        if w >= w_limit:
-            raise QuotaExceeded("ord", "weekly", w, w_limit, resets)
+        if d.total >= d_limit:                      # known overage wins, even if partial
+            raise QuotaExceeded("ord", "daily", d.total, d_limit, resets)
+        if w.total >= w_limit:
+            raise QuotaExceeded("ord", "weekly", w.total, w_limit, resets)
+        if not d.complete or not w.complete:        # under limit but unknowable → closed
+            raise QuotaUnavailable("ord", "daily" if not d.complete else "weekly")
 
     if needs_ocr:
         m = await redis_store.usage_window(redis, supabase, user_id, "ocr", 30)
         m_limit = int(limits.get("ocr_pages_monthly_limit") or 0)
-        if m + est_ocr_pages > m_limit:
-            raise QuotaExceeded("ocr", "monthly", m + est_ocr_pages, m_limit, resets)
+        if m.total + est_ocr_pages > m_limit:       # known overage wins, even if partial
+            raise QuotaExceeded("ocr", "monthly", m.total + est_ocr_pages, m_limit, resets)
+        if not m.complete:                          # under limit but unknowable → closed
+            raise QuotaUnavailable("ocr", "monthly")
 
     if needs_web:
         m = await redis_store.usage_window(redis, supabase, user_id, "web", 30)
         m_limit = int(limits.get("web_calls_monthly_limit") or 0)
-        if m + est_web_calls > m_limit:
-            raise QuotaExceeded("web", "monthly", m + est_web_calls, m_limit, resets)
+        if m.total + est_web_calls > m_limit:       # known overage wins, even if partial
+            raise QuotaExceeded("web", "monthly", m.total + est_web_calls, m_limit, resets)
+        if not m.complete:                          # under limit but unknowable → closed
+            raise QuotaUnavailable("web", "monthly")
 
 
 # ── read-only snapshot for the UI ───────────────────────────────────────────
@@ -174,15 +217,22 @@ async def current_usage_report(
 ) -> dict[str, Any]:
     """Snapshot the four bars rendered by the Usage limits dialog.
 
+    NEVER raises — unlike ``check``, the report fails SOFT: a window that could
+    only be partially determined renders its known ``total`` with
+    ``"approximate": true`` so the dialog still shows the user something rather
+    than a 503.
+
     Shape::
 
         {
           "ord": {
-            "daily":  {"used": 0.25, "limit": 1.0, "pct": 25, "resets_at": "..."},
-            "weekly": {"used": 0.80, "limit": 5.0, "pct": 16, "resets_at": "..."}
+            "daily":  {"used": 0.25, "limit": 1.0, "pct": 25,
+                       "resets_at": "...", "approximate": false},
+            "weekly": {...}
           },
-          "ocr":   {"monthly": {"used": 240, "limit": 600, "pct": 40, "resets_at": "..."}},
-          "web":   {"monthly": {"used": 24,  "limit": 300, "pct": 8,  "resets_at": "..."}}
+          "ocr":   {"monthly": {"used": 240, "limit": 600, "pct": 40,
+                                "resets_at": "...", "approximate": false}},
+          "web":   {"monthly": {...}}
         }
     """
     limits = _user_limits(supabase, user_id)
@@ -200,18 +250,22 @@ async def current_usage_report(
 
     return {
         "ord": {
-            "daily":  {"used": round(ord_d, 6), "limit": ord_d_limit,
-                       "pct": _pct(ord_d, ord_d_limit), "resets_at": resets},
-            "weekly": {"used": round(ord_w, 6), "limit": ord_w_limit,
-                       "pct": _pct(ord_w, ord_w_limit), "resets_at": resets},
+            "daily":  {"used": round(ord_d.total, 6), "limit": ord_d_limit,
+                       "pct": _pct(ord_d.total, ord_d_limit), "resets_at": resets,
+                       "approximate": not ord_d.complete},
+            "weekly": {"used": round(ord_w.total, 6), "limit": ord_w_limit,
+                       "pct": _pct(ord_w.total, ord_w_limit), "resets_at": resets,
+                       "approximate": not ord_w.complete},
         },
         "ocr": {
-            "monthly": {"used": int(ocr_m), "limit": ocr_m_limit,
-                        "pct": _pct(ocr_m, ocr_m_limit), "resets_at": resets},
+            "monthly": {"used": int(ocr_m.total), "limit": ocr_m_limit,
+                        "pct": _pct(ocr_m.total, ocr_m_limit), "resets_at": resets,
+                        "approximate": not ocr_m.complete},
         },
         "web": {
-            "monthly": {"used": int(web_m), "limit": web_m_limit,
-                        "pct": _pct(web_m, web_m_limit), "resets_at": resets},
+            "monthly": {"used": int(web_m.total), "limit": web_m_limit,
+                        "pct": _pct(web_m.total, web_m_limit), "resets_at": resets,
+                        "approximate": not web_m.complete},
         },
     }
 
@@ -265,6 +319,8 @@ def settle_web_sync(user_id: str, calls: int = 1) -> None:
 
 __all__ = [
     "QuotaExceeded",
+    "QuotaUnavailable",
+    "QUOTA_UNAVAILABLE_AR",
     "check",
     "current_usage_report",
     "settle_ord",
