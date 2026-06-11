@@ -20,13 +20,27 @@ const nextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.supabase.co data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://*.supabase.co https://*.railway.app wss://*.supabase.co; font-src 'self' https://fonts.gstatic.com`,
+            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.supabase.co data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://api.rayhanai.com https://*.supabase.co https://*.railway.app wss://*.supabase.co; font-src 'self' https://fonts.gstatic.com`,
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
         ],
+      },
+    ];
+  },
+
+  // Canonical host: redirect www → apex. The `host` condition only matches
+  // when the request actually arrives on www.rayhanai.com, so this is inert
+  // on localhost and on the *.railway.app domain — safe to ship anytime.
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.rayhanai.com" }],
+        destination: "https://rayhanai.com/:path*",
+        permanent: true,
       },
     ];
   },
