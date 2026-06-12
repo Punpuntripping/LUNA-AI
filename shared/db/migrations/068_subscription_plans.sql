@@ -11,11 +11,11 @@
 --   plan                  monthly  weekly  session  ocr/30d  web/30d  duration
 --   free                  100      50      20       0        0        —
 --   basic (أسبوعي)        640      160     40       40       40       7d
---   pro                   800      200     50       40       40       —
---   max                   2400     600     150      200      200      —
+--   pro                   800      200     50       40       40       30d
+--   max                   2400     600     150      200      200      30d
 --   marketing_lawyer      —        150     —        40       40       7d
 --   marketing_individual  —        75      —        20       20       7d
---   dev                   —        —       —        —        —        —
+--   dev                   —        —       —        —        —        60d
 --
 -- users.plan_id is NULL by default → account LOCKED (gate rejects every send
 -- with PlanInactive) until the operator manually assigns a plan in Supabase.
@@ -69,11 +69,11 @@ INSERT INTO public.plans
 VALUES
     ('free',                 'المجانية',      'Free',                 100,  50,   20,   0,    0,    NULL),
     ('basic',                'الأساسية',      'Basic',                640,  160,  40,   40,   40,   7),
-    ('pro',                  'الاحترافية',    'Pro',                  800,  200,  50,   40,   40,   NULL),
-    ('max',                  'القصوى',        'Max',                  2400, 600,  150,  200,  200,  NULL),
+    ('pro',                  'الاحترافية',    'Pro',                  800,  200,  50,   40,   40,   30),
+    ('max',                  'القصوى',        'Max',                  2400, 600,  150,  200,  200,  30),
     ('marketing_lawyer',     'عرض المحامين',  'Marketing — Lawyers',  NULL, 150,  NULL, 40,   40,   7),
     ('marketing_individual', 'عرض الأفراد',   'Marketing — Personal', NULL, 75,   NULL, 20,   20,   7),
-    ('dev',                  'حساب مطوّر',    'Developer',            NULL, NULL, NULL, NULL, NULL, NULL)
+    ('dev',                  'حساب مطوّر',    'Developer',            NULL, NULL, NULL, NULL, NULL, 60)
 ON CONFLICT (plan_id) DO UPDATE SET
     name_ar           = EXCLUDED.name_ar,
     name_en           = EXCLUDED.name_en,
