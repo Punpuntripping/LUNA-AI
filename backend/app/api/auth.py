@@ -287,7 +287,7 @@ async def me(
     def _fetch_profile():
         return (
             supabase.table("users")
-            .select("user_id, auth_id, email, full_name_ar, subscription_tier, created_at")
+            .select("user_id, auth_id, email, full_name_ar, subscription_tier, plan_id, created_at")
             .eq("auth_id", current_user.auth_id)
             .maybe_single()
             .execute()
@@ -309,5 +309,6 @@ async def me(
         email=profile["email"],
         full_name_ar=profile.get("full_name_ar"),
         subscription_tier=profile.get("subscription_tier", "free"),
+        plan_id=profile.get("plan_id"),
         created_at=profile.get("created_at"),
     )

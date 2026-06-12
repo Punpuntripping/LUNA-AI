@@ -6,7 +6,10 @@ export interface User {
   user_id: string;
   email: string;
   full_name_ar?: string | null;
+  /** Legacy column — superseded by plan_id. */
   subscription_tier?: string | null;
+  /** Subscription plan (plans table). null = account not activated yet. */
+  plan_id?: string | null;
   created_at?: string | null;
 }
 
@@ -303,35 +306,58 @@ export interface SSEDuplicate {
  * Emitted INSTEAD of message_start when the per-user quota gate rejects the
  * send (shared/quota gate fires before OCR + router). The user message is
  * already persisted; no assistant placeholder is created and the stream ends
- * immediately. ``meter`` is which counter tripped, ``period`` is daily or
- * weekly, ``resets_at`` is ISO-8601 UTC. ``message_ar`` is a pre-rendered
- * Arabic string the banner can show verbatim.
+ * immediately. ``meter`` is which counter tripped ("plan" = account not
+ * activated yet), ``period`` is the window ("session" = rolling 5h),
+ * ``resets_at`` is ISO-8601 UTC (empty for plan-inactive). ``message_ar`` is
+ * a pre-rendered Arabic string the banner can show verbatim. Point limits:
+ * 1 USD = 100 points.
  */
 export interface SSEQuotaExceeded {
-  meter: "ocr" | "ord" | "web";
-  period: "daily" | "weekly" | "monthly";
+  meter: "ocr" | "ord" | "web" | "plan";
+  period: "session" | "daily" | "weekly" | "monthly" | "none";
   used: number;
   limit: number;
   resets_at: string;
   message_ar: string;
 }
 
-/** One progress bar in the Settings → حدود الاستخدام dialog. */
+/** One progress bar in the Settings → حدود الاستخدام dialog.
+ *  ``limit: null`` = unlimited (no cap on this window). */
 export interface UsageBar {
   used: number;
-  limit: number;
+  limit: number | null;
   pct: number;
   resets_at: string;
+  approximate?: boolean;
+}
+
+/** Subscription plan block on the usage report. */
+export interface UsagePlan {
+  plan_id: string;
+  name_ar: string | null;
+  expires_at: string | null;
+  expired: boolean;
+  /** After expiry fallback — expired time-boxed plans resolve to "free". */
+  effective_plan_id: string;
+  effective_name_ar: string | null;
 }
 
 /**
- * GET /api/v1/usage payload. ord is gated on daily + rolling-7-day weekly;
+ * GET /api/v1/usage payload. Points (1 USD = 100 points) are gated on a
+ * rolling 5-hour session + rolling-7-day weekly + rolling-30-day monthly;
  * ocr and web are gated on a rolling-30-day monthly window only.
+ * ``locked: true`` → no plan assigned; plan is null and all bars are null.
  */
 export interface UsageReport {
-  ord: { daily: UsageBar; weekly: UsageBar };
-  ocr: { monthly: UsageBar };
-  web: { monthly: UsageBar };
+  locked: boolean;
+  plan: UsagePlan | null;
+  points: {
+    session: UsageBar | null;
+    weekly: UsageBar | null;
+    monthly: UsageBar | null;
+  };
+  ocr: { monthly: UsageBar | null };
+  web: { monthly: UsageBar | null };
 }
 
 export interface SSEDone {

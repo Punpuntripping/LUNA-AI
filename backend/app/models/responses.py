@@ -24,7 +24,8 @@ class UserProfile(BaseModel):
     user_id: str
     email: str
     full_name_ar: Optional[str] = None
-    subscription_tier: Optional[str] = None
+    subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
+    plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
 
 
@@ -46,7 +47,8 @@ class UserProfileResponse(BaseModel):
     user_id: str
     email: str
     full_name_ar: Optional[str] = None
-    subscription_tier: Optional[str] = None
+    subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
+    plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
 
 

@@ -435,6 +435,14 @@ async def send_message_stream(
             needs_ord=True,
             needs_web=False,  # future skill
         )
+    except quota.PlanInactive as pi:
+        # No plan assigned (users.plan_id IS NULL) — account locked until the
+        # operator activates it in Supabase. Same SSE event as quota_exceeded
+        # so the existing banner renders the Arabic notice.
+        _logfire.info("message.plan_inactive", conversation_id=conversation_id)
+        _active_runs.pop(conversation_id, None)  # release slot — task never created
+        yield _sse_event("quota_exceeded", pi.to_event_payload())
+        return
     except quota.QuotaExceeded as qe:
         _logfire.info(
             "message.quota_exceeded",

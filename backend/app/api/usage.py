@@ -35,11 +35,15 @@ async def get_usage(
     Shape::
 
         {
-          "ord": {"daily":   {"used", "limit", "pct", "resets_at"},
-                  "weekly":  {...}},
-          "ocr": {"monthly": {...}},
-          "web": {"monthly": {...}}
+          "locked": false,
+          "plan":   {"plan_id", "name_ar", "expires_at", "expired", ...} | null,
+          "points": {"session": {...}, "weekly": {...}, "monthly": {...}},
+          "ocr":    {"monthly": {...}},
+          "web":    {"monthly": {...}}
         }
+
+    Points are the user-facing spend unit (1 USD = 100 points); ``limit: null``
+    = unlimited; ``locked: true`` = no plan assigned yet.
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     return await quota.current_usage_report(redis, supabase, user_id)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Info } from "lucide-react";
+import { Info, Lock } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -36,25 +36,52 @@ function formatReset(resetsAt: string, now: number): string {
   return "خلال أقل من دقيقة";
 }
 
+/** Points may be fractional (1$ = 100 pts) — show one decimal, trimmed. */
+function formatAmount(value: number, fractionDigits: number): string {
+  if (fractionDigits > 0) {
+    return Number(value.toFixed(fractionDigits)).toLocaleString("ar-EG", {
+      maximumFractionDigits: fractionDigits,
+    });
+  }
+  return Math.round(value).toLocaleString("ar-EG");
+}
+
 interface BarRowProps {
   label: string;
-  unit: string; // "USD" | "صفحة" | "بحثة"
-  bar: UsageBar;
+  unit: string; // "نقطة" | "صفحة" | "بحثة"
+  bar: UsageBar | null;
   now: number;
   fractionDigits?: number;
 }
 
 function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
-  const reset = formatReset(bar.resets_at, now);
-  const usedDisplay =
-    fractionDigits > 0
-      ? bar.used.toFixed(fractionDigits)
-      : Math.round(bar.used).toLocaleString("ar-EG");
-  const limitDisplay =
-    fractionDigits > 0
-      ? bar.limit.toFixed(fractionDigits)
-      : Math.round(bar.limit).toLocaleString("ar-EG");
+  if (!bar) return null;
 
+  // limit 0 → the feature is not included in the plan at all.
+  if (bar.limit === 0) {
+    return (
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <span className="text-xs text-muted-foreground">
+          غير متاحة في باقتك الحالية
+        </span>
+      </div>
+    );
+  }
+
+  // limit null → unlimited window: show consumption without a bar.
+  if (bar.limit === null) {
+    return (
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {formatAmount(bar.used, fractionDigits)} {unit} — بلا حد
+        </span>
+      </div>
+    );
+  }
+
+  const reset = formatReset(bar.resets_at, now);
   const tone =
     bar.pct >= 100
       ? "bg-destructive"
@@ -74,7 +101,8 @@ function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
           )}
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
-          {bar.pct}% — {usedDisplay} / {limitDisplay} {unit}
+          {bar.pct}% — {formatAmount(bar.used, fractionDigits)} /{" "}
+          {formatAmount(bar.limit, 0)} {unit}
         </span>
       </div>
       <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
@@ -118,25 +146,75 @@ export function UsageLimitsDialog({
         </p>
       );
     }
+
+    if (data.locked) {
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-4">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+              حسابك غير مفعّل بعد
+            </p>
+            <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">
+              تواصل معنا لتفعيل اشتراكك والبدء في استخدام لونا.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    const plan = data.plan;
+    const expiryText =
+      plan?.expires_at && !plan.expired
+        ? formatReset(plan.expires_at, now)
+        : "";
+
     return (
       <div className="flex flex-col gap-6">
+        {plan && (
+          <div className="flex flex-col gap-1 rounded-md border border-muted-foreground/20 bg-muted/40 p-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-sm font-semibold text-foreground">
+                الباقة: {plan.name_ar ?? plan.plan_id}
+              </span>
+              {expiryText && (
+                <span className="text-xs text-muted-foreground">
+                  ينتهي الاشتراك {expiryText}
+                </span>
+              )}
+            </div>
+            {plan.expired && (
+              <p className="text-xs text-destructive">
+                انتهى اشتراكك — تُطبَّق حدود الباقة المجانية حتى التجديد.
+              </p>
+            )}
+          </div>
+        )}
+
         <section className="flex flex-col gap-3">
           <h3 className="text-sm font-semibold text-foreground">
-            الاستهلاك العادي
+            نقاط الاستخدام
           </h3>
           <BarRow
-            label="الاستخدام اليومي"
-            unit="$"
-            bar={data.ord.daily}
+            label="الجلسة (آخر ٥ ساعات)"
+            unit="نقطة"
+            bar={data.points.session}
             now={now}
-            fractionDigits={4}
+            fractionDigits={1}
           />
           <BarRow
-            label="الاستخدام الأسبوعي"
-            unit="$"
-            bar={data.ord.weekly}
+            label="الأسبوعي (آخر ٧ أيام)"
+            unit="نقطة"
+            bar={data.points.weekly}
             now={now}
-            fractionDigits={4}
+            fractionDigits={1}
+          />
+          <BarRow
+            label="الشهري (آخر ٣٠ يوماً)"
+            unit="نقطة"
+            bar={data.points.monthly}
+            now={now}
+            fractionDigits={1}
           />
         </section>
 
@@ -167,8 +245,8 @@ export function UsageLimitsDialog({
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="leading-relaxed">
-            الحدّان اليومي والأسبوعي يخصّان الاستهلاك العادي للنموذج فقط.
-            استخراج النص والبحث على الإنترنت يُحتسبان شهريًا (آخر 30 يوماً).
+            حد الجلسة يُحسب على آخر ٥ ساعات ويتجدد تدريجيًا مع مرور الوقت.
+            الحدّان الأسبوعي والشهري يُحسبان على آخر ٧ و٣٠ يوماً.
           </p>
         </div>
       </div>
@@ -186,7 +264,7 @@ export function UsageLimitsDialog({
         <DialogHeader>
           <DialogTitle>حدود الاستخدام</DialogTitle>
           <DialogDescription>
-            متابعة استخدامك اليومي والأسبوعي والشهري.
+            باقتك الحالية واستهلاك النقاط حسب الجلسة والأسبوع والشهر.
           </DialogDescription>
         </DialogHeader>
         {body}
