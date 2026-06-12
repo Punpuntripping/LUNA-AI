@@ -6,11 +6,13 @@
 -- per-plan OCR + web monthly caps. NULL limit = unlimited; 0 = feature not
 -- included in the plan.
 --
+-- Paid-plan ratios: weekly = 4 × session, monthly = 4 × weekly.
+--
 --   plan                  monthly  weekly  session  ocr/30d  web/30d  duration
 --   free                  100      50      20       0        0        —
---   basic (أسبوعي)        —        200     —        40       40       7d
---   pro                   500      200     50       40       40       —
---   max                   1600     400     100      200      200      —
+--   basic (أسبوعي)        640      160     40       40       40       7d
+--   pro                   800      200     50       40       40       —
+--   max                   2400     600     150      200      200      —
 --   marketing_lawyer      —        150     —        40       40       7d
 --   marketing_individual  —        75      —        20       20       7d
 --   dev                   —        —       —        —        —        —
@@ -66,9 +68,9 @@ INSERT INTO public.plans
      ocr_pages_monthly, web_calls_monthly, duration_days)
 VALUES
     ('free',                 'المجانية',      'Free',                 100,  50,   20,   0,    0,    NULL),
-    ('basic',                'الأساسية',      'Basic',                NULL, 200,  NULL, 40,   40,   7),
-    ('pro',                  'الاحترافية',    'Pro',                  500,  200,  50,   40,   40,   NULL),
-    ('max',                  'القصوى',        'Max',                  1600, 400,  100,  200,  200,  NULL),
+    ('basic',                'الأساسية',      'Basic',                640,  160,  40,   40,   40,   7),
+    ('pro',                  'الاحترافية',    'Pro',                  800,  200,  50,   40,   40,   NULL),
+    ('max',                  'القصوى',        'Max',                  2400, 600,  150,  200,  200,  NULL),
     ('marketing_lawyer',     'عرض المحامين',  'Marketing — Lawyers',  NULL, 150,  NULL, 40,   40,   7),
     ('marketing_individual', 'عرض الأفراد',   'Marketing — Personal', NULL, 75,   NULL, 20,   20,   7),
     ('dev',                  'حساب مطوّر',    'Developer',            NULL, NULL, NULL, NULL, NULL, NULL)
