@@ -2,20 +2,36 @@
 
 Key layout:
 
-    quota:{user_id}:ocr:day:{YYYY-MM-DD}     integer  pages   TTL 31d
-    quota:{user_id}:ord:day:{YYYY-MM-DD}     float    USD     TTL 31d
-    quota:{user_id}:web:day:{YYYY-MM-DD}     integer  calls   TTL 31d
-    quota:{user_id}:ord:hour:{YYYY-MM-DDTHH} float    USD     TTL 6h
+    quota:{user_id}:ocr:day:{YYYY-MM-DD}   integer  pages   TTL 31d
+    quota:{user_id}:ord:day:{YYYY-MM-DD}   float    USD     TTL 31d   (monthly window)
+    quota:{user_id}:web:day:{YYYY-MM-DD}   integer  calls   TTL 31d
+    quota:{user_id}:ord:sess               float    USD     TTL 5h    (session accumulator)
+    quota:{user_id}:ord:wk:{anchor}        float    USD     TTL 8d    (weekly accumulator)
 
-Daily buckets back the weekly (7d) and monthly (30d) windows; the ord meter
-additionally writes an hourly bucket backing the rolling 5-hour *session*
-window. Every reported window is the sum of the appropriate trailing buckets.
-TTL is one unit longer than the longest window the bucket is read over so the
-rolling sum always sees a complete window.
+Three ord windows, each with a DIFFERENT shape:
 
-Redis is the hot path. On Redis miss (cold start, evicted key, brief outage)
-we rehydrate the missing day from the llm_calls ledger (the durable cost/pages
-source of truth) and write it back so the next read hits Redis again.
+  * session — a FIXED 5-hour window that starts when the user sends a message.
+    A single accumulator key created (value 0) by ``start_session`` on send via
+    SET NX with a 5h TTL; settle increments it WITHOUT extending the TTL, so the
+    window is anchored to the first message and resets exactly 5h later. After
+    expiry the next message opens a fresh session. NOT a rolling window.
+
+  * weekly — a FIXED calendar week resetting every Friday 13:00 Asia/Riyadh
+    (= 10:00 UTC), the SAME wall-clock for every user. One accumulator key per
+    week, named by the week's anchor instant; the key name changes each week so
+    the previous week's counter is simply abandoned (and TTLs out).
+
+  * monthly — rolling 30 UTC days, summed from the daily ord buckets (the only
+    window still using the day-bucket model). Enforced as a silent backstop;
+    NOT shown in the UI.
+
+OCR + web stay on the rolling-30-day day-bucket model.
+
+Redis is the hot path. On Redis miss (cold start, evicted key, brief outage) we
+rehydrate from the llm_calls ledger (the durable cost/pages source of truth) and
+write the value back so the next read hits Redis again. The session window is
+inherently Redis-stateful (its anchor IS the key's creation time); when Redis is
+down it degrades to a trailing-5h PG approximation rather than failing every send.
 """
 from __future__ import annotations
 
@@ -34,22 +50,26 @@ logger = logging.getLogger(__name__)
 Meter = Literal["ocr", "ord", "web"]
 METERS: tuple[Meter, ...] = ("ocr", "ord", "web")
 
-# Per-meter TTL — one day longer than the longest window we read it over.
-# All three meters are now gated on a 30-day monthly window → 31d TTL.
+# Per-meter day-bucket TTL — one day past the longest window read over the
+# buckets (30-day monthly/ocr/web) → 31d.
 _TTL_BY_METER: dict[str, int] = {
     "ord": 86_400 * 31,
     "ocr": 86_400 * 31,
     "web": 86_400 * 31,
 }
 
-# Rolling session window for the ord meter: hourly buckets, summed over the
-# trailing SESSION_WINDOW_HOURS. TTL one hour past the window.
-SESSION_WINDOW_HOURS = 5
-_HOUR_TTL = 3_600 * (SESSION_WINDOW_HOURS + 1)
+# Session: fixed window length, anchored at the first message.
+SESSION_TTL_S = 5 * 3_600          # 5 hours
+
+# Weekly: fixed reset every Friday 13:00 Asia/Riyadh = 10:00 UTC (Saudi has no
+# DST, so the offset is constant). Same wall-clock for all users.
+WEEKLY_RESET_WEEKDAY = 4           # Monday=0 … Friday=4
+WEEKLY_RESET_HOUR_UTC = 10         # 13:00 AST − 3h
+_WEEK_TTL_S = 86_400 * 8           # one day past the week
 
 
 def _ttl_for(meter: Meter) -> int:
-    return _TTL_BY_METER.get(meter, 86_400 * 8)
+    return _TTL_BY_METER.get(meter, 86_400 * 31)
 
 
 # ── time helpers ────────────────────────────────────────────────────────────
@@ -69,19 +89,22 @@ def next_utc_midnight() -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
-def current_hour_utc() -> datetime:
-    return datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+def current_week_anchor_utc(now: datetime | None = None) -> datetime:
+    """The most recent Friday-13:00-Riyadh (10:00 UTC) instant at or before
+    ``now`` — the start of the current weekly window."""
+    now = now or datetime.now(timezone.utc)
+    days_back = (now.weekday() - WEEKLY_RESET_WEEKDAY) % 7
+    anchor = (now - timedelta(days=days_back)).replace(
+        hour=WEEKLY_RESET_HOUR_UTC, minute=0, second=0, microsecond=0
+    )
+    if anchor > now:                       # today is Friday but before 10:00 UTC
+        anchor -= timedelta(days=7)
+    return anchor
 
 
-def last_n_hours_utc(n: int, now_hour: datetime | None = None) -> list[datetime]:
-    """Returns n hour marks ending at the current hour: [now, now-1h, ...]."""
-    base = now_hour or current_hour_utc()
-    return [base - timedelta(hours=i) for i in range(n)]
-
-
-def next_hour_top() -> datetime:
-    """Top of the next UTC hour — when the oldest session bucket rolls off."""
-    return current_hour_utc() + timedelta(hours=1)
+def next_week_anchor_utc(now: datetime | None = None) -> datetime:
+    """When the current weekly window resets (next Friday 10:00 UTC)."""
+    return current_week_anchor_utc(now) + timedelta(days=7)
 
 
 # ── key layout ──────────────────────────────────────────────────────────────
@@ -90,25 +113,28 @@ def day_key(meter: Meter, user_id: str, day: date) -> str:
     return f"quota:{user_id}:{meter}:day:{day.isoformat()}"
 
 
-def hour_key(user_id: str, hour: datetime) -> str:
-    return f"quota:{user_id}:ord:hour:{hour.strftime('%Y-%m-%dT%H')}"
+def session_key(user_id: str) -> str:
+    return f"quota:{user_id}:ord:sess"
+
+
+def week_key(user_id: str, anchor: datetime) -> str:
+    return f"quota:{user_id}:ord:wk:{anchor.strftime('%Y%m%dT%H')}"
 
 
 # ── window usage result ─────────────────────────────────────────────────────
 
 @dataclass
 class WindowUsage:
-    """Outcome of a usage_window read.
+    """Outcome of a window read.
 
-    ``total`` is the sum over days whose value is KNOWN (hot Redis bucket or a
-    successful PG rehydrate). ``missing_days`` is the count of days whose value
-    could not be determined — cold key AND the PG fallback failed. The gate
-    treats ``missing_days > 0`` as "unknowable → fail closed"; the UI report
-    renders ``total`` with an ``approximate`` flag and never raises.
+    ``total`` is the spend (USD) we could determine; ``missing_days`` counts
+    sub-windows whose value could not be determined (cold key AND PG fallback
+    failed). The gate treats ``missing_days > 0`` as "unknowable → fail closed";
+    the UI report renders ``total`` with an ``approximate`` flag and never raises.
     """
 
-    total: float        # sum over days whose value is KNOWN
-    missing_days: int   # days whose value could not be determined
+    total: float
+    missing_days: int
 
     @property
     def complete(self) -> bool:
@@ -123,16 +149,11 @@ def rehydrate_window_from_pg(
     meter: Meter,
     dates: list[date],
 ) -> dict[date, float] | None:
-    """ONE PG query for all requested days.
+    """ONE PG query for all requested days (day-bucket windows).
 
-    Returns ``{day: value}`` zero-filled for days with no rows, or ``None``
-    when the query failed (the caller treats ``None`` as "unknown" — never as
-    zero). Sync; callers wrap it in ``asyncio.to_thread``.
-
-    PG source of truth = the per-call llm_calls ledger (migration 058). Cost
-    (``cost_usd``) and OCR pages (``pages_used``) both live there now; agent_runs
-    no longer carries them. The ``web`` meter has no PG backing yet (future
-    skill) so it returns a known-zero dict rather than ``None``.
+    Returns ``{day: value}`` zero-filled, or ``None`` when the query failed (the
+    caller treats ``None`` as "unknown" — never as zero). Sync; callers wrap it
+    in ``asyncio.to_thread``.
     """
     if not dates:
         return {}
@@ -163,12 +184,35 @@ def rehydrate_window_from_pg(
             ).date()
         except Exception:
             continue
-        if day in out:                       # span may cover non-requested days
+        if day in out:
             out[day] += float(r.get(col) or 0)
     return out
 
 
-# ── counter reads ──────────────────────────────────────────────────────────
+def rehydrate_ord_since_pg(
+    supabase: SupabaseClient,
+    user_id: str,
+    start_ts: datetime,
+) -> float | None:
+    """Sum ord cost (USD) from the llm_calls ledger since ``start_ts``. Returns
+    the sum, or ``None`` on query failure ("unknown", never zero). Sync; callers
+    wrap it in ``asyncio.to_thread``. Backs the session + weekly accumulators on
+    a cold key or a Redis outage."""
+    try:
+        result = (
+            supabase.table("llm_calls")
+            .select("cost_usd")
+            .eq("user_id", user_id)
+            .gte("created_at", start_ts.isoformat())
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("quota.rehydrate_ord_since_pg(since=%s) failed: %s", start_ts, e)
+        return None
+    return sum(float(r.get("cost_usd") or 0) for r in (getattr(result, "data", None) or []))
+
+
+# ── day-bucket window read (monthly ord, ocr, web) ───────────────────────────
 
 async def usage_window(
     redis: AsyncRedis | None,
@@ -177,20 +221,11 @@ async def usage_window(
     meter: Meter,
     days: int,
 ) -> WindowUsage:
-    """Returns the meter's usage over the last ``days`` UTC days (including
-    today). ``days=1`` → today only; ``days=7`` → rolling weekly; ``days=30`` →
-    rolling monthly.
-
-    Redis is the source of truth; cold buckets are rehydrated from PG in ONE
-    batched query (off the event loop via ``to_thread``) and written back. If
-    Redis is unavailable the whole window is read from PG.
-
-    Returns a :class:`WindowUsage`: ``total`` over the days we could determine,
-    plus ``missing_days`` for cold days whose PG rehydrate ALSO failed — those
-    are reported as unknown (``None`` sentinel from the PG helper), never folded
-    in as zero. The gate fails closed on ``missing_days > 0``; the report renders
-    the partial ``total`` with an ``approximate`` flag.
-    """
+    """Meter usage over the last ``days`` UTC days (including today), summed from
+    daily buckets. ``days=30`` → rolling monthly. Redis hot path; cold buckets
+    rehydrated from PG in ONE batched query and written back. Cold key + PG
+    failure → reported as unknown (never folded in as zero) so the gate can fail
+    closed."""
     if days < 1:
         return WindowUsage(0.0, 0)
     dates = last_n_days_utc(days)
@@ -208,7 +243,7 @@ async def usage_window(
             rehydrate_window_from_pg, supabase, user_id, meter, dates
         )
         if per_day is None:
-            return WindowUsage(0.0, len(dates))          # ← sentinel, not 0
+            return WindowUsage(0.0, len(dates))
         return WindowUsage(float(sum(per_day.values())), 0)
 
     total, cold = 0.0, []
@@ -227,7 +262,6 @@ async def usage_window(
             [dates[i] for i in cold],
         )
         if per_day is None:
-            # Cold key + PG failure → these days are UNKNOWN, not zero.
             return WindowUsage(total, len(cold))
         ttl = _ttl_for(meter)
         for i in cold:
@@ -240,105 +274,106 @@ async def usage_window(
     return WindowUsage(total, 0)
 
 
-# ── session window (ord only, hourly buckets) ───────────────────────────────
+# ── session window (fixed 5h, anchored at first message) ─────────────────────
 
-def rehydrate_hours_from_pg(
-    supabase: SupabaseClient,
-    user_id: str,
-    hours: list[datetime],
-) -> dict[datetime, float] | None:
-    """ONE PG query for all requested hour buckets (ord cost only).
-
-    Returns ``{hour: usd}`` zero-filled, or ``None`` when the query failed
-    (callers treat ``None`` as "unknown", never as zero). Sync; callers wrap
-    in ``asyncio.to_thread``.
-    """
-    if not hours:
-        return {}
-    start = min(hours)
-    end = max(hours) + timedelta(hours=1)
+async def start_session(redis: AsyncRedis | None, user_id: str) -> None:
+    """Open a session if none is active: SET the accumulator to 0 with a 5h TTL,
+    but only if absent (NX). A no-op when a session is already running (preserves
+    its spend AND its remaining TTL) or when Redis is down. Called on every send
+    so the window is anchored to the user's first message."""
+    if redis is None:
+        return
     try:
-        result = (
-            supabase.table("llm_calls")
-            .select("created_at,cost_usd")
-            .eq("user_id", user_id)
-            .gte("created_at", start.isoformat())
-            .lt("created_at", end.isoformat())
-            .execute()
-        )
+        await redis.set(session_key(user_id), 0, ex=SESSION_TTL_S, nx=True)
     except Exception as e:
-        logger.warning(
-            "quota.rehydrate_hours_from_pg(%s..%s) failed: %s", start, end, e
-        )
-        return None
-    out = {h: 0.0 for h in hours}
-    for r in (getattr(result, "data", None) or []):
-        try:
-            ts = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
-        except Exception:
-            continue
-        h = ts.replace(minute=0, second=0, microsecond=0)
-        if h in out:
-            out[h] += float(r.get("cost_usd") or 0)
-    return out
+        logger.warning("quota.start_session failed: %s", e)
 
 
-async def session_window(
+async def session_usage(
     redis: AsyncRedis | None,
     supabase: SupabaseClient,
     user_id: str,
-    hours: int = SESSION_WINDOW_HOURS,
-) -> WindowUsage:
-    """Ord spend (USD) over the trailing ``hours`` hourly buckets — the
-    rolling session window. Same semantics as :func:`usage_window`: Redis hot
-    path, cold buckets rehydrated from llm_calls in one query, unknown hours
-    reported via ``missing_days`` (here: missing hours) so the gate can fail
-    closed."""
-    if hours < 1:
-        return WindowUsage(0.0, 0)
-    marks = last_n_hours_utc(hours)
-    keys = [hour_key(user_id, h) for h in marks]
+) -> tuple[WindowUsage, datetime | None]:
+    """Read the current session's spend and reset time. Returns
+    ``(WindowUsage, resets_at)`` where ``resets_at`` is when the active session
+    expires, or ``None`` when no session is active (read-only path, e.g. the UI
+    report). Pure read — does NOT open a session; call ``start_session`` first on
+    the send path. Redis down → trailing-5h PG approximation."""
+    now = datetime.now(timezone.utc)
+    key = session_key(user_id)
 
-    raw: list | None = None
     if redis is not None:
         try:
-            raw = await redis.mget(keys)
+            pipe = redis.pipeline()
+            pipe.get(key)
+            pipe.pttl(key)
+            val, pttl = await pipe.execute()
         except Exception as e:
-            logger.warning("quota.session_window MGET failed (PG fallback): %s", e)
-
-    if raw is None:  # Redis absent or MGET failed → whole window from PG
-        per_hour = await asyncio.to_thread(
-            rehydrate_hours_from_pg, supabase, user_id, marks
-        )
-        if per_hour is None:
-            return WindowUsage(0.0, len(marks))
-        return WindowUsage(float(sum(per_hour.values())), 0)
-
-    total, cold = 0.0, []
-    for i, v in enumerate(raw):
-        if v is None:
-            cold.append(i)
+            logger.warning("quota.session_usage read failed (PG fallback): %s", e)
         else:
-            try:
-                total += float(v)
-            except (TypeError, ValueError):
-                cold.append(i)
+            if val is not None:
+                try:
+                    total = float(val)
+                except (TypeError, ValueError):
+                    total = 0.0
+                resets = (
+                    now + timedelta(milliseconds=pttl)
+                    if isinstance(pttl, int) and pttl > 0
+                    else now + timedelta(seconds=SESSION_TTL_S)
+                )
+                return WindowUsage(total, 0), resets
+            return WindowUsage(0.0, 0), None      # no active session
 
-    if cold:
-        per_hour = await asyncio.to_thread(
-            rehydrate_hours_from_pg, supabase, user_id,
-            [marks[i] for i in cold],
-        )
-        if per_hour is None:
-            return WindowUsage(total, len(cold))
-        for i in cold:
-            val = per_hour.get(marks[i], 0.0)
-            total += val
-            try:
-                await redis.set(keys[i], val, ex=_HOUR_TTL)  # backfill, best-effort
-            except Exception:
-                pass
-    return WindowUsage(total, 0)
+    # Redis down/absent → approximate the current session as trailing-5h spend.
+    s = await asyncio.to_thread(
+        rehydrate_ord_since_pg, supabase, user_id, now - timedelta(seconds=SESSION_TTL_S)
+    )
+    if s is None:
+        return WindowUsage(0.0, 1), None          # unknowable → gate fails closed
+    return WindowUsage(float(s), 0), now + timedelta(seconds=SESSION_TTL_S)
+
+
+# ── weekly window (fixed calendar week, resets Friday 13:00 Riyadh) ──────────
+
+async def week_usage(
+    redis: AsyncRedis | None,
+    supabase: SupabaseClient,
+    user_id: str,
+    anchor: datetime,
+) -> WindowUsage:
+    """Spend (USD) in the current weekly window, from the per-week accumulator.
+    Cold key → rehydrate from PG (sum since the week anchor) and backfill. Cold
+    key + PG failure → unknown (gate fails closed)."""
+    key = week_key(user_id, anchor)
+
+    if redis is not None:
+        try:
+            v = await redis.get(key)
+        except Exception as e:
+            logger.warning("quota.week_usage GET failed (PG fallback): %s", e)
+        else:
+            if v is not None:
+                try:
+                    return WindowUsage(float(v), 0)
+                except (TypeError, ValueError):
+                    pass                          # corrupt value → rehydrate below
+            else:
+                s = await asyncio.to_thread(
+                    rehydrate_ord_since_pg, supabase, user_id, anchor
+                )
+                if s is None:
+                    return WindowUsage(0.0, 1)
+                try:
+                    await redis.set(key, s, ex=_WEEK_TTL_S)   # backfill, best-effort
+                except Exception:
+                    pass
+                return WindowUsage(float(s), 0)
+
+    # Redis down/absent → whole window from PG.
+    s = await asyncio.to_thread(rehydrate_ord_since_pg, supabase, user_id, anchor)
+    if s is None:
+        return WindowUsage(0.0, 1)
+    return WindowUsage(float(s), 0)
 
 
 # ── counter writes ──────────────────────────────────────────────────────────
@@ -349,9 +384,9 @@ async def incr_today(
     meter: Meter,
     amount: float | int,
 ) -> None:
-    """Fire-and-forget. Increments today's bucket by ``amount`` and refreshes
-    the TTL. No-op when Redis is unavailable — PG rehydration will catch up on
-    the next read."""
+    """Fire-and-forget. Increments today's day bucket by ``amount`` and refreshes
+    the TTL. Used by the ocr + web meters. No-op when Redis is unavailable — PG
+    rehydration catches up on the next read."""
     if redis is None or not amount:
         return
     key = day_key(meter, user_id, today_utc())
@@ -374,8 +409,7 @@ def incr_today_sync(
     meter: Meter,
     amount: float | int,
 ) -> None:
-    """Sync counterpart of incr_today. Used by the sync usage_sink flush
-    (settle) so it does not require bridging into an async context."""
+    """Sync counterpart of incr_today (used by the usage_sink flush)."""
     if redis is None or not amount:
         return
     key = day_key(meter, user_id, today_utc())
@@ -392,44 +426,51 @@ def incr_today_sync(
         logger.warning("quota.incr_today_sync(meter=%s) failed: %s", meter, e)
 
 
-async def incr_ord(
-    redis: AsyncRedis | None,
-    user_id: str,
-    cost_usd: float,
-) -> None:
-    """Ord settle: one pipeline incrementing today's daily bucket AND the
-    current hourly session bucket. Fire-and-forget; no-op without Redis."""
+def _ord_keys(user_id: str) -> tuple[str, str, str]:
+    """(daily, session, weekly) ord keys for the current instant."""
+    return (
+        day_key("ord", user_id, today_utc()),
+        session_key(user_id),
+        week_key(user_id, current_week_anchor_utc()),
+    )
+
+
+async def incr_ord(redis: AsyncRedis | None, user_id: str, cost_usd: float) -> None:
+    """Ord settle: increment the daily bucket (monthly window), the session
+    accumulator, and the weekly accumulator in one pipeline. The session TTL is
+    set NX so settle never extends the fixed 5h window; the daily + weekly TTLs
+    are refreshed (their keys are date/week-stamped, so refreshing is safe)."""
     if redis is None or not cost_usd:
         return
-    dkey = day_key("ord", user_id, today_utc())
-    hkey = hour_key(user_id, current_hour_utc())
+    amt = float(cost_usd)
+    dkey, skey, wkey = _ord_keys(user_id)
     try:
         pipe = redis.pipeline()
-        pipe.incrbyfloat(dkey, float(cost_usd))
+        pipe.incrbyfloat(dkey, amt)
         pipe.expire(dkey, _ttl_for("ord"))
-        pipe.incrbyfloat(hkey, float(cost_usd))
-        pipe.expire(hkey, _HOUR_TTL)
+        pipe.incrbyfloat(skey, amt)
+        pipe.expire(skey, SESSION_TTL_S, nx=True)
+        pipe.incrbyfloat(wkey, amt)
+        pipe.expire(wkey, _WEEK_TTL_S)
         await pipe.execute()
     except Exception as e:
         logger.warning("quota.incr_ord failed: %s", e)
 
 
-def incr_ord_sync(
-    redis: SyncRedis | None,
-    user_id: str,
-    cost_usd: float,
-) -> None:
+def incr_ord_sync(redis: SyncRedis | None, user_id: str, cost_usd: float) -> None:
     """Sync counterpart of incr_ord — used by the usage_sink flush."""
     if redis is None or not cost_usd:
         return
-    dkey = day_key("ord", user_id, today_utc())
-    hkey = hour_key(user_id, current_hour_utc())
+    amt = float(cost_usd)
+    dkey, skey, wkey = _ord_keys(user_id)
     try:
         pipe = redis.pipeline()
-        pipe.incrbyfloat(dkey, float(cost_usd))
+        pipe.incrbyfloat(dkey, amt)
         pipe.expire(dkey, _ttl_for("ord"))
-        pipe.incrbyfloat(hkey, float(cost_usd))
-        pipe.expire(hkey, _HOUR_TTL)
+        pipe.incrbyfloat(skey, amt)
+        pipe.expire(skey, SESSION_TTL_S, nx=True)
+        pipe.incrbyfloat(wkey, amt)
+        pipe.expire(wkey, _WEEK_TTL_S)
         pipe.execute()
     except Exception as e:
         logger.warning("quota.incr_ord_sync failed: %s", e)

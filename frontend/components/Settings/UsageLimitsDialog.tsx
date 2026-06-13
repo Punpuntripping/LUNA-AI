@@ -196,23 +196,16 @@ export function UsageLimitsDialog({
             نقاط الاستخدام
           </h3>
           <BarRow
-            label="الجلسة (آخر ٥ ساعات)"
+            label="الجلسة (٥ ساعات)"
             unit="نقطة"
             bar={data.points.session}
             now={now}
             fractionDigits={1}
           />
           <BarRow
-            label="الأسبوعي (آخر ٧ أيام)"
+            label="الأسبوعي (يتجدّد الجمعة)"
             unit="نقطة"
             bar={data.points.weekly}
-            now={now}
-            fractionDigits={1}
-          />
-          <BarRow
-            label="الشهري (آخر ٣٠ يوماً)"
-            unit="نقطة"
-            bar={data.points.monthly}
             now={now}
             fractionDigits={1}
           />
@@ -245,8 +238,8 @@ export function UsageLimitsDialog({
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="leading-relaxed">
-            حد الجلسة يُحسب على آخر ٥ ساعات ويتجدد تدريجيًا مع مرور الوقت.
-            الحدّان الأسبوعي والشهري يُحسبان على آخر ٧ و٣٠ يوماً.
+            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات. الحدّ الأسبوعي
+            يتجدّد كل جمعة الساعة ١ ظهرًا.
           </p>
         </div>
       </div>

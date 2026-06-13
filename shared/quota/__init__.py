@@ -42,7 +42,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from redis.asyncio import Redis as AsyncRedis
@@ -111,17 +111,23 @@ class PlanInactive(Exception):
 
 
 _AR_METER = {"ocr": "استخراج النص", "ord": "الاستخدام", "web": "البحث على الإنترنت"}
-_AR_PERIOD = {"weekly": "الأسبوعي", "monthly": "الشهري"}
+_AR_MONTHLY = {
+    "ord": "تم تجاوز الحدّ الشهري للاستخدام.",
+    "ocr": "تم تجاوز الحدّ الشهري لاستخراج النص.",
+    "web": "تم تجاوز الحدّ الشهري للبحث على الإنترنت.",
+}
 
 
 def _arabic_message(meter: Meter, period: Period, limit: float) -> str:
     if limit <= 0:
         return f"باقتك الحالية لا تشمل {_AR_METER.get(meter, meter)}."
     if period == "session":
-        return "تم تجاوز حد الجلسة (آخر ٥ ساعات). يتجدد الحد تدريجيًا مع مرور الوقت."
-    m = _AR_METER.get(meter, meter)
-    p = _AR_PERIOD.get(period, period)
-    return f"تم تجاوز الحد {p} لـ{m}."
+        return "تم تجاوز حدّ الجلسة. تبدأ جلسة جديدة بعد ٥ ساعات من بداية الجلسة الحالية."
+    if period == "weekly":
+        return "تم تجاوز الحدّ الأسبوعي. يتجدّد كل جمعة الساعة ١ ظهرًا."
+    if period == "monthly":
+        return _AR_MONTHLY.get(meter, _AR_MONTHLY["ord"])
+    return f"تم تجاوز حدّ {_AR_METER.get(meter, meter)}."
 
 
 # ── fail-closed "unknown" exception ──────────────────────────────────────────
@@ -305,9 +311,11 @@ async def check(
 
     Ord windows are checked shortest-first (session → weekly → monthly) so
     the user sees the soonest-to-recover limit. A NULL plan limit skips the
-    window entirely (unlimited — no Redis read). OCR + web checks are
-    *projected* (``current + est > limit``); the ord meter is checked against
-    current spend only — LLM token cost can't be forecast before the call.
+    window entirely (unlimited — no Redis read). The session window is OPENED
+    here on every send (``start_session``), anchoring its fixed 5h clock to the
+    first message. OCR + web checks are *projected* (``current + est > limit``);
+    the ord meter is checked against current spend only — LLM token cost can't
+    be forecast before the call.
 
     Policy: a partial sum that ALREADY exceeds the limit is a valid rejection;
     a partial sum under the limit but incomplete is unknowable → closed.
@@ -322,26 +330,37 @@ async def check(
         raise PlanInactive()
 
     if needs_ord:
-        checks: list[tuple[Period, int]] = []
+        # Session — fixed 5h window, opened (lazily) on this send.
         if lim.points_session is not None:
-            checks.append(("session", lim.points_session))
+            await redis_store.start_session(redis, user_id)
+            w, resets = await redis_store.session_usage(redis, supabase, user_id)
+            resets = resets or (datetime.now(timezone.utc) + timedelta(seconds=redis_store.SESSION_TTL_S))
+            used = w.total * POINTS_PER_USD
+            if used >= float(lim.points_session):
+                raise QuotaExceeded("ord", "session", used, float(lim.points_session), resets)
+            if not w.complete:
+                raise QuotaUnavailable("ord", "session")
+
+        # Weekly — fixed calendar week, resets Friday 13:00 Riyadh.
         if lim.points_weekly is not None:
-            checks.append(("weekly", lim.points_weekly))
+            anchor = redis_store.current_week_anchor_utc()
+            w = await redis_store.week_usage(redis, supabase, user_id, anchor)
+            resets = redis_store.next_week_anchor_utc()
+            used = w.total * POINTS_PER_USD
+            if used >= float(lim.points_weekly):
+                raise QuotaExceeded("ord", "weekly", used, float(lim.points_weekly), resets)
+            if not w.complete:
+                raise QuotaUnavailable("ord", "weekly")
+
+        # Monthly — rolling 30 days, silent backstop (not shown in the UI).
         if lim.points_monthly is not None:
-            checks.append(("monthly", lim.points_monthly))
-        for period, limit_points in checks:
-            if period == "session":
-                w = await redis_store.session_window(redis, supabase, user_id)
-                resets = redis_store.next_hour_top()
-            else:
-                days = 7 if period == "weekly" else 30
-                w = await redis_store.usage_window(redis, supabase, user_id, "ord", days)
-                resets = redis_store.next_utc_midnight()
-            used_points = w.total * POINTS_PER_USD
-            if used_points >= float(limit_points):    # known overage wins, even if partial
-                raise QuotaExceeded("ord", period, used_points, float(limit_points), resets)
-            if not w.complete:                        # under limit but unknowable → closed
-                raise QuotaUnavailable("ord", period)
+            w = await redis_store.usage_window(redis, supabase, user_id, "ord", 30)
+            resets = redis_store.next_utc_midnight()
+            used = w.total * POINTS_PER_USD
+            if used >= float(lim.points_monthly):
+                raise QuotaExceeded("ord", "monthly", used, float(lim.points_monthly), resets)
+            if not w.complete:
+                raise QuotaUnavailable("ord", "monthly")
 
     resets_midnight = redis_store.next_utc_midnight()
 
@@ -399,14 +418,15 @@ async def current_usage_report(
           "points": {                      # ord meter, in points (1$ = 100)
             "session": {"used", "limit"|null, "pct", "resets_at", "approximate"},
             "weekly":  {...},
-            "monthly": {...}
+            "monthly": null                # enforced as a backstop, never shown
           },
           "ocr": {"monthly": {...}},       # pages
           "web": {"monthly": {...}}        # calls
         }
 
     ``limit: null`` = unlimited. ``locked: true`` → plan is null and the
-    bars are omitted (frontend shows the activation notice).
+    bars are omitted (frontend shows the activation notice). The monthly points
+    window is enforced by the gate but intentionally not surfaced here.
     """
     lim = await asyncio.to_thread(_user_limits, supabase, user_id)
 
@@ -420,11 +440,13 @@ async def current_usage_report(
         }
 
     resets_midnight = redis_store.next_utc_midnight().isoformat()
-    resets_hour = redis_store.next_hour_top().isoformat()
+    week_resets = redis_store.next_week_anchor_utc().isoformat()
 
-    ord_s = await redis_store.session_window(redis, supabase, user_id)
-    ord_w = await redis_store.usage_window(redis, supabase, user_id, "ord", 7)
-    ord_m = await redis_store.usage_window(redis, supabase, user_id, "ord", 30)
+    # Read-only — does NOT open a session (only the send path does that).
+    ord_s, sess_resets = await redis_store.session_usage(redis, supabase, user_id)
+    ord_w = await redis_store.week_usage(
+        redis, supabase, user_id, redis_store.current_week_anchor_utc()
+    )
     ocr_m = await redis_store.usage_window(redis, supabase, user_id, "ocr", 30)
     web_m = await redis_store.usage_window(redis, supabase, user_id, "web", 30)
 
@@ -458,9 +480,11 @@ async def current_usage_report(
             "effective_name_ar": lim.effective_name_ar,
         },
         "points": {
-            "session": _points_bar(ord_s, lim.points_session, resets_hour),
-            "weekly":  _points_bar(ord_w, lim.points_weekly, resets_midnight),
-            "monthly": _points_bar(ord_m, lim.points_monthly, resets_midnight),
+            "session": _points_bar(
+                ord_s, lim.points_session, sess_resets.isoformat() if sess_resets else ""
+            ),
+            "weekly":  _points_bar(ord_w, lim.points_weekly, week_resets),
+            "monthly": None,   # enforced by the gate; not shown per product decision
         },
         "ocr": {"monthly": _count_bar(ocr_m, lim.ocr_pages_monthly)},
         "web": {"monthly": _count_bar(web_m, lim.web_calls_monthly)},
