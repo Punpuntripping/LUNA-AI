@@ -48,6 +48,11 @@ export default function ChatEmptyPage() {
         <h1 className="text-2xl font-bold text-foreground mb-2">
           مرحبا بك في ريحان
         </h1>
+        <div className="mb-4">
+          <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+            إطلاق تجريبي
+          </span>
+        </div>
         <p className="text-muted-foreground text-sm mb-8 max-w-md">
           المساعد القانوني الذكي المتخصص في الأنظمة السعودية. اطرح أسئلتك
           القانونية واحصل على إجابات دقيقة مدعومة بالمصادر.

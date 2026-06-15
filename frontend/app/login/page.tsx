@@ -22,6 +22,12 @@ export default function LoginPage() {
           <p className="text-muted-foreground">
             المساعد القانوني الذكي
           </p>
+          <div className="flex justify-center pt-1">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3.5 py-1 text-xs font-semibold text-primary-foreground shadow-sm">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary-foreground/80" />
+              إطلاق تجريبي
+            </span>
+          </div>
         </div>
 
         {/* Login Form */}

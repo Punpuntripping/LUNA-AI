@@ -35,9 +35,14 @@ export function SidebarHeader() {
             {initial}
           </div>
           <div className="flex flex-col min-w-0 leading-tight">
-            <span className="text-sm font-semibold text-sidebar-foreground truncate">
-              ريحان
-            </span>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-sm font-semibold text-sidebar-foreground truncate">
+                ريحان
+              </span>
+              <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium leading-none text-primary">
+                إطلاق تجريبي
+              </span>
+            </div>
             <span className="text-xs text-muted-foreground truncate">
               القانونية
             </span>
