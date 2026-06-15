@@ -169,7 +169,8 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
 #
 # EXPERIMENT (2026-05-28): every former tier_1 qwen3.6-plus slot is temporarily
 # flipped to deepseek-v4-flash (tier_2, deepseek-primary) to A/B the cheap/fast
-# model across the pipeline. ONLY the router is left on tier_1.
+# model across the pipeline. The router (flipped 2026-06-14) now runs on the same
+# _FLASH policy too — nothing is left on tier_1.
 # Rerankers stay tier_2 qwen3.5-flash (never were 3.6-plus). Revert via git to
 # restore the all-tier_1 baseline.
 _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
@@ -179,16 +180,6 @@ _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
 _FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
 # Flash head with mid-effort reasoning — used by the artifact_editor slot.
 _FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium")
-
-# Router uses a custom 4-cell chain: qwen3.7-plus → qwen3.6-plus (fallback) →
-# deepseek-v4-pro → or-deepseek-v4-flash. Pre-built because the standard
-# resolve_chain 3-cell structure has no slot for a same-family version fallback.
-_ROUTER_MODEL = FallbackModel(
-    create_model("qwen3.7-plus"),
-    create_model("qwen3.6-plus"),
-    create_model("deepseek-v4-pro"),
-    create_model("or-deepseek-v4-flash"),
-)
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
@@ -203,7 +194,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # list[PlannerDecision | DeferredToolRequests]; same shape as the
     # deep_search planner. See .claude/plans/writer_planner.md.
     "writer_planner_decider":     _FLASH,
-    "router":                     _ROUTER_MODEL,  # qwen3.7-plus → qwen3.6-plus → deepseek-v4-pro → or-deepseek-v4-flash
+    "router":                     _FLASH,  # deepseek-v4-flash → qwen3.5-flash → or-deepseek-v4-flash
     "reg_search_expander":        _FLASH,
     "reg_search_reranker":        ModelPolicy("tier_2"),
     "reg_search_aggregator":      _FLASH,
@@ -307,9 +298,10 @@ def get_agent_model(
 #   reranker       → AGENT_MODELS["*_search_reranker"]      = ModelPolicy("tier_2") (qwen3.5-flash)
 #   aggregator     → AGENT_MODELS["*_search_aggregator"]    = _FLASH (deepseek-v4-flash)
 #   sector_picker  → AGENT_MODELS["sector_picker"]          = deepseek primary tier_2
-# Unknown roles default to the router slot's primary (qwen3.6-plus). When a
-# FallbackModel cell other than the primary fires, the inner_usage entry's
-# ``model`` field (when set by the caller) overrides this lookup.
+# Unknown roles fall back to _DEFAULT_MODEL (a conservative tier_1 estimate; the
+# router no longer runs on it — it's _FLASH now). When a FallbackModel cell other
+# than the primary fires, the inner_usage entry's ``model`` field (when set by the
+# caller) overrides this lookup.
 _SUBAGENT_MODEL: dict[str, str] = {
     "expander":      "deepseek-v4-flash",
     "reranker":      "qwen3.5-flash",
