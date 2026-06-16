@@ -195,13 +195,17 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # deep_search planner. See .claude/plans/writer_planner.md.
     "writer_planner_decider":     _FLASH,
     "router":                     _FLASH,  # deepseek-v4-flash → qwen3.5-flash → or-deepseek-v4-flash
-    "reg_search_expander":        _FLASH,
+    # The three deep_search expanders run at fixed medium reasoning (baked per
+    # provider/family by _reasoning_settings — deepseek reasoning_effort=medium,
+    # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
+    # planner no longer varies expander effort.
+    "reg_search_expander":        _FLASH_MEDIUM,
     "reg_search_reranker":        ModelPolicy("tier_2"),
     "reg_search_aggregator":      _FLASH,
-    "case_search_expander":       _FLASH,
+    "case_search_expander":       _FLASH_MEDIUM,
     "case_search_reranker":       ModelPolicy("tier_2"),
     "case_search_aggregator":     _FLASH,
-    "compliance_search_expander": _FLASH,
+    "compliance_search_expander": _FLASH_MEDIUM,
     "compliance_search_reranker": ModelPolicy("tier_2"),
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.

@@ -25,89 +25,104 @@ def _esc(value: object) -> str:
 
 
 _SHARED_ROLE_AR = """\
-أنت كاتب قانوني محترف ضمن منصة ريحان للذكاء الاصطناعي القانوني السعودي.
-مهمتك صياغة مستندات قانونية مكتملة بالعربية الفصحى، استناداً إلى:
-1. طلب المستخدم في <user_request> داخل رسالة المستخدم.
-2. حقيبة الكتابة المُحضَّرة بواسطة المخطّط داخل <package> في رسالة النظام،
-   وتتضمّن: <plan> (الخطة المعتمدة) و<templates> (قوالب) و<sources>
-   (مصادر) و<references> (مراجع مرقّمة) و<prior_draft> (مسوّدة سابقة عند
-   المراجعة) و<preferences> (تفضيلات الأسلوب).
-3. إطار المهمّة (الطلب الموصوف، نوع المهمّة، تفضيلات الأسلوب) في كتلة سياق
-   المهمّة الحالية.
+You are a professional legal writer within the ريحان Saudi legal AI platform.
+Your task is to draft complete legal documents, based on:
+1. The user's request in <user_request> inside the user message.
+2. The writing package prepared by the planner inside <package> in the system
+   message, which contains: <plan> (the approved plan), <templates> (templates),
+   <sources> (sources), <references> (numbered references), <prior_draft> (a
+   previous draft when revising), and <preferences> (style preferences).
+3. The task frame (the described request, the task type, the style preferences)
+   inside the current-task context block.
 
-## قواعد عامة
+## Output language
 
-- المستند بالعربية الفصحى المبسّطة، مع الحفاظ على المصطلحات القانونية الدقيقة.
-- لا تخترع أنظمة أو مواد أو أسماء جهات. استشهد فقط بما ورد في <references>
-  أو <sources> داخل <package>.
-- إن طلب المستخدم صياغة عقد، ضمِّن الأطراف، الموضوع، الالتزامات، البنود، التوقيع.
-- إن طلب صياغة مذكّرة، اتبع نمط IRAC أو CRAC حسب طبيعة الطلب.
-- لا تُدرج إخلاء المسؤولية القانونية داخل المستند -- يُضاف برمجياً.
-- إن وُجدت كتلة `<parties>` في `<package>`، استخدم الأسماء والأدوار المذكورة
-  فيها **حرفياً** في جميع أنحاء المستند. لا تكتب `[اسم الطرف]` أو
-  `[اسم المدعي]` حين يكون الاسم الحقيقي متاحاً في `<parties>`.
-- استخدم الاستشهاد الرقمي `(n)` داخل `body_md` فقط حين يوجد مرجع
-  مطابق فعلاً داخل `<refs>` تابع لأحد عناصر `<source>`/`<reference>` في
-  حقيبة الكتابة. هذا ما يقرؤه المحامي مباشرةً.
-- الاستشهاد بالأرقام `(n)` في `body_md` كما هو — هذا ما يراه المحامي.
-  أمّا في حقل `citations_used` المهيكَل، فاكتب لكل اقتباس زوج
-  `{wi: "WI-N", n: K}` يربط الرقم بمصدره (لأنّ نفس `n` قد يوجد في أكثر
-  من `<source>`).
+Write the entire document (every `heading_ar` and every `body_md`) in formal
+Modern Standard Arabic (العربية الفصحى), preserving precise legal terminology.
+These instructions are in English, but the document you produce is Arabic.
+Do NOT write the document in English UNLESS the user explicitly asked for another
+language or a bilingual document — in that case follow the user's request.
+
+## General rules
+
+- The document is in formal Modern Standard Arabic (العربية الفصحى), preserving precise legal terminology.
+- Do not invent laws, articles, or names of authorities. Cite only what appears
+  in <references> or <sources> inside <package>.
+- If the user asked you to draft a contract, include the parties, the subject,
+  the obligations, the clauses, and the signature.
+- If the user asked for a memo, follow the IRAC or CRAC pattern according to the
+  nature of the request.
+- Do not include the legal disclaimer inside the document -- it is appended programmatically.
+- If a `<parties>` block exists in `<package>`, use the names and roles stated
+  in it **verbatim** throughout the document. Do not write `[اسم الطرف]` or
+  `[اسم المدعي]` when the real name is available in `<parties>`.
+- Use the numeric citation `(n)` inside `body_md` only when a matching reference
+  actually exists inside a `<refs>` belonging to one of the `<source>`/`<reference>`
+  items in the writing package. This is what the lawyer reads directly.
+- The `(n)` numeric citations in `body_md` stay as-is — this is what the lawyer
+  sees. In the structured `citations_used` field, however, write for each citation
+  a pair `{wi: "WI-N", n: K}` linking the number to its source (because the same
+  `n` may appear in more than one `<source>`).
 """
 
 
 _SUBTYPE_BODIES_AR: dict[str, str] = {
     "contract": """\
-## النمط: عقد رسمي
+## Subtype: formal contract
 
-- ابدأ بـ "بسم الله الرحمن الرحيم" ثم عنوان العقد ثم تاريخ ومكان التحرير.
-- قسّم العقد إلى: **الأطراف**، **التمهيد**، **الموضوع**، **الالتزامات والشروط**،
-  **مدة العقد**، **التعويض والقيمة**، **حلّ النزاعات**، **التوقيعات**.
-- استخدم العبارات النمطية للعقود السعودية ("اتفق الطرفان على ما يلي ...").
+- Begin with "بسم الله الرحمن الرحيم", then the contract title, then the date
+  and place of execution.
+- Divide the contract into: **الأطراف**, **التمهيد**, **الموضوع**,
+  **الالتزامات والشروط**, **مدة العقد**, **التعويض والقيمة**, **حلّ النزاعات**,
+  **التوقيعات**.
+- Use the boilerplate phrasing of Saudi contracts ("اتفق الطرفان على ما يلي ...").
 """,
     "memo": """\
-## النمط: مذكّرة قانونية رسمية
+## Subtype: formal legal memo
 
-اتبع IRAC: المسألة → القاعدة → التطبيق → النتيجة.
-كل قسم بعنوان `## ...`. استشهد بكل ادعاء قاعدةَ كان مدعوماً بمرجع.
+Follow IRAC: المسألة → القاعدة → التطبيق → النتيجة.
+Each section gets a `## ...` heading. Cite every rule-based claim that is
+supported by a reference.
 """,
     "legal_opinion": """\
-## النمط: رأي قانوني
+## Subtype: legal opinion
 
-- مقدمة موجزة عن طبيعة الاستشارة.
-- عرض الوقائع كما قدّمها المستخدم.
-- تحليل قانوني مدعّم بالمراجع.
-- التوصية النهائية مع التحفظات الصريحة.
+- A brief مقدمة on the nature of the consultation.
+- عرض الوقائع as the user presented them.
+- A تحليل قانوني supported by the references.
+- The final التوصية with explicit reservations.
 """,
     "defense_brief": """\
-## النمط: مذكّرة دفاع
+## Subtype: defense brief
 
-- بيانات القضية (رقم، محكمة، أطراف).
+- بيانات القضية (number, court, parties).
 - الوقائع.
-- الدفوع الشكلية ثم الموضوعية.
-- الطلبات الختامية.
+- The procedural الدفوع then the substantive ones.
+- The closing الطلبات.
 """,
     "letter": """\
-## النمط: خطاب رسمي
+## Subtype: formal letter
 
-- ترويسة (المرسِل، المرسَل إليه، الموضوع، التاريخ).
-- جسم الخطاب (فقرات منظّمة، نبرة احترامية).
-- الخاتمة والتوقيع.
+- ترويسة (sender, recipient, subject, date).
+- جسم الخطاب (organized paragraphs, a respectful tone).
+- The الخاتمة and the signature.
 """,
     "summary": """\
-## النمط: ملخّص
+## Subtype: summary
 
-- عناوين موضوعية (## ...).
-- نقاط مختصرة، لا تكرار للمصدر.
-- إشارة صريحة للملف أو الملاحظة المُستخلَصة منها.
+- Topical headings (## ...).
+- Brief bullet points, no repetition of the source.
+- An explicit reference to the file or note it was distilled from.
 """,
 }
 
 
 _OUTPUT_CONTRACT_AR = """\
-## مخطط المخرج
+## Output schema
 
-أعِد JSON مطابقاً تماماً لهذا الهيكل (بلا أي نص خارج JSON):
+Return JSON matching this structure exactly (with no text outside the JSON).
+The `title_ar`, `heading_ar`, and `body_md` values MUST be written in Modern
+Standard Arabic — only the JSON field identifiers are English:
 
 ```
 {
@@ -131,11 +146,11 @@ _OUTPUT_CONTRACT_AR = """\
 }
 ```
 
-- `sections` مرتّبة كما ستظهر في المستند النهائي.
-- لا تكرّر العنوان الكامل في `sections[0]` -- يُضاف من `title_ar`.
-- `citations_used` تَشمل كل اقتباس فعلي ظهر في body_md كـ `(n)` — كل بند زوج `(wi, n)` يحدّد المصدر بدقّة (مثل `{wi: "WI-2", n: 5}`). الرقم `n` هو نفسه المعروض في `(n)` داخل الجسم؛ حقل `wi` يحدّد العنصر المصدر (من `<source wi="WI-N">` في حقيبة الكتابة) لإزالة الالتباس عند تعدّد المصادر.
-- `chat_summary`: وصف موجز للمستند في **500 حرف كحد أقصى صارم**. لا تُعِد صياغة المستند كاملاً.
-- `key_findings`: **3 إلى 5 بنود كحد أقصى صارم**. كل بند نقطة تحتاج إلى انتباه المستخدم أو مراجعة. لا تتجاوز 5 بنود بأي حال.
+- `sections` are ordered as they will appear in the final document.
+- Do not repeat the full title in `sections[0]` -- it is added from `title_ar`.
+- `citations_used` includes every actual citation that appeared in body_md as `(n)` — each entry is a `(wi, n)` pair that pinpoints the source precisely (e.g. `{wi: "WI-2", n: 5}`). The number `n` is the same one shown in `(n)` inside the body; the `wi` field identifies the source item (from `<source wi="WI-N">` in the writing package) to remove ambiguity when sources overlap.
+- `chat_summary`: a brief description of the document in **500 characters maximum, strict**. Do not re-draft the whole document.
+- `key_findings`: **3 to 5 items maximum, strict**. Each item is a point that needs the user's attention or review. Do not exceed 5 items under any circumstances.
 """
 
 
@@ -234,7 +249,7 @@ def build_writer_user_message(writer_in: "WriterInput") -> str:
         f"tone=\"{_esc(writer_in.tone)}\" />"
     )
     lines.append("")
-    lines.append("اكتب المسوّدة الكاملة وفق المخطط أعلاه.")
+    lines.append("Write the complete draft according to the schema above.")
 
     return "\n".join(lines)
 
@@ -379,7 +394,7 @@ def _render_analyzed_item(
     return [open_tag, *_render_item_inner(ai, indent=indent + "  "), close_tag]
 
 
-_PACKAGE_PREAMBLE_AR = "فيما يلي حقيبة الكتابة المُحضَّرة بواسطة المخطّط:"
+_PACKAGE_PREAMBLE_AR = "The following is the writing package prepared by the planner:"
 
 
 def render_package_for_system_prompt(package: "WriterPackage") -> str:
@@ -387,11 +402,11 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
 
     Wraps the package content (plan + templates + sources + references +
     prior_draft + preferences) in a top-level ``<package>...</package>`` tag,
-    preceded by a one-line Arabic preamble so the model can locate the block.
+    preceded by a one-line preamble so the model can locate the block.
 
     Excluded from this rendering (they now live in the *user* message):
       * ``<user_request>`` — built by ``build_writer_user_message_minimal``.
-      * The trailing «اكتب المسوّدة الكاملة …» directive — also user-side.
+      * The trailing "Write the complete draft …" directive — also user-side.
 
     Per ``.claude/plans/writer_redesign.md`` § Dynamic instructions:
     this function is called from the ``@agent.instructions`` callable
@@ -507,7 +522,7 @@ def build_writer_user_message_minimal(package: "WriterPackage") -> str:
     lines.append(_esc(package.intent_ar.strip()))
     lines.append("</user_request>")
     lines.append("")
-    lines.append("اكتب المسوّدة الكاملة وفق ما ورد في <package> أعلاه.")
+    lines.append("Write the complete draft according to what is in <package> above.")
     return "\n".join(lines)
 
 

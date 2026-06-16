@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 # instead of calling the output tool. Salvage the JSON rather than retrying the
 # whole (long) drafting prompt. See agents/utils/structured_output.py.
 _WRITER_RETRY_MSG = (
-    "أعد المخرَج ككائن JSON صالح وفق المخطط (title_ar, sections, citations_used, "
-    "confidence, notes_ar, chat_summary, key_findings) فقط — دون أي نص أو وسم "
-    "<thinking> خارج JSON."
+    "Return the output as a valid JSON object matching the schema (title_ar, "
+    "sections, citations_used, confidence, notes_ar, chat_summary, key_findings) "
+    "only — with no text and no <thinking> tag outside the JSON."
 )
 
 

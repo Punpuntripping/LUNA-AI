@@ -30,6 +30,11 @@ AUTH_WINDOW_SECONDS = 60         # per minute
 MESSAGE_SEND_RATE_LIMIT = 20     # requests
 MESSAGE_SEND_WINDOW_SECONDS = 60 # per minute
 
+# Stricter limits for activation-code redemption (burst control; the hard
+# brute-force wall is the per-user 5-fails/24h counter in api/plans.py).
+REDEEM_RATE_LIMIT = 5            # requests
+REDEEM_WINDOW_SECONDS = 60       # per minute
+
 # Paths that are exempt from rate limiting
 EXEMPT_PATHS = {"/api/v1/health", "/docs", "/redoc", "/openapi.json"}
 
@@ -62,6 +67,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ):
             max_requests = MESSAGE_SEND_RATE_LIMIT
             window = MESSAGE_SEND_WINDOW_SECONDS
+        elif (
+            request.url.path.endswith("/plans/redeem")
+            and request.method == "POST"
+        ):
+            max_requests = REDEEM_RATE_LIMIT
+            window = REDEEM_WINDOW_SECONDS
         else:
             max_requests = DEFAULT_RATE_LIMIT
             window = DEFAULT_WINDOW_SECONDS

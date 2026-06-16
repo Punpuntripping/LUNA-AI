@@ -14,7 +14,7 @@ from pydantic_ai.usage import UsageLimits
 from agents.utils.agent_models import get_agent_model, AGENT_MODELS, resolve_chain
 from agents.model_registry import MODEL_REGISTRY
 
-from .prompts import get_expander_prompt, EXPANDER_PROMPT_THINKING
+from .prompts import get_expander_prompt
 from .models import ExpanderOutput
 
 logger = logging.getLogger(__name__)
@@ -38,16 +38,17 @@ def get_expander_model_id() -> str:
 
 def create_expander_agent(
     prompt_key: str = "prompt_1",
-    thinking_effort: str | None = None,
     model_override: str | None = None,
 ) -> Agent[None, ExpanderOutput]:
     """Create QueryExpander agent with the selected prompt variant.
 
+    Reasoning effort is fixed at medium by the ``reg_search_expander`` slot
+    policy (``_FLASH_MEDIUM``), baked per provider/family by the tier system
+    (``agent_models._reasoning_settings``). No agent-level reasoning settings
+    are attached here.
+
     Args:
         prompt_key: Key into EXPANDER_PROMPTS dict (e.g. "prompt_1").
-        thinking_effort: Reasoning effort level — "low", "medium", "high", "none",
-            or None to use the per-prompt default from EXPANDER_PROMPT_THINKING.
-            Pass "none" to disable reasoning entirely.
         model_override: Tier override token (``qwen``/``deepseek``/``alibaba``/
             ``openrouter``) applied to the slot's policy; tier stays fixed.
 
@@ -55,19 +56,6 @@ def create_expander_agent(
         Configured Agent with ExpanderOutput result type.
     """
     system_prompt = get_expander_prompt(prompt_key)
-
-    # Resolve thinking effort: explicit override → per-prompt default
-    if thinking_effort is None:
-        thinking_effort = EXPANDER_PROMPT_THINKING.get(prompt_key)
-
-    model_settings: dict = {}
-    if thinking_effort and thinking_effort != "none":
-        model_settings = {
-            "extra_body": {
-                "enable_thinking": True,
-            },
-        }
-
     model = get_agent_model("reg_search_expander", model_override)
 
     return Agent(
@@ -76,5 +64,4 @@ def create_expander_agent(
         output_type=ExpanderOutput,
         instructions=system_prompt,
         retries=2,
-        model_settings=model_settings if model_settings else None,
     )

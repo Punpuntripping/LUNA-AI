@@ -303,7 +303,6 @@ class LoopState:
     # static ``sectors_override``. A resolved value of ``None`` from the
     # future means "picker said no filter" → run unfiltered.
     sectors_future: "asyncio.Future[list[str] | None] | None" = None
-    thinking_effort: str | None = None
     model_override: str | None = None
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     round_count: int = 0

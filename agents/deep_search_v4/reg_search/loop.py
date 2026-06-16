@@ -97,10 +97,10 @@ class ExpanderNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             state.focus_instruction[:80],
         )
 
-        # Create expander agent with selected prompt variant and thinking effort
+        # Create expander agent with selected prompt variant. Reasoning effort
+        # is fixed at medium by the slot policy (see expander.py).
         expander = create_expander_agent(
             prompt_key=state.expander_prompt_key,
-            thinking_effort=state.thinking_effort,
             model_override=state.model_override,
         )
 
@@ -112,15 +112,14 @@ class ExpanderNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             context_blocks=state.context_blocks,
         )
 
-        # Always build dynamic instructions — picks up planner caps and
-        # weak-axes guidance when in round 2+. Sectors are applied at search
-        # time directly from state.sectors_override (the LLM is no longer
-        # told about them).
+        # Always build dynamic instructions — weak-axes guidance when in
+        # round 2+. Sectors are applied at search time directly from
+        # state.sectors_override (the LLM is no longer told about them). The
+        # sub-query count is no longer capped — the expander decides it.
         weak_axes = state.weak_axes if state.round_count > 1 else []
         dynamic_instructions = build_expander_dynamic_instructions(
             weak_axes,
             state.round_count,
-            max_queries=state.expander_max_queries,
         )
         if dynamic_instructions:
             user_message = f"{user_message}\n\n{dynamic_instructions}"
@@ -543,7 +542,6 @@ async def run_reg_search(
     deps: RegSearchDeps,
     expander_prompt_key: str = "prompt_1",
     aggregator_prompt_key: str = "prompt_1",
-    thinking_effort: str | None = None,
     model_override: str | None = None,
     unfold_mode: str = "precise",
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
@@ -565,7 +563,6 @@ async def run_reg_search(
         deps: RegSearchDeps with supabase, embedding_fn, etc.
         expander_prompt_key: Which expander prompt variant to use.
         aggregator_prompt_key: Which aggregator prompt variant to use.
-        thinking_effort: Reasoning effort for expander — "low"/"medium"/"high"/"none"/None.
         model_override: Registry key to override both expander and aggregator model.
         unfold_mode: "precise" (compact) or "detailed" (full content).
         concurrency: Max concurrent search pipelines (default 3).
@@ -598,7 +595,6 @@ async def run_reg_search(
         user_context=user_context,
         expander_prompt_key=expander_prompt_key,
         aggregator_prompt_key=aggregator_prompt_key,
-        thinking_effort=thinking_effort,
         model_override=model_override,
         unfold_mode=unfold_mode,
         concurrency=concurrency,
@@ -683,7 +679,6 @@ async def run_reg_search(
         error=error_msg,
         query_id=deps._query_id,
         models=_resolve_models(state.model_override),
-        thinking_effort=thinking_effort,
         step_timings=dict(state.step_timings),
     )
 

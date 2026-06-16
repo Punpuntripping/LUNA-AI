@@ -24,7 +24,6 @@ from agents.model_registry import MODEL_REGISTRY
 
 from .prompts import (
     DEFAULT_EXPANDER_PROMPT,
-    EXPANDER_PROMPT_THINKING,
     get_expander_prompt,
     is_sectioned_prompt,
 )
@@ -60,7 +59,6 @@ def resolve_output_type(prompt_key: str) -> type:
 
 def create_expander_agent(
     prompt_key: str = DEFAULT_EXPANDER_PROMPT,
-    thinking_effort: str | None = None,
     model_override: str | None = None,
 ) -> Agent[None, Any]:
     """Create QueryExpander agent with the selected prompt variant.
@@ -69,10 +67,13 @@ def create_expander_agent(
     - Legacy prompts → ExpanderOutput
     - Sectioned prompts (prompt_3+) → ExpanderOutputV2
 
+    Reasoning effort is fixed at medium by the ``case_search_expander`` slot
+    policy (``_FLASH_MEDIUM``), baked per provider/family by the tier system
+    (``agent_models._reasoning_settings``). No agent-level reasoning settings
+    are attached here.
+
     Args:
         prompt_key: Key into EXPANDER_PROMPTS dict (e.g. "prompt_2", "prompt_3").
-        thinking_effort: Reasoning effort level -- "low", "medium", "high", "none",
-            or None to use the per-prompt default from EXPANDER_PROMPT_THINKING.
         model_override: Tier override token (``qwen``/``deepseek``/``alibaba``/
             ``openrouter``) applied to the slot's policy; tier stays fixed.
 
@@ -82,17 +83,6 @@ def create_expander_agent(
     system_prompt = get_expander_prompt(prompt_key)
     output_type = resolve_output_type(prompt_key)
 
-    if thinking_effort is None:
-        thinking_effort = EXPANDER_PROMPT_THINKING.get(prompt_key)
-
-    model_settings: dict = {}
-    if thinking_effort and thinking_effort != "none":
-        model_settings = {
-            "extra_body": {
-                "enable_thinking": True,
-            },
-        }
-
     model = get_agent_model("case_search_expander", model_override)
 
     return Agent(
@@ -101,5 +91,4 @@ def create_expander_agent(
         output_type=output_type,
         instructions=system_prompt,
         retries=2,
-        model_settings=model_settings if model_settings else None,
     )

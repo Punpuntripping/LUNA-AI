@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 # a retry that re-sends the whole (large) synthesis prompt. See
 # agents/utils/structured_output.py.
 _AGG_RETRY_MSG = (
-    "أعد المخرَج ككائن JSON صالح وفق المخطط (synthesis_md, used_refs, gaps, "
-    "confidence) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+    "Return the output as a single valid JSON object conforming to the schema "
+    "(synthesis_md, used_refs, gaps, confidence) only — with no text or "
+    "<thinking> tag outside the JSON. The `synthesis_md` value must be in Arabic."
 )
 
 

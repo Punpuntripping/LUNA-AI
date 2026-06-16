@@ -286,7 +286,12 @@ def create_app() -> FastAPI:
     )
 
     # ------------------------------------------
-    # Middleware (order matters — top = outermost)
+    # Middleware — order matters. Starlette's add_middleware() is LIFO: the
+    # LAST middleware added is the OUTERMOST (first to see each request). The
+    # `@app.middleware("http")` decorators below are added first, so they end
+    # up innermost. Effective request order (outer → inner) is:
+    #   CORS → Logfire/OTEL spans → rate limit → security headers → request-id
+    # CORS is added LAST on purpose — see the note at its add_middleware call.
     # ------------------------------------------
 
     # 1. Request-ID middleware (custom, added as raw ASGI middleware)
@@ -309,7 +314,26 @@ def create_app() -> FastAPI:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
 
-    # 3. CORS middleware
+    # 3. Rate limiting middleware
+    from backend.app.middleware.rate_limit import RateLimitMiddleware
+    application.add_middleware(RateLimitMiddleware)
+
+    # 4. Logfire FastAPI instrumentation — adds request spans + tags
+    instrument_fastapi_app(application)
+
+    # 5. CORS middleware — added LAST so it is the OUTERMOST middleware.
+    #     CORS MUST wrap the Logfire/OpenTelemetry instrumentation so it can
+    #     answer OPTIONS preflights itself and short-circuit BEFORE the request
+    #     reaches the OTEL ASGI layer. That layer computes a span name via
+    #     _get_route_details(scope) at the very start of every request, and on a
+    #     preflight to any *included-router* path (auth, conversations, …) it
+    #     hits an `_IncludedRouter` object that has no `.path` attribute and
+    #     raises AttributeError → bare 500. A 500 preflight makes the browser
+    #     block the real request, so every cross-origin login/API call fails
+    #     (only /health — a route defined directly on the app, with a real
+    #     `.path` — survived). Outermost CORS means preflights never reach the
+    #     instrumentation, so this is robust to the OTEL/FastAPI version skew
+    #     that introduced the crash.
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,
@@ -318,13 +342,6 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
         expose_headers=["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
     )
-
-    # 4. Rate limiting middleware
-    from backend.app.middleware.rate_limit import RateLimitMiddleware
-    application.add_middleware(RateLimitMiddleware)
-
-    # 5. Logfire FastAPI instrumentation — adds request spans + tags
-    instrument_fastapi_app(application)
 
     # ------------------------------------------
     # Exception handlers
@@ -473,6 +490,15 @@ def create_app() -> FastAPI:
         usage_router,
         prefix="/api/v1",
         tags=["usage"],
+    )
+
+    # Plans — activation-code redemption (Settings → تفعيل برمز).
+    from backend.app.api.plans import router as plans_router
+
+    application.include_router(
+        plans_router,
+        prefix="/api/v1",
+        tags=["plans"],
     )
 
     # Templates router (قوالبي — per-user markdown templates)

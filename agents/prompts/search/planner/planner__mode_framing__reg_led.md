@@ -1,0 +1,1 @@
+Mode framing — regulatory-led: start with the rule. The first sentence names the controlling law/article and its answer to the question. Then one constraint or exception if present. If the search included a procedural track, give it a single sentence after the rule, not before.

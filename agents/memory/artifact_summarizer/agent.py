@@ -39,8 +39,8 @@ def _text_as_summary(text: str) -> ArtifactSummaryLLMOutput:
     text = (text or "").strip()
     if len(text) < 40:
         raise ModelRetry(
-            "الملخّص قصير جداً. أعد كتابته بصيغة ماركداون عربية كاملة "
-            "تصف ما يغطّيه العنصر وما لا يغطّيه."
+            "The summary is too short. Rewrite it in full Arabic Markdown "
+            "describing what the item covers and what it does not cover."
         )
     return ArtifactSummaryLLMOutput(summary_md=text)
 

@@ -374,9 +374,10 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
     body = "\n".join(lines)
     if "〔[نظام]" in body:
         legend = (
-            "  (ملاحظة: وسمٌ مثل 〔[نظام] … (agent_family=writing) … WI-N〕 في بداية "
-            "ردّ المساعد يعني أنّ متخصصاً أنتج ذلك الردّ وأنشأ العنصر WI-N — استعمله "
-            "لمعرفة أيّ مُخرَجٍ سابقٍ يقصده المستخدم عند طلب التعديل أو المتابعة.)"
+            "  (Note: a tag like 〔[نظام] … (agent_family=writing) … WI-N〕 at the "
+            "start of an assistant reply means a specialist produced that reply and "
+            "created item WI-N — use it to know which prior output the user is "
+            "referring to when asking for an edit or a follow-up.)"
         )
         body = legend + "\n" + body
     return body

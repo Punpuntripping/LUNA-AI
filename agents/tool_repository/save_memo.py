@@ -241,26 +241,29 @@ def register_save_memo(agent: Agent) -> None:
         ctx: RunContext[HasMemoContext],
         title: str,
     ) -> str:
-        """احفظ رسالة المستخدم الأساسية (طلب جوهري أو قالب طويل) كعنصر مثبّت.
+        """Save the user's core message (a substantive request or a long template) as a pinned item.
 
-        استخدم هذه الأداة **فقط** عندما يشارك المستخدم صراحةً طلباً أساسياً أو
-        قالباً يتضمن تفاصيل لا يصح فقدانها — مثل لصق مسودة أو نموذج كامل. الغرض
-        منها حماية هذا المحتوى من الضياع عند ضغط المحادثة لاحقاً.
+        Use this tool **only** when the user explicitly shares a core request or a
+        template containing details that must not be lost — such as pasting a draft
+        or a full form. Its purpose is to protect this content from being lost when
+        the conversation is compacted later.
 
-        الأداة تحفظ نص رسالة المستخدم **كما هو حرفياً** (لا تُعِد كتابته)، وتُرفق
-        العنصر تلقائياً بأي مهمة في هذا الرد. لا تستدعها للرسائل القصيرة العادية
-        ولا للأسئلة البسيطة. يمكنك بعدها أن تذكر للمستخدم بإيجاز أنك ثبّتّ طلبه.
+        The tool saves the user's message text **verbatim** (do not re-type it), and
+        the item is automatically attached to any task in this reply. Do not call it
+        for ordinary short messages or simple questions. Afterward you may briefly
+        mention to the user that you pinned their request.
 
         Args:
-            title: عنوان عربي قصير مشتق من محتوى الرسالة (وصف الموضوع لا الفعل)،
-                يُستخدم كعنوان بطاقة العنصر في مساحة العمل.
+            title: A short Arabic title derived from the message content (describe the
+                topic, not the action), used as the title of the item's card in the
+                workspace.
 
         Returns:
-            تأكيد عربي قصير يتضمن رمز العنصر الجديد (WI-N)، أو إشعاراً بأن
-            الرسالة محفوظة مسبقاً.
+            A short Arabic confirmation including the new item's alias (WI-N), or a
+            notice that the message is already saved.
 
         Raises:
-            ModelRetry: عند غياب رسالة لحفظها أو فشل الحفظ — صحّح ثم أعد المحاولة.
+            ModelRetry: when there is no message to save or the save fails — fix and retry.
         """
         raw = (getattr(ctx.deps, "user_message", "") or "").strip()
         if not raw:
@@ -282,7 +285,7 @@ def register_save_memo(agent: Agent) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             raise ModelRetry(
-                "تعذّر حفظ الرسالة الأساسية بسبب خطأ في قاعدة البيانات. أعد المحاولة."
+                "Failed to save the core message due to a database error. Retry."
             ) from exc
 
         if result.skipped:

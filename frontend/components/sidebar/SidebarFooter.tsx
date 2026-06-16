@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Gauge, LogOut, Settings, User } from "lucide-react";
+import { Gauge, KeyRound, LogOut, Settings, User } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,13 @@ import {
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { DetailLevelToggle } from "@/components/Settings/DetailLevelToggle";
 import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
+import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
   const [usageOpen, setUsageOpen] = useState(false);
+  const [redeemOpen, setRedeemOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -89,10 +91,23 @@ export function SidebarFooter() {
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setRedeemOpen(true)}
+                  data-testid="sidebar-settings-redeem-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <KeyRound className="h-4 w-4" />
+                    تفعيل برمز
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
               </div>
             </PopoverContent>
           </Popover>
           <UsageLimitsDialog open={usageOpen} onOpenChange={setUsageOpen} />
+          <RedeemCodeDialog open={redeemOpen} onOpenChange={setRedeemOpen} />
           <ThemeToggle />
           <Tooltip>
             <TooltipTrigger asChild>

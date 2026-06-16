@@ -34,6 +34,7 @@ import type {
   TemplateListResponse,
   TemplateIngestResponse,
   UsageReport,
+  RedeemCodeResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -563,6 +564,15 @@ export const preferencesApi = {
 
 export const usageApi = {
   get: () => api.get<UsageReport>("/usage"),
+};
+
+// -----------------------------------------------
+// Plans API — activation-code redemption
+// -----------------------------------------------
+
+export const plansApi = {
+  redeem: (code: string) =>
+    api.post<RedeemCodeResponse>("/plans/redeem", { code }),
 };
 
 export const templatesApi = {

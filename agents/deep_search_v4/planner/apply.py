@@ -1,14 +1,14 @@
 """Mode profiles + the pure ``build_retrieval_config`` function.
 
-The planner LLM emits a tiny :class:`~.models.PlannerDecision` (mode + support +
-sectors). Every concrete number — expander caps, result budgets, aggregator
-prompt key — is derived **here**, in code, from three tables. The LLM never
-sees a number.
+The planner LLM emits a tiny :class:`~.models.PlannerDecision` (mode + support).
+Every concrete number — result budgets, aggregator prompt key — is derived
+**here**, in code, from these tables. The LLM never sees a number, and the
+planner no longer caps the expander's sub-query count.
 
 The result-budget model (full spec: ``planning/MODE_PROFILES.md``):
 
-- Each executor carries an ``expander_max_queries`` ceiling and a
-  ``result_budget`` (target total results) — **not** a fixed reranker keep.
+- Each executor carries a ``result_budget`` (target total results) — **not** a
+  fixed reranker keep, and **not** a cap on the expander's sub-query count.
 - The per-sub-query reranker keep is computed *inside each executor's loop* at
   runtime: ``ceil(result_budget / max(N, MIN_EXPANDER_DIVISOR))`` where ``N`` is
   the expander's actual emitted query count. ``build_retrieval_config`` does not
@@ -36,8 +36,8 @@ MIN_EXPANDER_DIVISOR = 3
 # ---------------------------------------------------------------------------
 
 ROLE_PROFILES: dict[str, dict[str, int]] = {
-    "base":    {"expander_max_queries": 10, "result_budget": 60},
-    "support": {"expander_max_queries": 6,  "result_budget": 30},
+    "base":    {"result_budget": 60},
+    "support": {"result_budget": 30},
 }
 
 
@@ -47,9 +47,9 @@ ROLE_PROFILES: dict[str, dict[str, int]] = {
 # ---------------------------------------------------------------------------
 
 FULL_PROFILE: dict[str, dict[str, int]] = {
-    "reg":        {"expander_max_queries": 7, "result_budget": 40},
-    "cases":      {"expander_max_queries": 4, "result_budget": 25},
-    "compliance": {"expander_max_queries": 3, "result_budget": 15},
+    "reg":        {"result_budget": 40},
+    "cases":      {"result_budget": 25},
+    "compliance": {"result_budget": 15},
 }
 
 
@@ -84,9 +84,8 @@ class RetrievalConfig:
     Plain dataclass, no heavy imports — stays in the pure layer. ``run_retrieval``
     reads it to assemble the internal ``FullLoopDeps``.
 
-    ``expander_max_queries`` and ``result_budget`` are keyed by executor name
-    (``"reg"`` / ``"compliance"`` / ``"cases"``) and contain an entry only for
-    *included* executors.
+    ``result_budget`` is keyed by executor name (``"reg"`` / ``"compliance"`` /
+    ``"cases"``) and contains an entry only for *included* executors.
 
     Phase C: ``context_labels`` echoes ``PlannerDecision.context_labels`` here
     as a pass-through. The field is plumbed in Wave 2 but not yet consumed
@@ -97,7 +96,6 @@ class RetrievalConfig:
     include_reg: bool
     include_compliance: bool
     include_cases: bool
-    expander_max_queries: dict[str, int]
     result_budget: dict[str, int]
     aggregator_prompt_key: str
     # ``sectors_override`` retained as a field for CLI / monitor smoke paths
@@ -120,38 +118,30 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
     Pure function — no I/O, no side effects. See MODE_PROFILES.md §6.
 
     - Modes 1–3: the ``base`` executor always runs; the ``support`` executor
-      runs iff ``decision.support`` is True. Caps come from ``ROLE_PROFILES``
+      runs iff ``decision.support`` is True. Budgets come from ``ROLE_PROFILES``
       by role.
     - ``full``: all three executors run as peers; ``decision.support`` is
-      ignored (structural — 'full' has no support role). Caps come from
+      ignored (structural — 'full' has no support role). Budgets come from
       ``FULL_PROFILE`` per executor.
     """
     profile = MODE_PROFILES[decision.mode]
-    expander_max_queries: dict[str, int] = {}
     result_budget: dict[str, int] = {}
 
     if decision.mode == "full":
         for executor in profile["executors"]:
-            caps = FULL_PROFILE[executor]
-            expander_max_queries[executor] = caps["expander_max_queries"]
-            result_budget[executor] = caps["result_budget"]
+            result_budget[executor] = FULL_PROFILE[executor]["result_budget"]
     else:
         base = profile["base"]
-        base_caps = ROLE_PROFILES["base"]
-        expander_max_queries[base] = base_caps["expander_max_queries"]
-        result_budget[base] = base_caps["result_budget"]
+        result_budget[base] = ROLE_PROFILES["base"]["result_budget"]
         if decision.support:
             support = profile["support"]
-            support_caps = ROLE_PROFILES["support"]
-            expander_max_queries[support] = support_caps["expander_max_queries"]
-            result_budget[support] = support_caps["result_budget"]
+            result_budget[support] = ROLE_PROFILES["support"]["result_budget"]
 
-    included = set(expander_max_queries)
+    included = set(result_budget)
     return RetrievalConfig(
         include_reg="reg" in included,
         include_compliance="compliance" in included,
         include_cases="cases" in included,
-        expander_max_queries=expander_max_queries,
         result_budget=result_budget,
         aggregator_prompt_key=profile["aggregator_prompt_key"],
         sectors_override=None,  # Wave B — picker future drives the filter

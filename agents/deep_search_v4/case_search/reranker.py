@@ -38,9 +38,10 @@ RERANKER_LIMITS = UsageLimits(
 # salvager rescues a schema-complete JSON without a (large) retry; a genuine
 # omission still raises ModelRetry. See agents/utils/structured_output.py.
 _CASE_RERANKER_RETRY_MSG = (
-    "أعد المخرَج ككائن JSON صالح وفق المخطط (sufficient, query_axes, "
+    "Return the output as a valid JSON object conforming to the schema "
+    "(sufficient, query_axes, "
     "decisions[position, action, relevance, reasoning, satisfies_axes], "
-    "summary_note) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+    "summary_note) only — with no text or <thinking> tag outside the JSON."
 )
 
 

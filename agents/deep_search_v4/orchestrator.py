@@ -127,7 +127,6 @@ class FullLoopDeps:
     planner_model: str | None = None
     # Planner-driven runtime knobs. ``run_retrieval`` populates these from the
     # mode-derived ``RetrievalConfig``.
-    expander_max_queries: dict[str, int] | None = None
     # Per-executor result budget ("reg" / "compliance" / "cases"). When set, the
     # executor loop derives reranker_max_keep dynamically from it; when None the
     # fixed ``*_max_keep`` caps apply. See MODE_PROFILES.md §1.
@@ -314,10 +313,6 @@ async def _run_reg_phase(
         )
         reg_deps._log_id = log_id
 
-        reg_expander_cap: int | None = None
-        if deps.expander_max_queries:
-            reg_expander_cap = deps.expander_max_queries.get("reg")
-
         reg_budget: int | None = None
         if deps.result_budget:
             reg_budget = deps.result_budget.get("reg")
@@ -332,7 +327,6 @@ async def _run_reg_phase(
             skip_aggregator=True,
             reranker_max_keep=deps.reg_max_keep,
             result_budget=reg_budget,
-            expander_max_queries=reg_expander_cap,
             sectors_override=(
                 list(deps.sectors_override) if deps.sectors_override else None
             ),
@@ -502,15 +496,10 @@ async def _run_compliance_phase(
         result_budget=comp_budget,
     )
 
-    comp_expander_cap: int | None = None
-    if deps.expander_max_queries:
-        comp_expander_cap = deps.expander_max_queries.get("compliance")
-
     state = ComplianceLoopState(
         focus_instruction=query,
         user_context="",
         log_id=log_id,
-        expander_max_queries=comp_expander_cap,
         sectors_override=(
             list(deps.sectors_override) if deps.sectors_override else None
         ),
@@ -651,10 +640,6 @@ async def _run_case_phase(
         except Exception:
             pass
 
-    case_expander_cap: int | None = None
-    if deps.expander_max_queries:
-        case_expander_cap = deps.expander_max_queries.get("cases")
-
     t0 = _time.perf_counter()
     try:
         result = await run_case_search(
@@ -664,7 +649,6 @@ async def _run_case_phase(
             expander_prompt_key=deps.case_expander_prompt_key,
             model_override=deps.model_override,
             concurrency=deps.concurrency,
-            expander_max_queries=case_expander_cap,
             sectors_override=deps.sectors_override,
             sectors_future=deps.sectors_future,
             score_threshold=deps.case_score_threshold,
@@ -1073,7 +1057,6 @@ async def run_retrieval(
         include_compliance=config.include_compliance,
         include_cases=config.include_cases,
         detail_level=deps.detail_level,
-        expander_max_queries=dict(config.expander_max_queries),
         result_budget=dict(config.result_budget),
         # Wave A: ``sectors_override`` retained for non-picker callers (CLI,
         # monitor, smoke tests that build FullLoopDeps directly). When the

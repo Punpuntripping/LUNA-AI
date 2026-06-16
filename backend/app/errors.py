@@ -63,6 +63,11 @@ class ErrorCode(str, Enum):
     # User
     USER_NOT_FOUND = "USER_NOT_FOUND"
 
+    # Plan activation codes (redemption)
+    CODE_INVALID = "CODE_INVALID"                # unknown / used / expired code
+    PLAN_ALREADY_ACTIVE = "PLAN_ALREADY_ACTIVE"  # active paid plan can't be overwritten
+    REDEEM_LOCKED = "REDEEM_LOCKED"              # too many failed attempts (24h wall)
+
     # Validation
     VALIDATION_ERROR = "VALIDATION_ERROR"
     NO_UPDATE_DATA = "NO_UPDATE_DATA"

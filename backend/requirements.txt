@@ -2,7 +2,17 @@
 # Install: pip install -r backend/requirements.txt
 
 # Web framework
-fastapi>=0.115.0,<1.0.0
+# HARD PIN — do not change without re-testing OTEL request instrumentation.
+# FastAPI 0.137.0 (Jun 2026) changed include_router() to store routers as
+# `_IncludedRouter` wrapper objects in app.routes. opentelemetry-instrumentation
+# -fastapi/-asgi (and prometheus-fastapi-instrumentator, etc.) read `route.path`
+# unconditionally when naming a span, so on an OPTIONS preflight to any included
+# router they raise `AttributeError: '_IncludedRouter' object has no attribute
+# 'path'` → bare 500 with no CORS headers → browsers block every cross-origin
+# login/API call (prod outage 2026-06-15). 0.136.1 is the last-good version.
+# Bump only once the OTEL instrumentation ships a `_IncludedRouter` fix
+# (track open-telemetry/opentelemetry-python-contrib).
+fastapi==0.136.1
 uvicorn[standard]>=0.32.0,<1.0.0
 
 # Pydantic + settings

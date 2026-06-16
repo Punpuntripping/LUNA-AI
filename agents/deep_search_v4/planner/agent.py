@@ -239,8 +239,8 @@ def create_planner_responder(
             resolved = _resolve_wi_alias(value.referenced_wi, ctx.deps.wi_alias_map or {})
             if resolved is None:
                 raise ModelRetry(
-                    f"العنصر {value.referenced_wi} غير موجود في هذه المحادثة. "
-                    f"استخدم رمزاً من <prior_searches> (WI-1, WI-2, ...)."
+                    f"Item {value.referenced_wi} does not exist in this conversation. "
+                    f"Use an alias from <prior_searches> (WI-1, WI-2, ...)."
                 )
             value.referenced_item_id = resolved
         else:

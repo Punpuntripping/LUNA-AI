@@ -1,0 +1,1 @@
+Re-emit the output as a single valid JSON object matching the schema (sufficient, query_axes, decisions[label, action, direction, relevance, reasoning, satisfies_axes], summary_note) only — no prose or <thinking> tag outside the JSON.

@@ -73,9 +73,10 @@ _NEIGHBOUR_RRF_DECAY = 0.5
 # salvager rescues a schema-complete JSON without a (large) retry; a genuine
 # omission still raises ModelRetry. See agents/utils/structured_output.py.
 _REG_RERANKER_RETRY_MSG = (
-    "أعد المخرَج ككائن JSON صالح وفق المخطط (sufficient, query_axes, "
-    "decisions[label, action, direction, relevance, reasoning, satisfies_axes], "
-    "summary_note) فقط — دون أي نص أو وسم <thinking> خارج JSON."
+    "Re-emit the output as a single valid JSON object matching the schema "
+    "(sufficient, query_axes, decisions[label, action, direction, relevance, "
+    "reasoning, satisfies_axes], summary_note) only — no prose or <thinking> tag "
+    "outside the JSON."
 )
 
 

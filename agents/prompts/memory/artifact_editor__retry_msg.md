@@ -1,0 +1,1 @@
+Re-issue the final output as a valid JSON object with the EditorResult schema only: {"status": "edited|no_change|failed", "change_summary": "...", "assumptions": null, "edits_applied": 0} — with no text outside the object.

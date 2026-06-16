@@ -184,6 +184,24 @@ class IngestTemplateRequest(BaseModel):
     item_id: str = Field(..., min_length=1, max_length=100)
 
 
+# ── Plan activation codes ──────────────────────────────
+
+class RedeemCodeRequest(BaseModel):
+    """POST /api/v1/plans/redeem
+
+    The user-typed activation code. Normalization (uppercase, strip separators)
+    happens server-side in the redeem RPC, so we accept dashes/spaces/lowercase
+    here. min_length is lenient (3) — anything shorter is obviously not a code
+    and is rejected before it reaches the brute-force counter.
+    """
+    code: str = Field(..., min_length=3, max_length=64)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def check_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 class UploadInitRequest(BaseModel):

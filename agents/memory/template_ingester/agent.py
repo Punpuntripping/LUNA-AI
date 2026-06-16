@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Retry hint surfaced when the salvager can't recover a valid object — steers
 # deepseek-flash back to a clean two-field JSON emission.
 _INGEST_RETRY_MSG = (
-    "أعد المخرَج ككائن JSON صالح وفق المخطط (title, content_md) فقط — دون أي "
-    "نصّ أو وسم <thinking> خارج JSON."
+    "Return the output as a valid JSON object per the schema (title, "
+    "content_md) only — with no text or <thinking> tag outside the JSON."
 )
 
 

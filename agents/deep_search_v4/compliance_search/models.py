@@ -190,8 +190,6 @@ class LoopState:
     # ``all_results_flat`` is still built (dedup pool) for logging, the
     # no-results guard, and round summaries.
     per_query_rows: list[dict] = field(default_factory=list)
-    # Planner-supplied caps (cap defaults match orchestrator FullLoopDeps).
-    expander_max_queries: int | None = None
     # Planner-supplied sector list. Forwarded by SearchNode to
     # search_compliance_raw -> hybrid_search_services' ``filter_sectors``
     # array-overlap filter. NOTE: the planner currently canonicalizes

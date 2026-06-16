@@ -22,16 +22,16 @@ if TYPE_CHECKING:
 
 
 _DETAIL_LABELS: dict[str, str] = {
-    "low": "مختصر (منخفض)",
-    "standard": "معتدل (قياسي)",
-    "medium": "معتدل (قياسي)",
-    "high": "مفصّل (عالٍ)",
+    "low": "brief (low)",
+    "standard": "moderate (standard)",
+    "medium": "moderate (standard)",
+    "high": "detailed (high)",
 }
 
 _TONE_LABELS: dict[str, str] = {
-    "formal": "رسمي",
-    "neutral": "محايد",
-    "concise": "موجز",
+    "formal": "formal",
+    "neutral": "neutral",
+    "concise": "concise",
 }
 
 
@@ -64,22 +64,22 @@ def format_writer_context(
     """
     lines: list[str] = []
 
-    lines.append("## سياق المهمة الحالية")
+    lines.append("## Current task context")
     lines.append("")
 
     # --- Query description ---------------------------------------------
-    lines.append("### الطلب")
-    lines.append((describe_query or "").strip() or "(لا يوجد طلب)")
+    lines.append("### The request")
+    lines.append((describe_query or "").strip() or "(no request)")
     lines.append("")
 
     # --- Attached items -------------------------------------------------
     if attached_items:
         if revising_item_id:
             lines.append(
-                "### المستند المُراجَع (يرجى قراءته بعناية قبل إعادة الصياغة)"
+                "### The document under revision (please read it carefully before re-drafting)"
             )
         else:
-            lines.append("### العناصر المرفقة للسياق")
+            lines.append("### Items attached for context")
         lines.append("")
 
         for idx, item in enumerate(attached_items):
@@ -93,7 +93,7 @@ def format_writer_context(
 
             # Mark revision target explicitly
             if revising_item_id and idx == 0:
-                lines.append(f"### [مسوّدة للمراجعة] {title}")
+                lines.append(f"### [draft for revision] {title}")
             else:
                 lines.append(f"### {title}")
 
@@ -102,16 +102,16 @@ def format_writer_context(
             lines.append(content_md.strip())
             lines.append("")
     else:
-        lines.append("### العناصر المرفقة للسياق")
-        lines.append("(لا توجد عناصر مرفقة)")
+        lines.append("### Items attached for context")
+        lines.append("(no attached items)")
         lines.append("")
 
     # --- Preferences ----------------------------------------------------
     detail_label = _DETAIL_LABELS.get(detail_level, detail_level)
     tone_label = _TONE_LABELS.get(tone, tone)
-    lines.append("### تفضيلات الأسلوب")
-    lines.append(f"- مستوى التفصيل: {detail_label}")
-    lines.append(f"- النبرة: {tone_label}")
+    lines.append("### Style preferences")
+    lines.append(f"- Detail level: {detail_label}")
+    lines.append(f"- Tone: {tone_label}")
     lines.append("")
 
     return "\n".join(lines)
@@ -149,35 +149,35 @@ def format_writer_envelope(
     """
     lines: list[str] = []
 
-    lines.append("## سياق المهمة الحالية")
+    lines.append("## Current task context")
     lines.append("")
 
     # --- Query description ---------------------------------------------
-    lines.append("### الطلب")
-    lines.append((describe_query or "").strip() or "(لا يوجد طلب)")
+    lines.append("### The request")
+    lines.append((describe_query or "").strip() or "(no request)")
     lines.append("")
 
     # --- Task label ----------------------------------------------------
     if (task_label or "").strip():
-        lines.append("### وصف المهمّة")
+        lines.append("### Task description")
         lines.append(task_label.strip())
         lines.append("")
 
     # --- Revision marker ----------------------------------------------
     if revising_item_id:
-        lines.append("### وضع المراجعة")
+        lines.append("### Revision mode")
         lines.append(
-            "هذه المهمّة مراجعة لمسوّدة سابقة — راجع <prior_draft> داخل <package> "
-            "بعناية قبل إعادة الصياغة."
+            "This task is a revision of a previous draft — review <prior_draft> "
+            "inside <package> carefully before re-drafting."
         )
         lines.append("")
 
     # --- Preferences ---------------------------------------------------
     detail_label = _DETAIL_LABELS.get(detail_level, detail_level)
     tone_label = _TONE_LABELS.get(tone, tone)
-    lines.append("### تفضيلات الأسلوب")
-    lines.append(f"- مستوى التفصيل: {detail_label}")
-    lines.append(f"- النبرة: {tone_label}")
+    lines.append("### Style preferences")
+    lines.append(f"- Detail level: {detail_label}")
+    lines.append(f"- Tone: {tone_label}")
     lines.append("")
 
     return "\n".join(lines)

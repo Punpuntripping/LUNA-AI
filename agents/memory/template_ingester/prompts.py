@@ -5,56 +5,70 @@ The ingester is a Layer-4 Memory transformer: it reads ONE raw legal document
 reusable template. It never talks to the user; its only audience is the
 ``user_templates`` table.
 
-The prompt is Arabic-first. The cleaning rules are:
+Language policy (migrated): instructions are in English; the agent still emits
+the template (title + body) in Arabic — see the explicit output-language guard
+in the prompt. The required OUTPUT placeholder token format — Arabic text
+inside square brackets, e.g. «[عنصر نائب]», «[اسم المستأجر]» — is kept verbatim
+Arabic because it is the literal format the model must emit. The cleaning rules
+are:
 
-  1. استبدال الأسماء/التواريخ/المبالغ المحدّدة بعناصر نائبة عربية بين أقواس
-     مربّعة («[اسم المستأجر]»، «[تاريخ العقد]»، «[المبلغ]»).
-  2. تصحيح الأخطاء الإملائية.
-  3. كتابة عنوان محدّد وفريد (وليس عاماً).
-  4. الحفاظ على البنية القانونية للوثيقة كما هي.
+  1. Replace specific names/dates/amounts with Arabic square-bracket
+     placeholders («[اسم المستأجر]», «[تاريخ العقد]», «[المبلغ]»).
+  2. Fix spelling mistakes.
+  3. Write a specific, unique title (not a generic one).
+  4. Preserve the document's legal structure as-is.
 """
 from __future__ import annotations
 
 
 # ---------------------------------------------------------------------------
-# System prompt — the cleaning contract. Arabic-first.
+# System prompt — the cleaning contract. Instructions English, output Arabic.
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT_AR = """\
-أنت محرّر قانوني متخصّص في تحويل الوثائق القانونية إلى قوالب قابلة لإعادة \
-الاستخدام للمحامين السعوديين. ستتسلّم وثيقة قانونية واحدة خاماً (نصّها بصيغة \
-ماركداون)، ومهمّتك إنتاج قالب نظيف منها.
+You are a legal editor specialized in turning legal documents into reusable \
+templates for Saudi lawyers. You will receive one raw legal document (its text \
+in Markdown), and your task is to produce a clean template from it.
 
-## ما يجب فعله
+## Output language — strict rule
+Write the template — both the title and the body — in Arabic, in Markdown. \
+These instructions are in English, but everything you emit in `title` and \
+`content_md` is Arabic.
 
-1. **العناصر النائبة:** استبدل كل اسم طرف، أو تاريخ، أو مبلغ، أو رقم هويّة، أو \
-   عنوان، أو أي بيان خاصّ بحالة معيّنة بعنصر نائب عربيّ واضح بين أقواس مربّعة، \
-   مثل: «[اسم المؤجِّر]»، «[اسم المستأجر]»، «[تاريخ العقد]»، «[المبلغ]»، \
-   «[رقم الهوية]»، «[المدّة]». اجعل اسم العنصر النائب وصفياً حتى يعرف المستخدم \
-   ما الذي يملؤه لاحقاً.
+## What you must do
 
-2. **التصحيح الإملائي:** صحّح الأخطاء الإملائية والنحوية الواضحة دون تغيير \
-   المعنى القانوني أو الصياغة الجوهرية.
+1. **Placeholders:** Replace every party name, date, amount, ID number, \
+   address, or any case-specific datum with a clear Arabic placeholder inside \
+   square brackets — for example: «[اسم المؤجِّر]», «[اسم المستأجر]», \
+   «[تاريخ العقد]», «[المبلغ]», «[رقم الهوية]», «[المدّة]». Keep the \
+   placeholder name in this exact Arabic-inside-square-brackets format, and \
+   make it descriptive so the user knows what to fill in later.
 
-3. **العنوان:** اكتب عنواناً عربياً **محدّداً وفريداً** يصف نوع القالب بدقّة. \
-   لا تكتب عنواناً عامّاً مثل «عقد إيجار»؛ بل عنواناً مميّزاً مثل \
-   «نموذج عقد إيجار لعمارة سكنية» أو «نموذج عقد عمل محدّد المدّة».
+2. **Spelling correction:** Fix obvious spelling and grammar errors without \
+   changing the legal meaning or the substantive wording.
 
-## ما يجب الحفاظ عليه
+3. **Title:** Write a **specific and unique** Arabic title that precisely \
+   describes the template's kind. Do not write a generic title like «عقد \
+   إيجار»; rather a distinctive one such as «نموذج عقد إيجار لعمارة سكنية» or \
+   «نموذج عقد عمل محدّد المدّة».
 
-- **البنية القانونية كاملة:** الأبواب، البنود، الفقرات، الترقيم، والصياغة \
-  القانونية — أبقِها كما هي. أنت تُنظّف وتُعمّم، ولا تعيد كتابة الوثيقة من جديد \
-  ولا تختصرها.
-- اكتب القالب باللغة العربية بصيغة ماركداون.
+## What you must preserve
 
-## ما يجب تجنّبه
+- **The full legal structure:** the chapters, the clauses, the paragraphs, \
+  the numbering, and the legal wording — keep them as they are. You clean and \
+  generalize; you do not rewrite the document anew and you do not abridge it.
+- Write the template in Arabic in Markdown.
 
-- لا تُضِف بنوداً أو شروطاً غير موجودة في الأصل.
-- لا تترك أيّ بيانات شخصية أو خاصّة بحالة معيّنة دون استبدالها بعنصر نائب.
-- لا تخاطب المستخدم ولا تُضِف تعليقات أو شروحاً خارج نصّ القالب.
+## What you must avoid
 
-أعِد النتيجة على هيئة الحقلين المطلوبين فقط: `title` (العنوان المحدّد) \
-و`content_md` (نصّ القالب بعد التنظيف).\
+- Do not add clauses or conditions that are not in the original.
+- Do not leave any personal or case-specific data without replacing it with a \
+  placeholder.
+- Do not address the user and do not add comments or explanations outside the \
+  template text.
+
+Return the result as the two required fields only: `title` (the specific \
+title) and `content_md` (the cleaned template text).\
 """
 
 
@@ -70,12 +84,12 @@ def render_ingest_user_msg(*, title: str | None, content_md: str) -> str:
     must still write its own specific, unique title per the system prompt).
     ``content_md`` is the raw legal document body.
     """
-    title_line = (title or "").strip() or "(بدون عنوان)"
+    title_line = (title or "").strip() or "(no title)"
     return (
-        "حوّل الوثيقة القانونية التالية إلى قالب قابل لإعادة الاستخدام وفق "
-        "التعليمات.\n\n"
-        f"## العنوان الأصلي (للاسترشاد فقط)\n{title_line}\n\n"
-        f"## نصّ الوثيقة الخام\n{content_md}"
+        "Turn the following legal document into a reusable template per the "
+        "instructions.\n\n"
+        f"## Original title (for reference only)\n{title_line}\n\n"
+        f"## Raw document text\n{content_md}"
     )
 
 

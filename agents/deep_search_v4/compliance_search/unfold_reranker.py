@@ -89,33 +89,33 @@ def build_reranker_user_message(
     cap_note = ""
     if max_keep > 0:
         cap_note = (
-            f"\n**حصّة هذا الاستعلام الفرعي:** سقفها الأعلى {max_keep} خدمة "
-            f"— سقفٌ لا هدف. احتفظ بالخدمات ذات الصلة الحقيقية فقط ولا تُكمل العدد.\n"
+            f"\n**Cap for this sub-query:** at most {max_keep} services "
+            f"— a ceiling, not a target. Keep only genuinely relevant services; do not pad to the number.\n"
         )
 
     if round_count == 1:
         return (
-            f"## تعليمات التركيز\n"
+            f"## Focus instructions\n"
             f"{focus_instruction}\n"
             f"{cap_note}"
             f"\n"
             f"---\n"
             f"\n"
-            f"## نتائج الخدمات الحكومية — {len(all_results_flat)} خدمة من {n_queries} استعلام\n"
+            f"## Government service results — {len(all_results_flat)} services from {n_queries} queries\n"
             f"\n"
             f"{formatted_blocks}"
         )
 
     return (
-        f"## تعليمات التركيز\n"
+        f"## Focus instructions\n"
         f"{focus_instruction}\n"
         f"{cap_note}"
         f"\n"
-        f"**الجولة {round_count}:** نتائج إضافية بعد إعادة البحث في المحاور الضعيفة. صنّف جميع النتائج المعروضة.\n"
+        f"**Round {round_count}:** additional results after re-searching the weak axes. Classify all shown results.\n"
         f"\n"
         f"---\n"
         f"\n"
-        f"## نتائج الخدمات الحكومية — {len(all_results_flat)} خدمة (مجمّعة من {round_count} جولات)\n"
+        f"## Government service results — {len(all_results_flat)} services (aggregated from {round_count} rounds)\n"
         f"\n"
         f"{formatted_blocks}"
     )

@@ -109,7 +109,6 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
 
         expander = create_expander_agent(
             prompt_key=state.expander_prompt_key,
-            thinking_effort=state.thinking_effort,
             model_override=state.model_override,
         )
 
@@ -423,7 +422,6 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
 
         expander = create_expander_agent(
             prompt_key=state.expander_prompt_key,
-            thinking_effort=state.thinking_effort,
             model_override=state.model_override,
         )
         user_message = build_expander_user_message(
@@ -976,14 +974,9 @@ async def run_case_search(
     user_context: str,
     deps: CaseSearchDeps,
     expander_prompt_key: str = DEFAULT_EXPANDER_PROMPT,
-    thinking_effort: str | None = None,
     model_override: str | None = None,
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     sectioned: bool | None = None,
-    # Accepted-but-not-yet-applied knobs that v3 supported and the v4
-    # orchestrator still passes. Threading them into LoopState is a follow-up;
-    # accepting them here unblocks the orchestrator call without a crash.
-    expander_max_queries: int | None = None,
     sectors_override: list[str] | None = None,
     sectors_future: "asyncio.Future[list[str] | None] | None" = None,
     score_threshold: float | None = None,
@@ -1000,7 +993,6 @@ async def run_case_search(
         user_context: Arabic context — user's situation/question.
         deps: CaseSearchDeps with supabase, embedding_fn, etc.
         expander_prompt_key: Which expander prompt variant to use.
-        thinking_effort: Reasoning effort for the expander agent.
         model_override: Registry key to override all agent models.
         concurrency: Max concurrent search pipelines.
         sectioned: Force sectioned pipeline regardless of prompt key.
@@ -1034,7 +1026,6 @@ async def run_case_search(
         focus_instruction=focus_instruction,
         user_context=user_context,
         expander_prompt_key=expander_prompt_key,
-        thinking_effort=thinking_effort,
         model_override=model_override,
         concurrency=concurrency,
         sectors_override=list(sectors_override) if sectors_override else None,
@@ -1117,7 +1108,6 @@ async def run_case_search(
             error=error_msg,
             query_id=deps._query_id,
             model_name=_get_expander_model_id(),
-            thinking_effort=thinking_effort,
         )
     except Exception as e:
         logger.warning("Failed to save run JSON: %s", e)
@@ -1134,7 +1124,6 @@ async def run_sectioned_case_search(
     user_context: str,
     deps: CaseSearchDeps,
     expander_prompt_key: str = "prompt_3",
-    thinking_effort: str | None = None,
     model_override: str | None = None,
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     context_blocks: list[ContextBlock] | None = None,
@@ -1149,7 +1138,6 @@ async def run_sectioned_case_search(
         user_context=user_context,
         deps=deps,
         expander_prompt_key=expander_prompt_key,
-        thinking_effort=thinking_effort,
         model_override=model_override,
         concurrency=concurrency,
         sectioned=True,

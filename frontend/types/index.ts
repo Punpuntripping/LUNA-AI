@@ -362,6 +362,14 @@ export interface UsageReport {
   web: { monthly: UsageBar | null };
 }
 
+/** POST /api/v1/plans/redeem success payload — the plan the code granted. */
+export interface RedeemCodeResponse {
+  plan_id: string;
+  name_ar: string | null;
+  /** ISO timestamp the granted plan expires, or null for non-expiring plans. */
+  expires_at: string | null;
+}
+
 export interface SSEDone {
   message_id: string;
   usage: {

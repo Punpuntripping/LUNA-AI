@@ -52,8 +52,8 @@ class CitationRef(BaseModel):
 class WriterSection(BaseModel):
     """One section of the drafted document."""
 
-    heading_ar: str = Field(description="عنوان القسم بالعربية (## level)")
-    body_md: str = Field(description="نص القسم بالماركداون العربي")
+    heading_ar: str = Field(description="The section heading in Arabic (## level)")
+    body_md: str = Field(description="The section text in Arabic markdown")
 
 
 class WriterLLMOutput(BaseModel):
@@ -65,40 +65,40 @@ class WriterLLMOutput(BaseModel):
     validation (e.g. each section must be >= 50 chars).
     """
 
-    title_ar: str = Field(description="عنوان المستند الكامل")
+    title_ar: str = Field(description="The full document title (in Arabic)")
     sections: list[WriterSection] = Field(
         ...,
-        description="ترتيب الأقسام كما تظهر في المستند النهائي",
+        description="The order of the sections as they appear in the final document",
     )
     citations_used: list[CitationRef] = Field(
         default_factory=list,
         description=(
-            "كل اقتباس فعلي ظهر في body_md كـ (n) — يُكتب كزوج "
-            "{wi: \"WI-N\", n: K} يحدّد المصدر بدقّة. الرقم n هو نفسه "
-            "الرقم المعروض في body_md؛ حقل wi يحدّد عنصر العمل المصدر "
-            "(من <source wi=\"WI-N\"> داخل حقيبة الكتابة) لإزالة الالتباس "
-            "حين يتقاطع نفس n بين أكثر من مصدر."
+            "Every actual citation that appeared in body_md as (n) — written as a "
+            "pair {wi: \"WI-N\", n: K} that pinpoints the source precisely. The number "
+            "n is the same one shown in body_md; the wi field identifies the source "
+            "workspace item (from <source wi=\"WI-N\"> inside the writing package) to "
+            "remove ambiguity when the same n overlaps across more than one source."
         ),
     )
     confidence: Literal["high", "medium", "low"] = Field(
-        description="تقدير الكاتب لجودة المسوّدة"
+        description="The writer's estimate of the draft's quality"
     )
     notes_ar: list[str] = Field(
         default_factory=list,
-        description="ملاحظات للمستخدم: نقاط تحتاج مراجعة، فجوات في المعطيات",
+        description="Notes for the user (in Arabic): points needing review, gaps in the inputs",
     )
     chat_summary: str = Field(
         default="",
         description=(
-            "جملة أو جملتان بالعربية تُقدِّمان المستند المُسوَّد للعرض المختصر في المحادثة. "
-            "الحد الأقصى 500 حرف."
+            "One or two Arabic sentences introducing the drafted document for the "
+            "brief inline display in chat. 500 characters maximum."
         ),
     )
     key_findings: list[str] = Field(
         default_factory=list,
         description=(
-            "أبرز 3 إلى 5 نقاط يجب على المستخدم مراجعتها أو الانتباه إليها في المستند — "
-            "5 بنود كحد أقصى، كل بند جملة قصيرة بالعربية."
+            "The top 3 to 5 points (in Arabic) the user should review or pay "
+            "attention to in the document — 5 items maximum, each a short Arabic sentence."
         ),
     )
 
@@ -320,10 +320,10 @@ class WriterStyle(BaseModel):
 class CaseParty(BaseModel):
     """One confirmed party in the case, validated by the planner before drafting."""
 
-    name: str = Field(description="الاسم الكامل للطرف أو مسمّى الجهة")
+    name: str = Field(description="The full name of the party or the name of the body")
     role: str = Field(
         description=(
-            "دور الطرف في القضية — مثل: موكّل المحامي، المدعي، المدعى عليه، "
+            "The party's role in the case — e.g.: موكّل المحامي، المدعي، المدعى عليه، "
             "القاضي، الشاهد، الطرف الأول، الطرف الثاني، الجهة الحكومية …"
         )
     )

@@ -302,7 +302,6 @@ class LoopState:
     user_context: str
     expander_prompt_key: str = "prompt_1"
     aggregator_prompt_key: str = "prompt_1"
-    thinking_effort: str | None = None
     model_override: str | None = None
     unfold_mode: str = "precise"
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
@@ -338,9 +337,6 @@ class LoopState:
     # back to the static ``sectors_override`` above. A resolved value of
     # ``None`` from the future means "picker said no filter" → run unfiltered.
     sectors_future: "asyncio.Future[list[str] | None] | None" = None
-    # Hard cap on number of sub-queries from the expander, plumbed from
-    # the planner's focus profile via the orchestrator.
-    expander_max_queries: int | None = None
     # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
     # the expander user message; the reranker is hardcoded to receive zero
     # blocks. Empty list → no <context_blocks> XML in the prompt.

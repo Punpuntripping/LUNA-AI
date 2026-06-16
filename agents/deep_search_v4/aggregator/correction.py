@@ -59,13 +59,15 @@ def build_correction_prompt(
         return None
 
     intro = (
-        "المخرج السابق احتوى على مخالفات في تحقّق ما بعد التركيب. "
-        "أعد إصدار `final_result` بالبنية والمحتوى نفسه، "
-        "مع تصحيح الجوانب التالية فقط — لا تُعد كتابة الإجابة من الصفر:"
+        "The previous output contained violations in post-synthesis validation. "
+        "Re-emit `final_result` with the same structure and content, "
+        "correcting only the following aspects — do not rewrite the answer from "
+        "scratch. The answer body (`synthesis_md`) stays in Arabic:"
     )
     outro = (
-        "\nاستجب بقرار `final_result` واحد يحوي النسخة المصحَّحة. "
-        "كل ما عدا ذلك (الأقسام، الترتيب، الأسلوب) يبقى كما هو."
+        "\nRespond with a single `final_result` decision containing the corrected "
+        "version. Everything else (the sections, the ordering, the style) stays "
+        "as it was."
     )
 
     return intro + "\n\n" + "\n\n".join(blocks) + outro
@@ -97,13 +99,13 @@ def _citation_correction_block(
     valid_ns = sorted(r.n for r in references)
     valid_summary = _format_int_range(valid_ns)
     return (
-        "### citation_ok — استشهادات غير موجودة\n"
-        f"استشهدتَ في `synthesis_md` بالأرقام التالية وهي غير موجودة في "
+        "### citation_ok — nonexistent citations\n"
+        f"In `synthesis_md` you cited the following numbers, which do not exist in "
         f"`<references>`: {dangling}.\n"
-        f"الأرقام الصحيحة المتاحة في `<references>` هي: {valid_summary}.\n"
-        "احذف هذه الاستشهادات من `synthesis_md` أو استبدلها بأرقام صحيحة من "
-        "القائمة أعلاه. حدِّث أيضاً قائمة `used_refs` بحيث لا تحوي إلا أرقاماً "
-        "موجودة فعلاً."
+        f"The valid numbers available in `<references>` are: {valid_summary}.\n"
+        "Delete these citations from `synthesis_md` or replace them with valid "
+        "numbers from the list above. Also update the `used_refs` list so it "
+        "contains only numbers that actually exist."
     )
 
 
@@ -134,7 +136,7 @@ def _gap_correction_block(
         domain = getattr(sq, "domain", "") or ""
         label = f"sub_query #{idx + 1}"
         if domain:
-            label += f" (نطاق: {domain})"
+            label += f" (domain: {domain})"
         text = (getattr(sq, "query", "") or "").strip()
         text_short = text[:120] + ("…" if len(text) > 120 else "")
         missing.append(f"- {label}: {text_short}")
@@ -143,12 +145,13 @@ def _gap_correction_block(
         return None
 
     return (
-        "### gap_honesty_ok — تغطية ناقصة لم تُذكَر في `gaps`\n"
-        "الـ sub_queries التالية موسومة `insufficient` في المدخل، لكنها غير "
-        "ممثَّلة في حقل `gaps` من مخرجك السابق:\n"
+        "### gap_honesty_ok — incomplete coverage not mentioned in `gaps`\n"
+        "The following sub_queries are tagged `insufficient` in the input, but "
+        "are not represented in the `gaps` field of your previous output:\n"
         + "\n".join(missing)
-        + "\n\nأضف لكل واحدة منها بنداً قصيراً واحداً في `gaps` يصف ما الذي "
-        "لم تغطّه المراجع — لا تكرّر نص الـ sub_query حرفياً، صِف الفجوة."
+        + "\n\nAdd one short item to `gaps` for each of them describing what the "
+        "references did not cover — do not repeat the sub_query text verbatim; "
+        "describe the gap (in Arabic)."
     )
 
 
@@ -163,7 +166,7 @@ def _format_int_range(ns: list[int]) -> str:
     ``[1, 2, 3]`` → ``"1-3"``; ``[1, 3, 5]`` → ``"1, 3, 5"``.
     """
     if not ns:
-        return "(لا توجد)"
+        return "(none)"
     if ns == list(range(ns[0], ns[-1] + 1)):
         return f"{ns[0]}-{ns[-1]}" if ns[0] != ns[-1] else str(ns[0])
     return ", ".join(str(n) for n in ns)

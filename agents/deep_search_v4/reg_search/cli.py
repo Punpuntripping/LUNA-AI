@@ -253,13 +253,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between queries in --batch mode (default: 5)",
     )
     parser.add_argument(
-        "--thinking",
-        choices=["low", "medium", "high", "none"],
-        default=None,
-        help="Reasoning effort for the expander agent (default: per-prompt setting). "
-             "Use 'none' to disable reasoning entirely.",
-    )
-    parser.add_argument(
         "--model",
         choices=list(OVERRIDE_TOKENS),
         default=None,
@@ -345,7 +338,6 @@ async def run_expand_only(args, query: str, deps) -> None:
 
     expander = create_expander_agent(
         prompt_key=args.expander_prompt,
-        thinking_effort=args.thinking,
         model_override=args.model,
     )
     user_message = build_expander_user_message(query, args.user_context)
@@ -469,7 +461,6 @@ async def run_expand_only(args, query: str, deps) -> None:
                           "search_queries": len(output.queries), "search_total": total_count}],
         search_results_log=search_log,
         models=_resolve_models(args.model),
-        thinking_effort=args.thinking,
     )
     print(f"\nLog dir: {LOGS_DIR / log_id}")
 
@@ -538,7 +529,6 @@ async def run_batch(args) -> None:
         try:
             expander = create_expander_agent(
                 prompt_key=prompt_key,
-                thinking_effort=args.thinking,
                 model_override=args.model,
             )
             user_message = build_expander_user_message(query_text, args.user_context)
@@ -670,7 +660,6 @@ async def run_batch(args) -> None:
                               "search_total": total_results}],
             search_results_log=search_log,
             models=_resolve_models(args.model),
-            thinking_effort=args.thinking,
         )
         row["log_id"] = log_id
         print(f"  Log:      {log_id}")
@@ -996,7 +985,6 @@ async def main() -> None:
         user_context=args.user_context,
         deps=deps,
         expander_prompt_key=args.expander_prompt,
-        thinking_effort=args.thinking,
         model_override=args.model,
         unfold_mode=args.unfold,
         concurrency=args.concurrency,

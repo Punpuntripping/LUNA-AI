@@ -201,12 +201,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait between queries in --batch mode (default: 5)",
     )
     parser.add_argument(
-        "--thinking",
-        choices=["low", "medium", "high", "none"],
-        default=None,
-        help="Reasoning effort for the expander agent",
-    )
-    parser.add_argument(
         "--model",
         choices=list(OVERRIDE_TOKENS),
         default=None,
@@ -285,13 +279,10 @@ async def run_expand_only(args, query: str, deps) -> None:
     model_id = _get_expander_model_id(args.model)
     print(f"[expand-only] Expander prompt: {args.expander_prompt}")
     print(f"[expand-only] Model: {model_id}")
-    if args.thinking:
-        print(f"[expand-only] Thinking: {args.thinking}")
     print(f"[expand-only] Running expander...")
 
     expander = create_expander_agent(
         prompt_key=args.expander_prompt,
-        thinking_effort=args.thinking,
         model_override=args.model,
     )
     user_message = build_expander_user_message(query, args.user_context)
@@ -397,7 +388,6 @@ async def run_expand_only(args, query: str, deps) -> None:
                           "search_queries": len(output.queries), "search_total": total_count}],
         search_results_log=search_log,
         model_name=model_id,
-        thinking_effort=args.thinking,
     )
     print(f"\nLog dir: agents/deep_search_v3/case_search/reports/{log_id}/")
 
@@ -569,8 +559,6 @@ async def main() -> None:
     print(f"Query: {query[:100]}...")
     print(f"Model: {model_id}")
     print(f"Expander prompt: {args.expander_prompt}")
-    if args.thinking:
-        print(f"Thinking: {args.thinking}")
     print(f"Score threshold: {args.score_threshold}")
     print(f"Concurrency: {args.concurrency}")
     print("Please wait...\n")
@@ -599,7 +587,6 @@ async def main() -> None:
         user_context=args.user_context,
         deps=deps,
         expander_prompt_key=args.expander_prompt,
-        thinking_effort=args.thinking,
         model_override=args.model,
         concurrency=args.concurrency,
         sectioned=sectioned_flag,

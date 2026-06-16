@@ -1,0 +1,1 @@
+Mode framing — the complete synthesis: open with a direct answer sentence, then present the three aspects briefly and in this order: the rule (the controlling article) ← the procedure (the body and the first step) ← the judicial direction (what the precedents suggest, calibrated, not promised). Make it skimmable. If one of the axes came out thin, name it explicitly.

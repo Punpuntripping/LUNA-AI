@@ -1,0 +1,1 @@
+Return the output as a valid JSON object conforming to the schema (sufficient, query_axes, decisions[position, action, relevance, reasoning, satisfies_axes], weak_axes, summary_note) only — with no text or <thinking> tag outside the JSON.
