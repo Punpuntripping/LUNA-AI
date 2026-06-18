@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 def _reject_null_bytes(v: str) -> str:
@@ -73,8 +73,24 @@ class CreateConversationRequest(BaseModel):
 
 
 class UpdateConversationRequest(BaseModel):
-    """PUT /api/v1/conversations/{conversation_id}"""
-    title_ar: str = Field(..., min_length=1, max_length=500)
+    """PATCH /api/v1/conversations/{conversation_id}
+
+    Rename (``title_ar``) and star toggle (``starred``) share the same PATCH.
+    At least one of the two fields must be supplied.
+    """
+    title_ar: Optional[str] = Field(None, min_length=1, max_length=500)
+    starred: Optional[bool] = None
+
+    @field_validator("title_ar", mode="before")
+    @classmethod
+    def check_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "UpdateConversationRequest":
+        if self.title_ar is None and self.starred is None:
+            raise ValueError("يجب تحديد العنوان أو حالة التمييز")
+        return self
 
 
 # ── Messages ──────────────────────────────────────────
@@ -215,6 +231,13 @@ class UploadInitRequest(BaseModel):
     filename: str = Field(..., min_length=1, max_length=500)
     mime_type: str = Field(..., min_length=1, max_length=100)
     size_bytes: int = Field(..., gt=0, le=50 * 1024 * 1024)
+    # Client-reported page count (PDF parsed in-browser; images → 1). Feeds the
+    # OCR quota gate's upfront projection so a multi-page document is counted
+    # before OCR runs. An ESTIMATE only — the post-OCR settle (real Mistral page
+    # count) stays authoritative — so it is never trusted for billing. Clamped
+    # server-side; None when the client couldn't determine it. Ignored by the
+    # case-documents init flow.
+    page_count: Optional[int] = Field(None, ge=1, le=10_000)
 
     @field_validator("filename", mode="before")
     @classmethod

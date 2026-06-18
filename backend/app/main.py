@@ -474,6 +474,16 @@ def create_app() -> FastAPI:
         tags=["workspace"],
     )
 
+    # Blog router (مدونة — public share-by-link). The public GET
+    # /public/blog/{token} has no auth dependency by design.
+    from backend.app.api.blog import router as blog_router
+
+    application.include_router(
+        blog_router,
+        prefix="/api/v1",
+        tags=["blog"],
+    )
+
     # Preferences + Templates router
     from backend.app.api.preferences import router as preferences_router
 

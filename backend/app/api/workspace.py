@@ -515,6 +515,7 @@ async def init_workspace_attachment_upload(
             filename=body.filename,
             mime_type=body.mime_type,
             size_bytes=body.size_bytes,
+            page_count=body.page_count,
         )
         try:
             _span.set_attribute("item_id", session["item_id"])

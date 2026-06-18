@@ -1,9 +1,13 @@
 "use client";
 
-import { MessageSquareOff } from "lucide-react";
+import { MessageSquareOff, ChevronLeft } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useConversations } from "@/hooks/use-conversations";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
 import { ScrollArea } from "@/components/ui/scroll-area";
+
+/** Cap the sidebar at the top recent conversations (starred float in first). */
+const SIDEBAR_LIMIT = 15;
 
 function ConversationSkeleton() {
   return (
@@ -16,6 +20,7 @@ function ConversationSkeleton() {
 }
 
 export function ConversationList() {
+  const router = useRouter();
   const { data, isLoading, isError } = useConversations(null);
 
   if (isLoading) {
@@ -38,9 +43,11 @@ export function ConversationList() {
     );
   }
 
-  const conversations = data?.conversations ?? [];
+  const allConversations = data?.conversations ?? [];
+  // Server already orders starred-first then most-recent; just cap the sidebar.
+  const conversations = allConversations.slice(0, SIDEBAR_LIMIT);
 
-  if (conversations.length === 0) {
+  if (allConversations.length === 0) {
     return (
       <div className="flex flex-col flex-1 min-h-0">
         <SectionHeader>المحادثات الأخيرة</SectionHeader>
@@ -67,6 +74,16 @@ export function ConversationList() {
           {conversations.map((conv) => (
             <ConversationItem key={conv.conversation_id} conversation={conv} />
           ))}
+
+          {/* Always present — the only entry point to the full /chats page. */}
+          <button
+            type="button"
+            onClick={() => router.push("/chats")}
+            className="group flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+          >
+            <span>عرض جميع المحادثات</span>
+            <ChevronLeft className="h-3.5 w-3.5 shrink-0 transition-transform group-hover:-translate-x-0.5" />
+          </button>
         </div>
       </ScrollArea>
     </div>

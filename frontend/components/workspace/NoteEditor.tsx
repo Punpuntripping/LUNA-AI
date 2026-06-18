@@ -1,9 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Lock, AlertTriangle } from "lucide-react";
+import { Lock, AlertTriangle, Share2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { MarkdownDocEditor } from "@/components/workspace/MarkdownDocEditor";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
+import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
 import { useUpdateWorkspaceItem } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import { ApiClientError } from "@/lib/api";
@@ -108,6 +110,8 @@ function overlayWriterAttribution(
 export function NoteEditor({ item }: NoteEditorProps) {
   const update = useUpdateWorkspaceItem();
   const [conflict, setConflict] = useState<string | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const isShareable = item.kind === "agent_writing";
 
   const lockedUntilTs = getLockedUntil(item);
   const isLocked = lockedUntilTs !== null;
@@ -175,27 +179,52 @@ export function NoteEditor({ item }: NoteEditorProps) {
     </>
   );
 
-  const footerSlot =
-    item.kind === "agent_writing" ? (
-      <ReferencePanel references={references} isLoading={isLoadingReferences} />
-    ) : null;
+  const footerSlot = isShareable ? (
+    <ReferencePanel references={references} isLoading={isLoadingReferences} />
+  ) : null;
+
+  // «مشاركة» — publish this written artifact to a public share-by-link page.
+  // Only on agent_writing items; opens ShareArtifactDialog.
+  const titleActions = isShareable ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-6 shrink-0 gap-1 px-2 text-[11px]"
+      onClick={() => setShareOpen(true)}
+      aria-label="مشاركة عبر رابط عام"
+    >
+      <Share2 className="h-3 w-3" />
+      مشاركة
+    </Button>
+  ) : null;
 
   return (
-    <MarkdownDocEditor
-      docId={item.item_id}
-      initialTitle={item.title}
-      initialContent={item.content_md ?? ""}
-      updatedAt={item.updated_at}
-      onSave={handleSave}
-      onSaveError={handleSaveError}
-      readOnly={isLocked}
-      titleReadOnly={titleReadOnly}
-      titlePlaceholder="عنوان الملاحظة..."
-      bodyPlaceholder={
-        item.kind === "note" ? "اكتب ملاحظاتك هنا..." : "محتوى المسودة..."
-      }
-      headerSlot={headerSlot}
-      footerSlot={footerSlot}
-    />
+    <>
+      <MarkdownDocEditor
+        docId={item.item_id}
+        initialTitle={item.title}
+        initialContent={item.content_md ?? ""}
+        updatedAt={item.updated_at}
+        onSave={handleSave}
+        onSaveError={handleSaveError}
+        readOnly={isLocked}
+        titleReadOnly={titleReadOnly}
+        titlePlaceholder="عنوان الملاحظة..."
+        bodyPlaceholder={
+          item.kind === "note" ? "اكتب ملاحظاتك هنا..." : "محتوى المسودة..."
+        }
+        headerSlot={headerSlot}
+        titleActions={titleActions}
+        footerSlot={footerSlot}
+      />
+      {isShareable && (
+        <ShareArtifactDialog
+          itemId={item.item_id}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+        />
+      )}
+    </>
   );
 }

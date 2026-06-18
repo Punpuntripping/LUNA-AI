@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 _JWKS_FETCH_TIMEOUT = 5.0
 _JWKS_CACHE_LIFESPAN = 300
 
+# Clock-skew tolerance (seconds) for temporal JWT claims (exp / iat / nbf).
+# PyJWT validates iat/nbf with ZERO leeway by default, so a token whose iat is
+# even a second ahead of THIS server's clock is rejected with
+# ``ImmatureSignatureError: The token is not yet valid (iat)`` → spurious 401.
+# That 401 cascades on the client (refresh → hard redirect to /login) and aborts
+# any in-flight SSE stream, leaving a freshly-created conversation's reply stuck
+# as an empty placeholder. 60s absorbs ordinary machine/NTP skew with negligible
+# security impact (Supabase access tokens last ~1h and auto-refresh well before).
+_CLOCK_SKEW_LEEWAY_S = 60
+
 
 class ResilientJWKClient(PyJWKClient):
     """PyJWKClient that keeps last-known-good keys across JWKS outages.

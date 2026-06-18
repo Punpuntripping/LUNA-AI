@@ -96,6 +96,22 @@ export interface ConversationSummary {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  /** True when the conversation is starred (pinned to the top of lists). */
+  is_starred: boolean;
+  /** ISO timestamp the conversation was starred, or null when not starred. */
+  starred_at?: string | null;
+  /**
+   * Trimmed excerpt of the matching message content — set ONLY on search
+   * results where the match was in a message body (``match_type === 'message'``).
+   * Null for title matches and for non-search listings.
+   */
+  snippet?: string | null;
+  /**
+   * Where the search term matched: ``'title'`` (in title_ar), ``'message'``
+   * (in a message body, with ``snippet`` populated), or null for non-search
+   * listings.
+   */
+  match_type?: 'title' | 'message' | null;
 }
 
 export interface ConversationDetail extends ConversationSummary {
@@ -615,6 +631,57 @@ export interface UpdateWorkspaceItemRequest {
 export interface WorkspaceFileUrlResponse {
   url: string;
   expires_at: string;
+}
+
+// ==========================================
+// BLOG / PUBLIC SHARE-BY-LINK (مدونة)
+// ==========================================
+// Snapshot model: at publish time the backend freezes the artifact's
+// ``content_md`` + the fully-resolved ``Reference[]`` into a ``blog_posts``
+// row. The public page reads only that snapshot — no anon access to live
+// workspace data, survives later edits/deletes of the source artifact.
+
+/**
+ * Public read shape returned by ``GET /api/v1/public/blog/{token}`` — no auth.
+ * Rendered by ``PublicAnswerView``. ``references`` reuses the existing
+ * relational ``Reference`` type so ``ReferencePanel`` renders identically.
+ */
+export interface BlogPostPublic {
+  /** السؤال shown on the page (the edited triggering user message). */
+  question_text: string;
+  /** Page heading + OG title. May be null (fall back to question_text). */
+  title: string | null;
+  /** Snapshot of the artifact body (markdown). */
+  content_md: string;
+  /** Snapshot of the resolved citation list. */
+  references: Reference[];
+  /** e.g. ``legal_synthesis`` → "تحليل قانوني". */
+  subtype: string | null;
+  /** ISO timestamp of publication. */
+  created_at: string;
+}
+
+/**
+ * Response of ``GET /api/v1/workspace/{item_id}/share-draft`` — pre-fills the
+ * share dialog's editable question textarea.
+ */
+export interface ShareDraftResponse {
+  /** Derived default السؤال (preceding user message / artifact title). */
+  default_question: string;
+}
+
+/** Request body of ``POST /api/v1/workspace/{item_id}/share``. */
+export interface ShareArtifactRequest {
+  /** Final السؤال text the publisher chose (verbatim). */
+  question_text: string;
+}
+
+/** Response of ``POST /api/v1/workspace/{item_id}/share``. */
+export interface ShareArtifactResponse {
+  /** Unguessable slug used in the public URL. */
+  token: string;
+  /** Fully-qualified ``/blog/{token}`` URL, built server-side. */
+  public_url: string;
 }
 
 // ==========================================

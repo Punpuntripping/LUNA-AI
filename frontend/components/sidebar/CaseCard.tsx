@@ -4,7 +4,7 @@ import { useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
-  MoreHorizontal,
+  MoreVertical,
   Pencil,
   Trash2,
   Archive,
@@ -188,7 +188,7 @@ export function CaseCard({ caseSummary }: CaseCardProps) {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-6 w-6">
-                  <MoreHorizontal className="h-3.5 w-3.5" />
+                  <MoreVertical className="h-3.5 w-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-48">

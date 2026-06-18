@@ -41,3 +41,7 @@ screenshots/
 full_redesign_*.png
 smoke_ui_*.png
 upload_smoke_*.png
+# Local dev-server logs (uvicorn/next stdout captures) — never commit
+*_dev.log
+# Deploy-checker verification screenshots — throwaway artifacts
+.claude/deploy-*.png

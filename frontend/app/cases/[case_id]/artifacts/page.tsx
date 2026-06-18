@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { FileText } from "lucide-react";
 import { useCaseWorkspace } from "@/hooks/use-workspace";
 import { WorkspaceList } from "@/components/workspace/WorkspaceList";
 import { WorkspaceItemViewer } from "@/components/workspace/WorkspaceItemViewer";
+import { CASES_ENABLED } from "@/lib/features";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +18,21 @@ import {
 // eslint-disable-next-line import/no-default-export
 export default function CaseArtifactsPage() {
   const params = useParams();
+  const router = useRouter();
   const caseId = params.case_id as string;
-  const { data, isLoading } = useCaseWorkspace(caseId);
+
+  // Cases are under development (قيد التطوير) and gated off — this route is not
+  // linked from anywhere in the UI, so this guard only catches a direct URL.
+  // Send any such visitor back to the chat. See lib/features.ts.
+  useEffect(() => {
+    if (!CASES_ENABLED) router.replace("/chat");
+  }, [router]);
+
+  const { data, isLoading } = useCaseWorkspace(CASES_ENABLED ? caseId : undefined);
 
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+
+  if (!CASES_ENABLED) return null;
 
   function handleItemClick(itemId: string) {
     setSelectedItemId(itemId);

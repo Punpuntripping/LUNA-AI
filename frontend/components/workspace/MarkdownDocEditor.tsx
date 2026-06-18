@@ -34,6 +34,9 @@ interface MarkdownDocEditorProps {
   bodyPlaceholder?: string;
   /** Optional banner(s) rendered above the title bar (e.g. lock / conflict). */
   headerSlot?: ReactNode;
+  /** Optional actions rendered inline in the title bar, before the edit/preview
+   *  toggle (e.g. a Share button on agent_writing items). */
+  titleActions?: ReactNode;
   /** Optional content appended inside the preview viewport (e.g. references). */
   footerSlot?: ReactNode;
   /**
@@ -66,6 +69,7 @@ export function MarkdownDocEditor({
   titlePlaceholder = "العنوان...",
   bodyPlaceholder = "اكتب المحتوى هنا...",
   headerSlot,
+  titleActions,
   footerSlot,
   onSaveError,
 }: MarkdownDocEditorProps) {
@@ -154,6 +158,7 @@ export function MarkdownDocEditor({
           )}
           placeholder={titlePlaceholder}
         />
+        {titleActions}
         <div
           className={cn(
             "flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted/30 p-0.5",

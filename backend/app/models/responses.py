@@ -4,7 +4,7 @@ Pydantic response models for API endpoints.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 
 from pydantic import BaseModel
@@ -62,8 +62,16 @@ class ConversationSummary(BaseModel):
     title_ar: Optional[str] = None
     message_count: int = 0
     is_active: bool = True
+    is_starred: bool = False
+    starred_at: Optional[str] = None  # ISO string or null
     created_at: datetime
     updated_at: datetime
+    # Search-result-only fields. ``snippet`` is a ~160-char excerpt of the
+    # matching message (populated only when the hit was in message content).
+    # ``match_type`` is the surface that matched ("title" preferred when both).
+    # Both are None outside of a search response.
+    snippet: Optional[str] = None
+    match_type: Optional[Literal["title", "message"]] = None
 
 
 class ConversationDetail(ConversationSummary):
@@ -291,6 +299,35 @@ class IngestTemplateResponse(BaseModel):
     template_id: str | None = None
     title: str | None = None
     error: str | None = None
+
+
+# ── Blog / public share-by-link (مدونة) ─────────────────
+
+
+class BlogPostPublicResponse(BaseModel):
+    """GET /api/v1/public/blog/{token} — anonymous read of a snapshot.
+
+    ``references`` is the stored ``references_json`` array verbatim (a list of
+    serialized ``Reference`` dicts); typed as ``list[dict]`` so the snapshot
+    passes through unchanged regardless of Reference schema drift.
+    """
+    question_text: str
+    title: Optional[str] = None
+    content_md: str
+    references: list[dict] = []
+    subtype: Optional[str] = None
+    created_at: str
+
+
+class ShareDraftResponse(BaseModel):
+    """GET /api/v1/workspace/{item_id}/share-draft"""
+    default_question: str
+
+
+class ShareArtifactResponse(BaseModel):
+    """POST /api/v1/workspace/{item_id}/share"""
+    token: str
+    public_url: str
 
 
 # ── Resumable uploads (TUS) ─────────────────────────────

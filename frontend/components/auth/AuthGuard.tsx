@@ -8,11 +8,26 @@ interface Props {
   children: React.ReactNode;
 }
 
+// Route prefixes that anonymous visitors may view without a session. These
+// pages must render for logged-out users — no /login redirect, no
+// `return null`. Currently the public share-by-link surface (/blog/{token}),
+// which serves an immutable snapshot to prospects who have no account yet.
+const PUBLIC_PREFIXES = ["/blog"] as const;
+
+function isPublicPath(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return PUBLIC_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
 export function AuthGuard({ children }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const { isAuthenticated, isLoading, loadUser, revalidateSession } =
     useAuthStore();
+
+  const isPublic = isPublicPath(pathname);
 
   useEffect(() => {
     loadUser();
@@ -43,13 +58,21 @@ export function AuthGuard({ children }: Props) {
   }, [revalidateSession]);
 
   useEffect(() => {
+    // Public pages never redirect — anon visitors must see /blog/{token}.
+    if (isPublic) return;
     if (!isLoading && !isAuthenticated && pathname !== "/login") {
       router.replace("/login");
     }
     if (!isLoading && isAuthenticated && pathname === "/login") {
       router.replace("/chat");
     }
-  }, [isLoading, isAuthenticated, pathname, router]);
+  }, [isLoading, isAuthenticated, pathname, router, isPublic]);
+
+  // Public pages render immediately for everyone (logged-in or anon) without
+  // waiting on the session probe or gating on auth state.
+  if (isPublic) {
+    return <>{children}</>;
+  }
 
   if (isLoading) {
     return (

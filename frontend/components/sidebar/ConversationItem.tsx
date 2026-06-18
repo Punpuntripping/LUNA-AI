@@ -2,14 +2,19 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Pencil, Trash2, Check, X } from "lucide-react";
+import { MoreVertical, Pencil, Trash2, Check, X, Star, StarOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { useDeleteConversation, useRenameConversation } from "@/hooks/use-conversations";
+import {
+  useDeleteConversation,
+  useRenameConversation,
+  useStarConversation,
+} from "@/hooks/use-conversations";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -29,13 +34,20 @@ import type { ConversationSummary } from "@/types";
 interface ConversationItemProps {
   conversation: ConversationSummary;
   searchQuery?: string;
+  /** Keep the 3-dots actions always visible (list view) instead of hover-only. */
+  alwaysShowActions?: boolean;
 }
 
-export function ConversationItem({ conversation, searchQuery = "" }: ConversationItemProps) {
+export function ConversationItem({
+  conversation,
+  searchQuery = "",
+  alwaysShowActions = false,
+}: ConversationItemProps) {
   const router = useRouter();
   const { selectedConversationId, setSelectedConversation } = useSidebarStore();
   const deleteConversation = useDeleteConversation();
   const renameConversation = useRenameConversation();
+  const starConversation = useStarConversation();
 
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -44,6 +56,14 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
 
   const isActive = selectedConversationId === conversation.conversation_id;
   const title = conversation.title_ar || "محادثة جديدة";
+  const isStarred = conversation.is_starred;
+  // Show the dimmed snippet line only on search results where the match was in
+  // a message body — never alter the compact sidebar look (no searchQuery → no
+  // snippet rendered).
+  const snippet =
+    searchQuery && conversation.match_type === "message"
+      ? conversation.snippet
+      : null;
   // Optimistic placeholder rows carry an ``optimistic-<timestamp>`` id while
   // the create-conversation POST is in flight. Navigating to that id leaks
   // it into every downstream API call (messages, workspace, …) and breaks
@@ -63,6 +83,13 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
     if (isPendingCreate) return;
     setSelectedConversation(conversation.conversation_id);
     router.push(`/chat/${conversation.conversation_id}`);
+  };
+
+  const handleToggleStar = () => {
+    starConversation.mutate({
+      id: conversation.conversation_id,
+      starred: !isStarred,
+    });
   };
 
   const handleStartRename = () => {
@@ -146,25 +173,60 @@ export function ConversationItem({ conversation, searchQuery = "" }: Conversatio
           </div>
         ) : (
           <>
-            <p className="flex-1 min-w-0 text-sm truncate">
-              {searchQuery ? (
-                <HighlightedText text={title} highlight={searchQuery} />
-              ) : (
-                title
+            <div className="flex flex-1 min-w-0 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1.5">
+                {isStarred && (
+                  <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
+                )}
+                <p
+                  className="min-w-0 flex-1 truncate text-sm max-w-[15rem]"
+                  title={title}
+                >
+                  {searchQuery ? (
+                    <HighlightedText text={title} highlight={searchQuery} />
+                  ) : (
+                    title
+                  )}
+                </p>
+              </div>
+
+              {snippet && (
+                <p className="min-w-0 truncate text-xs text-muted-foreground/70">
+                  <HighlightedText text={snippet} highlight={searchQuery} />
+                </p>
               )}
-            </p>
+            </div>
 
             <div
-              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              className={cn(
+                "transition-opacity shrink-0 self-start",
+                alwaysShowActions
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100",
+              )}
               onClick={(e) => e.stopPropagation()}
             >
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="h-6 w-6">
-                    <MoreHorizontal className="h-3.5 w-3.5" />
+                    <MoreVertical className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-40">
+                  <DropdownMenuItem onClick={handleToggleStar}>
+                    {isStarred ? (
+                      <>
+                        <StarOff className="h-3.5 w-3.5 me-2" />
+                        إزالة التمييز
+                      </>
+                    ) : (
+                      <>
+                        <Star className="h-3.5 w-3.5 me-2" />
+                        تمييز بنجمة
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={handleStartRename}>
                     <Pencil className="h-3.5 w-3.5 me-2" />
                     إعادة تسمية

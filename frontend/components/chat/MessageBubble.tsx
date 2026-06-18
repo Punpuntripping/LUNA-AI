@@ -35,7 +35,7 @@ import { getRelativeTimeAr } from "@/lib/utils";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
-import type { Message, WorkspaceItemKind } from "@/types";
+import type { Attachment, Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
@@ -305,25 +305,12 @@ export function MessageBubble({
           )}
 
           {/* Attachments */}
-          {message.attachments.length > 0 && (
-            <div className="ps-[38px] flex flex-wrap gap-2">
-              {message.attachments.map((att) => (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1"
-                >
-                  {att.attachment_type === "image" ? (
-                    <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                  ) : (
-                    <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
-                  <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
-                    {att.filename}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          <AttachmentList
+            attachments={message.attachments}
+            artifactLookup={artifactLookup}
+            onOpenArtifact={onOpenArtifact}
+            className="ps-[38px]"
+          />
 
           {/* Action bar */}
           {isCompleted && !message.isFailed && !isEditing && (
@@ -502,25 +489,12 @@ export function MessageBubble({
           )}
 
           {/* Attachments */}
-          {message.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-2">
-              {message.attachments.map((att) => (
-                <div
-                  key={att.id}
-                  className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1"
-                >
-                  {att.attachment_type === "image" ? (
-                    <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                  ) : (
-                    <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
-                  <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
-                    {att.filename}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          <AttachmentList
+            attachments={message.attachments}
+            artifactLookup={artifactLookup}
+            onOpenArtifact={onOpenArtifact}
+            className="mt-2"
+          />
 
           {/* Action bar */}
           {isCompleted && !message.isFailed && (
@@ -766,5 +740,101 @@ function ReferencedItemChip({ itemId, label, onJump }: ReferencedItemChipProps) 
       <CornerUpLeft className="h-3 w-3" />
       <span className="truncate max-w-[280px]">{labelText}</span>
     </Button>
+  );
+}
+
+// ============================================================================
+// Attachment chips
+// ============================================================================
+
+interface AttachmentListProps {
+  attachments: Attachment[];
+  /** Resolves ``attachment.document_id`` → workspace_item {kind, title}. */
+  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  /** Open the attachment's workspace_item in the pane (chip click). */
+  onOpenArtifact?: (itemId: string) => void;
+  className?: string;
+}
+
+/**
+ * Renders a message's attachments as chips.
+ *
+ * A chat attachment is a ``workspace_items`` row (``kind='attachment'``); the
+ * message's ``attachment.document_id`` is that item's ``item_id``. When the
+ * id resolves in ``artifactLookup`` (i.e. it's a live workspace item) the chip
+ * becomes a button that opens it in the pane via ``onOpenArtifact`` — the same
+ * AttachmentRenderer the workspace list uses. The lookup also supplies the
+ * title, which fixes the empty filename the messages API returns for
+ * workspace-item attachments (its join targets ``case_documents``, which a
+ * chat attachment has no row in).
+ */
+function AttachmentList({
+  attachments,
+  artifactLookup,
+  onOpenArtifact,
+  className,
+}: AttachmentListProps) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className={cn("flex flex-wrap gap-2", className)}>
+      {attachments.map((att) => (
+        <AttachmentChip
+          key={att.id}
+          attachment={att}
+          resolvedTitle={artifactLookup?.[att.document_id]?.title}
+          // Only openable when the id is a known workspace item — guards
+          // against legacy case-document ids that would 404 in the pane.
+          onOpen={
+            artifactLookup?.[att.document_id] ? onOpenArtifact : undefined
+          }
+        />
+      ))}
+    </div>
+  );
+}
+
+interface AttachmentChipProps {
+  attachment: Attachment;
+  resolvedTitle?: string;
+  onOpen?: (itemId: string) => void;
+}
+
+function AttachmentChip({
+  attachment,
+  resolvedTitle,
+  onOpen,
+}: AttachmentChipProps) {
+  const Icon = attachment.attachment_type === "image" ? ImageIcon : FileText;
+  const name = resolvedTitle || attachment.filename || "مرفق";
+  const inner = (
+    <>
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <span className="text-[11px] text-muted-foreground truncate max-w-[160px]">
+        {name}
+      </span>
+    </>
+  );
+
+  if (!onOpen) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
+        {inner}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(attachment.document_id)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1",
+        "hover:bg-muted transition-colors cursor-pointer",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+      )}
+      aria-label={`فتح المرفق ${name}`}
+    >
+      {inner}
+    </button>
   );
 }

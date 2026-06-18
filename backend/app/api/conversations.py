@@ -38,20 +38,39 @@ router = APIRouter()
 @router.get("", response_model=ConversationListResponse)
 async def list_conversations(
     case_id: Optional[str] = Query(None, description="Filter by case_id (UUID)"),
+    q: Optional[str] = Query(None, description="Search titles + message content"),
+    starred: bool = Query(False, description="Return only starred conversations"),
     limit: int = Query(50, ge=1, le=100, description="Max items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """List conversations for the authenticated user, optionally filtered by case."""
-    data = await run_db(
-        conversation_service.list_conversations,
-        supabase,
-        current_user.auth_id,
-        case_id=case_id,
-        limit=limit,
-        offset=offset,
-    )
+    """List conversations for the authenticated user.
+
+    Optional filters: ``case_id``, ``starred``. When ``q`` is a non-empty
+    string, searches both conversation titles and message content (the result
+    rows carry ``snippet``/``match_type``).
+    """
+    if q is not None and q.strip():
+        data = await run_db(
+            conversation_service.search_conversations,
+            supabase,
+            current_user.auth_id,
+            q,
+            starred=starred,
+            limit=limit,
+            offset=offset,
+        )
+    else:
+        data = await run_db(
+            conversation_service.list_conversations,
+            supabase,
+            current_user.auth_id,
+            case_id=case_id,
+            starred=starred,
+            limit=limit,
+            offset=offset,
+        )
 
     return ConversationListResponse(
         conversations=[_to_conversation_summary(c) for c in data["conversations"]],
@@ -114,7 +133,7 @@ async def update_conversation(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Update conversation title."""
+    """Update a conversation's title and/or starred state."""
     validate_uuid(conversation_id, "معرف المحادثة")
     data = await run_db(
         conversation_service.update_conversation,
@@ -122,6 +141,7 @@ async def update_conversation(
         current_user.auth_id,
         conversation_id,
         title_ar=body.title_ar,
+        starred=body.starred,
     )
 
     return ConversationResponse(conversation=_to_conversation_detail(data))
@@ -177,26 +197,36 @@ async def end_session(
 
 def _to_conversation_summary(data: dict) -> ConversationSummary:
     """Map a raw conversation dict to ConversationSummary."""
+    starred_at = data.get("starred_at")
     return ConversationSummary(
         conversation_id=data["conversation_id"],
         case_id=data.get("case_id"),
         title_ar=data.get("title_ar"),
         message_count=data.get("message_count", 0),
         is_active=data.get("is_active", True),
+        is_starred=data.get("is_starred", starred_at is not None),
+        starred_at=starred_at,
         created_at=data["created_at"],
         updated_at=data["updated_at"],
+        snippet=data.get("snippet"),
+        match_type=data.get("match_type"),
     )
 
 
 def _to_conversation_detail(data: dict) -> ConversationDetail:
     """Map a raw conversation dict to ConversationDetail."""
+    starred_at = data.get("starred_at")
     return ConversationDetail(
         conversation_id=data["conversation_id"],
         case_id=data.get("case_id"),
         title_ar=data.get("title_ar"),
         message_count=data.get("message_count", 0),
         is_active=data.get("is_active", True),
+        is_starred=data.get("is_starred", starred_at is not None),
+        starred_at=starred_at,
         model_name=data.get("model"),
         created_at=data["created_at"],
         updated_at=data["updated_at"],
+        snippet=data.get("snippet"),
+        match_type=data.get("match_type"),
     )

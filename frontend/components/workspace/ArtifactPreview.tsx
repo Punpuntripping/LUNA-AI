@@ -11,6 +11,14 @@ interface ArtifactPreviewProps {
   /** Raw markdown body. Copy button copies this string verbatim. */
   content: string;
   /**
+   * When provided, the copy button writes THIS string to the clipboard
+   * instead of ``content``. The rendered body still shows ``content`` — this
+   * lets a viewer copy more than what's rendered here (e.g. AgentSearchViewer
+   * appends its sibling reference list, which lives in ``footer``, not in the
+   * markdown body). Falls back to ``content`` when undefined.
+   */
+  copyContent?: string;
+  /**
    * Extra action(s) rendered to the start (RTL: left) of the copy button —
    * e.g. a preview/edit toggle on NoteEditor.
    */
@@ -53,6 +61,7 @@ interface ArtifactPreviewProps {
  */
 export function ArtifactPreview({
   content,
+  copyContent,
   headerActions,
   footer,
   hideToolbar = false,
@@ -65,7 +74,7 @@ export function ArtifactPreview({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(content ?? "");
+      await navigator.clipboard.writeText(copyContent ?? content ?? "");
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -76,7 +85,11 @@ export function ArtifactPreview({
     }
   };
 
+  // Body presence drives the empty-state placeholder; copy enablement keys off
+  // whatever will actually be written (``copyContent`` may carry refs even when
+  // the body is blank).
   const hasContent = (content ?? "").trim().length > 0;
+  const hasCopyText = (copyContent ?? content ?? "").trim().length > 0;
 
   return (
     <div className={cn("relative flex flex-1 min-h-0 flex-col", className)} dir="rtl">
@@ -97,7 +110,7 @@ export function ArtifactPreview({
             variant="secondary"
             size="sm"
             onClick={handleCopy}
-            disabled={!hasContent}
+            disabled={!hasCopyText}
             aria-label={copied ? "تم النسخ" : copyLabel}
             className={cn(
               "pointer-events-auto h-7 gap-1.5 px-2 text-[11px] shadow-sm",

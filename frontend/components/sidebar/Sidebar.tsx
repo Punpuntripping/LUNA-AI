@@ -5,7 +5,7 @@ import { Menu, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { useConversations, useCreateConversation } from "@/hooks/use-conversations";
+import { useConversations } from "@/hooks/use-conversations";
 import { useCases } from "@/hooks/use-cases";
 import { useTemplates } from "@/hooks/use-templates";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
@@ -15,6 +15,7 @@ import { CaseList } from "@/components/sidebar/CaseList";
 import { TemplateList } from "@/components/sidebar/TemplateList";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { CASES_ENABLED } from "@/lib/features";
 
 interface NavPillProps {
   label: string;
@@ -24,9 +25,45 @@ interface NavPillProps {
   onCreate?: () => void;
   createTooltip?: string;
   isCreating?: boolean;
+  /**
+   * Render the pill as non-interactive with a "قيد التطوير" badge. Used to keep
+   * a feature visible in the nav while it is gated off (see lib/features.ts).
+   * Suppresses the count, the create button, and all click/key handlers.
+   */
+  disabled?: boolean;
+  disabledBadge?: string;
 }
 
-function NavPill({ label, count, active, onSelect, onCreate, createTooltip, isCreating }: NavPillProps) {
+function NavPill({
+  label,
+  count,
+  active,
+  onSelect,
+  onCreate,
+  createTooltip,
+  isCreating,
+  disabled,
+  disabledBadge,
+}: NavPillProps) {
+  if (disabled) {
+    return (
+      <div
+        aria-disabled
+        className={cn(
+          "relative flex items-center justify-between gap-2 rounded-full px-3.5 py-2",
+          "border border-transparent text-muted-foreground/60 cursor-not-allowed select-none"
+        )}
+      >
+        <span className="text-sm font-medium truncate">{label}</span>
+        {disabledBadge && (
+          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+            {disabledBadge}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       role="button"
@@ -111,7 +148,6 @@ export function Sidebar() {
   const { data: convData } = useConversations(null);
   const { data: caseData } = useCases("active");
   const { data: templateData } = useTemplates();
-  const createConversation = useCreateConversation();
 
   const conversationCount = convData?.conversations?.length;
   const caseCount = caseData?.cases?.length;
@@ -130,15 +166,12 @@ export function Sidebar() {
 
   const handleNewConversation = () => {
     if (activeTab !== "conversations") setActiveTab("conversations");
-    createConversation.mutate(
-      { case_id: null },
-      {
-        onSuccess: (resp) => {
-          setSelectedConversation(resp.conversation.conversation_id);
-          router.push(`/chat/${resp.conversation.conversation_id}`);
-        },
-      }
-    );
+    // Lazy creation: do NOT persist a conversation here. Just route to the
+    // empty composer (/chat). The conversation row is created only when the
+    // user actually sends the first message (see app/chat/page.tsx). This stops
+    // empty "محادثة جديدة" rows from piling up every time "+" is clicked.
+    setSelectedConversation(null);
+    router.push("/chat");
   };
 
   const handleNewCase = () => {
@@ -188,16 +221,26 @@ export function Sidebar() {
             onSelect={() => setActiveTab("conversations")}
             onCreate={handleNewConversation}
             createTooltip="محادثة جديدة"
-            isCreating={createConversation.isPending}
           />
-          <NavPill
-            label="القضايا"
-            count={caseCount}
-            active={activeTab === "cases"}
-            onSelect={() => setActiveTab("cases")}
-            onCreate={handleNewCase}
-            createTooltip="قضية جديدة"
-          />
+          {CASES_ENABLED ? (
+            <NavPill
+              label="القضايا"
+              count={caseCount}
+              active={activeTab === "cases"}
+              onSelect={() => setActiveTab("cases")}
+              onCreate={handleNewCase}
+              createTooltip="قضية جديدة"
+            />
+          ) : (
+            <NavPill
+              label="القضايا"
+              count={undefined}
+              active={false}
+              onSelect={() => {}}
+              disabled
+              disabledBadge="قيد التطوير"
+            />
+          )}
           <NavPill
             label="قوالبي"
             count={templateCount}
@@ -210,12 +253,12 @@ export function Sidebar() {
 
         {/* Single panel — swaps content based on active tab */}
         <div className="flex-1 flex flex-col min-h-0">
-          {activeTab === "conversations" ? (
-            <ConversationList />
-          ) : activeTab === "cases" ? (
+          {activeTab === "cases" && CASES_ENABLED ? (
             <CaseList />
-          ) : (
+          ) : activeTab === "templates" ? (
             <TemplateList />
+          ) : (
+            <ConversationList />
           )}
         </div>
 

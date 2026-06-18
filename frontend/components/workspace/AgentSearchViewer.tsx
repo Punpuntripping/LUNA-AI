@@ -1,8 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { Share2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ArtifactPreview } from "./ArtifactPreview";
-import { ReferencePanel } from "./ReferencePanel";
+import { ReferencePanel, referenceLabel } from "./ReferencePanel";
+import { ShareArtifactDialog } from "./ShareArtifactDialog";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import type { WorkspaceItem } from "@/types";
 
@@ -46,6 +49,7 @@ export function AgentSearchViewer({
   const { data: references = [], isLoading: isLoadingReferences } =
     useWorkspaceItemReferences(item.item_id);
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
 
   // Intra-artifact citation click: when the user clicks ``[n]`` inside the
   // synthesis body, focus reference ``n`` in the panel below. No need to go
@@ -67,18 +71,57 @@ export function AgentSearchViewer({
     onFlashDone?.();
   }, [onFlashDone]);
 
+  // The copy button copies the synthesis body PLUS the reference list. The
+  // refs render in a sibling panel (footer), not in ``content_md``, so without
+  // this the user would copy [n] markers with no titles to resolve them. Each
+  // reference is appended as a plain ``{n}-{title}`` line (e.g.
+  // "1-نظام إيرادات الدولة") under a «المراجع» heading — number + title only,
+  // no snippets/domains/links.
+  const copyContent = useMemo(() => {
+    const body = item.content_md ?? "";
+    if (references.length === 0) return body;
+    const refLines = [...references]
+      .sort((a, b) => a.n - b.n)
+      .map((ref) => `${ref.n}-${referenceLabel(ref)}`)
+      .join("\n");
+    return body.trim().length > 0
+      ? `${body}\n\nالمراجع\n${refLines}`
+      : `المراجع\n${refLines}`;
+  }, [item.content_md, references]);
+
   return (
-    <ArtifactPreview
-      content={item.content_md ?? ""}
-      onCitationClick={handleBodyCitationClick}
-      footer={
-        <ReferencePanel
-          references={references}
-          focusedReferenceN={focusedN}
-          onFlashDone={handleFlashDone}
-          isLoading={isLoadingReferences}
-        />
-      }
-    />
+    <>
+      <ArtifactPreview
+        content={item.content_md ?? ""}
+        copyContent={copyContent}
+        onCitationClick={handleBodyCitationClick}
+        headerActions={
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-[11px] shadow-sm"
+            onClick={() => setShareOpen(true)}
+            aria-label="مشاركة عبر رابط عام"
+          >
+            <Share2 className="h-3 w-3" />
+            مشاركة
+          </Button>
+        }
+        footer={
+          <ReferencePanel
+            references={references}
+            focusedReferenceN={focusedN}
+            onFlashDone={handleFlashDone}
+            isLoading={isLoadingReferences}
+          />
+        }
+      />
+      <ShareArtifactDialog
+        itemId={item.item_id}
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+      />
+    </>
   );
 }

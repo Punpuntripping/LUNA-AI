@@ -505,7 +505,7 @@ function ServiceSection({
 // ---------------------------------------------------------------------------
 
 /** Best human-readable title for a reference card. */
-function referenceLabel(ref: Reference): string {
+export function referenceLabel(ref: Reference): string {
   if (ref.title) return ref.title;
   if (ref.domain === "cases") {
     return [ref.entity_name, ref.regulation_title].filter(Boolean).join(" — ") || "قضية";

@@ -8,12 +8,20 @@ const ScrollArea = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
 >(({ className, children, ...props }, ref) => (
+  // dir="ltr" on the Root forces Radix to render the vertical scrollbar on the
+  // RIGHT (in RTL it would default to the left, where it overlapped the row
+  // ⋮ menus). The Viewport is set back to dir="rtl" so all content stays
+  // right-to-left — only the scrollbar side flips.
   <ScrollAreaPrimitive.Root
     ref={ref}
+    dir="ltr"
     className={cn("relative overflow-hidden", className)}
     {...props}
   >
-    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
+    <ScrollAreaPrimitive.Viewport
+      dir="rtl"
+      className="h-full w-full rounded-[inherit]"
+    >
       {children}
     </ScrollAreaPrimitive.Viewport>
     <ScrollBar />

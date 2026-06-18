@@ -42,7 +42,9 @@ DEFAULT_AGGREGATOR_PROMPT = "prompt_1"
 _SHARED_ROLE_AR = """\
 ## Output language
 
-Respond in Arabic: write the `synthesis_md` body the lawyer reads in fluent, simplified Modern Standard Arabic. The instructions in this prompt are in English for your guidance only — your answer is Arabic. You MAY keep an unavoidable English/Latin token — a technical term, abbreviation, formula, or shorthand with no accurate Arabic equivalent — but do not otherwise write in English. (The reserved citation tag `[n]` and bare article/system numbers — «المادة 81» — are allowed as written.)
+Respond in Arabic as much as you can: write the `synthesis_md` body the lawyer reads in fluent, simplified Modern Standard Arabic. The instructions in this prompt are in English for your guidance only — your answer is Arabic. You MAY keep an unavoidable English/Latin token — a technical term, abbreviation, formula, or shorthand with no accurate Arabic equivalent — but do not otherwise write in English.
+
+**Numbers — use Western digits `0-9`, never Arabic-Indic digits (`٠١٢٣٤٥٦٧٨٩`).** Write every numeral in the answer with Western digits: the citation tags (`[1]`, `[1,3]`), article and system numbers («المادة 81»), amounts, dates, ratios, and ordered-list markers. Write «المادة 81», «4000 ريال», «[11]» — NOT «المادة ٨١», «٤٠٠٠ ريال», «[١١]». Arabic-Indic digits inside a citation tag break the clickable reference link, so this is binding. (The reserved citation tag `[n]` and bare article/system numbers — «المادة 81» — are allowed as written.)
 
 You are an intelligent legal synthesizer within the Rayhan (ريحان) Saudi legal-AI platform.
 You receive Arabic legal search results from multiple source types, already filtered and ranked by the reranker stage.
@@ -87,6 +89,7 @@ _CITATION_RULES_AR = """\
 ## Citation rules (binding)
 
 - The citation tag is the reference number in square brackets `[n]`. Cite inside the body after every sentence that rests on a reference: `... يجب على الزوج الإنفاق [1].`
+- **The number inside `[n]` is always a Western digit** — `[11]`, `[1,3]` — never an Arabic-Indic digit `[١١]`. Arabic-Indic numerals inside the tag are not recognized as a citation and silently lose their clickable link.
 - Multiple citations are grouped within a single pair of square brackets, separated by commas: `[1,3]`, not `[1][3]`.
 - Do not place more than 4 numbers inside one tag — if you need more, distribute them across consecutive sentences.
 - **The form `[n]` is reserved exclusively for citing references.** Article and system numbers are written in prose with no brackets at all — «المادة 81», «المادة الحادية والثمانون» — not «[81]» and not «(81)». The square bracket is for references only.
@@ -94,7 +97,7 @@ _CITATION_RULES_AR = """\
 
 ## Output language reminder — binding
 
-Before the schema: write the value of `synthesis_md` in Arabic. An unavoidable technical term, abbreviation, or formula with no accurate Arabic equivalent may stay in English, but do not otherwise write the answer in English. The schema field names, the JSON syntax, and the `[n]` citation tags stay as written here.
+Before the schema: write the value of `synthesis_md` in Arabic as much as you can. An unavoidable technical term, abbreviation, or formula with no accurate Arabic equivalent may stay in English, but do not otherwise write the answer in English. All numerals use Western digits `0-9` (never Arabic-Indic `٠-٩`) — most importantly inside the `[n]` citation tags, where an Arabic-Indic digit breaks the link. The schema field names, the JSON syntax, and the `[n]` citation tags stay as written here.
 
 ## Output schema
 
@@ -909,10 +912,12 @@ def build_aggregator_user_message(
     lines.append("## Task")
     lines.append(
         "Follow the instructions in the system prompt. Write the answer body "
-        "(`synthesis_md`) in Arabic (keep only unavoidable English technical terms "
-        "where there is no accurate Arabic equivalent). Cite references using the citation "
-        "tag shown in `cite` as-is (e.g. `[1]` or `[1,3]`), and do not put "
-        "article numbers in brackets. Return complete JSON conforming to the schema."
+        "(`synthesis_md`) in Arabic as much as you can (keep only unavoidable English "
+        "technical terms where there is no accurate Arabic equivalent). Use Western "
+        "digits `0-9` for every number — never Arabic-Indic digits `٠-٩` — especially "
+        "inside citation tags. Cite references using the citation tag shown in `cite` "
+        "as-is (e.g. `[1]` or `[1,3]`), and do not put article numbers in brackets. "
+        "Return complete JSON conforming to the schema."
     )
 
     return "\n".join(lines)

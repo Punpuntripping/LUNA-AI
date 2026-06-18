@@ -42,6 +42,17 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS into a list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
 
+    # Public-facing web (frontend) origin. Used to build absolute share URLs
+    # (e.g. the مدونة / public share-by-link page at /blog/{token}). Defaults
+    # to the prod frontend; override to http://localhost:3000 for local dev.
+    # No trailing slash (the validator strips it).
+    PUBLIC_WEB_URL: str = "https://rayhanai.com"
+
+    @field_validator("PUBLIC_WEB_URL")
+    @classmethod
+    def validate_public_web_url(cls, v: str) -> str:
+        return (v or "").rstrip("/")
+
     # ========================================
     # SUPABASE
     # ========================================

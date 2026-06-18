@@ -272,6 +272,45 @@ def _insert_attachment_links(
     supabase.table("message_attachments").insert(rows).execute()
 
 
+def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
+    """Project the OCR page total for this message's attachments so the quota
+    gate counts a multi-page document accurately *before* OCR runs.
+
+    Per attachment, prefers the authoritative post-OCR count (``metadata.ocr_pages``,
+    present on a re-sent attachment), else the upload-time client estimate
+    (``metadata.page_count``), else a 1-page floor (unknown). Falls back to one
+    page per attachment on any query failure — the gate must still run, and the
+    post-OCR settle bills the real count regardless.
+    """
+    if not attachment_ids:
+        return 0
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .select("item_id, metadata")
+            .in_("item_id", list(attachment_ids))
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("OCR page estimate query failed; using 1/attachment: %s", e)
+        return len(attachment_ids)
+
+    by_id = {
+        r.get("item_id"): (r.get("metadata") or {})
+        for r in (getattr(result, "data", None) or [])
+    }
+    total = 0
+    for aid in attachment_ids:
+        meta = by_id.get(aid) or {}
+        raw = meta.get("ocr_pages") or meta.get("page_count")
+        try:
+            pages = int(raw)
+        except (TypeError, ValueError):
+            pages = 0
+        total += pages if pages > 0 else 1  # unknown → 1-page floor
+    return total
+
+
 def _insert_assistant_placeholder(
     supabase: SupabaseClient,
     assistant_msg_id: str,
@@ -422,16 +461,26 @@ async def send_message_stream(
     # limit, emit a quota_exceeded SSE event and end the stream without
     # spawning the pipeline. The user message is already saved (kept in
     # history); no assistant placeholder is created.
+    # Project OCR pages from each attachment's stored page count (client-reported
+    # at upload; real ocr_pages on a re-sent file) so the gate counts multi-page
+    # documents accurately before OCR runs — not 1 page per file. Falls back to a
+    # 1-page floor per attachment when unknown. The post-OCR settle remains the
+    # authoritative billing count; this only drives the pre-send block decision.
+    est_ocr_pages = 0
+    if attachment_ids:
+        try:
+            est_ocr_pages = await run_db(
+                _estimate_ocr_pages, supabase, attachment_ids
+            )
+        except Exception:  # noqa: BLE001
+            est_ocr_pages = len(attachment_ids)
     try:
         await quota.check(
             getattr(request.app.state, "redis", None),
             supabase,
             user_id,
-            # 1 page minimum per attachment — coarse upfront projection. The
-            # real page count lands on settle after OCR runs; the next
-            # message's gate sees the true cumulative use.
             needs_ocr=bool(attachment_ids),
-            est_ocr_pages=len(attachment_ids or []),
+            est_ocr_pages=est_ocr_pages,
             needs_ord=True,
             needs_web=False,  # future skill
         )

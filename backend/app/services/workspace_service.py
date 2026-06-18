@@ -630,6 +630,7 @@ def init_attachment_upload(
     filename: str,
     mime_type: str,
     size_bytes: int,
+    page_count: int | None = None,
 ) -> dict:
     """Phase 1 of the resumable flow for chat attachments. Reserves a
     ``workspace_items`` row with ``metadata.upload_status='uploading'`` and
@@ -667,6 +668,16 @@ def init_attachment_upload(
         "upload_url_expires_at": session["expires_at"].isoformat(),
         "upload_init_at": now_iso,
     }
+    # Client-reported page estimate (PDF parsed in-browser; image → 1). Read by
+    # the OCR quota gate's upfront projection only; the post-OCR pass overwrites
+    # metadata.ocr_pages with the authoritative Mistral count. Clamp defensively
+    # against a spoofed body — a lie only buys the same bounded one-message
+    # overage the gate already tolerates, since settle bills the real count.
+    if page_count is not None:
+        try:
+            metadata["page_count"] = max(1, min(int(page_count), 10_000))
+        except (TypeError, ValueError):
+            pass
 
     row = create_workspace_item(
         supabase,

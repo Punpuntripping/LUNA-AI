@@ -83,3 +83,30 @@ export async function generatePdfThumbnail(
     return null;
   }
 }
+
+/**
+ * Page count of a PDF `file`, parsed in-browser. Returns null when the file
+ * isn't a PDF or can't be parsed (encrypted / damaged / worker blocked) — the
+ * caller falls back to a 1-page floor.
+ *
+ * Reuses the same lazily-loaded, memoized pdfjs instance as the thumbnail
+ * generator, so for an attached PDF (already parsed for its thumbnail) this is
+ * effectively free. The value feeds the backend OCR quota gate's upfront
+ * projection — an estimate only; the server's post-OCR count is authoritative.
+ */
+export async function getPdfPageCount(file: File): Promise<number | null> {
+  if (file.type !== "application/pdf") return null;
+  if (typeof window === "undefined") return null; // SSR safety.
+
+  try {
+    const pdfjs = await loadPdfjs();
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    return pdf.numPages;
+  } catch (err) {
+    if (typeof console !== "undefined") {
+      console.warn("[pdf-pagecount]", err);
+    }
+    return null;
+  }
+}

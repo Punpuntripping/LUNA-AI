@@ -35,6 +35,8 @@ import type {
   TemplateIngestResponse,
   UsageReport,
   RedeemCodeResponse,
+  ShareDraftResponse,
+  ShareArtifactResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -231,6 +233,33 @@ export const api = {
       body: formData,
       // Content-Type is NOT set — browser adds multipart boundary
     }),
+
+  // -----------------------------------------------
+  // Blog / public share-by-link (مدونة)
+  // -----------------------------------------------
+  // The PUBLIC read (``GET /public/blog/{token}``) is fetched server-side in
+  // app/blog/[token]/page.tsx with a plain ``fetch`` (no auth header), NOT via
+  // these helpers. These three are the AUTHED owner-side actions and go
+  // through apiFetch (Bearer token + 401 retry + Arabic error mapping).
+
+  /** Pre-fill the share dialog: derive the default السؤال for an artifact. */
+  getShareDraft: (itemId: string) =>
+    apiFetch<ShareDraftResponse>(`/workspace/${itemId}/share-draft`, {
+      method: "GET",
+    }),
+
+  /** Publish an ``agent_writing`` artifact → mint an unguessable public URL. */
+  shareArtifact: (itemId: string, questionText: string) =>
+    apiFetch<ShareArtifactResponse>(`/workspace/${itemId}/share`, {
+      method: "POST",
+      body: JSON.stringify({ question_text: questionText }),
+    }),
+
+  /** Owner kill-switch: revoke a published post (leaked-link mitigation). */
+  unpublishPost: (postId: string) =>
+    apiFetch<{ success: boolean }>(`/blog/posts/${postId}`, {
+      method: "DELETE",
+    }),
 };
 
 // -----------------------------------------------
@@ -290,11 +319,21 @@ export const casesApi = {
 // -----------------------------------------------
 
 export const conversationsApi = {
-  list: (params?: { case_id?: string | null; limit?: number; offset?: number }) => {
+  list: (params?: {
+    case_id?: string | null;
+    limit?: number;
+    offset?: number;
+    /** Full-text query over titles + message content (server-scoped to user). */
+    q?: string;
+    /** When true, return only starred conversations. */
+    starred?: boolean;
+  }) => {
     const searchParams = new URLSearchParams();
     if (params?.case_id) searchParams.set("case_id", params.case_id);
     if (params?.limit) searchParams.set("limit", String(params.limit));
     if (params?.offset) searchParams.set("offset", String(params.offset));
+    if (params?.q) searchParams.set("q", params.q);
+    if (params?.starred) searchParams.set("starred", "true");
     const qs = searchParams.toString();
     return api.get<ConversationListResponse>(`/conversations${qs ? `?${qs}` : ""}`);
   },
@@ -305,8 +344,19 @@ export const conversationsApi = {
   create: (data: CreateConversationRequest) =>
     api.post<{ conversation: ConversationDetail }>("/conversations", data),
 
-  update: (conversationId: string, title_ar: string) =>
-    api.patch<{ conversation: ConversationDetail }>(`/conversations/${conversationId}`, { title_ar }),
+  /**
+   * Rename and/or star a conversation. ``title_ar`` renames; ``starred`` toggles
+   * the star (server stamps ``starred_at`` accordingly). At least one field must
+   * be present (enforced server-side).
+   */
+  update: (
+    conversationId: string,
+    body: { title_ar?: string; starred?: boolean },
+  ) =>
+    api.patch<{ conversation: ConversationDetail }>(
+      `/conversations/${conversationId}`,
+      body,
+    ),
 
   delete: (conversationId: string) =>
     api.delete<{ success: boolean }>(`/conversations/${conversationId}`),
@@ -501,7 +551,13 @@ export const workspaceApi = {
   /** Phase 2: mint a TUS upload URL for a new chat attachment. */
   initAttachment: (
     conversationId: string,
-    body: { filename: string; mime_type: string; size_bytes: number },
+    body: {
+      filename: string;
+      mime_type: string;
+      size_bytes: number;
+      /** Client page estimate (PDF parsed in-browser; image → 1) for the OCR gate. */
+      page_count?: number;
+    },
   ) =>
     api.post<UploadInitResponse>(
       `/conversations/${conversationId}/workspace/attachments/init`,

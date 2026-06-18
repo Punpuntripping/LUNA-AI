@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { documentsApi, workspaceApi, getAccessToken, ApiClientError } from "@/lib/api";
 import { startTusUpload, type UploadHandle } from "@/lib/upload-client";
+import { getPdfPageCount } from "@/lib/pdf-thumbnail";
 import { documentKeys } from "@/hooks/use-documents";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import type { Document, WorkspaceItem } from "@/types";
@@ -151,10 +152,20 @@ export function runResumableUpload(
           size_bytes: file.size,
         });
       } else {
+        // OCR-quota projection: count PDF pages in-browser so the gate sees the
+        // real page total before OCR runs (image / parse failure → 1-page floor).
+        // Estimate only — the server clamps it and the post-OCR settle bills the
+        // authoritative Mistral count.
+        let pageCount = 1;
+        if (file.type === "application/pdf") {
+          const n = await getPdfPageCount(file);
+          if (n && n > 0) pageCount = n;
+        }
         initRes = await workspaceApi.initAttachment(target.conversationId, {
           filename: file.name,
           mime_type: file.type,
           size_bytes: file.size,
+          page_count: pageCount,
         });
       }
     } catch (err) {

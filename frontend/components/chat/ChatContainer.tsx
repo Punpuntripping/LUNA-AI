@@ -10,6 +10,7 @@ import { useConversationDetail } from "@/hooks/use-conversations";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { QuotaBanner } from "@/components/chat/QuotaBanner";
+import { ConversationHeaderMenu } from "@/components/chat/ConversationHeaderMenu";
 
 interface ChatContainerProps {
   conversationId: string;
@@ -26,7 +27,8 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   const toggleWorkspace = useChatStore((s) => s.toggleWorkspace);
 
   const { data: convData } = useConversationDetail(conversationId);
-  const caseId = convData?.conversation?.case_id ?? null;
+  const conversation = convData?.conversation;
+  const caseId = conversation?.case_id ?? null;
 
   const handleSend = useCallback(
     (content: string) => {
@@ -67,9 +69,16 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         lang="ar"
         className="flex items-center justify-between border-b px-4 py-2 shrink-0"
       >
-        <h2 className="text-sm font-medium text-muted-foreground">
-          المحادثة
-        </h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-sm font-medium text-muted-foreground">المحادثة</h2>
+          {conversation && (
+            <ConversationHeaderMenu
+              conversationId={conversationId}
+              title={conversation.title_ar || "محادثة جديدة"}
+              isStarred={conversation.is_starred}
+            />
+          )}
+        </div>
         <Button
           variant={isWorkspaceOpen ? "secondary" : "ghost"}
           size="sm"

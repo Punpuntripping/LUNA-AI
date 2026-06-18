@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pencil, Save, X, Loader2 } from "lucide-react";
+import { Pencil, Save, X, Loader2, Share2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   useUpdateWorkspaceItem,
@@ -9,6 +9,7 @@ import {
 } from "@/hooks/use-workspace";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
+import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import type { WorkspaceItem } from "@/types";
 
@@ -47,6 +48,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
   const [editTitle, setEditTitle] = useState("");
+  const [shareOpen, setShareOpen] = useState(false);
 
   function enterEditMode() {
     if (!item) return;
@@ -118,16 +120,31 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           </h3>
         )}
 
-        {editable && !isEditing && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={enterEditMode}
-            aria-label="تعديل"
-          >
-            <Pencil className="h-4 w-4" />
-          </Button>
+        {!isEditing && (
+          <div className="flex items-center gap-1 shrink-0">
+            {item.kind === "agent_writing" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setShareOpen(true)}
+                aria-label="مشاركة"
+              >
+                <Share2 className="h-4 w-4" />
+              </Button>
+            )}
+            {editable && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={enterEditMode}
+                aria-label="تعديل"
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         )}
 
         {isEditing && (
@@ -193,6 +210,14 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           }).format(new Date(item.updated_at))}
         </span>
       </div>
+
+      {item.kind === "agent_writing" && (
+        <ShareArtifactDialog
+          itemId={item.item_id}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+        />
+      )}
     </div>
   );
 }
