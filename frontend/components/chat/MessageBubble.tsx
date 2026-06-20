@@ -781,12 +781,15 @@ function AttachmentList({
         <AttachmentChip
           key={att.id}
           attachment={att}
+          // Title from the workspace-list cache when present (fixes the empty
+          // filename the messages API returns for workspace-item attachments);
+          // a fresh same-session attachment falls back to its own filename.
           resolvedTitle={artifactLookup?.[att.document_id]?.title}
-          // Only openable when the id is a known workspace item — guards
-          // against legacy case-document ids that would 404 in the pane.
-          onOpen={
-            artifactLookup?.[att.document_id] ? onOpenArtifact : undefined
-          }
+          // NOT gated on artifactLookup: opening fetches the item by id, so a
+          // just-uploaded attachment is clickable immediately — not only after
+          // the list cache refreshes on a full reload (the "per new sign-in"
+          // bug). Every message attachment is a workspace item.
+          onOpen={onOpenArtifact}
         />
       ))}
     </div>
@@ -815,7 +818,7 @@ function AttachmentChip({
     </>
   );
 
-  if (!onOpen) {
+  if (!onOpen || !attachment.document_id) {
     return (
       <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
         {inner}
