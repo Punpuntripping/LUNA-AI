@@ -2,6 +2,7 @@
 
 import { Construction } from "lucide-react";
 import { ArtifactPreview } from "./ArtifactPreview";
+import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import type { WorkspaceItem } from "@/types";
 
 interface ReferencesRendererProps {
@@ -17,12 +18,13 @@ interface ReferencesRendererProps {
  */
 export function ReferencesRenderer({ item }: ReferencesRendererProps) {
   return (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="relative flex flex-1 flex-col min-h-0">
       <div className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
         <Construction className="h-3.5 w-3.5" />
         <span>قيد التطوير — قائمة المراجع</span>
       </div>
-      <ArtifactPreview content={item.content_md ?? ""} />
+      <ArtifactPreview content={item.content_md ?? ""} hideToolbar />
+      <WorkspaceItemActionBar floating copyText={item.content_md ?? ""} />
     </div>
   );
 }

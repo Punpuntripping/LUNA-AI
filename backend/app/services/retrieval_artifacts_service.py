@@ -99,16 +99,39 @@ async def save_retrieval_artifact(
 # compliance, then case -- see agents/deep_search_v3/ura/merger.py).
 _EXECUTOR_ORDER: tuple[str, ...] = ("reg_search", "compliance_search", "case_search")
 
+# agent_family -> forensic source_table (the real corpus table each domain's
+# results point at). Used only by the legacy fallback projection below; the
+# adapters set ``source_table`` per-result directly on ``kept_forensic``.
+_FAMILY_SOURCE_TABLE: dict[str, str] = {
+    "reg_search": "chunks",
+    "compliance_search": "services",
+    "case_search": "cases",
+}
 
-def _kept_result_row(result: Any) -> dict:
-    """Project a domain URA result down to the serializable summary stored
-    in ``reranker_runs.kept_results``.
+# Citation ref_id prefixes minted by the URA adapters -> stripped to recover
+# the bare id for the forensic fallback. (``reg:<uuid>`` -> ``<uuid>``.)
+_REF_PREFIXES: tuple[str, ...] = ("reg:", "case:", "compliance:")
 
-    Keeps only the fields forensic analysis actually needs so the JSONB
-    column stays small (full content lives on ``retrieval_artifacts.ura_json``).
+
+def _strip_ref_prefix(ref_id: str) -> str:
+    for p in _REF_PREFIXES:
+        if ref_id.startswith(p):
+            return ref_id[len(p):]
+    return ref_id
+
+
+def _kept_result_row(result: Any, source_table: str = "") -> dict:
+    """Fallback projection of a domain URA result -> ``kept_results`` entry.
+
+    Used only when the adapter did not supply ``kept_forensic`` (defensive —
+    every production caller goes through the adapters). Strips the citation
+    prefix off ``ref_id`` and stamps ``source_table`` so even the fallback
+    emits the new shape. ``title`` stays best-effort (empty for reg/compliance
+    URA results, which carry no ``title`` attribute).
     """
     return {
-        "ref_id": getattr(result, "ref_id", "") or "",
+        "source_table": source_table,
+        "ref_id": _strip_ref_prefix(getattr(result, "ref_id", "") or ""),
         "relevance": getattr(result, "relevance", "") or "",
         "reasoning": getattr(result, "reasoning", "") or "",
         "source_type": getattr(result, "source_type", "") or "",
@@ -129,10 +152,20 @@ def _build_row(
     per-sub-query telemetry isn't currently captured (only per-executor
     aggregates via ``state.inner_usage``). See TODO in orchestrator.
 
-    ``dropped_results`` is left as ``[]`` -- reranker_runs currently emit
-    ``dropped_count`` only; wiring full drop reasoning is a future pass.
+    ``kept_results`` / ``dropped_results`` come from the adapter-built
+    ``rqr.kept_forensic`` / ``rqr.dropped_forensic`` (bare real UUID +
+    ``source_table`` + title). When the adapter didn't supply them (legacy /
+    test callers), ``kept_results`` falls back to the prefix-stripped
+    projection and ``dropped_results`` stays ``[]``.
     """
-    kept = [_kept_result_row(r) for r in (getattr(rqr, "results", None) or [])]
+    source_table = _FAMILY_SOURCE_TABLE.get(agent_family, "")
+    kept = list(getattr(rqr, "kept_forensic", None) or [])
+    if not kept:
+        kept = [
+            _kept_result_row(r, source_table)
+            for r in (getattr(rqr, "results", None) or [])
+        ]
+    dropped = list(getattr(rqr, "dropped_forensic", None) or [])
     return {
         "ura_id": ura_id,
         "agent_family": agent_family,
@@ -140,7 +173,7 @@ def _build_row(
         "sub_query_text": str(getattr(rqr, "query", "") or ""),
         "sub_query_rationale": str(getattr(rqr, "rationale", "") or ""),
         "kept_results": kept,
-        "dropped_results": [],  # TODO: capture dropped reasoning (currently drop_count-only)
+        "dropped_results": dropped,
         "sufficient": bool(getattr(rqr, "sufficient", False)),
         "summary_note": str(getattr(rqr, "summary_note", "") or ""),
         # TODO: wire per-sub-query tokens + timing once executor state exposes them

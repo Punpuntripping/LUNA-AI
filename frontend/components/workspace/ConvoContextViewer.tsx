@@ -1,6 +1,7 @@
 "use client";
 
 import { ArtifactPreview } from "./ArtifactPreview";
+import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import type { WorkspaceItem } from "@/types";
 
 interface ConvoContextViewerProps {
@@ -25,5 +26,10 @@ export function ConvoContextViewer({ item }: ConvoContextViewerProps) {
     );
   }
 
-  return <ArtifactPreview content={item.content_md} />;
+  return (
+    <div className="relative flex flex-1 min-h-0 flex-col">
+      <ArtifactPreview content={item.content_md} hideToolbar />
+      <WorkspaceItemActionBar floating copyText={item.content_md} />
+    </div>
+  );
 }

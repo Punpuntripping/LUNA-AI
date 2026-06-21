@@ -12,7 +12,7 @@ Models:
 - ExpanderOutput: legacy LLM query expansion result (flat list of strings)
 - ExpanderOutputV2: sectioned — typed queries (channel-tagged)
 - TypedQuery: one channel-tagged Arabic query
-- CaseRerankerDecision / CaseRerankerClassification: per-query LLM reranker output
+- CaseKeep / CaseRerankerClassification: per-query LLM reranker output (keep-only)
 - RerankedCaseResult: assembled kept case (code, not LLM)
 - RerankerQueryResult: per-query reranker summary (dataclass)
 - CaseSearchResult: final result returned to caller
@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -114,43 +114,41 @@ class ExpanderOutputV2(BaseModel):
 # but schema-complete JSON without a retry.
 
 
-class CaseRerankerDecision(BaseModel):
-    """One reranker decision for a case result (position-indexed)."""
+class CaseKeep(BaseModel):
+    """One KEPT case result (position-indexed). Keep-only contract: every
+    emitted entry is a keep — un-listed positions are dropped by difference in
+    the reranker. ``relevance`` is REQUIRED (no default) so the model cannot
+    silently coerce a keep to ``medium``.
+    """
 
     position: int = Field(
         description="1-based position matching [N] in the result header",
     )
-    action: Literal["keep", "drop"] = Field(
+    relevance: Literal["high", "medium"] = Field(
         description=(
-            "keep: relevant to the sub-query; "
-            "drop: not relevant / wrong jurisdiction / procedural-only ruling"
+            "Relevance tier — REQUIRED on every kept entry. "
+            "'high' = primary-axis + direct operative reasoning; "
+            "'medium' = secondary axis / partial / applicable principle."
         ),
-    )
-    relevance: Optional[Literal["high", "medium"]] = Field(
-        default=None,
-        description="Relevance tier — set ONLY when action='keep' (nulled otherwise)",
     )
     reasoning: str = Field(
         description=(
-            "Short Arabic note justifying the decision; on a partial keep, "
+            "Short Arabic note justifying the keep; on a partial keep, "
             "name the uncovered axis. Never assert an axis the result lacks."
         ),
     )
     satisfies_axes: list[int] = Field(
         default_factory=list,
-        description="Indices into query_axes that this result covers (keep only)",
+        description="Indices into query_axes that this result covers",
     )
-
-    @model_validator(mode="after")
-    def _relevance_only_on_keep(self) -> "CaseRerankerDecision":
-        # Coherence: a dropped result has no relevance tier.
-        if self.action != "keep":
-            self.relevance = None
-        return self
 
 
 class CaseRerankerClassification(BaseModel):
-    """Output of one case_search reranker LLM call — decisions + axis coverage."""
+    """Output of one case_search reranker LLM call — keeps + axis coverage.
+
+    Keep-only contract: the model emits ONLY the rulings it keeps; the reranker
+    derives the drop set by set-difference (candidate positions − kept).
+    """
 
     sufficient: bool = Field(
         description=(
@@ -165,13 +163,30 @@ class CaseRerankerClassification(BaseModel):
             "classifying (e.g. dispute type, procedural issue, statutory basis)"
         ),
     )
-    decisions: list[CaseRerankerDecision] = Field(
+    keeps: list[CaseKeep] = Field(
         default_factory=list,
-        description="Per-result classification decisions",
+        description="One entry per KEPT ruling — un-listed positions are dropped",
     )
     summary_note: str = Field(
         description="Arabic note naming covered axes and any uncovered axis",
     )
+
+    @field_validator("keeps", mode="before")
+    @classmethod
+    def _coerce_keeps(cls, v):
+        # LLM output quirks (mirrors ExpanderOutputV2._coerce_queries):
+        #   ''         -> []   (uncertain → empty keep list, not crash)
+        #   '[...]'    -> list (JSON-stringified array, no retry)
+        if isinstance(v, str):
+            if v.strip() == "":
+                return []
+            try:
+                parsed = _json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return v
 
 
 class RerankedCaseResult(BaseModel):
@@ -193,6 +208,10 @@ class RerankedCaseResult(BaseModel):
     relevance: Literal["high", "medium"] = Field(default="medium")
     reasoning: str = Field(default="", description="Arabic explanation of relevance")
     db_id: str = Field(default="", description="case_ref — used as URA ref_id seed")
+    db_uuid: str = Field(
+        default="",
+        description="cases.id UUID — forensic ref_id seed (db_id stays case_ref for citations)",
+    )
 
 
 class CaseSearchResult(BaseModel):
@@ -281,6 +300,11 @@ class RerankerQueryResult:
     caps_applied: dict = field(default_factory=dict)
     # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the flat
     # keep cap was applied. Empty dict when the cap was not active.
+    dropped_results: list = field(default_factory=list)
+    # Forensic descriptors for LLM-dropped + cap-truncated cases. Each dict:
+    # {db_uuid, title, reasoning, drop_reason, source_type}. Reconstructed in
+    # the loop (the markdown-based reranker is blind to cases.id). Empty on
+    # the legacy non-sectioned path / reconstruction failure.
 
 
 @dataclass

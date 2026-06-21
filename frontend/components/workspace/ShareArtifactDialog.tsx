@@ -121,11 +121,11 @@ export function ShareArtifactDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
             <Share2 className="h-4 w-4" />
-            مشاركة عبر رابط عام
+            مشاركة عبر رابط
           </DialogTitle>
           <DialogDescription>
-            يتم نشر نسخة ثابتة من السؤال والإجابة على صفحة عامة يمكن لأي شخص فتحها
-            دون تسجيل دخول.
+            تُنشر نسخة ثابتة من السؤال والإجابة عبر رابط خاص. لا يمكن فتح الصفحة
+            إلا لمن لديه الرابط الذي تشاركه — دون الحاجة إلى تسجيل دخول.
           </DialogDescription>
         </DialogHeader>
 

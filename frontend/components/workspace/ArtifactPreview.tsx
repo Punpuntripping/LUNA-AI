@@ -133,7 +133,9 @@ export function ArtifactPreview({
       )}
 
       <ScrollArea className="flex-1" data-testid={testId}>
-        <div className="p-6 pt-12" dir="rtl">
+        {/* Extra top padding only when the floating toolbar overlaps the body;
+            hidden-toolbar callers (action-bar viewers) use even padding. */}
+        <div className={cn("p-6", hideToolbar ? "pt-6" : "pt-12")} dir="rtl">
           {hasContent ? (
             <MarkdownRenderer
               content={content}

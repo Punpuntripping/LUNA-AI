@@ -156,6 +156,7 @@ def _build_reranked_case_result(
         relevance=relevance if relevance in ("high", "medium") else "medium",
         reasoning=reasoning or "",
         db_id=full_row.get("case_ref") or str(full_row.get("id") or ""),
+        db_uuid=str(full_row.get("id") or ""),
     )
 
 

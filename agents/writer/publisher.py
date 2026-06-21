@@ -124,7 +124,10 @@ def _persist_writer_references(
     ``input.research_items`` (which the runner populated with
     ``{item_id, wi_seq, ...}`` per research item), fetches the matching
     source rows from ``workspace_item_references``, and inserts new rows
-    on the new WI numbered ``1..K`` in the order the writer emitted them.
+    on the new WI. The new ``n`` reuses the writer's actual citation number
+    (``source_n``) so the panel badges match the ``(n)`` markers in body_md;
+    it only falls back to compact ``1..K`` order-of-emission sequencing when
+    those numbers collide across source WIs (``UNIQUE (wi_id, n)`` guard).
 
     The new WI's ``metadata["references"]`` is mutated in place with a
     forensics-friendly view (``n``, ``source_wi``, ``source_n``,
@@ -219,10 +222,9 @@ def _persist_writer_references(
                 sid, exc,
             )
 
-    # Build new workspace_item_references rows + the forensics view for metadata.
-    new_ref_rows: list[dict] = []
-    metadata_refs_view: list[dict] = []
-    new_n = 0
+    # Resolve every pick to its source row first (preserving the writer's
+    # emission order, dropping unresolvable picks).
+    resolved_rows: list[tuple[str, int, dict]] = []
     for (sid, source_n) in resolved_picks:
         src_row = source_refs.get((sid, source_n))
         if src_row is None:
@@ -231,7 +233,32 @@ def _persist_writer_references(
                 sid, source_n,
             )
             continue
-        new_n += 1
+        resolved_rows.append((sid, source_n, src_row))
+
+    # Number the new WI's references. PREFERRED: reuse the writer's actual
+    # citation number (``source_n``) verbatim, so the المراجع panel badges line
+    # up with the ``(n)`` markers in body_md one-for-one — citing ``(11)`` in
+    # the prose lands on the card labelled ``11``, not a resequenced ``3``.
+    # This only holds when those numbers are globally unique across the picks;
+    # if two citations share a ``source_n`` (e.g. the writer pulled ``n=5`` from
+    # TWO different source WIs) they would collide on the ``UNIQUE (wi_id, n)``
+    # constraint, so we fall back to compact ``1..K`` sequencing for the whole
+    # list (a multi-source body is already ambiguous there — the per-WI numbers
+    # cannot both legitimately render as ``5``).
+    source_ns = [sn for (_sid, sn, _row) in resolved_rows]
+    use_source_n = len(set(source_ns)) == len(source_ns)
+    if not use_source_n:
+        logger.info(
+            "writer.publisher: citation source_n values collide (%s) on WI %s "
+            "— falling back to compact 1..K reference numbering",
+            source_ns, new_item_id,
+        )
+
+    # Build new workspace_item_references rows + the forensics view for metadata.
+    new_ref_rows: list[dict] = []
+    metadata_refs_view: list[dict] = []
+    for idx, (sid, source_n, src_row) in enumerate(resolved_rows, start=1):
+        new_n = source_n if use_source_n else idx
         new_ref_rows.append({
             "wi_id": new_item_id,
             "domain": src_row["domain"],

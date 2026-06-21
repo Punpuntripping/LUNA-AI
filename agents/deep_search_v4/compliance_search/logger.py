@@ -216,9 +216,10 @@ def save_reranker_per_query_mds(
     pos_to_row = {i + 1: row for i, row in enumerate(all_results_flat)}
     pos_to_ref = {pos: (row.get("service_ref") or "") for pos, row in pos_to_row.items()}
 
-    # decision lookup: service_ref → decision object
+    # keep lookup: service_ref → ServiceKeep entry (keep-only contract — any
+    # ref absent from this map was dropped by difference).
     ref_to_dec: dict[str, Any] = {}
-    for dec in output.decisions:
+    for dec in output.keeps:
         ref = pos_to_ref.get(dec.position, "")
         if ref:
             ref_to_dec[ref] = dec
@@ -239,7 +240,7 @@ def save_reranker_per_query_mds(
             if row is None:
                 continue
             dec = ref_to_dec.get(ref)
-            if dec and dec.action == "keep":
+            if dec is not None:
                 kept_rows.append((row, dec))
             else:
                 dropped_rows.append((row, dec))
@@ -327,8 +328,18 @@ def save_reranker_md(
         path = LOGS_DIR / log_id / "reranker" / f"round_{round_num}.md"
         header = f"# Reranker — Round {round_num}"
 
-    kept = [d for d in output.decisions if d.action == "keep"]
-    dropped = [d for d in output.decisions if d.action == "drop"]
+    # Keep-only contract: ``output.keeps`` lists only the kept services; the
+    # drop set is derived by difference over the rendered rows (positions the
+    # reranker did not keep).
+    kept = [
+        k for k in output.keeps
+        if 0 <= (k.position - 1) < len(all_results_flat)
+    ]
+    kept_positions = {k.position for k in kept}
+    dropped_positions = [
+        pos for pos in range(1, len(all_results_flat) + 1)
+        if pos not in kept_positions
+    ]
 
     lines: list[str] = []
     lines.append(header)
@@ -336,7 +347,7 @@ def save_reranker_md(
     if query:
         lines.append(f"**Query:** {query}")
     lines.append(f"**Sufficient:** {output.sufficient}")
-    lines.append(f"**Kept:** {len(kept)} | **Dropped:** {len(dropped)}")
+    lines.append(f"**Kept:** {len(kept)} | **Dropped:** {len(dropped_positions)}")
     if output.summary_note:
         lines.append(f"**Note:** {output.summary_note}")
     lines.append("")
@@ -359,14 +370,15 @@ def save_reranker_md(
                 lines.append(f"- **reasoning:** {dec.reasoning}")
             lines.append("")
 
-    if dropped:
-        lines.append(f"## Dropped ({len(dropped)})")
+    if dropped_positions:
+        lines.append(f"## Dropped ({len(dropped_positions)})")
         lines.append("")
-        for dec in dropped:
-            idx = dec.position - 1
+        for pos in dropped_positions:
+            idx = pos - 1
             row = all_results_flat[idx] if 0 <= idx < len(all_results_flat) else {}
             name = row.get("service_name_ar", "?")
-            lines.append(f"- {dec.position}. {name} — {dec.reasoning[:80]}")
+            # Keep-only contract: derived drops carry no per-item reasoning.
+            lines.append(f"- {pos}. {name}")
         lines.append("")
 
     if output.weak_axes:

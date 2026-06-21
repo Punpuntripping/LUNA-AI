@@ -736,8 +736,6 @@ def _write_reranker_md_to_dir(
         f"**Sufficient:** {rqr.sufficient}",
         f"**Results kept:** {len(rqr.results)}",
         f"**Dropped:** {rqr.dropped_count}",
-        f"**Classification rounds:** {rqr.unfold_rounds}",
-        f"**DB unfolds:** {rqr.total_unfolds}",
     ]
     if rqr.summary_note:
         lines.append(f"**Summary:** {rqr.summary_note}")
@@ -845,7 +843,7 @@ async def run_replay_reranker(path_str: str) -> None:
             total_kept += len(rqr.results)
             total_dropped += rqr.dropped_count
             print(f"  kept={len(rqr.results)} dropped={rqr.dropped_count} "
-                  f"unfolds={rqr.total_unfolds} [{dur:.1f}s]")
+                  f"[{dur:.1f}s]")
 
         except Exception as e:
             dur = time.perf_counter() - t0

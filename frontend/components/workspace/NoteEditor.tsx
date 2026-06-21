@@ -1,15 +1,22 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Lock, AlertTriangle, Share2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useMemo, useState } from "react";
+import { Lock, AlertTriangle } from "lucide-react";
 import { MarkdownDocEditor } from "@/components/workspace/MarkdownDocEditor";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
-import { useUpdateWorkspaceItem } from "@/hooks/use-workspace";
+import {
+  useSetWorkspaceItemFeedback,
+  useUpdateWorkspaceItem,
+} from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import { ApiClientError } from "@/lib/api";
-import type { Reference, WorkspaceItem, WriterMetadataReferenceView } from "@/types";
+import type {
+  Reference,
+  WorkspaceFeedback,
+  WorkspaceItem,
+  WriterMetadataReferenceView,
+} from "@/types";
 
 interface NoteEditorProps {
   item: WorkspaceItem;
@@ -109,9 +116,15 @@ function overlayWriterAttribution(
  */
 export function NoteEditor({ item }: NoteEditorProps) {
   const update = useUpdateWorkspaceItem();
+  const setFeedback = useSetWorkspaceItemFeedback();
   const [conflict, setConflict] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const isShareable = item.kind === "agent_writing";
+  // Body-citation focus: clicking ``[n]`` in the preview scrolls/opens the
+  // matching reference card (agent_writing only — notes have no references).
+  const [focusedN, setFocusedN] = useState<number | null>(null);
+  // Share + 👍/👎 + references are agent-output features; on agent_writing only.
+  const isAgentOutput = item.kind === "agent_writing";
+  const isShareable = isAgentOutput;
 
   const lockedUntilTs = getLockedUntil(item);
   const isLocked = lockedUntilTs !== null;
@@ -179,24 +192,28 @@ export function NoteEditor({ item }: NoteEditorProps) {
     </>
   );
 
-  const footerSlot = isShareable ? (
-    <ReferencePanel references={references} isLoading={isLoadingReferences} />
-  ) : null;
+  // Intra-body citation click: re-arm by clearing first so ReferencePanel's
+  // effect re-fires when the same [n] is clicked twice in a row (mirrors
+  // AgentSearchViewer).
+  const handleBodyCitationClick = useCallback((n: number) => {
+    setFocusedN(null);
+    window.requestAnimationFrame(() => setFocusedN(n));
+  }, []);
 
-  // «مشاركة» — publish this written artifact to a public share-by-link page.
-  // Only on agent_writing items; opens ShareArtifactDialog.
-  const titleActions = isShareable ? (
-    <Button
-      type="button"
-      variant="ghost"
-      size="sm"
-      className="h-6 shrink-0 gap-1 px-2 text-[11px]"
-      onClick={() => setShareOpen(true)}
-      aria-label="مشاركة عبر رابط عام"
-    >
-      <Share2 className="h-3 w-3" />
-      مشاركة
-    </Button>
+  const handleFeedback = useCallback(
+    (next: WorkspaceFeedback) => {
+      setFeedback.mutate({ itemId: item.item_id, feedback: next });
+    },
+    [setFeedback, item.item_id],
+  );
+
+  const footerSlot = isShareable ? (
+    <ReferencePanel
+      references={references}
+      isLoading={isLoadingReferences}
+      focusedReferenceN={focusedN}
+      onFlashDone={() => setFocusedN(null)}
+    />
   ) : null;
 
   return (
@@ -215,8 +232,12 @@ export function NoteEditor({ item }: NoteEditorProps) {
           item.kind === "note" ? "اكتب ملاحظاتك هنا..." : "محتوى المسودة..."
         }
         headerSlot={headerSlot}
-        titleActions={titleActions}
         footerSlot={footerSlot}
+        onShare={isShareable ? () => setShareOpen(true) : undefined}
+        feedback={isAgentOutput ? item.feedback : undefined}
+        onFeedback={isAgentOutput ? handleFeedback : undefined}
+        feedbackPending={setFeedback.isPending}
+        onBodyCitationClick={isAgentOutput ? handleBodyCitationClick : undefined}
       />
       {isShareable && (
         <ShareArtifactDialog

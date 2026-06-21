@@ -26,12 +26,13 @@ renumbers and caused the legacy "article ×6" dedup artifact). Code holds the
 Public surface:
     unfold_chunk_simple / unfold_chunk_precise   — chunk row -> unfolded dict
     format_chunk                                 — unfolded dict -> markdown block
-    fetch_chunk                                  — chunk_id -> chunk row
-                                                   (used to pull a neighbour in)
     CHUNK_SELECT                                 — the column list a chunk row
                                                    needs to be unfoldable
 
 Replaces the legacy 3-tier (article / section / regulation) unfolder.
+
+(The neighbour-fetch helper ``fetch_chunk`` was removed with the reranker's
+multi-round ``unfold`` action — reg is single-pass now.)
 """
 from __future__ import annotations
 
@@ -50,10 +51,9 @@ MAX_SUMMARY_CHARS = 2_000
 MAX_CONTEXT_CHARS = 800
 
 
-# Columns a chunk row must carry to be unfoldable (and re-unfoldable after a
-# neighbour hop). search.py selects these from `chunks_v2`; `fetch_chunk` below
-# uses the same list so a pulled-in neighbour is interchangeable with a
-# search-result chunk.
+# Columns a chunk row must carry to be unfoldable. search.py selects these from
+# `chunks_v2` (the prev/next ids remain so the PRECISE view can render the
+# three-chunk context window).
 CHUNK_SELECT = (
     "id, chunk_ref, regulation_id, position, "
     "prev_chunk_id, next_chunk_id, title, summary, context"
@@ -70,30 +70,6 @@ def _truncate(text: str | None, max_chars: int) -> str:
 
 
 # -- DB fetch helpers ---------------------------------------------------------
-
-
-def fetch_chunk(supabase: SupabaseClient, chunk_id: str | None) -> dict[str, Any] | None:
-    """Fetch one `chunks_v2` row with the columns the unfolders need.
-
-    Used by the reranker to pull a chunk's prev/next neighbour into the
-    candidate pool. The returned row is shaped exactly like a search-result
-    chunk, so it can be fed straight into ``unfold_chunk_simple`` /
-    ``unfold_chunk_precise``.
-    """
-    if not chunk_id:
-        return None
-    try:
-        resp = (
-            supabase.table("chunks_v2")
-            .select(CHUNK_SELECT)
-            .eq("id", chunk_id)
-            .maybe_single()
-            .execute()
-        )
-        return resp.data if resp and resp.data else None
-    except Exception as e:
-        logger.warning("fetch_chunk(%s) failed: %s", chunk_id, e)
-        return None
 
 
 def _fetch_regulation_meta(
@@ -319,7 +295,6 @@ def _format_precise(result: dict[str, Any], label: str) -> str:
 
 __all__ = [
     "CHUNK_SELECT",
-    "fetch_chunk",
     "unfold_chunk_simple",
     "unfold_chunk_precise",
     "format_chunk",

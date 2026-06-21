@@ -902,6 +902,81 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                     )
                     # Fall through with section-text results.
 
+            # Forensic drop reconstruction (best-effort). The markdown-based
+            # reranker is blind to cases.id, so we rebuild the dropped list from
+            # decision_log + cands here, where ChannelCandidate.case_id IS the
+            # cases.id UUID. Positions in decision_log are 1-based indices into
+            # `cands` (format_bucket_for_reranker numbers candidates 1..N), so
+            # candidate for position p is cands[p-1] when 1 <= p <= len(cands).
+            try:
+                def _cand_title(row: dict) -> str:
+                    title = " | ".join(
+                        x for x in (
+                            row.get("court", "") or "",
+                            row.get("case_number", "") or "",
+                            row.get("date_hijri", "") or "",
+                        ) if x
+                    )
+                    return title or (row.get("case_ref", "") or "")
+
+                # UUIDs of cases that actually survived into the final results.
+                survived: set[str] = set()
+                for res in reranker_result.results:
+                    uuid = (getattr(res, "db_uuid", "") or "").strip()
+                    if not uuid:
+                        uuid = (getattr(res, "db_id", "") or "").strip()
+                    if uuid:
+                        survived.add(uuid)
+
+                dropped: list[dict] = []
+                seen_refs: set[str] = set()
+                for entry in decision_log:
+                    pos = int(entry.get("position", 0) or 0)
+                    if not (1 <= pos <= len(cands)):
+                        continue
+                    cand = cands[pos - 1]
+                    ref_id = (cand.case_id or "").strip()
+                    if not ref_id or ref_id in seen_refs:
+                        continue
+                    action = entry.get("action")
+                    title = _cand_title(cand.row or {})
+                    if action in ("drop", "undecided"):
+                        dropped.append({
+                            "source_table": "cases",
+                            "ref_id": ref_id,
+                            "title": title,
+                            "drop_reason": "llm",
+                            "reasoning": entry.get("reasoning", "") or "",
+                            "source_type": "case",
+                        })
+                        seen_refs.add(ref_id)
+                    elif action == "keep" and survived:
+                        # Kept by the LLM but didn't survive → cap-truncated.
+                        # Guarded on `survived`: in the fallback path (full-content
+                        # substitution failed) the section-text results carry no
+                        # id, so we can't tell survivors from cap-drops — skip
+                        # cap detection entirely rather than mislabel every keep.
+                        case_ref = (cand.row or {}).get("case_ref", "") or ""
+                        if ref_id in survived or (case_ref and case_ref in survived):
+                            continue
+                        dropped.append({
+                            "source_table": "cases",
+                            "ref_id": ref_id,
+                            "title": title,
+                            "drop_reason": "cap",
+                            "reasoning": "",
+                            "source_type": "case",
+                        })
+                        seen_refs.add(ref_id)
+
+                reranker_result.dropped_results = dropped
+            except Exception as e:
+                logger.warning(
+                    "SectionedRerankerNode q%d [%s]: dropped-forensic "
+                    "reconstruction failed: %s",
+                    qi, q.channel, e,
+                )
+
             return reranker_result, usage_entries, decision_log
 
         # Launch all per-query reranker tasks concurrently.

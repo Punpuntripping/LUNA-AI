@@ -40,8 +40,9 @@ RERANKER_LIMITS = UsageLimits(
 _CASE_RERANKER_RETRY_MSG = (
     "Return the output as a valid JSON object conforming to the schema "
     "(sufficient, query_axes, "
-    "decisions[position, action, relevance, reasoning, satisfies_axes], "
-    "summary_note) only — with no text or <thinking> tag outside the JSON."
+    "keeps[position, relevance, reasoning, satisfies_axes], "
+    "summary_note) only — with no text or <thinking> tag outside the JSON. "
+    "Emit one entry only for each ruling you KEEP; relevance is required."
 )
 
 
@@ -239,10 +240,13 @@ async def run_reranker_for_query(
     usage_entries: list[dict] = []
     decision_log: list[dict] = []
 
-    try:
-        result = await agent.run(user_msg, usage_limits=RERANKER_LIMITS)
-        classification = result.output
+    # Map position → block
+    pos_to_block: dict[int, dict] = {b["position"]: b for b in blocks}
 
+    async def _run_once(extra_note: str | None = None):
+        """One agent call. Returns (classification, usage_entry) or raises."""
+        msg = user_msg if not extra_note else f"{user_msg}\n\n{extra_note}"
+        result = await agent.run(msg, usage_limits=RERANKER_LIMITS)
         ru = result.usage()
         usage_entry = {
             "agent": "reranker",
@@ -253,8 +257,62 @@ async def run_reranker_for_query(
             "total_tokens": ru.total_tokens,
             "details": dict(ru.details) if ru.details else {},
         }
-        usage_entries.append(usage_entry)
+        return result.output, usage_entry
 
+    def _build_from_classification(classification):
+        """Keep-only application: iterate keeps (integrity-gated), derive drops
+        by set-difference. Returns (kept, dropped_count, log_entries)."""
+        kept: list[RerankedCaseResult] = []
+        log_entries: list[dict] = []
+        kept_positions: set[int] = set()
+
+        for keep in classification.keeps:
+            pos = keep.position
+            if pos not in pos_to_block:
+                logger.warning(
+                    "Reranker: invalid keep position %d (max %d) — skipped",
+                    pos, len(blocks),
+                )
+                continue
+            if pos in kept_positions:
+                logger.warning(
+                    "Reranker: duplicate keep position %d — keeping first, skipping",
+                    pos,
+                )
+                continue
+            kept_positions.add(pos)
+            block = pos_to_block[pos]
+
+            dec_dict = {
+                "relevance": keep.relevance,
+                "reasoning": keep.reasoning,
+            }
+            kept.append(_assemble_case_result(block, dec_dict))
+            log_entries.append({
+                "position": pos,
+                "rrf": block.get("rrf", 0.0),
+                "action": "keep",
+                "relevance": keep.relevance,
+                "reasoning": keep.reasoning or "",
+            })
+
+        # Derive drops by difference: un-kept candidate positions are dropped.
+        dropped_positions = sorted(set(pos_to_block) - kept_positions)
+        for pos in dropped_positions:
+            block = pos_to_block[pos]
+            log_entries.append({
+                "position": pos,
+                "rrf": block.get("rrf", 0.0),
+                "action": "drop",
+                "relevance": None,
+                "reasoning": "",
+            })
+
+        return kept, len(dropped_positions), log_entries
+
+    try:
+        classification, usage_entry = await _run_once()
+        usage_entries.append(usage_entry)
         if round_trace is not None:
             round_trace.append({
                 "round_num": 1,
@@ -262,6 +320,34 @@ async def run_reranker_for_query(
                 "classification": classification.model_dump(),
                 "usage": usage_entry,
             })
+
+        kept, dropped, decision_log = _build_from_classification(classification)
+
+        # kept == 0 of N>0 → ONE retry with a dynamic nudge; accept empty on
+        # the 2nd pass. Only retained retry signal (keep-only removed the
+        # count-mismatch / undecided failure class).
+        if not kept and len(blocks) > 0:
+            note = (
+                f"You classified 0 of {len(blocks)} rulings as keep. "
+                "If truly none apply to the sub-query, return an empty keeps "
+                "list — otherwise reconsider and keep the genuinely relevant "
+                "rulings."
+            )
+            logger.info(
+                "Reranker [%s]: kept 0 of %d — one retry with nudge",
+                query[:40], len(blocks),
+            )
+            classification2, usage_entry2 = await _run_once(extra_note=note)
+            usage_entries.append(usage_entry2)
+            if round_trace is not None:
+                round_trace.append({
+                    "round_num": 2,
+                    "user_msg": f"{user_msg}\n\n{note}",
+                    "classification": classification2.model_dump(),
+                    "usage": usage_entry2,
+                })
+            classification = classification2
+            kept, dropped, decision_log = _build_from_classification(classification)
 
     except Exception as e:
         logger.error("Reranker error [%s]: %s", query[:40], e, exc_info=True)
@@ -273,74 +359,6 @@ async def run_reranker_for_query(
             dropped_count=len(blocks),
             summary_note=f"خطأ في التصنيف: {str(e)[:100]}",
         ), [], []
-
-    # Map position → block
-    pos_to_block: dict[int, dict] = {b["position"]: b for b in blocks}
-
-    kept: list[RerankedCaseResult] = []
-    dropped = 0
-    decided_positions: set[int] = set()
-
-    for dec in classification.decisions:
-        pos = dec.position
-        if pos not in pos_to_block:
-            logger.warning("Reranker: invalid position %d (max %d)", pos, len(blocks))
-            continue
-
-        decided_positions.add(pos)
-        block = pos_to_block[pos]
-
-        # M4 — coerce any non-keep/drop action (e.g. an "unfold" leak from
-        # the shared schema, or a hypothetical model rebellion) to "drop"
-        # so the case reranker's terminal pass is strictly binary.
-        action = dec.action if dec.action in ("keep", "drop") else "drop"
-        if action != dec.action:
-            logger.info(
-                "Reranker: coerced action %r → 'drop' at position %d",
-                dec.action, pos,
-            )
-
-        dec_dict = {
-            "action": action,
-            "relevance": dec.relevance,
-            "reasoning": dec.reasoning,
-        }
-
-        log_entry = {
-            "position": pos,
-            "rrf": block.get("rrf", 0.0),
-            "action": action,
-            "relevance": dec.relevance or ("medium" if action == "keep" else None),
-            "reasoning": dec.reasoning or "",
-        }
-
-        if action == "keep":
-            kept.append(_assemble_case_result(block, dec_dict))
-        else:
-            dropped += 1
-
-        decision_log.append(log_entry)
-
-    # Positions with no explicit decision → treat as dropped
-    all_positions = set(pos_to_block.keys())
-    undecided_positions = sorted(all_positions - decided_positions)
-    undecided = len(undecided_positions)
-    if undecided > 0:
-        logger.warning(
-            "Reranker: %d positions had no decision (treated as dropped): %s",
-            undecided,
-            ", ".join(str(p) for p in undecided_positions),
-        )
-        for pos in undecided_positions:
-            block = pos_to_block[pos]
-            decision_log.append({
-                "position": pos,
-                "rrf": block.get("rrf", 0.0),
-                "action": "undecided",
-                "relevance": None,
-                "reasoning": "لم يصنّف المُصنّف هذا الموضع",
-            })
-        dropped += undecided
 
     # Apply a single flat per-sub-query keep cap. High-relevance results are
     # ordered ahead of medium; ties broken by score desc.
@@ -364,11 +382,10 @@ async def run_reranker_for_query(
         )
 
     logger.info(
-        "Reranker [%s]: %d kept, %d dropped, %d undecided, sufficient=%s",
+        "Reranker [%s]: %d kept, %d dropped, sufficient=%s",
         query[:40],
         len(kept),
         dropped,
-        undecided,
         classification.sufficient,
     )
 

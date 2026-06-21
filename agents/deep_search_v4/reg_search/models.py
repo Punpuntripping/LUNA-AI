@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -110,50 +110,37 @@ class AggregatorOutput(BaseModel):
 
 
 # -- Reg-local reranker models (v2: chunk corpus, label-addressed) ------------
-# Bespoke (no shared-schema dependency). Chunks are addressed by a stable label
-# (not a per-round position), and `unfold` targets a prev/next neighbour.
-# `reasoning`/`summary_note` are REQUIRED so the model can't silently drop them
-# (the salvager on the reranker agent rescues a text-finalised but complete JSON
-# without a retry). `query_axes`/`satisfies_axes` carry light axis annotation
-# (#3); they are advisory here and do NOT gate keep/unfold or the live unfold-loop
-# sufficiency terminator.
+# Bespoke (no shared-schema dependency). KEEP-ONLY contract: the LLM emits one
+# entry only for each chunk it KEEPS; chunks it does not list are dropped, and
+# code derives the drop set by set-difference. Chunks are addressed by a stable
+# label (not a per-round position). `relevance` is REQUIRED on every kept entry
+# (closes the silent keep→medium coercion). `reasoning`/`summary_note` are
+# REQUIRED so the model can't silently drop them (the salvager on the reranker
+# agent rescues a text-finalised but complete JSON without a retry).
+# `query_axes`/`satisfies_axes` carry light axis annotation (#3); they are
+# advisory here and do NOT gate keep decisions.
 
 
-class RegRerankerDecision(BaseModel):
-    """One reranker decision for a v2 chunk, addressed by its stable label."""
+class RegKeep(BaseModel):
+    """One KEPT v2 chunk, addressed by its stable label."""
 
     label: str = Field(
         description="Chunk label exactly as shown in the '### [Cn]' header, e.g. 'C7'",
     )
-    action: Literal["keep", "drop", "unfold"] = Field(
-        description="keep: relevant; drop: out of scope; unfold: pull a neighbour chunk",
-    )
-    direction: Optional[Literal["prev", "next"]] = Field(
-        default=None,
-        description="Which neighbour to pull — set only when action='unfold'",
-    )
-    relevance: Optional[Literal["high", "medium"]] = Field(
-        default=None,
-        description="Relevance tier — set only when action='keep' (nulled otherwise)",
+    relevance: Literal["high", "medium"] = Field(
+        description="Relevance tier for this kept chunk — REQUIRED",
     )
     reasoning: str = Field(
         description="Short Arabic note; states the regulation-scope-applicability verdict",
     )
     satisfies_axes: list[int] = Field(
         default_factory=list,
-        description="Indices into query_axes that this chunk covers (keep only)",
+        description="Indices into query_axes that this chunk covers",
     )
-
-    @model_validator(mode="after")
-    def _relevance_only_on_keep(self) -> "RegRerankerDecision":
-        # Coherence: relevance is meaningful only on a keep.
-        if self.action != "keep":
-            self.relevance = None
-        return self
 
 
 class RegRerankerClassification(BaseModel):
-    """Output of one v2 reg_search reranker LLM call — decisions only."""
+    """Output of one v2 reg_search reranker LLM call — KEPT chunks only."""
 
     sufficient: bool = Field(
         description="True if the kept chunks are >=80% sufficient to answer the sub-query",
@@ -162,13 +149,30 @@ class RegRerankerClassification(BaseModel):
         default_factory=list,
         description="2-3 discriminating axes restated from the sub-query (advisory)",
     )
-    decisions: list[RegRerankerDecision] = Field(
+    keeps: list[RegKeep] = Field(
         default_factory=list,
-        description="Per-chunk classification decisions",
+        description="One entry per KEPT chunk; unlisted chunks are dropped",
     )
     summary_note: str = Field(
         description="Brief Arabic note on collective sufficiency",
     )
+
+    @field_validator("keeps", mode="before")
+    @classmethod
+    def _coerce_keeps(cls, v):
+        # LLM output quirk: a JSON-stringified array "[{...}]" -> list,
+        # deterministically, no retry. Mirrors ExpanderOutputV2._coerce_queries.
+        if isinstance(v, str):
+            if v.strip() == "":
+                return []
+            try:
+                import json as _json
+                parsed = _json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+        return v
 
 
 class RerankedResult(BaseModel):
@@ -287,11 +291,18 @@ class RerankerQueryResult:
     results: list  # list[RerankedResult] — articles + up to 2 sections
     dropped_count: int
     summary_note: str
-    unfold_rounds: int = 0   # how many LLM classification runs (1-3)
-    total_unfolds: int = 0   # how many DB unfold calls were made
+    unfold_rounds: int = 0   # vestigial (single-pass now); always 0/1 — kept
+    total_unfolds: int = 0   # for shared-RQR / adapter field compatibility only
     caps_applied: dict = field(default_factory=dict)
     # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the keep
     # cap was applied. Empty dict when the cap was not active.
+    dropped_results: list = field(default_factory=list)  # list[dict]
+    # Forensic-only: LLM-dropped (derived by set-difference: candidates − keeps)
+    # + cap-truncated chunks (NOT the internal dedup drops counted in
+    # ``dropped_count``). Each:
+    #   {db_id: <chunks_v2.id>, title: str, reasoning: str (""always; keep-only
+    #    contract carries no per-drop reasoning), drop_reason: "llm"|"cap",
+    #    source_type: "chunk"}
 
 
 @dataclass

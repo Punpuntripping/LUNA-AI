@@ -64,11 +64,39 @@ def case_to_rqr(
     out: list[SharedRQR] = []
     for sq in case_rqrs:
         typed: list[CaseURAResult] = []
+        kept_forensic: list[dict] = []
         for r in sq.results or []:
             ura = _case_to_ura(r)
             if ura is None:
+                # Skip the same rows _case_to_ura skips (no db_id) so the
+                # forensic list stays 1:1 with the typed results.
                 continue
             typed.append(ura)
+            # Forensic: prefer the bare cases.id UUID; fall back to db_id
+            # (case_ref) only when db_uuid was not populated.
+            ref_id = (getattr(r, "db_uuid", "") or "").strip() or (
+                getattr(r, "db_id", "") or ""
+            ).strip()
+            kept_forensic.append({
+                "source_table": "cases",
+                "ref_id": ref_id,
+                "title": r.title or "",
+                "relevance": r.relevance,
+                "source_type": r.source_type or "case",
+                "reasoning": r.reasoning or "",
+            })
+        dropped_forensic = [
+            {
+                "source_table": d.get("source_table", "cases"),
+                "ref_id": (d.get("ref_id", "") or d.get("db_uuid", "") or "").strip(),
+                "title": d.get("title", "") or "",
+                "drop_reason": d.get("drop_reason", "llm"),
+                "reasoning": d.get("reasoning", "") or "",
+                "source_type": d.get("source_type", "case"),
+            }
+            for d in (getattr(sq, "dropped_results", None) or [])
+            if (d.get("ref_id", "") or d.get("db_uuid", "") or "").strip()
+        ]
         out.append(
             SharedRQR(
                 query=sq.query,
@@ -80,6 +108,8 @@ def case_to_rqr(
                 summary_note=sq.summary_note,
                 unfold_rounds=sq.unfold_rounds,
                 total_unfolds=sq.total_unfolds,
+                kept_forensic=kept_forensic,
+                dropped_forensic=dropped_forensic,
             )
         )
     return out

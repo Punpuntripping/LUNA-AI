@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Save, Loader2, Eye, Pencil } from "lucide-react";
+import { Save, Loader2 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Button } from "@/components/ui/button";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
+import { WorkspaceItemActionBar } from "@/components/workspace/WorkspaceItemActionBar";
 import { useDebounce } from "@/hooks/use-debounce";
 import { cn } from "@/lib/utils";
+import type { WorkspaceFeedback } from "@/types";
 
 interface MarkdownDocEditorProps {
   /** Stable identity of the document being edited. Changing it resets the
@@ -34,11 +35,23 @@ interface MarkdownDocEditorProps {
   bodyPlaceholder?: string;
   /** Optional banner(s) rendered above the title bar (e.g. lock / conflict). */
   headerSlot?: ReactNode;
-  /** Optional actions rendered inline in the title bar, before the edit/preview
-   *  toggle (e.g. a Share button on agent_writing items). */
-  titleActions?: ReactNode;
-  /** Optional content appended inside the preview viewport (e.g. references). */
+  /** Optional content appended inside the preview viewport (e.g. references).
+   *  Rendered below the action bar so the bar sits between body and refs. */
   footerSlot?: ReactNode;
+  /**
+   * Action-bar wiring. The معاينة/تحرير toggle + نسخ are always present; the
+   * host opts into مشاركة / 👍👎 by passing these (agent outputs only).
+   */
+  onShare?: () => void;
+  feedback?: WorkspaceFeedback;
+  onFeedback?: (next: WorkspaceFeedback) => void;
+  feedbackPending?: boolean;
+  /**
+   * When set, ``[n]`` markers in the preview body become clickable and call
+   * this with the citation number (agent_writing wires it to focus the
+   * ReferencePanel). Omit for notes/templates — markers stay plain text.
+   */
+  onBodyCitationClick?: (n: number) => void;
   /**
    * Invoked when ``onSave`` rejects. Lets the host show its own banner
    * (e.g. a 409 conflict). The error is passed through untouched.
@@ -69,8 +82,12 @@ export function MarkdownDocEditor({
   titlePlaceholder = "العنوان...",
   bodyPlaceholder = "اكتب المحتوى هنا...",
   headerSlot,
-  titleActions,
   footerSlot,
+  onShare,
+  feedback,
+  onFeedback,
+  feedbackPending,
+  onBodyCitationClick,
   onSaveError,
 }: MarkdownDocEditorProps) {
   const [title, setTitle] = useState(initialTitle);
@@ -137,8 +154,22 @@ export function MarkdownDocEditor({
   const titleEditable = !titleReadOnly && !readOnly;
   const titleMissing = titleRequired && !title.trim();
 
+  const actionBar = (
+    <WorkspaceItemActionBar
+      floating
+      copyText={content}
+      mode={mode}
+      onModeChange={setMode}
+      editDisabled={readOnly}
+      onShare={onShare}
+      feedback={feedback}
+      onFeedback={onFeedback}
+      feedbackPending={feedbackPending}
+    />
+  );
+
   return (
-    <div className="flex flex-1 flex-col min-h-0">
+    <div className="relative flex flex-1 flex-col min-h-0">
       {headerSlot}
 
       <div className="border-b">
@@ -158,40 +189,6 @@ export function MarkdownDocEditor({
           )}
           placeholder={titlePlaceholder}
         />
-        {titleActions}
-        <div
-          className={cn(
-            "flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted/30 p-0.5",
-          )}
-          role="tablist"
-          aria-label="وضع العرض"
-        >
-          <Button
-            type="button"
-            variant={mode === "edit" ? "default" : "ghost"}
-            size="sm"
-            className="h-6 gap-1 px-2 text-[11px]"
-            role="tab"
-            aria-selected={mode === "edit"}
-            onClick={() => setMode("edit")}
-            disabled={readOnly && mode !== "edit"}
-          >
-            <Pencil className="h-3 w-3" />
-            تحرير
-          </Button>
-          <Button
-            type="button"
-            variant={mode === "preview" ? "default" : "ghost"}
-            size="sm"
-            className="h-6 gap-1 px-2 text-[11px]"
-            role="tab"
-            aria-selected={mode === "preview"}
-            onClick={() => setMode("preview")}
-          >
-            <Eye className="h-3 w-3" />
-            معاينة
-          </Button>
-        </div>
       </div>
       {titleMissing && (
         <p className="px-4 pb-2 -mt-1 text-[11px] text-destructive">
@@ -212,7 +209,12 @@ export function MarkdownDocEditor({
           />
         </ScrollArea>
       ) : (
-        <ArtifactPreview content={content} footer={footerSlot} />
+        <ArtifactPreview
+          content={content}
+          hideToolbar
+          onCitationClick={onBodyCitationClick}
+          footer={footerSlot}
+        />
       )}
 
       <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
@@ -239,6 +241,9 @@ export function MarkdownDocEditor({
           }).format(new Date(updatedAt))}
         </span>
       </div>
+
+      {/* Floating, draggable action bar overlaying the viewer. */}
+      {actionBar}
     </div>
   );
 }

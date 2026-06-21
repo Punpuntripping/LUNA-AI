@@ -1,4 +1,4 @@
-"""Reranker for reg_search v2 — classification-only LLM over chunk results.
+"""Reranker for reg_search v2 — single-pass keep-only LLM over chunk results.
 
 Architecture: a classification-only LLM (no tools). Per sub-query,
 ``run_reranker_for_query`` :
@@ -7,15 +7,20 @@ Architecture: a classification-only LLM (no tools). Per sub-query,
    the top rank band, SIMPLE for the rest. The mode is decided by ``search.py``
    and carried on each chunk row as ``_mode``; the reranker does the actual
    unfold + render here so it owns the ``label -> chunk`` map.
-2. Asks the LLM to classify every chunk: ``keep`` / ``drop`` / ``unfold``.
-3. For each ``unfold`` (direction ``prev`` | ``next``), fetches that neighbour,
-   renders it SIMPLE, and feeds it into the next round as a fresh candidate.
-4. Repeats up to ``MAX_RERANKER_ROUNDS``.
-5. Assembles a ``RerankerQueryResult`` from the kept chunks.
+2. Asks the LLM, in a SINGLE pass, to emit one entry only for each chunk it
+   KEEPS (with a relevance tier). Chunks it does not list are dropped.
+3. Code derives the drop set by set-difference (``candidates − keeps``) and
+   records each derived drop as a forensic row.
+4. Assembles a ``RerankerQueryResult`` from the kept chunks.
 
 Chunks are addressed by a stable label (``C1``, ``C2`` …) assigned once and
 never renumbered — the LLM never sees a UUID. Code holds the ``label -> block``
-map; the UUID is used only for neighbour fetches and dedup.
+map; the UUID is used only for dedup.
+
+The legacy multi-round ``unfold`` action (neighbour prev/next fetch) was removed
+— reg is now single-pass like case/compliance. The chunk context-window *view*
+(``unfold_chunk_precise``/``simple``/``format_chunk``) that the renderer uses
+stays; only the neighbour-fetch loop is gone.
 
 Replaces the legacy 3-tier (article / section / regulation) reranker. The
 search -> reranker contract changed: ``run_reranker_for_query`` now receives
@@ -41,7 +46,6 @@ from .models import (
 )
 from .prompts import build_reranker_user_message, get_reranker_prompt
 from .unfold_reranker import (
-    fetch_chunk,
     format_chunk,
     unfold_chunk_precise,
     unfold_chunk_simple,
@@ -59,12 +63,6 @@ RERANKER_LIMITS = UsageLimits(
     request_limit=3,
 )
 
-MAX_RERANKER_ROUNDS = 3
-
-# An unfolded neighbour inherits its parent's rrf, attenuated — it ranks below
-# the chunk that pulled it in but still carries ordering signal.
-_NEIGHBOUR_RRF_DECAY = 0.5
-
 
 # -- Agent factory -------------------------------------------------------------
 
@@ -74,9 +72,9 @@ _NEIGHBOUR_RRF_DECAY = 0.5
 # omission still raises ModelRetry. See agents/utils/structured_output.py.
 _REG_RERANKER_RETRY_MSG = (
     "Re-emit the output as a single valid JSON object matching the schema "
-    "(sufficient, query_axes, decisions[label, action, direction, relevance, "
-    "reasoning, satisfies_axes], summary_note) only — no prose or <thinking> tag "
-    "outside the JSON."
+    "(sufficient, query_axes, keeps[label, relevance, reasoning, "
+    "satisfies_axes], summary_note) only — no prose or <thinking> tag "
+    "outside the JSON. Emit one entry only for each chunk you KEEP."
 )
 
 
@@ -167,8 +165,27 @@ def _assemble_markdown(blocks: list[dict[str, Any]]) -> str:
 # -- Result assembly -----------------------------------------------------------
 
 
+def _dropped_row(
+    block: dict[str, Any], reasoning: str, drop_reason: str
+) -> dict[str, Any]:
+    """Forensic descriptor for one dropped chunk (LLM drop or cap truncation).
+
+    ``db_id`` is the bare ``chunks_v2.id`` UUID; the adapter copies it straight
+    into ``ref_id`` (reg's citation seed already IS the chunk UUID).
+    """
+    chunk = block.get("chunk", {})
+    unfolded = block.get("unfolded", {})
+    return {
+        "db_id": chunk.get("id", "") or "",
+        "title": unfolded.get("title") or chunk.get("title", "") or "",
+        "reasoning": reasoning or "",
+        "drop_reason": drop_reason,
+        "source_type": "chunk",
+    }
+
+
 def _assemble_result(block: dict[str, Any], decision: dict[str, Any]) -> RerankedResult:
-    """Assemble a chunk ``RerankedResult`` from a kept block + its decision."""
+    """Assemble a chunk ``RerankedResult`` from a kept block + its keep dict."""
     unfolded = block["unfolded"]
     chunk = block["chunk"]
 
@@ -205,7 +222,10 @@ async def run_reranker_for_query(
     model_override: str | None = None,
     round_trace: list[dict] | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
-    """Run up to 3 classification rounds with neighbour unfolding between.
+    """Run a single keep-only classification pass and derive the drop set.
+
+    The LLM emits one entry only for each chunk it keeps; chunks it does not
+    list are dropped, and code derives the drop set by set-difference.
 
     Args:
         query: The sub-query string.
@@ -214,10 +234,10 @@ async def run_reranker_for_query(
             columns in ``unfold_reranker.CHUNK_SELECT`` plus two routing keys:
             ``_mode`` (``"precise"`` | ``"simple"``, set by search.py from the
             chunk's rank band) and ``_rrf`` (the fused retrieval score).
-        supabase: Supabase client for neighbour fetches.
+        supabase: Supabase client for the candidate-view render hops.
         max_keep: Per-sub-query keep cap — a single flat cap (default 8).
         model_override: Optional model registry key.
-        round_trace: Optional list; one dict appended per classification round.
+        round_trace: Optional list; one trace dict appended for the pass.
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
@@ -255,56 +275,49 @@ async def run_reranker_for_query(
         ])
     )
 
-    all_kept: list[tuple[dict, dict]] = []   # (block, decision_dict) pairs
+    all_kept: list[tuple[dict, dict]] = []   # (block, keep_dict) pairs
+    all_dropped: list[dict] = []             # forensic: derived-drop + cap-trunc
     total_dropped = 0
-    total_unfolds = 0
     usage_entries: list[dict] = []
     decision_log: list[dict] = []
-    seen_chunk_ids: set[str] = {b["chunk"]["id"] for b in active_blocks}
     final_summary = ""
     last_sufficient = False
-    round_num = 0
 
-    for round_num in range(1, MAX_RERANKER_ROUNDS + 1):
-        by_label = {b["label"]: b for b in active_blocks}
-        trimmed_md = _assemble_markdown(active_blocks)
-        user_msg = build_reranker_user_message(
-            query, rationale, trimmed_md, round_num,
-        )
+    by_label = {b["label"]: b for b in active_blocks}
+    trimmed_md = _assemble_markdown(active_blocks)
+    user_msg = build_reranker_user_message(query, rationale, trimmed_md)
 
-        logger.info(
-            "Reranker round %d: %d active blocks, %d chars",
-            round_num, len(active_blocks), len(trimmed_md),
-        )
+    logger.info(
+        "Reranker: %d candidate blocks, %d chars",
+        len(active_blocks), len(trimmed_md),
+    )
 
-        # Run the agent with retries.
-        result = None
-        last_err: Exception | None = None
-        for attempt in range(3):
-            try:
-                result = await agent.run(user_msg, usage_limits=RERANKER_LIMITS)
-                break
-            except Exception as e:
-                last_err = e
-                logger.warning(
-                    "Reranker round %d attempt %d/3 failed: %s",
-                    round_num, attempt + 1, e,
-                )
-                if attempt < 2:
-                    await asyncio.sleep(1.5 * (attempt + 1))
+    # Run the agent with retries. The integrity gate (kept==0 of N>0) may append
+    # ONE dynamic note and re-run; that is the only retained retry signal.
+    classification = None
+    retried_for_zero_keep = False
+    extra_note = ""
+    last_err: Exception | None = None
 
-        if result is None:
-            logger.error(
-                "Reranker round %d gave up after 3 attempts: %s", round_num, last_err
+    for attempt in range(3):
+        run_msg = user_msg + extra_note
+        try:
+            result = await agent.run(run_msg, usage_limits=RERANKER_LIMITS)
+        except Exception as e:
+            last_err = e
+            logger.warning(
+                "Reranker attempt %d/3 failed: %s", attempt + 1, e,
             )
-            break
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+            continue
 
-        classification = result.output
+        cand = result.output
 
         ru = result.usage()
         usage_entries.append({
             "agent": "reranker",
-            "reranker_round": round_num,
+            "reranker_round": 1,
             "requests": ru.requests,
             "input_tokens": ru.input_tokens,
             "output_tokens": ru.output_tokens,
@@ -312,165 +325,102 @@ async def run_reranker_for_query(
             "details": dict(ru.details) if ru.details else {},
         })
 
-        # Process decisions.
-        to_unfold: list[tuple[dict, dict]] = []
-        decided_labels: set[str] = set()
-        for dec in classification.decisions:
-            # The LLM often copies the label with its bracket/whitespace ("[C7]",
-            # " C7 ") — the markdown header shows "### [C7]". Normalise to the
-            # bare "C7" the by_label map is keyed on.
-            norm_label = (dec.label or "").strip().strip("[]").strip()
-            block = by_label.get(norm_label)
-            if block is None:
-                logger.warning(
-                    "Reranker: decision references unknown label %r", dec.label
-                )
-                continue
-            decided_labels.add(norm_label)
-
-            dec_dict = {
-                "action": dec.action,
-                "relevance": dec.relevance,
-                "direction": dec.direction,
-                "reasoning": dec.reasoning,
-            }
-            log_entry = {
-                "label": norm_label,
-                "rrf": block.get("rrf", 0.0),
-                "action": dec.action,
-            }
-
-            if dec.action == "keep":
-                all_kept.append((block, dec_dict))
-                log_entry["relevance"] = dec.relevance or "medium"
-            elif dec.action == "unfold":
-                # The LLM sometimes picks `unfold` but omits/garbles `direction`.
-                # Default to "next" (a chapter most often continues forward)
-                # rather than losing the unfold.
-                if dec.direction not in ("prev", "next"):
-                    logger.warning(
-                        "Reranker [%s]: unfold on %s with direction %r — "
-                        "defaulting to 'next'",
-                        query[:40], norm_label, dec.direction,
-                    )
-                    dec_dict["direction"] = "next"
-                to_unfold.append((block, dec_dict))
-            else:
-                total_dropped += 1
-
-            decision_log.append(log_entry)
-
-        # Completeness check — the LLM sometimes returns fewer decisions than
-        # blocks shown (under-emission), silently losing chunks. Auto-drop every
-        # block it left unclassified so nothing vanishes and dropped_count stays
-        # honest; warn (loudly when most of the round was skipped).
-        undecided = [lbl for lbl in by_label if lbl not in decided_labels]
-        if undecided:
-            for lbl in undecided:
-                total_dropped += 1
-                decision_log.append({
-                    "label": lbl,
-                    "rrf": by_label[lbl].get("rrf", 0.0),
-                    "action": "drop",
-                    "undecided": True,
-                })
-            lvl = (
-                logging.ERROR if len(undecided) * 2 > len(by_label)
-                else logging.WARNING
+        # Integrity gate: kept==0 of N>0 → ONE retry with a dynamic note. If the
+        # model truly keeps nothing, accept the empty list on the second pass.
+        n_keeps = len(cand.keeps)
+        if n_keeps == 0 and len(by_label) > 0 and not retried_for_zero_keep:
+            retried_for_zero_keep = True
+            extra_note = (
+                f"\n\n---\nNote: you classified 0 of {len(by_label)} candidates "
+                f"as keep. If truly none apply, return an empty `keeps` list — "
+                f"otherwise reconsider and keep the chunks whose parent system "
+                f"scope governs the sub-query."
             )
-            logger.log(
-                lvl,
-                "Reranker round %d [%s]: LLM classified %d/%d chunks — "
-                "%d left unclassified, auto-dropped: %s",
-                round_num, query[:40], len(decided_labels), len(by_label),
-                len(undecided), ", ".join(undecided),
+            logger.warning(
+                "Reranker [%s]: kept 0 of %d — retrying once with a reconsider note",
+                query[:40], len(by_label),
             )
+            continue
 
-        final_summary = classification.summary_note
-        last_sufficient = classification.sufficient
+        classification = cand
+        break
 
-        logger.info(
-            "Reranker round %d: %d kept, %d unfold, %d dropped, sufficient=%s",
-            round_num,
-            sum(1 for d in classification.decisions if d.action == "keep"),
-            len(to_unfold), total_dropped, classification.sufficient,
+    if classification is None:
+        logger.error(
+            "Reranker gave up after 3 attempts: %s", last_err
+        )
+        return (
+            RerankerQueryResult(
+                query=query, rationale=rationale, sufficient=False,
+                results=[], dropped_count=0,
+                summary_note=f"تعذّر تصنيف النتائج: {str(last_err)[:100]}",
+            ),
+            usage_entries,
+            decision_log,
         )
 
-        # 80% rule, or nothing to unfold → done.
-        if classification.sufficient or not to_unfold:
-            if round_trace is not None:
-                round_trace.append({
-                    "round_num": round_num,
-                    "user_msg": user_msg,
-                    "classification": classification.model_dump(),
-                    "unfolds": [],
-                    "usage": usage_entries[-1] if usage_entries else {},
-                })
-            break
-
-        # Neighbour unfold — fetch each requested prev/next in parallel.
-        async def _fetch_neighbour(
-            block: dict, dec_dict: dict
-        ) -> dict | None:
-            chunk = block["chunk"]
-            # `direction` is normalised to "prev"/"next" in the decision loop.
-            if dec_dict.get("direction") == "prev":
-                nid = chunk.get("prev_chunk_id")
-            else:
-                nid = chunk.get("next_chunk_id")
-            if not nid:
-                return None  # corpus boundary — no such neighbour
-            return await asyncio.to_thread(fetch_chunk, supabase, nid)
-
-        neighbours = await asyncio.gather(*[
-            _fetch_neighbour(b, d) for b, d in to_unfold
-        ])
-
-        new_blocks: list[dict[str, Any]] = []
-        unfold_summary: list[dict] = []
-        for (block, dec_dict), neighbour in zip(to_unfold, neighbours):
-            direction = dec_dict.get("direction")
-            if neighbour is None:
-                total_dropped += 1
-                unfold_summary.append({
-                    "label": block["label"], "direction": direction,
-                    "result": "no_neighbour",
-                })
-                continue
-            nid = neighbour.get("id")
-            if not nid or nid in seen_chunk_ids:
-                unfold_summary.append({
-                    "label": block["label"], "direction": direction,
-                    "result": "duplicate",
-                })
-                continue
-            seen_chunk_ids.add(nid)
-            nb = await asyncio.to_thread(
-                _make_block, supabase, neighbour, _next_label(),
-                "simple", block["rrf"] * _NEIGHBOUR_RRF_DECAY,
+    # -- Apply the keeps + integrity gate (invalid/duplicate label) -----------
+    kept_labels: set[str] = set()
+    for keep in classification.keeps:
+        # The LLM often copies the label with its bracket/whitespace ("[C7]",
+        # " C7 ") — the markdown header shows "### [C7]". Normalise to the bare
+        # "C7" the by_label map is keyed on.
+        norm_label = (keep.label or "").strip().strip("[]").strip()
+        block = by_label.get(norm_label)
+        if block is None:
+            logger.warning(
+                "Reranker [%s]: keep references unknown label %r — skipped",
+                query[:40], keep.label,
             )
-            new_blocks.append(nb)
-            total_unfolds += 1
-            unfold_summary.append({
-                "label": block["label"], "direction": direction,
-                "new_label": nb["label"], "result": "ok",
-            })
+            continue
+        if norm_label in kept_labels:
+            logger.warning(
+                "Reranker [%s]: duplicate keep for label %r — keeping first",
+                query[:40], norm_label,
+            )
+            continue
+        kept_labels.add(norm_label)
 
-        if round_trace is not None:
-            round_trace.append({
-                "round_num": round_num,
-                "user_msg": user_msg,
-                "classification": classification.model_dump(),
-                "unfolds": unfold_summary,
-                "usage": usage_entries[-1] if usage_entries else {},
-            })
+        keep_dict = {
+            "relevance": keep.relevance,
+            "reasoning": keep.reasoning,
+        }
+        all_kept.append((block, keep_dict))
+        decision_log.append({
+            "label": norm_label,
+            "rrf": block.get("rrf", 0.0),
+            "action": "keep",
+            "relevance": keep.relevance,
+        })
 
-        if not new_blocks:
-            # Every unfold yielded nothing (all boundaries / duplicates) — stop.
-            break
+    # -- Derive the drop set by difference (candidates − keeps) ---------------
+    dropped_labels = set(by_label) - kept_labels
+    for lbl in dropped_labels:
+        block = by_label[lbl]
+        total_dropped += 1
+        all_dropped.append(_dropped_row(block, "", "llm"))
+        decision_log.append({
+            "label": lbl,
+            "rrf": block.get("rrf", 0.0),
+            "action": "drop",
+        })
 
-        # Next round classifies only the freshly unfolded neighbours.
-        active_blocks = new_blocks
+    final_summary = classification.summary_note
+    last_sufficient = classification.sufficient
+
+    logger.info(
+        "Reranker [%s]: %d kept, %d dropped (derived), sufficient=%s",
+        query[:40], len(all_kept), len(dropped_labels), last_sufficient,
+    )
+
+    if round_trace is not None:
+        round_trace.append({
+            "round_num": 1,
+            "user_msg": user_msg,
+            "classification": classification.model_dump(),
+            "unfolds": [],
+            "usage": usage_entries[-1] if usage_entries else {},
+        })
 
     # -- Dedup kept blocks by chunk id (keep the higher-rrf copy) --------------
     by_id: dict[str, tuple[dict, dict]] = {}
@@ -501,6 +451,10 @@ async def run_reranker_for_query(
     total_dropped += truncated
 
     if truncated > 0:
+        # Cap-truncated chunks were keep-worthy to the LLM — record them as
+        # forensic drops (reason "cap", no per-item reasoning).
+        for block, _dec in all_kept[max_keep:]:
+            all_dropped.append(_dropped_row(block, "", "cap"))
         logger.info(
             "Reranker [%s]: cap truncated %d results (max_keep=%d)",
             query[:40], truncated, max_keep,
@@ -516,12 +470,13 @@ async def run_reranker_for_query(
             results=results,
             dropped_count=total_dropped,
             summary_note=final_summary,
-            unfold_rounds=min(round_num, MAX_RERANKER_ROUNDS),
-            total_unfolds=total_unfolds,
+            unfold_rounds=1,  # vestigial: single-pass now (kept for adapter compat)
+            total_unfolds=0,  # vestigial: neighbour-fetch loop removed
             caps_applied={
                 "max_keep": max_keep,
                 "truncated_by_cap": truncated,
             },
+            dropped_results=all_dropped,
         ),
         usage_entries,
         decision_log,

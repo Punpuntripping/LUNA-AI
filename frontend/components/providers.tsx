@@ -6,6 +6,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { ThemeProvider } from "next-themes";
 import { DirectionProvider } from "@radix-ui/react-direction";
 import { AuthGuard } from "@/components/auth/AuthGuard";
+import { AuthSync } from "@/components/auth/AuthSync";
 import { ApiClientError } from "@/lib/api";
 import { ApiEnvBadge } from "@/components/dev/ApiEnvBadge";
 
@@ -38,6 +39,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         themes={["light", "light-conservatory", "dark"]}
       >
         <QueryClientProvider client={queryClient}>
+          <AuthSync />
           <AuthGuard>{children}</AuthGuard>
           <ReactQueryDevtools initialIsOpen={false} />
           <ApiEnvBadge />

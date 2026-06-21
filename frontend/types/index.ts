@@ -426,6 +426,9 @@ export type WorkspaceItemKind =
 
 export type WorkspaceCreator = 'user' | 'agent';
 
+/** A user's 👍/👎 rating on a workspace item. ``null`` = no rating. */
+export type WorkspaceFeedback = 'up' | 'down' | null;
+
 /** Free-form subtype string carried in metadata.subtype — drives chip color/icon. */
 export type WorkspaceItemSubtype =
   | 'report'
@@ -451,6 +454,8 @@ export interface WorkspaceItem {
   storage_path: string | null;
   document_id: string | null;
   is_visible: boolean;
+  /** User 👍/👎 rating: 'up' | 'down' | null (no rating). Migration 073. */
+  feedback: WorkspaceFeedback;
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -621,6 +626,10 @@ export interface AttachFromDocumentRequest {
 
 export interface UpdateVisibilityRequest {
   is_visible: boolean;
+}
+
+export interface UpdateFeedbackRequest {
+  feedback: WorkspaceFeedback;
 }
 
 export interface UpdateWorkspaceItemRequest {

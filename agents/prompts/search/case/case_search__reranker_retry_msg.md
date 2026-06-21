@@ -1,1 +1,1 @@
-Return the output as a valid JSON object conforming to the schema (sufficient, query_axes, decisions[position, action, relevance, reasoning, satisfies_axes], summary_note) only — with no text or <thinking> tag outside the JSON.
+Return the output as a valid JSON object conforming to the schema (sufficient, query_axes, keeps[position, relevance, reasoning, satisfies_axes], summary_note) only — with no text or <thinking> tag outside the JSON. Emit one entry only for each ruling you KEEP; relevance is required.

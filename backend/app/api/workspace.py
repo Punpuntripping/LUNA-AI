@@ -83,6 +83,15 @@ class UpdateVisibilityRequest(BaseModel):
     is_visible: bool
 
 
+class UpdateFeedbackRequest(BaseModel):
+    """PATCH /workspace/{item_id}/feedback
+
+    ``feedback`` is the user's 👍/👎 rating: ``'up'`` / ``'down'`` / ``None``
+    (None clears it). Validation of the literal values happens in the service.
+    """
+    feedback: Optional[str] = None
+
+
 # ============================================
 # MAPPERS
 # ============================================
@@ -105,6 +114,7 @@ def _to_response(data: dict) -> WorkspaceItemResponse:
         storage_path=data.get("storage_path"),
         document_id=data.get("document_id"),
         is_visible=bool(data.get("is_visible", True)),
+        feedback=data.get("feedback"),
         metadata=data.get("metadata") or {},
         created_at=data["created_at"],
         updated_at=data["updated_at"],
@@ -276,6 +286,30 @@ async def update_workspace_visibility(
         current_user.auth_id,
         item_id,
         is_visible=body.is_visible,
+    )
+    return _to_response(data)
+
+
+@router.patch(
+    "/workspace/{item_id}/feedback",
+    response_model=WorkspaceItemResponse,
+)
+async def update_workspace_feedback(
+    item_id: str,
+    body: UpdateFeedbackRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Set the user's 👍/👎 rating ('up' / 'down' / null). Works on any kind
+    (including read-only ones like ``agent_search``) — feedback is a UX flag,
+    not content mutation, so it bypasses the kind-edit permission check."""
+    validate_uuid(item_id, "معرف العنصر")
+    data = await run_db(
+        workspace_service.update_feedback,
+        supabase,
+        current_user.auth_id,
+        item_id,
+        feedback=body.feedback,
     )
     return _to_response(data)
 

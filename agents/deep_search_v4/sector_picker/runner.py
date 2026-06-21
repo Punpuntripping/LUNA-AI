@@ -5,8 +5,14 @@
 
 1. A Logfire span (``deep_search.sector_picker``) so the picker shows up as a
    first-class stage in the trace tree.
-2. A hard timeout (``SECTOR_PICKER_TIMEOUT_S``) — picker is on the critical
-   path of every deep_search invocation, so we cannot let it hang.
+2. An *optional* internal timeout (``timeout_s``, default ``None`` = uncapped).
+   The orchestrator path leaves it uncapped: the picker runs in the shadow of
+   the executors, each of which grants it a bounded grace at its own filter
+   join point (``sector_picker.consume.resolve_sector_filter``) and
+   ``run_full_loop`` reaps the still-pending task once retrieval ends. So the
+   picker is bounded by retrieval lifetime, not a fixed kill-at-N-seconds cap
+   that fires before the loop even needs the result. Standalone / CLI callers
+   may still pass ``timeout_s`` for a self-contained bound.
 3. A bound check on the ``[MIN_SECTORS, MAX_SECTORS]`` count, downgrading to
    ``None`` (no filter) when the list is too short or too long.
 
@@ -45,9 +51,11 @@ logger = logging.getLogger(__name__)
 _logfire = get_logfire()
 
 
-# Hard timeout on one sector_picker call (seconds). tier_2 deepseek-flash
-# typically returns in ~1-2s; 15s is "something is very wrong, give up". On
-# timeout the runner returns ``None`` and the executors run unfiltered.
+# Opt-in internal timeout (seconds) for standalone / CLI callers that await the
+# picker to completion themselves and want a self-contained bound. The
+# orchestrator path passes ``timeout_s=None`` (uncapped) and bounds the picker
+# at the consumer instead — see the module docstring and
+# ``sector_picker.consume.SECTOR_PICKER_GRACE_S``.
 SECTOR_PICKER_TIMEOUT_S: float = 15.0
 
 
@@ -60,7 +68,7 @@ async def run_sector_picker(
     model_override: ModelPolicy | str | None = None,
     query_id: int = 0,
     conversation_id: str = "",
-    timeout_s: float = SECTOR_PICKER_TIMEOUT_S,
+    timeout_s: float | None = None,
 ) -> list[str] | None:
     """Run the sector_picker once and return the canonical sector list (or None).
 
@@ -80,7 +88,10 @@ async def run_sector_picker(
         model_override: optional tier override token / ModelPolicy for the
             ``sector_picker`` slot.
         query_id / conversation_id: telemetry only.
-        timeout_s: per-call timeout. Defaults to :data:`SECTOR_PICKER_TIMEOUT_S`.
+        timeout_s: optional internal cap. ``None`` (default, the orchestrator
+            path) runs the picker uncapped — it is bounded at the consumer via
+            the per-executor grace + the ``run_full_loop`` reaper. A float
+            applies an :func:`asyncio.wait_for` cap for standalone callers.
     """
     blocks = list(context_blocks or [])
 
@@ -110,10 +121,16 @@ async def run_sector_picker(
 
         try:
             agent = create_sector_picker(model_override=model_override)
-            result = await asyncio.wait_for(
-                agent.run(user_msg, deps=deps, usage_limits=SECTOR_PICKER_LIMITS),
-                timeout=timeout_s,
+            run_coro = agent.run(
+                user_msg, deps=deps, usage_limits=SECTOR_PICKER_LIMITS
             )
+            # ``timeout_s=None`` (orchestrator path): run uncapped and let the
+            # consumer-side grace + run_full_loop reaper bound the picker. A
+            # float (standalone / CLI) applies a self-contained wait_for cap.
+            if timeout_s is not None:
+                result = await asyncio.wait_for(run_coro, timeout=timeout_s)
+            else:
+                result = await run_coro
         except asyncio.TimeoutError:
             logger.warning(
                 "sector_picker: timed out after %.1fs (query_id=%s)",
@@ -121,6 +138,12 @@ async def run_sector_picker(
             )
             span.set(kind="timeout", duration_s=round(time.perf_counter() - t0, 3))
             return None
+        except asyncio.CancelledError:
+            # Reaped by run_full_loop after retrieval finished without needing
+            # us (the uncapped picker is bounded by retrieval lifetime). Tag the
+            # span and honour the cancellation — never swallow it.
+            span.set(kind="cancelled", duration_s=round(time.perf_counter() - t0, 3))
+            raise
         except Exception as exc:
             logger.warning(
                 "sector_picker: raised %s (query_id=%s); running unfiltered",

@@ -45,5 +45,21 @@ class RerankerQueryResult:
     # the per-run flat keep cap was applied by the domain reranker. Empty dict
     # when the cap was not active or not supported.
 
+    # -- Forensic projections (reranker_runs persistence) ---------------------
+    # Self-contained dicts built by the domain adapters from the original
+    # search rows (which still carry the real target-table UUID + title). These
+    # decouple the forensic layer from the typed URA/citation results: the
+    # citation ``ref_id`` (``reg:``/``case:``/``compliance:``) is load-bearing
+    # downstream and is NOT what we persist here.
+    #
+    # kept_forensic   -- 1:1 with ``results``. Each entry:
+    #   {source_table: "chunks"|"cases"|"services", ref_id: <bare UUID>,
+    #    title: str, relevance: "high"|"medium", source_type: str, reasoning: str}
+    # dropped_forensic -- LLM-dropped + cap-truncated results only. Each entry:
+    #   {source_table, ref_id: <bare UUID>, title, drop_reason: "llm"|"cap",
+    #    reasoning: str (""for cap), source_type: str}
+    kept_forensic: list = field(default_factory=list)     # list[dict]
+    dropped_forensic: list = field(default_factory=list)  # list[dict]
+
 
 __all__ = ["Domain", "DomainResult", "RerankerQueryResult"]

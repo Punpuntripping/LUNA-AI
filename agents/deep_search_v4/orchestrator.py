@@ -577,6 +577,7 @@ async def _run_compliance_phase(
         else compliance_to_rqr(
             result,
             per_query_service_refs=state.per_query_service_refs or None,
+            per_query_dropped=state.per_query_dropped or None,
             original_focus_instruction=query,
         )
     )
@@ -761,21 +762,37 @@ async def run_full_loop(
 
         # Sector filter source: the sector_picker future (when wired via
         # ``run_retrieval``) or the static ``sectors_override`` (CLI / monitor
-        # paths). By this point the gather above has finished, so the picker
-        # task — which fired concurrently with the executors — is already
-        # resolved; awaiting it here just reads the cached value.
+        # paths). The gather above has finished, so retrieval no longer needs
+        # the picker. The executors consumed it with a bounded grace and never
+        # cancel it, so it may still be running (the picker is uncapped by
+        # design). Read it if already resolved; otherwise REAP it here — the
+        # uncapped picker is bounded by retrieval lifetime, not a fixed timeout.
         sector_filter: list[str] = []
         sector_source = "none"
         if deps.sectors_future is not None:
-            try:
-                picked = await deps.sectors_future
-            except Exception as exc:
-                logger.warning(
-                    "run_full_loop[%s]: sector_picker future raised %s; "
-                    "treating as no filter",
-                    query_id, type(exc).__name__,
-                )
+            fut = deps.sectors_future
+            picked = None
+            if fut.cancelled():
                 picked = None
+            elif fut.done():
+                try:
+                    picked = fut.result()
+                except Exception as exc:
+                    logger.warning(
+                        "run_full_loop[%s]: sector_picker future raised %s; "
+                        "treating as no filter",
+                        query_id, type(exc).__name__,
+                    )
+                    picked = None
+            else:
+                # Still pending at end of retrieval — reap so it does not orphan.
+                fut.cancel()
+                await asyncio.gather(fut, return_exceptions=True)
+                logger.info(
+                    "run_full_loop[%s]: sector_picker still pending at end of "
+                    "retrieval — reaped, no filter recorded",
+                    query_id,
+                )
             if picked:
                 sector_filter = list(picked)
                 sector_source = "picker"

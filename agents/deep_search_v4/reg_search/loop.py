@@ -339,8 +339,8 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
     """Runs classification-only reranker per sub-query in parallel (v2).
 
     Launches all sub-queries concurrently via asyncio.gather, then
-    collects results. Each run_reranker_for_query handles its own
-    multi-round classify→unfold→reclassify loop.
+    collects results. Each run_reranker_for_query runs a single keep-only
+    classification pass and derives the drop set by set-difference.
     Always terminates at End with a placeholder RegSearchResult — the
     reranker_results on LoopState are what downstream URA consumers care about.
     """
@@ -447,11 +447,9 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
                 state.reranker_results.append(query_result)
 
                 logger.info(
-                    "RerankerNode q%d: %d results kept, %d dropped, sufficient=%s, "
-                    "%d unfold rounds, %d unfolds",
+                    "RerankerNode q%d: %d results kept, %d dropped, sufficient=%s",
                     qi + 1, len(query_result.results), query_result.dropped_count,
-                    query_result.sufficient, query_result.unfold_rounds,
-                    query_result.total_unfolds,
+                    query_result.sufficient,
                 )
 
                 # Log per-query reranker output (md)

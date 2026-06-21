@@ -15,6 +15,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
+
 if TYPE_CHECKING:
     from .models import ComplianceSearchDeps
 
@@ -106,20 +108,15 @@ async def _search_compliance_raw_inner(
 
         # Step 1b: resolve the picker's sector filter (when running under the
         # planner). compliance applies sectors inside the RPC, so this must
-        # finish before step 2 fires. The picker was launched concurrently
-        # with the executors in ``run_retrieval`` — by this point it has been
-        # running alongside the expander + embed and is usually resolved.
+        # finish before step 2 fires. The picker was launched concurrently with
+        # the executors in ``run_retrieval`` — it has been running alongside the
+        # expander + embed. We grant it a bounded grace here and run unfiltered
+        # if it has not resolved (``None`` → no filter). The picker is NOT
+        # cancelled — a slower executor may still use it.
         if sectors_future is not None:
-            try:
-                picked = await sectors_future
-                sectors = list(picked) if picked else None
-            except Exception as exc:
-                logger.warning(
-                    "search_compliance_raw: sector_picker future raised %s; "
-                    "running unfiltered for query '%s'",
-                    type(exc).__name__, query[:60],
-                )
-                sectors = None
+            sectors = await resolve_sector_filter(
+                sectors_future, label=query[:60],
+            )
 
         # Step 2: Hybrid search via RPC
         candidates = await _hybrid_rpc_search(

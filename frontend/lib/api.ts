@@ -24,6 +24,7 @@ import type {
   AttachFromDocumentRequest,
   UpdateVisibilityRequest,
   UpdateWorkspaceItemRequest,
+  WorkspaceFeedback,
   WorkspaceFileUrlResponse,
   UserPreferences,
   UserPreferencesData,
@@ -518,6 +519,9 @@ export const workspaceApi = {
 
   setVisibility: (itemId: string, body: UpdateVisibilityRequest) =>
     api.patch<WorkspaceItem>(`/workspace/${itemId}/visibility`, body),
+
+  setFeedback: (itemId: string, feedback: WorkspaceFeedback) =>
+    api.patch<WorkspaceItem>(`/workspace/${itemId}/feedback`, { feedback }),
 
   fileUrl: (itemId: string) =>
     api.get<WorkspaceFileUrlResponse>(`/workspace/${itemId}/file`),

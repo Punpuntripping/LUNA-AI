@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { Share2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { ArtifactPreview } from "./ArtifactPreview";
 import { ReferencePanel, referenceLabel } from "./ReferencePanel";
 import { ShareArtifactDialog } from "./ShareArtifactDialog";
+import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
+import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
-import type { WorkspaceItem } from "@/types";
+import type { WorkspaceFeedback, WorkspaceItem } from "@/types";
 
 interface AgentSearchViewerProps {
   item: WorkspaceItem;
@@ -48,8 +48,16 @@ export function AgentSearchViewer({
 }: AgentSearchViewerProps) {
   const { data: references = [], isLoading: isLoadingReferences } =
     useWorkspaceItemReferences(item.item_id);
+  const setFeedback = useSetWorkspaceItemFeedback();
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+
+  const handleFeedback = useCallback(
+    (next: WorkspaceFeedback) => {
+      setFeedback.mutate({ itemId: item.item_id, feedback: next });
+    },
+    [setFeedback, item.item_id],
+  );
 
   // Intra-artifact citation click: when the user clicks ``[n]`` inside the
   // synthesis body, focus reference ``n`` in the panel below. No need to go
@@ -90,24 +98,12 @@ export function AgentSearchViewer({
   }, [item.content_md, references]);
 
   return (
-    <>
+    <div className="relative flex flex-1 min-h-0 flex-col">
       <ArtifactPreview
         content={item.content_md ?? ""}
         copyContent={copyContent}
+        hideToolbar
         onCitationClick={handleBodyCitationClick}
-        headerActions={
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-[11px] shadow-sm"
-            onClick={() => setShareOpen(true)}
-            aria-label="مشاركة عبر رابط عام"
-          >
-            <Share2 className="h-3 w-3" />
-            مشاركة
-          </Button>
-        }
         footer={
           <ReferencePanel
             references={references}
@@ -117,11 +113,19 @@ export function AgentSearchViewer({
           />
         }
       />
+      <WorkspaceItemActionBar
+        floating
+        copyText={copyContent}
+        onShare={() => setShareOpen(true)}
+        feedback={item.feedback}
+        onFeedback={handleFeedback}
+        feedbackPending={setFeedback.isPending}
+      />
       <ShareArtifactDialog
         itemId={item.item_id}
         open={shareOpen}
         onOpenChange={setShareOpen}
       />
-    </>
+    </div>
   );
 }

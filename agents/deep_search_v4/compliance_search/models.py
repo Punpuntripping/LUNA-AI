@@ -2,7 +2,7 @@
 
 Compliance/government-services search loop (pydantic_graph):
 - ExpanderOutput: LLM query expansion result
-- ServiceDecision: LLM keep/drop decision for one service result
+- ServiceKeep: one service the LLM reranker decides to KEEP (keep-only contract)
 - ServiceRerankerOutput: LLM reranker output — classification only, no synthesis
 - ComplianceSearchResult: Final result returned to caller (raw kept service dicts)
 - WeakAxis: Identified gap for retry
@@ -14,12 +14,13 @@ Compliance/government-services search loop (pydantic_graph):
 """
 from __future__ import annotations
 
+import json as _json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 import httpx
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator
 from supabase import Client as SupabaseClient
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
@@ -56,26 +57,25 @@ class ExpanderOutput(BaseModel):
     )
 
 
-class ServiceDecision(BaseModel):
-    """LLM's keep/drop decision for one service result."""
+class ServiceKeep(BaseModel):
+    """One service the reranker decides to KEEP (keep-only contract).
+
+    The reranker emits an entry ONLY for services it keeps; services not
+    listed are dropped, and the drop set is derived by difference in
+    ``reranker.run_reranker_for_query``. ``relevance`` is REQUIRED — no
+    default — which closes the silent ``keep -> medium`` coercion that the
+    old optional-relevance ``ServiceDecision`` allowed.
+    """
 
     position: int
-    action: Literal["keep", "drop"]
-    relevance: Literal["high", "medium"] | None = None
+    relevance: Literal["high", "medium"]
     reasoning: str = Field(
-        description="Short Arabic note justifying the decision (required)",
+        description="Short Arabic note justifying the keep (required)",
     )
     satisfies_axes: list[int] = Field(
         default_factory=list,
-        description="Indices into query_axes that this service covers (keep only)",
+        description="Indices into query_axes that this service covers",
     )
-
-    @model_validator(mode="after")
-    def _relevance_only_on_keep(self) -> "ServiceDecision":
-        # Coherence: a dropped service has no relevance tier.
-        if self.action != "keep":
-            self.relevance = None
-        return self
 
 
 class ServiceRerankerOutput(BaseModel):
@@ -86,11 +86,28 @@ class ServiceRerankerOutput(BaseModel):
         default_factory=list,
         description="1-3 executive-need axes restated from the sub-query (advisory)",
     )
-    decisions: list[ServiceDecision]
+    keeps: list[ServiceKeep] = Field(default_factory=list)
     weak_axes: list[WeakAxis] = []
     summary_note: str = Field(
         description="Brief Arabic note on the collective assessment (required)",
     )
+
+    @field_validator("keeps", mode="before")
+    @classmethod
+    def _coerce_keeps(cls, v):
+        # LLM output quirks (mirrors ExpanderOutputV2._coerce_queries):
+        #   ''      -> []   (uncertain / empty keep list, not a crash)
+        #   '[...]' -> list (JSON-stringified array, salvaged without a retry)
+        if isinstance(v, str):
+            if v.strip() == "":
+                return []
+            try:
+                parsed = _json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (_json.JSONDecodeError, TypeError):
+                pass
+        return v
 
 
 class RerankedServiceResult(BaseModel):
@@ -103,6 +120,10 @@ class RerankedServiceResult(BaseModel):
 
     source_type: str = Field(default="gov_service")
     service_ref: str = Field(default="", description="Stable service identifier")
+    service_id: str = Field(
+        default="",
+        description="services.id UUID — forensic ref_id (citation ref_id stays the service_ref hash)",
+    )
     title: str = Field(default="", description="Arabic service name")
     content: str = Field(
         default="",
@@ -183,6 +204,13 @@ class LoopState:
     search_results_log: list[dict] = field(default_factory=list)
     round_summaries: list[dict] = field(default_factory=list)
     per_query_service_refs: dict[str, list[str]] = field(default_factory=dict)
+    # Parallel forensic channel to ``per_query_service_refs``: maps the same
+    # expander query string -> list of dropped-service dicts recorded by the
+    # RerankerNode (LLM-drop + cap-truncation). The orchestrator hands this to
+    # ``compliance_to_rqr`` so the persistence layer's ``dropped_forensic`` is
+    # populated (parity with reg_search). Each dict:
+    # ``{"service_id": str, "title": str, "reasoning": str, "drop_reason": "llm"|"cap"}``.
+    per_query_dropped: dict[str, list[dict]] = field(default_factory=dict)
     # Per-sub-query retrieved rows, retained so the RerankerNode can run ONE
     # reranker call per sub-query (parity with reg_search / case_search) instead
     # of a single fused call over ``all_results_flat``. Each entry:

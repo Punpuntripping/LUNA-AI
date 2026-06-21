@@ -399,6 +399,63 @@ def update_visibility(
     return result.data[0]
 
 
+def update_feedback(
+    supabase: SupabaseClient,
+    auth_id: str,
+    item_id: str,
+    *,
+    feedback: Optional[str],
+) -> dict:
+    """Set the user's 👍/👎 rating on a workspace item.
+
+    Like ``update_visibility`` this bypasses the kind-permission check: feedback
+    is a UX flag, not content mutation, so it is allowed on non-editable kinds
+    (notably ``agent_search``, which is read-only). ``feedback`` is one of
+    ``'up'`` / ``'down'`` / ``None`` (None clears the rating).
+    """
+    if feedback not in (None, "up", "down"):
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="قيمة التقييم غير صالحة",
+        )
+
+    user_id = get_user_id(supabase, auth_id)
+
+    # Existence + ownership check (raises 404 if not owned).
+    get_workspace_item(supabase, auth_id, item_id)
+
+    update_data = {
+        "feedback": feedback,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        result = (
+            supabase.table("workspace_items")
+            .update(update_data)
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error updating workspace_item feedback: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء تحديث التقييم",
+        )
+
+    if not result.data:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="العنصر غير موجود",
+        )
+
+    return result.data[0]
+
+
 def delete_workspace_item(
     supabase: SupabaseClient,
     auth_id: str,
@@ -863,6 +920,7 @@ __all__ = [
     "get_workspace_item",
     "update_workspace_item",
     "update_visibility",
+    "update_feedback",
     "delete_workspace_item",
     "upload_attachment_bytes",
     "init_attachment_upload",

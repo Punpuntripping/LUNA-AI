@@ -20,6 +20,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
+
 from .unfold_reranker import CHUNK_SELECT
 
 if TYPE_CHECKING:
@@ -142,21 +144,16 @@ async def _search_regulations_pipeline_inner(
         # Step 5: Fetch chunks_v2 rows (CHUNK_SELECT) for the selected ids.
         chunk_map = await _fetch_chunks(deps.supabase, top_ids)
 
-        # Resolve the sector filter for step 6. When the parallel sector_picker
-        # is wired, its future was launched concurrently with the embed + RPC
-        # + chunk fetch above — by this point it is usually already resolved.
-        # Future ``None`` (picker said no filter / picker failed) → unfiltered.
+        # Resolve the sector filter for step 6. The shared sector_picker future
+        # was launched concurrently with the embed + RPC + chunk fetch above, so
+        # by this join point it is usually already resolved. We grant it a
+        # bounded grace (measured from here) and run unfiltered if it has not
+        # resolved; ``None`` (no filter / picker failed / grace elapsed) →
+        # unfiltered. The picker is NOT cancelled — a slower executor may use it.
         if filter_sectors_future is not None:
-            try:
-                picked = await filter_sectors_future
-                filter_sectors = list(picked) if picked else None
-            except Exception as exc:
-                logger.warning(
-                    "search pipeline: sector_picker future raised %s; "
-                    "running unfiltered for query '%s'",
-                    type(exc).__name__, query[:60],
-                )
-                filter_sectors = None
+            filter_sectors = await resolve_sector_filter(
+                filter_sectors_future, label=query[:60],
+            )
 
         # Step 6: Optional sector filter — intersect parent regulation sectors[].
         # Applied before the rank-band cut; if it empties the set, retry without.

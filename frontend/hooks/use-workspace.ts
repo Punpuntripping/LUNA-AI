@@ -6,6 +6,8 @@ import type {
   CreateReferenceRequest,
   UpdateVisibilityRequest,
   UpdateWorkspaceItemRequest,
+  WorkspaceFeedback,
+  WorkspaceItem,
 } from "@/types";
 
 export const workspaceKeys = {
@@ -93,6 +95,41 @@ export function useToggleWorkspaceVisibility() {
     onSuccess: (updated) => {
       qc.setQueryData(workspaceKeys.detail(updated.item_id), updated);
       void qc.invalidateQueries({ queryKey: workspaceKeys.all });
+    },
+  });
+}
+
+export function useSetWorkspaceItemFeedback() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      itemId,
+      feedback,
+    }: {
+      itemId: string;
+      feedback: WorkspaceFeedback;
+    }) => workspaceApi.setFeedback(itemId, feedback),
+    // Optimistically flip the thumb so the toggle feels instant; roll back on
+    // error. Only the detail cache carries ``feedback`` — the list query
+    // doesn't render it, so we don't touch it here.
+    onMutate: async ({ itemId, feedback }) => {
+      await qc.cancelQueries({ queryKey: workspaceKeys.detail(itemId) });
+      const prev = qc.getQueryData<WorkspaceItem>(workspaceKeys.detail(itemId));
+      if (prev) {
+        qc.setQueryData<WorkspaceItem>(workspaceKeys.detail(itemId), {
+          ...prev,
+          feedback,
+        });
+      }
+      return { prev, itemId };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) {
+        qc.setQueryData(workspaceKeys.detail(ctx.itemId), ctx.prev);
+      }
+    },
+    onSuccess: (updated) => {
+      qc.setQueryData(workspaceKeys.detail(updated.item_id), updated);
     },
   });
 }

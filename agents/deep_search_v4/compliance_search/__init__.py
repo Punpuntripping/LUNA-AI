@@ -8,7 +8,7 @@ from .loop import run_compliance_search
 from .models import (
     ComplianceSearchDeps,
     ComplianceSearchResult,
-    ServiceDecision,
+    ServiceKeep,
     ServiceRerankerOutput,
 )
 
@@ -16,6 +16,6 @@ __all__ = [
     "run_compliance_search",
     "ComplianceSearchDeps",
     "ComplianceSearchResult",
-    "ServiceDecision",
+    "ServiceKeep",
     "ServiceRerankerOutput",
 ]

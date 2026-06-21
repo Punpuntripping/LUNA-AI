@@ -261,10 +261,6 @@ def _rqr_table_block(title: str, rqrs: list[RerankerQueryResult]) -> str:
         lines.append(f"- **kept_count**: {len(rqr.results or [])}")
         if rqr.summary_note:
             lines.append(f"- **summary_note**: {rqr.summary_note}")
-        if getattr(rqr, "unfold_rounds", 0):
-            lines.append(f"- **unfold_rounds**: {rqr.unfold_rounds}")
-        if getattr(rqr, "total_unfolds", 0):
-            lines.append(f"- **total_unfolds**: {rqr.total_unfolds}")
         lines.append("")
         if rqr.results:
             lines.append("| pos | ref_id | relevance | rrf_max | source_type | title | reasoning |")

@@ -30,6 +30,7 @@ def reg_to_rqr(reg_rqrs: list[RegRQR]) -> list[SharedRQR]:
     out: list[SharedRQR] = []
     for sq in reg_rqrs or []:
         typed_results: list[RegURAResult] = []
+        kept_forensic: list[dict] = []
         for r in sq.results or []:
             db_id = (getattr(r, "db_id", "") or "").strip()
             if not db_id:
@@ -47,6 +48,28 @@ def reg_to_rqr(reg_rqrs: list[RegRQR]) -> list[SharedRQR]:
                     rrf_max=float(getattr(r, "rrf", 0.0) or 0.0),
                 )
             )
+            # Forensic: bare chunks_v2.id UUID + the chunk title the reranker
+            # already resolved (RegURAResult carries no title field).
+            kept_forensic.append({
+                "source_table": "chunks",
+                "ref_id": db_id,
+                "title": (getattr(r, "title", "") or "").strip(),
+                "relevance": r.relevance,
+                "source_type": r.source_type,
+                "reasoning": r.reasoning or "",
+            })
+        dropped_forensic = [
+            {
+                "source_table": "chunks",
+                "ref_id": (d.get("db_id", "") or "").strip(),
+                "title": (d.get("title", "") or "").strip(),
+                "drop_reason": d.get("drop_reason", "llm"),
+                "reasoning": d.get("reasoning", "") or "",
+                "source_type": d.get("source_type", "chunk"),
+            }
+            for d in (getattr(sq, "dropped_results", None) or [])
+            if (d.get("db_id", "") or "").strip()
+        ]
         out.append(
             SharedRQR(
                 query=sq.query,
@@ -58,6 +81,8 @@ def reg_to_rqr(reg_rqrs: list[RegRQR]) -> list[SharedRQR]:
                 summary_note=sq.summary_note,
                 unfold_rounds=sq.unfold_rounds,
                 total_unfolds=sq.total_unfolds,
+                kept_forensic=kept_forensic,
+                dropped_forensic=dropped_forensic,
             )
         )
     return out

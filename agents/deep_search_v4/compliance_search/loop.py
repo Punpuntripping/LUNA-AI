@@ -429,7 +429,7 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
             rationale = entry.get("rationale", "")
             rows = entry.get("rows", []) or []
             try:
-                output, kept, usage, user_message, messages_json = (
+                output, kept, usage, user_message, messages_json, dropped = (
                     await run_reranker_for_query(
                         query=query,
                         rationale=rationale,
@@ -442,6 +442,11 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
             except Exception as e:
                 logger.error("RerankerNode q%d error: %s", qi + 1, e, exc_info=True)
                 return None
+
+            # Record per-sub-query drops keyed by the same ``query`` string used
+            # for ``state.per_query_service_refs`` (SearchNode) — the orchestrator
+            # threads this into ``compliance_to_rqr`` as ``per_query_dropped``.
+            state.per_query_dropped[query] = dropped
 
             usage["round"] = state.round_count
             usage["query_index"] = qi + 1
@@ -546,7 +551,7 @@ class RerankerNode(BaseNode[LoopState, ComplianceSearchDeps, ComplianceSearchRes
         # Merged round-level output (state + summaries + routing signal).
         merged_output = ServiceRerankerOutput(
             sufficient=sufficient_all,
-            decisions=[],
+            keeps=[],
             weak_axes=merged_weak_axes,
             summary_note=" | ".join(notes)[:500],
         )

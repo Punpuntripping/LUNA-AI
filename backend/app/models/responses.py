@@ -251,6 +251,8 @@ class WorkspaceItemResponse(BaseModel):
     storage_path: Optional[str] = None
     document_id: Optional[str] = None
     is_visible: bool = True
+    # User 👍/👎 rating: 'up' | 'down' | None (migration 073).
+    feedback: Optional[str] = None
     metadata: dict = {}
     created_at: str
     updated_at: str

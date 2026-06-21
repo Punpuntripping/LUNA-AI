@@ -357,8 +357,6 @@ def save_reranker_md(
     lines.append(f"**Sufficient:** {query_result.sufficient}")
     lines.append(f"**Results kept:** {len(query_result.results)}")
     lines.append(f"**Dropped:** {query_result.dropped_count}")
-    lines.append(f"**Classification rounds:** {query_result.unfold_rounds}")
-    lines.append(f"**DB unfolds:** {query_result.total_unfolds}")
     if query_result.summary_note:
         lines.append(f"**Summary:** {query_result.summary_note}")
     lines.append("")
@@ -419,41 +417,28 @@ def save_reranker_md(
                 ]
                 inp_path.write_text("\n".join(inp_lines), encoding="utf-8")
 
-                # Output: what the LLM classified
+                # Output: which chunks the LLM KEPT (keep-only contract).
                 cls = rt.get("classification", {})
                 out_path = rounds_dir / f"round_{rn}_output.md"
+                keeps = cls.get("keeps", [])
                 out_lines = [
                     f"# Reranker Output — q{query_index} round {rn}",
                     "",
                     f"- **sufficient**: {cls.get('sufficient')}",
                     f"- **summary_note**: {cls.get('summary_note', '')}",
                     "",
-                    f"## Decisions ({len(cls.get('decisions', []))})",
+                    f"## Keeps ({len(keeps)})",
                     "",
-                    "| label | action | direction | relevance | reasoning |",
-                    "|-------|--------|-----------|-----------|-----------|",
+                    "| label | relevance | satisfies_axes | reasoning |",
+                    "|-------|-----------|----------------|-----------|",
                 ]
-                for d in cls.get("decisions", []):
+                for d in keeps:
                     r = (d.get("reasoning") or "").replace("|", "\\|").replace("\n", " ")
+                    axes = ", ".join(str(a) for a in (d.get("satisfies_axes") or []))
                     out_lines.append(
-                        f"| {d.get('label', '-')} | {d.get('action', '-')} "
-                        f"| {d.get('direction') or '-'} | {d.get('relevance') or '-'} | {r} |"
+                        f"| {d.get('label', '-')} | {d.get('relevance') or '-'} "
+                        f"| {axes or '-'} | {r} |"
                     )
-
-                if rt.get("unfolds"):
-                    out_lines += ["", "## Unfolds triggered after this round", ""]
-                    for u in rt["unfolds"]:
-                        # v2 reranker unfold_summary shape:
-                        # {label, direction, result, new_label?}
-                        result = u.get("result", "?")
-                        direction = u.get("direction", "?")
-                        if result == "ok":
-                            detail = f"→ new block `{u.get('new_label', '')}`"
-                        else:
-                            detail = f"({result})"
-                        out_lines.append(
-                            f"- `{u.get('label', '')}` unfold {direction} {detail}"
-                        )
 
                 out_path.write_text("\n".join(out_lines), encoding="utf-8")
         except Exception as e:
@@ -502,11 +487,12 @@ def save_reranker_json(
             total_output_tokens += rnd["output_tokens"]
             total_requests += rnd["requests"]
 
-        # Decision log with RRF (stashed by RerankerNode)
+        # Decision log with RRF (stashed by RerankerNode). Keep-only contract:
+        # the log carries "keep" entries (emitted) and "drop" entries (derived
+        # by set-difference) — there is no "unfold" action.
         decision_log = getattr(rr, "_decision_log", [])
         kept_decisions = [d for d in decision_log if d.get("action") == "keep"]
         dropped_decisions = [d for d in decision_log if d.get("action") == "drop"]
-        unfolded_decisions = [d for d in decision_log if d.get("action") == "unfold"]
 
         query_entry: dict = {
             "query": rr.query,
@@ -514,8 +500,6 @@ def save_reranker_json(
             "articles_kept": articles_count,
             "sections_kept": sections_count,
             "dropped": rr.dropped_count,
-            "classification_rounds": rr.unfold_rounds,
-            "db_unfolds": rr.total_unfolds,
             "rounds": rounds,
             "decisions": {
                 "kept": [
@@ -525,10 +509,6 @@ def save_reranker_json(
                 "dropped": [
                     {"label": d.get("label", ""), "rrf": d.get("rrf", 0)}
                     for d in dropped_decisions
-                ],
-                "unfolded": [
-                    {"label": d.get("label", ""), "rrf": d.get("rrf", 0)}
-                    for d in unfolded_decisions
                 ],
             },
         }

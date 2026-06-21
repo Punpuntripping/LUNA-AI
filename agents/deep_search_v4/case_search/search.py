@@ -16,6 +16,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
+
 if TYPE_CHECKING:
     from .models import CaseSearchDeps, ChannelCandidate, TypedQuery
 
@@ -397,21 +399,16 @@ async def _search_case_section_inner(
         return []
 
     # Step 1b: resolve the sector filter. The picker future was launched
-    # concurrently with the executors back in ``run_retrieval`` — by this
-    # point it has been running alongside the expander + embed above and is
-    # usually already resolved. case_search bakes sectors into the RPC
-    # (``p_sectors``), so the resolution must happen BEFORE the RPC call.
+    # concurrently with the executors back in ``run_retrieval`` — it has been
+    # running alongside the expander + embed above. case_search bakes sectors
+    # into the RPC (``p_sectors``), so resolution must happen BEFORE the RPC
+    # call. We grant the picker a bounded grace here and run unfiltered if it
+    # has not resolved (``None`` → no filter); it is NOT cancelled — a slower
+    # executor may still use it.
     if sectors_future is not None:
-        try:
-            picked = await sectors_future
-            sectors = list(picked) if picked else None
-        except Exception as exc:
-            logger.warning(
-                "search_case_section [%s]: sector_picker future raised %s; "
-                "running unfiltered",
-                query.channel, type(exc).__name__,
-            )
-            sectors = None
+        sectors = await resolve_sector_filter(
+            sectors_future, label=str(getattr(query, "channel", "")),
+        )
 
     # Step 2: RPC call
     rows = await _case_sections_rpc(

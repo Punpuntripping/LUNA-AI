@@ -12,6 +12,7 @@ Public surface:
 Returns ``None`` on every failure mode — picker is critical-path but the
 filter it produces is a coarse pre-filter, so unfiltered fallback is safe.
 """
+from .consume import SECTOR_PICKER_GRACE_S, resolve_sector_filter
 from .deps import Mode, SectorPickerDeps
 from .models import MAX_SECTORS, MIN_SECTORS, SectorPickerOutput
 from .runner import SECTOR_PICKER_TIMEOUT_S, run_sector_picker
@@ -20,8 +21,10 @@ __all__ = [
     "MAX_SECTORS",
     "MIN_SECTORS",
     "Mode",
+    "SECTOR_PICKER_GRACE_S",
     "SECTOR_PICKER_TIMEOUT_S",
     "SectorPickerDeps",
     "SectorPickerOutput",
+    "resolve_sector_filter",
     "run_sector_picker",
 ]
