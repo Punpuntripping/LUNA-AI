@@ -23,6 +23,14 @@ interface ChatInputProps {
   caseId?: string | null;
   /** Conversation the chat input belongs to; needed for attachment uploads. */
   conversationId?: string | null;
+  /**
+   * New-chat mode: called when files are picked but no conversation exists yet.
+   * The handler creates + stores the conversation, then navigates to it; the
+   * picked files are stashed in the chat-store and the destination ChatInput
+   * resumes their uploads. When provided, the attach button is enabled even
+   * without a ``conversationId``.
+   */
+  onRequireConversation?: (files: File[]) => void;
 }
 
 const MAX_CHARS = 10_000;
@@ -36,6 +44,7 @@ export function ChatInput({
   disabled,
   className,
   conversationId,
+  onRequireConversation,
 }: ChatInputProps) {
   const [content, setContent] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -100,6 +109,18 @@ export function ChatInput({
     };
   }, []);
 
+  // New-chat handoff: prefill the composer with any draft text carried from the
+  // empty page when the user attached a file before sending. Runs once on mount;
+  // a no-op on every normal mount (the slot is null).
+  useEffect(() => {
+    const draft = useChatStore.getState().pendingComposerDraft;
+    if (draft) {
+      setContent(draft);
+      useChatStore.getState().setPendingComposerDraft(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setContent(e.target.value);
@@ -148,48 +169,16 @@ export function ChatInput({
     [removePendingFile],
   );
 
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files) return;
+  // Kick off resumable uploads for a list of already-validated files. Requires
+  // an existing conversation. Shared by the file picker (when a conversation is
+  // present) and the post-create consume effect (files carried over from a brand
+  // new chat). Status flips through the chat-store via updatePendingFile so the
+  // AttachmentUploadCard re-renders with live progress.
+  const startUploads = useCallback(
+    (files: File[]) => {
+      if (!conversationId || files.length === 0) return;
 
-      setValidationError(null);
-
-      // TODO(upload-reliability Phase 2): attachments require an existing
-      // conversation_id for the /init endpoint. In "general mode" (new
-      // chat with no conversation yet) the conversation is created on
-      // send, so we'd need to defer the upload kickoff until the create
-      // returns. For now, block attachments without a conversation —
-      // matches the existing behaviour (use-chat.ts only uploaded for
-      // case-scoped sends or after a conversation existed). Re-enable
-      // once the conversation-create-then-upload flow is in place.
-      if (!conversationId) {
-        setValidationError(
-          "ابدأ محادثة أولاً قبل إضافة المرفقات",
-        );
-        e.target.value = "";
-        return;
-      }
-
-      const currentCount = pendingFiles.length;
-      const newFiles = Array.from(files);
-
-      if (currentCount + newFiles.length > MAX_FILES) {
-        setValidationError(`الحد الأقصى ${MAX_FILES} ملفات`);
-        return;
-      }
-
-      for (const file of newFiles) {
-        if (!ACCEPTED_TYPES.includes(file.type)) {
-          setValidationError("الملفات المقبولة: PDF، PNG، JPG فقط");
-          return;
-        }
-
-        if (file.size > MAX_FILE_SIZE) {
-          setValidationError("الحد الأقصى لحجم الملف 50 ميجابايت");
-          return;
-        }
-
+      for (const file of files) {
         const pendingId = `file-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const pendingFile: PendingFile = {
           id: pendingId,
@@ -208,28 +197,18 @@ export function ChatInput({
 
         addPendingFile(pendingFile);
 
-        // Kick off the resumable upload. Status flips through the
-        // chat-store via updatePendingFile so the AttachmentUploadCard
-        // re-renders with live progress.
         const handle = runResumableUpload(
           { kind: "attachment", conversationId },
           file,
           qc,
           {
             onInitialized: (itemId) => {
-              updatePendingFile(pendingId, {
-                itemId,
-                uploadStatus: "uploading",
-              });
+              updatePendingFile(pendingId, { itemId, uploadStatus: "uploading" });
             },
             onProgress: (s) => {
-              // We can't tell `progress 0 → 0` from the very first call
-              // apart, but the visible bar handles 0 fine. Only push
-              // updates while we're actively transferring bytes.
               if (s.status === "uploading" || s.status === "finalizing") {
                 updatePendingFile(pendingId, {
-                  uploadStatus:
-                    s.status === "finalizing" ? "uploading" : "uploading",
+                  uploadStatus: "uploading",
                   uploadProgress: s.progress,
                 });
               }
@@ -239,9 +218,9 @@ export function ChatInput({
               updatePendingFile(pendingId, {
                 uploadStatus: "completed",
                 uploadProgress: 1,
-                // For attachment uploads `row` is a WorkspaceItem; pull
-                // the canonical item_id off the row in case it differs
-                // from the one /init returned (shouldn't, but defensive).
+                // For attachment uploads `row` is a WorkspaceItem; pull the
+                // canonical item_id off the row in case it differs from the
+                // one /init returned (shouldn't, but defensive).
                 itemId: "item_id" in row ? row.item_id : null,
               });
             },
@@ -261,16 +240,67 @@ export function ChatInput({
         );
         uploadHandlesRef.current.set(pendingId, handle);
       }
-
-      e.target.value = "";
     },
-    [
-      pendingFiles.length,
-      addPendingFile,
-      updatePendingFile,
-      conversationId,
-      qc,
-    ],
+    [conversationId, addPendingFile, updatePendingFile, qc],
+  );
+
+  // New-chat handoff: when files were picked before a conversation existed, the
+  // create-conversation flow stashed them in the store and navigated here. Now
+  // that a conversation id is present, resume their uploads. Declared AFTER the
+  // conversationId-change clear effect above so the carried files aren't wiped
+  // by it on mount; clears the slot first so a re-run is a no-op.
+  useEffect(() => {
+    if (!conversationId) return;
+    const carried = useChatStore.getState().pendingAttachFiles;
+    if (carried.length === 0) return;
+    useChatStore.getState().clearPendingAttachFiles();
+    startUploads(carried);
+  }, [conversationId, startUploads]);
+
+  const handleFileSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = Array.from(e.target.files ?? []);
+      e.target.value = "";
+      if (picked.length === 0) return;
+
+      setValidationError(null);
+
+      // Validate count + each file's type/size up front so the new-chat path
+      // never creates a conversation for an invalid selection.
+      if (pendingFiles.length + picked.length > MAX_FILES) {
+        setValidationError(`الحد الأقصى ${MAX_FILES} ملفات`);
+        return;
+      }
+      for (const file of picked) {
+        if (!ACCEPTED_TYPES.includes(file.type)) {
+          setValidationError("الملفات المقبولة: PDF، PNG، JPG فقط");
+          return;
+        }
+        if (file.size > MAX_FILE_SIZE) {
+          setValidationError("الحد الأقصى لحجم الملف 50 ميجابايت");
+          return;
+        }
+      }
+
+      // Brand-new chat with no conversation yet: hand the validated files to the
+      // create-then-upload flow (creates + stores the conversation, navigates,
+      // and the destination ChatInput resumes the uploads via the effect above).
+      // Carry the typed draft too so it isn't lost across the navigation.
+      if (!conversationId) {
+        if (onRequireConversation) {
+          if (content.trim()) {
+            useChatStore.getState().setPendingComposerDraft(content);
+          }
+          onRequireConversation(picked);
+        } else {
+          setValidationError("ابدأ محادثة أولاً قبل إضافة المرفقات");
+        }
+        return;
+      }
+
+      startUploads(picked);
+    },
+    [pendingFiles.length, conversationId, onRequireConversation, content, startUploads],
   );
 
   const handleAddFile = useCallback(() => {
@@ -331,7 +361,7 @@ export function ChatInput({
           size="icon"
           className="h-10 w-10 shrink-0"
           onClick={handleAddFile}
-          disabled={isStreaming || !conversationId}
+          disabled={isStreaming || (!conversationId && !onRequireConversation)}
           aria-label="إضافة مرفق"
         >
           <Paperclip className="h-5 w-5" />

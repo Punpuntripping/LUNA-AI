@@ -54,6 +54,13 @@ interface ChatState {
   streamingContent: string;
   abortController: AbortController | null;
   pendingFiles: PendingFile[];
+  // New-chat handoff: files picked before a conversation exists are stashed
+  // here (raw File objects, not persisted) and the optional composer draft text
+  // is carried in ``pendingComposerDraft`` — both consumed by the destination
+  // ChatInput after the create-conversation navigation so attachments work
+  // before the first message.
+  pendingAttachFiles: File[];
+  pendingComposerDraft: string | null;
   pendingMessage: string | null;
   error: string | null;
   // Per-conversation workspace pane state, keyed by conversation_id, so the
@@ -119,6 +126,9 @@ interface ChatState {
   setAbortController: (controller: AbortController | null) => void;
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
+  setPendingAttachFiles: (files: File[]) => void;
+  clearPendingAttachFiles: () => void;
+  setPendingComposerDraft: (text: string | null) => void;
   openWorkspaceItem: (conversationId: string, itemId: string) => void;
   /**
    * Open ``itemId`` in the pane AND mark reference ``n`` as focused so the
@@ -196,6 +206,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingContent: "",
   abortController: null,
   pendingFiles: [],
+  pendingAttachFiles: [],
+  pendingComposerDraft: null,
   pendingMessage: null,
   error: null,
   workspaceByConversation: {},
@@ -282,6 +294,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setPendingMessage: (message) => set({ pendingMessage: message }),
 
   clearPendingMessage: () => set({ pendingMessage: null }),
+
+  setPendingAttachFiles: (files) => set({ pendingAttachFiles: files }),
+
+  clearPendingAttachFiles: () => set({ pendingAttachFiles: [] }),
+
+  setPendingComposerDraft: (text) => set({ pendingComposerDraft: text }),
 
   openWorkspaceItem: (conversationId, itemId) =>
     set((state) => {
@@ -470,6 +488,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingContent: "",
       abortController: null,
       pendingFiles: [],
+      pendingAttachFiles: [],
+      pendingComposerDraft: null,
       pendingMessage: null,
       error: null,
       workspaceByConversation: {},

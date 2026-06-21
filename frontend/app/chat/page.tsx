@@ -38,6 +38,36 @@ export default function ChatEmptyPage() {
     [isCreating, createConversation, router]
   );
 
+  // Create-on-attach: the user picked file(s) in this brand-new chat before any
+  // conversation exists. Create + store the conversation now, stash the files
+  // (and let ChatInput carry the draft), and navigate — the destination
+  // ChatInput resumes their uploads once it mounts with the new id.
+  const handleRequireConversation = useCallback(
+    (files: File[]) => {
+      if (isCreating) return;
+      setIsCreating(true);
+
+      useChatStore.getState().setPendingAttachFiles(files);
+
+      createConversation.mutate(
+        { case_id: null },
+        {
+          onSuccess: (data) => {
+            const newId = data.conversation.conversation_id;
+            useSidebarStore.getState().setSelectedConversation(newId);
+            router.replace(`/chat/${newId}`);
+          },
+          onError: () => {
+            useChatStore.getState().clearPendingAttachFiles();
+            useChatStore.getState().setPendingComposerDraft(null);
+            setIsCreating(false);
+          },
+        }
+      );
+    },
+    [isCreating, createConversation, router]
+  );
+
   return (
     <div className="flex flex-1 flex-col h-full">
       <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
@@ -59,7 +89,11 @@ export default function ChatEmptyPage() {
         </p>
       </div>
 
-      <ChatInput onSend={handleSend} disabled={isCreating} />
+      <ChatInput
+        onSend={handleSend}
+        onRequireConversation={handleRequireConversation}
+        disabled={isCreating}
+      />
     </div>
   );
 }
