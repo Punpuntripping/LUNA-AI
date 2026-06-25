@@ -6,7 +6,7 @@ Key layout:
     quota:{user_id}:ord:day:{YYYY-MM-DD}   float    USD     TTL 31d   (monthly window)
     quota:{user_id}:web:day:{YYYY-MM-DD}   integer  calls   TTL 31d
     quota:{user_id}:ord:sess               float    USD     TTL 5h    (session accumulator)
-    quota:{user_id}:ord:wk:{anchor}        float    USD     TTL 8d    (weekly accumulator)
+    quota:{user_id}:ord:wk                 float    USD     TTL 7d    (weekly accumulator)
 
 Three ord windows, each with a DIFFERENT shape:
 
@@ -16,10 +16,13 @@ Three ord windows, each with a DIFFERENT shape:
     window is anchored to the first message and resets exactly 5h later. After
     expiry the next message opens a fresh session. NOT a rolling window.
 
-  * weekly — a FIXED calendar week resetting every Friday 13:00 Asia/Riyadh
-    (= 10:00 UTC), the SAME wall-clock for every user. One accumulator key per
-    week, named by the week's anchor instant; the key name changes each week so
-    the previous week's counter is simply abandoned (and TTLs out).
+  * weekly — a FIXED 7-day window that starts when the user sends a message,
+    exactly the session model but 7 days long. A single accumulator key created
+    (value 0) by ``start_week`` on send via SET NX with a 7d TTL; settle
+    increments it WITHOUT extending the TTL, so the window is anchored to the
+    first message and resets exactly 7 days later. After expiry the next message
+    opens a fresh week. NOT a calendar week and NOT a rolling window. (For a
+    7-day plan this makes the weekly window span the whole subscription.)
 
   * monthly — rolling 30 UTC days, summed from the daily ord buckets (the only
     window still using the day-bucket model). Enforced as a silent backstop;
@@ -29,9 +32,10 @@ OCR + web stay on the rolling-30-day day-bucket model.
 
 Redis is the hot path. On Redis miss (cold start, evicted key, brief outage) we
 rehydrate from the llm_calls ledger (the durable cost/pages source of truth) and
-write the value back so the next read hits Redis again. The session window is
-inherently Redis-stateful (its anchor IS the key's creation time); when Redis is
-down it degrades to a trailing-5h PG approximation rather than failing every send.
+write the value back so the next read hits Redis again. The session AND weekly
+windows are inherently Redis-stateful (their anchor IS the key's creation time);
+when Redis is down they degrade to a trailing-5h / trailing-7d PG approximation
+rather than failing every send.
 """
 from __future__ import annotations
 
@@ -58,14 +62,11 @@ _TTL_BY_METER: dict[str, int] = {
     "web": 86_400 * 31,
 }
 
-# Session: fixed window length, anchored at the first message.
+# Session + weekly: fixed window lengths, each anchored at the first message
+# (SET NX on send). The TTL == the window length exactly, so a missing key
+# means the window ended (the next message opens a fresh one).
 SESSION_TTL_S = 5 * 3_600          # 5 hours
-
-# Weekly: fixed reset every Friday 13:00 Asia/Riyadh = 10:00 UTC (Saudi has no
-# DST, so the offset is constant). Same wall-clock for all users.
-WEEKLY_RESET_WEEKDAY = 4           # Monday=0 … Friday=4
-WEEKLY_RESET_HOUR_UTC = 10         # 13:00 AST − 3h
-_WEEK_TTL_S = 86_400 * 8           # one day past the week
+WEEK_TTL_S = 86_400 * 7            # 7 days
 
 
 def _ttl_for(meter: Meter) -> int:
@@ -89,24 +90,6 @@ def next_utc_midnight() -> datetime:
     return now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
-def current_week_anchor_utc(now: datetime | None = None) -> datetime:
-    """The most recent Friday-13:00-Riyadh (10:00 UTC) instant at or before
-    ``now`` — the start of the current weekly window."""
-    now = now or datetime.now(timezone.utc)
-    days_back = (now.weekday() - WEEKLY_RESET_WEEKDAY) % 7
-    anchor = (now - timedelta(days=days_back)).replace(
-        hour=WEEKLY_RESET_HOUR_UTC, minute=0, second=0, microsecond=0
-    )
-    if anchor > now:                       # today is Friday but before 10:00 UTC
-        anchor -= timedelta(days=7)
-    return anchor
-
-
-def next_week_anchor_utc(now: datetime | None = None) -> datetime:
-    """When the current weekly window resets (next Friday 10:00 UTC)."""
-    return current_week_anchor_utc(now) + timedelta(days=7)
-
-
 # ── key layout ──────────────────────────────────────────────────────────────
 
 def day_key(meter: Meter, user_id: str, day: date) -> str:
@@ -117,8 +100,8 @@ def session_key(user_id: str) -> str:
     return f"quota:{user_id}:ord:sess"
 
 
-def week_key(user_id: str, anchor: datetime) -> str:
-    return f"quota:{user_id}:ord:wk:{anchor.strftime('%Y%m%dT%H')}"
+def week_key(user_id: str) -> str:
+    return f"quota:{user_id}:ord:wk"
 
 
 # ── window usage result ─────────────────────────────────────────────────────
@@ -333,47 +316,65 @@ async def session_usage(
     return WindowUsage(float(s), 0), now + timedelta(seconds=SESSION_TTL_S)
 
 
-# ── weekly window (fixed calendar week, resets Friday 13:00 Riyadh) ──────────
+# ── weekly window (fixed 7d, anchored at first message — session model) ───────
+
+async def start_week(redis: AsyncRedis | None, user_id: str) -> None:
+    """Open a weekly window if none is active: SET the accumulator to 0 with a 7d
+    TTL, but only if absent (NX). A no-op when a week is already running
+    (preserves its spend AND its remaining TTL) or when Redis is down. Called on
+    every send so the window is anchored to the user's first message — for a
+    7-day plan this makes the weekly window span the whole subscription."""
+    if redis is None:
+        return
+    try:
+        await redis.set(week_key(user_id), 0, ex=WEEK_TTL_S, nx=True)
+    except Exception as e:
+        logger.warning("quota.start_week failed: %s", e)
+
 
 async def week_usage(
     redis: AsyncRedis | None,
     supabase: SupabaseClient,
     user_id: str,
-    anchor: datetime,
-) -> WindowUsage:
-    """Spend (USD) in the current weekly window, from the per-week accumulator.
-    Cold key → rehydrate from PG (sum since the week anchor) and backfill. Cold
-    key + PG failure → unknown (gate fails closed)."""
-    key = week_key(user_id, anchor)
+) -> tuple[WindowUsage, datetime | None]:
+    """Read the current weekly window's spend and reset time. Returns
+    ``(WindowUsage, resets_at)`` where ``resets_at`` is when the active window
+    expires, or ``None`` when no window is active (read-only path, e.g. the UI
+    report). Pure read — does NOT open a window; call ``start_week`` first on the
+    send path. Mirrors ``session_usage`` exactly (7d instead of 5h). Redis down →
+    trailing-7d PG approximation."""
+    now = datetime.now(timezone.utc)
+    key = week_key(user_id)
 
     if redis is not None:
         try:
-            v = await redis.get(key)
+            pipe = redis.pipeline()
+            pipe.get(key)
+            pipe.pttl(key)
+            val, pttl = await pipe.execute()
         except Exception as e:
-            logger.warning("quota.week_usage GET failed (PG fallback): %s", e)
+            logger.warning("quota.week_usage read failed (PG fallback): %s", e)
         else:
-            if v is not None:
+            if val is not None:
                 try:
-                    return WindowUsage(float(v), 0)
+                    total = float(val)
                 except (TypeError, ValueError):
-                    pass                          # corrupt value → rehydrate below
-            else:
-                s = await asyncio.to_thread(
-                    rehydrate_ord_since_pg, supabase, user_id, anchor
+                    total = 0.0
+                resets = (
+                    now + timedelta(milliseconds=pttl)
+                    if isinstance(pttl, int) and pttl > 0
+                    else now + timedelta(seconds=WEEK_TTL_S)
                 )
-                if s is None:
-                    return WindowUsage(0.0, 1)
-                try:
-                    await redis.set(key, s, ex=_WEEK_TTL_S)   # backfill, best-effort
-                except Exception:
-                    pass
-                return WindowUsage(float(s), 0)
+                return WindowUsage(total, 0), resets
+            return WindowUsage(0.0, 0), None      # no active week
 
-    # Redis down/absent → whole window from PG.
-    s = await asyncio.to_thread(rehydrate_ord_since_pg, supabase, user_id, anchor)
+    # Redis down/absent → approximate the current week as trailing-7d spend.
+    s = await asyncio.to_thread(
+        rehydrate_ord_since_pg, supabase, user_id, now - timedelta(seconds=WEEK_TTL_S)
+    )
     if s is None:
-        return WindowUsage(0.0, 1)
-    return WindowUsage(float(s), 0)
+        return WindowUsage(0.0, 1), None          # unknowable → gate fails closed
+    return WindowUsage(float(s), 0), now + timedelta(seconds=WEEK_TTL_S)
 
 
 # ── counter writes ──────────────────────────────────────────────────────────
@@ -431,15 +432,15 @@ def _ord_keys(user_id: str) -> tuple[str, str, str]:
     return (
         day_key("ord", user_id, today_utc()),
         session_key(user_id),
-        week_key(user_id, current_week_anchor_utc()),
+        week_key(user_id),
     )
 
 
 async def incr_ord(redis: AsyncRedis | None, user_id: str, cost_usd: float) -> None:
     """Ord settle: increment the daily bucket (monthly window), the session
-    accumulator, and the weekly accumulator in one pipeline. The session TTL is
-    set NX so settle never extends the fixed 5h window; the daily + weekly TTLs
-    are refreshed (their keys are date/week-stamped, so refreshing is safe)."""
+    accumulator, and the weekly accumulator in one pipeline. The session AND
+    weekly TTLs are set NX so settle never extends those fixed windows (both are
+    anchored to the first message); only the date-stamped daily TTL is refreshed."""
     if redis is None or not cost_usd:
         return
     amt = float(cost_usd)
@@ -451,7 +452,7 @@ async def incr_ord(redis: AsyncRedis | None, user_id: str, cost_usd: float) -> N
         pipe.incrbyfloat(skey, amt)
         pipe.expire(skey, SESSION_TTL_S, nx=True)
         pipe.incrbyfloat(wkey, amt)
-        pipe.expire(wkey, _WEEK_TTL_S)
+        pipe.expire(wkey, WEEK_TTL_S, nx=True)
         await pipe.execute()
     except Exception as e:
         logger.warning("quota.incr_ord failed: %s", e)
@@ -470,7 +471,7 @@ def incr_ord_sync(redis: SyncRedis | None, user_id: str, cost_usd: float) -> Non
         pipe.incrbyfloat(skey, amt)
         pipe.expire(skey, SESSION_TTL_S, nx=True)
         pipe.incrbyfloat(wkey, amt)
-        pipe.expire(wkey, _WEEK_TTL_S)
+        pipe.expire(wkey, WEEK_TTL_S, nx=True)
         pipe.execute()
     except Exception as e:
         logger.warning("quota.incr_ord_sync failed: %s", e)

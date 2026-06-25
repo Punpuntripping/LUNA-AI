@@ -1,4 +1,5 @@
 import { LoginForm } from "@/components/auth/LoginForm";
+import { LegalLinksFooter } from "@/components/legal/LegalLinksFooter";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 
 export default function LoginPage() {
@@ -32,6 +33,9 @@ export default function LoginPage() {
 
         {/* Login Form */}
         <LoginForm />
+
+        {/* Legal links */}
+        <LegalLinksFooter />
       </div>
     </div>
   );

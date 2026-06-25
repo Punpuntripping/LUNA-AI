@@ -5,6 +5,7 @@ import { Lock, AlertTriangle } from "lucide-react";
 import { MarkdownDocEditor } from "@/components/workspace/MarkdownDocEditor";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
+import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
 import {
   useSetWorkspaceItemFeedback,
   useUpdateWorkspaceItem,
@@ -208,12 +209,15 @@ export function NoteEditor({ item }: NoteEditorProps) {
   );
 
   const footerSlot = isShareable ? (
-    <ReferencePanel
-      references={references}
-      isLoading={isLoadingReferences}
-      focusedReferenceN={focusedN}
-      onFlashDone={() => setFocusedN(null)}
-    />
+    <>
+      <ReferencePanel
+        references={references}
+        isLoading={isLoadingReferences}
+        focusedReferenceN={focusedN}
+        onFlashDone={() => setFocusedN(null)}
+      />
+      <AgentOutputDisclaimer />
+    </>
   ) : null;
 
   return (

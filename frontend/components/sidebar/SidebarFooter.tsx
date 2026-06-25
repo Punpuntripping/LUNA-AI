@@ -1,9 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { Gauge, KeyRound, LogOut, Settings, User } from "lucide-react";
+import {
+  CreditCard,
+  FileText,
+  Gauge,
+  KeyRound,
+  LogOut,
+  Settings,
+  ShieldCheck,
+  User,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
+import { LEGAL_ROUTES } from "@/lib/legal";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -100,6 +110,43 @@ export function SidebarFooter() {
                   <span className="flex items-center gap-2">
                     <KeyRound className="h-4 w-4" />
                     تفعيل برمز
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => router.push("/pricing")}
+                  data-testid="sidebar-settings-pricing"
+                >
+                  <span className="flex items-center gap-2">
+                    <CreditCard className="h-4 w-4" />
+                    الباقات والأسعار
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Separator />
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => window.open(LEGAL_ROUTES.terms, "_blank")}
+                  data-testid="sidebar-settings-terms"
+                >
+                  <span className="flex items-center gap-2">
+                    <FileText className="h-4 w-4" />
+                    الشروط والأحكام
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => window.open(LEGAL_ROUTES.privacy, "_blank")}
+                  data-testid="sidebar-settings-privacy"
+                >
+                  <span className="flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4" />
+                    سياسة الخصوصية
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>

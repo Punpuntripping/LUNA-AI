@@ -55,6 +55,15 @@ const nextConfig = {
     ];
   },
 
+  // Bake imported markdown (.md) files into the bundle as raw strings. Used by
+  // the public legal pages (/terms, /privacy) which `import md from "...md"`.
+  // `asset/source` resolves the import to the file's raw text contents, so the
+  // content travels inside the standalone build with zero runtime fs reads.
+  webpack(config) {
+    config.module.rules.push({ test: /\.md$/, type: "asset/source" });
+    return config;
+  },
+
   // Image optimization for document previews
   images: {
     remotePatterns: [

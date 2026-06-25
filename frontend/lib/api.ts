@@ -272,7 +272,9 @@ export const authApi = {
     api.post<AuthResponse>("/auth/login", { email, password }),
 
   // Signup runs entirely in the browser via supabase.auth.signUp() — see
-  // stores/auth-store.ts. No backend endpoint to call here.
+  // stores/auth-store.ts. No backend endpoint to call here. The signup
+  // consent version (option B) rides along as options.data.terms_version on
+  // that signUp call, NOT through this layer.
 
   refresh: () =>
     refreshAccessToken().then((token) => ({

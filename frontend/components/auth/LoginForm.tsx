@@ -2,11 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { z } from "zod";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { ApiClientError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
+import { LEGAL_VERSION, LEGAL_ROUTES } from "@/lib/legal";
 
 // Google "G" mark — multicolor official logo
 function GoogleIcon() {
@@ -68,6 +70,8 @@ export function LoginForm() {
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
+  // Option B consent: registration is blocked until this is checked.
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   // Surface OAuth failures redirected back from /auth/callback?error=oauth.
   useEffect(() => {
@@ -90,6 +94,7 @@ export function LoginForm() {
     setErrors({});
     setServerError(null);
     setRegistrationSuccess(false);
+    setAgreedToTerms(false);
   };
 
   const validate = (): boolean => {
@@ -109,7 +114,17 @@ export function LoginForm() {
           fieldErrors[field] = issue.message;
         }
       }
+      // Surface the consent error alongside any field errors (option B).
+      if (mode === "register" && !agreedToTerms) {
+        fieldErrors.terms = "يجب الموافقة على الشروط وسياسة الخصوصية";
+      }
       setErrors(fieldErrors);
+      return false;
+    }
+
+    // Schema passed — still block registration without consent.
+    if (mode === "register" && !agreedToTerms) {
+      setErrors({ terms: "يجب الموافقة على الشروط وسياسة الخصوصية" });
       return false;
     }
 
@@ -130,7 +145,12 @@ export function LoginForm() {
         await login(email, password);
         router.push("/chat");
       } else {
-        const { needsVerification } = await register(email, password, fullNameAr);
+        const { needsVerification } = await register(
+          email,
+          password,
+          fullNameAr,
+          LEGAL_VERSION,
+        );
         if (needsVerification) {
           setRegistrationSuccess(true);
         } else {
@@ -150,6 +170,15 @@ export function LoginForm() {
 
   const handleGoogleSignIn = async () => {
     setServerError(null);
+
+    // In register mode the checkbox gates Google too (Google auto-creates the
+    // account on first sign-in). The always-visible fine print under the button
+    // covers the login-mode / first-time-Google path by action.
+    if (mode === "register" && !agreedToTerms) {
+      setErrors({ terms: "يجب الموافقة على الشروط وسياسة الخصوصية" });
+      return;
+    }
+
     setIsGoogleLoading(true);
 
     const { error } = await supabase.auth.signInWithOAuth({
@@ -307,10 +336,68 @@ export function LoginForm() {
           )}
         </div>
 
+        {/* Terms consent (option B) — register only */}
+        {mode === "register" && (
+          <div className="space-y-1">
+            {/* The links must NOT be nested inside the <label>: an <a> inside a
+                <label> is invalid HTML and the label hijacks the click, so the
+                anchors don't navigate. Keep only the checkbox + "أوافق على" in
+                the label; render the two links as plain siblings. */}
+            <div className="flex items-start gap-2 text-sm text-foreground">
+              <input
+                id="agree_terms"
+                type="checkbox"
+                checked={agreedToTerms}
+                onChange={(e) => {
+                  setAgreedToTerms(e.target.checked);
+                  if (e.target.checked && errors.terms) {
+                    setErrors((prev) => {
+                      const next = { ...prev };
+                      delete next.terms;
+                      return next;
+                    });
+                  }
+                }}
+                data-testid="register-terms-checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-input accent-primary focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <span className="leading-relaxed">
+                <label htmlFor="agree_terms" className="cursor-pointer">
+                  أوافق على
+                </label>{" "}
+                <Link
+                  href={LEGAL_ROUTES.terms}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:text-primary/80 transition-colors"
+                >
+                  الشروط والأحكام
+                </Link>{" "}
+                و{" "}
+                <Link
+                  href={LEGAL_ROUTES.privacy}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-primary hover:text-primary/80 transition-colors"
+                >
+                  سياسة الخصوصية
+                </Link>
+              </span>
+            </div>
+            {errors.terms && (
+              <p className="text-xs text-destructive">{errors.terms}</p>
+            )}
+          </div>
+        )}
+
         {/* Submit button */}
         <button
           type="submit"
-          disabled={isSubmitting || isGoogleLoading}
+          disabled={
+            isSubmitting ||
+            isGoogleLoading ||
+            (mode === "register" && !agreedToTerms)
+          }
           className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -338,6 +425,30 @@ export function LoginForm() {
           )}
           المتابعة مع Google
         </button>
+
+        {/* Google consent fine-print — always visible (covers first-time
+            Google sign-in, which auto-creates an account, in both modes). */}
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          بالمتابعة عبر Google، فإنك توافق على{" "}
+          <Link
+            href={LEGAL_ROUTES.terms}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-foreground transition-colors"
+          >
+            الشروط والأحكام
+          </Link>{" "}
+          و{" "}
+          <Link
+            href={LEGAL_ROUTES.privacy}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline hover:text-foreground transition-colors"
+          >
+            سياسة الخصوصية
+          </Link>
+          .
+        </p>
       </div>
 
       {/* Toggle mode */}

@@ -18,11 +18,14 @@ from typing import Any, Callable, Literal
 PRIMARY_MODEL_DEFAULT = "qwen3.6-plus"
 FALLBACK_MODEL_DEFAULT = "gemini-3-flash"
 
-# Standard disclaimer appended to every synthesis. Safe to override per-deployment.
-DEFAULT_DISCLAIMER_AR = (
-    "هذه المعلومات لأغراض قانونية عامة ولا تُعدّ استشارة قانونية رسمية. "
-    "للحصول على رأي ملزم ينبغي مراجعة محامٍ مرخّص."
-)
+# Disclaimer baked into the synthesis body. Now empty: the AI legal disclaimer
+# renders in the frontend UI beneath every agent output (see
+# frontend/components/workspace/AgentOutputDisclaimer.tsx) instead of being
+# embedded in content_md — so it stays out of copied/shared text and is shown
+# consistently for both search and writing outputs. ``build_synthesis_artifact``
+# skips the trailer when this is empty. Override per-deployment if you want it
+# back in the body.
+DEFAULT_DISCLAIMER_AR = ""
 
 DEFAULT_DETAIL_LEVEL: Literal["low", "medium", "high"] = "medium"
 _VALID_DETAIL_LEVELS: set[str] = {"low", "medium", "high"}

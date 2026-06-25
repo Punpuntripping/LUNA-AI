@@ -10,9 +10,11 @@ interface Props {
 
 // Route prefixes that anonymous visitors may view without a session. These
 // pages must render for logged-out users — no /login redirect, no
-// `return null`. Currently the public share-by-link surface (/blog/{token}),
-// which serves an immutable snapshot to prospects who have no account yet.
-const PUBLIC_PREFIXES = ["/blog"] as const;
+// `return null`. The public share-by-link surface (/blog/{token}) serves an
+// immutable snapshot to prospects without an account; /terms + /privacy are
+// the public legal pages reached from the login footer; /pricing is the public
+// plans page (a pre-signup decision) — all reachable before signing up.
+const PUBLIC_PREFIXES = ["/blog", "/terms", "/privacy", "/pricing"] as const;
 
 function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;

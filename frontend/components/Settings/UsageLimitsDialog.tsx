@@ -203,7 +203,7 @@ export function UsageLimitsDialog({
             fractionDigits={1}
           />
           <BarRow
-            label="الأسبوعي (يتجدّد الجمعة)"
+            label="الأسبوعي (٧ أيام)"
             unit="نقطة"
             bar={data.points.weekly}
             now={now}
@@ -223,23 +223,11 @@ export function UsageLimitsDialog({
           />
         </section>
 
-        <section className="flex flex-col gap-3">
-          <h3 className="text-sm font-semibold text-foreground">
-            البحث على الإنترنت (شهري)
-          </h3>
-          <BarRow
-            label="آخر 30 يوماً"
-            unit="بحثة"
-            bar={data.web.monthly}
-            now={now}
-          />
-        </section>
-
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="leading-relaxed">
-            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات. الحدّ الأسبوعي
-            يتجدّد كل جمعة الساعة ١ ظهرًا.
+            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات، ويبدأ الأسبوع عند أول
+            رسالة ويستمر ٧ أيام.
           </p>
         </div>
       </div>

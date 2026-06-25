@@ -6,7 +6,8 @@ Currency: 1 USD = 100 points. LLM spend is tracked internally in USD
 
 Meters and windows:
 
-    ord (نقاط الاستخدام)  — rolling 5h *session* + rolling 7d weekly +
+    ord (نقاط الاستخدام)  — fixed 5h *session* + fixed 7d *weekly* (both
+                             anchored to the user's first message) +
                              rolling 30d monthly (points)
     ocr (الاستخراج)        — rolling-30-day monthly (pages)
     web (البحث)            — rolling-30-day monthly (calls; future skill)
@@ -124,7 +125,7 @@ def _arabic_message(meter: Meter, period: Period, limit: float) -> str:
     if period == "session":
         return "تم تجاوز حدّ الجلسة. تبدأ جلسة جديدة بعد ٥ ساعات من بداية الجلسة الحالية."
     if period == "weekly":
-        return "تم تجاوز الحدّ الأسبوعي. يتجدّد كل جمعة الساعة ١ ظهرًا."
+        return "تم تجاوز الحدّ الأسبوعي. يبدأ أسبوع جديد بعد ٧ أيام من بداية الأسبوع الحالي."
     if period == "monthly":
         return _AR_MONTHLY.get(meter, _AR_MONTHLY["ord"])
     return f"تم تجاوز حدّ {_AR_METER.get(meter, meter)}."
@@ -341,11 +342,12 @@ async def check(
             if not w.complete:
                 raise QuotaUnavailable("ord", "session")
 
-        # Weekly — fixed calendar week, resets Friday 13:00 Riyadh.
+        # Weekly — fixed 7d window, opened (lazily) on this send and anchored to
+        # the user's first message (same model as the session, 7d instead of 5h).
         if lim.points_weekly is not None:
-            anchor = redis_store.current_week_anchor_utc()
-            w = await redis_store.week_usage(redis, supabase, user_id, anchor)
-            resets = redis_store.next_week_anchor_utc()
+            await redis_store.start_week(redis, user_id)
+            w, resets = await redis_store.week_usage(redis, supabase, user_id)
+            resets = resets or (datetime.now(timezone.utc) + timedelta(seconds=redis_store.WEEK_TTL_S))
             used = w.total * POINTS_PER_USD
             if used >= float(lim.points_weekly):
                 raise QuotaExceeded("ord", "weekly", used, float(lim.points_weekly), resets)
@@ -440,13 +442,10 @@ async def current_usage_report(
         }
 
     resets_midnight = redis_store.next_utc_midnight().isoformat()
-    week_resets = redis_store.next_week_anchor_utc().isoformat()
 
-    # Read-only — does NOT open a session (only the send path does that).
+    # Read-only — does NOT open a session/week (only the send path does that).
     ord_s, sess_resets = await redis_store.session_usage(redis, supabase, user_id)
-    ord_w = await redis_store.week_usage(
-        redis, supabase, user_id, redis_store.current_week_anchor_utc()
-    )
+    ord_w, week_resets_dt = await redis_store.week_usage(redis, supabase, user_id)
     ocr_m = await redis_store.usage_window(redis, supabase, user_id, "ocr", 30)
     web_m = await redis_store.usage_window(redis, supabase, user_id, "web", 30)
 
@@ -483,7 +482,10 @@ async def current_usage_report(
             "session": _points_bar(
                 ord_s, lim.points_session, sess_resets.isoformat() if sess_resets else ""
             ),
-            "weekly":  _points_bar(ord_w, lim.points_weekly, week_resets),
+            "weekly":  _points_bar(
+                ord_w, lim.points_weekly,
+                week_resets_dt.isoformat() if week_resets_dt else "",
+            ),
             "monthly": None,   # enforced by the gate; not shown per product decision
         },
         "ocr": {"monthly": _count_bar(ocr_m, lim.ocr_pages_monthly)},

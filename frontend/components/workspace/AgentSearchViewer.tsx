@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArtifactPreview } from "./ArtifactPreview";
 import { ReferencePanel, referenceLabel } from "./ReferencePanel";
 import { ShareArtifactDialog } from "./ShareArtifactDialog";
+import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
 import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
@@ -105,12 +106,15 @@ export function AgentSearchViewer({
         hideToolbar
         onCitationClick={handleBodyCitationClick}
         footer={
-          <ReferencePanel
-            references={references}
-            focusedReferenceN={focusedN}
-            onFlashDone={handleFlashDone}
-            isLoading={isLoadingReferences}
-          />
+          <>
+            <ReferencePanel
+              references={references}
+              focusedReferenceN={focusedN}
+              onFlashDone={handleFlashDone}
+              isLoading={isLoadingReferences}
+            />
+            <AgentOutputDisclaimer />
+          </>
         }
       />
       <WorkspaceItemActionBar
