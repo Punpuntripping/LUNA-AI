@@ -43,6 +43,7 @@ _FAIL_KEY = "redeem:fails:{}"
 # ── Arabic messages ──────────────────────────────────────────────────────────
 
 CODE_INVALID_AR = "الرمز غير صالح أو مُستخدَم من قبل."
+CODE_ALREADY_REDEEMED_AR = "لقد فعّلت هذا الرمز من قبل."
 PLAN_ACTIVE_AR = "لديك اشتراك فعّال بالفعل، ولا يمكن استبداله برمز ترويجي."
 REDEEM_LOCKED_AR = "لقد تجاوزت عدد المحاولات المسموح بها. حاول مرة أخرى لاحقًا."
 
@@ -53,8 +54,12 @@ class _PlanAlreadyActive(Exception):
     """RPC raised 'plan_already_active' — user holds an active paid/dev plan."""
 
 
+class _CodeAlreadyRedeemed(Exception):
+    """RPC raised 'code_already_redeemed' — caller already redeemed THIS code."""
+
+
 class _CodeInvalid(Exception):
-    """RPC raised 'code_invalid_or_used' — unknown / used / expired code."""
+    """RPC raised 'code_invalid_or_used' — unknown / used / expired / full code."""
 
 
 def _redeem_rpc(supabase: SupabaseClient, user_id: str, code: str) -> dict:
@@ -69,6 +74,8 @@ def _redeem_rpc(supabase: SupabaseClient, user_id: str, code: str) -> dict:
         msg = (getattr(e, "message", None) or str(e) or "").lower()
         if "plan_already_active" in msg:
             raise _PlanAlreadyActive()
+        if "code_already_redeemed" in msg:
+            raise _CodeAlreadyRedeemed()
         if "code_invalid_or_used" in msg:
             raise _CodeInvalid()
         logger.exception("redeem_plan_code RPC failed: %s", e)
@@ -134,7 +141,8 @@ async def redeem_plan_code(
     Returns ``{plan_id, name_ar, expires_at}`` on success. Raises:
       - 429 REDEEM_LOCKED — 5 failed attempts in the last 24h.
       - 409 PLAN_ALREADY_ACTIVE — caller already on an active paid/dev plan.
-      - 400 CODE_INVALID — unknown, used, or expired code.
+      - 409 CODE_ALREADY_REDEEMED — caller already redeemed this code.
+      - 400 CODE_INVALID — unknown, expired, or fully-used (capacity) code.
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
 
@@ -155,6 +163,13 @@ async def redeem_plan_code(
             status_code=409,
             code=ErrorCode.PLAN_ALREADY_ACTIVE,
             detail=PLAN_ACTIVE_AR,
+        )
+    except _CodeAlreadyRedeemed:
+        # Valid code the caller already used — not a guess; does NOT count as a fail.
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.CODE_ALREADY_REDEEMED,
+            detail=CODE_ALREADY_REDEEMED_AR,
         )
     except _CodeInvalid:
         await _incr_redeem_fail(redis, user_id)

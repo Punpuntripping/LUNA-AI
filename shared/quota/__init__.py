@@ -2,30 +2,35 @@
 
 Currency: 1 USD = 100 points. LLM spend is tracked internally in USD
 (llm_calls.cost_usd); limits are defined in points on the ``plans`` catalog
-(migration 068) and converted at the gate.
+(migration 068/076) and converted at the gate.
 
-Meters and windows:
+Single source of truth:
+  * IDENTITY  → the ``user_subscriptions`` row (migration 079): plan_id,
+    expires_at, and the per-user *_override columns. plan_id NULL = LOCKED.
+  * USAGE     → the ``llm_calls`` ledger, read via the get_user_usage_windows
+    RPC. Every window is a plain rolling SUM, so the gate and the dialog
+    compute identical numbers from the same source. Redis is no longer on the
+    quota path (the old fixed-accumulator drift is gone).
 
-    ord (نقاط الاستخدام)  — fixed 5h *session* + fixed 7d *weekly* (both
-                             anchored to the user's first message) +
-                             rolling 30d monthly (points)
-    ocr (الاستخراج)        — rolling-30-day monthly (pages)
-    web (البحث)            — rolling-30-day monthly (calls; future skill)
+Meters and windows (all ROLLING):
+
+    ord (الاستخدام)  — last 5h *session* (points) + last 7d *weekly* (points)
+    ocr (الاستخراج)  — last 30d (pages)
 
 Limits resolve per user:
 
-    users.plan_id → plans row  (NULL plan_id = account LOCKED → PlanInactive)
-    expired time-boxed plan (subscription_expires_at in the past) → falls back
-        to the ``free`` plan's limits
-    per-user override columns (points_*_override, ocr_pages_monthly_limit,
-        web_calls_monthly_limit) — NULL = inherit plan; for dev limit-testing
+    user_subscriptions.plan_id → plans row  (NULL = LOCKED → PlanInactive)
+    expired time-boxed plan (expires_at in the past) → falls back to ``free``
+    per-user override columns (NULL = inherit plan; for dev limit-testing)
 
-A NULL plan limit = unlimited (the window is not even read); 0 = feature not
-included in the plan.
+A NULL plan limit = unlimited (window not read); 0 = feature not included.
 
 The gate fires once per message, before OCR + router, from
 backend.app.services.message_service. The same module exposes a read-only
 report consumed by GET /api/v1/usage → the frontend Usage limits dialog.
+
+resets_at for a rolling window = oldest-call-in-window + window-length (the
+soonest the used figure drops), not a calendar boundary.
 
 Public API:
     check(redis, supabase, user_id, *, needs_ocr=..., est_ocr_pages=..., ...)
@@ -34,8 +39,9 @@ Public API:
     current_usage_report(redis, supabase, user_id) -> dict
         Read-only snapshot: plan block + every meter+period the UI renders.
     settle_ord / settle_ocr / settle_web (async + _sync variants)
-        Fire-and-forget post-hoc counter updates. settle_ord writes BOTH the
-        daily bucket (weekly/monthly windows) and the hourly session bucket.
+        Retained no-op shims — the llm_calls ledger is now authoritative for
+        usage, so there is no Redis counter to settle. Kept so existing
+        callers (agents.utils.usage_sink) need no import changes.
 """
 from __future__ import annotations
 
@@ -49,12 +55,18 @@ from typing import Any
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
-from shared.quota import redis_store
 from shared.quota.redis_store import Meter
 
 logger = logging.getLogger(__name__)
 
 POINTS_PER_USD = 100.0
+
+# Rolling window lengths. Usage is measured directly from the llm_calls ledger
+# (the usage SSoT) via the get_user_usage_windows RPC — every window is a plain
+# rolling SUM over the trailing interval, so the gate and the dialog always agree.
+SESSION_WINDOW_S = 5 * 3_600      # last 5 hours
+WEEK_WINDOW_S = 86_400 * 7        # last 7 days
+MONTH_WINDOW_S = 86_400 * 30      # last 30 days (ocr meter)
 
 
 # ── exceptions ──────────────────────────────────────────────────────────────
@@ -123,9 +135,9 @@ def _arabic_message(meter: Meter, period: Period, limit: float) -> str:
     if limit <= 0:
         return f"باقتك الحالية لا تشمل {_AR_METER.get(meter, meter)}."
     if period == "session":
-        return "تم تجاوز حدّ الجلسة. تبدأ جلسة جديدة بعد ٥ ساعات من بداية الجلسة الحالية."
+        return "تم تجاوز حدّ الاستخدام لكل ٥ ساعات."
     if period == "weekly":
-        return "تم تجاوز الحدّ الأسبوعي. يبدأ أسبوع جديد بعد ٧ أيام من بداية الأسبوع الحالي."
+        return "تم تجاوز حدّ الاستخدام الأسبوعي (٧ أيام)."
     if period == "monthly":
         return _AR_MONTHLY.get(meter, _AR_MONTHLY["ord"])
     return f"تم تجاوز حدّ {_AR_METER.get(meter, meter)}."
@@ -220,16 +232,16 @@ _LOCKED = dict(
 
 
 def _user_limits(supabase: SupabaseClient, user_id: str) -> EffectiveLimits:
-    """Resolve the user's effective limits: plan row → expiry fallback to
-    free → per-user overrides. Raises on DB failure — ``check`` translates
-    that into QuotaUnavailable (fail closed); the report lets it propagate
-    as a 500 so the dialog shows its error state."""
+    """Resolve the user's effective limits from ``user_subscriptions`` (identity
+    SSoT): plan row → expiry fallback to free → per-user overrides. Raises on DB
+    failure — ``check`` translates that into QuotaUnavailable (fail closed); the
+    report lets it propagate as a 500 so the dialog shows its error state."""
     result = (
-        supabase.table("users")
+        supabase.table("user_subscriptions")
         .select(
-            "plan_id,subscription_expires_at,"
+            "plan_id,expires_at,"
             "points_monthly_override,points_weekly_override,points_session_override,"
-            "ocr_pages_monthly_limit,web_calls_monthly_limit"
+            "ocr_pages_monthly_override,web_calls_monthly_override"
         )
         .eq("user_id", user_id)
         .limit(1)
@@ -237,14 +249,14 @@ def _user_limits(supabase: SupabaseClient, user_id: str) -> EffectiveLimits:
     )
     rows = getattr(result, "data", None) or []
     if not rows:
-        # No users row — treat as locked rather than open.
+        # No subscription row — treat as locked rather than open.
         return EffectiveLimits(
             plan_id=None, plan_name_ar=None, expires_at=None, expired=False,
             **_LOCKED,
         )
     row = rows[0]
     plan_id = row.get("plan_id")
-    expires_at = row.get("subscription_expires_at")
+    expires_at = row.get("expires_at")
 
     if plan_id is None:
         return EffectiveLimits(
@@ -288,9 +300,39 @@ def _user_limits(supabase: SupabaseClient, user_id: str) -> EffectiveLimits:
         points_monthly=_ov("points_monthly_override", "points_monthly"),
         points_weekly=_ov("points_weekly_override", "points_weekly"),
         points_session=_ov("points_session_override", "points_session"),
-        ocr_pages_monthly=_ov("ocr_pages_monthly_limit", "ocr_pages_monthly"),
-        web_calls_monthly=_ov("web_calls_monthly_limit", "web_calls_monthly"),
+        ocr_pages_monthly=_ov("ocr_pages_monthly_override", "ocr_pages_monthly"),
+        web_calls_monthly=_ov("web_calls_monthly_override", "web_calls_monthly"),
     )
+
+
+# ── rolling usage source (llm_calls ledger via RPC) ──────────────────────────
+
+async def _usage_windows(supabase: SupabaseClient, user_id: str) -> dict[str, Any]:
+    """One rolling-usage read shared by the gate and the report. Calls the
+    get_user_usage_windows RPC (migration 079) → a single indexed scan of the
+    user's last 30 days of llm_calls. Returns the RPC row dict; raises on DB
+    failure (callers decide fail-closed vs fail-soft)."""
+    def _call() -> dict[str, Any]:
+        res = supabase.rpc("get_user_usage_windows", {"p_user_id": user_id}).execute()
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else {}
+    return await asyncio.to_thread(_call)
+
+
+def _rolling_reset(oldest_iso: Any, window_seconds: int) -> datetime:
+    """When the used figure first drops for a rolling window: the oldest call in
+    the window ages out at ``oldest + window_length``. Falls back to
+    ``now + window_length`` when the window is empty / the timestamp is unknown."""
+    now = datetime.now(timezone.utc)
+    if oldest_iso:
+        try:
+            o = datetime.fromisoformat(str(oldest_iso).replace("Z", "+00:00"))
+            r = o + timedelta(seconds=window_seconds)
+            if r > now:
+                return r
+        except Exception:
+            pass
+    return now + timedelta(seconds=window_seconds)
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -306,85 +348,61 @@ async def check(
     needs_web: bool = False,
     est_web_calls: int = 0,
 ) -> None:
-    """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on the
-    first failing (meter, period), or ``QuotaUnavailable`` when a window is
-    genuinely unknowable and the known partial sum is still under the limit.
+    """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on the first
+    failing (meter, period), or ``QuotaUnavailable`` when the usage RPC is
+    unreachable (fail closed — blocking unknowable spend is the gate's job).
 
-    Ord windows are checked shortest-first (session → weekly → monthly) so
-    the user sees the soonest-to-recover limit. A NULL plan limit skips the
-    window entirely (unlimited — no Redis read). The session window is OPENED
-    here on every send (``start_session``), anchoring its fixed 5h clock to the
-    first message. OCR + web checks are *projected* (``current + est > limit``);
-    the ord meter is checked against current spend only — LLM token cost can't
-    be forecast before the call.
-
-    Policy: a partial sum that ALREADY exceeds the limit is a valid rejection;
-    a partial sum under the limit but incomplete is unknowable → closed.
+    Ord windows are checked shortest-first (session → weekly) so the user sees
+    the soonest-to-recover limit. A NULL plan limit skips the window entirely
+    (unlimited). OCR is *projected* (``current + est > limit``); the ord meter is
+    checked against current spend only — LLM token cost can't be forecast before
+    the call. ``redis``/``est_web_calls`` are kept for call-site compatibility but
+    unused: usage now comes solely from the llm_calls ledger, and the gate and
+    the dialog read the SAME rolling windows so a block is always what's shown.
     """
     try:
         lim = await asyncio.to_thread(_user_limits, supabase, user_id)
     except Exception as e:
         logger.warning("quota._user_limits failed (fail closed): %s", e)
-        raise QuotaUnavailable("ord", "monthly")
+        raise QuotaUnavailable("ord", "weekly")
 
     if lim.locked:
         raise PlanInactive()
 
+    # Single rolling-usage read from the ledger, shared with the report.
+    try:
+        w = await _usage_windows(supabase, user_id)
+    except Exception as e:
+        logger.warning("quota usage RPC failed (fail closed): %s", e)
+        raise QuotaUnavailable("ord", "weekly")
+
     if needs_ord:
-        # Session — fixed 5h window, opened (lazily) on this send.
+        # Session — rolling last 5 hours.
         if lim.points_session is not None:
-            await redis_store.start_session(redis, user_id)
-            w, resets = await redis_store.session_usage(redis, supabase, user_id)
-            resets = resets or (datetime.now(timezone.utc) + timedelta(seconds=redis_store.SESSION_TTL_S))
-            used = w.total * POINTS_PER_USD
+            used = float(w.get("session_cost") or 0.0) * POINTS_PER_USD
             if used >= float(lim.points_session):
+                resets = _rolling_reset(w.get("session_oldest"), SESSION_WINDOW_S)
                 raise QuotaExceeded("ord", "session", used, float(lim.points_session), resets)
-            if not w.complete:
-                raise QuotaUnavailable("ord", "session")
 
-        # Weekly — fixed 7d window, opened (lazily) on this send and anchored to
-        # the user's first message (same model as the session, 7d instead of 5h).
+        # Weekly — rolling last 7 days.
         if lim.points_weekly is not None:
-            await redis_store.start_week(redis, user_id)
-            w, resets = await redis_store.week_usage(redis, supabase, user_id)
-            resets = resets or (datetime.now(timezone.utc) + timedelta(seconds=redis_store.WEEK_TTL_S))
-            used = w.total * POINTS_PER_USD
+            used = float(w.get("weekly_cost") or 0.0) * POINTS_PER_USD
             if used >= float(lim.points_weekly):
+                resets = _rolling_reset(w.get("weekly_oldest"), WEEK_WINDOW_S)
                 raise QuotaExceeded("ord", "weekly", used, float(lim.points_weekly), resets)
-            if not w.complete:
-                raise QuotaUnavailable("ord", "weekly")
-
-        # Monthly — rolling 30 days, silent backstop (not shown in the UI).
-        if lim.points_monthly is not None:
-            w = await redis_store.usage_window(redis, supabase, user_id, "ord", 30)
-            resets = redis_store.next_utc_midnight()
-            used = w.total * POINTS_PER_USD
-            if used >= float(lim.points_monthly):
-                raise QuotaExceeded("ord", "monthly", used, float(lim.points_monthly), resets)
-            if not w.complete:
-                raise QuotaUnavailable("ord", "monthly")
-
-    resets_midnight = redis_store.next_utc_midnight()
 
     if needs_ocr and lim.ocr_pages_monthly is not None:
         m_limit = int(lim.ocr_pages_monthly)
+        ocr_resets = _rolling_reset(w.get("ocr_oldest"), MONTH_WINDOW_S)
         if m_limit <= 0:
-            raise QuotaExceeded("ocr", "monthly", 0, 0, resets_midnight)
-        m = await redis_store.usage_window(redis, supabase, user_id, "ocr", 30)
-        if m.total + est_ocr_pages > m_limit:         # known overage wins, even if partial
-            raise QuotaExceeded("ocr", "monthly", m.total + est_ocr_pages, m_limit, resets_midnight)
-        if not m.complete:                            # under limit but unknowable → closed
-            raise QuotaUnavailable("ocr", "monthly")
+            raise QuotaExceeded("ocr", "monthly", 0, 0, ocr_resets)
+        used_pages = int(w.get("ocr_pages") or 0)
+        if used_pages + est_ocr_pages > m_limit:       # projected overage
+            raise QuotaExceeded("ocr", "monthly", used_pages + est_ocr_pages, m_limit, ocr_resets)
 
-    if needs_web and lim.web_calls_monthly is not None:
-        m_limit = int(lim.web_calls_monthly)
-        if m_limit <= 0:
-            raise QuotaExceeded("web", "monthly", 0, 0, resets_midnight)
-        m = await redis_store.usage_window(redis, supabase, user_id, "web", 30)
-        if m.total + est_web_calls > m_limit:         # known overage wins, even if partial
-            raise QuotaExceeded("web", "monthly", m.total + est_web_calls, m_limit, resets_midnight)
-        if not m.complete:                            # under limit but unknowable → closed
-            raise QuotaUnavailable("web", "monthly")
+    if needs_web and lim.web_calls_monthly is not None and int(lim.web_calls_monthly) <= 0:
+        # Internet search is not a live feature — any plan that lists it is 0.
+        raise QuotaExceeded("web", "monthly", 0, 0, _rolling_reset(None, MONTH_WINDOW_S))
 
 
 # ── read-only snapshot for the UI ───────────────────────────────────────────
@@ -405,11 +423,13 @@ async def current_usage_report(
     supabase: SupabaseClient,
     user_id: str,
 ) -> dict[str, Any]:
-    """Snapshot for the Settings → حدود الاستخدام dialog.
+    """Snapshot for the Settings → حدود الاستخدام dialog. Reads the SAME rolling
+    windows as the gate (get_user_usage_windows), so what's shown is exactly
+    what's enforced — no hidden binding window.
 
-    Fails SOFT on window reads — a partially-determined window renders its
-    known ``total`` with ``"approximate": true``. A limits-resolution failure
-    propagates (the dialog has an error state for the resulting 500).
+    Fails SOFT on the usage read — if the RPC is unreachable the bars render 0
+    with ``"approximate": true`` rather than 500ing. A limits-resolution failure
+    still propagates (the dialog has an error state).
 
     Shape::
 
@@ -420,15 +440,15 @@ async def current_usage_report(
           "points": {                      # ord meter, in points (1$ = 100)
             "session": {"used", "limit"|null, "pct", "resets_at", "approximate"},
             "weekly":  {...},
-            "monthly": null                # enforced as a backstop, never shown
+            "monthly": null                # retired window — kept null for contract
           },
           "ocr": {"monthly": {...}},       # pages
-          "web": {"monthly": {...}}        # calls
+          "web": {"monthly": null}         # retired feature — kept null for contract
         }
 
-    ``limit: null`` = unlimited. ``locked: true`` → plan is null and the
-    bars are omitted (frontend shows the activation notice). The monthly points
-    window is enforced by the gate but intentionally not surfaced here.
+    ``limit: null`` = unlimited; ``limit: 0`` = feature not in the plan.
+    ``locked: true`` → plan is null and the bars are omitted (frontend shows the
+    activation notice). resets_at is the rolling relief time (oldest + window).
     """
     lim = await asyncio.to_thread(_user_limits, supabase, user_id)
 
@@ -441,31 +461,31 @@ async def current_usage_report(
             "web": {"monthly": None},
         }
 
-    resets_midnight = redis_store.next_utc_midnight().isoformat()
+    try:
+        w = await _usage_windows(supabase, user_id)
+        approximate = False
+    except Exception as e:
+        logger.warning("quota.current_usage_report usage RPC failed (soft): %s", e)
+        w, approximate = {}, True
 
-    # Read-only — does NOT open a session/week (only the send path does that).
-    ord_s, sess_resets = await redis_store.session_usage(redis, supabase, user_id)
-    ord_w, week_resets_dt = await redis_store.week_usage(redis, supabase, user_id)
-    ocr_m = await redis_store.usage_window(redis, supabase, user_id, "ocr", 30)
-    web_m = await redis_store.usage_window(redis, supabase, user_id, "web", 30)
-
-    def _points_bar(w, limit: int | None, resets: str) -> dict:
-        used = round(w.total * POINTS_PER_USD, 2)
+    def _points_bar(used_cost: Any, limit: int | None, oldest: Any, window_s: int) -> dict:
+        used = round(float(used_cost or 0.0) * POINTS_PER_USD, 2)
         return {
             "used": used,
             "limit": limit,
             "pct": _pct(used, limit),
-            "resets_at": resets,
-            "approximate": not w.complete,
+            "resets_at": _rolling_reset(oldest, window_s).isoformat(),
+            "approximate": approximate,
         }
 
-    def _count_bar(w, limit: int | None) -> dict:
+    def _count_bar(used_pages: Any, limit: int | None, oldest: Any, window_s: int) -> dict:
+        used = int(used_pages or 0)
         return {
-            "used": int(w.total),
+            "used": used,
             "limit": limit,
-            "pct": _pct(w.total, limit),
-            "resets_at": resets_midnight,
-            "approximate": not w.complete,
+            "pct": _pct(used, limit),
+            "resets_at": _rolling_reset(oldest, window_s).isoformat(),
+            "approximate": approximate,
         }
 
     return {
@@ -480,64 +500,50 @@ async def current_usage_report(
         },
         "points": {
             "session": _points_bar(
-                ord_s, lim.points_session, sess_resets.isoformat() if sess_resets else ""
+                w.get("session_cost"), lim.points_session,
+                w.get("session_oldest"), SESSION_WINDOW_S,
             ),
-            "weekly":  _points_bar(
-                ord_w, lim.points_weekly,
-                week_resets_dt.isoformat() if week_resets_dt else "",
+            "weekly": _points_bar(
+                w.get("weekly_cost"), lim.points_weekly,
+                w.get("weekly_oldest"), WEEK_WINDOW_S,
             ),
-            "monthly": None,   # enforced by the gate; not shown per product decision
+            "monthly": None,   # retired window — kept null for the frontend contract
         },
-        "ocr": {"monthly": _count_bar(ocr_m, lim.ocr_pages_monthly)},
-        "web": {"monthly": _count_bar(web_m, lim.web_calls_monthly)},
+        "ocr": {"monthly": _count_bar(
+            w.get("ocr_pages"), lim.ocr_pages_monthly, w.get("ocr_oldest"), MONTH_WINDOW_S,
+        )},
+        "web": {"monthly": None},   # retired feature — kept null for the frontend contract
     }
 
 
-# ── settle hooks ────────────────────────────────────────────────────────────
+# ── settle hooks (retired no-ops) ─────────────────────────────────────────────
+# Usage is now read directly from the llm_calls ledger (the SSoT) via the
+# get_user_usage_windows RPC, so there is no Redis counter to settle. These shims
+# are kept — same signatures — so existing callers (agents.utils.usage_sink) and
+# any in-flight imports need no change. Remove once all callers drop the calls.
 
-async def settle_ord(redis: AsyncRedis | None, user_id: str, cost_usd: float) -> None:
-    if cost_usd:
-        await redis_store.incr_ord(redis, user_id, float(cost_usd))
-
-
-async def settle_ocr(redis: AsyncRedis | None, user_id: str, pages: int) -> None:
-    if pages:
-        await redis_store.incr_today(redis, user_id, "ocr", int(pages))
+async def settle_ord(redis: AsyncRedis | None, user_id: str, cost_usd: float) -> None:  # noqa: ARG001
+    return None
 
 
-async def settle_web(redis: AsyncRedis | None, user_id: str, calls: int = 1) -> None:
-    if calls:
-        await redis_store.incr_today(redis, user_id, "web", int(calls))
+async def settle_ocr(redis: AsyncRedis | None, user_id: str, pages: int) -> None:  # noqa: ARG001
+    return None
 
 
-def settle_ord_sync(user_id: str, cost_usd: float) -> None:
-    if not cost_usd:
-        return
-    try:
-        from shared.cache.redis import get_redis_client
-        redis_store.incr_ord_sync(get_redis_client(), user_id, float(cost_usd))
-    except Exception as e:
-        logger.debug("quota.settle_ord_sync failed: %s", e)
+async def settle_web(redis: AsyncRedis | None, user_id: str, calls: int = 1) -> None:  # noqa: ARG001
+    return None
 
 
-def settle_ocr_sync(user_id: str, pages: int) -> None:
-    if not pages:
-        return
-    try:
-        from shared.cache.redis import get_redis_client
-        redis_store.incr_today_sync(get_redis_client(), user_id, "ocr", int(pages))
-    except Exception as e:
-        logger.debug("quota.settle_ocr_sync failed: %s", e)
+def settle_ord_sync(user_id: str, cost_usd: float) -> None:  # noqa: ARG001
+    return None
 
 
-def settle_web_sync(user_id: str, calls: int = 1) -> None:
-    if not calls:
-        return
-    try:
-        from shared.cache.redis import get_redis_client
-        redis_store.incr_today_sync(get_redis_client(), user_id, "web", int(calls))
-    except Exception as e:
-        logger.debug("quota.settle_web_sync failed: %s", e)
+def settle_ocr_sync(user_id: str, pages: int) -> None:  # noqa: ARG001
+    return None
+
+
+def settle_web_sync(user_id: str, calls: int = 1) -> None:  # noqa: ARG001
+    return None
 
 
 __all__ = [

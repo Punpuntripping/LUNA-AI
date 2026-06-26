@@ -1,9 +1,16 @@
-"""Generate single-use plan activation codes (migration 069).
+"""Generate plan activation codes (migrations 069 + 081).
 
 Produces N unguessable 5-character codes for a given plan, inserts them into
-public.plan_codes, and prints them for distribution. Each code is single-use: a
-user redeems it in-app (Settings → تفعيل برمز) to get the plan, which sets their
-users.plan_id (migration 068 handles the duration + limits from there).
+public.plan_codes, and prints them for distribution. A user redeems a code in-app
+(Settings → تفعيل برمز) to get the plan (migration 068 handles the duration +
+limits from there).
+
+Two shapes:
+  - SINGLE-USE (default, --max-uses 1): each code activates exactly one user. Mint
+    a batch (--count N) and hand one to each person.
+  - MULTI-USE / GLOBAL (--max-uses N): ONE shared code that the first N distinct
+    users to redeem it get activated (one redemption per user). Pair with --code
+    to mint a memorable string instead of a random one.
 
 Codes use a 30-symbol no-lookalike alphabet (Crockford base32 minus 0/O/1/I/L/U),
 so they are safe to read aloud. Keyspace = 30^5 ≈ 24.3M — combined with the
@@ -12,9 +19,14 @@ backend's 5-fails/24h wall, effectively unguessable.
 Run from the repo root.
 
 Usage:
+  # single-use batches
   python scripts/gen_plan_codes.py --plan marketing_lawyer --count 50 --valid-days 60 --batch-label lawyers_launch_jun26
   python scripts/gen_plan_codes.py --plan marketing_individual --count 20
-  python scripts/gen_plan_codes.py --plan marketing_lawyer --count 5 --valid-days 0   # never-expiring codes
+  python scripts/gen_plan_codes.py --plan marketing_lawyer --count 5 --valid-days 0   # never-expiring
+
+  # one global code the first 100 redeemers share
+  python scripts/gen_plan_codes.py --plan marketing_lawyer --max-uses 100 --batch-label launch
+  python scripts/gen_plan_codes.py --plan marketing_lawyer --max-uses 100 --code LAWYERS100
 """
 from __future__ import annotations
 
@@ -48,6 +60,17 @@ from shared.db.client import get_supabase_client
 ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_LEN = 5
 
+# The frontend redeem input normalizes to [A-Z0-9] and caps at 12 chars, so a
+# custom --code must fit that to be typeable in-app.
+CUSTOM_CODE_MAXLEN = 12
+
+
+def normalize_custom_code(raw: str) -> str:
+    """Match the server/frontend normalization: uppercase, strip non-alphanumeric."""
+    import re
+
+    return re.sub(r"[^A-Z0-9]", "", raw.upper())
+
 
 def gen_code() -> str:
     return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LEN))
@@ -75,21 +98,48 @@ def gen_unique_batch(client, count: int) -> list[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Generate single-use plan activation codes."
+        description="Generate plan activation codes (single-use or multi-use/global)."
     )
     ap.add_argument("--plan", required=True, help="plan_id to grant (e.g. marketing_lawyer)")
-    ap.add_argument("--count", type=int, default=10, help="number of codes (default 10)")
+    ap.add_argument("--count", type=int, default=10, help="number of codes to mint (default 10)")
+    ap.add_argument(
+        "--max-uses",
+        type=int,
+        default=1,
+        help="distinct redeemers PER code; 1 = single-use (default), >1 = global code",
+    )
+    ap.add_argument(
+        "--code",
+        default=None,
+        help="mint this exact code instead of a random one (implies --count 1; "
+        "normalized to [A-Z0-9], max 12 chars). Handy for a memorable global code.",
+    )
     ap.add_argument(
         "--valid-days",
         type=int,
         default=60,
-        help="days until an UNREDEEMED code expires; 0 = never (default 60)",
+        help="days until a code expires; 0 = never (default 60)",
     )
     ap.add_argument("--batch-label", default=None, help="optional label to group this batch")
     args = ap.parse_args()
 
     if args.count < 1:
         ap.error("--count must be >= 1")
+    if args.max_uses < 1:
+        ap.error("--max-uses must be >= 1")
+
+    custom_code = None
+    if args.code is not None:
+        custom_code = normalize_custom_code(args.code)
+        if not custom_code:
+            ap.error("--code has no usable [A-Z0-9] characters after normalization")
+        if len(custom_code) > CUSTOM_CODE_MAXLEN:
+            ap.error(
+                f"--code '{custom_code}' is {len(custom_code)} chars; the in-app input "
+                f"caps at {CUSTOM_CODE_MAXLEN}"
+            )
+        if args.count != 1:
+            ap.error("--code mints a single specific code; omit --count (or set it to 1)")
 
     client = get_supabase_client()
 
@@ -112,13 +162,26 @@ def main() -> None:
             datetime.now(timezone.utc) + timedelta(days=args.valid_days)
         ).isoformat()
 
-    codes = gen_unique_batch(client, args.count)
+    if custom_code is not None:
+        taken = (
+            client.table("plan_codes")
+            .select("code")
+            .eq("code", custom_code)
+            .limit(1)
+            .execute()
+        )
+        if taken.data:
+            ap.error(f"code '{custom_code}' already exists in plan_codes")
+        codes = [custom_code]
+    else:
+        codes = gen_unique_batch(client, args.count)
 
     client.table("plan_codes").insert(
         [
             {
                 "code": c,
                 "plan_id": args.plan,
+                "max_uses": args.max_uses,
                 "expires_at": expires_at,
                 "batch_label": args.batch_label,
             }
@@ -128,9 +191,12 @@ def main() -> None:
 
     exp_txt = expires_at.split("T")[0] if expires_at else "never"
     batch_txt = f", batch '{args.batch_label}'" if args.batch_label else ""
+    uses_txt = (
+        "single-use" if args.max_uses == 1 else f"global, up to {args.max_uses} redeemers each"
+    )
     print(
         f"\nGenerated {len(codes)} code(s) for plan '{args.plan}' ({plan_name}) — "
-        f"expire {exp_txt}{batch_txt}:\n"
+        f"{uses_txt}, expire {exp_txt}{batch_txt}:\n"
     )
     for c in codes:
         print(f"  {c}")

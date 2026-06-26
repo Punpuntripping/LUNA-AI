@@ -285,9 +285,12 @@ async def me(
     Return the authenticated user's profile from the users table.
     """
     def _fetch_profile():
+        # plan_id comes from the user_subscriptions SSoT (embedded via the FK),
+        # not the legacy users.plan_id mirror. subscription_tier is a dead column.
         return (
             supabase.table("users")
-            .select("user_id, auth_id, email, full_name_ar, subscription_tier, plan_id, created_at")
+            .select("user_id, auth_id, email, full_name_ar, created_at, "
+                    "user_subscriptions(plan_id)")
             .eq("auth_id", current_user.auth_id)
             .maybe_single()
             .execute()
@@ -304,11 +307,16 @@ async def me(
         raise LunaHTTPException(status_code=404, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود")
 
     profile = result.data
+    # Embedded one-to-one may arrive as a dict or a single-element list.
+    sub = profile.get("user_subscriptions")
+    if isinstance(sub, list):
+        sub = sub[0] if sub else None
+    plan_id = (sub or {}).get("plan_id")
     return UserProfileResponse(
         user_id=profile["user_id"],
         email=profile["email"],
         full_name_ar=profile.get("full_name_ar"),
-        subscription_tier=profile.get("subscription_tier", "free"),
-        plan_id=profile.get("plan_id"),
+        subscription_tier=None,  # legacy column retired — plan_id is the truth
+        plan_id=plan_id,
         created_at=profile.get("created_at"),
     )

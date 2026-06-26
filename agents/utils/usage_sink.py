@@ -179,20 +179,13 @@ def _compute_cost(
 
 
 def _flush(supabase: Any, buf: list[dict[str, Any]] | None) -> int:
-    """Insert buffered rows; settle quota ONLY if the insert landed.
+    """Insert buffered llm_calls rows. The ledger is the single source of truth
+    for usage — the quota gate reads it directly — so the insert IS the settle.
 
-    Never raises. Insert gets one immediate retry. If both attempts fail,
-    the full row payload is logged at ERROR so cost can be backfilled into
-    ``llm_calls`` manually, and settle is SKIPPED — ledger and quota stay
-    consistent (both missing the turn) rather than drifting apart.
-
-    Why skip settle on insert failure: the ledger is the rehydration source of
-    truth. Settling Redis without a ledger row creates drift that resurfaces
-    forever — every Redis key expiry recomputes a smaller number than was
-    settled. Skipping keeps both stores consistently missing the same turn; the
-    ERROR payload allows manual backfill, after which the next cold-key
-    rehydrate heals quota automatically. Exposure: one free turn per insert
-    outage — bounded and loud.
+    Never raises. Insert gets one immediate retry. If both attempts fail, the
+    full row payload is logged at ERROR so cost can be backfilled into
+    ``llm_calls`` manually; until then that turn simply isn't counted against the
+    user's quota. Exposure: one free turn per insert outage — bounded and loud.
     """
     if not buf:
         return 0
@@ -220,22 +213,11 @@ def _flush(supabase: Any, buf: list[dict[str, Any]] | None) -> int:
                 )
 
     if not insert_ok:
-        return 0  # no ledger row ⇒ no settle ⇒ no drift
+        return 0  # ledger insert failed — the row simply isn't counted (see below)
 
-    # Quota settle — single point. All rows in a scope share one user_id.
-    user_id = buf[0].get("user_id")
-    if user_id:
-        total_cost = sum(float(r.get("cost_usd") or 0.0) for r in buf)
-        total_pages = sum(int(r.get("pages_used") or 0) for r in buf)
-        try:
-            from shared.quota import settle_ocr_sync, settle_ord_sync
-
-            if total_cost:
-                settle_ord_sync(str(user_id), total_cost)
-            if total_pages:
-                settle_ocr_sync(str(user_id), total_pages)
-        except Exception as exc:
-            logger.debug("quota settle skipped: %s", exc)
+    # No quota settle step: the quota gate reads usage DIRECTLY from this ledger
+    # (shared.quota.get_user_usage_windows). The ledger insert above IS the
+    # settle — once the row lands, the next gate read counts it automatically.
     return len(buf)
 
 

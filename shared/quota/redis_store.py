@@ -1,5 +1,12 @@
 """Redis counters + Postgres rehydration for the per-user quota gate.
 
+DEPRECATED (migration 079): the quota gate no longer uses any of these Redis
+counters. Usage is now read DIRECTLY from the llm_calls ledger (the single source
+of truth) via the get_user_usage_windows RPC — see ``shared/quota/__init__.py``.
+The only symbol still consumed from this module is the ``Meter`` type alias. The
+counter/window/rehydration functions below are retained for reference and for a
+clean deletion in a follow-up cleanup migration; nothing calls them.
+
 Key layout:
 
     quota:{user_id}:ocr:day:{YYYY-MM-DD}   integer  pages   TTL 31d

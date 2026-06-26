@@ -27,6 +27,7 @@ import re
 from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
+from agents.tool_repository.fetch_article import register_fetch_article
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
 
@@ -186,6 +187,15 @@ def create_planner_decider(
     # re-running a generic search. PlannerDeps exposes
     # .supabase / .user_id / .wi_alias_map (satisfies HasWorkspaceContext).
     register_unfold_workspace_item(agent)
+
+    # Deterministic read tool: fetch the verbatim text of a specific article
+    # (by article number) from a specific named regulation, straight from
+    # articles_v2.content. Lets the decider fold the exact article the user
+    # cites into planner_brief so it flows to the executors and aggregator as
+    # TEXT (never a citation), while the normal search still supplies the
+    # answer's corpus sources. Ambiguous regulation titles come back as an
+    # "AMBIGUOUS:" string → resolve via ask_user.
+    register_fetch_article(agent)
 
     return agent
 
