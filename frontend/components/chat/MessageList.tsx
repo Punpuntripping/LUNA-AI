@@ -3,11 +3,12 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useMessages } from "@/hooks/use-messages";
+import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
 import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useChatStore } from "@/stores/chat-store";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
+import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
 import type { Message, WorkspaceItemKind } from "@/types";
 
@@ -343,7 +344,7 @@ export function MessageList({
         )}
 
         {/* Messages */}
-        {messages.map((msg) => {
+        {messages.map((msg, idx) => {
           // `isStreaming` is already scoped to this conversation, so the
           // global streamingContent is only ever applied to its own stream.
           const isStreamingThis =
@@ -364,6 +365,35 @@ export function MessageList({
             (liveContent ?? "").trim() === "" &&
             !(msg.artifact_ids && msg.artifact_ids.length > 0)
           ) {
+            // The run behind this placeholder is dead once it's older than the
+            // background-recovery window (the useMessages poll has given up)
+            // AND no stream is feeding it here — e.g. the request died on
+            // logout / a server restart. Convert the perpetual "ريحان يحلّل"
+            // spinner into a failed bubble with a retry so it never spins
+            // forever. An actively-streaming run (isStreamingThis) is never
+            // failed, no matter how long it's been silent.
+            const ageMs = Date.now() - new Date(msg.created_at).getTime();
+            const isDead =
+              !isStreamingThis && ageMs >= PLACEHOLDER_MAX_AGE_MS;
+            if (isDead) {
+              // A dead placeholder superseded by a newer turn (e.g. after a
+              // retry) is just noise — drop it so only a still-relevant
+              // failure shows.
+              if (idx !== messages.length - 1) return null;
+              return (
+                <FailedResponseBubble
+                  key={msg.message_id}
+                  createdAt={msg.created_at}
+                  // Retry = regenerate: re-run the user message that preceded
+                  // this dead placeholder.
+                  onRetry={
+                    onRegenerate
+                      ? () => onRegenerate(msg.message_id)
+                      : undefined
+                  }
+                />
+              );
+            }
             return (
               <div key={msg.message_id} className="flex justify-end mb-4">
                 <TypingIndicator />

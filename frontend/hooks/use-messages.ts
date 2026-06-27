@@ -3,6 +3,19 @@ import { messagesApi } from "@/lib/api";
 
 const MESSAGE_PAGE_SIZE = 30;
 
+/**
+ * Background-recovery window for an empty assistant placeholder.
+ *
+ * While the newest message is a blank assistant row the run is either still
+ * streaming or finishing in the background (the backend detaches a dropped
+ * run, it never cancels it), so the poll below keeps refetching until it
+ * fills. Past this age the run is considered dead — the poll stops AND the
+ * UI flips the perpetual "thinking" spinner to a failed bubble (see
+ * ``MessageList``). Both consumers share this constant so the spinner shows
+ * for exactly as long as we are willing to recover, then fails.
+ */
+export const PLACEHOLDER_MAX_AGE_MS = 7 * 60 * 1000;
+
 export const messageKeys = {
   all: ["messages"] as const,
   list: (conversationId: string) => [...messageKeys.all, "list", conversationId] as const,
@@ -35,7 +48,7 @@ export function useMessages(conversationId: string | undefined) {
       if (!newest || newest.role !== "assistant") return false;
       if ((newest.content ?? "").trim() !== "") return false;
       const ageMs = Date.now() - new Date(newest.created_at).getTime();
-      return ageMs < 7 * 60 * 1000 ? 4000 : false;
+      return ageMs < PLACEHOLDER_MAX_AGE_MS ? 4000 : false;
     },
     // Messages are ordered newest-first from the API; we reverse in the UI
   });
