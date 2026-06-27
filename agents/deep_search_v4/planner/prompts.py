@@ -8,8 +8,9 @@ Two LLM phases, two prompts:
   :class:`~.models.PlannerDecision` — mode + support PLUS ``query_restatement``
   (a faithful, zero-bias restatement of the user's real question that becomes
   the canonical retrieval query), ``planner_brief`` (novel factual context,
-  empty by default) and ``context_labels`` (which context blocks flow to
-  expanders + aggregator). May pause via ``ask_user`` when the query is too
+  empty by default) and ``context_labels`` (opt-in forwarding of
+  ``prior_search_lessons``; ``case_brief`` + ``planner_brief`` forward
+  automatically). May pause via ``ask_user`` when the query is too
   vague to plan, when the legal parties / intent cannot be identified, OR to
   reflect its understanding back for confirmation on a long, multi-aspect
   question where misreading the situation is a real risk.
@@ -116,18 +117,20 @@ When the user refers to **a law, a ruling, or a service by a specific name** tha
 
 When the user **cites a specific article number inside a specific named law or regulation** («المادة الحادية والثمانون من نظام العمل»، «المادة 81 من نظام العمل»، «م/1-1 من اللائحة التنفيذية لنظام …»), call `fetch_article(regulation_title, article_number)` to retrieve that article's exact text.
 
+- **رقم مادة بلا نظام؟ اسأل، لا تخمّن ولا تبحث.** If the user cites an article **by number but does not name the law**, and the نظام is not unambiguous from context (e.g. «نُفّذت عليّ المادة 46» — could be نظام التنفيذ، أو نظام التنفيذ أمام ديوان المظالم، أو لائحة مقدمي خدمات التنفيذ…), do **not** fall through to a generic search and do **not** guess the نظام. First use `ask_user` to ask «المادة (رقمها) من أي نظام؟», then call `fetch_article` with the regulation the user names.
 - Pass `article_number` as its **plain string form** — `"81"`, or a compound like `"1-1"`. Convert Arabic ordinals («الحادية والثمانون» → `"81"`) and Arabic-Indic digits («٨١» → `"81"`) to that form **first**.
 - If the tool returns a string that begins with `AMBIGUOUS:`, more than one regulation matched the title — use `ask_user` to ask which regulation is meant, then call again with the precise title.
-- Carry the returned article text **verbatim into `planner_brief`** so it flows to the executors and the aggregator. The article moves as **TEXT ONLY** — it never becomes a citation, and it never substitutes for retrieval.
+- If the text carries a **«(ثقة متوسطة …)»** note, the match was approximate (the resolved law isn't an exact name match) — verify it's the law the user meant (`ask_user` if unsure), and carry **only the article body**, not that note, into `planner_brief`.
+- Carry the returned article text **verbatim into `planner_brief`** so it flows to the executors and the aggregator. The article moves as **TEXT ONLY** — it never becomes a citation, and it never substitutes for retrieval. (All articles you fetch this turn are bundled into one reference card saved for later turns — you don't manage that.)
 - **Still run the normal search.** `fetch_article` supplies the exact wording; the search supplies the answer's supporting sources and citations from the corpus.
 
 ## `planner_brief` — the facts channel for downstream
 
 A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question — and in particular: the content of `<attached_items>` reaches the search only through this field. Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
 
-## `context_labels` — exactly three labels
+## `context_labels` — opt in `prior_search_lessons` only
 
-The vocabulary: `case_brief` (add it when a case exists) · `planner_brief` (add it when you wrote it non-empty) · `prior_search_lessons` (add it when prior searches exist — a cheap block, include it by default). Any label outside that is ignored. Attachments are not a label — their facts go via `planner_brief`.
+`case_brief` and `planner_brief` are forwarded downstream **automatically** whenever they are non-empty — you do **not** list them, and forgetting to does not drop them. `context_labels` is now only for one optional block: add `prior_search_lessons` when prior searches exist (a cheap block — include it by default). Any other label is ignored. Attachments are not a label — their facts go via `planner_brief`.
 
 ## `ask_user` — the clarification and review tool
 
@@ -155,7 +158,7 @@ Return a JSON object matching this schema only (no text outside it, no comments)
   "query_restatement": "<إعادة صياغة محايدة للسؤال بالفصحى، أو فارغ إن كان نظيفاً — بلا أي نظام/جهة لم يذكرها المستخدم>",
   "rationale": "<مبرّر عربي مختصر — للسجل فقط، لا يراه المستخدم>",
   "planner_brief": "<فارغ افتراضاً؛ حقائق المرفقات/القضية اللازمة للبحث عند وجودها>",
-  "context_labels": ["case_brief", "planner_brief", "prior_search_lessons"]
+  "context_labels": ["prior_search_lessons"]
 }
 ```
 

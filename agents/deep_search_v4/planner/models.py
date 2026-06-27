@@ -142,16 +142,16 @@ class PlannerDecision(BaseModel):
         ),
     )
     context_labels: list[str] = Field(
-        default_factory=lambda: ["case_brief", "planner_brief"],
+        default_factory=list,
         description=(
-            "Which context block labels to forward downstream. The "
-            "same set flows to all executor expanders AND the "
-            "aggregator (the reranker never receives context). "
-            "Vocabulary: 'case_brief', 'planner_brief', "
-            "'prior_search_lessons'. "
-            "Defaults include case_brief and planner_brief. "
-            "Attachments are NOT a label — they reach the planner decider "
-            "only; downstream-relevant facts go via planner_brief instead."
+            "Opt-in forwarding for ONE block only: 'prior_search_lessons'. "
+            "'case_brief' and 'planner_brief' are force-forwarded downstream "
+            "whenever non-empty (see orchestrator._select_forwarded_blocks) — "
+            "they need NOT be listed here, and omitting them no longer drops "
+            "them. Any other label is ignored. The forwarded set flows to all "
+            "executor expanders AND the aggregator (the reranker never receives "
+            "context). Attachments are NOT a label — downstream-relevant facts "
+            "go via planner_brief instead."
         ),
     )
 

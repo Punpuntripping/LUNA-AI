@@ -116,6 +116,14 @@ async def fetch_article(
    candidate titles. The planner then calls its existing **`ask_user`** deferred tool to
    ask which regulation the user means. The tool **never silently grabs the wrong law.**
    (Scar: the انفيجو misclassification → wrong legal frame.)
+5. **Score floor (`_MIN_MATCH_SCORE = 0.40`).** If the best candidate is not exact *and*
+   scores below the floor, return **no match** (→ the not-found path, which names the
+   user's own title) rather than confidently accepting a low-similarity wrong law.
+   Calibrated against the corpus: a genuine partial match («العمل» → «نظام العمل») ≈ 0.48;
+   a spurious fallback-token hit («نظام الفساد المالي والإداري», absent, → «لائحة اشتراطات
+   السلامة … والإدارية») ≈ 0.38. Added 2026-06-27 after `convo_ccd1afea` resolved an
+   absent law onto an unrelated bylaw and returned a misleading "article not found in
+   <wrong law>".
 
 ### Step 2 · Fetch the article
 
@@ -158,6 +166,14 @@ Add a `## fetch_article` section to `PLANNER_DECIDER_SYSTEM_PROMPT`
 existing `## planner_brief` section ~line 115). It must state:
 
 1. **When** — the user names a specific article number in a specific regulation.
+1b. **Article cited but law NOT named → ask, don't guess/search.** If the user cites
+   an article by number without naming the نظام (and it isn't unambiguous from context —
+   e.g. «نُفّذت عليّ المادة 46» spans نظام التنفيذ / نظام التنفيذ أمام ديوان المظالم /
+   لائحة مقدمي خدمات التنفيذ…), the planner must `ask_user` «المادة N من أي نظام؟» FIRST,
+   then call `fetch_article`. It must NOT fall through to a generic search past the cited
+   article. (`fetch_article` requires a `regulation_title`; an article number alone can't
+   drive it.) Added 2026-06-27 after the planner searched instead of asking on a real
+   enforcement memo.
 2. **Pass `article_number` as the string the user used** ("81", "1-1") — including
    converting Arabic ordinals / Arabic-Indic digits ("الحادية والثمانون", "٨١") to the
    plain form.
@@ -244,3 +260,48 @@ Derived from reading all five existing tools (`unfold_workspace_item`, `save_mem
 9. Sync Supabase reads wrapped in `asyncio.to_thread`; `getattr(resp, "data", None) or []`.
 10. **`__all__`** exporting `register_fetch_article` + the pure functions + the Protocol,
     so tests import the pure layer directly (mirrors every tool's `__all__`).
+
+---
+
+## 10. Confidence score + auto-pin (built 2026-06-27)
+
+A successful fetch now carries a **confidence** and is **auto-pinned** as a durable
+workspace item — a lean reuse of `save_memo`'s persistence pattern.
+
+**Confidence** — derived from the resolver's existing state, no new matching:
+- `high` — exact normalized regulation match (`ResolveResult.exact`) **and** article found.
+- `medium` — above-floor non-exact match (the law was a best-guess) **and** article found.
+- (`AMBIGUOUS:` / below-floor / article-not-found are not confident results.)
+
+On a `medium` match the returned **text** gets a trailing «(ثقة متوسطة …)» verify note —
+the model-facing `text` only, never the pinnable `content`. The prompt tells the planner
+to verify (or `ask_user`) and to carry only the article body into `planner_brief`.
+
+**Pin — ONE `statute_package` per search** (gate: HIGH or MEDIUM → any successful fetch;
+depth: lean insert). Not one card per article — the N (parallel) `fetch_article` calls in
+a turn **accumulate**, and the runner flushes them into a single bundle:
+- `fetch_article_result()` returns a `FetchArticleResult {text, status, confidence,
+  reg_id, reg_name, article_number, content}`; `fetch_article_text()` is a thin wrapper.
+- The tool body, on `status=="ok"`, calls `accumulate_fetched_article(deps, …)` — a plain
+  `list.append` to `deps._fetched_articles` (atomic on the event loop; no DB write, no
+  lock). Not-found / ambiguous don't accumulate.
+- `agents/deep_search_v4/planner/runner.py` calls **`flush_statute_package(deps)`** once
+  per turn — at the decision-in-hand point AND on the `ask_user` pause path — writing ONE
+  `create_workspace_item(kind=note, subtype='statute_package', …)` via the
+  lazy/monkeypatchable `_insert_statute_item`. Body = «📌 نصوص المواد المثبّتة من البحث»
+  marker + one `## نص المادة …` section per article; metadata `{subtype, articles:[{regulation,
+  article_number, confidence}…]}`; title names the single article or «نصوص المواد المستشهد
+  بها (N)».
+- **Dedup within the turn** by `(regulation, article_number)` (the planner's retry loop may
+  fetch the same article twice). Each search writes its own package — no cross-turn dedup.
+- **Best-effort**: the accumulator is snapshotted-and-cleared up front; a flush failure
+  (missing scope / DB error) NEVER affects the returned text — guarded, logged, `None`.
+- **Lean, not full `save_memo`**: a plain insert (persists + loads as a summary + unfolds
+  next turn) + an *optional* `workspace_item_created` chip via `emit_sse`. **No** router
+  force-attach/alias sinks (`PlannerDeps` doesn't carry them; the articles already ground
+  THIS turn via `planner_brief`).
+- **Identity**: `subtype='statute_package'` (NOT `'memo'`) — corpus text, not a user message.
+
+Deps: a new `PlannerDeps._fetched_articles: list` accumulator (rebuilt empty each turn);
+the flush reads `.user_id` / `.conversation_id` / `.emit_sse` via `getattr`, skipping the
+write if scope is absent. The tool's `HasSupabase` read contract is unchanged.

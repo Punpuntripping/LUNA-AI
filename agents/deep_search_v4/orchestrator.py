@@ -917,9 +917,9 @@ def _spawn_sector_picker_task(
     # Re-derive the context blocks the picker should see. We can't take the
     # ``selected_blocks`` list from the caller because at picker-spawn time
     # the local variable is in a different scope — recompute here. Cheap.
-    candidates = _build_candidate_context_blocks(decision, deps)
-    label_order = (decision.context_labels if decision is not None else []) or []
-    blocks = [candidates[label] for label in label_order if label in candidates]
+    # planner_brief is passed to the picker as a dedicated param below, so it is
+    # excluded from this block list to avoid a double render.
+    blocks = _select_forwarded_blocks(decision, deps, include_planner_brief=False)
 
     planner_brief = ""
     if decision is not None:
@@ -1013,6 +1013,47 @@ def _build_candidate_context_blocks(
     return candidates
 
 
+# Canonical render order for forwarded context blocks. ``case_brief`` and
+# ``planner_brief`` are authoritative planner facts (case memory, fetched-article
+# text, distilled attachments) and are ALWAYS forwarded when non-empty —
+# regardless of whether the planner remembered to list them in
+# ``context_labels``. A forgotten label must never again silently drop a
+# fetched-article brief from the expander/aggregator (scar: convo ccd1afea —
+# planner wrote the brief but emitted ``context_labels=["prior_search_lessons"]``
+# so the 3 fetched articles reached nobody). ``prior_search_lessons`` stays
+# opt-in via the declared labels.
+_CANONICAL_LABEL_ORDER = ("case_brief", "planner_brief", "prior_search_lessons")
+_FORCE_FORWARD_LABELS = frozenset({"case_brief", "planner_brief"})
+
+
+def _select_forwarded_blocks(
+    decision: Any,
+    deps: PlannerDeps,
+    *,
+    include_planner_brief: bool,
+) -> list[ContextBlock]:
+    """Pick the ``ContextBlock`` list to forward downstream.
+
+    The two briefs are force-included when present; ``prior_search_lessons`` is
+    included only when the planner declared it in ``context_labels``.
+
+    ``include_planner_brief=False`` is used by the sector_picker, which renders
+    ``planner_brief`` through its own dedicated ``<planner_brief>`` tag (it is
+    passed to ``run_sector_picker`` as a separate param) and would otherwise
+    double-render it inside ``<context_blocks>``.
+    """
+    candidates = _build_candidate_context_blocks(decision, deps)
+    declared = set(getattr(decision, "context_labels", None) or [])
+    forced = _FORCE_FORWARD_LABELS if include_planner_brief else (
+        _FORCE_FORWARD_LABELS - {"planner_brief"}
+    )
+    return [
+        candidates[label]
+        for label in _CANONICAL_LABEL_ORDER
+        if label in candidates and (label in forced or label in declared)
+    ]
+
+
 async def run_retrieval(
     query: str,
     config: RetrievalConfig,
@@ -1030,17 +1071,16 @@ async def run_retrieval(
     Called by ``planner.handle_planner_turn`` (lazy-imported there to break the
     planner → orchestrator import cycle).
     """
-    # Build candidate context blocks from the 4 label sources, then filter by
-    # the planner's emitted label list. The SAME filtered bundle flows to all
-    # executor expanders AND the aggregator (§3.6). The reranker continues to
-    # receive zero blocks -- enforced by the executors not threading
-    # context_blocks into reranker calls (Wave 3A).
+    # Assemble the forwarded context blocks. case_brief + planner_brief are
+    # force-forwarded when non-empty regardless of the planner's declared
+    # context_labels (see _select_forwarded_blocks); prior_search_lessons is
+    # opt-in. The SAME bundle flows to all executor expanders AND the aggregator
+    # (§3.6). The reranker continues to receive zero blocks -- enforced by the
+    # executors not threading context_blocks into reranker calls (Wave 3A).
     decision = deps._decision
-    candidates = _build_candidate_context_blocks(decision, deps)
-    label_order = (decision.context_labels if decision is not None else []) or []
-    selected_blocks: list[ContextBlock] = [
-        candidates[label] for label in label_order if label in candidates
-    ]
+    selected_blocks: list[ContextBlock] = _select_forwarded_blocks(
+        decision, deps, include_planner_brief=True
+    )
     if selected_blocks:
         logger.info(
             "run_retrieval: context_blocks selected = %s",

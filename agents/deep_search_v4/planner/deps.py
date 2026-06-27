@@ -102,6 +102,13 @@ class PlannerDeps:
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
 
+    # --- fetch_article accumulator -----------------------------------------
+    # Successful ``fetch_article`` calls append ``{regulation, article_number,
+    # content, confidence}`` here during the decider's tool loop; the runner
+    # flushes them into ONE ``statute_package`` workspace item per turn/search
+    # (``flush_statute_package``). Rebuilt empty every turn.
+    _fetched_articles: list[dict] = field(default_factory=list)
+
     # --- read-back slots (populated by run_retrieval from FullLoopDeps) ----
     _per_executor_stats: dict[str, dict] = field(default_factory=dict)
     _ura: "UnifiedRetrievalArtifact | None" = None

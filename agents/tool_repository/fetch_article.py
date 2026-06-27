@@ -70,6 +70,14 @@ _ARTICLE_COLUMNS = "content"
 _AMBIGUITY_MARGIN = 0.1
 # How many candidate titles to surface in the AMBIGUOUS: payload.
 _AMBIGUOUS_LIST_N = 3
+# Minimum similarity for a NON-exact match to be accepted. Below this the best
+# candidate is too weak to trust — return "no match" (→ the not-found path,
+# which names the USER's title) rather than confidently picking a wrong law.
+# Calibrated against the corpus: a genuine partial match («العمل» → «نظام
+# العمل») scores ≈ 0.48, whereas a spurious fallback-token hit («نظام الفساد
+# المالي والإداري», absent from the corpus, → «لائحة اشتراطات السلامة …
+# والإدارية») scores ≈ 0.38.
+_MIN_MATCH_SCORE = 0.40
 
 # doc_type_bucket nudges — «نظام» ⇒ a statute, «لائحة» ⇒ an executive reg.
 _BUCKET_PREF_BONUS = 0.05
@@ -77,6 +85,20 @@ _LAW_KEYWORD = "نظام"
 _REG_KEYWORD = "لائحة"
 _BUCKET_LAW = "law_statute"
 _BUCKET_EXEC = "executive_regulation"
+
+# --- Statute-package pin config — a lean reuse of save_memo's persistence -------
+# Successful fetches in a turn accumulate on ``deps._fetched_articles`` and are
+# flushed into ONE durable workspace item per search (``flush_statute_package``)
+# so they survive conversation compaction, re-load as a summary, and unfold on
+# demand. Distinct from save_memo's USER-message memo: this is corpus text, so it
+# carries its own ``subtype='statute_package'`` and marker — never the «رسالة
+# أساسية من المستخدم» memo identity. Lean: a fire-and-forget insert (no router
+# force-attach/chip sinks, which PlannerDeps doesn't carry) — the articles
+# already ground THIS turn via planner_brief; the pin is for FUTURE turns.
+_STATUTE_KIND = "note"
+_STATUTE_PACKAGE_SUBTYPE = "statute_package"
+_STATUTE_CREATED_BY = "agent"
+_STATUTE_PACKAGE_MARKER = "> 📌 نصوص المواد المثبّتة من البحث"
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +111,11 @@ _BUCKET_EXEC = "executive_regulation"
 class HasSupabase(Protocol):
     """Structural deps contract for the tool.
 
-    ``PlannerDeps`` satisfies this via its ``.supabase`` attribute. Kept loose
+    ``.supabase`` is the only hard requirement (the corpus read). Pinning a
+    successful fetch additionally uses ``.user_id`` / ``.conversation_id`` (to
+    scope the workspace item) and ``.emit_sse`` (an optional chip) — all read
+    via ``getattr`` and skipped when absent, so the tool degrades to a pure
+    fetch on minimal deps. ``PlannerDeps`` carries all four. Kept loose
     (``object``) to avoid a hard import of the supabase client here.
     """
 
@@ -326,6 +352,7 @@ class ResolveResult:
     reg_id: str = ""
     display: str = ""
     ambiguous: str = ""  # the full "AMBIGUOUS: ..." payload when set
+    exact: bool = False  # True only on an exact normalized title match (→ HIGH)
 
 
 def _build_ambiguous(candidates: list[RegCandidate]) -> str:
@@ -363,11 +390,20 @@ def resolve_regulation_id(supabase, regulation_title: str) -> ResolveResult:
         return ResolveResult()
 
     top = ranked[0]
-    # An exact normalized match wins outright — never ambiguous.
+    # An exact normalized match wins outright — never ambiguous (→ HIGH).
     if top.exact:
-        return ResolveResult(reg_id=top.reg_id, display=top.display)
+        return ResolveResult(reg_id=top.reg_id, display=top.display, exact=True)
 
-    # Single candidate, no exact match — accept it (the planner still searches).
+    # Score floor: the best candidate is too weak to trust. A clean "no match"
+    # (→ the not-found path, which names the USER's title) beats confidently
+    # picking a low-similarity wrong law — e.g. «نظام الفساد المالي والإداري»
+    # (absent from the corpus) resolving onto «لائحة اشتراطات السلامة …
+    # والإدارية» via the fallback token. A genuine partial match stays above it.
+    if top.score < _MIN_MATCH_SCORE:
+        return ResolveResult()
+
+    # Single candidate above the floor, no exact match — accept it (the planner
+    # still searches).
     if len(ranked) == 1:
         return ResolveResult(reg_id=top.reg_id, display=top.display)
 
@@ -379,16 +415,39 @@ def resolve_regulation_id(supabase, regulation_title: str) -> ResolveResult:
     return ResolveResult(reg_id=top.reg_id, display=top.display)
 
 
-def fetch_article_text(supabase, regulation_title: str, article_number: str) -> str:
-    """Full deterministic fetch: resolve title → fetch article → render text.
+@dataclass(frozen=True)
+class FetchArticleResult:
+    """Rich outcome of a fetch — drives both the tool return and the pin.
 
-    Synchronous (the tool body wraps this in ``asyncio.to_thread``). Returns:
+    ``text`` is what the model sees. ``status`` is one of ``"ok"`` /
+    ``"ambiguous"`` / ``"not_found"``. ``confidence`` is ``"high"`` (exact
+    regulation match) / ``"medium"`` (above-floor non-exact match) / ``""``
+    (no confident result). ``content`` is the verbatim article body (no header /
+    no confidence note) — the body that gets pinned.
+    """
 
-    - the article body (prefixed with a one-line header naming the resolved
-      regulation) on success,
-    - the ``AMBIGUOUS: …`` payload when the regulation is ambiguous,
-    - ``"المادة {n} غير موجودة في {reg}"`` when the article is absent, and
-    - a generic not-found string when no regulation matched at all.
+    text: str
+    status: str  # "ok" | "ambiguous" | "not_found"
+    confidence: str = ""  # "high" | "medium" | ""
+    reg_id: str = ""
+    reg_name: str = ""
+    article_number: str = ""
+    content: str = ""
+
+
+def fetch_article_result(
+    supabase, regulation_title: str, article_number: str
+) -> FetchArticleResult:
+    """Full deterministic fetch: resolve title → fetch article → render + classify.
+
+    Synchronous (the tool body wraps this in ``asyncio.to_thread``). On success
+    returns ``status="ok"`` with the rendered ``text`` (header + body), a
+    ``confidence`` (``high`` on an exact regulation match, ``medium`` on an
+    above-floor non-exact one), and the verbatim ``content`` for pinning. On a
+    medium match the resolved law differs from what the user typed, so a short
+    confidence note is appended to ``text`` (NOT to ``content``) so the planner
+    can verify before trusting it. Ambiguous / not-found return the
+    corresponding plain string with no confidence and no pinnable content.
 
     TEXT ONLY — never a citation, never ``article_ref`` / ``chunk_parent_id``.
     """
@@ -396,19 +455,191 @@ def fetch_article_text(supabase, regulation_title: str, article_number: str) -> 
     resolved = resolve_regulation_id(supabase, regulation_title)
 
     if resolved.ambiguous:
-        return resolved.ambiguous
+        return FetchArticleResult(text=resolved.ambiguous, status="ambiguous")
 
     if not resolved.reg_id:
         # No regulation matched at all — let the planner fall back to search.
-        return f"المادة {num} غير موجودة في {regulation_title.strip()}"
+        return FetchArticleResult(
+            text=f"المادة {num} غير موجودة في {regulation_title.strip()}",
+            status="not_found",
+        )
 
     content = _fetch_article_content(supabase, resolved.reg_id, num)
     reg_name = resolved.display or regulation_title.strip()
     if not content:
-        return f"المادة {num} غير موجودة في {reg_name}"
+        return FetchArticleResult(
+            text=f"المادة {num} غير موجودة في {reg_name}",
+            status="not_found", reg_id=resolved.reg_id, reg_name=reg_name,
+            article_number=num,
+        )
 
-    header = f"## نص المادة {num} من {reg_name}"
-    return f"{header}\n\n{content.strip()}"
+    confidence = "high" if resolved.exact else "medium"
+    body = content.strip()
+    text = f"## نص المادة {num} من {reg_name}\n\n{body}"
+    if confidence == "medium":
+        # Non-exact match: the resolved law is a best-guess for the title typed.
+        text += (
+            f"\n\n— (ثقة متوسطة: «{reg_name}» هو أقرب نظام مطابق للاسم المذكور، "
+            "وليس تطابقًا تامًّا؛ تأكّد أنه النظام المقصود قبل اعتماده.)"
+        )
+    return FetchArticleResult(
+        text=text, status="ok", confidence=confidence,
+        reg_id=resolved.reg_id, reg_name=reg_name,
+        article_number=num, content=body,
+    )
+
+
+def fetch_article_text(supabase, regulation_title: str, article_number: str) -> str:
+    """Thin wrapper → the rendered ``text`` only (back-compat for callers/tests)."""
+    return fetch_article_result(supabase, regulation_title, article_number).text
+
+
+# --------------------------------------------------------------------------- #
+# Statute package — ONE durable workspace item per search. Successful fetches
+# accumulate on ``deps._fetched_articles`` during the decider's tool loop; the
+# runner calls ``flush_statute_package`` once per turn to write the bundle. Lean
+# reuse of save_memo's pattern: a fire-and-forget insert, best-effort (a failure
+# NEVER affects the fetch). Lazy backend import + a monkeypatchable insert
+# wrapper keep this module import-light and unit-testable.
+# --------------------------------------------------------------------------- #
+
+
+def accumulate_fetched_article(deps, *, reg_name: str, article_number: str,
+                               content: str, confidence: str) -> None:
+    """Record a successful fetch on the turn's accumulator for the package flush.
+
+    Best-effort: appends ``{regulation, article_number, content, confidence}`` to
+    ``deps._fetched_articles`` when that list slot exists (``PlannerDeps`` has
+    it). A list append is atomic on the event loop, so concurrent ``fetch_article``
+    calls accumulate safely without a lock. No-op on minimal deps (the fetch
+    still returns its text).
+    """
+    bucket = getattr(deps, "_fetched_articles", None)
+    if isinstance(bucket, list) and content:
+        bucket.append({
+            "regulation": reg_name,
+            "article_number": str(article_number),
+            "content": content,
+            "confidence": confidence,
+        })
+
+
+def _package_title(articles: list[dict]) -> str:
+    """Title for the statute package card: name the single article, else count."""
+    if len(articles) == 1:
+        a = articles[0]
+        return f"نص المادة {a['article_number']} من {a['regulation']}"
+    return f"نصوص المواد المستشهد بها ({len(articles)})"
+
+
+def build_statute_package_md(articles: list[dict]) -> str:
+    """Render the package body: the marker + one ``## نص المادة …`` section per
+    article (verbatim content). Pure — unit-testable without a DB."""
+    sections = "\n\n".join(
+        f"## نص المادة {a['article_number']} من {a['regulation']}\n\n"
+        f"{(a.get('content') or '').strip()}"
+        for a in articles
+    )
+    return f"{_STATUTE_PACKAGE_MARKER}\n\n{sections}"
+
+
+def _insert_statute_item(supabase, *, user_id: str, conversation_id: str,
+                         title: str, content_md: str, metadata: dict) -> dict:
+    """Insert the statute package row. Lazy backend import keeps this module
+    light; tests monkeypatch THIS function rather than the heavy service layer."""
+    from backend.app.services.workspace_service import create_workspace_item
+
+    return create_workspace_item(
+        supabase,
+        user_id,
+        kind=_STATUTE_KIND,
+        created_by=_STATUTE_CREATED_BY,
+        title=title,
+        conversation_id=conversation_id,
+        content_md=content_md,
+        metadata=metadata,
+    )
+
+
+def flush_statute_package(deps) -> str | None:
+    """Write the turn's accumulated articles as ONE ``statute_package`` workspace
+    item, then clear the accumulator. One package per search.
+
+    Deduped within the turn by ``(regulation, article_number)`` (the planner's
+    retry loop may fetch the same article twice). Best-effort + fully guarded — a
+    flush failure never propagates. Returns the new ``item_id``, or ``None`` when
+    nothing was accumulated / scope is missing / on any error. The accumulator is
+    snapshotted-and-cleared up front so a second flush can't double-write.
+    """
+    bucket = getattr(deps, "_fetched_articles", None)
+    if not isinstance(bucket, list) or not bucket:
+        return None
+    articles = list(bucket)
+    bucket.clear()
+
+    user_id = getattr(deps, "user_id", "") or ""
+    conversation_id = getattr(deps, "conversation_id", "") or ""
+    if not (user_id and conversation_id):
+        return None
+
+    try:
+        # Dedup within the turn — keep first occurrence of each (reg, article).
+        seen: set[tuple[str, str]] = set()
+        uniq: list[dict] = []
+        for a in articles:
+            key = (a.get("regulation", ""), str(a.get("article_number", "")))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(a)
+        if not uniq:
+            return None
+
+        row = _insert_statute_item(
+            deps.supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            title=_package_title(uniq),
+            content_md=build_statute_package_md(uniq),
+            metadata={
+                "subtype": _STATUTE_PACKAGE_SUBTYPE,
+                "articles": [
+                    {
+                        "regulation": a.get("regulation", ""),
+                        "article_number": str(a.get("article_number", "")),
+                        "confidence": a.get("confidence", ""),
+                    }
+                    for a in uniq
+                ],
+            },
+        )
+        item_id = row.get("item_id") or row.get("artifact_id") or None
+        if item_id:
+            _emit_pin_chip(deps, item_id, _package_title(uniq), len(uniq))
+        return item_id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_article: statute package flush failed: %s", exc)
+        return None
+
+
+def _emit_pin_chip(deps, item_id: str, title: str, count: int) -> None:
+    """Best-effort: surface a ``workspace_item_created`` chip via the planner's
+    SSE sink so the pinned package card appears immediately. If no sink is wired,
+    the card still loads on the next turn (persistence is the guarantee)."""
+    emit = getattr(deps, "emit_sse", None)
+    if not callable(emit):
+        return
+    try:
+        emit({
+            "type": "workspace_item_created",
+            "item_id": item_id,
+            "kind": _STATUTE_KIND,
+            "subtype": _STATUTE_PACKAGE_SUBTYPE,
+            "title": title,
+            "created_by": _STATUTE_CREATED_BY,
+        })
+    except Exception:  # noqa: BLE001 — chip is cosmetic; never break the fetch
+        logger.debug("fetch_article: pin chip emit failed", exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -448,9 +679,17 @@ def register_fetch_article(agent: Agent) -> None:
         "1-1") — convert Arabic ordinals («الحادية والثمانون») or Arabic-Indic
         digits («٨١») to the plain Western-digit form first.
 
+        All articles you fetch this turn are bundled into one durable reference
+        card (it persists across turns) — you don't manage that.
+        On an approximate (non-exact) regulation match the text carries a brief
+        «(ثقة متوسطة …)» note: verify it's the intended law (``ask_user`` if
+        unsure), and carry only the article body — not that note — into
+        ``planner_brief``.
+
         Returns:
             - The article text, prefixed with a one-line header naming the
-              resolved regulation, on success.
+              resolved regulation, on success (plus a confidence note on a
+              non-exact match).
             - A string starting ``AMBIGUOUS:`` listing candidate regulation
               titles when the named regulation is ambiguous — in which case use
               your ``ask_user`` tool to ask which one the user means.
@@ -464,15 +703,9 @@ def register_fetch_article(agent: Agent) -> None:
                 "81" or compound "1-1".
         """
         try:
-            text = await asyncio.to_thread(
-                fetch_article_text, ctx.deps.supabase, regulation_title, article_number,
+            result = await asyncio.to_thread(
+                fetch_article_result, ctx.deps.supabase, regulation_title, article_number,
             )
-            logger.info(
-                "fetch_article: title=%r art=%r → %d chars%s",
-                regulation_title, article_number, len(text),
-                " (AMBIGUOUS)" if text.startswith("AMBIGUOUS:") else "",
-            )
-            return text
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "fetch_article error for title=%r art=%r: %s",
@@ -480,13 +713,37 @@ def register_fetch_article(agent: Agent) -> None:
             )
             return f"المادة {(article_number or '').strip()} غير موجودة في {(regulation_title or '').strip()}"
 
+        # A successful fetch is accumulated on the turn's deps slot; the runner
+        # flushes all of them into ONE statute_package workspace item per search
+        # (flush_statute_package). A plain list append — no DB write here.
+        if result.status == "ok":
+            accumulate_fetched_article(
+                ctx.deps,
+                reg_name=result.reg_name,
+                article_number=result.article_number,
+                content=result.content,
+                confidence=result.confidence,
+            )
+
+        logger.info(
+            "fetch_article: title=%r art=%r → status=%s conf=%s (%d chars)",
+            regulation_title, article_number, result.status, result.confidence,
+            len(result.text),
+        )
+        return result.text
+
 
 __all__ = [
     "register_fetch_article",
+    "fetch_article_result",
     "fetch_article_text",
     "resolve_regulation_id",
+    "accumulate_fetched_article",
+    "flush_statute_package",
+    "build_statute_package_md",
     "_fetch_article_content",
     "_normalize_title",
+    "FetchArticleResult",
     "RegCandidate",
     "ResolveResult",
     "HasSupabase",

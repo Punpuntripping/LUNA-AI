@@ -32,6 +32,7 @@ from .agent import (
     create_planner_decider,
     create_planner_responder,
 )
+from agents.tool_repository.fetch_article import flush_statute_package
 from .apply import build_retrieval_config
 from .deps import PlannerDeps
 from .logger import (
@@ -310,6 +311,8 @@ async def _run_planner_turn(
                 # Normal pause — NOT a failure. Hand back to the orchestrator.
                 emit(deps, {"event": EVENT_PAUSED})
                 logger.info("planner: phase-1 paused via ask_user")
+                # Persist any articles fetched before the pause as their package.
+                flush_statute_package(deps)
                 # Bill the decider call that asked the question. (The orchestrator
                 # also emits on the pause path for the resume-decider case; this
                 # covers the fresh phase-1 pause. Same label → sums in SQL.)
@@ -320,6 +323,9 @@ async def _run_planner_turn(
             # PlannerDecision in hand.
             decision = output
             _decider_result = result
+            # One statute_package workspace item per search: flush the articles
+            # accumulated by fetch_article during this decider phase.
+            flush_statute_package(deps)
             _decided_payload = {
                 "event": EVENT_DECIDED,
                 "mode": decision.mode,
