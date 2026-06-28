@@ -29,6 +29,24 @@ export default function PricingPage() {
           </p>
         </header>
 
+        {/* Activation notice — paid plans not live yet; access is via code. */}
+        <div className="mx-auto mb-10 max-w-2xl rounded-2xl border border-primary/30 bg-primary/5 p-5 text-center">
+          <p className="text-sm font-semibold leading-relaxed text-foreground">
+            الاشتراك غير مُفعّل بعد
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+            لم يتم تفعيل الدفع والاشتراك حتى الآن. لاستخدام التطبيق، يُرجى
+            التواصل معنا للحصول على رمز تفعيل عبر البريد:{" "}
+            <a
+              href="mailto:support@rayhanai.com"
+              className="font-medium text-primary underline-offset-4 hover:underline"
+              dir="ltr"
+            >
+              support@rayhanai.com
+            </a>
+          </p>
+        </div>
+
         {/* Plan cards */}
         <div className="grid gap-6 md:grid-cols-3">
           {PRICING_PLANS.map((plan) => (
@@ -78,17 +96,15 @@ export default function PricingPage() {
                 ))}
               </ul>
 
-              {/* Dead-end CTA — payment not wired yet (intentionally inert). */}
+              {/* Subscription not live yet — CTA disabled; access via activation code. */}
               <div className="mt-auto pt-7">
                 <button
                   type="button"
-                  className={`w-full rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-                    plan.highlighted
-                      ? "bg-primary text-primary-foreground hover:bg-primary-hover"
-                      : "border border-border text-foreground hover:bg-muted"
-                  }`}
+                  disabled
+                  aria-disabled="true"
+                  className="w-full cursor-not-allowed rounded-lg border border-border bg-muted px-4 py-2.5 text-sm font-semibold text-muted-foreground opacity-60"
                 >
-                  اشترك الآن
+                  غير متاح حالياً
                 </button>
               </div>
             </div>
