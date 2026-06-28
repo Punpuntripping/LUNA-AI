@@ -16,7 +16,8 @@ const HOUR_MS = 60 * 60 * 1000;
 const MIN_MS = 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-function formatReset(resetsAt: string, now: number): string {
+function formatReset(resetsAt: string | null, now: number): string {
+  if (!resetsAt) return "";
   const target = Date.parse(resetsAt);
   if (Number.isNaN(target)) return "";
   const delta = target - now;
@@ -81,6 +82,9 @@ function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
     );
   }
 
+  // used === 0 → the window is fully available; the backend sends no reset
+  // (a "now + window" countdown would be meaningless and clock-skew-fragile).
+  const fullyAvailable = bar.used <= 0;
   const reset = formatReset(bar.resets_at, now);
   const tone =
     bar.pct >= 100
@@ -94,11 +98,13 @@ function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
       <div className="flex items-baseline justify-between gap-2">
         <div className="flex flex-col">
           <span className="text-sm font-medium text-foreground">{label}</span>
-          {reset && (
+          {fullyAvailable ? (
+            <span className="text-xs text-muted-foreground">متاحة بالكامل</span>
+          ) : reset ? (
             <span className="text-xs text-muted-foreground">
               يُعاد الاحتساب {reset}
             </span>
-          )}
+          ) : null}
         </div>
         <span className="text-xs tabular-nums text-muted-foreground">
           {bar.pct}% — {formatAmount(bar.used, fractionDigits)} /{" "}
@@ -156,7 +162,7 @@ export function UsageLimitsDialog({
               حسابك غير مفعّل بعد
             </p>
             <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">
-              تواصل معنا لتفعيل اشتراكك والبدء في استخدام لونا.
+              تواصل معنا لتفعيل اشتراكك والبدء في استخدام ريحان.
             </p>
           </div>
         </div>
@@ -226,8 +232,8 @@ export function UsageLimitsDialog({
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="leading-relaxed">
-            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات، ويبدأ الأسبوع عند أول
-            رسالة ويستمر ٧ أيام.
+            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات ثم تتجدّد تلقائيًا.
+            ويُحتسب الحد الأسبوعي على استهلاكك خلال آخر ٧ أيام.
           </p>
         </div>
       </div>

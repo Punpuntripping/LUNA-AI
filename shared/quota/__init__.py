@@ -61,12 +61,15 @@ logger = logging.getLogger(__name__)
 
 POINTS_PER_USD = 100.0
 
-# Rolling window lengths. Usage is measured directly from the llm_calls ledger
-# (the usage SSoT) via the get_user_usage_windows RPC — every window is a plain
-# rolling SUM over the trailing interval, so the gate and the dialog always agree.
-SESSION_WINDOW_S = 5 * 3_600      # last 5 hours
-WEEK_WINDOW_S = 86_400 * 7        # last 7 days
-MONTH_WINDOW_S = 86_400 * 30      # last 30 days (ocr meter)
+# Window lengths. Usage is measured directly from the llm_calls ledger (the
+# usage SSoT) via the get_user_usage_windows RPC, so the gate and the dialog
+# always agree. The session is a FIXED 5h block anchored at the first message
+# (migration 083 — session_oldest is the active anchor); weekly + ocr are plain
+# rolling SUMs over their trailing interval. ``resets_at`` = oldest/anchor +
+# window in either case.
+SESSION_WINDOW_S = 5 * 3_600      # fixed 5h session block (anchor + 5h)
+WEEK_WINDOW_S = 86_400 * 7        # rolling last 7 days
+MONTH_WINDOW_S = 86_400 * 30      # rolling last 30 days (ocr meter)
 
 
 # ── exceptions ──────────────────────────────────────────────────────────────
@@ -377,7 +380,7 @@ async def check(
         raise QuotaUnavailable("ord", "weekly")
 
     if needs_ord:
-        # Session — rolling last 5 hours.
+        # Session — fixed 5h block anchored at the first message (migration 083).
         if lim.points_session is not None:
             used = float(w.get("session_cost") or 0.0) * POINTS_PER_USD
             if used >= float(lim.points_session):
@@ -423,9 +426,9 @@ async def current_usage_report(
     supabase: SupabaseClient,
     user_id: str,
 ) -> dict[str, Any]:
-    """Snapshot for the Settings → حدود الاستخدام dialog. Reads the SAME rolling
-    windows as the gate (get_user_usage_windows), so what's shown is exactly
-    what's enforced — no hidden binding window.
+    """Snapshot for the Settings → حدود الاستخدام dialog. Reads the SAME windows
+    as the gate (get_user_usage_windows), so what's shown is exactly what's
+    enforced — no hidden binding window.
 
     Fails SOFT on the usage read — if the RPC is unreachable the bars render 0
     with ``"approximate": true`` rather than 500ing. A limits-resolution failure
@@ -448,7 +451,8 @@ async def current_usage_report(
 
     ``limit: null`` = unlimited; ``limit: 0`` = feature not in the plan.
     ``locked: true`` → plan is null and the bars are omitted (frontend shows the
-    activation notice). resets_at is the rolling relief time (oldest + window).
+    activation notice). resets_at = oldest/anchor + window, or null when the
+    window has no usage (used == 0 → fully available, no countdown).
     """
     lim = await asyncio.to_thread(_user_limits, supabase, user_id)
 
@@ -474,7 +478,12 @@ async def current_usage_report(
             "used": used,
             "limit": limit,
             "pct": _pct(used, limit),
-            "resets_at": _rolling_reset(oldest, window_s).isoformat(),
+            # Nothing spent in the window → full quota is available now, so there
+            # is no recovery time to show. Emitting a bogus ``now + window`` reset
+            # here would also be re-diffed against the (untrusted) client clock and
+            # can render wildly wrong on a skewed device — so send null and let the
+            # UI say "fully available".
+            "resets_at": _rolling_reset(oldest, window_s).isoformat() if used > 0 else None,
             "approximate": approximate,
         }
 
@@ -484,7 +493,8 @@ async def current_usage_report(
             "used": used,
             "limit": limit,
             "pct": _pct(used, limit),
-            "resets_at": _rolling_reset(oldest, window_s).isoformat(),
+            # See _points_bar: no usage → "fully available", no countdown.
+            "resets_at": _rolling_reset(oldest, window_s).isoformat() if used > 0 else None,
             "approximate": approximate,
         }
 

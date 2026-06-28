@@ -343,7 +343,9 @@ export interface UsageBar {
   used: number;
   limit: number | null;
   pct: number;
-  resets_at: string;
+  /** Recovery time (oldest-in-window + window length). Null when used === 0 —
+   *  the window is fully available, so there is no countdown to show. */
+  resets_at: string | null;
   approximate?: boolean;
 }
 
@@ -360,11 +362,11 @@ export interface UsagePlan {
 
 /**
  * GET /api/v1/usage payload. Points (1 USD = 100 points) are gated on a fixed
- * 5-hour session (starts on the user's first message) + a fixed weekly window
- * resetting Friday 1 PM Riyadh; ocr and web are gated on a rolling-30-day
- * monthly window. ``points.monthly`` is enforced as a silent backstop and
- * always null here (never shown). ``locked: true`` → no plan assigned; plan is
- * null and all bars are null.
+ * 5-hour session (anchored at the user's first message, resets 5h later) + a
+ * rolling 7-day weekly window; ocr is gated on a rolling-30-day window.
+ * ``points.monthly`` is enforced as a silent backstop and always null here
+ * (never shown). ``locked: true`` → no plan assigned; plan is null and all bars
+ * are null.
  */
 export interface UsageReport {
   locked: boolean;
