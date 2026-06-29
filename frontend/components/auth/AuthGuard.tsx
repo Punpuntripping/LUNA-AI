@@ -18,6 +18,9 @@ const PUBLIC_PREFIXES = ["/blog", "/terms", "/privacy", "/pricing"] as const;
 
 function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
+  // The marketing landing page is the public front door. Matched exactly — a
+  // bare-prefix "/" would swallow every authenticated route.
+  if (pathname === "/") return true;
   return PUBLIC_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
@@ -60,19 +63,31 @@ export function AuthGuard({ children }: Props) {
   }, [revalidateSession]);
 
   useEffect(() => {
-    // Public pages never redirect — anon visitors must see /blog/{token}.
-    if (isPublic) return;
-    if (!isLoading && !isAuthenticated && pathname !== "/login") {
-      router.replace("/login");
-    }
-    if (!isLoading && isAuthenticated && pathname === "/login") {
+    if (isLoading) return;
+    // Logged-in users hitting the login screen OR the marketing landing page
+    // belong in the app — send them to /chat (their real home). This runs
+    // BEFORE the public-page early-return below so the landing ("/") bounces
+    // authenticated visitors even though it's a public path for anon.
+    if (isAuthenticated && (pathname === "/login" || pathname === "/")) {
       router.replace("/chat");
+      return;
+    }
+    // Other public pages (/blog, /terms, /privacy, /pricing) never redirect —
+    // anon visitors must see them, and logged-in users may browse them freely.
+    if (isPublic) return;
+    if (!isAuthenticated && pathname !== "/login") {
+      router.replace("/login");
     }
   }, [isLoading, isAuthenticated, pathname, router, isPublic]);
 
   // Public pages render immediately for everyone (logged-in or anon) without
   // waiting on the session probe or gating on auth state.
   if (isPublic) {
+    // Exception: an authenticated visitor on the landing ("/") is mid-bounce
+    // to /chat (effect above) — don't flash the marketing page at them.
+    if (pathname === "/" && !isLoading && isAuthenticated) {
+      return null;
+    }
     return <>{children}</>;
   }
 
