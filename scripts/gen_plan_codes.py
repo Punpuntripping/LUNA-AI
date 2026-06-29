@@ -21,7 +21,6 @@ Run from the repo root.
 Usage:
   # single-use batches
   python scripts/gen_plan_codes.py --plan marketing_lawyer --count 50 --valid-days 60 --batch-label lawyers_launch_jun26
-  python scripts/gen_plan_codes.py --plan marketing_individual --count 20
   python scripts/gen_plan_codes.py --plan marketing_lawyer --count 5 --valid-days 0   # never-expiring
 
   # one global code the first 100 redeemers share
