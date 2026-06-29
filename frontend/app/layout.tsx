@@ -11,6 +11,7 @@ const notoNaskhArabic = Noto_Naskh_Arabic({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://rayhanai.com"),
   title: "ريحان - المساعد القانوني الذكي",
   description: "مساعد ذكاء اصطناعي للمحامين السعوديين",
 };
