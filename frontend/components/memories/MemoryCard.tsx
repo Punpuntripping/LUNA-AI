@@ -11,23 +11,23 @@ const MEMORY_TYPE_CONFIG: Record<
 > = {
   fact: {
     label: 'حقيقة',
-    classes: 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300',
+    classes: 'bg-info text-info-fg',
   },
   document_reference: {
     label: 'مرجع',
-    classes: 'bg-gray-100 text-gray-800 dark:bg-gray-800/40 dark:text-gray-300',
+    classes: 'bg-muted text-text-muted',
   },
   strategy: {
     label: 'استراتيجية',
-    classes: 'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+    classes: 'bg-brand-soft text-brand-soft-fg',
   },
   deadline: {
     label: 'موعد',
-    classes: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+    classes: 'bg-error text-error-fg',
   },
   party_info: {
     label: 'طرف',
-    classes: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+    classes: 'bg-success text-success-fg',
   },
 };
 

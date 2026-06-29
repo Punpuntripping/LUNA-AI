@@ -34,13 +34,16 @@ const SUBTYPE_LABEL: Record<string, string> = {
   legal_synthesis: "تحليل قانوني",
 };
 
+// Retoned to the Luna token family (sage / aubergine / semantic) so the
+// badges cohere with the theme in both light and dark instead of rendering
+// as a clashing six-color palette rainbow.
 const KIND_COLORS: Record<WorkspaceItemKind, string> = {
-  attachment: "bg-slate-500/10 text-slate-500",
-  note: "bg-amber-500/10 text-amber-500",
-  agent_search: "bg-teal-500/10 text-teal-500",
-  agent_writing: "bg-indigo-500/10 text-indigo-500",
-  convo_context: "bg-sky-500/10 text-sky-500",
-  references: "bg-violet-500/10 text-violet-500",
+  attachment: "bg-muted text-text-muted",
+  note: "bg-warning text-warning-fg",
+  agent_search: "bg-accent-soft text-accent-brand",
+  agent_writing: "bg-info text-info-fg",
+  convo_context: "bg-success text-success-fg",
+  references: "bg-brand-soft text-brand-soft-fg",
 };
 
 interface WorkspaceCardProps {

@@ -40,19 +40,19 @@ const STATUS_CONFIG: Record<
 > = {
   pending: {
     label: "قيد الانتظار",
-    className: "bg-yellow-100 text-yellow-700",
+    className: "bg-warning text-warning-fg",
   },
   processing: {
     label: "قيد المعالجة",
-    className: "bg-blue-100 text-blue-700",
+    className: "bg-info text-info-fg",
   },
   completed: {
     label: "مكتمل",
-    className: "bg-green-100 text-green-700",
+    className: "bg-success text-success-fg",
   },
   failed: {
     label: "فشل",
-    className: "bg-red-100 text-red-700",
+    className: "bg-error text-error-fg",
   },
 };
 

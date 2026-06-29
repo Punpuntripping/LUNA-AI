@@ -97,7 +97,7 @@ function SessionRow({
       dir="rtl"
       className={cn(
         "flex flex-col gap-1.5 rounded-md border px-3 py-2 text-sm",
-        isCompleted && "border-emerald-500/30 bg-emerald-500/5",
+        isCompleted && "border-success-fg/25 bg-success",
         isFailed && "border-destructive/30 bg-destructive/5",
         isCancelled && "border-muted bg-muted/30 opacity-70",
       )}
@@ -121,7 +121,7 @@ function SessionRow({
         )}
         {isCompleted && (
           <span
-            className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white"
+            className="flex h-5 w-5 items-center justify-center rounded-full bg-success-fg text-success"
             aria-label="اكتمل"
           >
             <Check className="h-3 w-3" />

@@ -79,7 +79,7 @@ export function TemplateSaveOfferChip({
         lang="ar"
         className="flex items-center gap-1.5 rounded-full bg-muted/50 px-3 py-1.5 text-[11px] text-muted-foreground"
       >
-        <Check className="h-3.5 w-3.5 text-green-600 shrink-0" />
+        <Check className="h-3.5 w-3.5 text-success-fg shrink-0" />
         <span className="truncate max-w-[280px]">
           تم حفظ القالب «{state.title}»
         </span>

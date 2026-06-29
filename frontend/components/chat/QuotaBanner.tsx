@@ -49,14 +49,14 @@ export function QuotaBanner() {
       dir="rtl"
       lang="ar"
       role="alert"
-      className="flex items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2"
+      className="flex items-center justify-between gap-2 border-b border-warning-fg/25 bg-warning px-4 py-2"
     >
       <div className="flex flex-col gap-0.5">
-        <p className="text-sm text-amber-900 dark:text-amber-200">
+        <p className="text-sm text-warning-fg">
           {quotaInfo.message_ar}
         </p>
         {resetText && (
-          <p className="text-xs text-amber-800/80 dark:text-amber-200/70">
+          <p className="text-xs text-warning-fg/80">
             يُعاد الاحتساب {resetText}.
           </p>
         )}
@@ -64,7 +64,7 @@ export function QuotaBanner() {
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 shrink-0 text-amber-900 hover:text-amber-900 dark:text-amber-200"
+        className="h-6 w-6 shrink-0 text-warning-fg hover:text-warning-fg"
         onClick={handleDismiss}
         aria-label="إغلاق"
       >

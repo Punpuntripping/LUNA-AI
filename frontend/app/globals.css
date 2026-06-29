@@ -65,6 +65,13 @@
     --destructive:            oklch(57.7% 0.215 27);
     --destructive-foreground: oklch(97% 0.005 265);
 
+    /* Code block — warm dark plane (code renders dark even on the cream canvas) */
+    --code-bg:      #211F1C;
+    --code-head-bg: #2A2724;
+    --code-border:  #34302B;
+    --code-fg:      #E8E2D8;
+    --code-muted:   #A89E8E;
+
     /* ---------- Case-type pills (light) ---------- */
     --case-realestate-bg: #DDE0EA; --case-realestate-fg: #2E3A55;
     --case-commercial-bg: #E8E0EA; --case-commercial-fg: #3D2D45;
@@ -170,88 +177,97 @@
   }
 
   /* ============================================================
-   * D6 — Full Systematized Scales (dark primary)
+   * D — Warm Slate · Paper-Ink (dark primary)
    *
-   * Two seed scales replace D1's six anchors. Every token below is a pointer
-   * into one of them — production-grade, defensible by step-number.
-   *
-   *   Aubergine scale (neutral / structural):
-   *     25  #FAF8FB · 50  #F1EEF3 · 100 #E0DAE5 · 200 #C2B8CB · 300 #9D91AC
-   *     400 #7E7290 · 500 #6A6581 · 600 #544F66 · 700 #4C4158 · 800 #373541
-   *     900 #18141A
-   *
-   *   Sage scale (brand):
-   *     25  #F4F7F6 · 50  #E8EDEB · 100 #D4DCD9 · 200 #C9D2CF · 300 #B0BDB9
-   *     400 #9BA9A5 · 500 #7C8E89 · 600 #5F716C · 700 #465451 · 800 #242E29
-   *     900 #141A17
-   *
-   * Architectural moves vs D1:
-   *   1. --primary (#6A8077, muted) and --accent (#9BA9A5, bright) split into
-   *      two speeds. Primary carries CTAs; accent reserved for system feedback.
-   *   2. --pill-bg decouples from sage → equals --surface-2. Pills become
-   *      neutral chrome chips, not sage-tinted.
-   *   3. Surfaces gain an intermediate (#221E26 between 800–900) for finer lift.
-   *   4. --primary-fg flips to light (#EDEAF2) since muted CTA can't carry
-   *      aubergine-on-aubergine contrast.
+   * Warm-neutral charcoal surfaces; the brand carries ALL the color.
+   * Restores the light-mode (Herbarium Paper) identity that the previous
+   * D6 dark mode abandoned:
+   *   1. --primary is a LIFTED forest-teal (#5E9385) with real chroma — the
+   *      living CTA, not D6's dead desaturated gray-sage (#6A8077).
+   *   2. --bubble-user is AUBERGINE again (#574A66) — the light-mode "voice" —
+   *      instead of swapping to sage.
+   *   3. Surfaces are warm-neutral charcoal (a faint taupe relating to the
+   *      cream canvas), not muddy aubergine-purple.
+   *   4. Text is a warm off-white (#EFEBE6) echoing the cream light canvas.
+   *   5. --accent stays bright sage (system voice, ≤ 3% coverage).
+   *   6. Case-type pills now carry explicit dark overrides (D6 had none, so
+   *      light cream values bled onto the dark canvas).
    * ============================================================ */
   .dark,
   [data-theme="dark"] {
-    /* Surfaces — Aubergine scale */
-    --canvas:          #18141A;  /* Aubergine 900 */
-    --surface-1:       #221E26;  /* between 800–900, intermediate lift */
-    --surface-2:       #2D2935;  /* between 700–800, also --pill-bg */
-    --surface-3:       #373541;  /* Aubergine 800, sidebar / chrome */
-    --surface-sidebar: #373541;  /* = surface-3, nav chrome plane */
+    /* Surfaces — warm-neutral charcoal ladder */
+    --canvas:          #1A1917;
+    --surface-1:       #222120;
+    --surface-2:       #2A2927;
+    --surface-3:       #343230;
+    --surface-sidebar: #131211;  /* deepest plane (light sidebar also steps down) */
 
-    /* Borders — Aubergine scale */
-    --border:          #2A2630;  /* between 800–900 */
-    --border-strong:   #4C4158;  /* Aubergine 700 */
+    /* Borders */
+    --border:          #2C2A28;
+    --border-strong:   #44413D;
 
-    /* Text — Aubergine scale */
-    --text-primary:    #EDEAF2;  /* near Aubergine 25 */
-    --text-secondary:  #B8B0C2;  /* between 200–300 */
-    --text-muted:      #6A6581;  /* Aubergine 500 */
-    --text-subtle:     #544F66;  /* Aubergine 600 */
+    /* Text — warm off-white ladder (echoes the cream light canvas) */
+    --text-primary:    #EFEBE6;
+    --text-secondary:  #C2BDB5;
+    --text-muted:      #8E8A82;
+    --text-subtle:     #64605A;
 
-    /* Brand — two-speed: muted CTA + bright system voice */
-    --primary:         #6A8077;  /* Sage 500–600, muted CTA */
-    --primary-fg:      #EDEAF2;  /* light text on muted sage (NOT canvas) */
-    --primary-hover:   #7B928A;  /* near Sage 500, lifts toward bright on hover */
+    /* Brand — lifted forest-teal CTA (the soul color, alive again) */
+    --primary:         #5E9385;
+    --primary-fg:      #14201C;  /* dark teal-ink on the bright CTA */
+    --primary-hover:   #6FA697;
 
-    --accent:          #9BA9A5;  /* Sage 400, bright voice — ≤ 3% coverage */
-    --accent-fg:       #18141A;  /* Aubergine 900, used on bright sage */
-    --accent-soft:     rgba(155, 169, 165, 0.14);  /* sage @ 14% — raised from D1's 12% */
-    --accent-line:     #9BA9A5;  /* = accent, owns the quoted-clause left rule */
+    /* Accent — bright sage system voice (≤ 3% coverage) */
+    --accent:          #A8B6B0;
+    --accent-fg:       #14201C;  /* dark ink on bright sage */
+    --accent-soft:     rgba(168, 182, 176, 0.14);  /* sage @ 14% */
+    --accent-line:     #A8B6B0;  /* = accent, owns the quoted-clause left rule */
 
-    /* Pills — neutral chips (decoupled from sage) */
-    --pill-bg:         #2D2935;  /* = surface-2 */
-    --pill-fg:         #C5BFD0;  /* between Aubergine 200–300 */
-    --brand-soft-bg:   #2D2935;  /* = pill-bg, alias for legacy utilities */
-    --brand-soft-fg:   #C5BFD0;  /* = pill-fg */
+    /* Pills — neutral warm chips */
+    --pill-bg:         #2A2927;  /* = surface-2 */
+    --pill-fg:         #C2BDB5;  /* = text-secondary */
+    --brand-soft-bg:   #2A2927;  /* = pill-bg, alias for legacy utilities */
+    --brand-soft-fg:   #C2BDB5;
 
-    /* User bubble inherits --primary (muted CTA tone) */
-    --bubble-user-bg:  #6A8077;  /* = primary */
-    --bubble-user-fg:  #EDEAF2;  /* = primary-fg */
+    /* User bubble — aubergine (the light-mode voice, restored) */
+    --bubble-user-bg:  #574A66;
+    --bubble-user-fg:  #F1EAE9;
 
     /* Focus halo — sage @ 14%, no hard outer ring */
-    --ring:            #9BA9A5;
-    --ring-focus:      0 0 0 3px rgba(155, 169, 165, 0.14);
+    --ring:            #A8B6B0;
+    --ring-focus:      0 0 0 3px rgba(168, 182, 176, 0.14);
 
-    /* Semantic — kept from D1; eligible to be re-derived from scales later */
-    --success-bg: #2A4438; --success-fg: #C5D9CD;
-    --warning-bg: #3F341B; --warning-fg: #E8D6A8;
-    --error-bg:   #3E1F1B; --error-fg:   #E8B5AC;
-    --info-bg:    #1F2A40; --info-fg:    #B5C2DC;
+    /* Semantic — warm-tuned darks */
+    --success-bg: #1E3A2C; --success-fg: #AEDABF;
+    --warning-bg: #3A2F18; --warning-fg: #E8D6A8;
+    --error-bg:   #3A201C; --error-fg:   #E8B5AC;
+    --info-bg:    #1E2A3C; --info-fg:    #B5C2DC;
 
-    /* Destructive — lifted red, readable on the dark canvas */
-    --destructive:            oklch(65% 0.21 27);
+    /* Destructive — lifted red, readable on warm charcoal */
+    --destructive:            oklch(66% 0.20 27);
     --destructive-foreground: oklch(98% 0 0);
 
-    /* Single shadow token — production-grade depth (deeper than D1's 0.40) */
+    /* Case-type pills — dark overrides (were missing → light values bled through) */
+    --case-realestate-bg: #1E2738; --case-realestate-fg: #BAC4D6;
+    --case-commercial-bg: #2C2632; --case-commercial-fg: #D2C0DC;
+    --case-labor-bg:      #322B19; --case-labor-fg:      #E6D4A2;
+    --case-criminal-bg:   #38201D; --case-criminal-fg:   #E8B2A8;
+    --case-personal-bg:   #341E2A; --case-personal-fg:   #E8B2CC;
+    --case-admin-bg:      #18282E; --case-admin-fg:      #AECCD6;
+    --case-execution-bg:  #18271F; --case-execution-fg:  #ADD6BE;
+
+    /* Code block — warm-retoned (was raw cool zinc) */
+    --code-bg:      #121110;
+    --code-head-bg: #201F1D;
+    --code-border:  #2C2A28;
+    --code-fg:      #D6D2CB;
+    --code-muted:   #8E8A82;
+
+    /* Depth — warm-black shadow, gentle ramp */
     --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.45);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
-    --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.45);
-    --shadow-lg: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 14px 32px rgba(0, 0, 0, 0.55);
   }
 
   /* RTL-aware global styles */

@@ -65,13 +65,13 @@ export function RedeemCodeDialog({ open, onOpenChange }: RedeemCodeDialogProps) 
         </DialogHeader>
 
         {success ? (
-          <div className="flex items-start gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-4">
-            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <div className="flex items-start gap-3 rounded-md border border-success-fg/25 bg-success p-4">
+            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success-fg" />
             <div className="flex flex-col gap-1">
-              <p className="text-sm font-medium text-emerald-900 dark:text-emerald-200">
+              <p className="text-sm font-medium text-success-fg">
                 تم تفعيل باقتك بنجاح
               </p>
-              <p className="text-xs text-emerald-800/90 dark:text-emerald-200/80">
+              <p className="text-xs text-success-fg/80">
                 باقتك الحالية: {success.name_ar ?? success.plan_id}
               </p>
             </div>

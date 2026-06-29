@@ -74,7 +74,7 @@ export function AttachmentUploadCard({
       className={cn(
         "relative flex-shrink-0 w-40 rounded-xl border bg-muted/30 overflow-hidden group",
         isFailed && "border-destructive/40",
-        isCompleted && "border-emerald-500/40",
+        isCompleted && "border-success-fg/30",
         className,
       )}
     >
@@ -92,7 +92,7 @@ export function AttachmentUploadCard({
 
       {/* Status badge — top-end corner. */}
       {isCompleted && (
-        <div className="absolute top-1.5 end-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white">
+        <div className="absolute top-1.5 end-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-success-fg text-success">
           <Check className="h-3 w-3" />
         </div>
       )}

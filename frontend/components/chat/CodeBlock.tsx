@@ -32,24 +32,24 @@ export const CodeBlock = memo(function CodeBlock({
     <div
       dir="ltr"
       className={cn(
-        "group/code relative rounded-lg bg-zinc-950 text-sm my-3 overflow-hidden",
+        "group/code relative rounded-lg bg-code text-sm my-3 overflow-hidden",
         className
       )}
     >
       {/* Header bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-zinc-800/60 border-b border-zinc-700/50">
-        <span className="text-xs text-zinc-400 font-mono select-none">
+      <div className="flex items-center justify-between px-4 py-2 bg-code-head border-b border-code-border">
+        <span className="text-xs text-code-muted font-mono select-none">
           {language || "code"}
         </span>
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50"
+          className="h-6 w-6 text-code-muted hover:text-code-fg hover:bg-code-border/60"
           onClick={handleCopy}
           aria-label="نسخ الكود"
         >
           {copied ? (
-            <Check className="h-3.5 w-3.5 text-green-400" />
+            <Check className="h-3.5 w-3.5 text-success-fg" />
           ) : (
             <Copy className="h-3.5 w-3.5" />
           )}
@@ -61,7 +61,7 @@ export const CodeBlock = memo(function CodeBlock({
         <pre className="!m-0 !p-0 !bg-transparent">
           <code
             className={cn(
-              "!bg-transparent text-zinc-200 text-[13px] leading-relaxed",
+              "!bg-transparent text-code-fg text-[13px] leading-relaxed",
               language && `hljs language-${language}`
             )}
           >

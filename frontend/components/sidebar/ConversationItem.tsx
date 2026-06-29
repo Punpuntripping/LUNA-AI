@@ -160,7 +160,7 @@ export function ConversationItem({
             />
             <button
               onClick={handleConfirmRename}
-              className="p-0.5 text-green-600 hover:text-green-700"
+              className="p-0.5 text-primary hover:text-primary-hover"
             >
               <Check className="h-3.5 w-3.5" />
             </button>
@@ -176,7 +176,7 @@ export function ConversationItem({
             <div className="flex flex-1 min-w-0 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-1.5">
                 {isStarred && (
-                  <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
+                  <Star className="h-3 w-3 shrink-0 fill-accent-brand text-accent-brand" />
                 )}
                 <p
                   className="min-w-0 flex-1 truncate text-sm max-w-[15rem]"

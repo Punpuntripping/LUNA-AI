@@ -99,6 +99,15 @@ const config: Config = {
 
         ring: "var(--ring)",
 
+        // code block plane (warm dark in both modes)
+        code: {
+          DEFAULT: "var(--code-bg)",
+          head: "var(--code-head-bg)",
+          border: "var(--code-border)",
+          fg: "var(--code-fg)",
+          muted: "var(--code-muted)",
+        },
+
         // raw anchors (escape hatches)
         anchor: {
           aubergine: "#18141A",

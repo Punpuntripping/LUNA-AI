@@ -171,7 +171,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
   const headerSlot = (
     <>
       {isLocked && (
-        <div className="flex items-center gap-2 border-b bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+        <div className="flex items-center gap-2 border-b bg-warning px-4 py-2 text-xs text-warning-fg">
           <Lock className="h-3.5 w-3.5" />
           <span>ريحان يحرر هذا الملف الآن…</span>
         </div>

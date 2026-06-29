@@ -191,7 +191,7 @@ export function ShareArtifactDialog({
         ) : (
           <div className="space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-success text-success-fg">
                 <Check className="h-4 w-4" />
               </span>
               تم النشر — الرابط في الحافظة

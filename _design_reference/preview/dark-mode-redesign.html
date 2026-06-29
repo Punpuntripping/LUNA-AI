@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>لونا — إعادة بناء الوضع الداكن</title>
+<link rel="stylesheet" href="../fonts/ibm-plex-sans-arabic.css"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --page-bg: #0B0B0C;
+    --page-fg: #C9C7CB;
+    --page-dim: #76747A;
+    --page-line: #232327;
+  }
+  html { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+  body {
+    margin: 0; padding: 40px 28px 80px;
+    background: var(--page-bg);
+    color: var(--page-fg);
+    font-family: 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1480px; margin: 0 auto; }
+
+  /* ---------- page header ---------- */
+  .page-head { margin-bottom: 36px; }
+  .page-kicker {
+    font-family: ui-monospace, monospace; font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--page-dim); direction: ltr; text-align: right; margin: 0 0 10px;
+  }
+  .page-title { font-size: 30px; font-weight: 700; color: #F4F2F6; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .page-lead { font-size: 15px; max-width: 860px; margin: 0 0 18px; color: #B4B2B8; }
+  .why {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px; max-width: 980px; margin-top: 18px;
+  }
+  .why-card {
+    border: 1px solid var(--page-line); border-radius: 12px; padding: 14px 16px; background: #141416;
+  }
+  .why-card h3 { margin: 0 0 6px; font-size: 13px; color: #E8B5AC; display: flex; align-items: center; gap: 8px; }
+  .why-card p { margin: 0; font-size: 12.5px; color: #9D9BA1; line-height: 1.65; }
+  .why-card code { font-family: ui-monospace, monospace; font-size: 11px; color: #C9C7CB; background: #1E1E21; padding: 1px 5px; border-radius: 4px; direction: ltr; display: inline-block; }
+
+  /* ---------- section labels ---------- */
+  .section-label {
+    font-family: ui-monospace, monospace; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--page-dim); direction: ltr; text-align: right; margin: 40px 0 14px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--page-line);
+  }
+
+  /* ---------- direction grid ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(600px, 1fr)); gap: 26px; }
+
+  /* ===================================================================
+   * THE FRAME — one realistic app slice, fully driven by scoped tokens
+   * =================================================================== */
+  .panel { display: flex; flex-direction: column; gap: 0; }
+  .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+  .panel-name { display: flex; align-items: baseline; gap: 10px; }
+  .panel-letter {
+    font-family: ui-monospace, monospace; font-size: 13px; font-weight: 700; color: #F4F2F6;
+    background: #1B1B1E; border: 1px solid #2A2A2E; border-radius: 6px; padding: 2px 8px; direction: ltr;
+  }
+  .panel-title-ar { font-size: 16px; font-weight: 600; color: #F4F2F6; }
+  .panel-title-en { font-size: 11px; color: var(--page-dim); direction: ltr; font-family: ui-monospace, monospace; }
+  .panel-concept { font-size: 12px; color: #908E94; max-width: 320px; text-align: left; }
+  .panel-concept.before { color: #C98B82; }
+
+  /* swatch strip */
+  .swatches { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .sw { display: flex; align-items: center; gap: 6px; font-family: ui-monospace, monospace; font-size: 10px; color: var(--page-dim); direction: ltr; }
+  .sw-dot { width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; }
+
+  .frame {
+    border-radius: 16px; overflow: hidden; border: 1px solid var(--border);
+    background: var(--canvas); color: var(--text-primary);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; min-height: 520px;
+  }
+  .frame.is-before { outline: 2px solid #5A2A28; outline-offset: 3px; }
+  .frame.is-pick { outline: 2px solid var(--primary); outline-offset: 3px; }
+
+  /* top bar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface-1);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand-mark {
+    width: 24px; height: 24px; border-radius: 7px; background: var(--primary);
+    display: flex; align-items: center; justify-content: center; color: var(--primary-fg);
+  }
+  .brand-mark svg { width: 14px; height: 14px; }
+  .brand-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .topbar-actions { display: flex; align-items: center; gap: 4px; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 8px; border: none; background: transparent; cursor: default;
+    display: flex; align-items: center; justify-content: center; color: var(--text-muted);
+  }
+  .icon-btn svg { width: 16px; height: 16px; }
+  .icon-btn.active { background: var(--accent-soft); color: var(--accent); }
+
+  /* body = sidebar + chat */
+  .body { display: flex; flex: 1; min-height: 0; }
+
+  .sidebar {
+    width: 178px; flex-shrink: 0; background: var(--sidebar);
+    border-inline-start: 1px solid var(--border); padding: 12px 10px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .new-btn {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    background: var(--primary); color: var(--primary-fg); border: none; border-radius: 10px;
+    padding: 9px 12px; font-family: inherit; font-size: 13px; font-weight: 600; cursor: default;
+  }
+  .new-btn svg { width: 15px; height: 15px; }
+  .nav-group { display: flex; flex-direction: column; gap: 2px; }
+  .nav-cap {
+    font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--text-subtle); direction: ltr; text-align: right; padding: 4px 8px 2px;
+  }
+  .convo {
+    display: flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: 8px;
+    font-size: 12.5px; color: var(--text-secondary); cursor: default; border: 1px solid transparent;
+  }
+  .convo svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--text-muted); }
+  .convo.active { background: color-mix(in srgb, var(--primary) 12%, transparent); border-color: color-mix(in srgb, var(--primary) 45%, transparent); color: var(--text-primary); }
+  .convo.active svg { color: var(--primary); }
+  .convo .star { margin-inline-start: auto; color: var(--accent); }
+  .convo .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* chat */
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .messages { flex: 1; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+
+  .meta-line {
+    font-family: ui-monospace, monospace; font-size: 10px; color: var(--text-muted); direction: ltr; text-align: right;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .meta-line svg { width: 12px; height: 12px; color: var(--accent); }
+
+  .bubble-assistant {
+    background: var(--surface-1); border: 1px solid var(--border); color: var(--text-primary);
+    border-radius: 18px; border-end-start-radius: 6px; padding: 13px 15px; max-width: 88%; align-self: flex-start;
+  }
+  .bubble-assistant p { margin: 0 0 9px; font-size: 13.5px; line-height: 1.78; }
+  .bubble-assistant p:last-child { margin-bottom: 0; }
+  .inline-code {
+    font-family: ui-monospace, monospace; font-size: 12px; direction: ltr; unicode-bidi: isolate;
+    background: color-mix(in srgb, var(--text-primary) 8%, transparent); color: var(--text-secondary);
+    padding: 1px 6px; border-radius: 5px;
+  }
+  .cite {
+    display: inline-flex; align-items: center; gap: 3px; height: 19px; padding: 0 8px; border-radius: 9999px;
+    background: var(--accent-soft); color: var(--accent); font-family: ui-monospace, monospace; font-size: 11px;
+    font-weight: 500; direction: ltr; unicode-bidi: isolate; margin: 0 2px;
+  }
+  .cite-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+
+  .bubble-user {
+    background: var(--bubble-user); color: var(--bubble-user-fg);
+    border-radius: 18px; border-end-end-radius: 6px; padding: 11px 15px; max-width: 82%; align-self: flex-end;
+    font-size: 13.5px; line-height: 1.7;
+  }
+
+  /* code block */
+  .codeblock {
+    border-radius: 10px; overflow: hidden; border: 1px solid var(--code-border); margin-top: 2px;
+  }
+  .code-head {
+    display: flex; align-items: center; justify-content: space-between; padding: 5px 11px;
+    background: var(--code-head-bg); border-bottom: 1px solid var(--code-border);
+    font-family: ui-monospace, monospace; font-size: 10px; color: var(--code-muted); direction: ltr;
+  }
+  .code-body {
+    background: var(--code-bg); color: var(--code-fg); padding: 10px 12px;
+    font-family: ui-monospace, monospace; font-size: 12px; direction: ltr; text-align: left; line-height: 1.6;
+  }
+  .code-body .k { color: var(--primary); }
+
+  /* pills row */
+  .pills { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+  .case-pill { font-size: 11px; font-weight: 500; padding: 3px 11px; border-radius: 9999px; }
+  .cp-realestate { background: var(--cp-re-bg); color: var(--cp-re-fg); }
+  .cp-labor { background: var(--cp-lb-bg); color: var(--cp-lb-fg); }
+  .cp-commercial { background: var(--cp-cm-bg); color: var(--cp-cm-fg); }
+
+  /* workspace kind badges */
+  .kbadges { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+  .kbadge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 7px; }
+  .kbadge svg { width: 12px; height: 12px; }
+
+  /* composer */
+  .composer { padding: 12px 16px 14px; border-top: 1px solid var(--border); background: var(--canvas); }
+  .composer-box {
+    display: flex; align-items: center; gap: 8px; background: var(--surface-2);
+    border: 1px solid var(--border); border-radius: 14px; padding: 8px 8px 8px 14px;
+  }
+  .composer-box.focused { border-color: var(--ring); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .composer-input { flex: 1; font-size: 13px; color: var(--text-muted); }
+  .send-btn {
+    width: 34px; height: 34px; border-radius: 10px; border: none; background: var(--primary); color: var(--primary-fg);
+    display: flex; align-items: center; justify-content: center; cursor: default; flex-shrink: 0;
+  }
+  .send-btn svg { width: 16px; height: 16px; }
+
+  .slice-label {
+    font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--text-subtle); direction: ltr; text-align: right; padding: 0 20px; margin-top: 2px;
+  }
+
+  .annot { display: flex; gap: 8px; margin-top: 10px; padding: 0 2px; }
+  .annot-chip {
+    font-size: 11px; padding: 3px 10px; border-radius: 9999px; border: 1px solid;
+  }
+  .annot-bad { color: #E0938A; border-color: #5A2E2A; background: #1E1413; }
+  .annot-good { color: #8FC9B6; border-color: #2A4A40; background: #121A17; }
+
+  .foot { margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--page-line); }
+  .foot h3 { font-size: 15px; color: #F4F2F6; margin: 0 0 12px; }
+  .foot ol { margin: 0; padding-inline-start: 20px; }
+  .foot li { font-size: 13px; color: #A9A7AD; margin-bottom: 8px; line-height: 1.65; }
+  .foot code { font-family: ui-monospace, monospace; font-size: 11.5px; color: #C9C7CB; background: #1A1A1D; padding: 1px 6px; border-radius: 4px; direction: ltr; display: inline-block; }
+
+  /* ===================================================================
+   * THEME TOKEN SETS
+   * =================================================================== */
+
+  /* CURRENT D6 — the "before" */
+  .t-before {
+    --canvas:#18141A; --surface-1:#221E26; --surface-2:#2D2935; --surface-3:#373541; --sidebar:#373541;
+    --border:#2A2630; --border-strong:#4C4158;
+    --text-primary:#EDEAF2; --text-secondary:#B8B0C2; --text-muted:#6A6581; --text-subtle:#544F66;
+    --primary:#6A8077; --primary-hover:#7B928A; --primary-fg:#EDEAF2;
+    --accent:#9BA9A5; --accent-soft:rgba(155,169,165,0.14);
+    --bubble-user:#6A8077; --bubble-user-fg:#EDEAF2; --ring:#9BA9A5;
+    /* leaked code block (raw zinc) */
+    --code-bg:#09090B; --code-head-bg:#1B1B1E; --code-border:#27272A; --code-fg:#E4E4E7; --code-muted:#71717A;
+    /* leaked case pills (LIGHT values on dark — blown out) */
+    --cp-re-bg:#DDE0EA; --cp-re-fg:#2E3A55; --cp-lb-bg:#F4E8D2; --cp-lb-fg:#6B5219; --cp-cm-bg:#E8E0EA; --cp-cm-fg:#3D2D45;
+  }
+
+  /* A — Herbarium at Night (warm espresso ink) */
+  .t-a {
+    --canvas:#1B1712; --surface-1:#241F19; --surface-2:#2D2720; --surface-3:#372F27; --sidebar:#15120E;
+    --border:#2A241D; --border-strong:#423829;
+    --text-primary:#F1EADF; --text-secondary:#C9BFB0; --text-muted:#968B7A; --text-subtle:#6B6354;
+    --primary:#5E9385; --primary-hover:#6FA697; --primary-fg:#11201B;
+    --accent:#A8B6B0; --accent-soft:rgba(168,182,176,0.14);
+    --bubble-user:#574A66; --bubble-user-fg:#F1EAE9; --ring:#A8B6B0;
+    --code-bg:#14110D; --code-head-bg:#221D17; --code-border:#2A241D; --code-fg:#D8CFBF; --code-muted:#968B7A;
+    --cp-re-bg:#1F2A40; --cp-re-fg:#B5C2DC; --cp-lb-bg:#332915; --cp-lb-fg:#E6D2A0; --cp-cm-bg:#2A2236; --cp-cm-fg:#D2BCE0;
+  }
+
+  /* B — Conservatory Nocturne (green-black botanical) */
+  .t-b {
+    --canvas:#141B17; --surface-1:#1C241F; --surface-2:#242E28; --surface-3:#2E3A33; --sidebar:#0F1612;
+    --border:#243029; --border-strong:#3A4A41;
+    --text-primary:#E8EFEA; --text-secondary:#B4C2BA; --text-muted:#7E8F86; --text-subtle:#586860;
+    --primary:#4F8C76; --primary-hover:#5FA088; --primary-fg:#0D1814;
+    --accent:#9DBBAD; --accent-soft:rgba(157,187,173,0.15);
+    --bubble-user:#4E4459; --bubble-user-fg:#EDE7EC; --ring:#9DBBAD;
+    --code-bg:#0E1410; --code-head-bg:#1A221D; --code-border:#243029; --code-fg:#CBD8CF; --code-muted:#7E8F86;
+    --cp-re-bg:#16263A; --cp-re-fg:#AEC4DE; --cp-lb-bg:#2C2A16; --cp-lb-fg:#E2D49E; --cp-cm-bg:#262236; --cp-cm-fg:#CEBCDE;
+  }
+
+  /* C — Aubergine, Refined (fix incumbent) */
+  .t-c {
+    --canvas:#17131C; --surface-1:#1F1A26; --surface-2:#282232; --surface-3:#322B3E; --sidebar:#13101A;
+    --border:#271F30; --border-strong:#463C57;
+    --text-primary:#ECE7F1; --text-secondary:#BDB4C9; --text-muted:#8A8199; --text-subtle:#5E566E;
+    --primary:#5E9385; --primary-hover:#6FA697; --primary-fg:#14201C;
+    --accent:#A6B3AE; --accent-soft:rgba(166,179,174,0.14);
+    --bubble-user:#574A66; --bubble-user-fg:#EFE9F2; --ring:#A6B3AE;
+    --code-bg:#120F18; --code-head-bg:#1E1926; --code-border:#271F30; --code-fg:#D2CADE; --code-muted:#8A8199;
+    --cp-re-bg:#1C2440; --cp-re-fg:#B8C2DE; --cp-lb-bg:#312818; --cp-lb-fg:#E6D2A0; --cp-cm-bg:#2C2238; --cp-cm-fg:#D4BEE2;
+  }
+
+  /* D — Warm Slate / Paper-Ink (neutral, brand is the only color) */
+  .t-d {
+    --canvas:#1A1917; --surface-1:#222120; --surface-2:#2A2927; --surface-3:#343230; --sidebar:#131211;
+    --border:#2C2A28; --border-strong:#44413D;
+    --text-primary:#EFEBE6; --text-secondary:#C2BDB5; --text-muted:#8E8A82; --text-subtle:#64605A;
+    --primary:#5E9385; --primary-hover:#6FA697; --primary-fg:#14201C;
+    --accent:#A8B6B0; --accent-soft:rgba(168,182,176,0.14);
+    --bubble-user:#574A66; --bubble-user-fg:#F1EAE9; --ring:#A8B6B0;
+    --code-bg:#121110; --code-head-bg:#201F1D; --code-border:#2C2A28; --code-fg:#D6D2CB; --code-muted:#8E8A82;
+    --cp-re-bg:#1E2738; --cp-re-fg:#BAC4D6; --cp-lb-bg:#322B19; --cp-lb-fg:#E6D4A2; --cp-cm-bg:#2C2632; --cp-cm-fg:#D2C0DC;
+  }
+
+  /* kind-badge palette per theme — retoned to a restrained family (neutral + primary + accent + 2 semantics) */
+  .frame .kb-attach { background: color-mix(in srgb, var(--text-muted) 16%, transparent); color: var(--text-secondary); }
+  .frame .kb-note   { background: var(--cp-lb-bg); color: var(--cp-lb-fg); }
+  .frame .kb-search { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary-hover); }
+  .frame .kb-write  { background: var(--accent-soft); color: var(--accent); }
+  /* the BEFORE frame overrides these with the raw rainbow */
+  .t-before .kb-attach { background: rgba(100,116,139,0.16); color: #94A3B8; }
+  .t-before .kb-note   { background: rgba(245,158,11,0.16); color: #F59E0B; }
+  .t-before .kb-search { background: rgba(20,184,166,0.16); color: #2DD4BF; }
+  .t-before .kb-write  { background: rgba(99,102,241,0.18); color: #818CF8; }
+
+  @media (max-width: 1240px){ .grid { grid-template-columns: 1fr; } .why { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="page-head">
+    <p class="page-kicker">Luna · Dark Mode Reconstruction</p>
+    <h1 class="page-title">إعادة بناء الوضع الداكن — مستوحى من الوضع الفاتح</h1>
+    <p class="page-lead">
+      الوضع الفاتح (ورق العشب) هويته: علامة <strong style="color:#7FB3A3">خضراء-تيل عميقة</strong>، وفقاعة مستخدم
+      <strong style="color:#B7A6C9">باذنجانية</strong>، ولمسة <strong style="color:#A8B6B0">حكيمية (sage)</strong> على ورقٍ دافئ.
+      الوضع الداكن الحالي (D6) تخلّى عن هذه الهوية. هنا أربعة اتجاهات تعيد بناءه — كلها تشترك في نفس الإصلاح الجوهري،
+      وتختلف فقط في «لون العتمة».
+    </p>
+    <div class="why">
+      <div class="why-card">
+        <h3><span>السبب الأول — اللوحة الأساسية</span></h3>
+        <p>أسطح باذنجانية موحلة، وزر إجراء (CTA) بلون <code>#6A8077</code> رمادي-حكيمي باهت بلا حياة، وفقاعة المستخدم تخلّت عن الباذنجاني لصالح الحكيمي — فضاعت الهوية.</p>
+      </div>
+      <div class="why-card">
+        <h3><span>السبب الثاني — تسريب ألوان مُثبّتة</span></h3>
+        <p>أكثر من 50 لونًا مُثبّتًا يخترق الثيم: كتل الكود <code>zinc-950</code>، وشارات بستة ألوان صارخة، وحالات نجاح/تحذير <code>emerald/amber</code>، وحبوب نوع القضية بلا نسخة داكنة (قيم فاتحة فوق خلفية داكنة).</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- BEFORE -->
+  <p class="section-label">الحالي — D6 (قبل)</p>
+  <div style="max-width:760px">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-name">
+          <span class="panel-letter">D6</span>
+          <span class="panel-title-ar">النظام المُمَنهَج الحالي</span>
+        </div>
+        <span class="panel-concept before">باذنجاني موحل · CTA باهت · هوية ضائعة · ألوان مُسرّبة</span>
+      </div>
+      <div class="swatches">
+        <span class="sw"><span class="sw-dot" style="background:#18141A"></span>canvas</span>
+        <span class="sw"><span class="sw-dot" style="background:#2D2935"></span>surface</span>
+        <span class="sw"><span class="sw-dot" style="background:#6A8077"></span>CTA #6A8077</span>
+        <span class="sw"><span class="sw-dot" style="background:#6A8077"></span>user=sage</span>
+        <span class="sw"><span class="sw-dot" style="background:#9BA9A5"></span>accent</span>
+      </div>
+      <div class="frame t-before is-before" data-slice></div>
+      <div class="annot">
+        <span class="annot-chip annot-bad">زر باهت بلا حياة</span>
+        <span class="annot-chip annot-bad">فقاعة مستخدم حكيمية (لا باذنجانية)</span>
+        <span class="annot-chip annot-bad">شارات قوس قزح صارخة</span>
+        <span class="annot-chip annot-bad">حبوب قضية فاتحة فوق داكن</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- DIRECTIONS -->
+  <p class="section-label">الاتجاهات الأربعة (بعد) — اختر واحدًا</p>
+  <div class="grid">
+
+    <!-- A -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-name">
+          <span class="panel-letter">A</span>
+          <span class="panel-title-ar">عُشبيّة الليل</span>
+          <span class="panel-title-en">Herbarium at Night</span>
+        </div>
+        <span class="panel-concept">حِبر دافئ بنبرة إسبريسو — نفس الورق الكريمي وقد خفتت الأنوار. أدفأ الخيارات وأكثرها «تحريريًا».</span>
+      </div>
+      <div class="swatches">
+        <span class="sw"><span class="sw-dot" style="background:#1B1712"></span>#1B1712</span>
+        <span class="sw"><span class="sw-dot" style="background:#2D2720"></span>#2D2720</span>
+        <span class="sw"><span class="sw-dot" style="background:#5E9385"></span>CTA</span>
+        <span class="sw"><span class="sw-dot" style="background:#574A66"></span>user</span>
+        <span class="sw"><span class="sw-dot" style="background:#A8B6B0"></span>sage</span>
+        <span class="sw"><span class="sw-dot" style="background:#F1EADF"></span>text</span>
+      </div>
+      <div class="frame t-a" data-slice></div>
+      <div class="annot"><span class="annot-chip annot-good">CTA تيل حيّ</span><span class="annot-chip annot-good">فقاعة باذنجانية</span><span class="annot-chip annot-good">كود ضمن الثيم</span></div>
+    </div>
+
+    <!-- B -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-name">
+          <span class="panel-letter">B</span>
+          <span class="panel-title-ar">ليل البيت الزجاجي</span>
+          <span class="panel-title-en">Conservatory Nocturne</span>
+        </div>
+        <span class="panel-concept">أسود-أخضر نباتي — العلامة تملك الغرفة. الأكثر تميّزًا وتوقيعًا للهوية، شقيق ليليّ لثيم «البيت الزجاجي» الفاتح.</span>
+      </div>
+      <div class="swatches">
+        <span class="sw"><span class="sw-dot" style="background:#141B17"></span>#141B17</span>
+        <span class="sw"><span class="sw-dot" style="background:#242E28"></span>#242E28</span>
+        <span class="sw"><span class="sw-dot" style="background:#4F8C76"></span>CTA</span>
+        <span class="sw"><span class="sw-dot" style="background:#4E4459"></span>user</span>
+        <span class="sw"><span class="sw-dot" style="background:#9DBBAD"></span>sage</span>
+        <span class="sw"><span class="sw-dot" style="background:#E8EFEA"></span>text</span>
+      </div>
+      <div class="frame t-b" data-slice></div>
+      <div class="annot"><span class="annot-chip annot-good">علامة تملك البيئة</span><span class="annot-chip annot-good">تباين باذنجاني/أخضر</span><span class="annot-chip annot-good">توقيع مميّز</span></div>
+    </div>
+
+    <!-- C -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-name">
+          <span class="panel-letter">C</span>
+          <span class="panel-title-ar">باذنجانيّ مُنقّح</span>
+          <span class="panel-title-en">Aubergine, Refined</span>
+        </div>
+        <span class="panel-concept">يُبقي مفهوم D6 الباذنجاني لكن يصلح الثلاثة العيوب: CTA حقيقي، فقاعة باذنجانية، أسطح أنظف. أقل تغيير وأخفّ مخاطرة.</span>
+      </div>
+      <div class="swatches">
+        <span class="sw"><span class="sw-dot" style="background:#17131C"></span>#17131C</span>
+        <span class="sw"><span class="sw-dot" style="background:#282232"></span>#282232</span>
+        <span class="sw"><span class="sw-dot" style="background:#5E9385"></span>CTA</span>
+        <span class="sw"><span class="sw-dot" style="background:#574A66"></span>user</span>
+        <span class="sw"><span class="sw-dot" style="background:#A6B3AE"></span>sage</span>
+        <span class="sw"><span class="sw-dot" style="background:#ECE7F1"></span>text</span>
+      </div>
+      <div class="frame t-c" data-slice></div>
+      <div class="annot"><span class="annot-chip annot-good">يحترم نيّة D6</span><span class="annot-chip annot-good">CTA حيّ</span><span class="annot-chip annot-good">هوية مُستعادة</span></div>
+    </div>
+
+    <!-- D -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-name">
+          <span class="panel-letter">D</span>
+          <span class="panel-title-ar">إردوازيّ دافئ</span>
+          <span class="panel-title-en">Warm Slate · Paper-Ink</span>
+          <span class="panel-letter" style="background:#1B2A24;border-color:#2F4A40;color:#8FC9B6">✓ المُختار / SHIPPED</span>
+        </div>
+        <span class="panel-concept">فحميّ دافئ شبه محايد — العلامة هي اللون الوحيد. الأعلى تباينًا والأكثر «احترافية SaaS»، والأمتن قراءةً للنصوص القانونية الكثيفة.</span>
+      </div>
+      <div class="swatches">
+        <span class="sw"><span class="sw-dot" style="background:#1A1917"></span>#1A1917</span>
+        <span class="sw"><span class="sw-dot" style="background:#2A2927"></span>#2A2927</span>
+        <span class="sw"><span class="sw-dot" style="background:#5E9385"></span>CTA</span>
+        <span class="sw"><span class="sw-dot" style="background:#574A66"></span>user</span>
+        <span class="sw"><span class="sw-dot" style="background:#A8B6B0"></span>sage</span>
+        <span class="sw"><span class="sw-dot" style="background:#EFEBE6"></span>text</span>
+      </div>
+      <div class="frame t-d is-pick" data-slice></div>
+      <div class="annot"><span class="annot-chip annot-good">العلامة تتألّق</span><span class="annot-chip annot-good">أعلى تباين</span><span class="annot-chip annot-good">أخفّ مخاطرة</span></div>
+    </div>
+
+  </div>
+
+  <div class="foot">
+    <h3>كيف نُطبّق الاتجاه المُختار</h3>
+    <ol>
+      <li>أستبدل كتلة <code>.dark, [data-theme="dark"]</code> في <code>frontend/app/globals.css</code> بمجموعة وسوم الاتجاه المختار — كل الأسطح المرتبطة بالتوكنز تتحدّث تلقائيًا في كامل التطبيق.</li>
+      <li>أضيف نسخًا داكنة لحبوب نوع القضية <code>--case-*-bg/fg</code> (مفقودة حاليًا — تُعرض بقيم فاتحة).</li>
+      <li>أُحوّل أسوأ التسريبات إلى توكنز: كتل الكود (<code>zinc-950</code>)، شارات مساحة العمل الستّة، أيقونات لوحة المراجع، وحالات النجاح/التحذير (<code>emerald/amber/green</code>).</li>
+      <li>أتحقق من تباين WCAG AA (4.5:1) على نص 14px، ثم أعرض لقطات Playwright من الوضع الداكن قبل النشر.</li>
+    </ol>
+  </div>
+
+</div>
+
+<!-- slice template injected into every .frame[data-slice] -->
+<template id="slice">
+  <div class="topbar">
+    <div class="brand">
+      <span class="brand-mark"><i data-lucide="scale"></i></span>
+      <span class="brand-name">لونا</span>
+    </div>
+    <div class="topbar-actions">
+      <button class="icon-btn"><i data-lucide="search"></i></button>
+      <button class="icon-btn active"><i data-lucide="moon"></i></button>
+      <button class="icon-btn"><i data-lucide="settings"></i></button>
+    </div>
+  </div>
+  <div class="body">
+    <div class="sidebar">
+      <button class="new-btn"><i data-lucide="plus"></i> محادثة جديدة</button>
+      <div class="nav-group">
+        <div class="nav-cap">المحادثات</div>
+        <div class="convo active"><i data-lucide="message-square"></i><span class="truncate">حقوق العامل في نظام العمل</span></div>
+        <div class="convo"><i data-lucide="message-square"></i><span class="truncate">عقد إيجار تجاري</span><i data-lucide="star" class="star"></i></div>
+        <div class="convo"><i data-lucide="message-square"></i><span class="truncate">نزاع تنفيذ حكم</span></div>
+        <div class="convo"><i data-lucide="folder"></i><span class="truncate">قضية رقم ٢٠٢٦/٤٤١</span></div>
+      </div>
+    </div>
+    <div class="chat">
+      <div class="messages">
+        <div class="meta-line"><i data-lucide="sparkles"></i> لونا · بحث عميق · ٤ مصادر</div>
+        <div class="bubble-assistant">
+          <p>بناءً على <span class="inline-code">المادة 61</span> من نظام العمل، يحق للعامل أجرٌ عادلٌ وفق العقد، ولا يجوز خصم أي مبلغ دون موافقةٍ خطية.</p>
+          <div class="cite-row">
+            <span class="cite">المادة 61</span>
+            <span class="cite">المادة 104</span>
+          </div>
+          <div class="codeblock">
+            <div class="code-head"><span>article.ts</span><span>نسخ</span></div>
+            <div class="code-body"><span class="k">const</span> wage = computeFairWage(contract);</div>
+          </div>
+        </div>
+        <div class="bubble-user">ما الحدّ الأدنى لمهلة الإشعار قبل إنهاء العقد؟</div>
+        <div class="pills">
+          <span class="case-pill cp-labor">عمالي</span>
+          <span class="case-pill cp-realestate">عقاري</span>
+          <span class="case-pill cp-commercial">تجاري</span>
+        </div>
+        <div class="kbadges">
+          <span class="kbadge kb-attach"><i data-lucide="paperclip"></i> مرفق</span>
+          <span class="kbadge kb-note"><i data-lucide="sticky-note"></i> ملاحظة</span>
+          <span class="kbadge kb-search"><i data-lucide="search"></i> بحث</span>
+          <span class="kbadge kb-write"><i data-lucide="pen-line"></i> صياغة</span>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-box focused">
+          <span class="composer-input">اكتب رسالتك…</span>
+          <button class="send-btn"><i data-lucide="arrow-up"></i></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+  const tpl = document.getElementById('slice');
+  document.querySelectorAll('.frame[data-slice]').forEach(f => f.appendChild(tpl.content.cloneNode(true)));
+  if (window.lucide) lucide.createIcons();
+</script>
+</body>
+</html>

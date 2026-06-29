@@ -90,7 +90,7 @@ function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
     bar.pct >= 100
       ? "bg-destructive"
       : bar.pct >= 80
-      ? "bg-amber-500"
+      ? "bg-warning-fg"
       : "bg-primary";
 
   return (
@@ -155,13 +155,13 @@ export function UsageLimitsDialog({
 
     if (data.locked) {
       return (
-        <div className="flex items-start gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-4">
-          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+        <div className="flex items-start gap-3 rounded-md border border-warning-fg/25 bg-warning p-4">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0 text-warning-fg" />
           <div className="flex flex-col gap-1">
-            <p className="text-sm font-medium text-amber-900 dark:text-amber-200">
+            <p className="text-sm font-medium text-warning-fg">
               حسابك غير مفعّل بعد
             </p>
-            <p className="text-xs leading-relaxed text-amber-800/90 dark:text-amber-200/80">
+            <p className="text-xs leading-relaxed text-warning-fg/80">
               تواصل معنا لتفعيل اشتراكك والبدء في استخدام ريحان.
             </p>
           </div>

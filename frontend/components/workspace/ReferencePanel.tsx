@@ -46,12 +46,12 @@ const DOMAIN_META: Record<
   ReferenceDomain,
   { label: string; icon: typeof Scale; tint: string }
 > = {
-  regulations: { label: "نظام", icon: Scale, tint: "text-sky-600 dark:text-sky-400" },
-  cases: { label: "قضية", icon: Gavel, tint: "text-amber-600 dark:text-amber-400" },
+  regulations: { label: "نظام", icon: Scale, tint: "text-info-fg" },
+  cases: { label: "قضية", icon: Gavel, tint: "text-warning-fg" },
   compliance: {
     label: "خدمة حكومية",
     icon: Building2,
-    tint: "text-emerald-600 dark:text-emerald-400",
+    tint: "text-success-fg",
   },
 };
 
@@ -218,7 +218,7 @@ function ReferenceCard({
             <span
               className={cn(
                 "h-1.5 w-1.5 rounded-full",
-                reference.relevance === "high" ? "bg-emerald-500" : "bg-amber-400"
+                reference.relevance === "high" ? "bg-primary" : "bg-text-subtle"
               )}
               title={reference.relevance === "high" ? "صلة عالية" : "صلة متوسطة"}
             />
