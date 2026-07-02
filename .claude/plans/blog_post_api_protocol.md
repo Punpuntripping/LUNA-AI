@@ -137,7 +137,7 @@ Never rate‑limited — poll as often as you like (a sensible cadence is every 
 | `subtype` | string | no | `"marketing_telegram"` | Free tag stored on the post so your posts are filterable. |
 | `language` | string | no | `"ar"` | Informational; answers are Arabic. |
 | `publish_policy` | string | no | `"auto"` | `auto` \| `always` \| `never` — see §10. |
-| `min_confidence` | string | no | `"high"` | `high` \| `medium` \| `low` — the threshold `auto` compares against. |
+| `min_confidence` | string | no | `"medium"` | `high` \| `medium` \| `low` — the threshold `auto` compares against. Default `medium` ⇒ medium **and** high publish; only `low` stays a draft. |
 | `metadata` | object | no | `{}` | Opaque provenance echoed onto the job row. **Never surfaced publicly.** |
 | `callback_url` | string | no | `null` | If set, the server best‑effort `POST`s the result here on completion (§12). |
 
@@ -261,7 +261,7 @@ queued → processing → completed
 | `always` | Always published, regardless of confidence. |
 | `never` | Never published — always a draft (you can publish later out‑of‑band). |
 
-Examples with defaults (`auto`, `min_confidence: high`): a `high` result publishes; a `medium`/`low` result is created as an unpublished draft (`is_published: false`, `url` 404s) but you still get the full `content_md` + `confidence` to decide what to do.
+Examples with defaults (`auto`, `min_confidence: medium`): a `high` or `medium` result publishes; only a `low` result is created as an unpublished draft (`is_published: false`, `url` 404s) — you still get the full `content_md` + `confidence` back to decide what to do. (Pass `min_confidence: high` to publish only high-confidence answers, or `publish_policy: always` to publish regardless.)
 
 `is_public` (gallery listing) is **always false** — these posts are never listed publicly; the token link is the only entry point.
 

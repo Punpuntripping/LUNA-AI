@@ -58,8 +58,9 @@ class BlogPostJobRequest(BaseModel):
         description="auto | always | never. auto => publish iff confidence >= min_confidence.",
     )
     min_confidence: str = Field(
-        default="high",
-        description="high | medium | low — the threshold the 'auto' policy compares against.",
+        default="medium",
+        description="high | medium | low — the threshold the 'auto' policy compares against. "
+        "Default 'medium' => medium and high confidence publish; only 'low' stays an unpublished draft.",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
