@@ -227,11 +227,37 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # 7. APScheduler — one-shot startup catch-up for stuck blog-post jobs. The
+    #    in-process worker tasks die with the process on a restart, stranding any
+    #    job left in 'queued'/'processing'. This sweep re-spawns them (or fails a
+    #    crash-looping one after _MAX_JOB_ATTEMPTS). Safe no-op when
+    #    EDITORIAL_BOT_USER_ID is unset (dev) — nothing can generate, so the
+    #    sweep skips gracefully. Mirrors the upload-reconciler boot catch-up.
+    async def _run_blog_job_catchup() -> None:
+        try:
+            from backend.app.api.deepsearch_api.service import catchup_stuck_jobs
+
+            stats = await catchup_stuck_jobs(app.state.supabase)
+            logger.info("Blog-post job catch-up complete: %s", stats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Blog-post job catch-up failed: %s", e)
+
+    scheduler.add_job(
+        _run_blog_job_catchup,
+        trigger=DateTrigger(
+            run_date=datetime.now(timezone.utc)
+            + timedelta(seconds=75 + random.uniform(0, 30))
+        ),
+        id="blog_job_catchup_startup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info(
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
-        "summary sweep 03:30 UTC, + one-shot upload-reconciler catch-up on boot"
+        "summary sweep 03:30 UTC, + one-shot upload-reconciler & blog-job "
+        "catch-up on boot"
     )
 
     logger.info(
@@ -529,6 +555,19 @@ def create_app() -> FastAPI:
         internal_webhooks_router,
         prefix="/internal",
         tags=["internal"],
+    )
+
+    # Blog-Post Generation API — service-authed (EDITORIAL_SERVICE_KEY), NOT for
+    # end users. Turns a legal question into a private/unlisted blog_posts
+    # snapshot by driving the same generation pipeline an in-app message uses.
+    # Mounted under /internal (next to the webhooks) to keep service-key routes
+    # visually separate from the JWT /api/v1 surface.
+    from backend.app.api.deepsearch_api.router import router as deepsearch_api_router
+
+    application.include_router(
+        deepsearch_api_router,
+        prefix="/internal",
+        tags=["deepsearch-api"],
     )
 
     return application

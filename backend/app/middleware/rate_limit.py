@@ -50,6 +50,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in EXEMPT_PATHS:
             return await call_next(request)
 
+        # Skip the editorial blog-post-jobs family — it owns a dedicated
+        # two-window limiter (deepsearch_api/ratelimit.py). The global 60/min
+        # limiter would otherwise 429 the 61st submission in a minute, but we
+        # want bursts up to the hourly cap. Prefix match (not exact) so the
+        # /{job_id} poll sub-path is covered too; EXEMPT_PATHS is exact-match.
+        if request.url.path.startswith("/internal/blog-post-jobs"):
+            return await call_next(request)
+
         # Get Redis from app state
         redis: Optional[AsyncRedis] = getattr(request.app.state, "redis", None)
 

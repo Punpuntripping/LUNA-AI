@@ -159,6 +159,19 @@ class Settings(BaseSettings):
     INTERNAL_WEBHOOK_SECRET: Optional[str] = None
 
     # ========================================
+    # EDITORIAL / BLOG-POST GENERATION API
+    # ========================================
+    # Internal blog-post-jobs API (marketing content generation). Fail-closed on
+    # auth like the webhook secret above: if EDITORIAL_SERVICE_KEY is unset,
+    # every call is rejected 401. All five are set as Railway env vars on the
+    # backend service; the endpoint boots cleanly with them unset.
+    EDITORIAL_SERVICE_KEY: Optional[str] = None   # Bearer key for the blog-post-jobs API (fail-closed: unset => all calls 401)
+    EDITORIAL_BOT_USER_ID: Optional[str] = None   # public.users.user_id of the editorial bot that owns generated posts
+    EDITORIAL_MAX_CONCURRENT_JOBS: int = 2        # in-flight generation cap (protects the single-worker backend)
+    EDITORIAL_RATE_LIMIT_PER_HOUR: int = 100      # blog-post submissions per rolling hour
+    EDITORIAL_RATE_LIMIT_PER_DAY: int = 300       # blog-post submissions per rolling day
+
+    # ========================================
     # ENVIRONMENT
     # ========================================
     ENVIRONMENT: str = "development"  # Alias for APP_ENV used by Railway
