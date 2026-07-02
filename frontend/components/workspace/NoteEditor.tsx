@@ -5,6 +5,7 @@ import { Lock, AlertTriangle } from "lucide-react";
 import { MarkdownDocEditor } from "@/components/workspace/MarkdownDocEditor";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
+import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
 import {
   useSetWorkspaceItemFeedback,
@@ -120,6 +121,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
   const setFeedback = useSetWorkspaceItemFeedback();
   const [conflict, setConflict] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [saveBlogOpen, setSaveBlogOpen] = useState(false);
   // Body-citation focus: clicking ``[n]`` in the preview scrolls/opens the
   // matching reference card (agent_writing only — notes have no references).
   const [focusedN, setFocusedN] = useState<number | null>(null);
@@ -238,6 +240,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
         headerSlot={headerSlot}
         footerSlot={footerSlot}
         onShare={isShareable ? () => setShareOpen(true) : undefined}
+        onSaveBlog={isShareable ? () => setSaveBlogOpen(true) : undefined}
         feedback={isAgentOutput ? item.feedback : undefined}
         onFeedback={isAgentOutput ? handleFeedback : undefined}
         feedbackPending={setFeedback.isPending}
@@ -248,6 +251,13 @@ export function NoteEditor({ item }: NoteEditorProps) {
           itemId={item.item_id}
           open={shareOpen}
           onOpenChange={setShareOpen}
+        />
+      )}
+      {isShareable && (
+        <SaveAsBlogDialog
+          itemId={item.item_id}
+          open={saveBlogOpen}
+          onOpenChange={setSaveBlogOpen}
         />
       )}
     </>

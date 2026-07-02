@@ -17,6 +17,7 @@ class ErrorCode(str, Enum):
     # Auth
     AUTH_INVALID = "AUTH_INVALID"
     AUTH_EXPIRED = "AUTH_EXPIRED"
+    FORBIDDEN = "FORBIDDEN"  # authenticated but not permitted for this resource
 
     # Cases
     CASE_NOT_FOUND = "CASE_NOT_FOUND"
@@ -52,6 +53,9 @@ class ErrorCode(str, Enum):
     # Artifacts
     ARTIFACT_NOT_FOUND = "ARTIFACT_NOT_FOUND"
     ARTIFACT_NOT_EDITABLE = "ARTIFACT_NOT_EDITABLE"
+
+    # Blog-post generation jobs (internal editorial API)
+    BLOG_JOB_NOT_FOUND = "BLOG_JOB_NOT_FOUND"
 
     # Preferences
     PREFERENCES_FAILED = "PREFERENCES_FAILED"

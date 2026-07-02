@@ -43,6 +43,11 @@ interface MarkdownDocEditorProps {
    * host opts into مشاركة / 👍👎 by passing these (agent outputs only).
    */
   onShare?: () => void;
+  /**
+   * When set, the action bar renders «حفظ كمدونة» (publishable agent outputs
+   * only). Forwarded to ``WorkspaceItemActionBar.onSaveBlog``.
+   */
+  onSaveBlog?: () => void;
   feedback?: WorkspaceFeedback;
   onFeedback?: (next: WorkspaceFeedback) => void;
   feedbackPending?: boolean;
@@ -84,6 +89,7 @@ export function MarkdownDocEditor({
   headerSlot,
   footerSlot,
   onShare,
+  onSaveBlog,
   feedback,
   onFeedback,
   feedbackPending,
@@ -162,6 +168,7 @@ export function MarkdownDocEditor({
       onModeChange={setMode}
       editDisabled={readOnly}
       onShare={onShare}
+      onSaveBlog={onSaveBlog}
       feedback={feedback}
       onFeedback={onFeedback}
       feedbackPending={feedbackPending}

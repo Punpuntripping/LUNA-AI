@@ -38,6 +38,8 @@ import type {
   RedeemCodeResponse,
   ShareDraftResponse,
   ShareArtifactResponse,
+  PublicBlogsResponse,
+  MyBlogsResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -249,11 +251,53 @@ export const api = {
       method: "GET",
     }),
 
-  /** Publish an ``agent_writing`` artifact → mint an unguessable public URL. */
-  shareArtifact: (itemId: string, questionText: string) =>
+  /**
+   * Publish an artifact → mint an unguessable public URL. ``displayMode``
+   * selects the share template: ``"question"`` (السؤال page, ``title`` null)
+   * or ``"title"`` (editorial article, ``title`` required server-side).
+   */
+  shareArtifact: (
+    itemId: string,
+    args: { questionText: string; displayMode: "question" | "title"; title: string | null },
+  ) =>
     apiFetch<ShareArtifactResponse>(`/workspace/${itemId}/share`, {
       method: "POST",
-      body: JSON.stringify({ question_text: questionText }),
+      body: JSON.stringify({
+        question_text: args.questionText,
+        display_mode: args.displayMode,
+        title: args.title,
+      }),
+    }),
+
+  /**
+   * List the PUBLIC ``/blog`` gallery (``is_public`` posts, newest first).
+   * Anonymous — no auth required; SEO-indexable. (v2: replaces the v1 gated
+   * ``/blog/directory``; the curate gate moved onto publish/unpublish.)
+   */
+  listPublicBlogs: () =>
+    apiFetch<PublicBlogsResponse>(`/public/blogs`, { method: "GET" }),
+
+  /**
+   * List مدوناتي — the caller's own blog_posts (both templates, owner-scoped).
+   * ``can_publish_public`` mirrors ``users.can_access_blog``: when true the
+   * management page exposes the نشر في المدونة العامة toggle.
+   */
+  listMyBlogs: () =>
+    apiFetch<MyBlogsResponse>(`/blogs/mine`, { method: "GET" }),
+
+  /**
+   * Curate a post INTO the public gallery (``is_public = true``). Authed +
+   * gated server-side on ``users.can_access_blog`` (403 otherwise).
+   */
+  publishBlogPublic: (postId: string) =>
+    apiFetch<{ success: boolean }>(`/blogs/${postId}/publish`, {
+      method: "POST",
+    }),
+
+  /** Remove a post FROM the public gallery (``is_public = false``). */
+  unpublishBlogPublic: (postId: string) =>
+    apiFetch<{ success: boolean }>(`/blogs/${postId}/publish`, {
+      method: "DELETE",
     }),
 
   /** Owner kill-switch: revoke a published post (leaked-link mitigation). */

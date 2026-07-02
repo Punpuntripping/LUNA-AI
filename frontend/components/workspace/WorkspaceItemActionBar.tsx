@@ -5,6 +5,7 @@ import {
   Eye,
   Pencil,
   Share2,
+  BookmarkPlus,
   Copy,
   Check,
   ThumbsUp,
@@ -38,6 +39,11 @@ interface WorkspaceItemActionBarProps {
   editDisabled?: boolean;
   /** Pass to render the مشاركة button (agent outputs only). */
   onShare?: () => void;
+  /**
+   * Pass to render the «حفظ كمدونة» button (publishable agent outputs only —
+   * agent_search / agent_writing). Saves the answer into مدوناتي.
+   */
+  onSaveBlog?: () => void;
   /**
    * Current 👍/👎 rating. Pass with ``onFeedback`` to render the like/dislike
    * pair (agent outputs only). Clicking the active thumb clears the rating.
@@ -74,6 +80,7 @@ export function WorkspaceItemActionBar({
   onModeChange,
   editDisabled = false,
   onShare,
+  onSaveBlog,
   feedback,
   onFeedback,
   feedbackPending = false,
@@ -233,6 +240,20 @@ export function WorkspaceItemActionBar({
           >
             <Share2 className="h-3.5 w-3.5" />
             مشاركة
+          </Button>
+        )}
+
+        {onSaveBlog && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={onSaveBlog}
+            aria-label="حفظ كمدونة"
+          >
+            <BookmarkPlus className="h-3.5 w-3.5" />
+            حفظ كمدونة
           </Button>
         )}
 

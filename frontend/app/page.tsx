@@ -3,8 +3,10 @@ import { LandingHeader } from "@/components/landing/LandingHeader";
 import { LandingHero } from "@/components/landing/LandingHero";
 import { ProblemSection } from "@/components/landing/ProblemSection";
 import { AboutSection } from "@/components/landing/AboutSection";
+import { AudiencesTeaser } from "@/components/audiences/AudiencesTeaser";
 import { SearchShowcase } from "@/components/landing/SearchShowcase";
 import { CapabilitiesSection } from "@/components/landing/CapabilitiesSection";
+import { ComparisonSection } from "@/components/landing/ComparisonSection";
 import { StatsBand } from "@/components/landing/StatsBand";
 import { TrustSection } from "@/components/landing/TrustSection";
 import { PricingSection } from "@/components/landing/PricingSection";
@@ -12,11 +14,11 @@ import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
 import { LandingFooter } from "@/components/landing/LandingFooter";
 
 export const metadata: Metadata = {
-  title: "ريحان — المساعد القانوني الذكي للمحامي السعودي",
+  title: "ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
   description:
     "ريحان يبحث في الأنظمة السعودية والأحكام القضائية والخدمات الحكومية ويعطيك تقريراً قانونياً كاملاً، كل استشهاد فيه مربوط بمصدره الرسمي ورابطه المباشر.",
   openGraph: {
-    title: "ريحان — المساعد القانوني الذكي للمحامي السعودي",
+    title: "ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
     description:
       "من سؤالك إلى تقرير قانوني كامل، موثّق بمصادره الرسمية. بحث في الأنظمة والأحكام والخدمات الحكومية السعودية.",
     type: "website",
@@ -35,8 +37,10 @@ export default function LandingPage() {
         <LandingHero />
         <ProblemSection />
         <AboutSection />
+        <AudiencesTeaser />
         <SearchShowcase />
         <CapabilitiesSection />
+        <ComparisonSection />
         <StatsBand />
         <TrustSection />
         <PricingSection />

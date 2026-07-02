@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, isValidElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -8,6 +8,39 @@ import { cn } from "@/lib/utils";
 import { CodeBlock } from "@/components/chat/CodeBlock";
 import { CitationMarker } from "@/components/chat/CitationMarker";
 import { remarkCitations } from "@/lib/markdown/remark-citations";
+import { slugifyHeading } from "@/lib/markdown/headings";
+
+/**
+ * Flatten a React node tree (a heading's children) to a plain text string so
+ * we can derive a deterministic anchor id. Citation markers render as
+ * ``<CitationMarker>`` elements with no text children, so they contribute
+ * nothing — which matches ``extractHeadings`` stripping ``[n]`` markers.
+ * Emphasis (``<strong>``/``<em>``) and links collapse to their inner text,
+ * again matching the raw-markdown cleaning in ``extractHeadings``.
+ */
+function flattenChildrenToText(children: ReactNode): string {
+  if (children == null || typeof children === "boolean") return "";
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) {
+    return children.map(flattenChildrenToText).join("");
+  }
+  if (isValidElement(children)) {
+    const props = children.props as { children?: ReactNode };
+    return flattenChildrenToText(props.children);
+  }
+  return "";
+}
+
+/** Anchor id for a heading when ``headingAnchors`` is on; undefined otherwise. */
+function headingId(
+  enabled: boolean,
+  children: ReactNode,
+): string | undefined {
+  if (!enabled) return undefined;
+  const slug = slugifyHeading(flattenChildrenToText(children));
+  return slug || undefined;
+}
 
 // Import highlight.js dark theme
 import "highlight.js/styles/github-dark.css";
@@ -22,10 +55,18 @@ interface MarkdownRendererProps {
    * or other non-deep_search content.
    */
   onCitationClick?: (n: number) => void;
+  /**
+   * Opt-in: when true, ``h1..h6`` render with a deterministic
+   * ``id={slugifyHeading(text)}`` + ``scroll-mt-24`` so TOC anchor jumps land
+   * below the sticky header. Default off → chat rendering is byte-identical.
+   * Only the مدونة article view (and other anchored reading surfaces) sets it.
+   */
+  headingAnchors?: boolean;
 }
 
 function buildMarkdownComponents(
   onCitationClick: ((n: number) => void) | undefined,
+  headingAnchors: boolean,
 ): Components {
   return {
     // --- Citation markers ([n] / [n,m,...]) ---
@@ -166,45 +207,93 @@ function buildMarkdownComponents(
       return <li className="text-base leading-relaxed">{children}</li>;
     },
 
-    // --- Headers (scaled down for chat context) ---
+    // --- Headers ---
+    // Two scales, switched on ``headingAnchors``:
+    //   • OFF (default, chat) → compact chat-scaled headings. The className
+    //     string is byte-IDENTICAL to before so chat rendering is untouched.
+    //   • ON (مدونة article)  → larger EDITORIAL sizes + ``id`` anchor +
+    //     ``scroll-mt-24`` so TOC jumps land below the sticky header.
+    // ``id`` is undefined when off → React omits the attribute entirely.
     h1({ children }) {
       return (
-        <h1 className="text-lg font-bold mt-4 mb-2 text-foreground">
+        <h1
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-2xl font-bold mt-8 mb-3 text-foreground scroll-mt-24"
+              : "text-lg font-bold mt-4 mb-2 text-foreground"
+          }
+        >
           {children}
         </h1>
       );
     },
     h2({ children }) {
       return (
-        <h2 className="text-base font-bold mt-3 mb-1.5 text-foreground">
+        <h2
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-xl font-bold mt-7 mb-2.5 text-foreground border-t border-border/40 pt-4 scroll-mt-24"
+              : "text-base font-bold mt-3 mb-1.5 text-foreground"
+          }
+        >
           {children}
         </h2>
       );
     },
     h3({ children }) {
       return (
-        <h3 className="text-base font-semibold mt-3 mb-1 text-foreground">
+        <h3
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-lg font-semibold mt-5 mb-2 text-foreground scroll-mt-24"
+              : "text-base font-semibold mt-3 mb-1 text-foreground"
+          }
+        >
           {children}
         </h3>
       );
     },
     h4({ children }) {
       return (
-        <h4 className="text-sm font-semibold mt-2 mb-1 text-foreground">
+        <h4
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-base font-semibold mt-4 mb-1.5 text-foreground scroll-mt-24"
+              : "text-sm font-semibold mt-2 mb-1 text-foreground"
+          }
+        >
           {children}
         </h4>
       );
     },
     h5({ children }) {
       return (
-        <h5 className="text-sm font-medium mt-2 mb-1 text-foreground">
+        <h5
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-sm font-semibold mt-3 mb-1 text-foreground scroll-mt-24"
+              : "text-sm font-medium mt-2 mb-1 text-foreground"
+          }
+        >
           {children}
         </h5>
       );
     },
     h6({ children }) {
       return (
-        <h6 className="text-sm font-medium mt-2 mb-1 text-muted-foreground">
+        <h6
+          id={headingId(headingAnchors, children)}
+          className={
+            headingAnchors
+              ? "text-sm font-semibold mt-3 mb-1 text-muted-foreground scroll-mt-24"
+              : "text-sm font-medium mt-2 mb-1 text-muted-foreground"
+          }
+        >
           {children}
         </h6>
       );
@@ -242,16 +331,18 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   className,
   onCitationClick,
+  headingAnchors,
 }: MarkdownRendererProps) {
   // Memoize the content to avoid unnecessary re-parses on parent re-renders
   // that don't change the content string
   const stableContent = useMemo(() => content, [content]);
 
-  // Re-bind the component map only when the citation click handler changes.
-  // The handler identity is generally stable per message, so this is cheap.
+  // Re-bind the component map only when the citation click handler or the
+  // heading-anchor toggle changes. Both are generally stable per render, so
+  // this is cheap.
   const components = useMemo(
-    () => buildMarkdownComponents(onCitationClick),
-    [onCitationClick],
+    () => buildMarkdownComponents(onCitationClick, headingAnchors ?? false),
+    [onCitationClick, headingAnchors],
   );
 
   return (

@@ -35,6 +35,7 @@ codebase). All error messages are Arabic.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from supabase import Client as SupabaseClient
@@ -42,6 +43,9 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 
 logger = logging.getLogger(__name__)
+
+# The two share templates a blog_posts row can render as.
+_DISPLAY_MODES = frozenset({"question", "title"})
 
 # Shareable artifact kinds: the deep_search synthesis (``agent_search`` —
 # "تحليل قانوني"/legal_synthesis) AND the writer outputs (``agent_writing`` —
@@ -55,7 +59,38 @@ __all__ = [
     "get_public_post",
     "derive_default_question",
     "unpublish_post",
+    "user_can_access_blog",
+    "list_public_blogs",
+    "list_my_blogs",
+    "set_post_public",
+    "make_snippet",
 ]
+
+
+# ---------------------------------------------------------------------------
+# SNIPPET (directory card preview)
+# ---------------------------------------------------------------------------
+
+
+def make_snippet(content_md: str, max_len: int = 200) -> str:
+    """Reduce a Markdown body to a short plain-text snippet for a directory card.
+
+    Best-effort: strips headings/emphasis/code fences/links/citation markers and
+    collapses whitespace. Never raises — a bad body just yields a shorter
+    snippet. Not security-sensitive (the full content is already public on the
+    post page); this is purely cosmetic.
+    """
+    text = content_md or ""
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)   # fenced code
+    text = re.sub(r"`([^`]*)`", r"\1", text)                  # inline code
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)         # images
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)      # links -> label
+    text = re.sub(r"\[\d+(?:\s*,\s*\d+)*\]", " ", text)       # [n] citations
+    text = re.sub(r"[#>*_~`]+", " ", text)                    # md punctuation
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +115,7 @@ def get_public_post(supabase: SupabaseClient, token: str) -> Optional[dict]:
             supabase.table("blog_posts")
             .select(
                 "post_id, question_text, title, content_md, references_json, "
-                "subtype, view_count, created_at"
+                "subtype, view_count, created_at, display_mode"
             )
             .eq("token", token)
             .eq("is_published", True)
@@ -120,6 +155,7 @@ def get_public_post(supabase: SupabaseClient, token: str) -> Optional[dict]:
         "references": row.get("references_json") or [],
         "subtype": row.get("subtype"),
         "created_at": row.get("created_at"),
+        "display_mode": row.get("display_mode") or "question",
     }
 
 
@@ -210,12 +246,21 @@ def insert_post(
     title: Optional[str],
     content_md: str,
     references_json: list[dict[str, Any]],
+    display_mode: str = "question",
+    is_published: bool = True,
 ) -> str:
     """Insert one ``blog_posts`` row and return the DB-minted ``token``.
 
     ``token`` is omitted from the payload so the column default
     (``encode(gen_random_bytes(16),'hex')``) mints it; we read it back from
-    the insert's returning representation.
+    the insert's returning representation. ``display_mode`` selects the share
+    template ('question' vs 'title'/مدونة).
+
+    ``is_published`` (default ``True``) lets a caller create an unpublished
+    draft — the editorial blog-post-jobs API sets it per ``publish_policy`` /
+    ``min_confidence``. The default keeps the in-app مشاركة share path
+    unchanged. ``is_public`` is deliberately NOT a param: it stays at its
+    column default (``false``) so these posts are never gallery-listed.
     """
     payload: dict[str, Any] = {
         "owner_user_id": owner_user_id,
@@ -225,6 +270,8 @@ def insert_post(
         "title": title,
         "content_md": content_md,
         "references_json": references_json,
+        "display_mode": display_mode if display_mode in _DISPLAY_MODES else "question",
+        "is_published": is_published,
     }
 
     try:
@@ -311,6 +358,185 @@ def unpublish_post(
             status_code=500,
             code=ErrorCode.INTERNAL_ERROR,
             detail="حدث خطأ أثناء إلغاء نشر المنشور",
+        )
+
+    if not result.data:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المنشور غير موجود",
+        )
+
+
+# ---------------------------------------------------------------------------
+# CURATION GATE + LISTINGS (v2 — viewing is open; only curation is gated)
+# ---------------------------------------------------------------------------
+
+
+def user_can_access_blog(supabase: SupabaseClient, auth_id: str) -> bool:
+    """True when the caller may CURATE the public gallery (push a post public).
+
+    v2 inverts the meaning: this no longer gates *viewing* (the gallery and
+    every post are anonymous). It now gates *curation* — who may set a post's
+    ``is_public=true``. Reads ``users.can_access_blog`` for the JWT's auth_id;
+    any lookup miss / error is treated as NOT authorized (fail closed).
+    """
+    try:
+        result = (
+            supabase.table("users")
+            .select("can_access_blog")
+            .eq("auth_id", auth_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("user_can_access_blog lookup failed for %s: %s", auth_id, e)
+        return False
+
+    if result is None or result.data is None:
+        return False
+    return bool(result.data.get("can_access_blog"))
+
+
+def list_public_blogs(
+    supabase: SupabaseClient,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List published PUBLIC posts for the anonymous gallery (/blog).
+
+    Newest first. Returns lightweight card dicts (token, title, snippet,
+    subtype, view_count, created_at) — never the full body. Anonymous: there
+    is NO ``can_access_blog`` gate on this read (v2 inverts the model). The
+    gallery keys on ``is_public`` (any user's published, public share appears),
+    regardless of display_mode.
+    """
+    limit = max(1, min(int(limit or 50), 100))
+    offset = max(0, int(offset or 0))
+
+    try:
+        result = (
+            supabase.table("blog_posts")
+            .select("token, title, content_md, subtype, view_count, created_at")
+            .eq("is_public", True)
+            .eq("is_published", True)
+            .is_("deleted_at", "null")
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error listing public blogs: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب المدونة",
+        )
+
+    rows = result.data or []
+    return [
+        {
+            "token": row.get("token"),
+            "title": row.get("title"),
+            "snippet": make_snippet(row.get("content_md") or ""),
+            "subtype": row.get("subtype"),
+            "view_count": int(row.get("view_count") or 0),
+            "created_at": row.get("created_at"),
+        }
+        for row in rows
+        if row.get("token")
+    ]
+
+
+def list_my_blogs(
+    supabase: SupabaseClient,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List the caller's own blogs (مدوناتي) — owner-scoped.
+
+    Newest first, both display_modes, not deleted. Returns card dicts
+    (post_id, token, title, snippet, subtype, display_mode, is_public,
+    created_at) — the management list, so it carries post_id + is_public for
+    the per-row publish toggle.
+    """
+    limit = max(1, min(int(limit or 100), 200))
+    offset = max(0, int(offset or 0))
+
+    try:
+        result = (
+            supabase.table("blog_posts")
+            .select(
+                "post_id, token, title, content_md, subtype, "
+                "display_mode, is_public, created_at"
+            )
+            .eq("owner_user_id", user_id)
+            .is_("deleted_at", "null")
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error listing my blogs: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب المدونة",
+        )
+
+    rows = result.data or []
+    return [
+        {
+            "post_id": row.get("post_id"),
+            "token": row.get("token"),
+            "title": row.get("title"),
+            "snippet": make_snippet(row.get("content_md") or ""),
+            "subtype": row.get("subtype"),
+            "display_mode": row.get("display_mode") or "question",
+            "is_public": bool(row.get("is_public")),
+            "created_at": row.get("created_at"),
+        }
+        for row in rows
+        if row.get("post_id")
+    ]
+
+
+def set_post_public(
+    supabase: SupabaseClient,
+    user_id: str,
+    post_id: str,
+    is_public: bool,
+) -> None:
+    """Owner-scoped toggle of a post's gallery visibility (``is_public``).
+
+    Scoped to ``owner_user_id = user_id`` and non-deleted so a caller can only
+    flip their own posts; a post that isn't theirs (or is missing / revoked)
+    surfaces as 404 with the same envelope, leaking no existence information.
+    The *curation* gate (``can_access_blog``) is enforced by the route handler
+    for the publish-to-public direction; retracting your own post needs no gate.
+    """
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        result = (
+            supabase.table("blog_posts")
+            .update({
+                "is_public": is_public,
+                "updated_at": now_iso,
+            })
+            .eq("post_id", post_id)
+            .eq("owner_user_id", user_id)
+            .is_("deleted_at", "null")
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error setting blog post public flag: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء تحديث حالة النشر",
         )
 
     if not result.data:

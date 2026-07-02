@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PublicAnswerView } from "@/components/blog/PublicAnswerView";
+import { BlogArticleView } from "@/components/blog/BlogArticleView";
 import type { BlogPostPublic } from "@/types";
 
 // This is a PUBLIC, anon-accessible route. It is a SERVER component that
@@ -59,7 +60,12 @@ export async function generateMetadata({
     };
   }
 
-  const title = truncate(post.question_text || post.title || "ريحان");
+  // Title-mode (مدونة) posts lead with their editorial title; question-mode
+  // posts lead with the question text (the title is often empty there).
+  const title =
+    post.display_mode === "title"
+      ? truncate(post.title || post.question_text || "ريحان")
+      : truncate(post.question_text || post.title || "ريحان");
   const description = "إجابة قانونية مُنشأة عبر ريحان — المساعد القانوني الذكي.";
 
   return {
@@ -90,5 +96,11 @@ export default async function BlogPostPage({ params }: PageProps) {
     notFound();
   }
 
-  return <PublicAnswerView post={post} />;
+  // Branch on the share template: ``title`` → editorial blog article;
+  // everything else (``question``) → the default السؤال layout.
+  return post.display_mode === "title" ? (
+    <BlogArticleView post={post} />
+  ) : (
+    <PublicAnswerView post={post} />
+  );
 }

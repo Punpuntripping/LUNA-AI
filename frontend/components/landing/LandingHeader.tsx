@@ -25,6 +25,15 @@ export function LandingHeader() {
 
         {/* Actions */}
         <nav className="flex items-center gap-2">
+          <Link
+            href="/audiences"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "sm" }),
+              "hidden text-sm sm:inline-flex",
+            )}
+          >
+            ريحان يستهدف مين؟
+          </Link>
           <a
             href="#pricing"
             className={cn(

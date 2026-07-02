@@ -19,7 +19,7 @@ export function FinalCtaSection() {
         />
         <div className="relative">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            كن من أوائل المحامين المستخدمين
+            كن من أوائل المستخدمين
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-primary-foreground/85">
             ريحان في مرحلة الإطلاق التجريبي. انضمّ الآن واحصل على وصول مبكر

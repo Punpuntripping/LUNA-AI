@@ -13,8 +13,15 @@ interface Props {
 // `return null`. The public share-by-link surface (/blog/{token}) serves an
 // immutable snapshot to prospects without an account; /terms + /privacy are
 // the public legal pages reached from the login footer; /pricing is the public
-// plans page (a pre-signup decision) — all reachable before signing up.
-const PUBLIC_PREFIXES = ["/blog", "/terms", "/privacy", "/pricing"] as const;
+// plans page (a pre-signup decision); /audiences is the public «ريحان يستهدف
+// مين؟» page — all reachable before signing up.
+const PUBLIC_PREFIXES = [
+  "/blog",
+  "/terms",
+  "/privacy",
+  "/pricing",
+  "/audiences",
+] as const;
 
 function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;

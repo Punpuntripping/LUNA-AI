@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Pencil, Save, X, Loader2, Share2 } from "lucide-react";
+import { Pencil, Save, X, Loader2, Share2, BookmarkPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   useUpdateWorkspaceItem,
@@ -10,6 +10,7 @@ import {
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
+import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import type { WorkspaceItem } from "@/types";
 
@@ -49,6 +50,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const [editContent, setEditContent] = useState("");
   const [editTitle, setEditTitle] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
+  const [saveBlogOpen, setSaveBlogOpen] = useState(false);
 
   function enterEditMode() {
     if (!item) return;
@@ -131,6 +133,17 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
                 aria-label="مشاركة"
               >
                 <Share2 className="h-4 w-4" />
+              </Button>
+            )}
+            {item.kind === "agent_writing" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => setSaveBlogOpen(true)}
+                aria-label="حفظ كمدونة"
+              >
+                <BookmarkPlus className="h-4 w-4" />
               </Button>
             )}
             {editable && (
@@ -216,6 +229,14 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
           itemId={item.item_id}
           open={shareOpen}
           onOpenChange={setShareOpen}
+        />
+      )}
+
+      {item.kind === "agent_writing" && (
+        <SaveAsBlogDialog
+          itemId={item.item_id}
+          open={saveBlogOpen}
+          onOpenChange={setSaveBlogOpen}
         />
       )}
     </div>

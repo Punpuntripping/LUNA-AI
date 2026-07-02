@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ArtifactPreview } from "./ArtifactPreview";
 import { ReferencePanel, referenceLabel } from "./ReferencePanel";
 import { ShareArtifactDialog } from "./ShareArtifactDialog";
+import { SaveAsBlogDialog } from "./SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
 import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
@@ -52,6 +53,7 @@ export function AgentSearchViewer({
   const setFeedback = useSetWorkspaceItemFeedback();
   const [localFocusedN, setLocalFocusedN] = useState<number | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [saveBlogOpen, setSaveBlogOpen] = useState(false);
 
   const handleFeedback = useCallback(
     (next: WorkspaceFeedback) => {
@@ -121,6 +123,7 @@ export function AgentSearchViewer({
         floating
         copyText={copyContent}
         onShare={() => setShareOpen(true)}
+        onSaveBlog={() => setSaveBlogOpen(true)}
         feedback={item.feedback}
         onFeedback={handleFeedback}
         feedbackPending={setFeedback.isPending}
@@ -129,6 +132,11 @@ export function AgentSearchViewer({
         itemId={item.item_id}
         open={shareOpen}
         onOpenChange={setShareOpen}
+      />
+      <SaveAsBlogDialog
+        itemId={item.item_id}
+        open={saveBlogOpen}
+        onOpenChange={setSaveBlogOpen}
       />
     </div>
   );

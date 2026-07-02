@@ -319,17 +319,58 @@ class BlogPostPublicResponse(BaseModel):
     references: list[dict] = []
     subtype: Optional[str] = None
     created_at: str
+    # Share template: 'question' (السؤال + answer) or 'title' (مدونة article).
+    display_mode: str = "question"
 
 
 class ShareDraftResponse(BaseModel):
     """GET /api/v1/workspace/{item_id}/share-draft"""
     default_question: str
+    # Pre-fill for the مدونة (title) template — the artifact's own title.
+    default_title: Optional[str] = None
 
 
 class ShareArtifactResponse(BaseModel):
     """POST /api/v1/workspace/{item_id}/share"""
     token: str
     public_url: str
+
+
+class BlogCardPublic(BaseModel):
+    """One card in the public blog gallery (/blog) — anonymous."""
+    token: str
+    title: Optional[str] = None
+    snippet: str = ""
+    subtype: Optional[str] = None
+    view_count: int = 0
+    created_at: str
+
+
+class PublicBlogsResponse(BaseModel):
+    """GET /api/v1/public/blogs — anonymous listing of public مدونة posts."""
+    posts: list[BlogCardPublic] = []
+
+
+class MyBlogItem(BaseModel):
+    """One row in مدوناتي (the author's own blogs) — owner-scoped."""
+    post_id: str
+    token: str
+    title: Optional[str] = None
+    snippet: str = ""
+    subtype: Optional[str] = None
+    display_mode: str = "question"
+    is_public: bool = False
+    created_at: str
+
+
+class MyBlogsResponse(BaseModel):
+    """GET /api/v1/blogs/mine — the caller's own blogs.
+
+    ``can_publish_public`` mirrors ``users.can_access_blog`` (the curation
+    gate): whether this user may push a post into the public gallery.
+    """
+    can_publish_public: bool = False
+    posts: list[MyBlogItem] = []
 
 
 # ── Resumable uploads (TUS) ─────────────────────────────

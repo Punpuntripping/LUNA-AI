@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, Copy, ExternalLink, Loader2, Share2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Loader2,
+  MessageCircleQuestion,
+  Newspaper,
+  Share2,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -20,6 +28,7 @@ interface ShareArtifactDialogProps {
 }
 
 type Phase = "draft" | "published";
+type Template = "question" | "title";
 
 /**
  * Publish-an-artifact dialog (مشاركة).
@@ -36,7 +45,9 @@ export function ShareArtifactDialog({
   onOpenChange,
 }: ShareArtifactDialogProps) {
   const [phase, setPhase] = useState<Phase>("draft");
+  const [template, setTemplate] = useState<Template>("question");
   const [questionText, setQuestionText] = useState("");
+  const [titleText, setTitleText] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
 
   const [isLoadingDraft, setIsLoadingDraft] = useState(false);
@@ -51,10 +62,12 @@ export function ShareArtifactDialog({
 
     let cancelled = false;
     setPhase("draft");
+    setTemplate("question");
     setPublicUrl("");
     setError(null);
     setCopied(false);
     setQuestionText("");
+    setTitleText("");
     setIsLoadingDraft(true);
 
     api
@@ -62,6 +75,7 @@ export function ShareArtifactDialog({
       .then((res) => {
         if (cancelled) return;
         setQuestionText(res.default_question ?? "");
+        setTitleText(res.default_title ?? "");
       })
       .catch((err) => {
         if (cancelled) return;
@@ -92,15 +106,34 @@ export function ShareArtifactDialog({
   }
 
   async function handlePublish() {
-    const text = questionText.trim();
-    if (!text) {
+    const question = questionText.trim();
+    const title = titleText.trim();
+
+    if (template === "title") {
+      if (!title) {
+        setError("اكتب عنواناً للمقال.");
+        return;
+      }
+    } else if (!question) {
       setError("لا يمكن نشر سؤال فارغ.");
       return;
     }
+
     setError(null);
     setIsPublishing(true);
     try {
-      const res = await api.shareArtifact(itemId, text);
+      const res =
+        template === "title"
+          ? await api.shareArtifact(itemId, {
+              questionText: "",
+              displayMode: "title",
+              title,
+            })
+          : await api.shareArtifact(itemId, {
+              questionText: question,
+              displayMode: "question",
+              title: null,
+            });
       setPublicUrl(res.public_url);
       setPhase("published");
       await copyToClipboard(res.public_url);
@@ -124,34 +157,101 @@ export function ShareArtifactDialog({
             مشاركة عبر رابط
           </DialogTitle>
           <DialogDescription>
-            تُنشر نسخة ثابتة من السؤال والإجابة عبر رابط خاص. لا يمكن فتح الصفحة
-            إلا لمن لديه الرابط الذي تشاركه — دون الحاجة إلى تسجيل دخول.
+            تُنشر نسخة ثابتة من المستند عبر رابط خاص — كصفحة سؤال وإجابة أو كمقال
+            في مدوّنة. لا يمكن فتح الصفحة إلا لمن لديه الرابط الذي تشاركه — دون
+            الحاجة إلى تسجيل دخول.
           </DialogDescription>
         </DialogHeader>
 
         {phase === "draft" ? (
           <div className="space-y-3">
-            <label
-              htmlFor="share-question"
-              className="block text-sm font-medium text-foreground"
+            <div
+              className="flex w-fit shrink-0 items-center gap-0.5 rounded-md border border-border bg-muted/30 p-0.5"
+              role="tablist"
+              aria-label="نوع المشاركة"
             >
-              السؤال
-            </label>
+              <Button
+                type="button"
+                variant={template === "question" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 gap-1.5 px-3 text-xs"
+                role="tab"
+                aria-selected={template === "question"}
+                onClick={() => setTemplate("question")}
+                disabled={isPublishing}
+              >
+                <MessageCircleQuestion className="h-3.5 w-3.5" />
+                سؤال
+              </Button>
+              <Button
+                type="button"
+                variant={template === "title" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 gap-1.5 px-3 text-xs"
+                role="tab"
+                aria-selected={template === "title"}
+                onClick={() => setTemplate("title")}
+                disabled={isPublishing}
+              >
+                <Newspaper className="h-3.5 w-3.5" />
+                مدونة
+              </Button>
+            </div>
 
-            {isLoadingDraft ? (
-              <div className="flex h-28 items-center justify-center rounded-md border border-input bg-muted/30">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
+            {template === "question" ? (
+              <>
+                <label
+                  htmlFor="share-question"
+                  className="block text-sm font-medium text-foreground"
+                >
+                  السؤال
+                </label>
+
+                {isLoadingDraft ? (
+                  <div className="flex h-28 items-center justify-center rounded-md border border-input bg-muted/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <textarea
+                    id="share-question"
+                    value={questionText}
+                    onChange={(e) => setQuestionText(e.target.value)}
+                    rows={4}
+                    dir="rtl"
+                    placeholder="اكتب السؤال الذي سيظهر على الصفحة العامة..."
+                    className="w-full resize-y rounded-md border border-input bg-background p-3 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                )}
+              </>
             ) : (
-              <textarea
-                id="share-question"
-                value={questionText}
-                onChange={(e) => setQuestionText(e.target.value)}
-                rows={4}
-                dir="rtl"
-                placeholder="اكتب السؤال الذي سيظهر على الصفحة العامة..."
-                className="w-full resize-y rounded-md border border-input bg-background p-3 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+              <>
+                <label
+                  htmlFor="share-title"
+                  className="block text-sm font-medium text-foreground"
+                >
+                  عنوان المقال
+                </label>
+
+                {isLoadingDraft ? (
+                  <div className="flex h-11 items-center justify-center rounded-md border border-input bg-muted/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : (
+                  <input
+                    id="share-title"
+                    type="text"
+                    value={titleText}
+                    onChange={(e) => setTitleText(e.target.value)}
+                    dir="rtl"
+                    placeholder="عنوان المقال"
+                    className="w-full rounded-md border border-input bg-background p-3 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                )}
+
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  سيظهر كعنوان مقال في منتصف الصفحة بتنسيق مدوّنة.
+                </p>
+              </>
             )}
 
             <p className="text-xs leading-relaxed text-muted-foreground">

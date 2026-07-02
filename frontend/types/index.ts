@@ -670,6 +670,12 @@ export interface BlogPostPublic {
   subtype: string | null;
   /** ISO timestamp of publication. */
   created_at: string;
+  /**
+   * Share template the publisher chose:
+   *   ``"question"`` → السؤال block → answer → references (default layout).
+   *   ``"title"``    → editorial blog article (centered hero title + TOC).
+   */
+  display_mode: "question" | "title";
 }
 
 /**
@@ -679,12 +685,72 @@ export interface BlogPostPublic {
 export interface ShareDraftResponse {
   /** Derived default السؤال (preceding user message / artifact title). */
   default_question: string;
+  /** Derived default مدونة title (the artifact's own ``title``); may be null. */
+  default_title: string | null;
 }
 
 /** Request body of ``POST /api/v1/workspace/{item_id}/share``. */
 export interface ShareArtifactRequest {
   /** Final السؤال text the publisher chose (verbatim). */
   question_text: string;
+  /** Which share template to publish: السؤال page vs editorial article. */
+  display_mode: "question" | "title";
+  /** Final مدونة title (title mode); null for question mode. */
+  title: string | null;
+}
+
+/**
+ * One card in the public ``/blog`` gallery — a lightweight listing row for a
+ * publicly-curated (``is_public``) post. The full body is NOT included; the
+ * card links to the public ``/blog/<token>`` page which carries the snapshot.
+ */
+export interface BlogCardPublic {
+  /** Unguessable slug used in the public URL. */
+  token: string;
+  /** مدونة article title shown on the card. */
+  title: string | null;
+  /** Plain-text preview derived server-side from ``content_md``. */
+  snippet: string;
+  /** e.g. ``legal_synthesis`` → "تحليل قانوني". */
+  subtype: string | null;
+  /** Number of times the public post page has been opened. */
+  view_count: number;
+  /** ISO timestamp of publication. */
+  created_at: string;
+}
+
+/**
+ * Response of ``GET /api/v1/public/blogs`` — the anonymous public gallery
+ * listing (``is_public`` posts, newest first). No auth; SEO-indexable.
+ */
+export interface PublicBlogsResponse {
+  posts: BlogCardPublic[];
+}
+
+/**
+ * One row in مدوناتي — an owner-scoped listing of the user's own blog_posts
+ * (both templates), badged by ``display_mode`` and ``is_public``. Returned by
+ * ``GET /api/v1/blogs/mine``.
+ */
+export interface MyBlogItem {
+  post_id: string;
+  token: string;
+  title: string | null;
+  snippet: string;
+  subtype: string | null;
+  display_mode: "question" | "title";
+  is_public: boolean;
+  created_at: string;
+}
+
+/**
+ * Response of ``GET /api/v1/blogs/mine`` — the owner-scoped مدوناتي listing.
+ * ``can_publish_public`` reflects ``users.can_access_blog`` (the curate gate);
+ * the management page shows the نشر في المدونة العامة toggle only when true.
+ */
+export interface MyBlogsResponse {
+  can_publish_public: boolean;
+  posts: MyBlogItem[];
 }
 
 /** Response of ``POST /api/v1/workspace/{item_id}/share``. */

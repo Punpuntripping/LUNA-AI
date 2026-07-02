@@ -16,6 +16,8 @@ import {
   Clock,
   Sparkles,
   Landmark,
+  Library,
+  ScanText,
   type LucideIcon,
 } from "lucide-react";
 
@@ -106,6 +108,64 @@ export const CAPABILITIES: Capability[] = [
     icon: ShieldCheck,
     title: "الامتثال للنظام",
     body: "تغطية واسعة لبيانات الامتثال للأنظمة السعودية تساعدك على الالتزام بثقة.",
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Comparison — Rayhan vs. general-purpose AI (ChatGPT & friends)
+//
+// Head-to-head table. Tone stays gain-framed: the "others" column is neutral,
+// not fear-mongering — general tools are fine for general questions, they just
+// weren't built for Saudi legal work. Each row is one dimension the lawyer feels.
+// ---------------------------------------------------------------------------
+
+export const COMPARISON_HEADER = {
+  title: "ريحان مقابل الأدوات العامة",
+  subtitle:
+    "أدوات الذكاء الاصطناعي العامة مفيدة للأسئلة اليومية، لكنها لم تُصمَّم للعمل القانوني السعودي. هذا هو الفرق حين تكون الدقة والمصدر أساس عملك.",
+  rayhanLabel: "ريحان",
+  rayhanHint: "مساعد قانوني سعودي متخصص",
+  othersLabel: "الأدوات العامة",
+  othersHint: "ChatGPT وأمثالها",
+} as const;
+
+export interface ComparisonRow {
+  icon: LucideIcon;
+  dimension: string;
+  /** Rayhan's answer — the ✓ column. */
+  rayhan: string;
+  /** General-purpose tools — the ✗ column. */
+  others: string;
+}
+
+export const COMPARISON: ComparisonRow[] = [
+  {
+    icon: ShieldCheck,
+    dimension: "دقّة المصادر",
+    rayhan:
+      "كل معلومة ورقم مربوطان بمصدرهما الرسمي ورابطه المباشر — بلا هلوسة.",
+    others: "قد يستشهد بأنظمة أو أرقام غير حقيقية يصعب التحقّق منها.",
+  },
+  {
+    icon: Library,
+    dimension: "تغطية الأنظمة السعودية",
+    rayhan:
+      "أكثر من 3,000 نظام ولائحة، و20,000 حكم قضائي، و4,500 خدمة حكومية.",
+    others: "يُلمّ بالأنظمة الشهيرة فقط كنظام العمل، وتغيب عنه بقية المصادر.",
+  },
+  {
+    icon: PenLine,
+    dimension: "التخصّص لعمل المحامي",
+    rayhan:
+      "وكيل بحث ووكيل صياغة متخصّصان، مع إمكانية إضافة قوالبك الخاصة.",
+    others: "أداة عامة لا تستهدف احتياجات المحامي ولا سير عمله.",
+  },
+  {
+    icon: ScanText,
+    dimension: "استخراج بيانات المستندات",
+    rayhan:
+      "يستخرج الأسماء والأرقام من مستنداتك بدقة تصل إلى 99٪ للملفات الواضحة (OCR).",
+    others: "لا يستخرج الأسماء والأرقام من المستندات بدقة.",
   },
 ];
 

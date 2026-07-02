@@ -8,11 +8,13 @@ import { useSidebarStore } from "@/stores/sidebar-store";
 import { useConversations } from "@/hooks/use-conversations";
 import { useCases } from "@/hooks/use-cases";
 import { useTemplates } from "@/hooks/use-templates";
+import { useMyBlogs } from "@/hooks/use-my-blogs";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { ConversationList } from "@/components/sidebar/ConversationList";
 import { CaseList } from "@/components/sidebar/CaseList";
 import { TemplateList } from "@/components/sidebar/TemplateList";
+import { BlogList } from "@/components/sidebar/BlogList";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CASES_ENABLED } from "@/lib/features";
@@ -98,7 +100,7 @@ function NavPill({
           </span>
         )}
 
-        {onCreate && createTooltip && (
+        {onCreate && createTooltip ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -127,6 +129,10 @@ function NavPill({
               <p>{createTooltip}</p>
             </TooltipContent>
           </Tooltip>
+        ) : (
+          // No create action (e.g. مدوناتي): reserve the same slot the "+" button
+          // would occupy so the count stays aligned with the other pills' counts.
+          <span className="h-5 w-5 shrink-0" aria-hidden />
         )}
       </div>
     </div>
@@ -148,10 +154,12 @@ export function Sidebar() {
   const { data: convData } = useConversations(null);
   const { data: caseData } = useCases("active");
   const { data: templateData } = useTemplates();
+  const { data: myBlogsData } = useMyBlogs();
 
   const conversationCount = convData?.conversations?.length;
   const caseCount = caseData?.cases?.length;
   const templateCount = templateData?.templates?.length;
+  const myBlogsCount = myBlogsData?.posts?.length;
 
   useEffect(() => {
     const handleResize = () => {
@@ -249,6 +257,12 @@ export function Sidebar() {
             onCreate={handleNewTemplate}
             createTooltip="قالب جديد"
           />
+          <NavPill
+            label="مدوناتي"
+            count={myBlogsCount}
+            active={activeTab === "blogs"}
+            onSelect={() => setActiveTab("blogs")}
+          />
         </div>
 
         {/* Single panel — swaps content based on active tab */}
@@ -257,6 +271,8 @@ export function Sidebar() {
             <CaseList />
           ) : activeTab === "templates" ? (
             <TemplateList />
+          ) : activeTab === "blogs" ? (
+            <BlogList />
           ) : (
             <ConversationList />
           )}
