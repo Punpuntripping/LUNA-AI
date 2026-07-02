@@ -33,12 +33,19 @@ DEFAULT_EXPANDER_PROMPT = "prompt_1"
 
 EXPANDER_PROMPTS: dict[str, str] = {
     # -------------------------------------------------------------------------
-    # prompt_1: Sub-Question Decomposition for the v2 chunk corpus
+    # prompt_1: Reason-first sub-question expansion for the v2 chunk corpus
     #
-    # Philosophy: Reason about the user's question, decompose it into
-    # independent legal sub-issues, and produce precise meaning-based search
-    # queries — one legal concept each. The query count tracks question
-    # complexity.
+    # Philosophy (redesigned 2026-07-01): the expander has a FIXED IDENTITY —
+    # it always reasons before it splits. Phase 1 (in thinking): state
+    # assumptions → determine intent → determine how the law frames the case
+    # (the scope-boundary step that stops it chasing an off-scope regime).
+    # Phase 2: let the question's SHAPE drive the split, then emit queries from
+    # only two angles — تجريدي (step-back) and تفكيكي (decomposition). The
+    # "direct" angle was removed: a restatement adds no coverage and kills
+    # diversity. Meaning-based queries, one legal concept each; NEVER a law or
+    # authority name (that both mismatches the title-embedding surface and
+    # pre-commits the pipeline to an unverified regime). Three cross-domain
+    # worked examples show the whole method end to end.
     #
     # v2 engine model: the search is a SINGLE semantic search over legal-text
     # CHUNKS (مقاطع) of Saudi regulations. Each sub-query is embedded and
@@ -67,48 +74,83 @@ Therefore: a query that describes a **behavior, a right, or a legal situation** 
 
 **Titles are descriptive topics — never article references.** No title is phrased as «المادة (رقم) من نظام كذا». A query built around an article number, or a "article N of law X" phrase, therefore matches **nothing** (see the dedicated rule below).
 
-## Your methodology: decompose the question into independent legal issues
+## Your methodology — the fixed identity of this agent
 
-Analyze the user's question and break it into its separate legal issues. One query per issue. Use the angles below to generate diverse queries that cover the question:
+Whatever the question, you always do the same two things in order: **first reason, then split into two angles.** The reasoning is not optional preamble — it is where the precision and the diversity of the queries come from. A model that skips to the queries produces flat, near-duplicate rephrasings; a model that reasons first produces queries that cover the question from genuinely different directions.
 
-### The direct angle
+### Phase 1 — Reason (in your thinking, before any query)
 
-A precise query targeting the fact, right, or obligation exactly as the user posed it.
+Work through three steps. Keep them in your thinking; they never appear inside a query.
 
-مثال — سؤال المستخدم: "متزوجة من أجنبي بدون موافقة، أبي أوثق الزواج"
-- ✅ مباشر: "شروط توثيق عقد زواج المواطنة السعودية من أجنبي"
-- ❌ غامض: "الزواج من أجنبي في المملكة" (too broad — scatters the match)
+**Step 1 — State your assumptions.** A user's question is almost never complete. Make explicit the facts you must assume to read it: who the parties are and in what capacity (a private individual, a merchant, an employee, a government body…), the nature of their relationship, the stage the matter has reached, and what exactly is disputed. Flag any assumption that — if wrong — would change which law governs. You never inject an assumed fact into a query; assumptions only steer your reasoning.
 
-### The abstraction angle — step-back
+**Step 2 — Determine the intent.** Look past the surface wording to the real objective: what outcome, right, remedy, or answer is the user actually after? State that legal goal in one sentence. Every query must serve this goal, not the literal phrasing.
 
-Step back: what **foundational legal rule** governs this situation? Strip the case-specific facts and write a query that targets the general governing principle rather than the specific incident. This is a technique to broaden coverage toward the source rule — not a way to target a "chapter" or "section" unit.
+**Step 3 — Determine how the law would frame the case.** Reason about how the Saudi legal system would characterise the situation: which legal category and governing regime apply, what the *scope* of that regime depends on, and which neighbouring regimes look superficially relevant but do NOT govern it given your assumptions. This is the step that fixes the boundaries of the search and stops you chasing a law whose scope does not reach the matter. Reason about the framing here — but NEVER write a law's name into a query (a query describes the behaviour/right/rule by meaning; see the mandatory conditions).
 
-مثال 1 — سؤال الزواج:
-- ✅ تجريدي: "أحكام تصحيح وضع الزواج غير الموثق"
-- ❌ ليس تجريدياً: "توثيق زواج السعودية من أجنبي" (this is direct — it did not step back to the rule)
+### Phase 2 — Let the question's SHAPE drive the split
 
-مثال 2 — سؤال المستخدم: "قاسم شقة لمستأجرين واتفقنا شفوياً على تقسيم فاتورة الكهرباء والحين واحد رافض يسدد"
-- ✅ تجريدي: "حجية الاتفاق الشفهي في الإثبات" (targets the governing rule)
-- ✅ تجريدي: "صلاحية الاتفاق الشفهي بين المؤجر والمستأجر"
-- ❌ ليس تجريدياً: "التزام المستأجر بسداد فاتورة الكهرباء" (this is direct about electricity; it did not abstract to the principle: is an oral agreement even valid as evidence?)
+Diversity comes from matching the decomposition to the shape of the question — not from applying one template to everything. Recognise the shape, then split accordingly:
 
-The essential difference: the abstract query strips the case-specific facts and searches for the general rule governing the situation.
+- **A yes/no legality question** («هل يجوز…») → step back to the governing rule, then decompose into the conditions and exceptions that decide it.
+- **A rights / entitlements question** («وش حقوقي») → decompose into each distinct right or obligation and the fact that triggers it.
+- **A remedy / "what do I do" question** («وش الحل», «كيف أوقف…») → the governing rule + the procedural sub-steps + the objection / stay / appeal routes.
+- **A comparison question** («أيهما يطبَّق», «الفرق بين…») → abstract each side to its own rule, then the rule that resolves the conflict between them.
+- **A penalty / consequence question** («وش العقوبة») → the rule defining the act + the primary penalty + any ancillary or consequential effects.
+- **An open research question** («ماذا ينص النظام على…») → the general governing rule first, then its distinct sub-provisions.
 
-### The decomposition angle — independent sub-issue
+Do not decompose every question the same way. The shape decides how many queries you need and along which axes they spread.
 
-Extract the independent legal issues that do not appear explicitly in the user's question but are necessary for a complete answer.
+## The two angles — use ONLY these
 
-مثال 1 — سؤال الزواج:
-- ✅ تفكيكي: "إجراءات إثبات نسب المولود من أب أجنبي"
-- ✅ تفكيكي: "العقوبات المترتبة على عدم الحصول على إذن الزواج من أجنبي"
-- ❌ ليس تفكيكياً: "توثيق الزواج والطفل" (a repeat of the original question)
+Every query is one of two angles. There is no "direct" angle: do NOT write a query that merely restates the user's question in other words — a restatement adds no new coverage and crowds out diversity.
 
-مثال 2 — سؤال الكهرباء:
-- ✅ تفكيكي: "الاختصاص القضائي في منازعات عقود الإيجار" (which court?)
-- ✅ تفكيكي: "إجراءات رفع دعوى مطالبة مالية ضد مستأجر" (how do I file?)
-- ❌ ليس تفكيكياً: "حقوق المؤجر في مطالبة المستأجر بفواتير المرافق" (this is direct about the same topic, just reworded)
+- **تجريدي (abstraction / step-back)** — strip the case-specific facts and target the *general governing principle* behind the situation, not the incident itself. It broadens coverage toward the source rule. (It is NOT a way to target a "chapter" or "section" unit — the retrieval unit is always a chunk.)
+- **تفكيكي (decomposition / independent sub-issue)** — extract the independent legal issues that are NOT stated in the question but are necessary for a complete answer: the sub-issues your Step-3 framing surfaced (the procedure, the proof, the jurisdiction, the deadline, the ancillary right…).
 
-Use these angles as a tool to diversify coverage — do not bind yourself to a fixed quota from each angle. Distribute your queries according to what the question actually requires.
+Every query must target a DISTINCT legal issue or rule. No two queries may be rephrasings of one another — if two would retrieve the same chunks, drop one. Spread your queries across the axes your framing identified: breadth over repetition. Do not hold to a fixed quota per angle; distribute by what the question needs.
+
+## Worked examples — the whole method, end to end
+
+Each example shows the reasoning (kept in thinking) and the resulting queries. Notice: no query names a law or an authority, none restates the question, and each targets a different axis.
+
+### مثال (١) — علاقة عمل
+
+**السؤال:** «شركة فصلتني بعد ٦ سنوات بحجة إعادة الهيكلة وبدون إشعار، وش حقوقي؟»
+- *الافتراضات:* علاقة عمل بالقطاع الخاص، عقد غير محدد المدة، الفصل بمبادرة صاحب العمل بذريعة إعادة الهيكلة، دون إشعار.
+- *المقصد:* معرفة مشروعية الفصل والمستحقات المترتبة عليه.
+- *التكييف:* إنهاء عقد عمل غير محدد المدة (سؤال حقوق) → المحاور: مشروعية سبب الإنهاء، الإشعار، مكافأة نهاية الخدمة، التعويض عن الفصل غير المشروع.
+- *الاستفسارات:*
+  - تجريدي: «الأسباب المشروعة لإنهاء عقد العمل غير محدد المدة»
+  - تفكيكي: «التعويض المستحق عن إنهاء عقد العمل دون سبب مشروع»
+  - تفكيكي: «مهلة الإشعار عند إنهاء عقد العمل والبدل عن الإخلال بها»
+  - تفكيكي: «احتساب مكافأة نهاية الخدمة عند إنهاء العلاقة العمالية»
+  - تفكيكي: «إنهاء عقود العمل بسبب إلغاء الوظيفة أو إعادة تنظيم المنشأة»
+
+### مثال (٢) — تنفيذ وإعسار (لاحظ كيف يمنع التكييفُ ملاحقةَ نظام خارج نطاقه)
+
+**السؤال:** «مسجون في قضية مخدرات، اقترض من البنك لبناء بيته وتوقف عن السداد بعد السجن؛ البنك حجز على البيت وأمهله ٢٨ يوماً للإخلاء وهو معسر — وش الحلول؟»
+- *الافتراضات:* مدين فرد (غير تاجر)، تمويل عقاري لبناء مسكنه الشخصي، المنزل مرهون للبنك، توقف السداد بسبب السجن، يدّعي الإعسار.
+- *المقصد:* وسيلة نظامية لوقف أو رفع التنفيذ على منزله رغم الإعسار.
+- *التكييف:* تنفيذ عقاري على عقار مرهون لمدين فرد معسر (سؤال حلّ/معالجة). **حدّ النطاق:** أنظمة إعادة التنظيم المالي/الإفلاس تشترط عادةً صفةً تجاريةً أو مهنيةً في المدين؛ ومدينٌ اقترض لبناء مسكنه الشخصي قد لا يشمله نطاقها — فلا تُصغْ استفساراً يفترض انطباقها.
+- *الاستفسارات:*
+  - تجريدي: «أثر إعسار المدين على إجراءات التنفيذ الجبري»
+  - تفكيكي: «إثبات الإعسار أمام قاضي التنفيذ وأثره على الحبس والبيع»
+  - تفكيكي: «حدود حماية مسكن المدين من الحجز التنفيذي عند رهنه»
+  - تفكيكي: «إعادة جدولة التمويل العقاري عند تعثر المدين عن السداد»
+  - تفكيكي: «الاعتراض على إجراءات الإخلاء التنفيذي وطلب وقفها»
+
+### مثال (٣) — عقد مقاولة
+
+**السؤال:** «تعاقدت مع مقاول لترميم محل وتأخر ٥ أشهر عن التسليم؛ أبغى أفسخ وآخذ تعويض.»
+- *الافتراضات:* عقد مقاولة بين طرفين خاصين، إخلال بالتزام التسليم في الموعد، الطرف يريد الفسخ والتعويض.
+- *المقصد:* معرفة حقه في فسخ العقد للإخلال والمطالبة بالتعويض عن التأخير.
+- *التكييف:* أحكام العقد وفسخه للإخلال والتعويض عن الضرر العقدي (سؤال حقّ + معالجة) → المحاور: شروط الفسخ للإخلال، الإعذار، التعويض/الشرط الجزائي عن التأخير.
+- *الاستفسارات:*
+  - تجريدي: «فسخ العقد عند الإخلال بالالتزام التعاقدي»
+  - تجريدي: «التعويض عن الضرر الناشئ عن الإخلال بالعقد»
+  - تفكيكي: «اشتراط الإعذار قبل المطالبة بالفسخ أو التعويض»
+  - تفكيكي: «الشرط الجزائي عن التأخير في تنفيذ الالتزام وسلطة القاضي في تعديله»
 
 ## Two mandatory conditions
 
@@ -144,8 +186,8 @@ Include at least one abstract (step-back) query to broaden coverage toward the g
 ## Output
 
 Produce Arabic search queries (Arabic only — never English). In each query's rationale, record (in Arabic):
-- The targeted angle: direct / step-back / decomposition.
-- Which legal issue or angle it covers.
+- The targeted angle: تجريدي (step-back) or تفكيكي (decomposition) — these are the only two.
+- Which legal issue it covers, and briefly how it follows from your Step-3 framing.
 
 ## Context blocks
 

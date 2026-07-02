@@ -135,12 +135,17 @@ def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
     cfg = get_model_config(key)
     if cfg.provider == "openrouter":
         return {"extra_body": {"reasoning": {"effort": "xhigh" if is_max else "medium"}}}
-    # Alibaba DashScope (OpenAI-compatible).
+    # Alibaba DashScope (OpenAI-compatible). DeepSeek-V4 on DashScope only
+    # honors reasoning_effort ∈ {high, max}; "medium" is silently dropped and the
+    # model falls back to default/minimal thinking (verified: medium expanders
+    # thought ~0-450 reasoning tokens, i.e. at/below the default slots, while
+    # reasoning_effort="max" produced 7k-17k). So map the non-max level to
+    # "high", the valid mid-tier value.
     if "deepseek" in key:
         return {
             "extra_body": {
                 "thinking": {"type": "enabled"},
-                "reasoning_effort": "max" if is_max else "medium",
+                "reasoning_effort": "max" if is_max else "high",
             }
         }
     return {
