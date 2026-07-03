@@ -3,6 +3,9 @@
 import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
+import { useSidebarStore } from "@/stores/sidebar-store";
+import { api, conversationsApi } from "@/lib/api";
+import { consumePendingIntent } from "@/lib/post-login-intent";
 
 interface Props {
   children: React.ReactNode;
@@ -14,13 +17,15 @@ interface Props {
 // immutable snapshot to prospects without an account; /terms + /privacy are
 // the public legal pages reached from the login footer; /pricing is the public
 // plans page (a pre-signup decision); /audiences is the public «ريحان يستهدف
-// مين؟» page — all reachable before signing up.
+// مين؟» page; /masking is the public «تقنيع المعرّفات» explainer linked from
+// the وضع السرية settings dialog — all reachable before signing up.
 const PUBLIC_PREFIXES = [
   "/blog",
   "/terms",
   "/privacy",
   "/pricing",
   "/audiences",
+  "/masking",
 ] as const;
 
 function isPublicPath(pathname: string | null): boolean {
@@ -68,6 +73,31 @@ export function AuthGuard({ children }: Props) {
       document.removeEventListener("visibilitychange", handleVisible);
     };
   }, [revalidateSession]);
+
+  // Post-login intent (blog_import plan §D6): an anonymous visitor clicked
+  // «اتحدث مع المدونة» on a public blog page → the intent was stashed in
+  // sessionStorage → they signed in (email, signup, or the OAuth full-page
+  // round-trip — all funnel through an authed render of this guard). This is
+  // the ONE consumer: create a conversation, import the blog as a note, land
+  // in the chat. ``consumePendingIntent`` clears on read, so re-renders and
+  // StrictMode double-effects can't run the flow twice. Best-effort — any
+  // failure (revoked token, network) just leaves the user on /chat normally.
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) return;
+    const intent = consumePendingIntent();
+    if (!intent) return;
+    void (async () => {
+      try {
+        const created = await conversationsApi.create({ case_id: null });
+        const newId = created.conversation.conversation_id;
+        await api.createBlogItem(newId, intent.token);
+        useSidebarStore.getState().setSelectedConversation(newId);
+        router.replace(`/chat/${newId}`);
+      } catch {
+        // Dropped silently — the default post-login landing takes over.
+      }
+    })();
+  }, [isLoading, isAuthenticated, router]);
 
   useEffect(() => {
     if (isLoading) return;

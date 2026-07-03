@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { BookText, Loader2 } from "lucide-react";
+import { BookText, Loader2, Plus } from "lucide-react";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
+import { useSidebarStore } from "@/stores/sidebar-store";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 // مدوناتي landing (/blogs). The route-group layout supplies the sidebar; this
@@ -26,6 +28,7 @@ function formatDate(iso: string): string {
 // eslint-disable-next-line import/no-default-export
 export default function MyBlogsPage() {
   const { data, isLoading, isError } = useMyBlogs();
+  const setImportBlogDialogOpen = useSidebarStore((s) => s.setImportBlogDialogOpen);
   const posts = data?.posts ?? [];
 
   return (
@@ -38,9 +41,19 @@ export default function MyBlogsPage() {
           <div>
             <h1 className="text-xl font-bold text-foreground">مدوناتي</h1>
             <p className="text-sm text-muted-foreground">
-              المقالات التي حفظتها من إجاباتك.
+              المقالات التي حفظتها من إجاباتك أو أضفتها برابط.
             </p>
           </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="ms-auto gap-1.5"
+            onClick={() => setImportBlogDialogOpen(true)}
+          >
+            <Plus className="h-4 w-4" />
+            إضافة برابط
+          </Button>
         </header>
 
         {isLoading ? (
@@ -76,6 +89,11 @@ export default function MyBlogsPage() {
                   <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
                     {post.display_mode === "title" ? "مدونة" : "سؤال"}
                   </span>
+                  {post.is_imported && (
+                    <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground">
+                      مستوردة
+                    </span>
+                  )}
                   <span
                     className={
                       "inline-flex items-center gap-1 text-[10px] font-medium " +

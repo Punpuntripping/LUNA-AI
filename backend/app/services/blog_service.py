@@ -64,6 +64,11 @@ __all__ = [
     "list_my_blogs",
     "set_post_public",
     "make_snippet",
+    "extract_blog_token",
+    "resolve_post_by_token",
+    "import_post_for_user",
+    "create_blog_item",
+    "to_my_blog_item",
 ]
 
 
@@ -319,6 +324,366 @@ def assert_publishable(item: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# IMPORT (blog → مدوناتي library / blog → conversation note)
+# .claude/plans/blog_import.md
+# ---------------------------------------------------------------------------
+
+# A blog token is 32 lowercase hex chars (encode(gen_random_bytes(16),'hex')).
+# Accept either a full share URL (…/blog/<token>) or a bare token.
+_TOKEN_IN_URL_RE = re.compile(r"/blog/([0-9a-f]{32})(?![0-9a-f])")
+_BARE_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+# Fields the import paths need: snapshot payload + identity/provenance.
+# ``source_item_id`` = the workspace item the post was originally shared from —
+# the conversation-import path copies that item's reference rows for a
+# full-fidelity المراجع panel.
+_RESOLVE_FIELDS = (
+    "post_id, owner_user_id, source_post_id, source_item_id, subtype, "
+    "question_text, title, content_md, references_json, display_mode, "
+    "is_public, created_at"
+)
+
+
+def extract_blog_token(raw: str) -> Optional[str]:
+    """Pull a blog token out of a pasted share URL or a bare token string.
+
+    Host-agnostic (matches prod, localhost, any mirror) — only the
+    ``/blog/<32-hex>`` path shape matters. Returns ``None`` when nothing
+    token-shaped is present.
+    """
+    text = (raw or "").strip().lower()
+    if not text:
+        return None
+    m = _TOKEN_IN_URL_RE.search(text)
+    if m:
+        return m.group(1)
+    if _BARE_TOKEN_RE.match(text):
+        return text
+    return None
+
+
+def resolve_post_by_token(supabase: SupabaseClient, token: str) -> Optional[dict]:
+    """Fetch the FULL row of a published, non-deleted post by token.
+
+    The import-path sibling of ``get_public_post``: same access rule (a valid
+    token of a published post is sufficient — identical to viewing), but it
+    returns identity/provenance fields (``post_id``, ``owner_user_id``,
+    ``source_post_id``) and does NOT bump ``view_count`` (importing is not a
+    page view).
+    """
+    try:
+        result = (
+            supabase.table("blog_posts")
+            .select(_RESOLVE_FIELDS)
+            .eq("token", token)
+            .eq("is_published", True)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error resolving blog post by token: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب المدونة",
+        )
+    if result is None or result.data is None:
+        return None
+    return result.data
+
+
+def to_my_blog_item(row: dict) -> dict:
+    """Project a blog_posts row into the MyBlogItem card dict (مدوناتي shape)."""
+    return {
+        "post_id": row.get("post_id"),
+        "token": row.get("token"),
+        "title": row.get("title"),
+        "snippet": make_snippet(row.get("content_md") or ""),
+        "subtype": row.get("subtype"),
+        "display_mode": row.get("display_mode") or "question",
+        "is_public": bool(row.get("is_public")),
+        "is_imported": row.get("source_post_id") is not None,
+        "created_at": row.get("created_at"),
+    }
+
+
+def import_post_for_user(
+    supabase: SupabaseClient,
+    *,
+    user_id: str,
+    token: str,
+) -> tuple[dict, bool]:
+    """Snapshot-copy the published post behind ``token`` into ``user_id``'s مدوناتي.
+
+    Returns ``(row, already_saved)``. Dedup model (root propagation):
+    ``source_post_id`` always stores the ROOT original post_id — copying a copy
+    carries the copy's ``source_post_id`` forward — so one user can hold at most
+    one live post per root (authored or imported). The copy gets its own
+    DB-minted token (independently re-shareable), ``is_published=true``,
+    ``is_public=false`` (never auto-gallery-listed).
+    """
+    post = resolve_post_by_token(supabase, token)
+    if post is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المدونة غير موجودة أو تم إلغاء نشرها",
+        )
+
+    root_id = post.get("source_post_id") or post["post_id"]
+
+    # Caller pasted a token of their own post → nothing to copy.
+    if post["owner_user_id"] == user_id:
+        return {**post, "token": token}, True
+
+    def _find_existing() -> Optional[dict]:
+        """The caller's live post for this root — authored or imported."""
+        result = (
+            supabase.table("blog_posts")
+            .select(_RESOLVE_FIELDS + ", token")
+            .eq("owner_user_id", user_id)
+            .is_("deleted_at", "null")
+            .or_(f"post_id.eq.{root_id},source_post_id.eq.{root_id}")
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        return rows[0] if rows else None
+
+    try:
+        existing = _find_existing()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error checking existing blog import: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء استيراد المدونة",
+        )
+    if existing is not None:
+        return existing, True
+
+    payload: dict[str, Any] = {
+        "owner_user_id": user_id,
+        "source_post_id": root_id,
+        # source_item_id deliberately NOT copied — it references the original
+        # author's workspace item, meaningless (and misleading) on the copy.
+        "subtype": post.get("subtype"),
+        "question_text": post.get("question_text") or "",
+        "title": post.get("title"),
+        "content_md": post.get("content_md") or "",
+        "references_json": post.get("references_json") or [],
+        "display_mode": post.get("display_mode") or "question",
+        "is_published": True,
+    }
+    try:
+        result = supabase.table("blog_posts").insert(payload).execute()
+        row = (result.data or [None])[0]
+    except Exception as e:  # noqa: BLE001
+        # Concurrent double-import: the partial unique index
+        # (owner_user_id, source_post_id) rejects the second insert — re-read.
+        if "23505" in str(getattr(e, "code", "")) or "uq_blog_posts_owner_source" in str(e):
+            try:
+                existing = _find_existing()
+            except Exception:  # noqa: BLE001
+                existing = None
+            if existing is not None:
+                return existing, True
+        logger.exception("Error importing blog post: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء استيراد المدونة",
+        )
+
+    if not row:
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء استيراد المدونة",
+        )
+    return row, False
+
+
+# Default subtype when the snapshot carries none — renders as تحليل قانوني,
+# the same treatment as a native deep_search output.
+_DEFAULT_IMPORT_SUBTYPE = "legal_synthesis"
+_ITEM_TITLE_MAX = 150
+
+
+def _materialize_references(
+    supabase: SupabaseClient,
+    wi_id: str,
+    post: dict,
+) -> int:
+    """Give the imported WI a working المراجع panel by writing its
+    ``workspace_item_references`` rows. Returns rows written.
+
+    Primary path: copy the ORIGINAL workspace item's rows (``used=true`` only —
+    the share snapshot itself was frozen ``used_only=True``). The original is
+    ``post.source_item_id``; for an imported copy (``source_post_id`` set,
+    ``source_item_id`` deliberately not copied) it's resolved off the ROOT
+    post. Row copies carry ``item_id`` (source-table PK) verbatim, so even
+    compliance refs — whose ``ref_id`` hash is irreversible — reconstruct
+    fully on read.
+
+    Fallback (original rows gone / editorial posts without a WI): rebuild rows
+    from the frozen ``references_json``. ``ref_id`` recovers regulations
+    (``reg:<chunk uuid>``) and cases (``case:<case_ref>``) completely;
+    compliance rows get ``item_id=NULL`` and render as stub cards.
+
+    Best-effort like ``persist_item_references``: failures are logged and
+    swallowed — a refs hiccup must not fail the import (the item still
+    renders; the panel degrades).
+    """
+    try:
+        source_item_id = post.get("source_item_id")
+        if not source_item_id and post.get("source_post_id"):
+            root = (
+                supabase.table("blog_posts")
+                .select("source_item_id")
+                .eq("post_id", post["source_post_id"])
+                .maybe_single()
+                .execute()
+            )
+            if root is not None and root.data is not None:
+                source_item_id = root.data.get("source_item_id")
+
+        payloads: list[dict[str, Any]] = []
+
+        if source_item_id:
+            rows = (
+                supabase.table("workspace_item_references")
+                .select(
+                    "item_id, ref_id, domain, n, relevance, "
+                    "sub_queries, content_word_count"
+                )
+                .eq("wi_id", str(source_item_id))
+                .eq("used", True)
+                .execute()
+            ).data or []
+            payloads = [
+                {**row, "wi_id": wi_id, "used": True}
+                for row in rows
+                if row.get("ref_id")
+            ]
+
+        if not payloads:
+            for ref in post.get("references_json") or []:
+                ref_id = (ref.get("ref_id") or "").strip()
+                domain = ref.get("domain")
+                n = ref.get("n")
+                if not ref_id or n is None or domain not in ("regulations", "cases", "compliance"):
+                    continue
+                item_uuid = None
+                if domain == "regulations" and ref_id.startswith("reg:"):
+                    item_uuid = ref_id[4:]
+                payloads.append({
+                    "wi_id": wi_id,
+                    "item_id": item_uuid,
+                    "ref_id": ref_id,
+                    "domain": domain,
+                    "n": int(n),
+                    "relevance": ref.get("relevance") or "medium",
+                    "used": True,  # the snapshot froze used_only refs
+                    "sub_queries": [],
+                    "content_word_count": 0,
+                })
+
+        if not payloads:
+            return 0
+
+        supabase.table("workspace_item_references").insert(payloads).execute()
+        return len(payloads)
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "blog import: reference materialization failed for wi_id=%s: %s",
+            wi_id, e,
+        )
+        return 0
+
+
+def create_blog_item(
+    supabase: SupabaseClient,
+    *,
+    user_id: str,
+    conversation_id: str,
+    token: str,
+) -> tuple[dict, bool]:
+    """Copy the published post behind ``token`` into the conversation as a
+    ``kind=agent_search`` workspace item (تحليل قانوني) with a REAL المراجع
+    panel. Returns ``(item_row, already_attached)``.
+
+    ``agent_search`` (not ``note``) so the import gets the exact same
+    treatment as a native search output: read-only viewer, clickable [n]
+    citations resolving through ``GET /workspace/{id}/references``, unfold
+    manifest for the agents, action-bar share/feedback. References are
+    materialized via ``_materialize_references`` right after the insert.
+
+    Ownership of the conversation is verified here. Dedup: one live import per
+    root post per conversation, keyed on ``metadata->>'source_post_id'``
+    (root-propagated, same key as مدوناتي import; kind-agnostic so older
+    imports also match). Summary is set at insert (the blog snippet) so the
+    router context is populated without an analyzer pass.
+    """
+    # Lazy imports — matches the workspace_service ↔ message_service convention.
+    from backend.app.services.message_service import verify_conversation_ownership
+    from backend.app.services.workspace_service import create_workspace_item
+
+    verify_conversation_ownership(supabase, conversation_id, user_id)
+
+    post = resolve_post_by_token(supabase, token)
+    if post is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المدونة غير موجودة أو تم إلغاء نشرها",
+        )
+
+    root_id = post.get("source_post_id") or post["post_id"]
+
+    try:
+        existing = (
+            supabase.table("workspace_items")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .eq("metadata->>source_post_id", root_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+        rows = existing.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error checking existing blog import: %s", e)
+        rows = []
+    if rows:
+        return rows[0], True
+
+    question_text = (post.get("question_text") or "").strip()
+    title = (post.get("title") or "").strip() or question_text[:_ITEM_TITLE_MAX].strip() or "مدونة مستوردة"
+    content_md = post.get("content_md") or ""
+
+    item = create_workspace_item(
+        supabase,
+        user_id,
+        kind="agent_search",
+        created_by="user",
+        title=title,
+        conversation_id=conversation_id,
+        content_md=content_md,
+        summary=make_snippet(content_md, 400),
+        metadata={
+            "subtype": post.get("subtype") or _DEFAULT_IMPORT_SUBTYPE,
+            "source_post_id": root_id,
+            "source_token": token,
+        },
+    )
+
+    _materialize_references(supabase, item["item_id"], post)
+    return item, False
+
+
+# ---------------------------------------------------------------------------
 # REVOKE (owner-scoped soft delete)
 # ---------------------------------------------------------------------------
 
@@ -469,7 +834,7 @@ def list_my_blogs(
             supabase.table("blog_posts")
             .select(
                 "post_id, token, title, content_md, subtype, "
-                "display_mode, is_public, created_at"
+                "display_mode, is_public, source_post_id, created_at"
             )
             .eq("owner_user_id", user_id)
             .is_("deleted_at", "null")
@@ -486,20 +851,7 @@ def list_my_blogs(
         )
 
     rows = result.data or []
-    return [
-        {
-            "post_id": row.get("post_id"),
-            "token": row.get("token"),
-            "title": row.get("title"),
-            "snippet": make_snippet(row.get("content_md") or ""),
-            "subtype": row.get("subtype"),
-            "display_mode": row.get("display_mode") or "question",
-            "is_public": bool(row.get("is_public")),
-            "created_at": row.get("created_at"),
-        }
-        for row in rows
-        if row.get("post_id")
-    ]
+    return [to_my_blog_item(row) for row in rows if row.get("post_id")]
 
 
 def set_post_public(

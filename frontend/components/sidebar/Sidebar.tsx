@@ -130,8 +130,8 @@ function NavPill({
             </TooltipContent>
           </Tooltip>
         ) : (
-          // No create action (e.g. مدوناتي): reserve the same slot the "+" button
-          // would occupy so the count stays aligned with the other pills' counts.
+          // No create action: reserve the same slot the "+" button would
+          // occupy so the count stays aligned with the other pills' counts.
           <span className="h-5 w-5 shrink-0" aria-hidden />
         )}
       </div>
@@ -149,6 +149,7 @@ export function Sidebar() {
     setSelectedConversation,
     setCreateCaseDialogOpen,
     setCreateTemplateDialogOpen,
+    setImportBlogDialogOpen,
   } = useSidebarStore();
 
   const { data: convData } = useConversations(null);
@@ -190,6 +191,11 @@ export function Sidebar() {
   const handleNewTemplate = () => {
     if (activeTab !== "templates") setActiveTab("templates");
     setCreateTemplateDialogOpen(true);
+  };
+
+  const handleImportBlog = () => {
+    if (activeTab !== "blogs") setActiveTab("blogs");
+    setImportBlogDialogOpen(true);
   };
 
   return (
@@ -262,6 +268,8 @@ export function Sidebar() {
             count={myBlogsCount}
             active={activeTab === "blogs"}
             onSelect={() => setActiveTab("blogs")}
+            onCreate={handleImportBlog}
+            createTooltip="إضافة مدونة برابط"
           />
         </div>
 

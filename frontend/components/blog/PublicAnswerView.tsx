@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel, referenceLabel } from "@/components/workspace/ReferencePanel";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
+import { ChatWithBlogButton } from "@/components/blog/ChatWithBlogButton";
 import type { BlogPostPublic } from "@/types";
 
 // Subtype → Arabic chip label. Mirrors WorkspaceCard.tsx SUBTYPE_LABEL so the
@@ -27,7 +28,9 @@ interface PublicAnswerViewProps {
  * (السؤال block → answer → references).
  *
  * Anon-accessible: receives the frozen snapshot (``content_md`` +
- * ``references``) as props — NO auth hooks, NO useWorkspaceItemReferences.
+ * ``references``) as props — NO useWorkspaceItemReferences. The only
+ * auth-aware element is the ``ChatWithBlogButton`` action, which degrades to
+ * a login-redirect for anonymous readers.
  *
  * The brand header, «جرّب ريحان مجاناً» CTA, and footer come from the shared
  * ``BlogPageShell`` — this component only supplies the reading ``<main>``.
@@ -128,6 +131,11 @@ export function PublicAnswerView({ post }: PublicAnswerViewProps) {
             </h1>
           </header>
         )}
+
+        {/* Chat-with-blog action — between the question/heading and the answer */}
+        <div className="mt-4 flex justify-center">
+          <ChatWithBlogButton className="h-8 gap-1.5 px-3 text-xs" />
+        </div>
 
         {/* Answer + references — same fluidity as the in-app artifact view */}
         <section className="mt-4 flex min-h-[40vh] flex-col rounded-xl border bg-card shadow-sm">

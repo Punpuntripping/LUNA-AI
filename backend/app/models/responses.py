@@ -352,7 +352,11 @@ class PublicBlogsResponse(BaseModel):
 
 
 class MyBlogItem(BaseModel):
-    """One row in مدوناتي (the author's own blogs) — owner-scoped."""
+    """One row in مدوناتي (the caller's own blogs) — owner-scoped.
+
+    ``is_imported`` = the row is a snapshot copy saved from someone else's
+    share link (``source_post_id`` set), not authored by the caller.
+    """
     post_id: str
     token: str
     title: Optional[str] = None
@@ -360,6 +364,7 @@ class MyBlogItem(BaseModel):
     subtype: Optional[str] = None
     display_mode: str = "question"
     is_public: bool = False
+    is_imported: bool = False
     created_at: str
 
 
@@ -371,6 +376,29 @@ class MyBlogsResponse(BaseModel):
     """
     can_publish_public: bool = False
     posts: list[MyBlogItem] = []
+
+
+class ImportBlogResponse(BaseModel):
+    """POST /api/v1/blogs/import — save a shared blog into مدوناتي.
+
+    ``already_saved`` = the caller already held a live post for this root
+    (authored it, or imported it before); ``post`` is that existing row.
+    """
+    post: MyBlogItem
+    already_saved: bool = False
+
+
+class BlogItemResponse(BaseModel):
+    """POST /api/v1/conversations/{id}/blog-items — blog → conversation.
+
+    The copy is a ``kind='agent_search'`` workspace item (تحليل قانوني) whose
+    ``workspace_item_references`` rows are materialized from the original
+    shared item, so it gets the same المراجع treatment as a native search
+    output. ``already_attached`` = a live import for this root post already
+    exists in the conversation; ``item`` is that existing row.
+    """
+    item: WorkspaceItemResponse
+    already_attached: bool = False
 
 
 # ── Resumable uploads (TUS) ─────────────────────────────

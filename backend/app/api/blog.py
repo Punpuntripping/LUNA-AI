@@ -19,6 +19,11 @@ gallery (``is_public=true``).
     DELETE /blogs/{post_id}/publish          — auth, owner. Retract a post from
                                                the public gallery.
     DELETE /blog/posts/{post_id}             — auth, owner-only. Revoke a post.
+    POST   /blogs/import                     — auth. Save a pasted share link
+                                               into مدوناتي (snapshot copy).
+    POST   /conversations/{id}/blog-items    — auth. Copy a blog into a
+                                               conversation as an agent_search
+                                               item with real references.
 
 Snapshot model: at publish time we freeze ``content_md`` + the fully-resolved
 ``Reference[]`` into the post row, so the public page never touches live
@@ -43,7 +48,9 @@ from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.models.responses import (
     BlogCardPublic,
+    BlogItemResponse,
     BlogPostPublicResponse,
+    ImportBlogResponse,
     MyBlogItem,
     MyBlogsResponse,
     PublicBlogsResponse,
@@ -51,6 +58,7 @@ from backend.app.models.responses import (
     ShareDraftResponse,
     SuccessResponse,
 )
+from backend.app.api.workspace import _to_response as _wi_to_response
 from backend.app.services import blog_service, workspace_service
 from backend.app.services.case_service import get_user_id
 from backend.app.services.references_service import fetch_item_references
@@ -81,6 +89,15 @@ class ShareArtifactRequest(BaseModel):
     question_text: str = Field("", max_length=5000)
     display_mode: str = Field("question")
     title: Optional[str] = Field(None, max_length=300)
+
+
+class ImportBlogRequest(BaseModel):
+    """POST /blogs/import and POST /conversations/{id}/blog-items.
+
+    ``token`` accepts either a full share URL (…/blog/<token>) or a bare
+    32-hex token — the handler extracts tolerantly via ``extract_blog_token``.
+    """
+    token: str = Field(..., min_length=1, max_length=2000)
 
 
 # ============================================
@@ -316,6 +333,87 @@ async def list_my_blogs(
     return MyBlogsResponse(
         can_publish_public=can_pub,
         posts=[MyBlogItem(**r) for r in rows],
+    )
+
+
+# ============================================
+# IMPORT — shared blog → مدوناتي / → conversation note
+# (.claude/plans/blog_import.md)
+# ============================================
+
+
+@router.post(
+    "/blogs/import",
+    response_model=ImportBlogResponse,
+)
+async def import_blog(
+    body: ImportBlogRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Save the published post behind a pasted share URL/token into the
+    caller's مدوناتي as a snapshot copy (own DB-minted token, ``is_public``
+    false, ``source_post_id`` = root original for dedup).
+
+    Access rule = viewing rule: any valid token of a published post imports.
+    Idempotent: an existing live post for the same root (authored or imported)
+    is returned with ``already_saved=true`` instead of a duplicate.
+    """
+    token = blog_service.extract_blog_token(body.token)
+    if token is None:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="رابط المدونة غير صالح",
+        )
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    row, already_saved = await run_db(
+        blog_service.import_post_for_user,
+        supabase, user_id=user_id, token=token,
+    )
+    return ImportBlogResponse(
+        post=MyBlogItem(**blog_service.to_my_blog_item(row)),
+        already_saved=already_saved,
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/blog-items",
+    response_model=BlogItemResponse,
+)
+async def create_blog_item(
+    conversation_id: str,
+    body: ImportBlogRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Copy the published post behind a token into the conversation as a
+    ``kind=agent_search`` workspace item — تحليل قانوني with a working
+    المراجع panel («اتحدث مع المدونة» / composer paste-chip).
+
+    Conversation ownership is verified in the service. Idempotent per
+    conversation+root post (``already_attached=true`` returns the existing
+    item). The 15-item cap surfaces as an Arabic 400.
+    """
+    validate_uuid(conversation_id, "معرف المحادثة")
+    token = blog_service.extract_blog_token(body.token)
+    if token is None:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="رابط المدونة غير صالح",
+        )
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    item, already_attached = await run_db(
+        blog_service.create_blog_item,
+        supabase,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        token=token,
+    )
+    return BlogItemResponse(
+        item=_wi_to_response(item),
+        already_attached=already_attached,
     )
 
 

@@ -4,7 +4,9 @@ import { useParams, useRouter } from "next/navigation";
 import { Newspaper } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
+import { useSidebarStore } from "@/stores/sidebar-store";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ImportBlogDialog } from "@/components/blogs/ImportBlogDialog";
 import type { MyBlogItem } from "@/types";
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
@@ -72,6 +74,11 @@ function BlogItem({ blog }: { blog: MyBlogItem }) {
           <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
             {modeLabel}
           </span>
+          {blog.is_imported && (
+            <span className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-medium leading-none text-accent-foreground">
+              مستوردة
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 text-[10px] font-medium leading-none text-muted-foreground">
             <span
               className={cn(
@@ -93,6 +100,8 @@ function BlogItem({ blog }: { blog: MyBlogItem }) {
 
 export function BlogList() {
   const { data, isLoading, isError } = useMyBlogs();
+  const isImportOpen = useSidebarStore((s) => s.isImportBlogDialogOpen);
+  const setImportOpen = useSidebarStore((s) => s.setImportBlogDialogOpen);
   const blogs = data?.posts ?? [];
 
   let body: React.ReactNode;
@@ -134,6 +143,7 @@ export function BlogList() {
     <div className="flex flex-col flex-1 min-h-0">
       <SectionHeader>مدوناتي</SectionHeader>
       {body}
+      <ImportBlogDialog open={isImportOpen} onOpenChange={setImportOpen} />
     </div>
   );
 }

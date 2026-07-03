@@ -96,10 +96,20 @@ export function useSendMessage(): UseSendMessageReturn {
       // any upload is in flight). Failed / cancelled files contribute
       // no attachment_ids — we silently drop them so the message still
       // sends with whatever made it through.
-      const { pendingFiles, clearPendingFiles } = useChatStore.getState();
+      const { pendingFiles, clearPendingFiles, pendingBlogs, clearPendingBlogs } =
+        useChatStore.getState();
       const attachmentIds: string[] = pendingFiles
         .filter((pf) => pf.uploadStatus === "completed" && pf.itemId)
         .map((pf) => pf.itemId as string);
+
+      // Pasted blog chips (blog_import plan §D4): their notes were imported at
+      // paste time; ready chips contribute their note item_ids alongside file
+      // attachments so the note links to this message like any attachment.
+      attachmentIds.push(
+        ...pendingBlogs
+          .filter((pb) => pb.status === "ready" && pb.itemId)
+          .map((pb) => pb.itemId as string),
+      );
 
       // Build optimistic attachment list from pending files (for UI display).
       // We carry every pending file into the optimistic bubble so the user
@@ -117,9 +127,23 @@ export function useSendMessage(): UseSendMessageReturn {
         file_size: pf.size,
       }));
 
+      // Ready blog chips join the optimistic bubble too.
+      optimisticAttachments.push(
+        ...pendingBlogs
+          .filter((pb) => pb.status === "ready" && pb.itemId)
+          .map((pb) => ({
+            id: pb.id,
+            document_id: pb.itemId as string,
+            attachment_type: "file" as const,
+            filename: (pb.title ?? "").trim() || "مدونة",
+            file_size: 0,
+          })),
+      );
+
       // Clear pending files immediately after capture — the bytes already
       // live on Supabase, the workspace cache will refresh on its own.
       if (pendingFiles.length > 0) clearPendingFiles();
+      if (pendingBlogs.length > 0) clearPendingBlogs();
 
       // If no text but files are pending, use a default (backend requires min_length=1)
       const messageContent = content || (optimisticAttachments.length > 0 ? "مرفق" : "");

@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
 import { BlogTableOfContents } from "@/components/blog/BlogTableOfContents";
+import { ChatWithBlogButton } from "@/components/blog/ChatWithBlogButton";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import {
   ReferencePanel,
@@ -49,7 +50,9 @@ interface BlogArticleViewProps {
  * (when the body has ≥2 headings), the article body, and the reference panel.
  *
  * Anon-accessible: receives the frozen snapshot (``content_md`` +
- * ``references``) as props — NO auth hooks.
+ * ``references``) as props. The only auth-aware element is the
+ * ``ChatWithBlogButton`` action, which degrades to a login-redirect for
+ * anonymous readers.
  *
  * Citation fluidity mirrors PublicAnswerView / AgentSearchViewer EXACTLY:
  * clicking ``[n]`` in the body sets ``focusedN`` (re-armed via
@@ -127,8 +130,8 @@ export function BlogArticleView({ post }: BlogArticleViewProps) {
             ريحان{bylineDate ? ` · ${bylineDate}` : ""}
           </p>
 
-          {/* Unobtrusive copy action under the byline */}
-          <div className="mt-4 flex justify-center">
+          {/* Unobtrusive actions under the byline: copy + chat-with-blog */}
+          <div className="mt-4 flex justify-center gap-2">
             <Button
               type="button"
               variant="secondary"
@@ -149,6 +152,7 @@ export function BlogArticleView({ post }: BlogArticleViewProps) {
                 </>
               )}
             </Button>
+            <ChatWithBlogButton className="h-7 gap-1.5 px-2 text-[11px]" />
           </div>
         </header>
 

@@ -38,10 +38,12 @@ export default function ChatEmptyPage() {
     [isCreating, createConversation, router]
   );
 
-  // Create-on-attach: the user picked file(s) in this brand-new chat before any
-  // conversation exists. Create + store the conversation now, stash the files
-  // (and let ChatInput carry the draft), and navigate — the destination
-  // ChatInput resumes their uploads once it mounts with the new id.
+  // Create-on-attach: the user picked file(s) — or pasted blog link(s), which
+  // arrive with an empty ``files`` array after ChatInput stashed the tokens in
+  // ``pendingBlogTokens`` — in this brand-new chat before any conversation
+  // exists. Create + store the conversation now, stash the files (ChatInput
+  // carries the draft), and navigate — the destination ChatInput resumes the
+  // uploads / imports once it mounts with the new id.
   const handleRequireConversation = useCallback(
     (files: File[]) => {
       if (isCreating) return;
@@ -59,6 +61,7 @@ export default function ChatEmptyPage() {
           },
           onError: () => {
             useChatStore.getState().clearPendingAttachFiles();
+            useChatStore.getState().clearPendingBlogTokens();
             useChatStore.getState().setPendingComposerDraft(null);
             setIsCreating(false);
           },

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { PendingFile, SSEQuotaExceeded } from "@/types";
+import type { PendingBlog, PendingFile, SSEQuotaExceeded } from "@/types";
 
 const DEFAULT_SPLIT_RATIO = 50;
 const SPLIT_RATIO_KEY = "luna.workspace.splitRatio";
@@ -62,6 +62,13 @@ interface ChatState {
   pendingAttachFiles: File[];
   pendingComposerDraft: string | null;
   pendingMessage: string | null;
+  // Blog share-links pasted into the composer, shown as chips next to file
+  // attachments (blog_import plan §D4). ``pendingBlogs`` are the live chips;
+  // ``pendingBlogTokens`` is the new-chat carry slot (tokens pasted before a
+  // conversation exists — the ``pendingAttachFiles`` twin), consumed by the
+  // destination ChatInput after the create-conversation navigation.
+  pendingBlogs: PendingBlog[];
+  pendingBlogTokens: string[];
   error: string | null;
   // Per-conversation workspace pane state, keyed by conversation_id, so the
   // pane follows conversation navigation instead of leaking across them.
@@ -129,6 +136,13 @@ interface ChatState {
   setPendingAttachFiles: (files: File[]) => void;
   clearPendingAttachFiles: () => void;
   setPendingComposerDraft: (text: string | null) => void;
+  addPendingBlog: (blog: PendingBlog) => void;
+  removePendingBlog: (id: string) => void;
+  clearPendingBlogs: () => void;
+  /** Patch a blog chip in place; no-op when the id is gone (user removal race). */
+  updatePendingBlog: (id: string, partial: Partial<PendingBlog>) => void;
+  setPendingBlogTokens: (tokens: string[]) => void;
+  clearPendingBlogTokens: () => void;
   openWorkspaceItem: (conversationId: string, itemId: string) => void;
   /**
    * Open ``itemId`` in the pane AND mark reference ``n`` as focused so the
@@ -209,6 +223,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingAttachFiles: [],
   pendingComposerDraft: null,
   pendingMessage: null,
+  pendingBlogs: [],
+  pendingBlogTokens: [],
   error: null,
   workspaceByConversation: {},
   referencedItemsByMessage: {},
@@ -300,6 +316,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearPendingAttachFiles: () => set({ pendingAttachFiles: [] }),
 
   setPendingComposerDraft: (text) => set({ pendingComposerDraft: text }),
+
+  addPendingBlog: (blog) =>
+    set((state) => ({ pendingBlogs: [...state.pendingBlogs, blog] })),
+
+  removePendingBlog: (id) =>
+    set((state) => ({
+      pendingBlogs: state.pendingBlogs.filter((b) => b.id !== id),
+    })),
+
+  clearPendingBlogs: () => set({ pendingBlogs: [] }),
+
+  updatePendingBlog: (id, partial) =>
+    set((state) => ({
+      pendingBlogs: state.pendingBlogs.map((b) =>
+        b.id === id ? { ...b, ...partial } : b,
+      ),
+    })),
+
+  setPendingBlogTokens: (tokens) => set({ pendingBlogTokens: tokens }),
+
+  clearPendingBlogTokens: () => set({ pendingBlogTokens: [] }),
 
   openWorkspaceItem: (conversationId, itemId) =>
     set((state) => {
@@ -491,6 +528,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingAttachFiles: [],
       pendingComposerDraft: null,
       pendingMessage: null,
+      pendingBlogs: [],
+      pendingBlogTokens: [],
       error: null,
       workspaceByConversation: {},
       referencedItemsByMessage: {},

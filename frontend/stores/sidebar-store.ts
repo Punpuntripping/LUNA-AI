@@ -10,6 +10,7 @@ interface SidebarState {
   selectedCaseId: string | null;
   isCreateCaseDialogOpen: boolean;
   isCreateTemplateDialogOpen: boolean;
+  isImportBlogDialogOpen: boolean;
 
   toggle: () => void;
   setOpen: (open: boolean) => void;
@@ -19,6 +20,7 @@ interface SidebarState {
   setSelectedCase: (id: string | null) => void;
   setCreateCaseDialogOpen: (open: boolean) => void;
   setCreateTemplateDialogOpen: (open: boolean) => void;
+  setImportBlogDialogOpen: (open: boolean) => void;
 }
 
 export const useSidebarStore = create<SidebarState>((set) => ({
@@ -29,6 +31,7 @@ export const useSidebarStore = create<SidebarState>((set) => ({
   selectedCaseId: null,
   isCreateCaseDialogOpen: false,
   isCreateTemplateDialogOpen: false,
+  isImportBlogDialogOpen: false,
 
   toggle: () => set((s) => ({ isOpen: !s.isOpen })),
   setOpen: (isOpen) => set({ isOpen }),
@@ -45,4 +48,6 @@ export const useSidebarStore = create<SidebarState>((set) => ({
   setCreateCaseDialogOpen: (isCreateCaseDialogOpen) => set({ isCreateCaseDialogOpen }),
   setCreateTemplateDialogOpen: (isCreateTemplateDialogOpen) =>
     set({ isCreateTemplateDialogOpen }),
+  setImportBlogDialogOpen: (isImportBlogDialogOpen) =>
+    set({ isImportBlogDialogOpen }),
 }));

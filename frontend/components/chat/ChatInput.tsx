@@ -1,6 +1,13 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { Send, Square, Paperclip } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -8,11 +15,14 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { FilePreview } from "@/components/chat/FilePreview";
+import { BlogChips } from "@/components/chat/BlogChip";
+import { api, workspaceApi, ApiClientError } from "@/lib/api";
+import { workspaceKeys } from "@/hooks/use-workspace";
 import {
   runResumableUpload,
   type ImperativeUploadHandle,
 } from "@/hooks/use-resumable-upload";
-import type { PendingFile } from "@/types";
+import type { PendingBlog, PendingFile } from "@/types";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -37,6 +47,9 @@ const MAX_CHARS = 10_000;
 const MAX_FILES = 5;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
+// Blog paste-chips (blog_import plan §D4): max pasted blogs held in the
+// composer at once. A blog token is 32 lowercase hex chars.
+const MAX_BLOG_CHIPS = 3;
 
 export function ChatInput({
   onSend,
@@ -62,13 +75,20 @@ export function ChatInput({
   const removePendingFile = useChatStore((s) => s.removePendingFile);
   const updatePendingFile = useChatStore((s) => s.updatePendingFile);
   const clearPendingFiles = useChatStore((s) => s.clearPendingFiles);
+  const pendingBlogs = useChatStore((s) => s.pendingBlogs);
+  const addPendingBlog = useChatStore((s) => s.addPendingBlog);
+  const removePendingBlog = useChatStore((s) => s.removePendingBlog);
+  const updatePendingBlog = useChatStore((s) => s.updatePendingBlog);
+  const clearPendingBlogs = useChatStore((s) => s.clearPendingBlogs);
 
-  // Block send while any attachment is still uploading. Failed / cancelled
-  // files don't block — the user can either remove them or send anyway
-  // (only `completed` files contribute attachment_ids in use-chat.ts).
-  const hasInFlightUpload = pendingFiles.some(
-    (f) => f.uploadStatus === "queued" || f.uploadStatus === "uploading",
-  );
+  // Block send while any attachment is still uploading (or a pasted blog is
+  // still importing). Failed / cancelled entries don't block — the user can
+  // either remove them or send anyway (only `completed`/`ready` entries
+  // contribute attachment_ids in use-chat.ts).
+  const hasInFlightUpload =
+    pendingFiles.some(
+      (f) => f.uploadStatus === "queued" || f.uploadStatus === "uploading",
+    ) || pendingBlogs.some((b) => b.status === "loading");
 
   // Only count files the user can actually send. Failed/cancelled files in
   // the queue would otherwise let the send button activate with an empty
@@ -79,8 +99,13 @@ export function ChatInput({
     (f) => f.uploadStatus === "completed",
   ).length;
 
+  // Ready blog chips count like completed files for send purposes.
+  const sendableBlogCount = pendingBlogs.filter(
+    (b) => b.status === "ready" && b.itemId,
+  ).length;
+
   const canSend =
-    (content.trim().length > 0 || sendableFileCount > 0) &&
+    (content.trim().length > 0 || sendableFileCount > 0 || sendableBlogCount > 0) &&
     !isStreaming &&
     !disabled &&
     !hasInFlightUpload;
@@ -89,14 +114,16 @@ export function ChatInput({
   // is a global singleton so its `pendingFiles` array would otherwise carry
   // the previous conversation's attachments into the new one — visually
   // "pinned" and incorrectly attributed. Abort any in-flight uploads tied
-  // to the prior conversation, drop the cancel handles, and clear the queue.
+  // to the prior conversation, drop the cancel handles, and clear the queue
+  // (blog chips too — their notes belong to the prior conversation).
   // Keyed on `conversationId` so the effect re-runs only on navigation.
   useEffect(() => {
     const handles = uploadHandlesRef.current;
     handles.forEach((h) => h.cancel());
     handles.clear();
     clearPendingFiles();
-  }, [conversationId, clearPendingFiles]);
+    clearPendingBlogs();
+  }, [conversationId, clearPendingFiles, clearPendingBlogs]);
 
   // Abort any live tus uploads on unmount (e.g. user navigates away
   // mid-upload). Cancel handles also call the backend cancel endpoint
@@ -130,7 +157,7 @@ export function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = content.trim();
-    if (!trimmed && pendingFiles.length === 0) return;
+    if (!trimmed && pendingFiles.length === 0 && pendingBlogs.length === 0) return;
 
     if (trimmed.length > MAX_CHARS) {
       setValidationError(`الحد الأقصى ${MAX_CHARS.toLocaleString("ar-SA")} حرف`);
@@ -140,7 +167,7 @@ export function ChatInput({
     setValidationError(null);
     onSend(trimmed);
     setContent("");
-  }, [content, onSend, pendingFiles.length]);
+  }, [content, onSend, pendingFiles.length, pendingBlogs.length]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -257,6 +284,151 @@ export function ChatInput({
     startUploads(carried);
   }, [conversationId, startUploads]);
 
+  // Import pasted blog tokens as kind='agent_search' workspace items with a
+  // real المراجع panel (blog_import plan §D4) — the blog twin of startUploads:
+  // fire at paste time (pre-send), track per-chip status in the store, and let
+  // the send path collect the itemIds. ``createdByChip`` records whether THIS
+  // import created the item (vs. server dedup returning an existing one) so
+  // chip removal never deletes an item that existed before the paste.
+  const importBlogTokens = useCallback(
+    (tokens: string[]) => {
+      if (!conversationId || tokens.length === 0) return;
+
+      for (const token of tokens) {
+        const chipId = `blog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const chip: PendingBlog = {
+          id: chipId,
+          token,
+          title: null,
+          status: "loading",
+          itemId: null,
+          createdByChip: false,
+          errorMessage: null,
+        };
+        addPendingBlog(chip);
+
+        api
+          .createBlogItem(conversationId, token)
+          .then((res) => {
+            updatePendingBlog(chipId, {
+              status: "ready",
+              itemId: res.item.item_id,
+              title: res.item.title,
+              createdByChip: !res.already_attached,
+            });
+            void qc.invalidateQueries({
+              queryKey: workspaceKeys.byConversation(conversationId),
+            });
+          })
+          .catch((err) => {
+            updatePendingBlog(chipId, {
+              status: "failed",
+              errorMessage:
+                err instanceof ApiClientError
+                  ? err.message
+                  : "تعذّر استيراد المدونة",
+            });
+          });
+      }
+    },
+    [conversationId, addPendingBlog, updatePendingBlog, qc],
+  );
+
+  // New-chat handoff for pasted blogs: tokens pasted before a conversation
+  // existed were stashed in ``pendingBlogTokens`` (the pendingAttachFiles
+  // twin). Now that a conversation id is present, import them. Declared AFTER
+  // the conversationId-change clear effect so the fresh chips aren't wiped.
+  useEffect(() => {
+    if (!conversationId) return;
+    const carried = useChatStore.getState().pendingBlogTokens;
+    if (carried.length === 0) return;
+    useChatStore.getState().clearPendingBlogTokens();
+    importBlogTokens(carried);
+  }, [conversationId, importBlogTokens]);
+
+  // Detect blog share-links in pasted text: each unique ``/blog/<32-hex>``
+  // URL becomes a chip (the URL itself is stripped from the inserted text —
+  // "like an attachment"). Ordinary pastes fall through untouched. In a
+  // brand-new chat the tokens ride the create-on-attach flow via the store
+  // slot; the destination ChatInput's consume effect imports them.
+  const handlePaste = useCallback(
+    (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (!text || !text.toLowerCase().includes("/blog/")) return;
+
+      // Fresh regexes per call — module-level /g regexes carry lastIndex.
+      const tokenRe = /\/blog\/([0-9a-f]{32})(?![0-9a-f])/gi;
+      const stripRe = /(?:https?:\/\/[^\s]*)?\/blog\/[0-9a-f]{32}[^\s]*/gi;
+
+      const already = new Set(pendingBlogs.map((b) => b.token));
+      const tokens: string[] = [];
+      for (const m of text.matchAll(tokenRe)) {
+        const token = m[1].toLowerCase();
+        if (!already.has(token) && !tokens.includes(token)) tokens.push(token);
+      }
+      if (tokens.length === 0) return; // no NEW blog links — ordinary paste
+
+      e.preventDefault();
+      setValidationError(null);
+
+      const room = MAX_BLOG_CHIPS - pendingBlogs.length;
+      if (room <= 0) {
+        setValidationError(`الحد الأقصى ${MAX_BLOG_CHIPS} مدونات في الرسالة`);
+        return;
+      }
+      const capped = tokens.slice(0, room);
+
+      // Insert the pasted text minus the blog URLs at the caret position.
+      const remainder = text.replace(stripRe, " ").replace(/\s{2,}/g, " ").trim();
+      const target = e.currentTarget;
+      const start = target.selectionStart ?? content.length;
+      const end = target.selectionEnd ?? content.length;
+      const nextContent = remainder
+        ? content.slice(0, start) + remainder + content.slice(end)
+        : content;
+      if (remainder) setContent(nextContent);
+
+      // Brand-new chat: stash the tokens (+ draft) and ride the same
+      // create-then-navigate flow the file picker uses (with no files).
+      if (!conversationId) {
+        if (onRequireConversation) {
+          const store = useChatStore.getState();
+          store.setPendingBlogTokens([...store.pendingBlogTokens, ...capped]);
+          if (nextContent.trim()) store.setPendingComposerDraft(nextContent);
+          onRequireConversation([]);
+        } else {
+          setValidationError("ابدأ محادثة أولاً قبل إضافة المدونات");
+        }
+        return;
+      }
+
+      importBlogTokens(capped);
+    },
+    [pendingBlogs, content, conversationId, onRequireConversation, importBlogTokens],
+  );
+
+  // Remove a blog chip. If this chip's import CREATED the item (not a dedup
+  // reuse), delete it too — an accidental paste shouldn't leave a stray
+  // workspace item behind. Best-effort: a failed delete leaves the item in
+  // the pane where the user can remove it manually.
+  const handleRemoveBlog = useCallback(
+    (id: string) => {
+      const blog = useChatStore.getState().pendingBlogs.find((b) => b.id === id);
+      removePendingBlog(id);
+      if (blog?.itemId && blog.createdByChip && conversationId) {
+        workspaceApi
+          .delete(blog.itemId)
+          .then(() => {
+            void qc.invalidateQueries({
+              queryKey: workspaceKeys.byConversation(conversationId),
+            });
+          })
+          .catch(() => {});
+      }
+    },
+    [removePendingBlog, conversationId, qc],
+  );
+
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const picked = Array.from(e.target.files ?? []);
@@ -321,6 +493,14 @@ export function ChatInput({
         />
       )}
 
+      {pendingBlogs.length > 0 && (
+        <BlogChips
+          blogs={pendingBlogs}
+          onRemove={handleRemoveBlog}
+          className="mb-2"
+        />
+      )}
+
       {validationError && (
         <p className="text-xs text-destructive mb-2">{validationError}</p>
       )}
@@ -342,6 +522,7 @@ export function ChatInput({
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="اكتب رسالتك هنا..."
           minRows={1}
           maxRows={6}
