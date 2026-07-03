@@ -12,6 +12,12 @@ screenshots_temp/
 login-page-final.png
 agents_reports/
 tests/
+# privacy codec tests are durable (masking validation Layers 1-2) — re-include
+!shared/privacy/tests/
+# masking backend-wiring tests are durable too (rest of backend/tests stays local-only)
+!backend/tests/
+backend/tests/*
+!backend/tests/test_masking_wiring.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock

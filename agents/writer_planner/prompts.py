@@ -416,14 +416,23 @@ def _render_attached_items(items: list[WorkspaceItemSnapshot]) -> str:
     """
     if not items:
         return "(none)"
+    # وضع السرية: title + summary are stored REAL and reach the planner_decider
+    # LLM raw. Encode them at render via the active turn codec (passthrough when
+    # masking is disabled / no codec). The runner pre-mints this render once and
+    # persists the fakes BEFORE the decider runs; the WI-{seq} alias handle stays
+    # untouched. The shared snapshot object is NOT mutated (its real title feeds
+    # the user-facing save-offer title_hint), only this rendered string carries
+    # fakes.
+    from backend.app.services.masking_service import encode_active
+
     lines = []
     for it in items:
         wi_seq = getattr(it, "wi_seq", None)
         item_id = getattr(it, "item_id", "") or ""
         wi = _wi_label(wi_seq, debug_ref=str(item_id))
         kind = getattr(it, "kind", "") or ""
-        title = getattr(it, "title", "") or ""
-        summary = _truncate(getattr(it, "summary", None), max_chars=500)
+        title = encode_active(getattr(it, "title", "") or "")
+        summary = _truncate(encode_active(getattr(it, "summary", None)), max_chars=500)
         word_count = int(getattr(it, "word_count", 0) or 0)
         lines.append(
             f"  - {wi} | kind={kind} | word_count={word_count} | title={title!r}"
@@ -441,12 +450,21 @@ def _render_prior_artifacts(views: list[ArtifactSummaryView]) -> str:
     """
     if not views:
         return "(none)"
+    # وضع السرية: the proven turn-2..4 leak surface — prior-artifact summaries +
+    # titles are stored REAL and reached router/planner/writer_planner LLMs raw.
+    # Encode at render via the active turn codec (passthrough when disabled). The
+    # runner pre-mints + persists before the decider runs. The frozen view is not
+    # mutated (its real title also feeds the save-offer title_hint fallback) —
+    # only this rendered string carries fakes.
+    from backend.app.services.masking_service import encode_active
+
     lines = []
     for v in views:
         wi = _wi_label(getattr(v, "wi_seq", None), debug_ref=str(v.item_id))
-        summary = _truncate(v.summary, max_chars=500)
+        summary = _truncate(encode_active(v.summary), max_chars=500)
+        title = encode_active(v.title)
         lines.append(
-            f"  - {wi} | kind={v.kind} | word_count={v.word_count} | title={v.title!r}"
+            f"  - {wi} | kind={v.kind} | word_count={v.word_count} | title={title!r}"
         )
         if summary:
             lines.append(f"    summary: {summary}")

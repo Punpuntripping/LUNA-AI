@@ -161,6 +161,22 @@ async def generate_answer_headless(
         except Exception:  # noqa: BLE001
             pass
 
+    # وضع السرية: content_text was accumulated from the pipeline's RAW (encoded)
+    # token events — this headless path consumes handle_message DIRECTLY, so it
+    # does NOT get message_service's stream-decode. handle_message already reset
+    # its per-turn codec ContextVar by the time we get here, so build one
+    # EXPLICITLY for the bot user and decode ONCE, before both the persist
+    # (store-real) and the returned HeadlessResult. The produced workspace_item
+    # is decoded separately at the publisher (Phase 3). Passthrough when masking
+    # is disabled.
+    if content_text:
+        try:
+            from backend.app.services.masking_service import build_turn_codec, decode_text
+            _codec = await run_db(build_turn_codec, supabase, bot_user_id)
+            content_text = decode_text(_codec, content_text, emit=True)
+        except Exception:  # noqa: BLE001
+            logger.warning("headless: content decode failed; storing as-is", exc_info=True)
+
     # Persist the streamed chat text onto the assistant placeholder (best-effort
     # — keeps the throwaway conversation coherent; the real answer for a
     # deep_search route lives on the workspace_item, not this row).

@@ -236,7 +236,7 @@ def _fetch_item(supabase, item_id: str) -> dict | None:
     """
     res = (
         supabase.table("workspace_items")
-        .select("content_md, title, kind")
+        .select("content_md, title, kind, user_id")
         .eq("item_id", item_id)
         .is_("deleted_at", "null")
         .maybe_single()
@@ -293,11 +293,34 @@ async def run_artifact_editor(
             )
         return EditorResult(status="failed", change_summary=reason)
 
+    # وضع السرية: the editor sees the artifact injected whole and emits verbatim
+    # find/replace anchors against it. Encode the injected content + title so the
+    # editor LLM never sees raw PII; the anchors it produces are therefore in
+    # ENCODED space, and edit_supabase_md re-encodes the fresh-fetched content
+    # with the SAME turn codec so they match, decoding the final batch result
+    # before the write (store-real). Persist newly-minted fakes BEFORE the LLM.
+    # ``user_message`` + ``task`` already ride in encoded space (intake-encoded
+    # question / router quote), so they are left untouched. Passthrough when
+    # masking is disabled / no turn codec is active.
+    _content_md = row.get("content_md") or ""
+    _title = (row.get("title") or "").strip()
+    from backend.app.services.masking_service import active_codec, persist_new_mappings
+    _codec = active_codec()
+    if _codec is not None:
+        try:
+            _content_md = _codec.encode(_content_md)
+            _title = _codec.encode(_title)
+        except Exception:  # noqa: BLE001
+            logger.debug("artifact_editor: content encode failed", exc_info=True)
+        _editor_user_id = str(row.get("user_id") or "")
+        if _editor_user_id:
+            persist_new_mappings(supabase, _editor_user_id, _codec)
+
     deps = EditorDeps(
         supabase=supabase,
         item_id=item_id,
-        artifact_title=(row.get("title") or "").strip(),
-        artifact_content_md=row.get("content_md") or "",
+        artifact_title=_title,
+        artifact_content_md=_content_md,
         user_message=user_message,
         task=task,
     )

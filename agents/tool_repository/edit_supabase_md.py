@@ -378,13 +378,27 @@ def register_edit_supabase_md(agent: Agent) -> None:
         if edits and not pairs:
             return "No change: old_text and new_text are identical."
 
+        # وضع السرية: the editor generated its find/replace anchors against the
+        # ENCODED artifact injected into its prompt, but the DB row holds REAL
+        # content. Encode the fresh-fetched content with the SAME active turn
+        # codec so the anchors match, apply the batch in encoded space, then
+        # DECODE the whole result before the write (store-real). The diff we hand
+        # back to the LLM stays in encoded space (what it saw). ``prev_content``
+        # snapshots the ORIGINAL real content (one-level undo untouched).
+        # Passthrough when masking is disabled / no turn codec is active — the
+        # editor then also saw real content, so the anchors already match reals.
+        from backend.app.services.masking_service import active_codec, decode_text
+        _codec = active_codec()
+
         try:
             content, version = _fetch(supabase, item_id)
-            new_content, matches = apply_edits(content, pairs)
+            enc_content = _codec.encode(content) if _codec is not None else content
+            new_enc_content, matches = apply_edits(enc_content, pairs)
         except MatchError as exc:
             raise ModelRetry(exc.hint) from exc
 
-        diff = unified_diff(content, new_content, item_id)
+        # LLM-facing diff: computed in encoded space (matches what the editor saw).
+        diff = unified_diff(enc_content, new_enc_content, item_id)
         how_counts = Counter(m.how for m in matches)
         summary = (
             f"{len(matches)} edits: "
@@ -394,6 +408,12 @@ def register_edit_supabase_md(agent: Agent) -> None:
         if dry_run:
             return f"DRY RUN ({summary}) â€” nothing written:\n{diff}"
 
+        # Decode the applied result to REAL before persisting (store-real).
+        new_content = (
+            decode_text(_codec, new_enc_content, emit=False)
+            if _codec is not None
+            else new_enc_content
+        )
         if not _write(supabase, item_id, new_content, version, prev_content=content):
             raise ModelRetry(
                 f"Artifact {item_id} changed since you read it (concurrent edit). "

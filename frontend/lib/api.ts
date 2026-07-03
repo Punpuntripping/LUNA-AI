@@ -40,6 +40,9 @@ import type {
   ShareArtifactResponse,
   PublicBlogsResponse,
   MyBlogsResponse,
+  ImportBlogResponse,
+  BlogItemResponse,
+  BlogPostPublic,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 
@@ -305,6 +308,43 @@ export const api = {
     apiFetch<{ success: boolean }>(`/blog/posts/${postId}`, {
       method: "DELETE",
     }),
+
+  // -----------------------------------------------
+  // Blog import (.claude/plans/blog_import.md)
+  // -----------------------------------------------
+
+  /**
+   * Save a pasted share link/token into مدوناتي as a snapshot copy owned by
+   * the caller (own fresh token, never auto-public). Backend tolerantly
+   * extracts the token from a full URL or a bare 32-hex string. Idempotent
+   * per root post (``already_saved``).
+   */
+  importBlog: (tokenOrUrl: string) =>
+    apiFetch<ImportBlogResponse>(`/blogs/import`, {
+      method: "POST",
+      body: JSON.stringify({ token: tokenOrUrl }),
+    }),
+
+  /**
+   * Copy the blog snapshot behind a token into a conversation as a
+   * ``kind='agent_search'`` workspace item — تحليل قانوني with a real
+   * المراجع panel («اتحدث مع المدونة» / composer paste-chip). Idempotent per
+   * conversation+root post (``already_attached``).
+   */
+  createBlogItem: (conversationId: string, tokenOrUrl: string) =>
+    apiFetch<BlogItemResponse>(`/conversations/${conversationId}/blog-items`, {
+      method: "POST",
+      body: JSON.stringify({ token: tokenOrUrl }),
+    }),
+
+  /**
+   * Client-side read of a public post (anonymous endpoint) — used by the
+   * composer paste-chip to show the blog title before send. The server-side
+   * blog pages keep their own plain ``fetch``; this one rides apiFetch for
+   * the error mapping (a Bearer header on a public endpoint is harmless).
+   */
+  getPublicBlog: (token: string) =>
+    apiFetch<BlogPostPublic>(`/public/blog/${token}`, { method: "GET" }),
 };
 
 // -----------------------------------------------

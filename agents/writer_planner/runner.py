@@ -52,6 +52,7 @@ from shared.observability import get_logfire
 from .agent import WRITER_PLANNER_LIMITS, create_writer_planner_decider
 from .deps import WriterPlannerDeps, build_writer_planner_deps
 from .models import PlannerDecision, PlannerRole
+from .prompts import build_writer_planner_instructions
 from .walkers import build_analyzed_items_direct
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -101,6 +102,27 @@ def _pause_reason_for_tool(tool_name: str) -> Literal["clarify", "approve_plan"]
     if tool_name == "present_plan_for_approval":
         return "approve_plan"
     return "clarify"  # default — covers ask_user + any future deferred-with-no-mapping
+
+
+def _encode_template_titles(titles: list) -> list:
+    """Encode قوالبي titles the planner sees (وضع السرية). Passthrough when no
+    turn codec is active / masking disabled. Never raises — a hiccup keeps the
+    raw title rather than dropping the template from the planner's context.
+    """
+    from backend.app.services.masking_service import active_codec
+
+    codec = active_codec()
+    if codec is None or not titles:
+        return titles
+    import dataclasses
+
+    out = []
+    for t in titles:
+        try:
+            out.append(dataclasses.replace(t, title=codec.encode(t.title)))
+        except Exception:  # noqa: BLE001
+            out.append(t)
+    return out
 
 
 def _resolve_decision_aliases(
@@ -203,6 +225,12 @@ async def _build_writer_planner_deps_from_input(
         supabase=supabase,
         user_id=major_input.user_id,
     )
+    # وضع السرية: the planner reads these titles in its <my_templates> block —
+    # encode identifiers/emails in each so the planner LLM never sees raw PII.
+    # The TPL-{n} alias / template_id the planner selects by is untouched, so
+    # resolution is unaffected; the body is fetched + masked later at the writer
+    # prompt. Persist of any minted fakes happens before the planner agent.run.
+    user_templates = _encode_template_titles(user_templates)
 
     return build_writer_planner_deps(
         supabase=supabase,
@@ -384,6 +412,29 @@ async def handle_writer_planner_turn(
         # Fresh dispatch sends the user prompt; resume relies on history.
         user_prompt = major_input.describe_query if message_history is None else None
 
+        # وضع السرية: the dynamic instructions render <attached_items> +
+        # <prior_artifacts> (title + summary) through the active turn codec — the
+        # proven turn-2..4 eager-summary leak surface. That render runs INSIDE
+        # agent.run (too late to persist), so pre-mint the fakes here by rendering
+        # once (build_writer_planner_instructions is pure — the in-run render
+        # produces the identical encoded prompt, encode being idempotent).
+        from backend.app.services.masking_service import (
+            active_codec as _active_codec,
+            persist_new_mappings as _persist_new_mappings,
+        )
+        if _active_codec() is not None:
+            try:
+                build_writer_planner_instructions(deps)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "writer_planner: instruction pre-mint render failed", exc_info=True
+                )
+        # Flush any fakes minted above (attached/prior render) AND while encoding
+        # the قوالبي titles (deps.user_templates) BEFORE the planner LLM reads them —
+        # a fresh-process resume reloads the codec from DB. Delta-only + no-op when
+        # disabled.
+        _persist_new_mappings(supabase, major_input.user_id, _active_codec())
+
         # writer.plan span covers ONLY the planner-decider run; the executor
         # (writer.execute) and publish (publish.workspace_item) get their own
         # spans downstream.
@@ -544,6 +595,24 @@ async def handle_writer_planner_turn(
             detail_level=deps.style.detail_level,
             tone=deps.style.tone,
         )
+
+        # وضع السرية: the writer executor's system prompt is assembled by
+        # render_package_for_system_prompt, which encodes the whole package
+        # (templates + analyzed sources + plan). That render runs INSIDE agent.run
+        # (too late to persist), so pre-mint the fakes here by rendering+encoding
+        # once, then persist BEFORE the executor LLM runs (idempotent — the
+        # in-run render produces the identical encoded prompt). No-op/passthrough
+        # when masking is disabled or no turn codec is active.
+        _codec_exec = _active_codec()
+        if _codec_exec is not None:
+            try:
+                from agents.writer.prompts import render_package_for_system_prompt
+                # render already applies the encode; calling it here mints the
+                # fakes into the shared turn codec.
+                render_package_for_system_prompt(package)
+            except Exception:  # noqa: BLE001
+                logger.debug("writer_planner: package pre-mint render failed", exc_info=True)
+            _persist_new_mappings(supabase, major_input.user_id, _codec_exec)
 
         llm_output = await handle_writer_turn(package, exec_deps)
 

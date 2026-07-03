@@ -49,6 +49,38 @@ def get_detail_level(supabase: SupabaseClient, user_id: str) -> DetailLevel:
     return "medium"
 
 
+def get_privacy_masking(supabase: SupabaseClient, user_id: str) -> bool:
+    """Read ``privacy_masking`` from a user's preferences JSONB, default ``True``.
+
+    Identifier masking (وضع السرية) is privacy-by-default: only an explicit
+    ``false`` disables it (any other value — missing key, malformed row, null —
+    resolves to ``True``). Mirrors :func:`get_detail_level`'s resilience: called
+    by the pipeline (not routes), takes the resolved ``user_id`` (not the auth_id),
+    and swallows every error so a broken preferences row can never abort a turn.
+
+    The global env kill-switch ``settings.PRIVACY_MASKING_ENABLED`` gates the
+    feature server-side and is combined with this per-user flag by
+    ``masking_service.build_turn_codec``.
+    """
+    try:
+        res = (
+            supabase.table("user_preferences")
+            .select("preferences")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return True
+
+    rows = getattr(res, "data", None) or []
+    if not rows:
+        return True
+    prefs = rows[0].get("preferences") or {}
+    # Only an explicit boolean False disables; everything else stays ON.
+    return prefs.get("privacy_masking") is not False
+
+
 # ============================================
 # USER PREFERENCES
 # ============================================

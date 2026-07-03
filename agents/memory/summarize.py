@@ -56,6 +56,69 @@ ATTACHMENT_CONTEXT_COMPACTION_CLIP_CHARS = 1500
 # the inline OCR path).
 MIN_CONTENT_LENGTH_CHARS = 300
 
+
+# ---------------------------------------------------------------------------
+# Identifier masking (وضع السرية)
+# ---------------------------------------------------------------------------
+#
+# The summarizer is a Layer-4 memory agent that feeds real ``content_md`` +
+# conversation context to an LLM and stores the produced summary. Store-real
+# invariant: encode the LLM-bound inputs, decode the produced summary before it
+# is persisted (it re-encodes at the next assembly point).
+#
+# Context propagation: this function runs in THREE contexts —
+#   (A) inline in a chat turn (orchestrator's post-OCR summarize) — the turn's
+#       codec IS on the ContextVar (same task);
+#   (B) the ``/internal/summarize-workspace-item`` webhook (DB trigger) — DETACHED,
+#       no active codec;
+#   (C) the scheduled summary_sweeper — DETACHED, no active codec.
+# So we build the codec EXPLICITLY from the row's ``user_id`` when the ContextVar
+# is unset, rather than silently no-opping in (B)/(C). Reused when already set.
+
+
+def _summarize_codec(supabase, user_id: str):
+    """The active turn codec, or a freshly-built one for a detached call.
+
+    Returns ``None`` only when no ``user_id`` is available to build one (encode/
+    decode then degrade to passthrough). Resilient: a build failure is swallowed
+    by ``build_turn_codec`` (empty passthrough codec).
+    """
+    from backend.app.services.masking_service import active_codec, build_turn_codec
+
+    codec = active_codec()
+    if codec is not None:
+        return codec
+    if not user_id:
+        return None
+    try:
+        return build_turn_codec(supabase, user_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("summarize: explicit codec build failed", exc_info=True)
+        return None
+
+
+def _enc(codec, text: str) -> str:
+    """Encode one summarizer input surface. Passthrough on None/disabled/error."""
+    if codec is None or not text:
+        return text
+    try:
+        return codec.encode(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _dec(codec, text: str) -> str:
+    """Decode one summarizer output surface before store (store-real invariant).
+
+    DECODE is never gated by the enabled flag — a disabled codec still restores
+    fakes captured while masking was previously ON. Passthrough on None/error.
+    """
+    if codec is None or not text:
+        return text
+    from backend.app.services.masking_service import decode_text
+
+    return decode_text(codec, text, emit=True)
+
 # A summarize attempt stamps ``metadata.summary_attempt.at`` BEFORE the LLM
 # fires. A second invocation that arrives within this window — an in-flight
 # duplicate, or a retry right after a failed persist — is skipped instead of
@@ -418,6 +481,18 @@ async def summarize_workspace_item(
                 except Exception:
                     pass
                 return False
+
+            # وضع السرية: build the codec (turn codec when inline, explicit build
+            # on the detached webhook/sweeper paths) and encode the content_md the
+            # LLM will see. ``_source_length`` keeps the REAL pre-encode length so
+            # ``summary_source_length`` drift detection stays accurate (email
+            # swaps are not length-preserving). Persist happens per-flow just
+            # before the LLM call.
+            _user_id = str(row.get("user_id") or "")
+            _codec = _summarize_codec(supabase, _user_id)
+            _source_length = len(content_md)
+            content_md = _enc(_codec, content_md)
+
             if len(content_md) < MIN_CONTENT_LENGTH_CHARS:
                 # Below the threshold the LLM call is wasteful — short blurbs
                 # don't need an agent-facing summary.
@@ -442,6 +517,14 @@ async def summarize_workspace_item(
                     supabase,
                     str(row.get("conversation_id") or ""),
                 )
+                # وضع السرية: encode the conversation context + filename the LLM
+                # sees (content_md was already encoded above), then persist the
+                # newly-minted fakes BEFORE the LLM call.
+                conversation_context = _enc(_codec, conversation_context)
+                _enc_filename = _enc(_codec, str(row.get("title") or ""))
+                if _codec is not None and _user_id:
+                    from backend.app.services.masking_service import persist_new_mappings
+                    persist_new_mappings(supabase, _user_id, _codec)
                 try:
                     _span.set(
                         attachment_context_chars=len(conversation_context)
@@ -459,18 +542,23 @@ async def summarize_workspace_item(
                 with _maybe_scope(supabase, row):
                     att_summary = await run_attachment_summary(
                         AttachmentSummaryInput(
-                            filename=str(row.get("title") or ""),
+                            filename=_enc_filename,
                             content_md=content_md,
                             conversation_context=conversation_context,
                         ),
                         build_artifact_summary_deps(),
                     )
 
+                # وضع السرية: decode the LLM-produced title + summary before store
+                # (store-real; they re-encode at the next assembly point).
+                att_summary.title = _dec(_codec, att_summary.title)
+                att_summary.summary_md = _dec(_codec, att_summary.summary_md)
+
                 _persist_attachment_summary(
                     supabase,
                     item_id,
                     att_summary,
-                    source_length=len(content_md),
+                    source_length=_source_length,
                     existing_metadata=marked_md,
                 )
                 # Cost is captured per-call by the tracking hook (run_attachment_summary
@@ -507,23 +595,36 @@ async def summarize_workspace_item(
                 supabase, item_id, row.get("metadata") or {}
             )
 
+            # وضع السرية: encode describe_query + title the LLM sees (content_md
+            # already encoded above), then persist the newly-minted fakes BEFORE
+            # the LLM call.
+            _enc_describe = _enc(_codec, str(row.get("describe_query") or ""))
+            _enc_title = _enc(_codec, str(row.get("title") or ""))
+            if _codec is not None and _user_id:
+                from backend.app.services.masking_service import persist_new_mappings
+                persist_new_mappings(supabase, _user_id, _codec)
+
             with _maybe_scope(supabase, row):
                 summary = await run_artifact_summary(
                     ArtifactSummaryInput(
-                        describe_query=str(row.get("describe_query") or ""),
+                        describe_query=_enc_describe,
                         content_md=content_md,
-                        title=str(row.get("title") or ""),
+                        title=_enc_title,
                         kind=kind,
                     ),
                     build_artifact_summary_deps(),
                 )
+
+            # وضع السرية: decode the LLM-produced summary before store (store-real;
+            # it re-encodes at the next assembly point).
+            summary.summary_md = _dec(_codec, summary.summary_md)
 
             # --- Persist + record cost (best-effort) ------------------------
             _persist_summary(
                 supabase,
                 item_id,
                 summary,
-                source_length=len(content_md),
+                source_length=_source_length,
                 existing_metadata=marked_md,
             )
             # Cost is captured per-call by the tracking hook (run_artifact_summary

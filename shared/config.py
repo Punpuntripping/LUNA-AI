@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     FEATURE_AUDIT_LOGGING: bool = True
     FEATURE_RATE_LIMITING: bool = True
 
+    # Global server-side kill-switch for identifier masking (وضع السرية). When
+    # False, the codec encode path is a byte-identical passthrough regardless of
+    # the per-user preference. Default True (privacy-by-default; the emergency
+    # brake if decode misbehaves in prod). Env var name == field name (no
+    # validation_alias), so set PRIVACY_MASKING_ENABLED=false to disable.
+    PRIVACY_MASKING_ENABLED: bool = True
+
     # Overall pipeline timeout (seconds) for a single message turn. Bounds the
     # whole handle_message run inside pipeline_producer — even when the client
     # disconnects and the pipeline is detached to the background. 7 min = ~1.75×

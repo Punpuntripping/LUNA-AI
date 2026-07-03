@@ -275,6 +275,34 @@ export interface PendingFile {
   errorMessage: string | null;
 }
 
+/**
+ * A blog share-link pasted into the composer, shown as a chip alongside file
+ * attachments (.claude/plans/blog_import.md §D4). Imported into the
+ * conversation as a ``kind='agent_search'`` workspace item at paste time
+ * (mirrors the pre-send upload model); on send the ``itemId`` joins
+ * ``attachment_ids``.
+ */
+export interface PendingBlog {
+  /** Chip id (client-generated). */
+  id: string;
+  /** The 32-hex blog token extracted from the pasted URL. */
+  token: string;
+  /** Blog/note title once the import (or title fetch) resolves. */
+  title: string | null;
+  /** ``loading`` = import in flight; ``failed`` chips never block send. */
+  status: "loading" | "ready" | "failed";
+  /** workspace_items.item_id of the imported note; null until ready. */
+  itemId: string | null;
+  /**
+   * True when THIS chip's import created the note (vs. reusing an existing
+   * one via server dedup). Removing the chip deletes the note only then —
+   * never a note the user created earlier on purpose.
+   */
+  createdByChip: boolean;
+  /** Arabic-language error message when status === 'failed'. */
+  errorMessage: string | null;
+}
+
 // ==========================================
 // RESUMABLE UPLOADS
 // ==========================================
@@ -740,7 +768,36 @@ export interface MyBlogItem {
   subtype: string | null;
   display_mode: "question" | "title";
   is_public: boolean;
+  /**
+   * True when the row is a snapshot copy imported from someone else's share
+   * link («+» in مدوناتي) rather than authored by the caller. Badged
+   * «مستوردة» in the lists.
+   */
+  is_imported: boolean;
   created_at: string;
+}
+
+/**
+ * Response of ``POST /api/v1/blogs/import`` — save a pasted share link into
+ * مدوناتي as a snapshot copy. ``already_saved`` = the caller already held a
+ * live post for the same root (authored or previously imported); ``post`` is
+ * that existing row.
+ */
+export interface ImportBlogResponse {
+  post: MyBlogItem;
+  already_saved: boolean;
+}
+
+/**
+ * Response of ``POST /api/v1/conversations/{id}/blog-items`` — copy a blog
+ * snapshot into the conversation as a ``kind='agent_search'`` workspace item
+ * (تحليل قانوني with a real المراجع panel; «اتحدث مع المدونة» / composer
+ * paste-chip). ``already_attached`` = a live import for this root post
+ * already existed in the conversation.
+ */
+export interface BlogItemResponse {
+  item: WorkspaceItem;
+  already_attached: boolean;
 }
 
 /**
@@ -769,6 +826,13 @@ export type DetailLevel = "low" | "medium" | "high";
 
 export interface UserPreferencesData {
   detail_level?: DetailLevel;
+  /**
+   * وضع السرية — reversible identifier masking before user text reaches any
+   * external LLM. Default-ON: absent/undefined is treated as `true` by the
+   * store's coercion (see `preferences-store.ts`). PATCHed through the same
+   * JSONB `/preferences` endpoint as `detail_level`.
+   */
+  privacy_masking?: boolean;
   [key: string]: unknown;
 }
 

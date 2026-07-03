@@ -290,12 +290,40 @@ def load_router_context(
     # Built from the already-loaded summaries — no extra DB hit. Lets the router
     # route a follow-up ("elaborate that letter") back to the SAME family with
     # target_wi instead of mis-firing a fresh deep_search.
+    #
+    # Built from the REAL titles BEFORE the masking encode below — its title
+    # rides the assistant-turn provenance tag through messages_to_history, which
+    # applies its own encode (double-encode would be idempotent, but keeping the
+    # source real means a single, clean encode of the assembled tag).
     wi_provenance: dict[str, tuple[int | None, str, str]] = {
         str(s["item_id"]): (s.get("wi_seq"), s.get("kind") or "", s.get("title") or "")
         for s in workspace_item_summaries
         if s.get("item_id")
     }
     message_history = messages_to_history(msg_rows, wi_provenance)
+
+    # وضع السرية: the eager surfaces the router LLM reads DIRECTLY in its dynamic
+    # instructions — workspace-item summaries + titles (inject_workspace_summaries),
+    # the case memory block (inject_case_context), and the conversation-compaction
+    # summary (inject_compaction_summary) — are stored REAL (store-real invariant)
+    # and would otherwise reach the model raw. Encode them here at assembly; the
+    # item_id / wi_seq handles are untouched so the alias resolver still works.
+    # New fakes minted here are persisted by the caller (``_route``) BEFORE the
+    # router LLM consumes them (same pattern as messages_to_history). Passthrough
+    # when masking is disabled / no turn codec is active.
+    from backend.app.services.masking_service import active_codec, encode_active
+
+    if active_codec() is not None:
+        workspace_item_summaries = [
+            {
+                **s,
+                "title": encode_active(s.get("title") or ""),
+                "summary": encode_active(s.get("summary")),
+            }
+            for s in workspace_item_summaries
+        ]
+        case_memory_md = encode_active(case_memory_md)
+        compaction_summary_md = encode_active(compaction_summary_md)
 
     return RouterContext(
         case_memory_md=case_memory_md,

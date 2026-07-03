@@ -20,11 +20,17 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
+from backend.app.services.masking_service import (
+    build_turn_codec,
+    decode_text,
+    emit_decode_telemetry,
+)
 from agents.orchestrator import handle_message
 from shared import quota
 from shared.config import get_settings
 from shared.db.run import run_db
 from shared.observability import get_logfire
+from shared.privacy import StreamDecoder
 
 logger = logging.getLogger(__name__)
 _logfire = get_logfire()
@@ -196,21 +202,26 @@ def list_messages(
 
     if message_ids:
         try:
+            # ``document_id`` is a workspace_items.item_id (FK re-pointed from
+            # case_documents in migration 088); embed the item for the chip's
+            # title/kind. ``filename`` keeps its legacy key name for the
+            # frontend Attachment type.
             att_result = (
                 supabase.table("message_attachments")
-                .select("*, case_documents(document_name, mime_type, file_size_bytes)")
+                .select("*, workspace_items(title, kind, metadata)")
                 .in_("message_id", message_ids)
                 .execute()
             )
             for att in (att_result.data or []):
                 mid = att["message_id"]
-                doc = att.get("case_documents", {}) or {}
+                wi = att.get("workspace_items", {}) or {}
                 attachments_map.setdefault(mid, []).append({
                     "id": att["id"],
                     "document_id": att["document_id"],
-                    "attachment_type": att.get("attachment_type", "file"),
-                    "filename": doc.get("document_name", ""),
-                    "file_size": doc.get("file_size_bytes"),
+                    "attachment_type": att.get("attachment_type") or "file",
+                    "filename": wi.get("title", ""),
+                    "file_size": None,
+                    "kind": wi.get("kind", "attachment"),
                 })
         except Exception as e:
             logger.warning("Error loading attachments: %s", e)
@@ -264,10 +275,28 @@ def _insert_attachment_links(
     supabase: SupabaseClient,
     user_msg_id: str,
     attachment_ids: list,
+    user_id: str,
 ) -> None:
+    """Link workspace items to the user message (chip persistence).
+
+    Only items the sender owns are linked — the ids come from the client, so
+    without this filter a crafted send could link (and later read the title
+    of) another user's workspace item.
+    """
+    owned = (
+        supabase.table("workspace_items")
+        .select("item_id")
+        .in_("item_id", [str(a) for a in attachment_ids])
+        .eq("user_id", user_id)
+        .is_("deleted_at", "null")
+        .execute()
+    )
+    owned_ids = [r["item_id"] for r in (owned.data or [])]
+    if not owned_ids:
+        return
     rows = [
-        {"message_id": user_msg_id, "document_id": doc_id}
-        for doc_id in attachment_ids
+        {"message_id": user_msg_id, "document_id": item_id}
+        for item_id in owned_ids
     ]
     supabase.table("message_attachments").insert(rows).execute()
 
@@ -281,13 +310,17 @@ def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
     (``metadata.page_count``), else a 1-page floor (unknown). Falls back to one
     page per attachment on any query failure — the gate must still run, and the
     post-OCR settle bills the real count regardless.
+
+    ``attachment_ids`` can also carry non-attachment workspace items (blog
+    paste-chips ride the same array) — those never reach OCR, so resolved
+    non-``attachment`` kinds contribute 0 instead of the safety floor.
     """
     if not attachment_ids:
         return 0
     try:
         result = (
             supabase.table("workspace_items")
-            .select("item_id, metadata")
+            .select("item_id, kind, metadata")
             .in_("item_id", list(attachment_ids))
             .execute()
         )
@@ -295,13 +328,16 @@ def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
         logger.warning("OCR page estimate query failed; using 1/attachment: %s", e)
         return len(attachment_ids)
 
-    by_id = {
-        r.get("item_id"): (r.get("metadata") or {})
+    rows_by_id = {
+        r.get("item_id"): r
         for r in (getattr(result, "data", None) or [])
     }
     total = 0
     for aid in attachment_ids:
-        meta = by_id.get(aid) or {}
+        row = rows_by_id.get(aid)
+        if row is not None and row.get("kind") != "attachment":
+            continue  # blog import / note — no OCR, no page projection
+        meta = (row or {}).get("metadata") or {}
         raw = meta.get("ocr_pages") or meta.get("page_count")
         try:
             pages = int(raw)
@@ -452,7 +488,10 @@ async def send_message_stream(
     # 1b. Link attachments to user message (if any)
     if attachment_ids:
         try:
-            await run_db(_insert_attachment_links, supabase, user_msg_id, attachment_ids)
+            await run_db(
+                _insert_attachment_links,
+                supabase, user_msg_id, attachment_ids, user_id,
+            )
         except Exception as e:
             logger.warning("Error linking attachments: %s", e)
 
@@ -539,6 +578,15 @@ async def send_message_stream(
     # the slot is fully coherent before any concurrent path can re-inspect it.
     _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=assistant_msg_id)
 
+    # 2c. Build the turn's identifier-masking codec (وضع السرية) ONCE. This single
+    # instance serves BOTH the pipeline (passed to handle_message, which publishes
+    # it on a ContextVar for history-encode + workspace_items publisher-decode)
+    # AND this relay's SSE stream-decode + persist-decode below. build_turn_codec
+    # is resilient — a failure degrades to an empty passthrough codec. The mapping
+    # table is loaded even when masking is disabled: decode is always-on, so a
+    # paused run captured while masking was ON still decodes after a later OFF.
+    codec = await run_db(build_turn_codec, supabase, user_id)
+
     # 3. Yield message_start
     yield _sse_event("message_start", {
         "user_message_id": user_msg_id,
@@ -603,6 +651,13 @@ async def send_message_stream(
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
         nonlocal full_content, paused
+        # وضع السرية: buffered stream-decode of assistant text deltas. A fake can
+        # split across SSE chunks, so the decoder holds back digit-run tails and
+        # flushes on the first non-run char or at finalize(). full_content keeps
+        # the RAW (encoded) pipeline text — it is decoded once at persist time.
+        # Only `token` events pass through the decoder; every other SSE event
+        # (heartbeat/status/citation/workspace/ask_user/…) is relayed untouched.
+        stream_decoder = StreamDecoder(codec)
         try:
             async with asyncio.timeout(get_settings().LUNA_PIPELINE_TIMEOUT_S):
                 async for event in handle_message(
@@ -613,13 +668,16 @@ async def send_message_stream(
                     case_id=conv.get("case_id"),
                     user_message_id=user_msg_id,
                     assistant_message_id=assistant_msg_id,
+                    codec=codec,
                 ):
                     event_type = event.get("type")
 
                     if event_type == "token":
                         text = event.get("text", "")
-                        full_content += text
-                        await queue.put(_sse_event("token", {"text": text}))
+                        full_content += text  # RAW/encoded — decoded at persist
+                        decoded_piece = stream_decoder.feed(text)
+                        if decoded_piece:
+                            await queue.put(_sse_event("token", {"text": decoded_piece}))
 
                     elif event_type == "agent_selected":
                         await queue.put(_sse_event("agent_selected", {
@@ -710,9 +768,13 @@ async def send_message_stream(
                         # Mark the stream as paused so we skip writing an empty
                         # assistant placeholder on the subsequent 'done' event.
                         paused = True
+                        # وضع السرية: the question was generated from ENCODED
+                        # planner input and can carry fakes. Decode before it
+                        # reaches the user's screen (store-real applies to the
+                        # matching messages row too — decoded in _record_deferred).
                         await queue.put(_sse_event("agent_question", {
                             "run_id": event.get("run_id", ""),
-                            "question": event.get("question", ""),
+                            "question": decode_text(codec, event.get("question", ""), emit=True),
                             "suggestions": event.get("suggestions", []),
                         }))
 
@@ -723,6 +785,15 @@ async def send_message_stream(
                         }))
 
                     elif event_type == "done":
+                        # وضع السرية: flush any decode-buffer tail held back mid-
+                        # stream as a final token, then emit decode counters.
+                        tail = stream_decoder.finalize()
+                        if tail:
+                            await queue.put(_sse_event("token", {"text": tail}))
+                        emit_decode_telemetry(
+                            stream_decoder.restored_count, stream_decoder.tripwires
+                        )
+
                         usage = event.get("usage", {})
 
                         # 5. Update assistant message with full content.
@@ -742,7 +813,15 @@ async def send_message_stream(
                                 )
                         else:
                             try:
-                                update_data: dict = {"content": full_content}
+                                # وضع السرية: full_content is encoded pipeline
+                                # output; the stored row must hold reals. Decode
+                                # once (emit=False — the SSE stream already emitted
+                                # decode counters for the same text).
+                                update_data: dict = {
+                                    "content": decode_text(
+                                        codec, full_content, emit=False
+                                    )
+                                }
                                 if usage:
                                     update_data["prompt_tokens"] = usage.get("prompt_tokens", 0)
                                     update_data["completion_tokens"] = usage.get(
@@ -837,7 +916,10 @@ async def send_message_stream(
                         supabase,
                         assistant_msg_id,
                         {
-                            "content": full_content + _PIPELINE_TIMEOUT_PARTIAL_NOTE_AR,
+                            # وضع السرية: decode the encoded partial before persist
+                            # (store-real). The Arabic timeout note carries no PII.
+                            "content": decode_text(codec, full_content, emit=False)
+                            + _PIPELINE_TIMEOUT_PARTIAL_NOTE_AR,
                             "metadata": {"kind": "pipeline_timeout", "partial": True},
                         },
                     )

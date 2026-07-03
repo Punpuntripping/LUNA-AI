@@ -502,7 +502,33 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
     )
 
     lines.append("</package>")
-    return "\n".join(lines)
+    return _encode_for_llm("\n".join(lines))
+
+
+def _encode_for_llm(text: str) -> str:
+    """Mask identifiers/emails in a writer-executor prompt block (وضع السرية).
+
+    This is the single prompt-assembly choke point for everything the writer
+    executor's system prompt carries — the قوالبي templates (library + the
+    user-attached role='template' items) AND the analyzed sources / references /
+    prior_draft / plan. Encoding here means the writer LLM never sees raw PII;
+    the draft it emits is decoded back to reals at the publisher (Phase 3), and
+    the stored templates/WIs stay real. The runner pre-mints + persists these
+    fakes BEFORE the executor runs (a fresh-process resume reloads the codec from
+    DB), so this render-time encode is deterministic/idempotent. Passthrough when
+    masking is disabled or no turn codec is active (tests, legacy callers).
+    """
+    if not text:
+        return text
+    from backend.app.services.masking_service import active_codec
+
+    codec = active_codec()
+    if codec is None:
+        return text
+    try:
+        return codec.encode(text)
+    except Exception:  # noqa: BLE001
+        return text
 
 
 def build_writer_user_message_minimal(package: "WriterPackage") -> str:

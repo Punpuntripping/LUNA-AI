@@ -370,6 +370,32 @@ def unfold_item(supabase, item_id: str, user_id: str) -> str:
     return render_unfold_md(content_md, lines)
 
 
+def _encode_unfold_output(supabase, user_id: str, content: str) -> str:
+    """Encode the LLM-bound unfold output via the active turn codec + persist.
+
+    وضع السرية seam: mask identifiers/emails in the rendered content before it
+    feeds an LLM, then persist any newly-minted fakes synchronously (a
+    pause/resume in a fresh process reloads the codec from the DB). A None codec
+    (no masked turn) or a disabled codec is a byte-identical passthrough. Never
+    raises — masking must not break a tool read.
+    """
+    if not content:
+        return content
+    from backend.app.services.masking_service import active_codec, persist_new_mappings
+
+    codec = active_codec()
+    if codec is None:
+        return content
+    try:
+        encoded = codec.encode(content)
+    except Exception:  # noqa: BLE001
+        logger.debug("unfold: encode failed — returning raw content", exc_info=True)
+        return content
+    if user_id:
+        persist_new_mappings(supabase, user_id, codec)
+    return encoded
+
+
 # --------------------------------------------------------------------------- #
 # Pydantic AI tool.
 # --------------------------------------------------------------------------- #
@@ -423,6 +449,16 @@ def register_unfold_workspace_item(agent: Agent) -> None:
             return ""
         try:
             content = unfold_item(ctx.deps.supabase, item_id, ctx.deps.user_id)
+            # وضع السرية: the rendered content_md + used-source manifest is
+            # LLM-bound context (router / planner_decider / writer_planner). Mask
+            # identifiers/emails before returning so the LLM never sees raw PII;
+            # the stored content_md stays real. This also masks OCR'd attachment
+            # content that flows through here. New fakes are persisted IMMEDIATELY
+            # (a fresh-process resume reloads the codec from DB). Byte-identical
+            # passthrough when masking is disabled / no turn codec is active.
+            content = _encode_unfold_output(
+                ctx.deps.supabase, getattr(ctx.deps, "user_id", ""), content
+            )
             logger.info(
                 "unfold_workspace_item: unfolded %s (alias %s) — %d chars",
                 item_id, wi, len(content),

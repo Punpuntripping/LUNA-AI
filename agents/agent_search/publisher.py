@@ -20,6 +20,7 @@ import logging
 
 from agents.agent_search.deps import SearchPublishDeps
 from agents.agent_search.models import SearchPublishInput, SearchPublishOutput
+from backend.app.services.masking_service import decode_for_persist
 from backend.app.services.workspace_service import create_workspace_item
 from backend.app.services.retrieval_artifacts_service import (
     save_reranker_runs,
@@ -150,6 +151,11 @@ async def publish_search_result(
 
     title = _build_title(input)
     content_md = _build_content_md(input)
+    # Exit decode (وضع السرية): the aggregator output is pipeline text = encoded.
+    # Restore real identifiers before persisting so the stored WI holds reals
+    # (store-real invariant — DB rows must never contain fakes). Always-on:
+    # decode is never gated by the masking flag.
+    content_md = decode_for_persist(content_md)
     metadata = _build_metadata(input)
 
     # PII note: user_id not on this span (recoverable via Supabase join).

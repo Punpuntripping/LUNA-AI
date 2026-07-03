@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from agents.utils.tracking import track_stage
+from backend.app.services.masking_service import decode_for_persist
 from backend.app.services.workspace_service import create_workspace_item
 from shared.observability import get_logfire
 
@@ -353,6 +354,10 @@ async def publish_writer_result(
 
         # 2. Build the markdown body.
         content_md = _assemble_content(llm_output)
+        # Exit decode (وضع السرية): the writer output is pipeline text = encoded.
+        # Restore real identifiers before the workspace_items write so the stored
+        # document holds reals (store-real invariant). Decode is always-on.
+        content_md = decode_for_persist(content_md)
 
         # 3. Build metadata BEFORE the insert so the same dict ships into the row
         # AND drives the SSE event payloads. The subtype is preserved verbatim --

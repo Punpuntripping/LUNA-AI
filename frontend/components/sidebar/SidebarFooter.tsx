@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   CreditCard,
+  EyeOff,
   FileText,
   Gauge,
   KeyRound,
@@ -30,12 +31,14 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { DetailLevelToggle } from "@/components/Settings/DetailLevelToggle";
 import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
+import { PrivacyMaskingDialog } from "@/components/Settings/PrivacyMaskingDialog";
 
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
   const [usageOpen, setUsageOpen] = useState(false);
   const [redeemOpen, setRedeemOpen] = useState(false);
+  const [maskingOpen, setMaskingOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -116,6 +119,18 @@ export function SidebarFooter() {
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setMaskingOpen(true)}
+                  data-testid="sidebar-settings-masking-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <EyeOff className="h-4 w-4" />
+                    وضع السرية
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
                   onClick={() => router.push("/pricing")}
                   data-testid="sidebar-settings-pricing"
                 >
@@ -155,6 +170,10 @@ export function SidebarFooter() {
           </Popover>
           <UsageLimitsDialog open={usageOpen} onOpenChange={setUsageOpen} />
           <RedeemCodeDialog open={redeemOpen} onOpenChange={setRedeemOpen} />
+          <PrivacyMaskingDialog
+            open={maskingOpen}
+            onOpenChange={setMaskingOpen}
+          />
           <ThemeToggle />
           <Tooltip>
             <TooltipTrigger asChild>

@@ -84,7 +84,30 @@ def messages_to_history(
     ``WI-{seq}`` + its title). This is the signal the router needs to recognise a
     follow-up that refines the just-produced artifact. When omitted, behaviour
     is identical to before (plain text, no tags) — only the router opts in.
+
+    Identifier masking (وضع السرية): the router's prior-turn history comes
+    through here (via ``load_router_context``), NOT through the orchestrator's
+    ``_load_recent_messages``. Each fully-assembled message (the provenance tag
+    + the body, WI titles included) is passed through the turn's active codec so
+    the router LLM never sees raw prior-turn PII. Byte-identical passthrough when
+    masking is disabled or no turn codec is active (tests, non-LLM callers). New
+    fakes minted here are persisted by the caller (``_route``) BEFORE the router
+    LLM consumes them; this function is pure w.r.t. the DB, so it never persists.
     """
+    from backend.app.services.masking_service import active_codec
+
+    codec = active_codec()
+
+    def _enc(text: str) -> str:
+        # Encode one assembled surface. Resilient: a codec hiccup degrades to
+        # the raw text rather than dropping the row from history.
+        if codec is None or not text:
+            return text
+        try:
+            return codec.encode(text)
+        except Exception:  # noqa: BLE001
+            return text
+
     history: list[ModelMessage] = []
     for row in rows:
         role = row.get("role", "")
@@ -93,7 +116,7 @@ def messages_to_history(
             continue
 
         if role == "user":
-            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+            history.append(ModelRequest(parts=[UserPromptPart(content=_enc(content))]))
         elif role == "assistant":
             text = content
             if wi_provenance:
@@ -102,9 +125,9 @@ def messages_to_history(
                     tag = build_provenance_tag(list(artifact_ids), wi_provenance)
                     if tag:
                         text = f"{tag}\n{content}"
-            history.append(ModelResponse(parts=[TextPart(content=text)]))
+            history.append(ModelResponse(parts=[TextPart(content=_enc(text))]))
         elif role == "system":
             # System-injected messages (e.g. task summaries) appear as assistant context
-            history.append(ModelResponse(parts=[TextPart(content=content)]))
+            history.append(ModelResponse(parts=[TextPart(content=_enc(content))]))
 
     return history

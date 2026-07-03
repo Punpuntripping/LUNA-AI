@@ -51,6 +51,52 @@ INGEST_LLM_TIMEOUT_S = 45.0
 
 
 # ===========================================================================
+# Identifier masking (وضع السرية) — detached-path helpers
+# ===========================================================================
+
+
+def _ingest_codec(supabase: Any, user_id: str):
+    """Codec for the ingest LLM round-trip.
+
+    The endpoint runs OUTSIDE a chat turn (no ContextVar codec), so prefer the
+    active codec if one is somehow present, else build one EXPLICITLY from the
+    user's mapping table. Returns ``None`` only when no ``user_id`` is available
+    (encode/decode then degrade to passthrough).
+    """
+    from backend.app.services.masking_service import active_codec, build_turn_codec
+
+    codec = active_codec()
+    if codec is not None:
+        return codec
+    if not user_id:
+        return None
+    try:
+        return build_turn_codec(supabase, user_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("template_ingester: explicit codec build failed", exc_info=True)
+        return None
+
+
+def _enc(codec, text: str) -> str:
+    """Encode one ingest input surface. Passthrough on None/disabled/error."""
+    if codec is None or not text:
+        return text
+    try:
+        return codec.encode(text)
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _dec(codec, text: str) -> str:
+    """Decode a cleaned template field before store (store-real; never gated)."""
+    if codec is None or not text:
+        return text
+    from backend.app.services.masking_service import decode_text
+
+    return decode_text(codec, text, emit=True)
+
+
+# ===========================================================================
 # Public entrypoint
 # ===========================================================================
 
@@ -79,17 +125,30 @@ async def handle_template_ingestion(
 
     title_hint, content_md = raw
 
+    # --- 1b. وضع السرية: mask before the LLM, restore before store ----------
+    # The ingest endpoint is a DETACHED path (its own request, NOT a chat turn),
+    # so no codec is on the ContextVar — build one EXPLICITLY from deps.user_id.
+    # Encode the raw document + title the LLM sees; persist the minted fakes
+    # BEFORE the LLM call; decode the cleaned title/body before it is stored
+    # (store-real invariant). Passthrough when masking is disabled.
+    codec = _ingest_codec(deps.supabase, deps.user_id)
+    enc_content_md = _enc(codec, content_md)
+    enc_title_hint = _enc(codec, title_hint) if title_hint else title_hint
+    if codec is not None and deps.user_id:
+        from backend.app.services.masking_service import persist_new_mappings
+        persist_new_mappings(deps.supabase, deps.user_id, codec)
+
     # --- 2. Run the LLM (cost self-emits via track_stage) -----------------
-    cleaned = await _run_ingester(content_md, title_hint, deps, log=log, t0=t0)
+    cleaned = await _run_ingester(enc_content_md, enc_title_hint, deps, log=log, t0=t0)
     if cleaned is None:
         return IngestResult(ok=False, error_ar=INGEST_FAILED_AR)
 
-    # --- 3. Insert into user_templates ------------------------------------
+    # --- 3. Insert into user_templates (decoded — store-real) -------------
     template_id = _insert_template(
         deps.supabase,
         user_id=deps.user_id,
-        title=cleaned.title,
-        content_md=cleaned.content_md,
+        title=_dec(codec, cleaned.title),
+        content_md=_dec(codec, cleaned.content_md),
         log=log,
     )
     if template_id is None:

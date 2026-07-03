@@ -168,6 +168,51 @@ def _load_attached_items(
     return snapshots
 
 
+def _encode_attached_for_planner(
+    snapshots: list[WorkspaceItemSnapshot],
+) -> list[WorkspaceItemSnapshot]:
+    """Return planner-only copies with title/content_md/summary encoded (وضع السرية).
+
+    GAP fix: the deep_search ``planner_decider`` renders a force-attached item's
+    full ``content_md`` (and title) INLINE in its ``<attached_items>`` block
+    (``agents/deep_search_v4/planner/prompts.py::_render_attached_items``) — a
+    distinct, eager, tool-free path separate from the ``unfold_workspace_item``
+    tool that Phase 3b already covers. Encode the LLM-bound fields so the decider
+    never sees raw PII.
+
+    Crucially this returns fresh COPIES (``model_copy``): the shared snapshot
+    objects stay REAL because the SAME ``_load_attached_items`` output also feeds
+    user-facing paths (e.g. the writer_planner save-offer ``title_hint`` and the
+    writer executor, which has its own encode hook). Only the planner's copies
+    carry fakes. Byte-identical (returns the originals) when masking is disabled /
+    no turn codec is active. The CALLER persists the minted fakes before the
+    decider LLM runs.
+    """
+    from backend.app.services.masking_service import active_codec, encode_active
+
+    if active_codec() is None or not snapshots:
+        return list(snapshots)
+    encoded: list[WorkspaceItemSnapshot] = []
+    for s in snapshots:
+        try:
+            encoded.append(
+                s.model_copy(
+                    update={
+                        "title": encode_active(s.title),
+                        "content_md": encode_active(s.content_md),
+                        "summary": encode_active(s.summary),
+                    }
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "_encode_attached_for_planner: encode failed for %s — keeping raw",
+                getattr(s, "item_id", "?"), exc_info=True,
+            )
+            encoded.append(s)
+    return encoded
+
+
 def _load_wi_provenance(
     supabase: SupabaseClient, conversation_id: str
 ) -> dict[str, tuple[int | None, str, str]]:
@@ -203,6 +248,8 @@ def _load_recent_messages(
     supabase: SupabaseClient,
     conversation_id: str,
     n: int = _RECENT_MESSAGES_N,
+    *,
+    user_id: str | None = None,
 ) -> list[ChatMessageSnapshot]:
     """Load the last N messages for the conversation as ChatMessageSnapshot objects.
 
@@ -216,8 +263,17 @@ def _load_recent_messages(
     placeholder that ``message_service`` inserts before the agent runs is
     empty, and counting it would silently shrink the real window (pushing the
     foundational first message out). A small fetch buffer covers it.
+
+    Identifier masking (وضع السرية): this is the single choke point for chat
+    history feeding the planners/writer. Each assembled row (provenance tag +
+    body) is passed through the turn's active codec so the planners see fakes,
+    not real PII. Byte-identical passthrough when masking is disabled. New fakes
+    created here are persisted before the LLM consumes them (needs ``user_id``).
     """
     from agents.utils.history import build_provenance_tag  # pure util — no import cycle
+    from backend.app.services.masking_service import active_codec, persist_new_mappings
+
+    codec = active_codec()
 
     try:
         result = (
@@ -249,6 +305,12 @@ def _load_recent_messages(
                 tag = build_provenance_tag(list(artifact_ids), wi_provenance)
                 if tag:
                     content = f"{tag}\n{content}"
+        # Mask the fully-assembled surface (tag + body) before it feeds an LLM.
+        if codec is not None:
+            try:
+                content = codec.encode(content)
+            except Exception:
+                logger.debug("history encode failed for one row", exc_info=True)
         snapshots.append(
             ChatMessageSnapshot(
                 role=role,
@@ -256,6 +318,10 @@ def _load_recent_messages(
                 created_at=row.get("created_at") or "",
             )
         )
+    # Persist any fakes minted while encoding history — synchronously, before the
+    # planner LLM reads them (a fresh-process resume reloads the codec from DB).
+    if codec is not None and user_id:
+        persist_new_mappings(supabase, user_id, codec)
     return snapshots
 
 
@@ -285,10 +351,26 @@ def _load_case_brief(
     try:
         from agents.router.context import _load_case_block  # lazy import
         _metadata, memory_md = _load_case_block(supabase, case_id, user_id)
-        return memory_md
     except Exception as e:
         logger.warning("_load_case_brief failed for case_id=%s: %s", case_id, e)
         return None
+
+    # وضع السرية: the case brief (<case_brief> block) reaches the planner_decider
+    # LLM directly and is stored REAL (store-real invariant). Encode it here at
+    # assembly and persist any minted fakes before the decider consumes them
+    # (fresh dispatch AND resume both call this loader). Passthrough when masking
+    # is disabled / no turn codec is active.
+    from backend.app.services.masking_service import (
+        active_codec,
+        encode_active,
+        persist_new_mappings,
+    )
+
+    codec = active_codec()
+    if codec is not None and memory_md:
+        memory_md = encode_active(memory_md)
+        persist_new_mappings(supabase, user_id, codec)
+    return memory_md
 
 
 def _load_prior_search_summaries(
@@ -329,6 +411,20 @@ def _load_prior_search_summaries(
         )
         return []
 
+    # وضع السرية: the prior-search comprehension the planner_decider reads
+    # (<prior_searches> block → title + describe_query + summary) is stored REAL
+    # (store-real invariant) and reaches the decider LLM raw without this wrap.
+    # Encode the text fields at assembly; item_id / wi_seq (the alias handles)
+    # stay untouched so the WI-{seq} resolver still works. New fakes are persisted
+    # BELOW, before the decider LLM consumes them (this loader runs on both fresh
+    # dispatch AND resume, so both paths are covered here). Passthrough when
+    # masking is disabled / no turn codec is active.
+    from backend.app.services.masking_service import (
+        active_codec,
+        encode_active,
+        persist_new_mappings,
+    )
+
     summaries: list[PriorSearchSummary] = []
     for row in rows:
         metadata = row.get("metadata") or {}
@@ -345,9 +441,9 @@ def _load_prior_search_summaries(
                 PriorSearchSummary(
                     item_id=row.get("item_id") or "",
                     wi_seq=row.get("wi_seq"),
-                    title=row.get("title") or "",
-                    describe_query=row.get("describe_query") or "",
-                    summary=row.get("summary") or "",
+                    title=encode_active(row.get("title") or ""),
+                    describe_query=encode_active(row.get("describe_query") or ""),
+                    summary=encode_active(row.get("summary") or ""),
                     confidence=confidence,
                     created_at=row.get("created_at") or "",
                 )
@@ -357,6 +453,12 @@ def _load_prior_search_summaries(
                 "_load_prior_search_summaries: skipping malformed row %r: %s",
                 row.get("item_id"), exc,
             )
+    # Flush any fakes minted while encoding the summaries — synchronously, before
+    # the planner decider reads them (a fresh-process resume reloads the codec
+    # from DB). Delta-only + no-op when disabled / no codec active.
+    codec = active_codec()
+    if codec is not None:
+        persist_new_mappings(supabase, user_id, codec)
     return summaries
 
 
@@ -618,7 +720,9 @@ async def _resume_major_agent_inner(
         _rewrote_pause = False
         try:
             attached_items = _load_attached_items(supabase, [], user_id, conversation_id)
-            recent_messages = _load_recent_messages(supabase, conversation_id)
+            recent_messages = _load_recent_messages(
+                supabase, conversation_id, user_id=user_id
+            )
             resumed_task_label = (
                 (pending.get("task_label") or "").strip() or "متابعة المحادثة"
             )
@@ -757,7 +861,9 @@ async def _resume_major_agent_inner(
         _resume_attached_items = _load_attached_items(
             supabase, [], user_id, conversation_id
         )
-        _resume_recent_messages = _load_recent_messages(supabase, conversation_id)
+        _resume_recent_messages = _load_recent_messages(
+            supabase, conversation_id, user_id=user_id
+        )
         _resume_settings = _get_settings()
 
         # Rebuild the WI alias map on resume — PlannerDeps is never persisted
@@ -771,7 +877,23 @@ async def _resume_major_agent_inner(
             if _s.wi_seq is not None and _s.item_id:
                 _resume_alias_map[int(_s.wi_seq)] = _s.item_id
 
+        # وضع السرية: mask the attached items' inline content_md/title for the
+        # decider (parity with fresh dispatch). Copies only; alias map built above
+        # from the REAL ids. On resume this list is empty in practice (loaded with
+        # item_ids=[]) so this is a no-op today, but it keeps the two entry points
+        # symmetric if a future resume ever re-hydrates attachments. case_brief +
+        # prior_searches were already encoded/persisted inside their loaders.
+        _resume_attached_items = _encode_attached_for_planner(_resume_attached_items)
+
         async with _httpx.AsyncClient(timeout=30.0) as _resume_http:
+            # Flush any attached-item fakes minted just above before the resume
+            # decider LLM reads them. Delta-only + no-op when disabled / no codec.
+            from backend.app.services.masking_service import (
+                active_codec as _active_codec,
+                persist_new_mappings as _persist_new_mappings,
+            )
+            _persist_new_mappings(supabase, user_id, _active_codec())
+
             _resume_deps = build_planner_deps(
                 supabase=supabase,
                 embedding_fn=embed_regulation_query_alibaba,
@@ -876,7 +998,9 @@ async def _resume_major_agent_inner(
         attached_items = _load_attached_items(
             supabase, [], user_id, conversation_id
         )
-        recent_messages = _load_recent_messages(supabase, conversation_id)
+        recent_messages = _load_recent_messages(
+            supabase, conversation_id, user_id=user_id
+        )
         # On resume the router has NOT re-run, so task_label / describe_query
         # are inherited from the paused agent_runs row (populated at original
         # dispatch time). Fall back to a placeholder if missing — keeps the
@@ -1030,12 +1154,20 @@ def _record_deferred(
     )
 
     # Insert the question as an assistant message so it appears in chat history.
+    # وضع السرية: the pause question was generated from ENCODED planner input, so
+    # it can carry fakes. Decode before the messages insert so the reloaded chat
+    # view shows the user's REAL identifiers (store-real invariant). The SSE
+    # `agent_question` payload is decoded independently in message_service — both
+    # sites decode so the streamed and reloaded views stay consistent. emit=False
+    # here (message_service emits the decode counters for the same text).
+    from backend.app.services.masking_service import active_codec as _active_codec, decode_text as _decode_text
+    stored_question = _decode_text(_active_codec(), question, emit=False)
     try:
         supabase.table("messages").insert({
             "message_id": str(uuid.uuid4()),
             "conversation_id": conversation_id,
             "role": "assistant",
-            "content": question,
+            "content": stored_question,
             "metadata": {
                 "kind": "agent_question",
                 "run_id": run_id,
@@ -1074,6 +1206,7 @@ async def handle_message(
     case_id: str | None = None,
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    codec: Any = None,
 ) -> AsyncGenerator[dict, None]:
     """Public entry point for all chat turns.
 
@@ -1083,24 +1216,50 @@ async def handle_message(
     ``llm_calls`` buffer attributed to ``user_message_id`` and flushed (+ quota
     settled) once when this generator finishes or is closed (SSE disconnect /
     gateway timeout included). See ``agents/utils/usage_sink.py``.
+
+    ``codec`` (وضع السرية identifier masking): the per-turn ``PrivacyCodec``.
+    ``message_service`` builds it once and passes it here (it reuses the same
+    instance for SSE stream-decode + persist-decode). When ``None`` — the blog
+    API front door (``deepsearch_api/generate.py``) calls this directly — one is
+    built internally the same way. The codec is published on a ContextVar for the
+    whole pipeline so ``_load_recent_messages`` (history encode) and the
+    workspace_items publishers can reach it via ``masking_service.active_codec()``.
+    The mapping table is loaded even when masking is disabled — decode is
+    always-on; only encode honours the flag.
     """
-    with collect_llm_calls(
-        supabase,
-        conversation_id=conversation_id,
-        user_id=user_id,
-        message_id=user_message_id,
-        case_id=case_id,
-    ):
-        async for ev in _handle_message_inner(
-            question=question,
-            user_id=user_id,
+    from backend.app.services.masking_service import (
+        build_turn_codec,
+        reset_active_codec,
+        set_active_codec,
+    )
+
+    if codec is None:
+        # Sync DB load (one SELECT) off the event loop. build_turn_codec is
+        # fully resilient — a failure degrades to an empty passthrough codec.
+        codec = await asyncio.to_thread(build_turn_codec, supabase, user_id)
+
+    _codec_token = set_active_codec(codec)
+    try:
+        with collect_llm_calls(
+            supabase,
             conversation_id=conversation_id,
-            supabase=supabase,
+            user_id=user_id,
+            message_id=user_message_id,
             case_id=case_id,
-            user_message_id=user_message_id,
-            assistant_message_id=assistant_message_id,
         ):
-            yield ev
+            async for ev in _handle_message_inner(
+                question=question,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                supabase=supabase,
+                case_id=case_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+                codec=codec,
+            ):
+                yield ev
+    finally:
+        reset_active_codec(_codec_token)
 
 
 async def _handle_message_inner(
@@ -1111,6 +1270,7 @@ async def _handle_message_inner(
     case_id: str | None = None,
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    codec: Any = None,
 ) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
@@ -1129,7 +1289,32 @@ async def _handle_message_inner(
     ``workspace_items.message_id`` — the assistant message that produced
     the artifact. Without this, agent-produced workspace_items end up with
     a NULL message_id and the chat ↔ artifact linkage breaks.
+
+    ``codec`` is the turn's masking codec (already published on the ContextVar
+    by ``handle_message``). Used here to encode ``question`` ONCE at intake.
     """
+    # ── Intake encode (وضع السرية) ──────────────────────────────────────────
+    # Mask identifiers/emails in the user's message ONCE at the top so every
+    # downstream prompt assembly sees fakes, not real PII: the normal path
+    # (router `question`, dispatch `describe_query=question`) AND the resume
+    # path (the pause branch below consumes the same `question` as `user_reply`).
+    # Byte-identical passthrough when masking is disabled. New fakes are persisted
+    # IMMEDIATELY — before the router LLM — so a pause/resume in a fresh process
+    # can still decode them; then the encoded text is self-audited (Layer 4).
+    if codec is not None:
+        from backend.app.services.masking_service import (
+            audit_encoded,
+            emit_encoded_count,
+            persist_new_mappings,
+        )
+        try:
+            question = codec.encode(question)
+        except Exception:
+            logger.warning("intake encode failed; using raw question", exc_info=True)
+        n_new = persist_new_mappings(supabase, user_id, codec)
+        emit_encoded_count(n_new)
+        audit_encoded(question, codec)
+
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
     # Defensive stale check: a pause whose resolve DELETE silently failed (or
@@ -1242,6 +1427,15 @@ async def _route(
     from agents.router.router import run_router
 
     ctx = load_router_context(supabase, user_id, conversation_id, case_id)
+
+    # وضع السرية: load_router_context assembled the router's prior-turn history
+    # through messages_to_history, which encodes each message via the active
+    # codec. Any fake minted there must be persisted BEFORE the router LLM reads
+    # it (a fresh-process resume reloads the codec from DB). Delta-only + no-op
+    # when masking is disabled / no codec is active.
+    from backend.app.services.masking_service import active_codec, persist_new_mappings
+
+    persist_new_mappings(supabase, user_id, active_codec())
 
     router_result = await run_router(
         question=question,
@@ -1407,7 +1601,9 @@ async def _dispatch(
             attached_items = _load_attached_items(
                 supabase, attached_item_ids, user_id, conversation_id
             )
-            recent_messages = _load_recent_messages(supabase, conversation_id)
+            recent_messages = _load_recent_messages(
+                supabase, conversation_id, user_id=user_id
+            )
 
             major_input = MajorAgentInput(
                 describe_query=describe_query,
@@ -1693,6 +1889,15 @@ async def _run_deep_search(
         if snap.wi_seq is not None and snap.item_id:
             wi_alias_map[int(snap.wi_seq)] = snap.item_id
 
+    # وضع السرية: encode the attached items' inline content_md + title for the
+    # planner_decider (GAP: <attached_items> renders full content_md eagerly).
+    # Copies only — the shared snapshots stay REAL for other consumers. The alias
+    # map above is already built from the REAL item_id/wi_seq (encoding preserves
+    # both). Fakes minted here are flushed by the persist below, before the
+    # decider LLM runs. (case_brief + prior_searches were already encoded +
+    # persisted inside their loaders; recent_messages inside _load_recent_messages.)
+    _planner_attached = _encode_attached_for_planner(list(input.attached_items))
+
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         deps = build_planner_deps(
             supabase=supabase,
@@ -1705,9 +1910,18 @@ async def _run_deep_search(
             case_brief=case_brief,
             recent_messages=list(input.recent_messages),
             prior_searches=prior_searches,
-            attached_items=list(input.attached_items),
+            attached_items=_planner_attached,
             wi_alias_map=wi_alias_map,
         )
+
+        # Flush the attached-item fakes minted just above BEFORE the decider LLM
+        # reads them (a fresh-process resume reloads the codec from DB). Delta-only
+        # + no-op when masking is disabled / no turn codec is active.
+        from backend.app.services.masking_service import (
+            active_codec as _active_codec,
+            persist_new_mappings as _persist_new_mappings,
+        )
+        _persist_new_mappings(supabase, input.user_id, _active_codec())
 
         # The planner owns the loop — decide → retrieve → respond. Never raises.
         # `describe_query` is the renamed positional parameter (Phase C —

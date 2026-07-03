@@ -187,8 +187,17 @@ def save_memo_core(
     Builds the marker+verbatim body, skips when an identical memo already
     exists, otherwise inserts the row and returns its identifiers plus the
     ``workspace_item_created`` SSE event the orchestrator should forward.
+
+    Identifier masking (وضع السرية): ``raw_message`` is the router's
+    ``user_message`` — the ENCODED question. The memo body is decoded before the
+    dedup check AND the insert so the pinned core message stores + shows the
+    user's REAL identifiers (store-real invariant). Always-on: a no-op when no
+    turn codec is active or masking never fired. Lazy import keeps this module's
+    top-level free of the backend dependency (mirrors ``_insert_workspace_item``).
     """
-    content_md = build_memo_content(raw_message)
+    from backend.app.services.masking_service import decode_for_persist
+
+    content_md = decode_for_persist(build_memo_content(raw_message))
     clean_title = (title or "").strip() or _FALLBACK_TITLE
 
     if memo_exists_with_content(supabase, conversation_id, content_md):

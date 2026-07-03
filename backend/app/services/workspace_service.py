@@ -117,6 +117,7 @@ def create_workspace_item(
     is_visible: bool = True,
     metadata: Optional[dict] = None,
     describe_query: Optional[str] = None,
+    summary: Optional[str] = None,
 ) -> dict:
     """Create a new workspace_item row.
 
@@ -132,6 +133,11 @@ def create_workspace_item(
     ``describe_query`` is the router-emitted description of the user's query
     (typically 50–150 words). Persisted to the ``workspace_items.describe_query``
     column (migration 038). NULL for user-authored kinds (note, attachment).
+
+    ``summary`` pre-fills the agent-facing summary (migration 037). When set,
+    the ``summarize_artifact_on_insert`` trigger (WHEN new.summary IS NULL)
+    does not fire, so no analyzer pass runs — used by blog-note imports whose
+    snippet is known at insert time.
     """
     payload: dict = {
         "user_id": user_id,
@@ -157,10 +163,21 @@ def create_workspace_item(
         payload["document_id"] = document_id
     if describe_query is not None:
         payload["describe_query"] = describe_query
+    if summary is not None:
+        payload["summary"] = summary
 
     try:
         result = supabase.table("workspace_items").insert(payload).execute()
     except Exception as e:
+        # The 15-item cap trigger (migration 031) raises
+        # workspace_items_cap_exceeded with SQLSTATE 23514 — surface it as a
+        # client error, not a 500.
+        if "workspace_items_cap_exceeded" in str(e) or getattr(e, "code", None) == "23514":
+            raise LunaHTTPException(
+                status_code=400,
+                code=ErrorCode.VALIDATION_ERROR,
+                detail="وصلت المحادثة إلى الحد الأقصى للعناصر — احذف عنصرًا قبل الإضافة",
+            )
         logger.exception("Error creating workspace_item: %s", e)
         raise LunaHTTPException(
             status_code=500,
