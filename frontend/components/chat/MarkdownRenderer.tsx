@@ -62,6 +62,12 @@ interface MarkdownRendererProps {
    * Only the مدونة article view (and other anchored reading surfaces) sets it.
    */
   headingAnchors?: boolean;
+  /**
+   * Streaming hot path: skip the rehype-highlight pass — it is the most
+   * expensive plugin and its output is discarded on the next reveal frame.
+   * The settled message re-renders once with the full chain.
+   */
+  streaming?: boolean;
 }
 
 function buildMarkdownComponents(
@@ -196,9 +202,15 @@ function buildMarkdownComponents(
         </ul>
       );
     },
-    ol({ children }) {
+    ol({ children, start }) {
       return (
-        <ol className="my-2 list-decimal pe-0 ps-0 me-5 ms-0 space-y-1">
+        // CommonMark splits a numbered list at interruptions (and at the
+        // streaming prefix/tail seam) and carries the resume number via
+        // ``start`` — dropping it would restart every fragment at 1.
+        <ol
+          start={start}
+          className="my-2 list-decimal pe-0 ps-0 me-5 ms-0 space-y-1"
+        >
           {children}
         </ol>
       );
@@ -332,11 +344,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   className,
   onCitationClick,
   headingAnchors,
+  streaming,
 }: MarkdownRendererProps) {
-  // Memoize the content to avoid unnecessary re-parses on parent re-renders
-  // that don't change the content string
-  const stableContent = useMemo(() => content, [content]);
-
   // Re-bind the component map only when the citation click handler or the
   // heading-anchor toggle changes. Both are generally stable per render, so
   // this is cheap.
@@ -356,10 +365,10 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     >
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
+        rehypePlugins={streaming ? undefined : rehypePlugins}
         components={components}
       >
-        {stableContent}
+        {content}
       </ReactMarkdown>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useMemo, useState } from "react";
+import { memo, useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
@@ -57,7 +57,11 @@ export function MessageList({
   } = useMessages(conversationId);
 
   const streamingMessageId = useChatStore((s) => s.streamingMessageId);
-  const streamingContent = useChatStore((s) => s.streamingContent);
+  // Deliberately NOT the content string: the list must not re-render per
+  // reveal frame. StreamingMessageRow (bottom of file) is the only content
+  // subscriber; the list only needs the empty→non-empty flip to swap the
+  // typing indicator for the live bubble.
+  const hasStreamContent = useChatStore((s) => s.streamingContent.length > 0);
   // The streaming buffer is global; only treat it as "streaming here" when the
   // active stream actually belongs to this conversation. Without this guard one
   // conversation's stream renders inside every other conversation.
@@ -115,20 +119,15 @@ export function MessageList({
   );
 
   // Citation clicks always target the message's first agent_search artifact.
-  // Resolves the id from the lookup; no-op if the message has no agent_search
-  // among its artifacts (defensive — should not happen for deep_search runs).
-  const buildCitationHandler = useCallback(
-    (artifactIds: string[] | null | undefined) => {
-      if (!artifactIds || artifactIds.length === 0) return undefined;
-      const firstSearchId = artifactIds.find(
-        (id) => artifactLookup[id]?.kind === "agent_search",
-      );
-      if (!firstSearchId) return undefined;
-      return (n: number) => {
-        openWorkspaceItemAtReference(conversationId, firstSearchId, n);
-      };
+  // The id itself is resolved per message in the render loop (a value-stable
+  // string); this navigate callback is identity-stable, so memo(MessageBubble)
+  // and the memoized MarkdownRenderer under it never re-render — the old
+  // per-render closure here defeated both memos on every stream token.
+  const handleCitationNavigate = useCallback(
+    (artifactId: string, n: number) => {
+      openWorkspaceItemAtReference(conversationId, artifactId, n);
     },
-    [artifactLookup, openWorkspaceItemAtReference, conversationId],
+    [openWorkspaceItemAtReference, conversationId],
   );
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -226,7 +225,9 @@ export function MessageList({
       return;
     }
 
-    // During streaming: only auto-scroll if user is near the bottom
+    // Streaming transitions (indicator mounts, first token lands): pin to
+    // bottom if the user is there. Per-frame growth is followed by the
+    // imperative store subscription below, not by this effect.
     if (isStreaming && isNearBottomRef.current) {
       container.scrollTop = container.scrollHeight;
       return;
@@ -241,7 +242,20 @@ export function MessageList({
         setNewMessageCount((prev) => prev + 1);
       }
     }
-  }, [messages.length, isStreaming, streamingContent]);
+  }, [messages.length, isStreaming, hasStreamContent]);
+
+  // Pin-to-bottom while text streams in. Reveal frames update streamingContent
+  // up to once per animation frame; subscribing imperatively lets us follow
+  // the growth with a bare scrollTop write — zero React re-renders involved.
+  useEffect(() => {
+    if (!isStreaming) return;
+    return useChatStore.subscribe((state, prev) => {
+      if (state.streamingContent === prev.streamingContent) return;
+      if (!isNearBottomRef.current) return;
+      const container = scrollContainerRef.current;
+      if (container) container.scrollTop = container.scrollHeight;
+    });
+  }, [isStreaming]);
 
   // Reset initial load flag when conversation changes
   useEffect(() => {
@@ -346,7 +360,7 @@ export function MessageList({
         {/* Messages */}
         {messages.map((msg, idx) => {
           // `isStreaming` is already scoped to this conversation, so the
-          // global streamingContent is only ever applied to its own stream.
+          // global stream is only ever applied to its own conversation.
           const isStreamingThis =
             isStreaming &&
             (msg.isStreaming ||
@@ -356,13 +370,13 @@ export function MessageList({
           // card. Show the thinking state until content lands — independent of
           // `isStreaming`, so it survives a dropped stream, reconnect, or a
           // page refresh while the run is still in flight.
-          const liveContent = isStreamingThis
-            ? (streamingContent ?? "")
-            : msg.content;
+          const isEmptyContent = isStreamingThis
+            ? !hasStreamContent
+            : (msg.content ?? "").trim() === "";
           if (
             msg.role === "assistant" &&
             !msg.isOptimistic &&
-            (liveContent ?? "").trim() === "" &&
+            isEmptyContent &&
             !(msg.artifact_ids && msg.artifact_ids.length > 0)
           ) {
             // The run behind this placeholder is dead once it's older than the
@@ -400,6 +414,12 @@ export function MessageList({
               </div>
             );
           }
+          // Hot-path isolation: the row bound to the live stream subscribes
+          // to the streaming buffer itself, so each reveal frame re-renders
+          // it alone while every settled bubble above stays untouched.
+          if (isStreamingThis) {
+            return <StreamingMessageRow key={msg.message_id} message={msg} />;
+          }
           const ids = msg.artifact_ids;
           // Window B Tasks 5–7: prefer the persisted row value over the
           // store-only entry. The store is populated live by the
@@ -413,19 +433,17 @@ export function MessageList({
           return (
             <MessageBubble
               key={msg.message_id}
-              message={
-                isStreamingThis
-                  ? { ...msg, isStreaming: true }
-                  : msg
-              }
-              streamingContent={isStreamingThis ? streamingContent : undefined}
+              message={msg}
               onRegenerate={onRegenerate}
               onEditResend={onEditResend}
               onRetry={onRetry}
               artifactIds={ids}
               artifactLookup={artifactLookup}
               onOpenArtifact={handleOpenArtifact}
-              onCitationClick={buildCitationHandler(ids)}
+              citationArtifactId={ids?.find(
+                (id) => artifactLookup[id]?.kind === "agent_search",
+              )}
+              onCitationNavigate={handleCitationNavigate}
               referencedItemIds={referencedIds}
               onJumpToReferencedItem={handleJumpToReferencedItem}
               templateOffer={templateOffersByMessage[msg.message_id]}
@@ -435,7 +453,7 @@ export function MessageList({
 
         {/* Typing indicator: streaming started but no content yet — unless an
             empty placeholder row is already showing its own (Layer 1). */}
-        {isStreaming && streamingContent === "" && !hasIncompletePlaceholder && (
+        {isStreaming && !hasStreamContent && !hasIncompletePlaceholder && (
           <div className="flex justify-end mb-4">
             <TypingIndicator />
           </div>
@@ -444,9 +462,9 @@ export function MessageList({
         {/* Streaming assistant bubble (when message_id hasn't been added to the query cache yet) */}
         {isStreaming &&
           streamingMessageId &&
-          streamingContent !== "" &&
+          hasStreamContent &&
           !messages.some((m) => m.message_id === streamingMessageId) && (
-            <MessageBubble
+            <StreamingMessageRow
               message={{
                 message_id: streamingMessageId,
                 conversation_id: conversationId,
@@ -460,7 +478,6 @@ export function MessageList({
                 artifact_ids: undefined,
                 isStreaming: true,
               }}
-              streamingContent={streamingContent}
             />
           )}
 
@@ -479,3 +496,26 @@ export function MessageList({
     </div>
   );
 }
+
+/**
+ * The sole subscriber of the per-frame streaming buffer. Isolating the
+ * ``streamingContent`` read here means each reveal frame re-renders only this
+ * one row — MessageList and every settled bubble above it stay untouched.
+ */
+const StreamingMessageRow = memo(function StreamingMessageRow({
+  message,
+}: {
+  message: Message;
+}) {
+  const streamingContent = useChatStore((s) => s.streamingContent);
+  const streamingMessage = useMemo(
+    () => (message.isStreaming ? message : { ...message, isStreaming: true }),
+    [message],
+  );
+  return (
+    <MessageBubble
+      message={streamingMessage}
+      streamingContent={streamingContent}
+    />
+  );
+});

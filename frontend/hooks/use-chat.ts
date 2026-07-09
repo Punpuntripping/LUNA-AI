@@ -115,7 +115,7 @@ export function useSendMessage(): UseSendMessageReturn {
       // We carry every pending file into the optimistic bubble so the user
       // sees what they intended to attach; the server-side state of the row
       // is the source of truth for what the agent actually receives.
-      const optimisticAttachments = pendingFiles.map((pf) => ({
+      const optimisticAttachments: Attachment[] = pendingFiles.map((pf) => ({
         id: pf.id,
         document_id: pf.itemId ?? pf.id,
         attachment_type: (pf.mimeType === "application/pdf"
@@ -125,6 +125,7 @@ export function useSendMessage(): UseSendMessageReturn {
             : "file") as "pdf" | "image" | "file",
         filename: pf.name,
         file_size: pf.size,
+        kind: "attachment" as const,
       }));
 
       // Ready blog chips join the optimistic bubble too.
@@ -137,6 +138,7 @@ export function useSendMessage(): UseSendMessageReturn {
             attachment_type: "file" as const,
             filename: (pb.title ?? "").trim() || "مدونة",
             file_size: 0,
+            kind: "agent_search" as const,
           })),
       );
 
@@ -433,6 +435,10 @@ export function useSendMessage(): UseSendMessageReturn {
             }
             case "done": {
               const payload = data as SSEDone;
+              // The paced reveal may still hold tail text in its buffer —
+              // publish it so streamingContent is the complete answer before
+              // it is persisted into the cache.
+              useChatStore.getState().flushStreamBuffer();
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
               const finalContent = useChatStore.getState().streamingContent;
@@ -452,7 +458,31 @@ export function useSendMessage(): UseSendMessageReturn {
                         (m) => m.message_id === assistantMessageId,
                       ),
                     );
-                    if (alreadyPresent) return old;
+                    if (alreadyPresent) {
+                      // Usually the row is the EMPTY placeholder the backend
+                      // inserted at run start, pulled in by a mid-stream
+                      // refetch. Fill it in place — leaving it empty would
+                      // flash the thinking indicator between finishStreaming
+                      // and the post-stream refetch landing.
+                      return {
+                        ...old,
+                        pages: old.pages.map((page) => ({
+                          ...page,
+                          messages: page.messages.map((m) =>
+                            m.message_id === assistantMessageId &&
+                            (m.content ?? "").trim() === ""
+                              ? {
+                                  ...m,
+                                  content: finalContent,
+                                  artifact_ids: payload.artifact_ids ?? null,
+                                  referenced_item_ids:
+                                    payload.referenced_item_ids ?? null,
+                                }
+                              : m,
+                          ),
+                        })),
+                      };
+                    }
                     const newPages = [...old.pages];
                     newPages[0] = {
                       ...newPages[0],

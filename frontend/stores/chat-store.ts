@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { PendingBlog, PendingFile, SSEQuotaExceeded } from "@/types";
+import type {
+  PendingBlog,
+  PendingFile,
+  PendingTemplate,
+  SSEQuotaExceeded,
+} from "@/types";
 
 const DEFAULT_SPLIT_RATIO = 50;
 const SPLIT_RATIO_KEY = "luna.workspace.splitRatio";
@@ -21,6 +26,61 @@ function persistSplitRatio(ratio: number): void {
     window.localStorage.setItem(SPLIT_RATIO_KEY, String(ratio));
   } catch {
     // localStorage can throw (private mode, quota) — ignore.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming reveal buffer — module-level on purpose.
+//
+// Raw SSE tokens land here instead of directly in state; ``revealFrame``
+// publishes to ``streamingContent`` at most once per animation frame, at a
+// velocity proportional to the backlog. That coalesces a burst of token
+// events into one React render AND smooths the network's stop-and-go rhythm
+// into a steady typewriter reveal. Mutating these must never re-render, which
+// is why they are not store state.
+// ---------------------------------------------------------------------------
+
+let tokenBuffer = "";
+let revealRafId: number | null = null;
+
+/** Floor so a near-empty backlog still visibly advances every frame. */
+const REVEAL_MIN_CHARS = 3;
+/**
+ * Fraction of the backlog revealed per frame. The backlog settles where
+ * production = reveal rate (≈ divisor × chars-per-frame), so display lags the
+ * network by only ~100ms at typical token rates while bursts get absorbed.
+ */
+const REVEAL_BACKLOG_DIVISOR = 6;
+
+function cancelReveal(): void {
+  if (typeof window !== "undefined" && revealRafId !== null) {
+    window.cancelAnimationFrame(revealRafId);
+  }
+  revealRafId = null;
+  tokenBuffer = "";
+}
+
+function revealFrame(): void {
+  revealRafId = null;
+  if (!useChatStore.getState().isStreaming) {
+    tokenBuffer = "";
+    return;
+  }
+  if (tokenBuffer.length === 0) return;
+  let n = Math.min(
+    tokenBuffer.length,
+    Math.max(REVEAL_MIN_CHARS, Math.ceil(tokenBuffer.length / REVEAL_BACKLOG_DIVISOR)),
+  );
+  // Never split a surrogate pair (emoji etc.) across frames.
+  const cut = tokenBuffer.charCodeAt(n - 1);
+  if (n < tokenBuffer.length && cut >= 0xd800 && cut <= 0xdbff) n += 1;
+  const piece = tokenBuffer.slice(0, n);
+  tokenBuffer = tokenBuffer.slice(n);
+  useChatStore.setState((state) => ({
+    streamingContent: state.streamingContent + piece,
+  }));
+  if (tokenBuffer.length > 0) {
+    revealRafId = window.requestAnimationFrame(revealFrame);
   }
 }
 
@@ -69,6 +129,13 @@ interface ChatState {
   // destination ChatInput after the create-conversation navigation.
   pendingBlogs: PendingBlog[];
   pendingBlogTokens: string[];
+  // قالب chip picked from the composer's «+» menu. Single-slot — the planner
+  // drafts from ONE template, so picking another replaces it. Cleared on
+  // conversation switch (same discipline as files/blogs); ``pendingTemplateCarry``
+  // is the new-chat carry slot (the pendingBlogTokens twin) so a chip attached
+  // on the empty page survives the create-on-attach navigation.
+  pendingTemplate: PendingTemplate | null;
+  pendingTemplateCarry: PendingTemplate | null;
   error: string | null;
   // Per-conversation workspace pane state, keyed by conversation_id, so the
   // pane follows conversation navigation instead of leaking across them.
@@ -117,6 +184,12 @@ interface ChatState {
 
   startStreaming: (messageId: string, conversationId: string) => void;
   appendToken: (text: string) => void;
+  /**
+   * Synchronously publish any text still waiting in the paced-reveal buffer.
+   * MUST be called before reading ``streamingContent`` as the final answer
+   * (the SSE ``done`` handler) — otherwise the buffered tail is lost.
+   */
+  flushStreamBuffer: () => void;
   stopStreaming: () => void;
   finishStreaming: () => void;
   setError: (error: string | null) => void;
@@ -143,6 +216,8 @@ interface ChatState {
   updatePendingBlog: (id: string, partial: Partial<PendingBlog>) => void;
   setPendingBlogTokens: (tokens: string[]) => void;
   clearPendingBlogTokens: () => void;
+  setPendingTemplate: (template: PendingTemplate | null) => void;
+  setPendingTemplateCarry: (template: PendingTemplate | null) => void;
   openWorkspaceItem: (conversationId: string, itemId: string) => void;
   /**
    * Open ``itemId`` in the pane AND mark reference ``n`` as focused so the
@@ -225,6 +300,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingMessage: null,
   pendingBlogs: [],
   pendingBlogTokens: [],
+  pendingTemplate: null,
+  pendingTemplateCarry: null,
   error: null,
   workspaceByConversation: {},
   referencedItemsByMessage: {},
@@ -238,7 +315,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isReconnecting: false,
   quotaInfo: null,
 
-  startStreaming: (messageId, conversationId) =>
+  startStreaming: (messageId, conversationId) => {
+    // Drop any reveal backlog a superseded stream left behind.
+    cancelReveal();
     set({
       isStreaming: true,
       streamingMessageId: messageId,
@@ -248,12 +327,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // A new stream means the gate let this send through — drop any stale
       // banner from a previous rejection.
       quotaInfo: null,
-    }),
+    });
+  },
 
-  appendToken: (text) =>
-    set((state) => ({ streamingContent: state.streamingContent + text })),
+  appendToken: (text) => {
+    if (typeof window === "undefined") {
+      set((state) => ({ streamingContent: state.streamingContent + text }));
+      return;
+    }
+    tokenBuffer += text;
+    if (revealRafId === null) {
+      revealRafId = window.requestAnimationFrame(revealFrame);
+    }
+  },
+
+  flushStreamBuffer: () => {
+    if (typeof window !== "undefined" && revealRafId !== null) {
+      window.cancelAnimationFrame(revealRafId);
+    }
+    revealRafId = null;
+    if (tokenBuffer.length === 0) return;
+    const rest = tokenBuffer;
+    tokenBuffer = "";
+    set((state) => ({ streamingContent: state.streamingContent + rest }));
+  },
 
   stopStreaming: () => {
+    cancelReveal();
     const { abortController } = get();
     if (abortController) abortController.abort();
     set({
@@ -269,6 +369,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Called when stream completes naturally (done event).
     // Does NOT abort — just clears streaming state.
     // Also resets reconnect counters because the stream completed successfully.
+    // Any unrevealed buffer is intentionally discarded: the done handler
+    // flushes before reading, and the agent_question path discards by design.
+    cancelReveal();
     set({
       isStreaming: false,
       streamingMessageId: null,
@@ -337,6 +440,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setPendingBlogTokens: (tokens) => set({ pendingBlogTokens: tokens }),
 
   clearPendingBlogTokens: () => set({ pendingBlogTokens: [] }),
+
+  setPendingTemplate: (template) => set({ pendingTemplate: template }),
+
+  setPendingTemplateCarry: (template) =>
+    set({ pendingTemplateCarry: template }),
 
   openWorkspaceItem: (conversationId, itemId) =>
     set((state) => {
@@ -516,7 +624,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setQuotaInfo: (info) => set({ quotaInfo: info }),
 
-  reset: () =>
+  reset: () => {
+    cancelReveal();
     // splitRatio is intentionally preserved — it is a global layout preference.
     set({
       isStreaming: false,
@@ -530,6 +639,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingMessage: null,
       pendingBlogs: [],
       pendingBlogTokens: [],
+      pendingTemplate: null,
+      pendingTemplateCarry: null,
       error: null,
       workspaceByConversation: {},
       referencedItemsByMessage: {},
@@ -541,5 +652,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       maxReconnectAttempts: 5,
       isReconnecting: false,
       quotaInfo: null,
-    }),
+    });
+  },
 }));

@@ -4,18 +4,21 @@ import {
   Copy,
   Check,
   Bot,
+  BookText,
   FileText,
   FileSearch,
   ImageIcon,
   AlertCircle,
+  PenLine,
   RefreshCw,
   Pencil,
+  StickyNote,
   ThumbsUp,
   ThumbsDown,
   HelpCircle,
   CornerUpLeft,
 } from "lucide-react";
-import { useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
+import { memo, useState, useCallback, useRef, useEffect, type KeyboardEvent } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,8 +62,15 @@ interface MessageBubbleProps {
   artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
   /** Open a workspace item in the pane (used by chip click). */
   onOpenArtifact?: (itemId: string) => void;
-  /** Open the message's first ``agent_search`` artifact at reference ``n``. */
-  onCitationClick?: (n: number) => void;
+  /**
+   * First ``agent_search`` artifact of this message — the target of ``[n]``
+   * citation clicks. A plain string rather than a per-render closure so
+   * ``memo(MessageBubble)`` and the memoized ``MarkdownRenderer`` under it
+   * stay cache hits while another message streams.
+   */
+  citationArtifactId?: string;
+  /** Navigate to reference ``n`` inside ``artifactId`` (identity-stable). */
+  onCitationNavigate?: (artifactId: string, n: number) => void;
   /**
    * Phase E (full_redesign §9 O5): workspace_item ids the planner flagged
    * as "already covers this question" for this assistant message. When
@@ -83,7 +93,7 @@ interface MessageBubbleProps {
   templateOffer?: { itemId: string; titleHint: string };
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   streamingContent,
   onRegenerate,
@@ -92,7 +102,8 @@ export function MessageBubble({
   artifactIds,
   artifactLookup,
   onOpenArtifact,
-  onCitationClick,
+  citationArtifactId,
+  onCitationNavigate,
   referencedItemIds,
   onJumpToReferencedItem,
   templateOffer,
@@ -200,6 +211,15 @@ export function MessageBubble({
       }
     },
     [handleSaveEdit, handleCancelEdit]
+  );
+
+  // Rebuilt only when the target artifact changes; the stable identity keeps
+  // the memoized MarkdownRenderer from re-parsing on unrelated re-renders.
+  const handleCitationClick = useCallback(
+    (n: number) => {
+      if (citationArtifactId) onCitationNavigate?.(citationArtifactId, n);
+    },
+    [citationArtifactId, onCitationNavigate]
   );
 
   const displayContent = isCurrentlyStreaming ? streamingContent : message.content;
@@ -421,7 +441,11 @@ export function MessageBubble({
           ) : (
             <MarkdownRenderer
               content={displayContent ?? ""}
-              onCitationClick={hasArtifacts ? onCitationClick : undefined}
+              onCitationClick={
+                hasArtifacts && citationArtifactId
+                  ? handleCitationClick
+                  : undefined
+              }
             />
           )}
 
@@ -619,7 +643,7 @@ export function MessageBubble({
       </div>
     </TooltipProvider>
   );
-}
+});
 
 // ============================================================================
 // Artifact chip (Window C)
@@ -785,6 +809,9 @@ function AttachmentList({
           // filename the messages API returns for workspace-item attachments);
           // a fresh same-session attachment falls back to its own filename.
           resolvedTitle={artifactLookup?.[att.document_id]?.title}
+          // Kind from the API row (migration 088 embeds it) with the
+          // workspace-list cache as fallback for legacy cached rows.
+          resolvedKind={att.kind ?? artifactLookup?.[att.document_id]?.kind}
           // NOT gated on artifactLookup: opening fetches the item by id, so a
           // just-uploaded attachment is clickable immediately — not only after
           // the list cache refreshes on a full reload (the "per new sign-in"
@@ -799,19 +826,56 @@ function AttachmentList({
 interface AttachmentChipProps {
   attachment: Attachment;
   resolvedTitle?: string;
+  resolvedKind?: WorkspaceItemKind;
   onOpen?: (itemId: string) => void;
 }
+
+/**
+ * Per-kind chip presentation so the user can tell an *uploaded file* apart
+ * from an item *attached from within the conversation* (blog import, note,
+ * draft). Mirrors the composer chips: blogs keep the BookText/text-primary
+ * look of ``BlogChip``. ``hint`` doubles as the hover tooltip (native title).
+ */
+const CHIP_STYLE_BY_KIND: Partial<
+  Record<WorkspaceItemKind, { icon: typeof FileText; iconClass: string; hint: string }>
+> = {
+  agent_search: {
+    icon: BookText,
+    iconClass: "text-primary",
+    hint: "مدونة/تحليل مرفق من المحادثة",
+  },
+  note: {
+    icon: StickyNote,
+    iconClass: "text-primary",
+    hint: "ملاحظة مرفقة من المحادثة",
+  },
+  agent_writing: {
+    icon: PenLine,
+    iconClass: "text-primary",
+    hint: "مسودة مرفقة من المحادثة",
+  },
+};
 
 function AttachmentChip({
   attachment,
   resolvedTitle,
+  resolvedKind,
   onOpen,
 }: AttachmentChipProps) {
-  const Icon = attachment.attachment_type === "image" ? ImageIcon : FileText;
+  const kindStyle = resolvedKind ? CHIP_STYLE_BY_KIND[resolvedKind] : undefined;
+  const Icon =
+    kindStyle?.icon ??
+    (attachment.attachment_type === "image" ? ImageIcon : FileText);
+  const hint = kindStyle?.hint ?? "ملف مرفوع";
   const name = resolvedTitle || attachment.filename || "مرفق";
   const inner = (
     <>
-      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      <Icon
+        className={cn(
+          "h-3.5 w-3.5 shrink-0",
+          kindStyle?.iconClass ?? "text-muted-foreground",
+        )}
+      />
       <span className="text-[11px] text-muted-foreground truncate max-w-[160px]">
         {name}
       </span>
@@ -820,7 +884,10 @@ function AttachmentChip({
 
   if (!onOpen || !attachment.document_id) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1">
+      <div
+        title={hint}
+        className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1"
+      >
         {inner}
       </div>
     );
@@ -830,6 +897,7 @@ function AttachmentChip({
     <button
       type="button"
       onClick={() => onOpen(attachment.document_id)}
+      title={hint}
       className={cn(
         "flex items-center gap-1.5 rounded-md bg-muted/50 px-2 py-1",
         "hover:bg-muted transition-colors cursor-pointer",
