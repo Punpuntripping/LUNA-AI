@@ -237,7 +237,7 @@ def _load_filtered_messages(
     try:
         q = (
             supabase.table("messages")
-            .select("role, content, metadata, artifact_ids, created_at")
+            .select("message_id, role, content, metadata, artifact_ids, created_at")
             .eq("conversation_id", conversation_id)
         )
         if cutoff_created_at:
@@ -259,7 +259,54 @@ def _load_filtered_messages(
         if kind in _EXCLUDED_MESSAGE_KINDS:
             continue
         filtered.append(row)
+
+    _attach_message_attachments(supabase, filtered)
     return filtered
+
+
+def _attach_message_attachments(
+    supabase: SupabaseClient, msg_rows: list[dict]
+) -> None:
+    """Annotate USER message rows with ``attached_wi_ids`` (in place).
+
+    One batched ``message_attachments`` query for the whole window. The ids
+    feed :func:`agents.utils.history.build_user_attachment_tag` inside
+    ``messages_to_history`` so the router's history marks which workspace
+    items (uploaded files / attached blogs) rode which user message — the
+    user-turn twin of the assistant provenance tag. Best-effort: any failure
+    leaves the rows untagged rather than dropping history.
+    """
+    user_msg_ids = [
+        str(r["message_id"])
+        for r in msg_rows
+        if r.get("message_id") and (r.get("role") or "") == "user"
+    ]
+    if not user_msg_ids:
+        return
+    try:
+        att_resp = (
+            supabase.table("message_attachments")
+            .select("message_id, document_id")
+            .in_("message_id", user_msg_ids)
+            .execute()
+        )
+        att_rows = (getattr(att_resp, "data", None) or [])
+    except Exception as e:
+        logger.warning(
+            "load_router_context: message_attachments load failed: %s", e
+        )
+        return
+    by_message: dict[str, list[str]] = {}
+    for att in att_rows:
+        mid, did = att.get("message_id"), att.get("document_id")
+        if mid and did:
+            by_message.setdefault(str(mid), []).append(str(did))
+    if not by_message:
+        return
+    for row in msg_rows:
+        ids = by_message.get(str(row.get("message_id") or ""))
+        if ids:
+            row["attached_wi_ids"] = ids
 
 
 def load_router_context(

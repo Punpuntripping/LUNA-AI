@@ -63,6 +63,7 @@ export default function ChatEmptyPage() {
             useChatStore.getState().clearPendingAttachFiles();
             useChatStore.getState().clearPendingBlogTokens();
             useChatStore.getState().setPendingComposerDraft(null);
+            useChatStore.getState().setPendingTemplateCarry(null);
             setIsCreating(false);
           },
         }

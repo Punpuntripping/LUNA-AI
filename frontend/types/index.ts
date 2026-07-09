@@ -187,6 +187,14 @@ export interface Attachment {
   attachment_type: 'pdf' | 'image' | 'file';
   filename: string;
   file_size?: number;
+  /**
+   * ``workspace_items.kind`` of the attached item (messages API embeds it via
+   * the migration-088 FK). Distinguishes an uploaded file (``attachment``)
+   * from an item attached from within the conversation (e.g. a blog import =
+   * ``agent_search``) on the message chips. Optional: absent on legacy cache
+   * entries — the chip falls back to ``artifactLookup``.
+   */
+  kind?: WorkspaceItemKind;
 }
 
 export interface MessageListResponse {
@@ -875,6 +883,20 @@ export interface UpdateTemplateRequest {
 
 export interface TemplateListResponse {
   templates: UserTemplate[];
+}
+
+/**
+ * قالب picked from the composer's «+» menu, shown as a removable chip above
+ * the input (the قوالبي twin of ``PendingBlog``). Purely client-side: on send
+ * the chip becomes an explicit «استخدم القالب: «العنوان»» line appended to the
+ * outgoing message — the writer_planner matches that title in its
+ * ``<my_templates>`` block and sets ``chosen_template``, so no id is ever
+ * sent over the wire. At most ONE template chip at a time (the planner drafts
+ * from a single template); picking another replaces it.
+ */
+export interface PendingTemplate {
+  templateId: string;
+  title: string;
 }
 
 /**

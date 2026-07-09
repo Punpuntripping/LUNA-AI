@@ -1,6 +1,9 @@
 "use client";
 
-import { Loader2, FileWarning, Download } from "lucide-react";
+import { useState } from "react";
+import { Loader2, FileWarning, Download, FileText, ScanText } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ArtifactPreview } from "./ArtifactPreview";
 import { useWorkspaceItemFileUrl } from "@/hooks/use-workspace";
 import type { WorkspaceItem } from "@/types";
 
@@ -8,6 +11,13 @@ interface AttachmentMetadata {
   filename?: string;
   mime_type?: string;
   file_size_bytes?: number;
+  /**
+   * OCR pipeline marker (agents/memory/ocr_extractor): absent = never
+   * attempted (extraction runs when the message is sent), ``done`` = text in
+   * ``content_md``, ``empty`` = no extractable text, ``failed`` /
+   * ``skipped_*`` = extraction did not produce text.
+   */
+  ocr_status?: string;
 }
 
 interface AttachmentRendererProps {
@@ -17,11 +27,89 @@ interface AttachmentRendererProps {
 /**
  * Renders an ``attachment`` workspace item.
  *
- * - ``image/*``       → ``<img>`` with the signed URL
- * - ``application/pdf``→ ``<iframe>`` with the signed URL
- * - anything else      → download fallback
+ * Primary view is the **pure OCR extraction** (``content_md``, written by the
+ * ocr_extractor at message-send time) — that text is exactly what the agents
+ * read, so showing it here lets the user verify what the pipeline actually
+ * saw. A toolbar toggle switches to the original file (signed-URL image /
+ * PDF iframe), which is also the automatic fallback while no extraction
+ * exists yet (pre-send) or when OCR failed/was skipped.
  */
 export function AttachmentRenderer({ item }: AttachmentRendererProps) {
+  const meta = (item.metadata as AttachmentMetadata) || {};
+  const ocrText = (item.content_md ?? "").trim();
+  const [showOriginal, setShowOriginal] = useState(false);
+
+  if (ocrText && !showOriginal) {
+    return (
+      <ArtifactPreview
+        content={ocrText}
+        copyLabel="نسخ النص المستخرج"
+        headerActions={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => setShowOriginal(true)}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            الملف الأصلي
+          </Button>
+        }
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-1 flex-col">
+      {ocrText ? (
+        // Original-file mode entered from the OCR view — offer the way back.
+        <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => setShowOriginal(false)}
+          >
+            <ScanText className="h-3.5 w-3.5" />
+            النص المستخرج
+          </Button>
+        </div>
+      ) : (
+        <OcrStatusNote status={meta.ocr_status} />
+      )}
+      <OriginalFileView item={item} />
+    </div>
+  );
+}
+
+/**
+ * Slim banner explaining why there is no extracted text yet — shown above the
+ * original-file fallback so the "OCR-first" contract stays visible.
+ */
+function OcrStatusNote({ status }: { status?: string }) {
+  let text: string;
+  if (!status) {
+    text = "لم يُستخرج نص المستند بعد — يُستخرج تلقائيًا عند إرسال الرسالة";
+  } else if (status === "empty") {
+    text = "لا يحتوي المستند على نص قابل للاستخراج";
+  } else {
+    // failed / skipped_unsupported / skipped_quota / skipped_too_large
+    text = "تعذّر استخراج نص هذا المستند";
+  }
+  return (
+    <div className="border-b bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+      {text}
+    </div>
+  );
+}
+
+/**
+ * The pre-existing signed-URL renderer for the raw file:
+ * - ``image/*``        → ``<img>``
+ * - ``application/pdf`` → ``<iframe>``
+ * - anything else       → download fallback
+ */
+function OriginalFileView({ item }: { item: WorkspaceItem }) {
   const { data, isLoading, error } = useWorkspaceItemFileUrl(item.item_id);
   const meta = (item.metadata as AttachmentMetadata) || {};
   const mimeType = meta.mime_type ?? "application/octet-stream";
@@ -65,7 +153,7 @@ export function AttachmentRenderer({ item }: AttachmentRendererProps) {
       <iframe
         src={data.url}
         title={filename}
-        className="h-full w-full border-0"
+        className="h-full w-full flex-1 border-0"
       />
     );
   }

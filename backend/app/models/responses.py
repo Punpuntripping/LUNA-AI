@@ -156,6 +156,10 @@ class AttachmentResponse(BaseModel):
     attachment_type: str
     filename: str
     file_size: Optional[int] = None
+    # ``workspace_items.kind`` of the attached item (embedded by the service
+    # via the migration-088 FK join). Lets the frontend chip distinguish an
+    # uploaded file from a blog/analysis item attached from within the convo.
+    kind: Optional[str] = None
 
 
 class MessageResponse(BaseModel):

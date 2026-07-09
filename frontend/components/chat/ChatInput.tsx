@@ -9,20 +9,22 @@ import {
   type KeyboardEvent,
 } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Send, Square, Paperclip } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { FilePreview } from "@/components/chat/FilePreview";
 import { BlogChips } from "@/components/chat/BlogChip";
+import { TemplateChip } from "@/components/chat/TemplateChip";
+import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
 import { api, workspaceApi, ApiClientError } from "@/lib/api";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import {
   runResumableUpload,
   type ImperativeUploadHandle,
 } from "@/hooks/use-resumable-upload";
-import type { PendingBlog, PendingFile } from "@/types";
+import type { PendingBlog, PendingFile, PendingTemplate } from "@/types";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -80,6 +82,8 @@ export function ChatInput({
   const removePendingBlog = useChatStore((s) => s.removePendingBlog);
   const updatePendingBlog = useChatStore((s) => s.updatePendingBlog);
   const clearPendingBlogs = useChatStore((s) => s.clearPendingBlogs);
+  const pendingTemplate = useChatStore((s) => s.pendingTemplate);
+  const setPendingTemplate = useChatStore((s) => s.setPendingTemplate);
 
   // Block send while any attachment is still uploading (or a pasted blog is
   // still importing). Failed / cancelled entries don't block — the user can
@@ -105,7 +109,10 @@ export function ChatInput({
   ).length;
 
   const canSend =
-    (content.trim().length > 0 || sendableFileCount > 0 || sendableBlogCount > 0) &&
+    (content.trim().length > 0 ||
+      sendableFileCount > 0 ||
+      sendableBlogCount > 0 ||
+      pendingTemplate !== null) &&
     !isStreaming &&
     !disabled &&
     !hasInFlightUpload;
@@ -123,7 +130,8 @@ export function ChatInput({
     handles.clear();
     clearPendingFiles();
     clearPendingBlogs();
-  }, [conversationId, clearPendingFiles, clearPendingBlogs]);
+    setPendingTemplate(null);
+  }, [conversationId, clearPendingFiles, clearPendingBlogs, setPendingTemplate]);
 
   // Abort any live tus uploads on unmount (e.g. user navigates away
   // mid-upload). Cancel handles also call the backend cancel endpoint
@@ -145,6 +153,14 @@ export function ChatInput({
       setContent(draft);
       useChatStore.getState().setPendingComposerDraft(null);
     }
+    // Template chip carried across the create-on-attach navigation (the
+    // conversationId clear-effect above already ran and wiped the live slot;
+    // restore it from the carry slot the source ChatInput stashed).
+    const carriedTemplate = useChatStore.getState().pendingTemplateCarry;
+    if (carriedTemplate) {
+      useChatStore.getState().setPendingTemplateCarry(null);
+      useChatStore.getState().setPendingTemplate(carriedTemplate);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -157,17 +173,37 @@ export function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = content.trim();
-    if (!trimmed && pendingFiles.length === 0 && pendingBlogs.length === 0) return;
+    const template = useChatStore.getState().pendingTemplate;
+    if (
+      !trimmed &&
+      pendingFiles.length === 0 &&
+      pendingBlogs.length === 0 &&
+      !template
+    ) {
+      return;
+    }
 
-    if (trimmed.length > MAX_CHARS) {
+    // Template chip → explicit directive line appended to the outgoing text.
+    // The writer_planner picks قوالبي templates by matching the user's words
+    // against its <my_templates> titles, so a verbatim «استخدم القالب: ...»
+    // line is the strongest signal it can consume — no id travels over the
+    // wire, and the directive stays visible in the message history.
+    const outgoing = template
+      ? [trimmed, `استخدم القالب: «${template.title.trim()}»`]
+          .filter(Boolean)
+          .join("\n\n")
+      : trimmed;
+
+    if (outgoing.length > MAX_CHARS) {
       setValidationError(`الحد الأقصى ${MAX_CHARS.toLocaleString("ar-SA")} حرف`);
       return;
     }
 
     setValidationError(null);
-    onSend(trimmed);
+    onSend(outgoing);
     setContent("");
-  }, [content, onSend, pendingFiles.length, pendingBlogs.length]);
+    if (template) setPendingTemplate(null);
+  }, [content, onSend, pendingFiles.length, pendingBlogs.length, setPendingTemplate]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -346,6 +382,56 @@ export function ChatInput({
     importBlogTokens(carried);
   }, [conversationId, importBlogTokens]);
 
+  // Queue blog tokens as composer chips — the single entry point shared by
+  // the paste handler, the «مدونة → من مدوناتي» menu list, and the «إضافة
+  // رابط» dialog. Dedups against live chips AND the new-chat carry slot,
+  // enforces MAX_BLOG_CHIPS, and rides the create-on-attach flow when no
+  // conversation exists yet (carrying the draft + any template chip across
+  // the navigation). Returns true when at least one token was queued.
+  const queueBlogTokens = useCallback(
+    (tokens: string[], draft: string): boolean => {
+      const store = useChatStore.getState();
+      const already = new Set([
+        ...store.pendingBlogs.map((b) => b.token),
+        ...store.pendingBlogTokens,
+      ]);
+      const fresh = tokens.filter(
+        (t, i) => !already.has(t) && tokens.indexOf(t) === i,
+      );
+      if (fresh.length === 0) return false;
+
+      const room =
+        MAX_BLOG_CHIPS -
+        (store.pendingBlogs.length + store.pendingBlogTokens.length);
+      if (room <= 0) {
+        setValidationError(`الحد الأقصى ${MAX_BLOG_CHIPS} مدونات في الرسالة`);
+        return false;
+      }
+      setValidationError(null);
+      const capped = fresh.slice(0, room);
+
+      // Brand-new chat: stash the tokens (+ draft + template chip) and ride
+      // the same create-then-navigate flow the file picker uses.
+      if (!conversationId) {
+        if (!onRequireConversation) {
+          setValidationError("ابدأ محادثة أولاً قبل إضافة المدونات");
+          return false;
+        }
+        store.setPendingBlogTokens([...store.pendingBlogTokens, ...capped]);
+        if (draft.trim()) store.setPendingComposerDraft(draft);
+        if (store.pendingTemplate) {
+          store.setPendingTemplateCarry(store.pendingTemplate);
+        }
+        onRequireConversation([]);
+        return true;
+      }
+
+      importBlogTokens(capped);
+      return true;
+    },
+    [conversationId, onRequireConversation, importBlogTokens],
+  );
+
   // Detect blog share-links in pasted text: each unique ``/blog/<32-hex>``
   // URL becomes a chip (the URL itself is stripped from the inserted text —
   // "like an attachment"). Ordinary pastes fall through untouched. In a
@@ -369,14 +455,6 @@ export function ChatInput({
       if (tokens.length === 0) return; // no NEW blog links — ordinary paste
 
       e.preventDefault();
-      setValidationError(null);
-
-      const room = MAX_BLOG_CHIPS - pendingBlogs.length;
-      if (room <= 0) {
-        setValidationError(`الحد الأقصى ${MAX_BLOG_CHIPS} مدونات في الرسالة`);
-        return;
-      }
-      const capped = tokens.slice(0, room);
 
       // Insert the pasted text minus the blog URLs at the caret position.
       const remainder = text.replace(stripRe, " ").replace(/\s{2,}/g, " ").trim();
@@ -386,25 +464,11 @@ export function ChatInput({
       const nextContent = remainder
         ? content.slice(0, start) + remainder + content.slice(end)
         : content;
-      if (remainder) setContent(nextContent);
 
-      // Brand-new chat: stash the tokens (+ draft) and ride the same
-      // create-then-navigate flow the file picker uses (with no files).
-      if (!conversationId) {
-        if (onRequireConversation) {
-          const store = useChatStore.getState();
-          store.setPendingBlogTokens([...store.pendingBlogTokens, ...capped]);
-          if (nextContent.trim()) store.setPendingComposerDraft(nextContent);
-          onRequireConversation([]);
-        } else {
-          setValidationError("ابدأ محادثة أولاً قبل إضافة المدونات");
-        }
-        return;
-      }
-
-      importBlogTokens(capped);
+      const queued = queueBlogTokens(tokens, nextContent);
+      if (queued && remainder) setContent(nextContent);
     },
-    [pendingBlogs, content, conversationId, onRequireConversation, importBlogTokens],
+    [pendingBlogs, content, queueBlogTokens],
   );
 
   // Remove a blog chip. If this chip's import CREATED the item (not a dedup
@@ -460,8 +524,14 @@ export function ChatInput({
       // Carry the typed draft too so it isn't lost across the navigation.
       if (!conversationId) {
         if (onRequireConversation) {
+          const store = useChatStore.getState();
           if (content.trim()) {
-            useChatStore.getState().setPendingComposerDraft(content);
+            store.setPendingComposerDraft(content);
+          }
+          // A template chip attached before the conversation existed rides
+          // the carry slot — the destination's clear effect wipes the live one.
+          if (store.pendingTemplate) {
+            store.setPendingTemplateCarry(store.pendingTemplate);
           }
           onRequireConversation(picked);
         } else {
@@ -478,6 +548,23 @@ export function ChatInput({
   const handleAddFile = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
+
+  // قالب pick from the «+» menu — single chip; picking another replaces it.
+  const handlePickTemplate = useCallback(
+    (template: PendingTemplate) => {
+      setValidationError(null);
+      setPendingTemplate(template);
+    },
+    [setPendingTemplate],
+  );
+
+  // مدونة pick (list item or validated link dialog) from the «+» menu.
+  const handleAddBlogTokens = useCallback(
+    (tokens: string[]) => {
+      queueBlogTokens(tokens, content);
+    },
+    [queueBlogTokens, content],
+  );
 
   const handleStopClick = useCallback(() => {
     onStop?.();
@@ -497,6 +584,14 @@ export function ChatInput({
         <BlogChips
           blogs={pendingBlogs}
           onRemove={handleRemoveBlog}
+          className="mb-2"
+        />
+      )}
+
+      {pendingTemplate && (
+        <TemplateChip
+          template={pendingTemplate}
+          onRemove={() => setPendingTemplate(null)}
           className="mb-2"
         />
       )}
@@ -537,16 +632,13 @@ export function ChatInput({
           )}
         />
 
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 shrink-0"
-          onClick={handleAddFile}
-          disabled={isStreaming || (!conversationId && !onRequireConversation)}
-          aria-label="إضافة مرفق"
-        >
-          <Paperclip className="h-5 w-5" />
-        </Button>
+        <ComposerPlusMenu
+          disabled={isStreaming || disabled}
+          canAttach={!!conversationId || !!onRequireConversation}
+          onPickFiles={handleAddFile}
+          onPickTemplate={handlePickTemplate}
+          onAddBlogTokens={handleAddBlogTokens}
+        />
 
         {isStreaming ? (
           <Button

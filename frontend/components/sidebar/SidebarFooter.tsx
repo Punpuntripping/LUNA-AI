@@ -3,13 +3,13 @@
 import { useState } from "react";
 import {
   CreditCard,
-  EyeOff,
   FileText,
   Gauge,
   KeyRound,
   LogOut,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   User,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -28,17 +28,16 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
-import { DetailLevelToggle } from "@/components/Settings/DetailLevelToggle";
 import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
-import { PrivacyMaskingDialog } from "@/components/Settings/PrivacyMaskingDialog";
+import { ConversationSettingsDialog } from "@/components/Settings/ConversationSettingsDialog";
 
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
   const [usageOpen, setUsageOpen] = useState(false);
   const [redeemOpen, setRedeemOpen] = useState(false);
-  const [maskingOpen, setMaskingOpen] = useState(false);
+  const [conversationOpen, setConversationOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -87,11 +86,18 @@ export function SidebarFooter() {
               data-testid="sidebar-settings-popover"
             >
               <div className="flex flex-col gap-3" dir="rtl">
-                <h3 className="text-sm font-semibold text-foreground">
-                  مستوى التفصيل
-                </h3>
-                <DetailLevelToggle />
-                <Separator />
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setConversationOpen(true)}
+                  data-testid="sidebar-settings-conversation-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <SlidersHorizontal className="h-4 w-4" />
+                    إعدادات المحادثة
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
@@ -113,18 +119,6 @@ export function SidebarFooter() {
                   <span className="flex items-center gap-2">
                     <KeyRound className="h-4 w-4" />
                     تفعيل برمز
-                  </span>
-                  <span className="text-muted-foreground">›</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => setMaskingOpen(true)}
-                  data-testid="sidebar-settings-masking-trigger"
-                >
-                  <span className="flex items-center gap-2">
-                    <EyeOff className="h-4 w-4" />
-                    وضع السرية
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
@@ -170,9 +164,9 @@ export function SidebarFooter() {
           </Popover>
           <UsageLimitsDialog open={usageOpen} onOpenChange={setUsageOpen} />
           <RedeemCodeDialog open={redeemOpen} onOpenChange={setRedeemOpen} />
-          <PrivacyMaskingDialog
-            open={maskingOpen}
-            onOpenChange={setMaskingOpen}
+          <ConversationSettingsDialog
+            open={conversationOpen}
+            onOpenChange={setConversationOpen}
           />
           <ThemeToggle />
           <Tooltip>

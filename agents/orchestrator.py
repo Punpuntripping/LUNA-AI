@@ -258,6 +258,8 @@ def _load_recent_messages(
     created) — the SAME marker the router sees via ``messages_to_history``.
     This lets the planners follow multi-step exchanges and recognise a
     refinement of a prior output instead of re-planning from scratch.
+    User turns get the twin marker: which workspace items (uploaded files /
+    attached blogs) the user attached to that specific message.
 
     Empty-content rows are dropped BEFORE taking the last ``n`` — the assistant
     placeholder that ``message_service`` inserts before the agent runs is
@@ -270,7 +272,10 @@ def _load_recent_messages(
     not real PII. Byte-identical passthrough when masking is disabled. New fakes
     created here are persisted before the LLM consumes them (needs ``user_id``).
     """
-    from agents.utils.history import build_provenance_tag  # pure util — no import cycle
+    from agents.utils.history import (  # pure utils — no import cycle
+        build_provenance_tag,
+        build_user_attachment_tag,
+    )
     from backend.app.services.masking_service import active_codec, persist_new_mappings
 
     codec = active_codec()
@@ -278,7 +283,7 @@ def _load_recent_messages(
     try:
         result = (
             supabase.table("messages")
-            .select("role, content, artifact_ids, created_at")
+            .select("message_id, role, content, artifact_ids, created_at")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=True)
             .limit(n + _RECENT_MESSAGES_BUFFER)
@@ -293,6 +298,31 @@ def _load_recent_messages(
 
     wi_provenance = _load_wi_provenance(supabase, conversation_id)
 
+    # USER-turn attachment map (message_id → attached workspace item ids) so
+    # user rows get the build_user_attachment_tag marker — the user-turn twin
+    # of the assistant provenance tag, and the SAME marker the router sees via
+    # messages_to_history. Best-effort: on failure the turns render untagged.
+    attachments_by_message: dict[str, list[str]] = {}
+    user_msg_ids = [
+        str(r["message_id"])
+        for r in rows
+        if r.get("message_id") and (r.get("role") or "") == "user"
+    ]
+    if user_msg_ids and wi_provenance:
+        try:
+            att_resp = (
+                supabase.table("message_attachments")
+                .select("message_id, document_id")
+                .in_("message_id", user_msg_ids)
+                .execute()
+            )
+            for att in (getattr(att_resp, "data", None) or []):
+                mid, did = att.get("message_id"), att.get("document_id")
+                if mid and did:
+                    attachments_by_message.setdefault(str(mid), []).append(str(did))
+        except Exception as e:
+            logger.warning("_load_recent_messages: attachments load failed: %s", e)
+
     snapshots = []
     for row in rows:
         role = row.get("role") or "user"
@@ -303,6 +333,12 @@ def _load_recent_messages(
             artifact_ids = row.get("artifact_ids") or []
             if artifact_ids:
                 tag = build_provenance_tag(list(artifact_ids), wi_provenance)
+                if tag:
+                    content = f"{tag}\n{content}"
+        elif role == "user" and wi_provenance:
+            attached_ids = attachments_by_message.get(str(row.get("message_id") or ""))
+            if attached_ids:
+                tag = build_user_attachment_tag(attached_ids, wi_provenance)
                 if tag:
                     content = f"{tag}\n{content}"
         # Mask the fully-assembled surface (tag + body) before it feeds an LLM.
