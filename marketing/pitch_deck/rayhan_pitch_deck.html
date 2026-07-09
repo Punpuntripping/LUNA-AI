@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rayhan — Pitch Deck</title>
+<style>
+  :root{
+    --canvas:#F7F2EC; --surface:#FCF8F2; --surface2:#EFE9E1; --surface3:#E5DED2;
+    --border:#E0D6CA; --border-strong:#C9BDAB;
+    --ink:#18141A; --ink2:#373541; --muted:#6A6581; --subtle:#9A93A0;
+    --sage:#4A6B5F; --sage-deep:#2A4438; --sage-soft:#DDE5E0;
+    --aubergine:#4C4158; --forest:#242E29;
+    --gold-bg:#F4E8D2; --gold-fg:#6B5219;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  @page{size:13.333in 7.5in;margin:0;}
+  body{font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;color:var(--ink);}
+  .slide{width:1280px;height:720px;background:var(--canvas);position:relative;overflow:hidden;page-break-after:always;padding:56px 64px 64px;}
+  .slide:last-child{page-break-after:auto;}
+
+  /* typography */
+  .eyebrow{font-size:13px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--sage);margin-bottom:14px;}
+  h1{font-family:Georgia,'Times New Roman',serif;font-size:54px;line-height:1.12;font-weight:400;color:var(--forest);}
+  h2{font-family:Georgia,'Times New Roman',serif;font-size:38px;line-height:1.15;font-weight:400;color:var(--forest);margin-bottom:10px;}
+  .lede{font-size:18px;line-height:1.55;color:var(--ink2);}
+  .ar{direction:rtl;unicode-bidi:isolate;}
+
+  /* footer */
+  .foot{position:absolute;bottom:26px;left:64px;right:64px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--subtle);}
+  .foot .mark{font-weight:600;color:var(--sage);letter-spacing:.08em;}
+
+  /* components */
+  .pill{display:inline-block;background:var(--sage-soft);color:var(--sage-deep);border-radius:999px;padding:5px 14px;font-size:12.5px;font-weight:600;}
+  .pill.gold{background:var(--gold-bg);color:var(--gold-fg);}
+  .pill.plum{background:#E8E0EA;color:#3D2D45;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px 24px;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:28px;}
+  .stat .n{font-family:Georgia,serif;font-size:40px;color:var(--sage);line-height:1;}
+  .stat .l{font-size:13.5px;color:var(--muted);margin-top:6px;line-height:1.35;}
+
+  /* browser-frame screenshot */
+  .shot{background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 18px 40px rgba(36,46,41,.14);overflow:hidden;}
+  .shot .bar{height:30px;background:var(--surface2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:0 12px;}
+  .shot .bar i{width:9px;height:9px;border-radius:50%;background:var(--border-strong);display:inline-block;}
+  .shot .bar span{margin-left:8px;font-size:11px;color:var(--muted);}
+  .shot .vp{position:relative;overflow:hidden;}
+  .shot .vp img{width:100%;display:block;}
+
+  /* callout list */
+  .callouts{display:flex;flex-direction:column;gap:14px;}
+  .co{display:flex;gap:12px;align-items:flex-start;}
+  .co .dot{flex:0 0 26px;height:26px;border-radius:50%;background:var(--sage);color:#FCF8F2;font-size:13.5px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px;}
+  .co p{font-size:14.5px;line-height:1.5;color:var(--ink2);}
+  .co b{color:var(--forest);}
+
+  ul.tick{list-style:none;}
+  ul.tick li{position:relative;padding-left:26px;font-size:15.5px;line-height:1.5;color:var(--ink2);margin-bottom:12px;}
+  ul.tick li::before{content:"";position:absolute;left:2px;top:7px;width:9px;height:9px;border-radius:2px;background:var(--sage);}
+  ul.tick b{color:var(--forest);}
+
+  .quote{font-family:Georgia,serif;font-style:italic;font-size:17px;color:var(--aubergine);line-height:1.5;}
+
+  /* pipeline diagram */
+  .flow{display:flex;align-items:stretch;gap:0;}
+  .fbox{background:var(--surface);border:1.5px solid var(--border-strong);border-radius:12px;padding:14px 16px;text-align:center;}
+  .fbox h4{font-size:14.5px;color:var(--forest);margin-bottom:4px;}
+  .fbox p{font-size:11.5px;color:var(--muted);line-height:1.4;}
+  .farrow{align-self:center;color:var(--border-strong);font-size:22px;padding:0 10px;}
+</style>
+</head>
+<body>
+
+<!-- ============ 1 · COVER ============ -->
+<div class="slide" style="display:flex;flex-direction:column;">
+  <div style="display:flex;gap:56px;align-items:center;flex:1;">
+    <div style="flex:1.05;">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:30px;">
+        <div style="width:52px;height:52px;border-radius:14px;background:var(--sage);color:#FCF8F2;display:flex;align-items:center;justify-content:center;font-size:26px;font-family:Georgia,serif;">ر</div>
+        <div>
+          <div style="font-size:26px;font-weight:600;color:var(--forest);letter-spacing:.02em;">Rayhan <span class="ar" style="color:var(--sage);">ريحان</span></div>
+          <div style="font-size:12.5px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;">Rayhan Tech · Saudi Arabia</div>
+        </div>
+      </div>
+      <h1 style="margin-bottom:22px;">From a question<br>to a fully-cited<br>legal report.</h1>
+      <p class="lede" style="max-width:430px;margin-bottom:26px;">The Arabic-first AI legal associate for Saudi law — every answer grounded in official sources, every citation one click from its origin.</p>
+      <div style="display:flex;gap:10px;">
+        <span class="pill">Live in production — rayhanai.com</span>
+        <span class="pill gold">Private beta</span>
+      </div>
+    </div>
+    <div style="flex:1;">
+      <div class="shot">
+        <div class="bar"><i></i><i></i><i></i><span>rayhanai.com</span></div>
+        <div class="vp" style="height:430px;"><img src="assets/deck-01-landing.png" style="object-fit:cover;object-position:top;height:100%;"></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>Pitch deck — 2026</span></div>
+</div>
+
+<!-- ============ 2 · PROBLEM ============ -->
+<div class="slide">
+  <div class="eyebrow">The problem</div>
+  <h2 style="max-width:900px;">Saudi legal work runs on hours of manual research —<br>and generic AI can't be trusted with it.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:36px;">
+    <div class="card">
+      <div style="font-size:30px;margin-bottom:10px;">⏳</div>
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">Research and drafting consume the day</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">Lawyers spend hours daily locating the right regulation, precedent, and procedure — then drafting from scratch. It is the single largest overhead of Saudi practice.</p>
+    </div>
+    <div class="card">
+      <div style="font-size:30px;margin-bottom:10px;">🧩</div>
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">Sources are official — but fragmented</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">3,000+ regulations and bylaws, 20,000+ published judgments, and 4,500+ government services are scattered across 200+ government entities and portals.</p>
+    </div>
+    <div class="card">
+      <div style="font-size:30px;margin-bottom:10px;">⚠️</div>
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">General-purpose AI hallucinates the law</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">ChatGPT-class tools invent article numbers and cite regulations that don't exist. In legal work, an unverifiable answer is worse than no answer.</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:26px;background:var(--surface2);border-color:var(--border-strong);">
+    <p style="font-size:15.5px;color:var(--ink2);"><b style="color:var(--forest);">And it isn't only lawyers.</b> Entrepreneurs, compliance officers, and ordinary citizens face the same wall — legal guidance in Saudi Arabia is expensive, slow, or simply out of reach.</p>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>2</span></div>
+</div>
+
+<!-- ============ 3 · SOLUTION ============ -->
+<div class="slide">
+  <div class="eyebrow">The solution</div>
+  <h2>One assistant for the whole legal workflow —<br>with its sources on the table.</h2>
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:40px;margin-top:30px;align-items:start;">
+    <div>
+      <ul class="tick" style="margin-top:8px;">
+        <li><b>Verified research.</b> Agentic deep search over a curated corpus of official Saudi sources. Every statement carries a numbered citation that resolves to the official text and its direct link.</li>
+        <li><b>Document drafting.</b> Court-ready memos, claims, and legal analyses composed from the verified research — with the citations carried through into the document.</li>
+        <li><b>Government procedures.</b> The right service, its steps, requirements, and official portal links — resolved from 4,700+ indexed services.</li>
+        <li><b>Document intake.</b> OCR extraction of names, numbers, and facts from uploaded PDFs and scans at 98%+ accuracy on clear files.</li>
+      </ul>
+      <div class="quote" style="margin-top:18px;">"نُظهر مصادرنا" — we show our sources. Rayhan does not invent the law; it retrieves it, cites it, and links it.</div>
+    </div>
+    <div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div class="card stat"><div class="n">3,373</div><div class="l">regulations, bylaws &amp; official guides</div></div>
+        <div class="card stat"><div class="n">20,671</div><div class="l">court judgments &amp; decisions</div></div>
+        <div class="card stat"><div class="n">4,717</div><div class="l">government services indexed</div></div>
+        <div class="card stat"><div class="n">~95%</div><div class="l">of Saudi compliance data covered, from 200+ entities</div></div>
+      </div>
+      <div class="card" style="margin-top:16px;background:var(--sage-soft);border-color:var(--sage);">
+        <p style="font-size:14px;color:var(--sage-deep);line-height:1.5;"><b>Arabic-first by design.</b> RTL interface, colloquial-dialect understanding, and formal legal Arabic drafting — not a translated afterthought.</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>3</span></div>
+</div>
+
+<!-- ============ 4 · DEMO ACT 1 ============ -->
+<div class="slide">
+  <div class="eyebrow">One real conversation · Act 1 of 4 — Understand</div>
+  <h2 style="font-size:32px;">A citizen from Tabuk, in plain dialect, with a real inheritance dispute.</h2>
+  <div style="display:grid;grid-template-columns:0.9fr 1.1fr;gap:34px;margin-top:22px;align-items:start;">
+    <div class="shot">
+      <div class="bar"><i></i><i></i><i></i><span>rayhanai.com/chat — actual conversation, June 2026</span></div>
+      <div class="vp" style="height:480px;"><img src="assets/deck-04-crop.png" style="object-fit:cover;object-position:top;height:100%;width:100%;"></div>
+    </div>
+    <div class="callouts" style="margin-top:12px;">
+      <div class="co"><div class="dot">1</div><p><b>The problem, as people actually write it:</b> a father passed away; a brother obtained a power of attorney from the heirs, emptied the accounts, and bought land in his own name. <span class="quote" style="font-size:14px;">"كيف اخذ حقي ونصيبي؟"</span></p></div>
+      <div class="co"><div class="dot">2</div><p><b>Instant legal framing.</b> Rayhan identifies the operative doctrine, the first procedural step (صك حصر الإرث), and the path to annulment — in seconds.</p></div>
+      <div class="co"><div class="dot">3</div><p><b>Honest about confidence.</b> The answer explicitly flags that current results are low-confidence on procedure — and offers a deeper search instead of bluffing.</p></div>
+      <div class="co"><div class="dot">4</div><p><b>Context that adapts.</b> When the user corrects one fact ("the POA was taken <i>after</i> death"), Rayhan re-frames the entire legal theory — from void agency to breach of trust.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>4</span></div>
+</div>
+
+<!-- ============ 5 · DEMO ACT 2 ============ -->
+<div class="slide">
+  <div class="eyebrow">One real conversation · Act 2 of 4 — Research</div>
+  <h2 style="font-size:32px;">"ابحث" — one word launches an agentic deep search.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1.05fr;gap:34px;margin-top:22px;align-items:start;">
+    <div class="shot">
+      <div class="bar"><i></i><i></i><i></i><span>Two-pane workspace — chat + research report</span></div>
+      <div class="vp" style="height:480px;"><img src="assets/deck-06-crop.png" style="object-fit:cover;object-position:top;height:100%;width:100%;"></div>
+    </div>
+    <div class="callouts" style="margin-top:12px;">
+      <div class="co"><div class="dot">1</div><p><b>A structured report, not a chat blob:</b> direct answer, settled judicial principle, agency limits, and the effect of the heirs' signatures — each its own section.</p></div>
+      <div class="co"><div class="dot">2</div><p><b>Article-level grounding.</b> Claims cite specific articles — 645, 484, 486/1, 494/2, 502 of the Civil Transactions Law <span class="ar">(نظام المعاملات المدنية)</span> — each marker resolving to the retrieved official text.</p></div>
+      <div class="co"><div class="dot">3</div><p><b>A living workspace pane.</b> The report opens beside the chat in a two-pane workspace and stays available to every later step — built for how lawyers actually work.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>5</span></div>
+</div>
+
+<!-- ============ 6 · DEMO ACT 3 ============ -->
+<div class="slide">
+  <div class="eyebrow">One real conversation · Act 3 of 4 — Verify</div>
+  <h2 style="font-size:32px;">Twelve references. Every one links to the official source.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1.05fr;gap:34px;margin-top:22px;align-items:start;">
+    <div class="shot">
+      <div class="bar"><i></i><i></i><i></i><span>References panel — regulations, judgments, services</span></div>
+      <div class="vp" style="height:480px;"><img src="assets/deck-07-crop.png" style="object-fit:cover;object-position:top;height:100%;width:100%;"></div>
+    </div>
+    <div class="callouts" style="margin-top:12px;">
+      <div class="co"><div class="dot">1</div><p><b>Typed sources:</b> <span class="ar">نظام</span> (regulation), <span class="ar">قضية</span> (judgment), <span class="ar">خدمة حكومية</span> (government service) — each card shows the exact passage relied upon.</p></div>
+      <div class="co"><div class="dot">2</div><p><b>One click to the origin:</b> laws.boe.gov.sa for regulations, Ministry of Justice for judgments and services. The lawyer can verify everything before relying on it.</p></div>
+      <div class="co"><div class="dot">3</div><p><b>This is the moat generic AI can't cross</b> — a citation you can check beats an answer you have to trust.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>6</span></div>
+</div>
+
+<!-- ============ 7 · SOURCE ANATOMY ============ -->
+<div class="slide">
+  <div class="eyebrow">One real conversation · How sources are provided</div>
+  <h2 style="font-size:32px;">Three source types. One verifiable chain.</h2>
+  <div class="card" style="margin-top:36px;background:var(--surface);border-color:var(--border-strong);">
+    <p style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">A claim from the report — with its citation marker</p>
+    <p class="ar quote" style="font-size:16.5px;">تنتقل ملكية التركة إلى الورثة بقوة القانون من تاريخ الوفاة، فيملك كل وارث نصيبه من أموال المورث <span style="background:var(--sage);color:#FCF8F2;border-radius:6px;padding:1px 7px;font-style:normal;font-size:13px;">[2]</span> (المادة 645)</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:30px;">
+    <div class="card" style="padding:22px 20px;">
+      <span class="pill">نظام · Regulation</span>
+      <h4 style="font-size:15.5px;color:var(--forest);margin:10px 0 4px;" class="ar">نظام المعاملات المدنية — المادة ٦٤٥</h4>
+      <p class="ar" style="font-size:12.5px;line-height:1.6;color:var(--ink2);">"يملك الوارث بالإرث نصيبه من الأموال المملوكة للمورث، وفقاً للنصوص النظامية الخاصة به."</p>
+      <p style="font-size:11.5px;color:var(--sage);margin-top:8px;">🔗 laws.moj.gov.sa — official legislation portal</p>
+    </div>
+    <div class="card" style="padding:18px 20px;">
+      <span class="pill plum">قضية · Court judgment</span>
+      <h4 style="font-size:15.5px;color:var(--forest);margin:10px 0 4px;" class="ar">حكم رقم ٩٥٤ — المحكمة التجارية بالدمام (١٤٤٢هـ)</h4>
+      <p class="ar" style="font-size:12.5px;line-height:1.6;color:var(--ink2);">نزاع بين ورثة حول المطالبة بنصيب من أرباح عقار مشترك ضمن التركة — وقضت المحكمة بعدم اختصاصها النوعي وإحالة النظر إلى المحاكم العامة.</p>
+      <p style="font-size:11.5px;color:var(--sage);margin-top:8px;">🔗 laws.moj.gov.sa — published judicial decisions</p>
+    </div>
+    <div class="card" style="padding:18px 20px;">
+      <span class="pill gold">خدمة حكومية · Gov. service</span>
+      <h4 style="font-size:15.5px;color:var(--forest);margin:10px 0 4px;" class="ar">توثيق ورثة متوفى — وزارة العدل</h4>
+      <p class="ar" style="font-size:12.5px;line-height:1.6;color:var(--ink2);">الخدمة الإلكترونية لإصدار وثيقة الورثة الرسمية — وهي بالضبط "الخطوة العملية الأولى" التي وجّه إليها التقرير.</p>
+      <p style="font-size:11.5px;color:var(--sage);margin-top:8px;">🔗 my.gov.sa/ar/services/40116 — national platform</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:34px;background:var(--surface2);">
+    <p style="font-size:13.5px;line-height:1.55;color:var(--ink2);text-align:center;">Under the hood, every marker is a database row, not a string: <b style="color:var(--forest);">[n] → reference record</b> (source type · relevance · used-in-answer) <b style="color:var(--forest);">→ corpus row → official link</b>. Unused retrievals never appear; every rendered card traces back to a real document.</p>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>7</span></div>
+</div>
+
+<!-- ============ 8 · DEMO ACT 4 ============ -->
+<div class="slide">
+  <div class="eyebrow">One real conversation · Act 4 of 4 — Draft</div>
+  <h2 style="font-size:32px;">"Write it all as one legal analysis" — and it's a document.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1.05fr;gap:34px;margin-top:22px;align-items:start;">
+    <div class="shot">
+      <div class="bar"><i></i><i></i><i></i><span>Drafted legal analysis — editable, shareable</span></div>
+      <div class="vp" style="height:480px;"><img src="assets/deck-08-crop.png" style="object-fit:cover;object-position:top;height:100%;width:100%;"></div>
+    </div>
+    <div class="callouts" style="margin-top:12px;">
+      <div class="co"><div class="dot">1</div><p><b>A 1,400-word structured legal analysis</b> — introduction, governing principle, agency limits, effect of signatures, and procedural steps — synthesized from all three research reports.</p></div>
+      <div class="co"><div class="dot">2</div><p><b>Citations survive the draft.</b> The inline markers in the document still point to the same verified sources from the research phase.</p></div>
+      <div class="co"><div class="dot">3</div><p><b>Live document tools:</b> edit in place, share, save as a blog page, copy — with changes auto-saved.</p></div>
+      <div class="co"><div class="dot">4</div><p><b>Question → cited analysis in one sitting.</b> The entire journey on these four slides happened inside a single 22-minute conversation.</p></div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>8</span></div>
+</div>
+
+<!-- ============ 8 · LAWYER WORKFLOW ============ -->
+<div class="slide">
+  <div class="eyebrow">The professional workflow · a practicing lawyer, a live appeal</div>
+  <h2 style="font-size:31px;">Search once. Draft from the verified sources. Refine in place.</h2>
+  <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:44px;margin-top:48px;align-items:start;">
+    <div class="callouts" style="gap:26px;">
+      <div class="co"><div class="dot">1</div><p><b>The lawyer attaches the judgment and states the goal:</b> <span class="quote" style="font-size:13.5px;">"أريد صياغة لائحة اعتراضية… لكون المنفعة حُجبت جزئياً"</span> — an appeal against a 1.6M SAR rent ruling. OCR extracts the case file straight into the workspace.</p></div>
+      <div class="co"><div class="dot">2</div><p><b>Rayhan researches before it writes</b> — by design: <span class="quote" style="font-size:13.5px;">"أقترح أن أبحث أولاً في الأنظمة والأحكام ذات الصلة، ثم أصيغ اللائحة"</span>.</p></div>
+      <div class="co"><div class="dot">3</div><p><b>Deep search lands the winning principle</b> — rent is owed only in proportion to the benefit actually received — in a 1,141-word cited research item.</p></div>
+      <div class="co"><div class="dot">4</div><p><b>The writer drafts the full appeal brief</b> — 1,188 words, including the requested expert-appointment motion — built from the research item's verified sources.</p></div>
+      <div class="co"><div class="dot">5</div><p><b>Then refines it like an associate would:</b> <span class="quote" style="font-size:13.5px;">"بدّل كلمة الطاعنة اذكر موكلتي"</span> · <span class="quote" style="font-size:13.5px;">"شِل كل أرقام الاستشهادات"</span> — surgical in-place edits, with the prior version snapshotted.</p></div>
+    </div>
+    <div>
+      <div class="card" style="border-color:var(--sage);background:var(--surface);padding:22px 22px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-bottom:10px;">Workspace items — the context backbone</div>
+        <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--surface2);">
+          <div style="font-size:12.5px;color:var(--forest);font-weight:600;">📄 Case file <span style="color:var(--muted);font-weight:400;">· OCR intake · 98%+ on clear docs</span></div>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--sage-soft);">
+          <div style="font-size:12.5px;color:var(--sage-deep);font-weight:600;">🔎 Research report <span style="color:var(--muted);font-weight:400;">· 1,141 words · cited</span></div>
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px;" class="ar">بحث عن نقص المنفعة في الإيجار بسبب الإغلاق للمزاد</div>
+        </div>
+        <div style="text-align:center;color:var(--border-strong);font-size:16px;margin:2px 0;">↓ sources pass by reference ↓</div>
+        <div style="border:1px solid var(--aubergine);border-radius:10px;padding:10px 12px;background:#E8E0EA;">
+          <div style="font-size:12.5px;color:#3D2D45;font-weight:600;">⚖️ Appeal brief <span style="color:var(--muted);font-weight:400;">· 1,188 words · edited in place ×3</span></div>
+          <div style="font-size:11.5px;color:var(--muted);margin-top:3px;" class="ar">لائحة اعتراضية — مذكرة استئنافية</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:18px;background:var(--surface2);">
+        <p style="font-size:13.5px;line-height:1.55;color:var(--ink2);"><b style="color:var(--forest);">Why workspace items? Because long chats rot.</b> As a conversation grows, ordinary chat AI quietly compresses and paraphrases earlier turns — details degrade. In Rayhan, every search report and every draft is a workspace item: a complete, permanent artifact with its own sources. Search produces a cited item → the writer drafts from that item's sources → edits update the same item. The evidence from message 3 is still intact at message 40 — and attached files join the workspace via OCR at <b style="color:var(--forest);">98%+ accuracy</b> on clear documents.</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>9</span></div>
+</div>
+
+<!-- ============ 9 · HOW IT WORKS ============ -->
+<div class="slide">
+  <div class="eyebrow">Under the hood</div>
+  <h2>A multi-agent pipeline over an official-source corpus.</h2>
+  <div style="margin-top:64px;">
+    <div class="flow">
+      <div class="fbox" style="flex:1;"><h4>User</h4><p>Arabic, any dialect.<br>Documents via OCR intake.</p></div>
+      <div class="farrow">→</div>
+      <div class="fbox" style="flex:1.1;background:#E8E0EA;border-color:var(--aubergine);"><h4>Privacy mask <span class="ar">(وضع السرية)</span></h4><p>Reversible PII swap — IDs &amp; phone numbers never reach any LLM. PDPL-aligned.</p></div>
+      <div class="farrow">→</div>
+      <div class="fbox" style="flex:1;"><h4>Router</h4><p>Intent, context &amp; workspace awareness. Picks the specialist.</p></div>
+      <div class="farrow">→</div>
+      <div class="fbox" style="flex:1.6;background:var(--sage-soft);border-color:var(--sage);"><h4>Deep Search agents</h4><p>Plan the research → retrieve in parallel across regulations / judgments / services → strict relevance filtering → cited synthesis.</p></div>
+      <div class="farrow">→</div>
+      <div class="fbox" style="flex:1.1;"><h4>Writer agent</h4><p>Plans &amp; drafts documents from verified research + user templates.</p></div>
+      <div class="farrow">→</div>
+      <div class="fbox" style="flex:1;"><h4>Workspace items</h4><p>Every output is a persistent, referenced artifact — the context backbone between agents.</p></div>
+    </div>
+    <div style="display:flex;gap:14px;margin-top:52px;">
+      <div class="card" style="flex:1;text-align:center;background:var(--surface2);"><p style="font-size:13.5px;color:var(--ink2);"><b style="color:var(--forest);">Grounded corpus</b><br>3,373 regulations · 33,729 chunked articles · 20,671 judgments · 4,717 services — semantic search on pgvector</p></div>
+      <div class="card" style="flex:1;text-align:center;background:var(--surface2);"><p style="font-size:13.5px;color:var(--ink2);"><b style="color:var(--forest);">Resilient serving</b><br>Multi-provider model failover · SSE streaming with reconnect · per-call cost ledger &amp; usage metering</p></div>
+      <div class="card" style="flex:1;text-align:center;background:var(--surface2);"><p style="font-size:13.5px;color:var(--ink2);"><b style="color:var(--forest);">Full observability</b><br>Every agent step traced end-to-end · security-audited · row-level security on every table</p></div>
+    </div>
+    <p style="text-align:center;margin-top:48px;font-size:13px;color:var(--muted);letter-spacing:.06em;">Next.js · FastAPI · Supabase Postgres + pgvector · Redis · multi-LLM serving with automatic provider failover · SSE streaming</p>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>10</span></div>
+</div>
+
+<!-- ============ 9 · DEEP TECH ============ -->
+<div class="slide">
+  <div class="eyebrow">Why this is hard to copy</div>
+  <h2>The innovation is in the guarantees, not the chat.</h2>
+  <div class="grid2" style="margin-top:30px;">
+    <div class="card">
+      <span class="pill">Grounding</span>
+      <h4 style="font-size:17px;color:var(--forest);margin:12px 0 8px;">Citations are structural, not decorative</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">Agents can only cite what retrieval actually returned. Every marker resolves through a per-document source manifest to the official text — fabricated references are impossible by construction.</p>
+    </div>
+    <div class="card">
+      <span class="pill">Retrieval quality</span>
+      <h4 style="font-size:17px;color:var(--forest);margin:12px 0 8px;">Relevance you can rely on</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">Every retrieved source must pass strict scope and relevance checks — tuned separately for regulations, judgments, and services — before it is allowed into an answer, and retrieval quality is continuously measured and improved.</p>
+    </div>
+    <div class="card">
+      <span class="pill plum">Privacy — PDPL</span>
+      <h4 style="font-size:17px;color:var(--forest);margin:12px 0 8px;">وضع السرية — reversible identifier masking</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">National IDs, phone numbers, and emails are swapped for realistic decoys before any model call, and restored only in the user's view — a per-user reversible mapping, on by default.</p>
+    </div>
+    <div class="card">
+      <span class="pill gold">Honesty</span>
+      <h4 style="font-size:17px;color:var(--forest);margin:12px 0 8px;">Designed to say "I'm not sure"</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">Low-confidence results are flagged as such, coverage gaps are stated explicitly, and the assistant proposes narrower searches — built for professional reliance, not engagement.</p>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>11</span></div>
+</div>
+
+<!-- ============ 11 · IMPACT ============ -->
+<div class="slide">
+  <div class="eyebrow">Impact</div>
+  <h2>Hours of research become minutes —<br>and legal clarity reaches people who never had it.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:34px;">
+    <div class="card">
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">For lawyers</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">Research that took a day now takes minutes, and arrives pre-cited for verification. Drafting starts from a grounded analysis instead of a blank page — the demo produced a court-ready analysis in one 22-minute session.</p>
+    </div>
+    <div class="card">
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">For everyone else</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">The user in our demo isn't a lawyer — an ordinary citizen from Tabuk received a correct legal roadmap for an inheritance dispute: the doctrine, the first procedural step, and the claim to file. That is access to justice.</p>
+    </div>
+    <div class="card">
+      <h4 style="font-size:17px;color:var(--forest);margin-bottom:8px;">For the Kingdom</h4>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);">A Saudi-built platform digitizing legal-sector knowledge work on official national sources — directly aligned with Vision 2030's digital transformation and justice-sector efficiency programs.</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:26px;background:var(--sage-soft);border-color:var(--sage);">
+    <p style="font-size:15px;color:var(--sage-deep);line-height:1.55;"><b>Responsible by default:</b> every AI output carries a legal disclaimer, privacy masking is on by default, and answers are designed to be verified — not blindly trusted.</p>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>12</span></div>
+</div>
+
+<!-- ============ 12 · TRACTION ============ -->
+<div class="slide">
+  <div class="eyebrow">Where we are</div>
+  <h2>Not a prototype — a production platform in private beta.</h2>
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:36px;margin-top:26px;align-items:start;">
+    <div>
+      <ul class="tick">
+        <li><b>Live at rayhanai.com</b> — full product in production: research, drafting, OCR intake, templates, blog sharing, usage metering.</li>
+        <li><b>500+ real conversations</b> and 1,200+ messages from early-access users during private beta.</li>
+        <li><b>Points-based subscription tiers defined and live</b> — Basic 49 SAR/week · Professional 89 SAR/month · Max 189 SAR/month; onboarding currently via activation codes.</li>
+        <li><b>Production engineering done:</b> security audit passed, row-level security everywhere, per-call cost ledger, full pipeline tracing, multi-provider failover.</li>
+      </ul>
+      <div style="display:flex;gap:14px;margin-top:20px;">
+        <div class="card stat" style="flex:1;"><div class="n">500+</div><div class="l">beta conversations</div></div>
+        <div class="card stat" style="flex:1;"><div class="n">~95%</div><div class="l">compliance-data coverage</div></div>
+        <div class="card stat" style="flex:1;"><div class="n">3</div><div class="l">subscription tiers live</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="shot">
+        <div class="bar"><i></i><i></i><i></i><span>rayhanai.com/chat</span></div>
+        <div class="vp" style="height:268px;"><img src="assets/deck-09-crop.png" style="object-fit:cover;object-position:top;height:100%;width:100%;"></div>
+      </div>
+      <div class="card" style="margin-top:16px;background:var(--sage-soft);border-color:var(--sage);">
+        <p style="font-size:13.5px;color:var(--sage-deep);line-height:1.5;"><b>Everything shown in this deck is live today</b> — the demo conversation, the citations, and the drafted document are real product output, unedited.</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>13</span></div>
+</div>
+
+<!-- ============ 13 · ROADMAP / CLOSE ============ -->
+<div class="slide" style="display:flex;flex-direction:column;">
+  <div class="eyebrow">What's next</div>
+  <h2>From assistant to the operating system of Saudi legal practice.</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:30px;">
+    <div class="card">
+      <span class="pill">Now → next quarter</span>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);margin-top:12px;">Case workspaces (matters with documents &amp; memory) · payments go-live · custom drafting templates (قوالبي) · public legal-blog publishing engine.</p>
+    </div>
+    <div class="card">
+      <span class="pill">Growing moat</span>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);margin-top:12px;">Continuous corpus expansion toward full coverage of circulars and new judgments · retrieval quality that improves with every release.</p>
+    </div>
+    <div class="card">
+      <span class="pill">Vision</span>
+      <p style="font-size:14.5px;line-height:1.55;color:var(--ink2);margin-top:12px;">Every lawyer, firm, and business in the Kingdom working with a legal AI that shows its sources — in their language, on their law.</p>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;">
+    <div style="text-align:center;">
+      <div style="font-family:Georgia,serif;font-size:44px;color:var(--forest);margin-bottom:10px;">Rayhan <span class="ar" style="color:var(--sage);">ريحان</span></div>
+      <div class="quote" style="font-size:19px;margin-bottom:16px;">كل إجابة تُظهر مصدرها — every answer shows its source.</div>
+      <div style="font-size:15px;color:var(--muted);">rayhanai.com · support@rayhanai.com</div>
+    </div>
+  </div>
+  <div class="foot"><span class="mark">RAYHAN · ريحان</span><span>14</span></div>
+</div>
+
+</body>
+</html>
