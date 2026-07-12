@@ -109,11 +109,21 @@ class Settings(BaseSettings):
     # MiniMax
     MINIMAX_API_KEY: Optional[str] = None
 
-    # Alibaba DashScope (Qwen models + embeddings)
+    # Alibaba DashScope — EMBEDDINGS ONLY (text-embedding-v4). The chat/LLM
+    # agents moved to the ALIBABA_*_GLOBAL pair below; this key/base now serve
+    # only agents/utils/embeddings.py.
     ALIBABA_API_KEY: Optional[str] = None
     ALIBABA_BASE_URL: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     ALIBABA_EMBEDDING_MODEL: str = "text-embedding-v4"
     ALIBABA_EMBEDDING_DIMENSIONS: int = 1024
+
+    # Alibaba "global" workspace key + dedicated MaaS endpoint (eu-central-1).
+    # ALL chat/LLM agents (Qwen AND DeepSeek-on-Alibaba, via model_registry
+    # create_model) use this pair. Embeddings stay on ALIBABA_API_KEY above.
+    # When the global key is unset the chat path transparently falls back to the
+    # embeddings pair. See agents/model_registry.py create_model() alibaba branch.
+    ALIBABA_API_KEY_GLOBAL: Optional[str] = None
+    ALIBABA_BASE_URL_GLOBAL: str = "https://ws-pz0iv9oq6gq1mhjy.eu-central-1.maas.aliyuncs.com/compatible-mode/v1"
 
     # ========================================
     # AGENT FRAMEWORK

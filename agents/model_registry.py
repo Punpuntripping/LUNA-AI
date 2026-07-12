@@ -941,7 +941,11 @@ def get_api_key(provider: str) -> str:
         "google": getattr(settings, "GOOGLE_API_KEY", ""),
         "deepseek": getattr(settings, "DEEPSEEK_API_KEY", ""),
         "minimax": getattr(settings, "MINIMAX_API_KEY", ""),
-        "alibaba": getattr(settings, "ALIBABA_API_KEY", ""),
+        # Chat/LLM agents use the "global" workspace key (dedicated MaaS
+        # endpoint); embeddings keep ALIBABA_API_KEY (see embeddings.py). Falls
+        # back to the non-global key when the global one is unset.
+        "alibaba": getattr(settings, "ALIBABA_API_KEY_GLOBAL", "")
+        or getattr(settings, "ALIBABA_API_KEY", ""),
         "openrouter": getattr(settings, "OPENROUTER_API_KEY", ""),
     }
     return key_map.get(provider, "")
@@ -1061,10 +1065,19 @@ def create_model(model_name: str, model_settings: Any = None):
     elif config.provider == "alibaba":
         from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
         from pydantic_ai.providers.openai import OpenAIProvider
+        # Agents run against the "global" workspace MaaS endpoint (base + key are
+        # paired: when the global key is active use the global base, else the
+        # embeddings base). ``api_key`` already resolved global-first in
+        # get_api_key(); embeddings.py has its own client on the old pair.
+        base_url = (
+            settings.ALIBABA_BASE_URL_GLOBAL
+            if settings.ALIBABA_API_KEY_GLOBAL
+            else settings.ALIBABA_BASE_URL
+        ) or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
         return OpenAIChatModel(
             config.model_id,
             provider=OpenAIProvider(
-                base_url=settings.ALIBABA_BASE_URL or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                base_url=base_url,
                 api_key=api_key,
             ),
             profile=OpenAIModelProfile(
