@@ -399,6 +399,22 @@ class RerankerNode(BaseNode[LoopState, RegSearchDeps, RegSearchResult]):
             "text": f"جاري إعادة ترتيب وتصفية النتائج ({len(current_round_results)} استعلام بالتوازي)...",
         })
 
+        # Live progress: the rerankers are the real "تقييم وترجيح" stage. The
+        # `status` line above is batched + sanitized away (it leaks parallelism);
+        # this carries the stage transition instead. Guarded — a broken progress
+        # sink must never perturb retrieval. Peer executors emit this too; the
+        # client keeps the stage monotonic, so a duplicate is a no-op.
+        if deps.emit_sse is not None:
+            try:
+                deps.emit_sse({
+                    "type": "agent_progress",
+                    "stage": "evaluating",
+                    "text": "تقييم النتائج وترجيحها",
+                    "data": {},
+                })
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("RerankerNode: emit_sse failed", exc_info=True)
+
         logger.info(
             "RerankerNode: launching %d parallel reranker tasks",
             len(current_round_results),

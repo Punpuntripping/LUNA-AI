@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -56,6 +57,40 @@ _PIPELINE_TIMEOUT_PARTIAL_NOTE_AR = (
 # is pending" warning. The add_done_callback (registered at the detach site)
 # discards the reference once the task naturally completes.
 _inflight_pipelines: set[asyncio.Task] = set()
+
+
+# ── deep_search `status` sanitizer ─────────────────────────────────────────
+# The executor loops narrate their internals onto `status` events (reranker
+# keep/drop counts, similarity thresholds, rounds, per-channel query taxonomy,
+# parallelism). Those lines now reach the user's screen via the progress
+# chip's expanded log — so this relay is the privacy chokepoint: WHITELIST
+# only the search-topic lines (what Rayhan searched for), rewritten without
+# the "جاري" prefix / [channel] tag, and DROP everything else. Unrecognized
+# lines are dropped by default, so a new status emit added deep in a loop is
+# private until explicitly whitelisted here.
+_STATUS_TOPIC_REWRITES: tuple[tuple[str, str], ...] = (
+    # reg_search/search.py — "جاري البحث في الأنظمة واللوائح: {sub-query}..."
+    ("جاري البحث في الأنظمة واللوائح: ", "بحث في الأنظمة واللوائح: "),
+    # case_search/search.py — "جاري البحث في السوابق القضائية: {sub-query}..."
+    ("جاري البحث في السوابق القضائية: ", "بحث في السوابق القضائية: "),
+)
+# case_search/search.py sectioned channels — "بحث [principle]: {sub-query}..."
+_STATUS_CHANNEL_RE = re.compile(r"^بحث \[[a-zA-Z_]+\]: ")
+
+
+def sanitize_status_text(text: str) -> str | None:
+    """Return the user-safe rewrite of a pipeline ``status`` line, or None.
+
+    None means "drop" — the default for any line not explicitly recognized
+    as a search-topic line.
+    """
+    for prefix, replacement in _STATUS_TOPIC_REWRITES:
+        if text.startswith(prefix):
+            return replacement + text[len(prefix):]
+    m = _STATUS_CHANNEL_RE.match(text)
+    if m:
+        return "بحث في السوابق القضائية: " + text[m.end():]
+    return None
 
 
 @dataclass
@@ -753,8 +788,34 @@ async def send_message_stream(
                         }))
 
                     elif event_type == "status":
-                        await queue.put(_sse_event("status", {
+                        # Privacy chokepoint: only whitelisted search-topic
+                        # lines pass; internals (thresholds, keep/drop counts,
+                        # rounds, channels) never reach the wire. Topic lines
+                        # are LLM-derived from ENCODED input (وضع السرية) and
+                        # can carry fakes — decode like agent_question does.
+                        safe_text = sanitize_status_text(event.get("text", ""))
+                        if safe_text is not None:
+                            await queue.put(_sse_event("status", {
+                                "text": decode_text(codec, safe_text, emit=True),
+                            }))
+
+                    elif event_type == "agent_progress":
+                        # deep_search live progress bar (planning → searching →
+                        # aggregating → writing → done). Stage labels + counts
+                        # are static Arabic strings built in the orchestrator —
+                        # never LLM output of encoded input — so no decode
+                        # needed. `data` is restricted to the display keys the
+                        # frontend consumes; internal keys (e.g. phase names)
+                        # stay off the wire.
+                        raw_data = event.get("data", {}) or {}
+                        await queue.put(_sse_event("agent_progress", {
+                            "stage": event.get("stage", ""),
                             "text": event.get("text", ""),
+                            "data": {
+                                k: raw_data[k]
+                                for k in ("sources", "queries", "elapsed_s")
+                                if k in raw_data
+                            },
                         }))
 
                     elif event_type == "ask_user":

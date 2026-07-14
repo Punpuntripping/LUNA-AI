@@ -207,10 +207,27 @@ const config: Config = {
           "0%, 80%, 100%": { transform: "translateY(0)" },
           "40%": { transform: "translateY(-4px)" },
         },
+        // Deep-search progress bar: a glossy highlight sweeps across the FILLED
+        // portion so the honest n-of-4 fill still shows motion during the long
+        // quiet stages. translateX (a physical transform, unaffected by
+        // dir="rtl") runs +100% → -100%, i.e. right → left, matching Arabic
+        // reading direction. The band is centred inside a full-width element,
+        // so it traverses the whole fill exactly once per loop.
+        "ds-bar-sweep": {
+          "0%": { transform: "translateX(100%)" },
+          "100%": { transform: "translateX(-100%)" },
+        },
+        // Deep-search recent-topics feed: each new sub-query line eases in.
+        "ds-fade-in": {
+          "0%": { opacity: "0", transform: "translateY(2px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         blink: "blink 1s step-end infinite",
         "bounce-dot": "bounce-dot 1.2s ease-in-out infinite",
+        "ds-bar-sweep": "ds-bar-sweep 2s ease-in-out infinite",
+        "ds-fade-in": "ds-fade-in 300ms var(--ease-standard) both",
       },
     },
   },

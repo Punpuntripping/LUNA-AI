@@ -26,6 +26,13 @@ function coercePrivacyMasking(value: unknown): boolean {
 interface PreferencesState {
   detailLevel: DetailLevel;
   privacyMasking: boolean;
+  /**
+   * «اتعرف على ريحان» first-run tour flag. Fail-closed: defaults to true
+   * (= seen) so the tour never flashes for existing users before/without a
+   * successful hydrate — only an explicit absent/false value from the
+   * backend opens it.
+   */
+  onboardingSeen: boolean;
   isHydrated: boolean;
   isSaving: boolean;
   error: string | null;
@@ -36,6 +43,8 @@ interface PreferencesState {
   setDetailLevel: (level: DetailLevel) => Promise<void>;
   /** Optimistically update وضع السرية; PATCH /preferences; rollback on failure. */
   setPrivacyMasking: (enabled: boolean) => Promise<void>;
+  /** Mark the onboarding tour as seen; PATCH /preferences (no rollback — worst case the tour shows once more next session). */
+  markOnboardingSeen: () => Promise<void>;
   /** Clear the last error (e.g. after the user dismisses a toast). */
   clearError: () => void;
   /** Reset to defaults (used on logout). */
@@ -45,6 +54,7 @@ interface PreferencesState {
 export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   detailLevel: DEFAULT_DETAIL_LEVEL,
   privacyMasking: DEFAULT_PRIVACY_MASKING,
+  onboardingSeen: true,
   isHydrated: false,
   isSaving: false,
   error: null,
@@ -55,6 +65,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     set({
       detailLevel: DEFAULT_DETAIL_LEVEL,
       privacyMasking: DEFAULT_PRIVACY_MASKING,
+      onboardingSeen: true,
       isHydrated: false,
       isSaving: false,
       error: null,
@@ -67,6 +78,9 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       set({
         detailLevel: coerceDetailLevel(prefs.detail_level),
         privacyMasking: coercePrivacyMasking(prefs.privacy_masking),
+        // Only an explicit true counts as seen — a brand-new user has no
+        // stored key, which is exactly the "open the tour" signal.
+        onboardingSeen: prefs.onboarding_seen === true,
         isHydrated: true,
         error: null,
       });
@@ -76,6 +90,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       set({
         detailLevel: DEFAULT_DETAIL_LEVEL,
         privacyMasking: DEFAULT_PRIVACY_MASKING,
+        // Fail-closed: never open the tour off a failed hydrate.
+        onboardingSeen: true,
         isHydrated: true,
         error:
           err instanceof ApiClientError
@@ -102,6 +118,17 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
           ? err.message
           : "تعذر حفظ مستوى التفصيل. حاول مرة أخرى.";
       set({ detailLevel: previous, isSaving: false, error: message });
+    }
+  },
+
+  markOnboardingSeen: async () => {
+    if (get().onboardingSeen) return;
+    set({ onboardingSeen: true });
+    try {
+      await preferencesApi.update({ onboarding_seen: true });
+    } catch {
+      // Swallow — keep the local flag so the tour doesn't reappear this
+      // session; worst case it shows once more next login.
     }
   },
 

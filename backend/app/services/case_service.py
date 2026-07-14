@@ -32,13 +32,19 @@ def get_user_id(supabase: SupabaseClient, auth_id: str) -> str:
     Look up the internal user_id from the Supabase auth_id.
     AuthUser.auth_id maps to users.auth_id, NOT users.user_id.
 
+    Doubles as the account-deactivation gate: every data module resolves the
+    caller through this helper, so the deletion check rides along on a query
+    that already happens once per request (zero extra round-trips). Auth routes
+    do NOT use it — login / me / logout / restore stay reachable during grace.
+
     Raises:
         HTTPException 401: if user profile not found (should not happen for authenticated users).
+        HTTPException 403 ACCOUNT_DELETION_PENDING: account is in the 30-day deletion grace window.
     """
     try:
         result = (
             supabase.table("users")
-            .select("user_id")
+            .select("user_id, deletion_requested_at")
             .eq("auth_id", auth_id)
             .maybe_single()
             .execute()
@@ -49,6 +55,13 @@ def get_user_id(supabase: SupabaseClient, auth_id: str) -> str:
 
     if result is None or result.data is None:
         raise LunaHTTPException(status_code=401, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود")
+
+    if result.data.get("deletion_requested_at"):
+        raise LunaHTTPException(
+            status_code=403,
+            code=ErrorCode.ACCOUNT_DELETION_PENDING,
+            detail="الحساب قيد الحذف — يمكنك استعادته أو تسجيل الخروج",
+        )
 
     return result.data["user_id"]
 

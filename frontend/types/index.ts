@@ -11,6 +11,12 @@ export interface User {
   /** Subscription plan (plans table). null = account not activated yet. */
   plan_id?: string | null;
   created_at?: string | null;
+  /** Account deletion grace period (30 days). True → app is gated behind
+   *  AccountDeletionPendingScreen until restored. */
+  deletion_pending?: boolean;
+  deletion_requested_at?: string | null;
+  /** Server-computed purge date (requested + 30 days) — never derived client-side. */
+  purge_at?: string | null;
 }
 
 export interface AuthTokens {
@@ -841,6 +847,12 @@ export interface UserPreferencesData {
    * JSONB `/preferences` endpoint as `detail_level`.
    */
   privacy_masking?: boolean;
+  /**
+   * «اتعرف على ريحان» first-run tour. Absent/false → the tour opens once
+   * after login; any dismissal PATCHes it to true. Same JSONB `/preferences`
+   * endpoint as the other keys — no backend change needed.
+   */
+  onboarding_seen?: boolean;
   [key: string]: unknown;
 }
 
@@ -920,6 +932,66 @@ export type TemplateIngestResponse =
 export interface SSEAgentRunStarted {
   agent_family: AgentFamily;
   subtype?: string | null;
+}
+
+/**
+ * deep_search_progress_bar plan — the four ordered stages of a deep_search
+ * run, plus the terminal ``done`` marker that carries the run totals for the
+ * collapsed summary chip.
+ *
+ * ``done`` is NOT a step: the tracker renders four steps
+ * (planning → searching → aggregating → writing) and treats ``done`` as
+ * "all four complete".
+ */
+export type DeepSearchStage =
+  | "planning"
+  | "searching"
+  | "evaluating"
+  | "aggregating"
+  | "writing"
+  | "done";
+
+/**
+ * Optional evidence payload on an ``agent_progress`` event. EVERY key is
+ * optional — a phase-boundary event may carry counts while a lifecycle event
+ * carries none, so consumers must treat a missing key as "unchanged", never
+ * as zero.
+ */
+export interface SSEAgentProgressData {
+  /** Cumulative retrieved/kept results so far. */
+  sources?: number;
+  /** Sub-queries the planner generated. */
+  queries?: number;
+  /** Planner-picked sectors. */
+  sectors?: string[];
+  /** Which executor phase just finished. */
+  phase?: "reg" | "compliance" | "case";
+  confidence?: number;
+  elapsed_s?: number;
+}
+
+/**
+ * ``event: agent_progress`` — the live staged-progress event emitted by the
+ * deep_search branch of the orchestrator (planner-level only; the reg /
+ * compliance / case executor loops stay batched). Drives
+ * ``DeepSearchProgress``; the terminal ``stage: "done"`` event seals
+ * ``chat-store.deepSearchSummaries[assistant_message_id]``.
+ */
+export interface SSEAgentProgress {
+  stage: DeepSearchStage;
+  /** Arabic detail line for the active stage. */
+  text?: string | null;
+  data?: SSEAgentProgressData | null;
+}
+
+/**
+ * ``event: status`` — free-text Arabic progress line. The backend has emitted
+ * these from ~50 call sites all along (batch-flushed just before the answer
+ * tokens); the frontend now consumes them to populate the expanded log of the
+ * deep_search summary chip. Ignored when no deep_search run is in flight.
+ */
+export interface SSEStatus {
+  text: string;
 }
 
 export interface SSEAgentRunFinished {

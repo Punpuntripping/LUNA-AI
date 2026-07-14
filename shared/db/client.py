@@ -149,6 +149,27 @@ def get_supabase_anon_client() -> Client:
     return client
 
 
+def create_isolated_anon_client() -> Client:
+    """Fresh, UNCACHED anon client for a one-off GoTrue password check.
+
+    ``sign_in_with_password`` parks the resulting session in the client's own
+    in-memory auth storage, and ``auth.sign_out()`` acts on whatever session is
+    parked there (gotrue_client.py:789). ``get_supabase_anon_client()`` is an
+    lru_cached singleton shared by every request, so re-verifying a password on
+    it would overwrite another request's parked session. Sensitive re-auth
+    (change-password, delete-account) gets its own throwaway client instead.
+
+    Not hardened: ``postgrest``/``storage`` are lazy properties, so an auth-only
+    client opens exactly one HTTP client. Callers MUST ``client.auth.close()``.
+    """
+    settings = get_settings()
+    return create_client(
+        supabase_url=settings.SUPABASE_URL,
+        supabase_key=settings.SUPABASE_ANON_KEY,
+        options=_client_options(),
+    )
+
+
 async def get_async_supabase_client() -> AsyncClient:
     """
     Async Supabase client.

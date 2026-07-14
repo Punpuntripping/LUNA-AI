@@ -19,6 +19,9 @@ class ErrorCode(str, Enum):
     AUTH_EXPIRED = "AUTH_EXPIRED"
     FORBIDDEN = "FORBIDDEN"  # authenticated but not permitted for this resource
 
+    # Account lifecycle
+    ACCOUNT_DELETION_PENDING = "ACCOUNT_DELETION_PENDING"  # 403 — in the 30-day grace window
+
     # Cases
     CASE_NOT_FOUND = "CASE_NOT_FOUND"
     CASE_INVALID_TYPE = "CASE_INVALID_TYPE"

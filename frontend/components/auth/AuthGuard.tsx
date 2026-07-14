@@ -6,6 +6,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { api, conversationsApi } from "@/lib/api";
 import { consumePendingIntent } from "@/lib/post-login-intent";
+import { AccountDeletionPendingScreen } from "@/components/auth/AccountDeletionPendingScreen";
 
 interface Props {
   children: React.ReactNode;
@@ -41,7 +42,7 @@ function isPublicPath(pathname: string | null): boolean {
 export function AuthGuard({ children }: Props) {
   const router = useRouter();
   const pathname = usePathname();
-  const { isAuthenticated, isLoading, loadUser, revalidateSession } =
+  const { user, isAuthenticated, isLoading, loadUser, revalidateSession } =
     useAuthStore();
 
   const isPublic = isPublicPath(pathname);
@@ -137,6 +138,14 @@ export function AuthGuard({ children }: Props) {
         </span>
       </div>
     );
+  }
+
+  // Account inside the 30-day deletion grace period: every data route 403s
+  // server-side, so the app is replaced by a restore-or-logout screen. Public
+  // pages already returned above — a pending user may still browse /pricing,
+  // /blog, etc.
+  if (isAuthenticated && user?.deletion_pending && !isPublic) {
+    return <AccountDeletionPendingScreen />;
   }
 
   if (!isAuthenticated && pathname !== "/login") {

@@ -42,6 +42,7 @@ from shared.observability import (
     instrument_fastapi_app,
     observability_status,
 )
+from backend.app.services.account_purge_service import purge_expired_accounts
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
 from backend.app.services.summary_sweeper import sweep_missing_summaries
 from backend.app.services.upload_reconciler import reconcile_stuck_uploads
@@ -211,7 +212,27 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    # 6. APScheduler — one-shot startup catch-up for the upload reconciler. The
+    # 6. APScheduler — daily account-purge sweep. Hard-deletes accounts whose
+    #    30-day deletion grace period has expired (storage → purge RPC →
+    #    auth.admin.delete_user). Offset 45 min past the other jobs so the four
+    #    never contend for the same postgrest connection pool.
+    async def _run_account_purge() -> None:
+        try:
+            stats = await asyncio.to_thread(
+                purge_expired_accounts, app.state.supabase
+            )
+            logger.info("Account purge sweep complete: %s", stats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Account purge sweep failed: %s", e)
+
+    scheduler.add_job(
+        _run_account_purge,
+        trigger=CronTrigger(hour=3, minute=45),  # daily at 03:45 UTC
+        id="account_purge",
+        replace_existing=True,
+    )
+
+    # 7. APScheduler — one-shot startup catch-up for the upload reconciler. The
     #    03:15 cron silently skips a day whenever the process restarts across
     #    it; the reconciler is idempotent and cheap, so run it once shortly
     #    after every boot. The 60s base delay lets the app warm; the 0–30s
@@ -227,7 +248,7 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
-    # 7. APScheduler — one-shot startup catch-up for stuck blog-post jobs. The
+    # 8. APScheduler — one-shot startup catch-up for stuck blog-post jobs. The
     #    in-process worker tasks die with the process on a restart, stranding any
     #    job left in 'queued'/'processing'. This sweep re-spawns them (or fails a
     #    crash-looping one after _MAX_JOB_ATTEMPTS). Safe no-op when
@@ -252,12 +273,28 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # 9. APScheduler — one-shot startup catch-up for the account purge. Same
+    #    rationale as the upload reconciler's: the 03:45 cron silently skips a
+    #    day whenever the process restarts across it, and a purge that runs a
+    #    day late is a PDPL erasure-deadline miss. The sweep is idempotent
+    #    (users row survives until the terminal auth delete), so re-running on
+    #    every boot is safe. Staggered last, after the other boot catch-ups.
+    scheduler.add_job(
+        _run_account_purge,
+        trigger=DateTrigger(
+            run_date=datetime.now(timezone.utc)
+            + timedelta(seconds=90 + random.uniform(0, 30))
+        ),
+        id="account_purge_startup",
+        replace_existing=True,
+    )
+
     scheduler.start()
     app.state.scheduler = scheduler
     logger.info(
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
-        "summary sweep 03:30 UTC, + one-shot upload-reconciler & blog-job "
-        "catch-up on boot"
+        "summary sweep 03:30, account purge 03:45 UTC, + one-shot "
+        "upload-reconciler, blog-job & account-purge catch-up on boot"
     )
 
     logger.info(

@@ -386,3 +386,10 @@ class CaseSearchDeps:
     _log_id: str = ""
     _events: list[dict] = field(default_factory=list)
     _search_log: list[dict] = field(default_factory=list)
+    # Live SSE sink — copied from ``FullLoopDeps.emit_sse`` by ``_run_case_phase``.
+    # When set, each per-sub-query topic line ("جاري البحث في السوابق القضائية: …"
+    # and the sectioned "بحث [channel]: …") is fired LIVE at emit time and its
+    # batched copy tagged ``streamed`` so the orchestrator's terminal flush skips
+    # it (no double-send). ``None`` (CLI / monitor / smoke paths) → topic lines
+    # stay batch-only.
+    emit_sse: Callable[[dict], None] | None = None

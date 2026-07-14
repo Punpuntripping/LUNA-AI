@@ -365,3 +365,11 @@ class RegSearchDeps:
     _log_id: str = ""    # Set by run_reg_search() before graph starts
     _events: list[dict] = field(default_factory=list)
     _search_log: list[dict] = field(default_factory=list)
+    # Live SSE sink — copied from ``FullLoopDeps.emit_sse`` by ``_run_reg_phase``.
+    # When set, the per-sub-query topic line ("جاري البحث في الأنظمة واللوائح: …")
+    # is fired LIVE the moment it is appended to ``_events`` (and that batched copy
+    # is tagged ``streamed`` so the orchestrator's terminal flush skips it — no
+    # double-send). ``None`` (CLI / monitor / smoke paths) → topic lines stay
+    # batch-only. Only the ONE topic line is streamed; the other mechanics status
+    # lines stay batched (message_service drops them anyway).
+    emit_sse: Callable[[dict], None] | None = None

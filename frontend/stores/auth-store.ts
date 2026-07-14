@@ -56,6 +56,16 @@ function cancelProactiveRefresh() {
   }
 }
 
+/** Local session teardown shared by logout / logout-all / delete-account.
+ *  Callers own the `set({ user: null, isAuthenticated: false })` that follows. */
+async function teardownSession(): Promise<void> {
+  cancelProactiveRefresh();
+  clearTokens();
+  await supabase.auth.signOut();
+  // Drop cached user-scoped preferences so a next sign-in rehydrates from DB.
+  usePreferencesStore.getState().reset();
+}
+
 interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
@@ -71,6 +81,13 @@ interface AuthState {
     terms_version: string,
   ) => Promise<{ needsVerification: boolean }>;
   logout: () => Promise<void>;
+  /** Revoke every refresh token (this device included) → local teardown. */
+  logoutAll: () => Promise<void>;
+  /** Schedule account deletion (30-day grace) → local teardown. Errors
+   *  propagate so the confirmation dialog can render them inline. */
+  deleteAccount: (password?: string) => Promise<void>;
+  /** Cancel a pending deletion and refresh the user from /auth/me. */
+  restoreAccount: () => Promise<void>;
   loadUser: () => Promise<void>;
   revalidateSession: () => Promise<void>;
   clearError: () => void;
@@ -173,12 +190,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // Ignore errors on logout
     }
-    cancelProactiveRefresh();
-    clearTokens();
-    await supabase.auth.signOut();
-    // Drop cached user-scoped preferences so a next sign-in rehydrates from DB.
-    usePreferencesStore.getState().reset();
+    await teardownSession();
     set({ user: null, isAuthenticated: false });
+  },
+
+  logoutAll: async () => {
+    // Unlike /logout, a failure here is NOT swallowed: the point is killing
+    // other sessions, and a silent no-op would be false safety.
+    await authApi.logoutAll();
+    // This device's refresh token is dead too — a clean local logout is the
+    // honest UX.
+    await teardownSession();
+    set({ user: null, isAuthenticated: false });
+  },
+
+  deleteAccount: async (password) => {
+    await authApi.deleteAccount(password);
+    await teardownSession();
+    set({ user: null, isAuthenticated: false });
+  },
+
+  restoreAccount: async () => {
+    await authApi.restoreAccount();
+    const user = await authApi.me();
+    set({ user, isAuthenticated: true });
   },
 
   loadUser: async () => {

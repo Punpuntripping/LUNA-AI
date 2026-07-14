@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type {
+  DeepSearchStage,
   PendingBlog,
   PendingFile,
   PendingTemplate,
+  SSEAgentProgress,
   SSEQuotaExceeded,
 } from "@/types";
 
@@ -84,6 +86,76 @@ function revealFrame(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// deep_search live progress (deep_search_progress_bar plan)
+// ---------------------------------------------------------------------------
+
+/**
+ * Live state of the in-flight deep_search run, fed by the ``agent_progress``
+ * SSE event (stage/detail/counts) and the pre-existing ``status`` event (free
+ * Arabic lines → ``log``). Rendered by ``DeepSearchProgress``; ``null``
+ * whenever no deep_search run is in flight.
+ */
+export interface DeepSearchProgressState {
+  stage: DeepSearchStage;
+  /** Latest Arabic detail line for the ACTIVE stage (cleared on stage change). */
+  text: string | null;
+  /** Cumulative counts — monotonic, never reset by an event that omits them. */
+  sources: number;
+  queries: number;
+  /**
+   * Count of streamed sub-query TOPIC lines (``"بحث في …"``) seen so far this
+   * run. Bumped by ``appendDeepSearchLog`` as topics stream in during the
+   * ``searching`` stage, so the tracker can show a live query counter
+   * («الاستعلام ٣») before the authoritative phase-end ``queries`` count lands.
+   */
+  topicsSeen: number;
+  /** Client clock at the first progress event — drives the elapsed timer. */
+  startedAt: number;
+  /** Stage detail lines + ``status`` lines, in arrival order (capped). */
+  log: string[];
+}
+
+/**
+ * Sealed totals of a FINISHED deep_search run, keyed by assistant message id
+ * in ``deepSearchSummaries``. Session-only: never persisted, never sent to the
+ * backend — a reload drops it and the assistant bubble simply renders without
+ * its chip.
+ */
+export interface DeepSearchSummary {
+  sources: number;
+  elapsedMs: number;
+  log: string[];
+}
+
+/** Hard cap on the log so a chatty run can't grow the store without bound. */
+const MAX_DEEP_SEARCH_LOG = 200;
+
+/**
+ * Prefix the backend stamps on every live sub-query ``status`` line during the
+ * searching stage (``"بحث في الأنظمة واللوائح: …"`` / ``"بحث في السوابق
+ * القضائية: …"``). Exported so ``DeepSearchProgress`` can detect and strip it
+ * with the exact same string the store keys off. Trailing space is
+ * intentional — it must not match a bare ``"بحث في"`` with no topic.
+ */
+export const DEEP_SEARCH_TOPIC_PREFIX = "بحث في ";
+
+/**
+ * Pipeline order of the deep_search stages, used to keep the tracker's stage
+ * MONOTONIC. The executors (reg/case/compliance) rerank in parallel, so their
+ * events interleave: a slow phase can emit `searching` after a fast one already
+ * reached `evaluating`. Rank comparison lets the late event's counts merge while
+ * its stale stage is ignored.
+ */
+export const DEEP_SEARCH_STAGE_ORDER: Record<DeepSearchStage, number> = {
+  planning: 0,
+  searching: 1,
+  evaluating: 2,
+  aggregating: 3,
+  writing: 4,
+  done: 5,
+};
+
 interface WorkspaceUiState {
   isOpen: boolean;
   openItemId: string | null;
@@ -121,6 +193,12 @@ interface ChatState {
   // before the first message.
   pendingAttachFiles: File[];
   pendingComposerDraft: string | null;
+  // Live composer injection (onboarding starter questions): unlike
+  // ``pendingComposerDraft`` (consumed once on ChatInput mount), this slot is
+  // observed by an effect on the already-mounted ChatInput, which copies the
+  // text into the textarea and clears the slot. ``nonce`` bumps on every
+  // injection so picking the same question twice still re-triggers.
+  composerInjection: { text: string; nonce: number } | null;
   pendingMessage: string | null;
   // Blog share-links pasted into the composer, shown as chips next to file
   // attachments (blog_import plan §D4). ``pendingBlogs`` are the live chips;
@@ -181,6 +259,31 @@ interface ChatState {
    * successful send (``startStreaming`` clears it).
    */
   quotaInfo: SSEQuotaExceeded | null;
+  /**
+   * Live progress of the in-flight deep_search run (``null`` otherwise). The
+   * ONLY subscriber is ``DeepSearchProgress`` — keep it that way, or every
+   * progress event re-renders the message list and regresses the fluid-
+   * streaming render isolation.
+   */
+  deepSearchProgress: DeepSearchProgressState | null;
+  /**
+   * Carry slot between ``finishAgentRun`` and the SSE ``done`` handler.
+   *
+   * ``agent_run_finished`` arrives BEFORE ``done``, and the tracker must
+   * disappear the moment the run ends — but ``done`` is where the assistant
+   * message id is final and the summary gets sealed. So ``finishAgentRun``
+   * parks the run here instead of dropping it. Cleared by
+   * ``finishStreaming`` / ``stopStreaming`` / ``startStreaming``, which is
+   * also what kills the chip on the pause path (``agent_question`` calls
+   * ``finishAgentRun`` then ``finishStreaming`` → nothing left to seal).
+   */
+  deepSearchSealable: DeepSearchProgressState | null;
+  /**
+   * Sealed deep_search summaries keyed by assistant ``message_id``. Drives
+   * ``DeepSearchSummaryChip`` above the assistant bubble. Session-only — no
+   * persistence, no DB column; ``reset()`` (user switch) clears it.
+   */
+  deepSearchSummaries: Record<string, DeepSearchSummary>;
 
   startStreaming: (messageId: string, conversationId: string) => void;
   appendToken: (text: string) => void;
@@ -209,6 +312,9 @@ interface ChatState {
   setPendingAttachFiles: (files: File[]) => void;
   clearPendingAttachFiles: () => void;
   setPendingComposerDraft: (text: string | null) => void;
+  /** Put ``text`` into the live composer textarea (does NOT send). */
+  injectComposerText: (text: string) => void;
+  clearComposerInjection: () => void;
   addPendingBlog: (blog: PendingBlog) => void;
   removePendingBlog: (id: string) => void;
   clearPendingBlogs: () => void;
@@ -271,6 +377,30 @@ interface ChatState {
   startReconnect: () => void;
   resetReconnect: () => void;
   setQuotaInfo: (info: SSEQuotaExceeded | null) => void;
+  /**
+   * Fold an ``agent_progress`` SSE event into the live slice. Creates the
+   * slice (stamping ``startedAt``) on the first event of a run. Counts are
+   * merged monotonically — an event that omits ``sources``/``queries`` leaves
+   * them untouched rather than zeroing them.
+   */
+  setDeepSearchProgress: (event: SSEAgentProgress) => void;
+  /**
+   * Append a free-text ``status`` line to the live log. No-op when no
+   * deep_search run is in flight (status events fire for every family) and on
+   * an exact repeat of the previous line.
+   *
+   * A topic line (``"بحث في …"``) — one streamed per sub-query during the
+   * ``searching`` stage — additionally drives the ACTIVE detail line (``text``)
+   * and bumps ``topicsSeen``, so the user watches the sub-queries scroll by in
+   * real time instead of seeing them only in the terminal batch.
+   */
+  appendDeepSearchLog: (text: string) => void;
+  /**
+   * Freeze the current (or just-finished) run into
+   * ``deepSearchSummaries[messageId]``. No-op when there is nothing to seal —
+   * which is exactly what makes the pause path chip-free.
+   */
+  sealDeepSearchSummary: (messageId: string) => void;
   reset: () => void;
 }
 
@@ -297,6 +427,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingFiles: [],
   pendingAttachFiles: [],
   pendingComposerDraft: null,
+  composerInjection: null,
   pendingMessage: null,
   pendingBlogs: [],
   pendingBlogTokens: [],
@@ -314,6 +445,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   maxReconnectAttempts: 5,
   isReconnecting: false,
   quotaInfo: null,
+  deepSearchProgress: null,
+  deepSearchSealable: null,
+  deepSearchSummaries: {},
 
   startStreaming: (messageId, conversationId) => {
     // Drop any reveal backlog a superseded stream left behind.
@@ -327,6 +461,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // A new stream means the gate let this send through — drop any stale
       // banner from a previous rejection.
       quotaInfo: null,
+      // A new run owns the tracker: drop any progress/carry a superseded run
+      // left behind (sealed summaries are keyed by message id and survive).
+      deepSearchProgress: null,
+      deepSearchSealable: null,
     });
   },
 
@@ -362,6 +500,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingConversationId: null,
       streamingContent: "",
       abortController: null,
+      // Cancelled (composer Stop button) → the tracker goes away and nothing
+      // is sealed: an aborted run gets no summary chip.
+      deepSearchProgress: null,
+      deepSearchSealable: null,
     });
   },
 
@@ -380,6 +522,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       abortController: null,
       reconnectAttempts: 0,
       isReconnecting: false,
+      // The `done` handler seals the summary BEFORE calling this, so dropping
+      // both slots here is safe — and it is what clears the tracker on the
+      // ``agent_question`` pause path (which seals nothing).
+      deepSearchProgress: null,
+      deepSearchSealable: null,
     });
   },
 
@@ -419,6 +566,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
   clearPendingAttachFiles: () => set({ pendingAttachFiles: [] }),
 
   setPendingComposerDraft: (text) => set({ pendingComposerDraft: text }),
+
+  injectComposerText: (text) =>
+    set((state) => ({
+      composerInjection: {
+        text,
+        nonce: (state.composerInjection?.nonce ?? 0) + 1,
+      },
+    })),
+
+  clearComposerInjection: () => set({ composerInjection: null }),
 
   addPendingBlog: (blog) =>
     set((state) => ({ pendingBlogs: [...state.pendingBlogs, blog] })),
@@ -607,11 +764,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   finishAgentRun: () =>
-    set({
+    set((state) => ({
       isAgentRunning: false,
       runningAgentFamily: null,
       runningAgentSubtype: null,
-    }),
+      // The run is over → the tracker must stop showing "searching". The
+      // totals are parked (not dropped) so the `done` handler can still seal
+      // the chip; see ``deepSearchSealable``.
+      deepSearchProgress: null,
+      deepSearchSealable: state.deepSearchProgress ?? state.deepSearchSealable,
+    })),
 
   startReconnect: () =>
     set((state) => ({
@@ -623,6 +785,117 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ reconnectAttempts: 0, isReconnecting: false }),
 
   setQuotaInfo: (info) => set({ quotaInfo: info }),
+
+  setDeepSearchProgress: (event) =>
+    set((state) => {
+      const prev = state.deepSearchProgress;
+      const detail = (event.text ?? "").trim() || null;
+      const base: DeepSearchProgressState = prev ?? {
+        stage: event.stage,
+        text: null,
+        sources: 0,
+        queries: 0,
+        topicsSeen: 0,
+        startedAt: Date.now(),
+        log: [],
+      };
+
+      // Counts arrive on phase boundaries only; an event without them must
+      // not zero what a previous phase already reported. Monotonic so a
+      // late-arriving smaller count can't make the tracker count backwards.
+      const nextSources =
+        typeof event.data?.sources === "number"
+          ? Math.max(base.sources, event.data.sources)
+          : base.sources;
+      const nextQueries =
+        typeof event.data?.queries === "number"
+          ? Math.max(base.queries, event.data.queries)
+          : base.queries;
+
+      // Stage is MONOTONIC. The reg/case/compliance executors run in parallel,
+      // so a slow phase can report `searching` (its phase-end counts) after a
+      // fast one already pushed the run to `evaluating` — and the bar must
+      // never walk backwards. A stale stage is ignored, but its COUNTS above
+      // still merge, which is exactly what those late events carry.
+      const nextStage =
+        DEEP_SEARCH_STAGE_ORDER[event.stage] >=
+        DEEP_SEARCH_STAGE_ORDER[base.stage]
+          ? event.stage
+          : base.stage;
+
+      // The detail line belongs to the stage it arrived with — a stage change
+      // without a new line clears the stale one rather than carrying it over.
+      // A stage-regressing event must not repaint the current stage's line.
+      const isStale = nextStage !== event.stage;
+      const nextText = isStale
+        ? base.text
+        : (detail ?? (event.stage === base.stage ? base.text : null));
+
+      const log =
+        detail && base.log[base.log.length - 1] !== detail
+          ? [...base.log, detail].slice(-MAX_DEEP_SEARCH_LOG)
+          : base.log;
+
+      return {
+        deepSearchProgress: {
+          ...base,
+          stage: nextStage,
+          text: nextText,
+          sources: nextSources,
+          queries: nextQueries,
+          log,
+        },
+      };
+    }),
+
+  appendDeepSearchLog: (text) =>
+    set((state) => {
+      const prev = state.deepSearchProgress;
+      const line = text.trim();
+      // No live run → this status line belongs to another family (writer,
+      // memory, …) which has no tracker. Drop it.
+      if (!prev || !line) return state;
+      // Exact repeat of the last line → nothing to record.
+      if (prev.log[prev.log.length - 1] === line) return state;
+
+      const log = [...prev.log, line].slice(-MAX_DEEP_SEARCH_LOG);
+
+      // A "بحث في …" line is a live sub-query topic streamed during the
+      // searching stage. Beyond logging it, promote it to the ACTIVE detail
+      // line so the topics drive the evidence line, and bump ``topicsSeen`` so
+      // the tracker can show live query progress before the phase-end counts
+      // arrive.
+      if (line.startsWith(DEEP_SEARCH_TOPIC_PREFIX)) {
+        return {
+          deepSearchProgress: {
+            ...prev,
+            text: line,
+            topicsSeen: prev.topicsSeen + 1,
+            log,
+          },
+        };
+      }
+
+      return {
+        deepSearchProgress: { ...prev, log },
+      };
+    }),
+
+  sealDeepSearchSummary: (messageId) =>
+    set((state) => {
+      const run = state.deepSearchProgress ?? state.deepSearchSealable;
+      if (!run || !messageId) return state;
+      return {
+        deepSearchSummaries: {
+          ...state.deepSearchSummaries,
+          [messageId]: {
+            sources: run.sources,
+            elapsedMs: Math.max(0, Date.now() - run.startedAt),
+            log: run.log,
+          },
+        },
+      };
+    }),
 
   reset: () => {
     cancelReveal();
@@ -636,6 +909,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingFiles: [],
       pendingAttachFiles: [],
       pendingComposerDraft: null,
+      composerInjection: null,
       pendingMessage: null,
       pendingBlogs: [],
       pendingBlogTokens: [],
@@ -652,6 +926,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       maxReconnectAttempts: 5,
       isReconnecting: false,
       quotaInfo: null,
+      deepSearchProgress: null,
+      deepSearchSealable: null,
+      deepSearchSummaries: {},
     });
   },
 }));

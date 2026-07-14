@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 # endpoint from wedging the finalize/reconcile path.
 STORAGE_HEAD_TIMEOUT = 5.0  # seconds
 
+# Supabase Storage caps a single list() page (1000 is the server-side max), so
+# recursive deletion paginates with an explicit offset. remove() takes a batch
+# of keys; 100 keeps each request comfortably under the payload limit.
+STORAGE_LIST_PAGE_SIZE = 1000
+STORAGE_REMOVE_BATCH_SIZE = 100
+
 
 class _RangeUnsupported(Exception):
     """Server rejected the Range request (416/501) — fall back to a full
@@ -165,6 +171,79 @@ def delete_folder(
     except Exception as e:
         logger.exception("Failed to delete folder %s/%s: %s", bucket, folder_path, e)
         return 0
+
+
+def delete_folder_recursive(
+    bucket: str,
+    prefix: str,
+    supabase: SupabaseClient | None = None,
+) -> int:
+    """Delete every object under ``prefix``, recursing into subfolders.
+
+    Unlike :func:`delete_folder` (single-level, swallows errors) this walks the
+    whole subtree — storage paths nest as ``cases/{case_id}/convos/{convo_id}/…``
+    and ``general/{user_id}/convos/{convo_id}/…`` (see ``build_storage_path``).
+
+    RAISES on any listing or removal failure. Callers (the account purge sweep)
+    delete DB rows only after this returns: once the owning case_ids are gone
+    from the DB the storage prefixes are unrecoverable, so a silent failure here
+    would orphan the files forever.
+
+    Returns the number of objects removed.
+    """
+    client = supabase or get_supabase_client()
+
+    try:
+        object_paths: list[str] = []
+        # BFS over prefixes: Supabase's list() is single-level and synthesises a
+        # pseudo-entry per subfolder, so subfolders must be walked explicitly.
+        queue: list[str] = [prefix.strip("/")]
+        while queue:
+            folder = queue.pop(0)
+            offset = 0
+            while True:
+                page = (
+                    client.storage.from_(bucket).list(
+                        folder,
+                        {"limit": STORAGE_LIST_PAGE_SIZE, "offset": offset},
+                    )
+                    or []
+                )
+                for entry in page:
+                    name = entry.get("name")
+                    if not name:
+                        continue
+                    # A real object always carries an `id` (and a `metadata`
+                    # dict); a synthesised subfolder entry has `id is None`.
+                    if entry.get("id") is None and not entry.get("metadata"):
+                        queue.append(f"{folder}/{name}")
+                    else:
+                        object_paths.append(f"{folder}/{name}")
+                if len(page) < STORAGE_LIST_PAGE_SIZE:
+                    break  # short page = last page
+                offset += len(page)
+
+        if not object_paths:
+            logger.info("No objects under %s/%s", bucket, prefix)
+            return 0
+
+        for i in range(0, len(object_paths), STORAGE_REMOVE_BATCH_SIZE):
+            client.storage.from_(bucket).remove(
+                object_paths[i : i + STORAGE_REMOVE_BATCH_SIZE]
+            )
+
+        logger.info(
+            "Recursively deleted %d objects from %s/%s",
+            len(object_paths),
+            bucket,
+            prefix,
+        )
+        return len(object_paths)
+    except Exception as e:
+        logger.exception(
+            "Failed to recursively delete folder %s/%s: %s", bucket, prefix, e
+        )
+        raise
 
 
 def build_storage_path(

@@ -28,6 +28,22 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., min_length=1)
 
 
+class DeleteAccountRequest(BaseModel):
+    """POST /api/v1/auth/delete-account
+
+    ``password`` is optional at the schema level only: Google-OAuth-only users
+    have no password identity to re-enter. Whether it is actually required is
+    decided SERVER-side (live GoTrue identity check), never by the client.
+    """
+    password: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    """POST /api/v1/auth/change-password"""
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)  # mirrors the signup rule (LoginForm.tsx)
+
+
 # ── Cases ──────────────────────────────────────────────
 
 class CreateCaseRequest(BaseModel):

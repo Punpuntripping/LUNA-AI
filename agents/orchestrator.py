@@ -40,6 +40,11 @@ from supabase import Client as SupabaseClient
 import agents.memory.agent as memory
 from agents.memory.ocr_extractor import run_ocr_extraction
 from agents.memory.summarize import summarize_workspace_item
+from agents.deep_search_v4.planner.logger import (
+    EVENT_DECIDED,
+    EVENT_RESPONDED,
+    EVENT_RETRIEVAL_DONE,
+)
 from agents.deep_search_v4.planner.models import PriorSearchSummary
 from agents.models import (
     ChatResponse,
@@ -876,6 +881,17 @@ async def _resume_major_agent_inner(
     # itself reads its prior turn's bytes from `message_history`, so the
     # rendered comprehension is the *post-pause* world, not the pre-pause one
     # (per §6.3.1).
+    #
+    # Live progress: same queue bridge as the fresh dispatch (see _dispatch's
+    # deep_search branch). Opened HERE so the resume decider's deps carry the
+    # sink too — without it a resumed run would show no progress at all. The
+    # queue is drained by the bridge around the _run_deep_search call below; if
+    # the decider pauses again we return early and the queue is simply dropped.
+    ds_t0 = perf_counter()
+    progress_q: asyncio.Queue[dict] = asyncio.Queue()
+    total_sources = 0
+    yield _make_progress("planning", "استئناف البحث وتحليل الردّ")
+
     try:
         import httpx as _httpx
 
@@ -942,6 +958,8 @@ async def _resume_major_agent_inner(
                 prior_searches=_resume_prior_searches,
                 attached_items=_resume_attached_items,
                 wi_alias_map=_resume_alias_map,
+                # Live progress sink — drained by the bridge below.
+                emit_sse=progress_q.put_nowait,
             )
 
             planner_decider = create_planner_decider()
@@ -1055,13 +1073,62 @@ async def _resume_major_agent_inner(
 
         # Phases 2–3 run via the same convergence point as fresh dispatch.
         # decision is supplied → phase 1 is skipped → cannot pause again.
-        ds_outcome = await _run_deep_search(
-            major_input, supabase, decision=planner_output,
-            assistant_message_id=assistant_message_id,
+        # Same live-progress queue bridge as _dispatch: run it as a task, drain
+        # the queue while it works, yield each translated event immediately.
+        ds_task = asyncio.create_task(
+            _run_deep_search(
+                major_input, supabase, decision=planner_output,
+                assistant_message_id=assistant_message_id,
+                emit_sse=progress_q.put_nowait,
+            )
         )
+        try:
+            while not ds_task.done():
+                try:
+                    raw = await asyncio.wait_for(
+                        progress_q.get(), timeout=_PROGRESS_POLL_S
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                prog = _progress_from_planner_event(raw)
+                if prog is None:
+                    continue
+                total_sources += _progress_sources(prog)
+                yield prog
+
+            while True:  # tail drain
+                try:
+                    raw = progress_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                prog = _progress_from_planner_event(raw)
+                if prog is None:
+                    continue
+                total_sources += _progress_sources(prog)
+                yield prog
+
+            ds_outcome = await ds_task  # re-raises on failure
+        finally:
+            # Generator closed / body raised → never orphan the run.
+            # CancelledError is NOT swallowed.
+            if not ds_task.done():
+                ds_task.cancel()
+
         run_result = ds_outcome.result
 
+        yield _make_progress(
+            "done",
+            "اكتمل البحث",
+            sources=total_sources,
+            elapsed_s=round(perf_counter() - ds_t0, 1),
+        )
+
+        # Skip events already streamed LIVE via the progress queue (executor topic
+        # lines tagged `streamed`) — kept on `_events` for forensic dumps, but
+        # re-yielding here would double-send them.
         for ev in run_result.sse_events:
+            if ev.get("streamed"):
+                continue
             yield ev
 
         if run_result.chat_summary:
@@ -1218,7 +1285,7 @@ def _record_deferred(
 
 
 # Needed for _record_deferred type annotation
-from typing import Any  # noqa: E402 — after class definitions
+from typing import Any, Callable  # noqa: E402 — after class definitions
 
 
 class _SkipRunRecord(Exception):
@@ -1546,6 +1613,146 @@ async def _route(
 
 
 # ---------------------------------------------------------------------------
+# deep_search live progress  (SSE `agent_progress`)
+# ---------------------------------------------------------------------------
+#
+# The deep_search run takes 1–4 minutes. Without a live feed the user stares at a
+# typing indicator. `_dispatch` bridges the planner's in-process event stream to
+# SSE through an asyncio.Queue: `PlannerDeps.emit_sse` (planner/deps.py) fires on
+# every planner lifecycle event (planner/logger.py `emit`), plus the four phase
+# -boundary events fired directly by deep_search_v4/orchestrator.py.
+#
+# TRAP — double-send: `planner/logger.emit()` ALSO appends the raw event to
+# `deps._events`, which `_run_deep_search` copies into `SpecialistResult.sse_events`
+# and `_dispatch` batch-yields just before the answer tokens. Raw `planner_*` events
+# carry no "type" key so message_service's relay whitelist ignores them — harmless.
+# NEVER append a translated `agent_progress` event onto `_events`: it would be sent
+# once live and once again in that terminal batch.
+
+# The five ordered stage keys of the wire contract. Anything else is dropped —
+# the contract is closed.
+# Stage keys name the PIPELINE COMPONENT that is running; the frontend maps each
+# to a user-facing label. Ordered:
+#   planning     — planner_decider picks mode/sectors
+#   searching    — expander + vector search across reg/case/compliance
+#   evaluating   — the per-sub-query rerankers score/keep/drop (inside the
+#                  executor loops, so it overlaps the tail of `searching`)
+#   aggregating  — the AGGREGATOR, which WRITES the answer (synthesis_md with
+#                  [n] citations). This is the long stage, not a merge step.
+#   writing      — planner_responder produces the chat summary of that answer
+# Stage order is enforced client-side (monotonic): the executors run in
+# parallel, so a slower phase can emit `searching` after a faster one already
+# pushed the run to `evaluating`. Counts still merge; the stage never regresses.
+_PROGRESS_STAGES = (
+    "planning", "searching", "evaluating", "aggregating", "writing", "done",
+)
+
+# Queue poll interval for the progress bridge. Bounds how long a finished
+# deep_search task waits before `_dispatch` notices; also the drain granularity.
+_PROGRESS_POLL_S = 0.2
+
+
+def _make_progress(stage: str, text: str = "", **data: Any) -> dict:
+    """Build one ``agent_progress`` pipeline event (relayed by message_service).
+
+    ``text`` is an Arabic **label** and ``data`` holds **numbers only** — never
+    LLM-derived content. Progress text is not routed through the وضع السرية
+    StreamDecoder (only ``token`` events are), so it must never be able to carry
+    a fake identifier minted from encoded input.
+    """
+    return {
+        "type": "agent_progress",
+        "stage": stage,
+        "text": text,
+        "data": {k: v for k, v in data.items() if v is not None},
+    }
+
+
+def _progress_from_planner_event(event: dict) -> dict | None:
+    """Translate ONE raw pipeline event → an ``agent_progress`` event, or ``None``.
+
+    Pure (no I/O, no state) so the mapping is unit-testable. Inputs are whatever
+    lands on ``PlannerDeps.emit_sse``:
+
+    * planner lifecycle events (``{"event": "planner_…", …}`` — planner/logger.py)
+    * pre-built ``agent_progress`` events fired by the deep_search_v4 phase
+      wrappers (``{"type": "agent_progress", …}``) — re-normalized, passed through.
+
+    Returns ``None`` for anything that carries no progress meaning:
+
+    * ``planner_paused`` — the run is alive but waiting on the user. The frontend
+      clears the bar on ``agent_question``; emitting a ``done`` here would seal a
+      summary chip for a run that never finished.
+    * ``planner_error`` — the run degrades but still terminates through the normal
+      completion path, whose ``done`` event carries the real totals.
+    * free-text ``status`` / ``tool_call`` records — those stay batch-flushed.
+    """
+    if not isinstance(event, dict):
+        return None
+
+    # Executor topic lines (``{"type": "status", …}``) now stream LIVE through the
+    # queue bridge. They are NOT progress-bar events — message_service sanitizes +
+    # decodes them at the relay. Pass through unchanged (the mapper stays pure) so
+    # the drain loop yields them as-is; ``_progress_sources`` returns 0 for them
+    # (no ``stage`` key), so they never inflate the completion chip's source total.
+    if event.get("type") == "status":
+        return event
+
+    # Already-shaped progress (deep_search_v4 phase wrappers call emit_sse with a
+    # built event). Re-normalize rather than trust the shape.
+    if event.get("type") == "agent_progress":
+        stage = str(event.get("stage") or "")
+        if stage not in _PROGRESS_STAGES:
+            return None
+        return _make_progress(
+            stage,
+            str(event.get("text") or ""),
+            **dict(event.get("data") or {}),
+        )
+
+    name = event.get("event")
+
+    if name == EVENT_DECIDED:
+        # Phase 1 resolved → the three executors are about to run.
+        return _make_progress("searching", "بدء البحث في الأنظمة والأحكام والاشتراطات")
+
+    if name == EVENT_RETRIEVAL_DONE:
+        # Phase 2 (executors → URA → AGGREGATOR) is DONE — the answer itself is
+        # already written by the aggregator. What follows is the responder
+        # turning it into the chat summary, i.e. the `writing` stage = PRESENTING
+        # the answer, not composing it.
+        conf = event.get("confidence")
+        return _make_progress(
+            "writing",
+            "تلخيص الإجابة للمحادثة",
+            confidence=(
+                round(float(conf), 3) if isinstance(conf, (int, float)) else None
+            ),
+        )
+
+    if name == EVENT_RESPONDED:
+        # Phase 3 done → answer tokens are imminent. Same stage (the bar never
+        # regresses); the detail line just refreshes.
+        return _make_progress("writing", "جارٍ عرض الإجابة")
+
+    return None
+
+
+def _progress_sources(event: dict) -> int:
+    """Retrieved-source count carried by a translated ``searching`` event (else 0).
+
+    Summed across the three executor phases → the total on the terminal ``done``
+    event (the completion chip's «N مصدرًا»).
+    """
+    if event.get("stage") != "searching":
+        return 0
+    try:
+        return int((event.get("data") or {}).get("sources") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
@@ -1656,10 +1863,66 @@ async def _dispatch(
                 # The planner owns the loop: _run_deep_search → handle_planner_turn
                 # runs phase 1 (decide) → phase 2 (retrieve) → phase 3 (respond).
                 # A phase-1 ask_user pause comes back as kind="paused".
-                ds_outcome = await _run_deep_search(
-                    major_input, supabase,
-                    assistant_message_id=assistant_message_id,
+                #
+                # Live progress bridge: the run is a 1–4 min blocking await, so we
+                # drive it as a task and drain an asyncio.Queue that the planner
+                # (+ the deep_search_v4 phase wrappers) feed via `emit_sse`. Each
+                # drained event is translated and yielded IMMEDIATELY — before the
+                # answer tokens — instead of accumulating on `deps._events` and
+                # flushing in one useless batch at the end.
+                ds_t0 = perf_counter()
+                progress_q: asyncio.Queue[dict] = asyncio.Queue()
+                total_sources = 0
+
+                # Painted before anything is awaited, so the bar appears at once.
+                yield _make_progress("planning", "تحليل السؤال وتخطيط البحث")
+
+                # put_nowait: the sink is a SYNC callback (planner/logger.emit
+                # calls it inline) and the queue is unbounded → never blocks,
+                # never raises QueueFull.
+                ds_task = asyncio.create_task(
+                    _run_deep_search(
+                        major_input, supabase,
+                        assistant_message_id=assistant_message_id,
+                        emit_sse=progress_q.put_nowait,
+                    )
                 )
+                try:
+                    while not ds_task.done():
+                        try:
+                            raw = await asyncio.wait_for(
+                                progress_q.get(), timeout=_PROGRESS_POLL_S
+                            )
+                        except asyncio.TimeoutError:
+                            continue  # nothing yet — re-check task completion
+                        prog = _progress_from_planner_event(raw)
+                        if prog is None:
+                            continue
+                        total_sources += _progress_sources(prog)
+                        yield prog
+
+                    # Task finished — drain whatever landed after the last poll.
+                    while True:
+                        try:
+                            raw = progress_q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        prog = _progress_from_planner_event(raw)
+                        if prog is None:
+                            continue
+                        total_sources += _progress_sources(prog)
+                        yield prog
+
+                    # Re-raises whatever _run_deep_search raised — the existing
+                    # CancelledError / Exception handlers below are unchanged.
+                    ds_outcome = await ds_task
+                finally:
+                    # Generator closed (SSE disconnect / Stop button) or the body
+                    # raised → never orphan the run. CancelledError is NOT
+                    # swallowed: it propagates to the handler below.
+                    if not ds_task.done():
+                        ds_task.cancel()
+
                 if ds_outcome.kind == "paused":
                     # The pause-triggering decider's cost is emitted by
                     # handle_planner_turn (phase-1 pause path → deep_search.planner).
@@ -1681,6 +1944,17 @@ async def _dispatch(
                     )
                     raise _SkipRunRecord()
                 run_result = ds_outcome.result
+
+                # Terminal progress event — totals for the completion chip
+                # («بحث معمّق · N مصدرًا · m:ss»). Emitted only on the completed
+                # path: a paused run raised _SkipRunRecord above, so it never
+                # seals a chip.
+                yield _make_progress(
+                    "done",
+                    "اكتمل البحث",
+                    sources=total_sources,
+                    elapsed_s=round(perf_counter() - ds_t0, 1),
+                )
             elif agent_family == "writing":
                 # The writer_planner owns the loop: it may pause for ask_user
                 # ('clarify') or present_plan_for_approval ('approve_plan'),
@@ -1726,7 +2000,12 @@ async def _dispatch(
                 return
 
             # Forward queued SSE events (workspace_item_created / workspace_item_updated / etc.)
+            # Skip events already streamed LIVE via the progress queue (executor
+            # topic lines tagged `streamed`) — they are still on `_events` for
+            # forensic dumps, but re-yielding here would double-send them.
             for ev in run_result.sse_events:
+                if ev.get("streamed"):
+                    continue
                 yield ev
 
             # Stream chat_summary to chat — full body stays in workspace item only.
@@ -1847,6 +2126,7 @@ async def _run_deep_search(
     decision: Any = None,
     *,
     assistant_message_id: str | None = None,
+    emit_sse: Callable[[dict], None] | None = None,
 ) -> _DeepSearchOutcome:
     """Run the planner-driven deep_search_v4 loop.
 
@@ -1868,6 +2148,12 @@ async def _run_deep_search(
 
     ``decision``: supplied on the resume path (phase 1 already resolved by
     ``_resume_major_agent``); ``None`` on fresh dispatch.
+
+    ``emit_sse``: sync sink for LIVE progress events (``_dispatch``'s queue
+    ``put_nowait``). Threaded into ``PlannerDeps.emit_sse`` → fired by
+    ``planner/logger.emit`` on every lifecycle event and by the deep_search_v4
+    phase wrappers at each executor/aggregator boundary. ``None`` (CLI, tests,
+    monitor) → the hook stays dead and everything batches as before.
 
     The user-facing chat summary is written by the **planner** (phase 3):
     ``SpecialistResult.chat_summary`` = the planner's ``chat_summary_md`` +
@@ -1948,6 +2234,8 @@ async def _run_deep_search(
             prior_searches=prior_searches,
             attached_items=_planner_attached,
             wi_alias_map=wi_alias_map,
+            # Live progress sink (None outside _dispatch → hook stays dead).
+            emit_sse=emit_sse,
         )
 
         # Flush the attached-item fakes minted just above BEFORE the decider LLM

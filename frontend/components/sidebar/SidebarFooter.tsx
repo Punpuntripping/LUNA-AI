@@ -10,10 +10,13 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   User,
+  UserCog,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
+import { useOnboardingStore } from "@/stores/onboarding-store";
 import { LEGAL_ROUTES } from "@/lib/legal";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -31,6 +34,7 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 import { ConversationSettingsDialog } from "@/components/Settings/ConversationSettingsDialog";
+import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
 
 export function SidebarFooter() {
   const router = useRouter();
@@ -38,6 +42,7 @@ export function SidebarFooter() {
   const [usageOpen, setUsageOpen] = useState(false);
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -125,6 +130,18 @@ export function SidebarFooter() {
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setAccountOpen(true)}
+                  data-testid="sidebar-settings-account"
+                >
+                  <span className="flex items-center gap-2">
+                    <UserCog className="h-4 w-4" />
+                    إعدادات الحساب
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
                   onClick={() => router.push("/pricing")}
                   data-testid="sidebar-settings-pricing"
                 >
@@ -135,6 +152,18 @@ export function SidebarFooter() {
                   <span className="text-muted-foreground">›</span>
                 </Button>
                 <Separator />
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => useOnboardingStore.getState().open()}
+                  data-testid="sidebar-settings-onboarding-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4" />
+                    اتعرف على ريحان
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
@@ -167,6 +196,10 @@ export function SidebarFooter() {
           <ConversationSettingsDialog
             open={conversationOpen}
             onOpenChange={setConversationOpen}
+          />
+          <AccountSettingsDialog
+            open={accountOpen}
+            onOpenChange={setAccountOpen}
           />
           <ThemeToggle />
           <Tooltip>

@@ -27,6 +27,10 @@ class UserProfile(BaseModel):
     subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
     plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
+    # Account-deletion grace window (migration 090).
+    deletion_pending: bool = False
+    deletion_requested_at: Optional[datetime] = None
+    purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
 
 
 class LoginResponse(BaseModel):
@@ -50,6 +54,10 @@ class UserProfileResponse(BaseModel):
     subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
     plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
+    # Account-deletion grace window (migration 090).
+    deletion_pending: bool = False
+    deletion_requested_at: Optional[datetime] = None
+    purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
 
 
 # ── Conversations ──────────────────────────────────────

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
+import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -88,6 +89,9 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           </div>
         )}
       </main>
+
+      {/* first-run «اتعرف على ريحان» tour — self-gating, renders nothing once seen */}
+      <OnboardingDialog />
     </div>
   );
 }

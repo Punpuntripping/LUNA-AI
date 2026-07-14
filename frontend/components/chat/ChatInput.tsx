@@ -164,6 +164,18 @@ export function ChatInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Live composer injection (onboarding starter questions): fires while the
+  // composer is already mounted — the mount-time pendingComposerDraft read
+  // above can't cover that. Applies the text, focuses the box, clears the
+  // slot (the clear re-runs the effect with null; the guard makes it a no-op).
+  const composerInjection = useChatStore((s) => s.composerInjection);
+  useEffect(() => {
+    if (!composerInjection) return;
+    setContent(composerInjection.text);
+    useChatStore.getState().clearComposerInjection();
+    textareaRef.current?.focus();
+  }, [composerInjection]);
+
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setContent(e.target.value);

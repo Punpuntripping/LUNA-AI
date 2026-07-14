@@ -311,6 +311,20 @@ class RerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
             "text": f"جاري تصنيف وتصفية النتائج ({len(current_round_logs)} استعلام)...",
         })
 
+        # Live progress — the reranker IS the "تقييم وترجيح" stage. See the twin
+        # emit in reg_search/loop.py RerankerNode. Guarded; peer executors emit
+        # the same stage and the client keeps it monotonic.
+        if deps.emit_sse is not None:
+            try:
+                deps.emit_sse({
+                    "type": "agent_progress",
+                    "stage": "evaluating",
+                    "text": "تقييم النتائج وترجيحها",
+                    "data": {},
+                })
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("RerankerNode: emit_sse failed", exc_info=True)
+
         # Dynamic result-budget model (MODE_PROFILES.md §1): per-sub-query keep
         # is derived from the expander's actual query count N when the planner
         # passed a ``result_budget``; otherwise the fixed fallback is used.
@@ -780,6 +794,18 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
     ) -> End[CaseSearchResult]:
         state = ctx.state
         deps = ctx.deps
+
+        # Live progress — sectioned path's twin of RerankerNode's emit above.
+        if deps.emit_sse is not None:
+            try:
+                deps.emit_sse({
+                    "type": "agent_progress",
+                    "stage": "evaluating",
+                    "text": "تقييم النتائج وترجيحها",
+                    "data": {},
+                })
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("SectionedRerankerNode: emit_sse failed", exc_info=True)
 
         per_query = list(state.per_query_candidates)
 

@@ -369,6 +369,29 @@ export const authApi = {
   logout: () => api.post<{ success: boolean }>("/auth/logout"),
 
   me: () => api.get<User>("/auth/me"),
+
+  // -----------------------------------------------
+  // Account settings (إعدادات الحساب)
+  // -----------------------------------------------
+
+  /** Rejected with 400 VALIDATION_ERROR for Google-only accounts (no password
+   *  identity); 401 AUTH_INVALID when `current_password` is wrong. */
+  changePassword: (current_password: string, new_password: string) =>
+    api.post<{ success: boolean }>("/auth/change-password", {
+      current_password,
+      new_password,
+    }),
+
+  /** Revokes ALL refresh tokens — including this device's. 503 on failure. */
+  logoutAll: () => api.post<{ success: boolean }>("/auth/logout-all"),
+
+  /** Schedules deletion (30-day grace). The server checks the real identity:
+   *  password is required for email accounts (422 if missing) and ignored for
+   *  Google-only accounts — the client never chooses the branch. */
+  deleteAccount: (password?: string) =>
+    api.post<{ success: boolean }>("/auth/delete-account", { password }),
+
+  restoreAccount: () => api.post<{ success: boolean }>("/auth/restore-account"),
 };
 
 // -----------------------------------------------

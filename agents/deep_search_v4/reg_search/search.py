@@ -104,10 +104,22 @@ async def _search_regulations_pipeline_inner(
     events = deps._events
 
     try:
-        events.append({
+        topic_ev = {
             "type": "status",
             "text": f"جاري البحث في الأنظمة واللوائح: {query[:80]}...",
-        })
+        }
+        events.append(topic_ev)
+        # Stream the topic line LIVE. Only this one line is streamed — the ~50
+        # other mechanics status lines stay batched (message_service's sanitizer
+        # drops them anyway). On a successful emit, tag the SAME dict `streamed`
+        # so the orchestrator's terminal batch flush skips it (no double-send);
+        # the object still lives on `_events` for forensic dumps.
+        if deps.emit_sse is not None:
+            try:
+                deps.emit_sse(topic_ev)
+                topic_ev["streamed"] = True
+            except Exception:  # pragma: no cover - defensive; sink must not break search
+                pass
 
         # Step 1: Embed query (skip if pre-computed).
         embedding = precomputed_embedding or await deps.embedding_fn(query)

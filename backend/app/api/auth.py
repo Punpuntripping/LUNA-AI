@@ -1,6 +1,9 @@
 """
 Auth API routes — /api/v1/auth/
-5 endpoints: login, register, refresh, logout, me
+8 endpoints: login, refresh, logout, me, delete-account, restore-account,
+change-password, logout-all
+
+(Signup runs client-side via supabase.auth.signUp() — see the note above /refresh.)
 """
 from __future__ import annotations
 
@@ -24,7 +27,12 @@ from backend.app.errors import (
     MSG_SERVICE_UNAVAILABLE,
 )
 from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
-from backend.app.models.requests import LoginRequest, RefreshRequest
+from backend.app.models.requests import (
+    ChangePasswordRequest,
+    DeleteAccountRequest,
+    LoginRequest,
+    RefreshRequest,
+)
 from backend.app.models.responses import (
     LoginResponse,
     TokenResponse,
@@ -32,7 +40,16 @@ from backend.app.models.responses import (
     UserProfileResponse,
     SuccessResponse,
 )
+from backend.app.services.account_service import (
+    cancel_account_deletion,
+    compute_purge_at,
+    get_account_user_id,
+    has_password_identity,
+    schedule_account_deletion,
+)
+from backend.app.services.audit_service import write_audit_log
 from shared.auth.jwt import AuthUser
+from shared.db.client import create_isolated_anon_client
 from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
@@ -58,6 +75,127 @@ async def _gotrue_call(fn, /, *args, **kwargs):
     )
 
 
+def _raw_jwt(request: Request) -> str:
+    """Return the caller's raw bearer token.
+
+    admin.sign_out() revokes the refresh tokens attached to the JWT's session,
+    so it needs the token itself — not the decoded AuthUser.
+    """
+    header = request.headers.get("Authorization") or ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise LunaHTTPException(
+            status_code=401,
+            code=ErrorCode.AUTH_INVALID,
+            detail="بيانات الدخول غير صحيحة",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token.strip()
+
+
+async def _verify_password(
+    email: str,
+    password: str,
+    wrong_password_detail: str,
+) -> None:
+    """Re-verify the caller's password against GoTrue before a sensitive action.
+
+    ``email`` MUST come from the verified JWT claim, never from the request body.
+    Error mapping mirrors /login: bad credentials → 401 AUTH_INVALID, anything
+    else (outage, hang, unexpected shape) → 503.
+
+    Runs on a THROWAWAY anon client, not the shared ``app.state.supabase_auth``
+    singleton: sign_in_with_password parks its session in the client's in-memory
+    auth store, and gotrue's ``auth.sign_out()`` acts on whatever session is
+    parked there — so verifying on the shared client would let one request's
+    re-auth collide with another request's session.
+    """
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        response = await _verify_on(client, email, password, wrong_password_detail)
+    finally:
+        try:
+            await asyncio.to_thread(client.auth.close)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not close verification auth client: %s", e)
+
+    if response.user is None:
+        raise LunaHTTPException(
+            status_code=401,
+            code=ErrorCode.AUTH_INVALID,
+            detail=wrong_password_detail,
+        )
+
+
+async def _verify_on(
+    client: SupabaseClient,
+    email: str,
+    password: str,
+    wrong_password_detail: str,
+):
+    try:
+        return await _gotrue_call(
+            client.auth.sign_in_with_password,
+            {"email": email, "password": password},
+        )
+    except (AuthRetryableError, TimeoutError) as e:
+        logger.error("GoTrue unavailable during password verification: %s", e)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+    except AuthApiError as e:
+        if e.status in (400, 401, 403, 422):
+            raise LunaHTTPException(
+                status_code=401,
+                code=ErrorCode.AUTH_INVALID,
+                detail=wrong_password_detail,
+            )
+        logger.error(
+            "GoTrue API error during password verification (status=%s code=%s)",
+            e.status,
+            e.code,
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+    except Exception as e:
+        logger.exception("Unexpected password verification error: %s", e)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+
+
+def _audit_account_event(
+    supabase: SupabaseClient, auth_id: str, action: str, event: str
+) -> None:
+    """Resolve the internal user_id (ungated) and write one account audit row."""
+    user_id = get_account_user_id(supabase, auth_id)
+    write_audit_log(
+        supabase,
+        user_id=user_id,
+        action=action,
+        resource_type="account",
+        resource_id=user_id,
+        metadata={"event": event},
+    )
+
+
+async def _drop_redis_session(redis: Optional[AsyncRedis], auth_id: str) -> None:
+    """Best-effort Redis session teardown — never blocks the response."""
+    if redis is None:
+        return
+    try:
+        await redis.delete(f"session:{auth_id}")
+    except Exception as e:
+        logger.warning("Failed to delete Redis session for %s: %s", auth_id, e)
+
+
 # ============================================
 # POST /login
 # ============================================
@@ -66,12 +204,14 @@ async def _gotrue_call(fn, /, *args, **kwargs):
 async def login(
     body: LoginRequest,
     request: Request,
+    supabase: SupabaseClient = Depends(get_supabase),
     supabase_auth: SupabaseClient = Depends(get_supabase_auth),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """
     Authenticate a user with email + password.
-    Returns access_token, refresh_token, and user profile.
+    Returns access_token, refresh_token, and user profile (incl. deletion state,
+    so an account in its grace window lands straight on the blocking screen).
     """
     try:
         response = await _gotrue_call(
@@ -135,6 +275,25 @@ async def login(
 
     user_metadata = user.user_metadata or {}
 
+    def _fetch_deletion_state():
+        return (
+            supabase.table("users")
+            .select("deletion_requested_at")
+            .eq("auth_id", user.id)
+            .maybe_single()
+            .execute()
+        )
+
+    # A failure here must never break login — degrade to "not pending"; the
+    # get_user_id gate still blocks every data route server-side either way.
+    deletion_requested_at = None
+    try:
+        result = await run_db(_fetch_deletion_state)
+        if result is not None and result.data is not None:
+            deletion_requested_at = result.data.get("deletion_requested_at")
+    except Exception as e:
+        logger.warning("Could not read deletion state during login: %s", e)
+
     return LoginResponse(
         access_token=session.access_token,
         refresh_token=session.refresh_token,
@@ -144,6 +303,9 @@ async def login(
             full_name_ar=user_metadata.get("full_name_ar"),
             subscription_tier="free",
             created_at=user.created_at if user.created_at else None,
+            deletion_pending=bool(deletion_requested_at),
+            deletion_requested_at=deletion_requested_at,
+            purge_at=compute_purge_at(deletion_requested_at),
         ),
     )
 
@@ -283,6 +445,9 @@ async def me(
 ):
     """
     Return the authenticated user's profile from the users table.
+
+    Never 403s for an account pending deletion — the frontend's blocking
+    restore screen is driven by the deletion_* fields returned here.
     """
     def _fetch_profile():
         # plan_id comes from the user_subscriptions SSoT (embedded via the FK),
@@ -290,7 +455,7 @@ async def me(
         return (
             supabase.table("users")
             .select("user_id, auth_id, email, full_name_ar, created_at, "
-                    "user_subscriptions(plan_id)")
+                    "deletion_requested_at, user_subscriptions(plan_id)")
             .eq("auth_id", current_user.auth_id)
             .maybe_single()
             .execute()
@@ -312,6 +477,7 @@ async def me(
     if isinstance(sub, list):
         sub = sub[0] if sub else None
     plan_id = (sub or {}).get("plan_id")
+    deletion_requested_at = profile.get("deletion_requested_at")
     return UserProfileResponse(
         user_id=profile["user_id"],
         email=profile["email"],
@@ -319,4 +485,210 @@ async def me(
         subscription_tier=None,  # legacy column retired — plan_id is the truth
         plan_id=plan_id,
         created_at=profile.get("created_at"),
+        deletion_pending=bool(deletion_requested_at),
+        deletion_requested_at=deletion_requested_at,
+        purge_at=compute_purge_at(deletion_requested_at),
     )
+
+
+# ============================================
+# POST /delete-account
+# ============================================
+
+@router.post("/delete-account", response_model=SuccessResponse)
+async def delete_account(
+    body: DeleteAccountRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """
+    Schedule the caller's account for deletion (30-day grace window).
+
+    Password re-entry is required only for accounts that actually have a
+    password identity — the server decides from live GoTrue state, not from
+    what the client sent. Google-OAuth-only users confirm with the JWT alone.
+
+    No global sign-out here: the user must keep a working session to reach the
+    restore button during grace. Every data route is already blocked by the
+    get_user_id gate.
+    """
+    needs_password = await run_db(
+        has_password_identity, supabase, current_user.auth_id
+    )
+
+    if needs_password:
+        if not body.password:
+            raise LunaHTTPException(
+                status_code=422,
+                code=ErrorCode.VALIDATION_ERROR,
+                detail="كلمة المرور مطلوبة",
+            )
+        await _verify_password(
+            current_user.email,
+            body.password,
+            "كلمة المرور غير صحيحة",
+        )
+
+    await run_db(schedule_account_deletion, supabase, current_user.auth_id)
+    await _drop_redis_session(redis, current_user.auth_id)
+
+    return SuccessResponse(success=True)
+
+
+# ============================================
+# POST /restore-account
+# ============================================
+
+@router.post("/restore-account", response_model=SuccessResponse)
+async def restore_account(
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """
+    Cancel a pending deletion and reactivate the account. Idempotent.
+    """
+    await run_db(cancel_account_deletion, supabase, current_user.auth_id)
+    return SuccessResponse(success=True)
+
+
+# ============================================
+# POST /change-password
+# ============================================
+
+@router.post("/change-password", response_model=SuccessResponse)
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """
+    Change the caller's password after re-verifying the current one.
+
+    The caller's own session survives; other devices are signed out.
+    """
+    if not await run_db(has_password_identity, supabase, current_user.auth_id):
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="هذا الحساب مسجّل عبر Google ولا يملك كلمة مرور",
+        )
+
+    await _verify_password(
+        current_user.email,
+        body.current_password,
+        "كلمة المرور الحالية غير صحيحة",
+    )
+
+    raw_jwt = _raw_jwt(request)
+
+    try:
+        await run_db(
+            supabase.auth.admin.update_user_by_id,
+            current_user.auth_id,
+            {"password": body.new_password},
+        )
+    except AuthApiError as e:
+        if e.status in (400, 422):
+            # GoTrue rejected the new password itself (e.g. identical to the
+            # current one) — a user error, not an outage.
+            logger.info(
+                "GoTrue rejected new password (status=%s code=%s)", e.status, e.code
+            )
+            raise LunaHTTPException(
+                status_code=400,
+                code=ErrorCode.VALIDATION_ERROR,
+                detail="تعذّر تحديث كلمة المرور. اختر كلمة مرور مختلفة",
+            )
+        logger.error(
+            "GoTrue API error during password update (status=%s code=%s)",
+            e.status,
+            e.code,
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+    except Exception as e:
+        logger.exception("Unexpected password update error: %s", e)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+
+    # scope="others": the password is already changed, so a failure here must not
+    # fail the request — but stolen sessions on other devices should die with it.
+    try:
+        await run_db(supabase.auth.admin.sign_out, raw_jwt, "others")
+    except Exception as e:
+        logger.warning(
+            "Could not revoke other sessions after password change (auth_id=%s): %s",
+            current_user.auth_id,
+            e,
+        )
+
+    try:
+        await run_db(
+            _audit_account_event,
+            supabase,
+            current_user.auth_id,
+            "update",
+            "password_changed",
+        )
+    except Exception as e:
+        logger.warning("Audit write failed after password change: %s", e)
+
+    return SuccessResponse(success=True)
+
+
+# ============================================
+# POST /logout-all
+# ============================================
+
+@router.post("/logout-all", response_model=SuccessResponse)
+async def logout_all(
+    request: Request,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """
+    Revoke every refresh token for the caller, including this device's.
+
+    Unlike /logout, a failure here is a hard 503: the entire point is killing
+    other sessions, so a silent 200 would be false safety.
+
+    Already-issued access tokens still work until they expire (stateless JWT) —
+    other devices die on their next refresh, within ~1h.
+    """
+    raw_jwt = _raw_jwt(request)
+
+    try:
+        await run_db(supabase.auth.admin.sign_out, raw_jwt, "global")
+    except Exception as e:
+        logger.error(
+            "Global sign-out failed for auth_id=%s: %s", current_user.auth_id, e
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+
+    await _drop_redis_session(redis, current_user.auth_id)
+
+    try:
+        await run_db(
+            _audit_account_event,
+            supabase,
+            current_user.auth_id,
+            "update",
+            "logout_all_devices",
+        )
+    except Exception as e:
+        logger.warning("Audit write failed after logout-all: %s", e)
+
+    return SuccessResponse(success=True)

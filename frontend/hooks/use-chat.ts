@@ -14,6 +14,8 @@ import type {
   SSEDone,
   SSEDuplicate,
   SSEQuotaExceeded,
+  SSEAgentProgress,
+  SSEStatus,
   SSEAgentRunStarted,
   SSEAgentRunFinished,
   SSEAgentQuestion,
@@ -433,12 +435,50 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().appendToken(payload.text);
               break;
             }
+            case "agent_progress": {
+              // deep_search live progress (deep_search_progress_bar plan).
+              // Feeds ``DeepSearchProgress`` — the ONLY subscriber of the
+              // progress slice, so a progress event never re-renders the
+              // message list.
+              const payload = data as SSEAgentProgress;
+              useChatStore.getState().setDeepSearchProgress(payload);
+              // The terminal event carries the run totals. Seal here as well
+              // as on `done`: this way the chip survives regardless of the
+              // order the backend emits agent_progress(done) /
+              // agent_run_finished / done in.
+              if (payload.stage === "done" && assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .sealDeepSearchSummary(assistantMessageId);
+              }
+              break;
+            }
+            case "status": {
+              // Free-text Arabic progress line the backend has always emitted
+              // (~50 sites, batch-flushed just before the answer tokens) and
+              // the frontend used to drop. It now populates the expanded log
+              // of the deep_search summary chip. No-op when no deep_search run
+              // is in flight, so other families are unaffected.
+              const payload = data as SSEStatus;
+              useChatStore.getState().appendDeepSearchLog(payload.text ?? "");
+              break;
+            }
             case "done": {
               const payload = data as SSEDone;
               // The paced reveal may still hold tail text in its buffer —
               // publish it so streamingContent is the complete answer before
               // it is persisted into the cache.
               useChatStore.getState().flushStreamBuffer();
+              // Seal the deep_search summary against the assistant message id
+              // BEFORE finishStreaming() drops the progress slice — that is
+              // what turns the live tracker into the collapsed chip above the
+              // finished bubble. No-op for non-deep_search runs and for the
+              // pause path (agent_question already cleared both slots).
+              if (assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .sealDeepSearchSummary(assistantMessageId);
+              }
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
               const finalContent = useChatStore.getState().streamingContent;
@@ -544,6 +584,9 @@ export function useSendMessage(): UseSendMessageReturn {
               useChatStore.getState().finishAgentRun();
               // Also clear any in-progress streaming bubble — the assistant
               // message that arrives via refetch is the canonical question.
+              // This pair also tears down the deep_search tracker: the run is
+              // alive but paused, so it must stop showing "searching", and
+              // nothing is sealed (no chip on a question bubble).
               useChatStore.getState().finishStreaming();
               break;
             }

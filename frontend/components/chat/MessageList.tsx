@@ -1,6 +1,14 @@
 "use client";
 
-import { memo, useEffect, useRef, useCallback, useMemo, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  useState,
+} from "react";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
@@ -8,6 +16,8 @@ import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useChatStore } from "@/stores/chat-store";
 import { MessageBubble } from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
+import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
+import { DeepSearchSummaryChip } from "@/components/chat/DeepSearchSummaryChip";
 import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
 import type { Message, WorkspaceItemKind } from "@/types";
@@ -101,6 +111,12 @@ export function MessageList({
   const templateOffersByMessage = useChatStore(
     (s) => s.templateOffersByMessage,
   );
+  // deep_search_progress_bar plan: sealed receipts of finished deep_search
+  // runs, keyed by assistant message_id. Written ONCE per run (at `done`), so
+  // subscribing to the whole record costs the list a single extra render —
+  // the live progress slice is deliberately NOT read here (that would
+  // re-render the list on every progress event).
+  const deepSearchSummaries = useChatStore((s) => s.deepSearchSummaries);
 
   const handleOpenArtifact = useCallback(
     (itemId: string) => {
@@ -410,7 +426,7 @@ export function MessageList({
             }
             return (
               <div key={msg.message_id} className="flex justify-end mb-4">
-                <TypingIndicator />
+                <ThinkingRow />
               </div>
             );
           }
@@ -430,24 +446,31 @@ export function MessageList({
             (Array.isArray(msg.referenced_item_ids) && msg.referenced_item_ids.length > 0
               ? msg.referenced_item_ids
               : undefined) ?? referencedItemsByMessage[msg.message_id];
+          // deep_search receipt: the live tracker collapses into this chip
+          // once the run seals (session-only — absent after a reload).
+          const deepSearchSummary = deepSearchSummaries[msg.message_id];
           return (
-            <MessageBubble
-              key={msg.message_id}
-              message={msg}
-              onRegenerate={onRegenerate}
-              onEditResend={onEditResend}
-              onRetry={onRetry}
-              artifactIds={ids}
-              artifactLookup={artifactLookup}
-              onOpenArtifact={handleOpenArtifact}
-              citationArtifactId={ids?.find(
-                (id) => artifactLookup[id]?.kind === "agent_search",
+            <Fragment key={msg.message_id}>
+              {deepSearchSummary && (
+                <DeepSearchSummaryChip summary={deepSearchSummary} />
               )}
-              onCitationNavigate={handleCitationNavigate}
-              referencedItemIds={referencedIds}
-              onJumpToReferencedItem={handleJumpToReferencedItem}
-              templateOffer={templateOffersByMessage[msg.message_id]}
-            />
+              <MessageBubble
+                message={msg}
+                onRegenerate={onRegenerate}
+                onEditResend={onEditResend}
+                onRetry={onRetry}
+                artifactIds={ids}
+                artifactLookup={artifactLookup}
+                onOpenArtifact={handleOpenArtifact}
+                citationArtifactId={ids?.find(
+                  (id) => artifactLookup[id]?.kind === "agent_search",
+                )}
+                onCitationNavigate={handleCitationNavigate}
+                referencedItemIds={referencedIds}
+                onJumpToReferencedItem={handleJumpToReferencedItem}
+                templateOffer={templateOffersByMessage[msg.message_id]}
+              />
+            </Fragment>
           );
         })}
 
@@ -455,7 +478,7 @@ export function MessageList({
             empty placeholder row is already showing its own (Layer 1). */}
         {isStreaming && !hasStreamContent && !hasIncompletePlaceholder && (
           <div className="flex justify-end mb-4">
-            <TypingIndicator />
+            <ThinkingRow />
           </div>
         )}
 
@@ -496,6 +519,22 @@ export function MessageList({
     </div>
   );
 }
+
+/**
+ * The "assistant is working" row, in both slots where MessageList shows one
+ * (the empty-placeholder path and the standalone path).
+ *
+ * ``deep_search`` runs for 1–4 minutes, so it gets the live step tracker;
+ * every other family keeps the generic TypingIndicator. The family read lives
+ * HERE rather than in MessageList so the agent_run_started/finished flips
+ * re-render this 1-line component instead of the whole list.
+ */
+const ThinkingRow = memo(function ThinkingRow() {
+  const isDeepSearch = useChatStore(
+    (s) => s.runningAgentFamily === "deep_search",
+  );
+  return isDeepSearch ? <DeepSearchProgress /> : <TypingIndicator />;
+});
 
 /**
  * The sole subscriber of the per-frame streaming buffer. Isolating the

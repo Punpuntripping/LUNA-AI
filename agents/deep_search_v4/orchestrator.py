@@ -191,6 +191,12 @@ class FullLoopDeps:
     # belt-and-suspenders PII reduction. router.classify + dispatch.specialist
     # still carry user_id from before — those are the canonical user-tagged spans.
     conversation_id: str = ""
+    # Live SSE progress sink — copied from ``PlannerDeps.emit_sse`` by
+    # ``run_retrieval``. Fired DIRECTLY (never via ``_events``) at four
+    # boundaries only: the end of each executor phase and just before the
+    # aggregator turn. ``None`` for CLI / monitor / smoke-test callers that
+    # build FullLoopDeps by hand → every emit site is a guarded no-op.
+    emit_sse: Callable[[dict], None] | None = None
 
     def __post_init__(self) -> None:
         # ``DetailLevel`` is a dataclass type hint, not a runtime constraint.
@@ -204,6 +210,58 @@ class FullLoopDeps:
                 self.detail_level,
             )
             self.detail_level = "medium"
+
+
+# ---------------------------------------------------------------------------
+# Live progress (SSE `agent_progress`) — phase-boundary events only
+# ---------------------------------------------------------------------------
+
+# Arabic labels for the three executor phases. Static labels + numbers ONLY —
+# progress text is relayed to the client WITHOUT passing through the وضع السرية
+# StreamDecoder (only `token` events are decoded), so it must never carry
+# LLM-derived content (sector names, titles, …) that could leak a fake identifier.
+_PHASE_TEXT_AR = {
+    "reg": "اكتمل البحث في الأنظمة واللوائح",
+    "compliance": "اكتمل البحث في الاشتراطات والخدمات",
+    "case": "اكتمل البحث في الأحكام القضائية",
+}
+
+
+def _count_sources(rqrs: list[RerankerQueryResult]) -> int:
+    """Total kept results across a phase's per-sub-query reranker outputs."""
+    total = 0
+    for rqr in rqrs or []:
+        try:
+            total += len(rqr.results or [])
+        except Exception:  # pragma: no cover - defensive
+            continue
+    return total
+
+
+def _emit_progress(deps: FullLoopDeps, stage: str, text: str = "", **data: Any) -> None:
+    """Fire ONE ``agent_progress`` event on ``deps.emit_sse`` — guarded, best-effort.
+
+    Called DIRECTLY and never appended to ``deps._events``: that list is
+    batch-flushed by the orchestrator right before the answer tokens, so an event
+    living on both surfaces would be delivered twice. Never raises — a broken
+    progress sink must not perturb retrieval.
+
+    The ~50 free-text ``status`` emits inside the executor loops (loop.py /
+    search.py) deliberately stay on ``_events`` (batched) — this is the
+    phase-boundary feed only.
+    """
+    sink = getattr(deps, "emit_sse", None)
+    if sink is None:
+        return
+    try:
+        sink({
+            "type": "agent_progress",
+            "stage": stage,
+            "text": text,
+            "data": {k: v for k, v in data.items() if v is not None},
+        })
+    except Exception:
+        logger.debug("emit_progress failed (stage=%s)", stage, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +368,9 @@ async def _run_reg_phase(
             supabase=deps.supabase,
             embedding_fn=deps.embedding_fn,
             _query_id=query_id,
+            # Thread the live progress sink so the per-sub-query topic line
+            # streams as it happens instead of arriving in the terminal batch.
+            emit_sse=deps.emit_sse,
         )
         reg_deps._log_id = log_id
 
@@ -435,9 +496,20 @@ async def _run_reg_phase(
         if error_msg and not reranker_results:
             # Graph crashed before producing anything; surface an empty phase so
             # the orchestrator can still assemble the URA from the other two.
+            _emit_progress(
+                deps, "searching", _PHASE_TEXT_AR["reg"],
+                phase="reg", sources=0, queries=0,
+            )
             return ([], log_id, sectors)
 
-        return (reg_to_rqr(reranker_results), log_id, sectors)
+        reg_rqrs = reg_to_rqr(reranker_results)
+        _emit_progress(
+            deps, "searching", _PHASE_TEXT_AR["reg"],
+            phase="reg",
+            sources=_count_sources(reg_rqrs),
+            queries=len(reg_rqrs),
+        )
+        return (reg_rqrs, log_id, sectors)
 
 
 async def _run_compliance_phase(
@@ -596,7 +668,18 @@ async def _run_compliance_phase(
     )
 
     if error_msg or result is None:
+        _emit_progress(
+            deps, "searching", _PHASE_TEXT_AR["compliance"],
+            phase="compliance", sources=0, queries=0,
+        )
         return []
+
+    _emit_progress(
+        deps, "searching", _PHASE_TEXT_AR["compliance"],
+        phase="compliance",
+        sources=_count_sources(rqrs),
+        queries=len(rqrs),
+    )
     return rqrs
 
 
@@ -633,6 +716,9 @@ async def _run_case_phase(
         _query_id=query_id,
         reranker_max_keep=deps.case_max_keep,
         result_budget=case_budget,
+        # Thread the live progress sink so each per-sub-query topic line streams
+        # as it happens instead of arriving in the terminal batch.
+        emit_sse=deps.emit_sse,
     )
     # Best-effort: thread case score threshold when the deps object exposes it.
     if deps.case_score_threshold is not None:
@@ -663,6 +749,10 @@ async def _run_case_phase(
             "total_tokens_in": 0,
             "total_tokens_out": 0,
         }
+        _emit_progress(
+            deps, "searching", _PHASE_TEXT_AR["case"],
+            phase="case", sources=0, queries=0,
+        )
         return []
 
     deps._events.extend(case_deps._events)
@@ -696,6 +786,12 @@ async def _run_case_phase(
         total_tokens_out=total_out,
         rqr_count=len(rqrs),
         case_max_keep=deps.case_max_keep,
+    )
+    _emit_progress(
+        deps, "searching", _PHASE_TEXT_AR["case"],
+        phase="case",
+        sources=_count_sources(rqrs),
+        queries=len(rqrs),
     )
     return rqrs
 
@@ -847,6 +943,16 @@ async def run_full_loop(
             supabase=deps.supabase,
             logger=deps.aggregator_logger,
         )
+        # Live progress: executors are done + the URA is merged — the aggregator
+        # (one long LLM call) starts now. Counts stay OUT of this event: the
+        # per-phase `searching` events already carry the source tallies the bar
+        # displays, and a second (deduped, smaller) number here would make the
+        # count visibly shrink mid-run.
+        # The aggregator WRITES the answer (synthesis_md + [n] citations) — it is
+        # not a merge step. The reranking that precedes it is the `evaluating`
+        # stage, emitted from the executor loops' RerankerNodes.
+        _emit_progress(deps, "aggregating", "كتابة الإجابة وتوثيق المراجع")
+
         with track_stage(
             "deep_search.aggregator",
             conversation_id=deps.conversation_id or None,
@@ -1125,6 +1231,9 @@ async def run_retrieval(
         enable_planner=False,
         context_blocks=selected_blocks,
         conversation_id=getattr(deps, "conversation_id", "") or "",
+        # Live progress sink — the SAME callback the planner's logger fires
+        # (PlannerDeps.emit_sse). None outside a real dispatch → guarded no-op.
+        emit_sse=getattr(deps, "emit_sse", None),
     )
     full_deps._plan = config
 

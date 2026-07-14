@@ -74,10 +74,21 @@ async def _search_cases_inner(
     events = deps._events
 
     try:
-        events.append({
+        topic_ev = {
             "type": "status",
             "text": f"جاري البحث في السوابق القضائية: {query[:80]}...",
-        })
+        }
+        events.append(topic_ev)
+        # Stream the topic line LIVE; tag the SAME dict `streamed` on a successful
+        # emit so the orchestrator's terminal flush skips it (no double-send). The
+        # object stays on `_events` for forensic dumps. Other mechanics status
+        # lines stay batched (message_service drops them).
+        if deps.emit_sse is not None:
+            try:
+                deps.emit_sse(topic_ev)
+                topic_ev["streamed"] = True
+            except Exception:  # pragma: no cover - defensive; sink must not break search
+                pass
 
         # Step 1: Embed query (or use precomputed)
         embedding = precomputed_embedding or await deps.embedding_fn(query)
@@ -386,10 +397,20 @@ async def _search_case_section_inner(
         ]
 
     events = deps._events
-    events.append({
+    topic_ev = {
         "type": "status",
         "text": f"بحث [{query.channel}]: {query.text[:70]}...",
-    })
+    }
+    events.append(topic_ev)
+    # Stream the sectioned-channel topic line LIVE; tag the SAME dict `streamed`
+    # on a successful emit so the orchestrator's terminal flush skips it (no
+    # double-send). The object stays on `_events` for forensic dumps.
+    if deps.emit_sse is not None:
+        try:
+            deps.emit_sse(topic_ev)
+            topic_ev["streamed"] = True
+        except Exception:  # pragma: no cover - defensive; sink must not break search
+            pass
 
     # Step 1: embed query (or use precomputed)
     try:
