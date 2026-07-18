@@ -5,6 +5,7 @@ import {
   Scale,
   Gavel,
   Building2,
+  Megaphone,
   ExternalLink,
   ChevronDown,
   FileText,
@@ -52,6 +53,11 @@ const DOMAIN_META: Record<
     label: "خدمة حكومية",
     icon: Building2,
     tint: "text-emerald-600 dark:text-emerald-400",
+  },
+  circulars: {
+    label: "تعميم",
+    icon: Megaphone,
+    tint: "text-violet-600 dark:text-violet-400",
   },
 };
 
@@ -440,6 +446,23 @@ function SourceViewContent({
       </div>
     );
   }
+  if (view.source_type === "circular") {
+    // Full circular body, uncapped — the parent SourceViewBody wraps this in a
+    // ``max-h-[60vh] overflow-y-auto`` container, so even a ~168k-char outlier
+    // scrolls inside the dialog instead of blowing up the layout (same
+    // constraint the chunk / gov_service views rely on).
+    return (
+      <div className="space-y-3">
+        {view.entity_name && (
+          <p className="text-xs font-medium text-muted-foreground">
+            الجهة: <span className="text-foreground">{view.entity_name}</span>
+          </p>
+        )}
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
+        <SourceLink label="رابط التعميم" url={view.url} />
+      </div>
+    );
+  }
   // Legacy variants (article / section / regulation).
   return (
     <div className="space-y-3">
@@ -520,6 +543,8 @@ function referencePrimaryUrl(ref: Reference): string {
       return ref.landing_url || "";
     case "compliance":
       return ref.service_url || ref.url || "";
+    case "circulars":
+      return ref.url || "";
     case "cases":
       return ref.details_url || "";
     default:

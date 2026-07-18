@@ -72,6 +72,8 @@ export function LoginForm() {
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
   // Option B consent: registration is blocked until this is checked.
   const [agreedToTerms, setAgreedToTerms] = useState(false);
+  // Marketing consent: optional, default ON — never blocks registration.
+  const [marketingOptIn, setMarketingOptIn] = useState(true);
 
   // Surface OAuth failures redirected back from /auth/callback?error=oauth.
   useEffect(() => {
@@ -95,6 +97,7 @@ export function LoginForm() {
     setServerError(null);
     setRegistrationSuccess(false);
     setAgreedToTerms(false);
+    setMarketingOptIn(true);
   };
 
   const validate = (): boolean => {
@@ -150,6 +153,7 @@ export function LoginForm() {
           password,
           fullNameAr,
           LEGAL_VERSION,
+          marketingOptIn,
         );
         if (needsVerification) {
           setRegistrationSuccess(true);
@@ -338,7 +342,7 @@ export function LoginForm() {
 
         {/* Terms consent (option B) — register only */}
         {mode === "register" && (
-          <div className="space-y-1">
+          <div className="space-y-2">
             {/* The links must NOT be nested inside the <label>: an <a> inside a
                 <label> is invalid HTML and the label hijacks the click, so the
                 anchors don't navigate. Keep only the checkbox + "أوافق على" in
@@ -387,6 +391,24 @@ export function LoginForm() {
             {errors.terms && (
               <p className="text-xs text-destructive">{errors.terms}</p>
             )}
+
+            {/* Marketing consent — optional, default checked, never blocks. */}
+            <div className="flex items-start gap-2 text-sm text-foreground">
+              <input
+                id="marketing_opt_in"
+                type="checkbox"
+                checked={marketingOptIn}
+                onChange={(e) => setMarketingOptIn(e.target.checked)}
+                data-testid="register-marketing-checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 rounded border-input accent-primary focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <label
+                htmlFor="marketing_opt_in"
+                className="cursor-pointer leading-relaxed"
+              >
+                أوافق على استلام محتوى ترويجي وتحديثات عبر البريد الإلكتروني
+              </label>
+            </div>
           </div>
         )}
 

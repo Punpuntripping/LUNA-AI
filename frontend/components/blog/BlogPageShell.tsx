@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { ArrowLeft, Sparkles } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { HeaderAuthActions } from "@/components/site/HeaderAuthActions";
+import { BlogConversionCta } from "@/components/blog/BlogConversionCta";
+import { SiteFooter } from "@/components/site/SiteFooter";
 
 interface BlogPageShellProps {
   children: React.ReactNode;
@@ -14,7 +14,12 @@ interface BlogPageShellProps {
  * Shared public-page chrome for every مدونة surface — the question page, the
  * editorial article page, and the gated directory. Wraps caller-provided
  * ``children`` (which supply their OWN ``<main>`` + max-width) with the sticky
- * brand header, the conversion CTA, and the slim footer.
+ * brand header, the conversion CTA, and the full site footer.
+ *
+ * Auth-aware chrome: HeaderAuthActions swaps the login/signup buttons for
+ * «العودة إلى ريحان» when a session exists, and BlogConversionCta hides the
+ * signup pitch from signed-in readers — the same shell serves the anonymous
+ * /blog surfaces and the authed /blogs management view.
  *
  * RTL throughout. The CTA sits inside its own centered ``max-w-3xl`` wrapper so
  * it reads correctly regardless of how wide the children content column is
@@ -26,8 +31,9 @@ export function BlogPageShell({ children, showCta = true }: BlogPageShellProps) 
       {/* Header bar */}
       <header className="sticky top-0 z-20 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 py-3">
-          {/* Logo block — mirrors login/page.tsx rounded badge */}
-          <Link href="/login" className="flex items-center gap-2">
+          {/* Logo block — links to the public front door (authed users get
+              bounced onward to /chat, their home) */}
+          <Link href="/" className="flex items-center gap-2">
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">
               ريحان
             </span>
@@ -38,21 +44,7 @@ export function BlogPageShell({ children, showCta = true }: BlogPageShellProps) 
 
           <div className="flex items-center gap-1.5">
             <ThemeToggle />
-            <Link
-              href="/login"
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "sm" }),
-                "hidden sm:inline-flex",
-              )}
-            >
-              تسجيل الدخول
-            </Link>
-            <Link
-              href="/login"
-              className={cn(buttonVariants({ variant: "default", size: "sm" }))}
-            >
-              إنشاء حساب
-            </Link>
+            <HeaderAuthActions />
           </div>
         </div>
       </header>
@@ -60,47 +52,11 @@ export function BlogPageShell({ children, showCta = true }: BlogPageShellProps) 
       {/* Page content — caller supplies its own <main> + max-width */}
       {children}
 
-      {/* Conversion CTA — centered regardless of children width */}
-      {showCta && (
-        <div className="mx-auto w-full max-w-3xl px-4 pb-8">
-          <section className="overflow-hidden rounded-xl border bg-primary/5 p-6 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-              <Sparkles className="h-6 w-6" />
-            </div>
-            <h2 className="text-lg font-bold text-foreground">
-              جرّب ريحان مجاناً
-            </h2>
-            <p className="mx-auto mt-1.5 max-w-md text-sm leading-relaxed text-muted-foreground">
-              المساعد القانوني الذكي للمحامين السعوديين — أنشئ تحليلاتك القانونية
-              ومذكراتك مدعومة بالأنظمة والسوابق.
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <Link
-                href="/login"
-                className={cn(buttonVariants({ variant: "default", size: "lg" }))}
-              >
-                <Sparkles className="h-4 w-4" />
-                ابدأ الآن
-              </Link>
-              <Link
-                href="/login"
-                className={cn(buttonVariants({ variant: "outline", size: "lg" }))}
-              >
-                تسجيل الدخول
-                <ArrowLeft className="h-4 w-4" />
-              </Link>
-            </div>
-          </section>
-        </div>
-      )}
+      {/* Conversion CTA — anonymous readers only, centered regardless of
+          children width */}
+      {showCta && <BlogConversionCta />}
 
-      {/* Slim footer */}
-      <footer className="border-t py-4 text-center text-xs text-muted-foreground">
-        مُنشأ عبر{" "}
-        <Link href="/login" className="font-medium text-primary hover:underline">
-          ريحان
-        </Link>
-      </footer>
+      <SiteFooter />
     </div>
   );
 }

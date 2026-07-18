@@ -20,6 +20,7 @@ import { TemplateChip } from "@/components/chat/TemplateChip";
 import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
 import { api, workspaceApi, ApiClientError } from "@/lib/api";
 import { workspaceKeys } from "@/hooks/use-workspace";
+import { conversationKeys } from "@/hooks/use-conversations";
 import {
   runResumableUpload,
   type ImperativeUploadHandle,
@@ -367,6 +368,9 @@ export function ChatInput({
             void qc.invalidateQueries({
               queryKey: workspaceKeys.byConversation(conversationId),
             });
+            // The import may have retitled a fresh «محادثة جديدة» after the
+            // blog — refresh the sidebar so the new title shows.
+            void qc.invalidateQueries({ queryKey: conversationKeys.all });
           })
           .catch((err) => {
             updatePendingBlog(chipId, {

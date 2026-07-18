@@ -65,7 +65,12 @@ function readWriterMetadataRefsView(
         : null;
     const refId = typeof e.ref_id === "string" ? e.ref_id : "";
     const domain = e.domain;
-    if (domain !== "regulations" && domain !== "cases" && domain !== "compliance") {
+    if (
+      domain !== "regulations" &&
+      domain !== "cases" &&
+      domain !== "compliance" &&
+      domain !== "circulars"
+    ) {
       continue;
     }
     out.push({

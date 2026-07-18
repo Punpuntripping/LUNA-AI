@@ -14,7 +14,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api, ApiClientError } from "@/lib/api";
-import { useConversations, useCreateConversation } from "@/hooks/use-conversations";
+import {
+  conversationKeys,
+  useConversations,
+  useCreateConversation,
+} from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { useSidebarStore } from "@/stores/sidebar-store";
 
@@ -57,6 +61,9 @@ export function BlogDestinationDialog({
     void queryClient.invalidateQueries({
       queryKey: workspaceKeys.byConversation(conversationId),
     });
+    // The import retitles a fresh «محادثة جديدة» after the blog — refresh
+    // the sidebar list so the new title shows.
+    void queryClient.invalidateQueries({ queryKey: conversationKeys.all });
     useSidebarStore.getState().setSelectedConversation(conversationId);
     onOpenChange(false);
     router.push(`/chat/${conversationId}`);

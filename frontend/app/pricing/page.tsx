@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { Check } from "lucide-react";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { LegalLinksFooter } from "@/components/legal/LegalLinksFooter";
+import { LandingHeader } from "@/components/landing/LandingHeader";
+import { SiteFooter } from "@/components/site/SiteFooter";
 import { PRICING_PLANS } from "@/lib/pricing";
 
 export const metadata: Metadata = {
@@ -15,12 +15,10 @@ export const metadata: Metadata = {
 export default function PricingPage() {
   return (
     <div className="min-h-screen bg-background">
+      <LandingHeader />
       <main className="mx-auto max-w-5xl px-4 py-12">
-        {/* Header — ريحان logo box + page title */}
+        {/* Page title */}
         <header className="mb-10 flex flex-col items-center gap-4 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-xl font-bold text-primary-foreground">
-            ريحان
-          </div>
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
             الباقات والأسعار
           </h1>
@@ -115,18 +113,8 @@ export default function PricingPage() {
           تُستهلك النقاط مع كل بحث أو صياغة بحسب حجمها. جميع الأسعار بالريال
           السعودي.
         </p>
-
-        {/* Back link + footer links */}
-        <footer className="mt-12 flex flex-col items-center gap-4 border-t border-border pt-6">
-          <Link
-            href="/chat"
-            className="text-sm text-primary underline-offset-4 transition-colors hover:underline"
-          >
-            العودة إلى ريحان
-          </Link>
-          <LegalLinksFooter />
-        </footer>
       </main>
+      <SiteFooter />
     </div>
   );
 }

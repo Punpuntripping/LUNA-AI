@@ -142,8 +142,8 @@ export const DEEP_SEARCH_TOPIC_PREFIX = "بحث في ";
 
 /**
  * Pipeline order of the deep_search stages, used to keep the tracker's stage
- * MONOTONIC. The executors (reg/case/compliance) rerank in parallel, so their
- * events interleave: a slow phase can emit `searching` after a fast one already
+ * MONOTONIC. The two executors (reg_compliance/case) rerank in parallel, so
+ * their events interleave: a slow phase can emit `searching` after a fast one already
  * reached `evaluating`. Rank comparison lets the late event's counts merge while
  * its stale stage is ignored.
  */
@@ -812,8 +812,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? Math.max(base.queries, event.data.queries)
           : base.queries;
 
-      // Stage is MONOTONIC. The reg/case/compliance executors run in parallel,
-      // so a slow phase can report `searching` (its phase-end counts) after a
+      // Stage is MONOTONIC. The two executors (reg_compliance/case) run in
+      // parallel, so a slow phase can report `searching` (its phase-end counts) after a
       // fast one already pushed the run to `evaluating` — and the bar must
       // never walk backwards. A stale stage is ignored, but its COUNTS above
       // still merge, which is exactly what those late events carry.

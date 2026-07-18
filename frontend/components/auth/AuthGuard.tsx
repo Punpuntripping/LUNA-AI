@@ -19,7 +19,9 @@ interface Props {
 // the public legal pages reached from the login footer; /pricing is the public
 // plans page (a pre-signup decision); /audiences is the public «ريحان يستهدف
 // مين؟» page; /masking is the public «تقنيع المعرّفات» explainer linked from
-// the وضع السرية settings dialog — all reachable before signing up.
+// the وضع السرية settings dialog — all reachable before signing up. /about_us
+// is the marketing-landing content at an address that does NOT bounce
+// authenticated users (the bare "/" does) — their way back to the front door.
 const PUBLIC_PREFIXES = [
   "/blog",
   "/terms",
@@ -27,6 +29,7 @@ const PUBLIC_PREFIXES = [
   "/pricing",
   "/audiences",
   "/masking",
+  "/about_us",
 ] as const;
 
 function isPublicPath(pathname: string | null): boolean {

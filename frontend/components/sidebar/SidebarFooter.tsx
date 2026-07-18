@@ -5,6 +5,7 @@ import {
   CreditCard,
   FileText,
   Gauge,
+  Info,
   KeyRound,
   LogOut,
   Settings,
@@ -161,6 +162,18 @@ export function SidebarFooter() {
                   <span className="flex items-center gap-2">
                     <Sparkles className="h-4 w-4" />
                     اتعرف على ريحان
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => window.open("/about_us", "_blank")}
+                  data-testid="sidebar-settings-about"
+                >
+                  <span className="flex items-center gap-2">
+                    <Info className="h-4 w-4" />
+                    عن ريحان
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>

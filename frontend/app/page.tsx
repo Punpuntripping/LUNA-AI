@@ -1,17 +1,7 @@
 import type { Metadata } from "next";
 import { LandingHeader } from "@/components/landing/LandingHeader";
-import { LandingHero } from "@/components/landing/LandingHero";
-import { ProblemSection } from "@/components/landing/ProblemSection";
-import { AboutSection } from "@/components/landing/AboutSection";
-import { AudiencesTeaser } from "@/components/audiences/AudiencesTeaser";
-import { SearchShowcase } from "@/components/landing/SearchShowcase";
-import { CapabilitiesSection } from "@/components/landing/CapabilitiesSection";
-import { ComparisonSection } from "@/components/landing/ComparisonSection";
-import { StatsBand } from "@/components/landing/StatsBand";
-import { TrustSection } from "@/components/landing/TrustSection";
-import { PricingSection } from "@/components/landing/PricingSection";
-import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
-import { LandingFooter } from "@/components/landing/LandingFooter";
+import { LandingPageBody } from "@/components/landing/LandingPageBody";
+import { SiteFooter } from "@/components/site/SiteFooter";
 
 export const metadata: Metadata = {
   title: "ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
@@ -26,27 +16,16 @@ export const metadata: Metadata = {
 };
 
 // Public landing page. Anonymous visitors see this front door; AuthGuard
-// bounces authenticated users to /chat (the app home). Server component — fully
-// static, prerendered like /pricing and the legal pages.
+// bounces authenticated users to /chat (the app home) — they can read the same
+// content on /about_us. Server component — fully static, prerendered like
+// /pricing and the legal pages.
 // eslint-disable-next-line import/no-default-export
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-background">
       <LandingHeader />
-      <main>
-        <LandingHero />
-        <ProblemSection />
-        <AboutSection />
-        <AudiencesTeaser />
-        <SearchShowcase />
-        <CapabilitiesSection />
-        <ComparisonSection />
-        <StatsBand />
-        <TrustSection />
-        <PricingSection />
-        <FinalCtaSection />
-      </main>
-      <LandingFooter />
+      <LandingPageBody />
+      <SiteFooter />
     </div>
   );
 }

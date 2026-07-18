@@ -520,7 +520,7 @@ export interface WorkspaceItemListResponse {
 // frontend fetches via `useWorkspaceItemReferences(item_id)` and the
 // workspace ReferencePanel renders the response.
 
-export type ReferenceDomain = 'regulations' | 'compliance' | 'cases';
+export type ReferenceDomain = 'regulations' | 'compliance' | 'cases' | 'circulars';
 
 export type ReferenceSourceType =
   | 'article'
@@ -529,7 +529,8 @@ export type ReferenceSourceType =
   | 'regulation'
   | 'gov_service'
   | 'form'
-  | 'case';
+  | 'case'
+  | 'circular';
 
 /** One resolved cross-reference from a regulation chunk to a target unit. */
 export interface CrossRef {
@@ -572,6 +573,23 @@ export type SourceView =
       required_documents: string[];
       national_platform_url: string;
       service_url: string;
+    }
+  | {
+      source_type: 'circular';
+      title: string;
+      /** Issuing authority name (``entities.name``). */
+      entity_name: string;
+      /**
+       * FULL circular body (markdown) — uncapped. Can be extremely long
+       * (up to ~168k chars for outliers); the source-view dialog scrolls it
+       * inside its own ``overflow-y-auto`` container rather than growing the
+       * layout.
+       */
+      content: string;
+      /** Circular reference id (``circulars.circ_ref``). */
+      circ_ref: string;
+      /** Optional external source link (``circulars.source``); may be "". */
+      url: string;
     }
   // Legacy variants — retained for reload of pre-URA-v3.0 artifacts.
   | {
@@ -965,7 +983,7 @@ export interface SSEAgentProgressData {
   /** Planner-picked sectors. */
   sectors?: string[];
   /** Which executor phase just finished. */
-  phase?: "reg" | "compliance" | "case";
+  phase?: "reg_compliance" | "case";
   confidence?: number;
   elapsed_s?: number;
 }

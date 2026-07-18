@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { LandingHeader } from "@/components/landing/LandingHeader";
-import { LandingFooter } from "@/components/landing/LandingFooter";
+import { SiteFooter } from "@/components/site/SiteFooter";
 import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
 import { AudiencesHero } from "@/components/audiences/AudiencesHero";
 import { AudienceBlock } from "@/components/audiences/AudienceBlock";
@@ -41,7 +41,7 @@ export default function AudiencesPage() {
         <SectorBand />
         <FinalCtaSection />
       </main>
-      <LandingFooter />
+      <SiteFooter />
     </div>
   );
 }

@@ -79,6 +79,7 @@ interface AuthState {
     password: string,
     full_name_ar: string,
     terms_version: string,
+    marketing_opt_in: boolean,
   ) => Promise<{ needsVerification: boolean }>;
   logout: () => Promise<void>;
   /** Revoke every refresh token (this device included) → local teardown. */
@@ -123,7 +124,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: response.user, isAuthenticated: true });
   },
 
-  register: async (email, password, full_name_ar, terms_version) => {
+  register: async (email, password, full_name_ar, terms_version, marketing_opt_in) => {
     set({ error: null });
     // Signup runs in the browser so the PKCE code_verifier cookie lives in
     // the same browser that will click the email-confirmation link. The
@@ -131,15 +132,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // exchangeCodeForSession() and writes the session cookie.
     //
     // There is NO backend register route — signup is entirely client-side via
-    // supabase.auth.signUp(). So the consent version (option B) is carried in
-    // options.data.terms_version, which Supabase stores on the user's
-    // raw_user_meta_data. Backend persistence (stamping terms_accepted_at +
-    // terms_version onto the users row) must read it from there on bootstrap.
+    // supabase.auth.signUp(). So the consent version (option B) and the
+    // marketing opt-in are carried in options.data, which Supabase stores on
+    // the user's raw_user_meta_data. The handle_new_user() DB trigger
+    // (migration 094) stamps both onto the users row at creation.
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        data: { full_name_ar, terms_version },
+        data: { full_name_ar, terms_version, marketing_opt_in },
         emailRedirectTo: `${window.location.origin}/auth/callback`,
       },
     });
