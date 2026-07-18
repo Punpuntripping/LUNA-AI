@@ -4,7 +4,7 @@ Primary entry point (after Wave D lands):
     from agents.deep_search_v4.orchestrator import run_full_loop, FullLoopDeps
 
 The pipeline:
-    reg_search + compliance_search + case_search (parallel)
+    reg_compliance + case_search (parallel)
         -> build_ura_from_phases -> UnifiedRetrievalArtifact -> aggregator
 
 Wave A (this change) has already reshaped the URA schema to 2.0 and

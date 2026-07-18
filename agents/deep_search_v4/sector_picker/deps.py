@@ -16,7 +16,7 @@ from typing import Literal
 
 from agents.deep_search_v4.shared.context import ContextBlock
 
-Mode = Literal["case_led", "reg_led", "compliance_led", "full"]
+Mode = Literal["case_led", "reg_compliance_led", "full"]
 
 
 @dataclass

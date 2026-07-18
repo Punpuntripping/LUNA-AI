@@ -2,8 +2,8 @@
 
 The canonical implementation now lives in
 :mod:`agents.deep_search_v4.shared.sector_vocab.unified` — one ministry-sector
-taxonomy shared by reg_search (``regulations_v2.sectors``), compliance_search
-(``services.sectors``), case_search (``cases.legal_domains``) and the v4
+taxonomy shared by reg_compliance (``regulations_v2.sectors`` +
+``services.sectors``), case_search (``cases.legal_domains``) and the v4
 planner. This module re-exports the public names so existing call-sites that
 import ``agents.deep_search_v4.shared.sector_vocab.regulations`` keep working
 unchanged.

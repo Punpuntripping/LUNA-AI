@@ -91,13 +91,13 @@ class PlannerTurnResult:
 # Degraded fallbacks (§9)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_DECISION_RATIONALE = "planner_error_fallback: phase-1 raised; defaulted to reg_led."
+_DEFAULT_DECISION_RATIONALE = "planner_error_fallback: phase-1 raised; defaulted to reg_compliance_led."
 
 
 def _default_decision(reason: str) -> PlannerDecision:
-    """Safe default plan when phase 1 raises (§9): reg_led, no support."""
+    """Safe default plan when phase 1 raises (§9): reg_compliance_led, no support."""
     return PlannerDecision(
-        mode="reg_led",
+        mode="reg_compliance_led",
         support=False,
         rationale=f"planner_error_fallback: {reason}",
     )

@@ -9,7 +9,7 @@ Verified against the live DB (2026-05-17): ``regulations_v2.sectors`` and
 is a 36-entry subset (two sectors have zero cases).
 
 The :mod:`.regulations` and :mod:`.cases` submodules — plus the legacy paths
-``agents.deep_search_v4.reg_search.sector_vocab`` and
+``agents.deep_search_v4.reg_compliance_search.sector_vocab`` and
 ``agents.deep_search_v4.case_search.sector_vocab`` — are thin re-exports of
 :mod:`.unified`, kept only for import-path backward compatibility.
 """

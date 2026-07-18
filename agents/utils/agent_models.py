@@ -204,14 +204,12 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # provider/family by _reasoning_settings — deepseek reasoning_effort=medium,
     # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
     # planner no longer varies expander effort.
-    "reg_search_expander":        _FLASH_MEDIUM,
-    "reg_search_reranker":        ModelPolicy("tier_2"),
-    "reg_search_aggregator":      _FLASH,
+    "reg_compliance_expander":        _FLASH_MEDIUM,
+    "reg_compliance_reranker":        ModelPolicy("tier_2"),
+    "reg_compliance_aggregator":      _FLASH,
     "case_search_expander":       _FLASH_MEDIUM,
     "case_search_reranker":       ModelPolicy("tier_2"),
     "case_search_aggregator":     _FLASH,
-    "compliance_search_expander": _FLASH_MEDIUM,
-    "compliance_search_reranker": ModelPolicy("tier_2"),
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.
     "artifact_summarizer":        ModelPolicy("tier_2", primary="deepseek"),

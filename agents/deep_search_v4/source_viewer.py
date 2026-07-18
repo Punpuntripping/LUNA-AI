@@ -23,6 +23,8 @@ the article/section split is gone):
   human-readable composite title.
 - ``ServiceSourceView``    -- a government service; both the national-platform
   URL (``services.url``) and the service URL (``services.service_url``).
+- ``CircularSourceView``   -- a ministerial circular (تعميم); the FULL uncapped
+  ``circulars.content`` body + issuing entity name + ``circulars.source`` link.
 
 ``ArticleSourceView`` / ``SectionSourceView`` / ``RegulationSourceView`` are
 retained in the ``SourceView`` union ONLY so pre-v3.0 persisted ``source_view``
@@ -31,12 +33,14 @@ them.
 
 The ref_id formats produced by the three executor adapters are::
 
-    reg_search/adapter.py        ->  ``reg:<uuid>``        (the chunks_v2.id;
+    reg_adapter.py (chunk)       ->  ``reg:<uuid>``        (the chunks_v2.id;
                                      enrich.py strips the ``reg:`` prefix)
-    case_search/adapter.py       ->  ``case:<uuid>``       (the cases.id)
-    compliance_search/adapter.py ->  ``compliance:<sha1>`` (16-char hash; the
+    case_adapter.py              ->  ``case:<uuid>``       (the cases.id)
+    reg_compliance (service)     ->  ``compliance:<sha1>`` (16-char hash; the
                                      real lookup key is ``ComplianceURAResult.service_ref``,
                                      not the ref_id itself)
+    reg_compliance (circular)    ->  ``circular:<uuid>``   (the circulars.id;
+                                     _build_circular_view strips the prefix)
 
 Example::
 
@@ -61,6 +65,7 @@ from pydantic import BaseModel, Field
 
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
+    CircularURAResult,
     ComplianceURAResult,
     RegURAResult,
     URAResult,
@@ -198,6 +203,31 @@ class ServiceSourceView(BaseModel):
     """``services.service_url`` -- shown as "رابط الخدمة" in the UI."""
 
 
+class CircularSourceView(BaseModel):
+    """Click-ready payload for a **ministerial circular** (تعميم).
+
+    New under the unified ``search_topics`` corpus (D5/D11). The user view is the
+    FULL circular body, uncapped — the URA shell only carries the 4k-capped
+    aggregator view, so ``_build_circular_view`` fetches ``circulars`` fresh for
+    the uncapped ``content`` (the 168k-char outlier lives here; the panel scrolls
+    it, we never truncate). Mirrors the service view's flat, one-fetch shape.
+    """
+
+    source_type: Literal["circular"] = "circular"
+    circ_ref: str = ""
+    """``circulars.circ_ref`` — the human-readable circular reference code."""
+    title: str = ""
+    """Circular title (``circulars.title``)."""
+    entity_name: str = ""
+    """Issuing entity Arabic name (embedded ``entities.entity_name``)."""
+    content: str = ""
+    """FULL circular body (``circulars.content``) — uncapped, rendered as
+    markdown in the popup. May be very long (max ~168k chars) → the panel
+    scrolls."""
+    url: str = ""
+    """``circulars.source`` — the official source link (may be "")."""
+
+
 SourceView = Annotated[
     Union[
         ChunkSourceView,
@@ -206,6 +236,7 @@ SourceView = Annotated[
         RegulationSourceView,  # legacy -- reload compat only
         CaseSourceView,
         ServiceSourceView,
+        CircularSourceView,
     ],
     Field(discriminator="source_type"),
 ]
@@ -316,6 +347,37 @@ async def _fetch_service_by_ref(
         except Exception as e:
             logger.debug(
                 "source_viewer: fetch service %s failed: %s", service_ref, e
+            )
+            return None
+
+    return await asyncio.to_thread(_call)
+
+
+async def _fetch_circular_by_id(
+    supabase: SupabaseClient, circular_id: str
+) -> dict | None:
+    """Fetch a circular row by ``circulars.id`` (uuid).
+
+    Pulls the FULL ``content`` (uncapped — user view per D11), the source link,
+    circ_ref, title, and the embedded issuing entity name. The 168k-char outlier
+    is read here on demand only; the references list never carries it.
+    """
+    def _call() -> dict | None:
+        try:
+            resp = (
+                supabase.table("circulars")
+                .select(
+                    "id, circ_ref, title, content, source, "
+                    "entities!circulars_entity_id_fkey(entity_name)"
+                )
+                .eq("id", circular_id)
+                .maybe_single()
+                .execute()
+            )
+            return resp.data if resp else None
+        except Exception as e:
+            logger.debug(
+                "source_viewer: fetch circular %s failed: %s", circular_id, e
             )
             return None
 
@@ -468,6 +530,47 @@ async def _build_service_view(
     )
 
 
+def _circular_entity_name(row: Any) -> str:
+    """Issuing entity name from an embedded ``entities`` object (dict or list).
+
+    Rides in via the ``circulars_entity_id_fkey`` PostgREST embed (a to-one
+    object; a list is tolerated defensively). Mirrors reg_search's helper.
+    """
+    ent = (row or {}).get("entities") if isinstance(row, dict) else None
+    if isinstance(ent, dict):
+        return (ent.get("entity_name") or "").strip()
+    if isinstance(ent, list) and ent and isinstance(ent[0], dict):
+        return (ent[0].get("entity_name") or "").strip()
+    return ""
+
+
+async def _build_circular_view(
+    supabase: SupabaseClient, ura: CircularURAResult
+) -> CircularSourceView:
+    """Resolve a ``CircularURAResult`` -> ``CircularSourceView`` (D11).
+
+    The URA shell carries only the 4k-capped aggregator content, so we always
+    fetch ``circulars`` by id to pull the UNCAPPED full body for the user popup
+    (the 168k outlier lives here — the panel scrolls it, we never truncate).
+    Falls back to the shell's own fields when the lookup misses (the capped body
+    is the last resort so the popup is never empty). Lazy by construction: this
+    fetch only runs when a source view is requested, exactly like case/service.
+    """
+    circ_id = _parse_simple_ref_id("circular", ura.ref_id)
+    row: dict = {}
+    if circ_id:
+        row = (await _fetch_circular_by_id(supabase, circ_id)) or {}
+
+    return CircularSourceView(
+        circ_ref=(row.get("circ_ref") or ura.circ_ref or "").strip(),
+        title=(row.get("title") or ura.title or "").strip(),
+        entity_name=(_circular_entity_name(row) or ura.entity_name or "").strip(),
+        # FULL body (uncapped). Capped shell content is the last-resort fallback.
+        content=(row.get("content") or ura.content or "").strip(),
+        url=(row.get("source") or ura.source_url or "").strip(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
@@ -496,6 +599,8 @@ async def build_source_view(
         return await _build_case_view(supabase, ura_result)
     if isinstance(ura_result, ComplianceURAResult):
         return await _build_service_view(supabase, ura_result)
+    if isinstance(ura_result, CircularURAResult):
+        return await _build_circular_view(supabase, ura_result)
     raise TypeError(
         f"build_source_view: unsupported URA result type {type(ura_result).__name__}"
     )
@@ -508,6 +613,7 @@ __all__ = [
     "RegulationSourceView",
     "CaseSourceView",
     "ServiceSourceView",
+    "CircularSourceView",
     "SourceView",
     "build_source_view",
 ]
@@ -568,6 +674,14 @@ def _self_test() -> None:
             "url": "https://my.gov.sa/national",
             "service_url": "https://entity.gov.sa/svc",
         },
+        "circulars": {
+            "id": "circ-1",
+            "circ_ref": "ت/123",
+            "title": "تعميم بشأن كذا",
+            "content": "النص الكامل للتعميم بدون اقتطاع.",
+            "source": "https://gov.sa/circular/123",
+            "entities": {"entity_name": "وزارة التجارة"},
+        },
     }
     stub = _StubChain(fixtures)
 
@@ -615,6 +729,22 @@ def _self_test() -> None:
         assert v.national_platform_url == "https://my.gov.sa/national"
         assert v.service_url == "https://entity.gov.sa/svc"
 
+        # 4) circular — FULL uncapped content + entity + source link
+        circ = CircularURAResult(
+            ref_id="circular:circ-1",
+            source_type="circular",
+            relevance="high",
+            title="عنوان احتياطي",
+            content="محتوى مقتطع احتياطي",
+        )
+        v = await build_source_view(stub, circ)
+        assert isinstance(v, CircularSourceView), v
+        assert v.source_type == "circular"
+        assert v.content == "النص الكامل للتعميم بدون اقتطاع."
+        assert v.entity_name == "وزارة التجارة"
+        assert v.circ_ref == "ت/123"
+        assert v.url == "https://gov.sa/circular/123"
+
         # ref_id parser edge cases
         assert _parse_reg_ref_id("") == ("", "")
         assert _parse_reg_ref_id("reg:abc") == ("", "abc")
@@ -622,7 +752,7 @@ def _self_test() -> None:
         assert _parse_simple_ref_id("case", "case:xyz") == "xyz"
         assert _parse_simple_ref_id("case", "reg:xyz") == ""
 
-        print("source_viewer self-test: OK (3 variants + ref_id parsers)")
+        print("source_viewer self-test: OK (4 variants + ref_id parsers)")
 
     _asyncio.run(_run())
 

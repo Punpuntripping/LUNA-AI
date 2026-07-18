@@ -31,7 +31,7 @@ MIN_EXPANDER_DIVISOR = 3
 
 
 # ---------------------------------------------------------------------------
-# Role-based budgets — modes 1–3 (case_led / reg_led / compliance_led).
+# Role-based budgets — modes 1–2 (case_led / reg_compliance_led).
 # The budget depends on the executor's ROLE, not on which executor it is.
 # ---------------------------------------------------------------------------
 
@@ -42,14 +42,13 @@ ROLE_PROFILES: dict[str, dict[str, int]] = {
 
 
 # ---------------------------------------------------------------------------
-# Full mode — explicit, lower per-executor budgets. Three executors unioned
+# Full mode — explicit, lower per-executor budgets. Two executors unioned
 # would otherwise flood the aggregator, so 'full' does not use ROLE_PROFILES.
 # ---------------------------------------------------------------------------
 
 FULL_PROFILE: dict[str, dict[str, int]] = {
-    "reg":        {"result_budget": 40},
+    "reg_compliance": {"result_budget": 40},
     "cases":      {"result_budget": 25},
-    "compliance": {"result_budget": 15},
 }
 
 
@@ -59,19 +58,15 @@ FULL_PROFILE: dict[str, dict[str, int]] = {
 
 MODE_PROFILES: dict[Mode, dict] = {
     "case_led": {
-        "base": "cases", "support": "reg",
+        "base": "cases", "support": "reg_compliance",
         "aggregator_prompt_key": "prompt_mode_case",
     },
-    "reg_led": {
-        "base": "reg", "support": "compliance",
-        "aggregator_prompt_key": "prompt_mode_reg",
-    },
-    "compliance_led": {
-        "base": "compliance", "support": "reg",
-        "aggregator_prompt_key": "prompt_mode_compliance",
+    "reg_compliance_led": {
+        "base": "reg_compliance", "support": "cases",
+        "aggregator_prompt_key": "prompt_mode_reg_compliance",
     },
     "full": {
-        "executors": ["reg", "cases", "compliance"],   # all base-equivalent peers
+        "executors": ["reg_compliance", "cases"],   # both base-equivalent peers
         "aggregator_prompt_key": "prompt_mode_full",
     },
 }
@@ -84,8 +79,8 @@ class RetrievalConfig:
     Plain dataclass, no heavy imports — stays in the pure layer. ``run_retrieval``
     reads it to assemble the internal ``FullLoopDeps``.
 
-    ``result_budget`` is keyed by executor name (``"reg"`` / ``"compliance"`` /
-    ``"cases"``) and contains an entry only for *included* executors.
+    ``result_budget`` is keyed by executor name (``"reg_compliance"`` / ``"cases"``) and
+    contains an entry only for *included* executors.
 
     Phase C: ``context_labels`` echoes ``PlannerDecision.context_labels`` here
     as a pass-through. The field is plumbed in Wave 2 but not yet consumed
@@ -93,8 +88,7 @@ class RetrievalConfig:
     ``ContextBlock`` objects rendered by ``run_retrieval``.
     """
 
-    include_reg: bool
-    include_compliance: bool
+    include_reg_compliance: bool
     include_cases: bool
     result_budget: dict[str, int]
     aggregator_prompt_key: str
@@ -117,11 +111,11 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
 
     Pure function — no I/O, no side effects. See MODE_PROFILES.md §6.
 
-    - Modes 1–3: the ``base`` executor always runs; the ``support`` executor
+    - Modes 1–2: the ``base`` executor always runs; the ``support`` executor
       runs iff ``decision.support`` is True. Budgets come from ``ROLE_PROFILES``
       by role.
-    - ``full``: all three executors run as peers; ``decision.support`` is
-      ignored (structural — 'full' has no support role). Budgets come from
+    - ``full``: both executors run as peers; ``decision.support`` is ignored
+      (structural — 'full' has no support role). Budgets come from
       ``FULL_PROFILE`` per executor.
     """
     profile = MODE_PROFILES[decision.mode]
@@ -139,8 +133,7 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
 
     included = set(result_budget)
     return RetrievalConfig(
-        include_reg="reg" in included,
-        include_compliance="compliance" in included,
+        include_reg_compliance="reg_compliance" in included,
         include_cases="cases" in included,
         result_budget=result_budget,
         aggregator_prompt_key=profile["aggregator_prompt_key"],

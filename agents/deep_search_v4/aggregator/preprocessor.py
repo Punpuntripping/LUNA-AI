@@ -7,8 +7,8 @@ deduplicated results by ``ref_id`` and tier-split them into ``high_results`` /
 1. Walks ``ura.high_results`` then ``ura.medium_results`` (so high-relevance
    refs get lower citation numbers).
 2. Dispatches on the typed discriminated union (``RegURAResult`` /
-   ``ComplianceURAResult`` / ``CaseURAResult``) to build a ``Reference`` per
-   URA result — no dict lookups, no cross-domain dedup.
+   ``ComplianceURAResult`` / ``CircularURAResult`` / ``CaseURAResult``) to build
+   a ``Reference`` per URA result — no dict lookups, no cross-domain dedup.
 3. Assigns 1-based citation numbers in iteration order.
 4. Returns a parallel mapping ``ref.n -> appears_in_sub_queries`` (sorted)
    so the post-validator can do coverage checks.
@@ -26,11 +26,12 @@ import asyncio
 import logging
 from typing import Any, Iterable
 
-from agents.deep_search_v4.reg_search.models import RerankedResult
+from agents.deep_search_v4.reg_compliance_search.models import RerankedResult
 from agents.deep_search_v4.source_viewer import build_source_view
 from agents.deep_search_v4.ura.schema import (
     AggregatorItem,
     CaseURAResult,
+    CircularURAResult,
     ComplianceURAResult,
     CrossRef,
     RegURAResult,
@@ -215,6 +216,7 @@ def render_aggregator_content(item: AggregatorItem) -> str:
 
     - regulations: ``chunk_content`` followed by rendered ``cross_refs``.
     - compliance:  ``service_context``.
+    - circulars:   ``تعميم: {title}`` / ``الجهة: {entity}`` / body (capped 4k).
     - cases:       ``case_content`` followed by ``referenced_regulations``.
     """
     parts: list[str] = []
@@ -228,6 +230,16 @@ def render_aggregator_content(item: AggregatorItem) -> str:
     elif item.domain == "compliance":
         if item.service_context:
             parts.append(item.service_context.strip())
+    elif item.domain == "circulars":
+        header: list[str] = []
+        if item.circular_title:
+            header.append(f"تعميم: {item.circular_title.strip()}")
+        if item.entity_name:
+            header.append(f"الجهة: {item.entity_name.strip()}")
+        if header:
+            parts.append("\n".join(header))
+        if item.circular_content:
+            parts.append(item.circular_content.strip())
     elif item.domain == "cases":
         if item.case_content:
             parts.append(item.case_content.strip())
@@ -258,6 +270,12 @@ def build_snippet(result, max_chars: int = 500) -> str:
     """
     if isinstance(result, (RegURAResult, ComplianceURAResult, CaseURAResult)):
         source = render_aggregator_content(result.for_aggregator())
+    elif isinstance(result, CircularURAResult):
+        # Circular hover snippet = the raw circular content (D11 "snippet from
+        # circular_content"), NOT the rendered ``تعميم:``/``الجهة:`` header block
+        # — routing through render_aggregator_content would let the header's
+        # trailing newline truncate the snippet before the body.
+        source = getattr(result, "content", "") or ""
     else:
         # Legacy RerankedResult
         source = (
@@ -336,6 +354,25 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             domain="compliance",
             service_url=view.service_url or "",
             url=view.url or "",
+        )
+
+    if view.domain == "circulars":
+        # Mirrors the compliance mapping: the issuing entity is the "parent"
+        # label (regulation_title slot, like provider_name for services), the
+        # circular's own title is the specific title, and the circular's source
+        # link rides on the generic ``url`` field. ``entity_name`` is carried
+        # explicitly for the citation panel.
+        return Reference(
+            n=n,
+            source_type="circular",
+            regulation_title=view.entity_name or "",
+            title=view.circular_title or "تعميم",
+            snippet=snippet,
+            relevance=view.relevance,
+            ref_id=view.ref_id,
+            domain="circulars",
+            entity_name=view.entity_name or "",
+            url=view.source_url or "",
         )
 
     if view.domain == "cases":

@@ -1,4 +1,9 @@
-"""Test runner for the full URA pipeline (reg → compliance → aggregator).
+"""Test runner for the full URA pipeline (reg → case → aggregator).
+
+The reg executor now spans regulations, appendixes, circulars and government
+services (unified ``search_topics`` corpus), so the standalone compliance phase
+is gone — ``full`` is two phases (reg + case). Service results still surface
+under URA domain ``"compliance"`` (they now arrive via the reg executor).
 
 Usage:
     python -m agents.deep_search_v4.test_full_loop
@@ -84,7 +89,6 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--query-ids", type=int, nargs="+")
     parser.add_argument("--count", type=int, default=5)
-    parser.add_argument("--no-compliance", action="store_true")
     args = parser.parse_args()
 
     from shared.config import get_settings
@@ -98,8 +102,6 @@ async def main() -> None:
     deps = FullLoopDeps(
         supabase=supabase,
         embedding_fn=embed_regulation_query,
-        include_compliance=not args.no_compliance,
-        max_reg_hits=8,
     )
 
     all_queries = _load_queries()
@@ -113,7 +115,7 @@ async def main() -> None:
         selected = random.sample(all_queries, min(args.count, len(all_queries)))
 
     print(f"\n{'='*70}")
-    print(f"  Full Loop Test  —  {len(selected)} queries  (compliance={'off' if args.no_compliance else 'on'})")
+    print(f"  Full Loop Test  —  {len(selected)} queries  (reg + case)")
     print(f"{'='*70}")
     for q in selected:
         print(f"  #{q['id']:3d}  [{q['category']}]  {_truncate(q.get('text',''), 55)}")

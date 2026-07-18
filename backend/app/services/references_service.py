@@ -9,12 +9,12 @@ existing source tables via the URA-enrichment helpers and ``source_viewer``.
 Migration 050: two-key design.
 
 - ``item_id`` (UUID, nullable) — source row PK. ``chunks_v2.id``,
-  ``cases.id``, or ``services.id``. The preferred join key for cross-WI
-  queries ("which WIs cite this chunk?").
+  ``cases.id``, ``services.id``, or ``circulars.id``. The preferred join key
+  for cross-WI queries ("which WIs cite this chunk?").
 - ``ref_id`` (TEXT, always set) — the URA-emitted identifier
-  (``reg:<uuid>`` | ``case:<case_ref>`` | ``compliance:<sha1[:16]>``).
-  The durable fallback when item_id failed to resolve, and the
-  forensic-traceability key into ``retrieval_artifacts``.
+  (``reg:<uuid>`` | ``case:<case_ref>`` | ``compliance:<sha1[:16]>`` |
+  ``circular:<uuid>``). The durable fallback when item_id failed to resolve,
+  and the forensic-traceability key into ``retrieval_artifacts``.
 
 Public surface:
     fetch_item_references(supabase, wi_id, *, used_only=False) -> list[Reference]
@@ -48,9 +48,11 @@ from agents.deep_search_v4.ura.enrich import (
 )
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
+    CircularURAResult,
     ComplianceURAResult,
     RegURAResult,
     URAResultBase,
+    cap_circular_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +101,9 @@ async def fetch_item_references(
         return []
 
     # Group rows by domain so each source-table fetch can be batched.
-    by_domain: dict[str, list[dict]] = {"regulations": [], "compliance": [], "cases": []}
+    by_domain: dict[str, list[dict]] = {
+        "regulations": [], "compliance": [], "cases": [], "circulars": [],
+    }
     for row in rows:
         domain = row.get("domain")
         if domain in by_domain:
@@ -122,6 +126,11 @@ async def fetch_item_references(
             supabase, by_domain["compliance"]
         )
         shells_by_n.update(compliance_shells)
+    if by_domain["circulars"]:
+        circular_shells = await _build_circular_shells(
+            supabase, by_domain["circulars"]
+        )
+        shells_by_n.update(circular_shells)
 
     # Walk rows in order, build Reference per shell, attach source_view in
     # parallel (mirrors aggregator preprocessor.attach_source_views).
@@ -385,7 +394,7 @@ def _fetch_services_by_id(
 
 
 def _compliance_hash(service_ref: str) -> str:
-    """Mirror ``ura.compliance_adapter._compliance_ref_id`` — sha1[:16].
+    """Mirror ``ura.reg_adapter._service_ref_id`` — sha1[:16].
 
     Only used to fabricate a plausible ``ref_id`` on the reconstructed
     ComplianceURAResult shell so downstream code that parses ``ref_id``
@@ -396,6 +405,133 @@ def _compliance_hash(service_ref: str) -> str:
     if not service_ref:
         return ""
     return hashlib.sha1(service_ref.encode("utf-8")).hexdigest()[:16]
+
+
+def _circular_id_from_row(row: dict) -> str:
+    """Return circulars.id (uuid text) for a circulars row.
+
+    Prefers ``item_id`` (persist mints it from the ``circular:<uuid>`` ref_id);
+    falls back to parsing that ref_id so rows whose item_id wasn't set still
+    render. Mirrors ``_reg_chunk_id_from_row``.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    ref_id = (row.get("ref_id") or "").strip()
+    if ref_id.startswith("circular:"):
+        return ref_id[len("circular:"):]
+    return ""
+
+
+def _circular_entity_name(row: dict) -> str:
+    """Issuing entity name from an embedded ``entities`` object (dict or list).
+
+    The name rides in via the ``circulars_entity_id_fkey`` PostgREST embed (a
+    to-one object; a list is tolerated defensively). Mirrors reg_search's
+    ``_circular_entity_name``.
+    """
+    ent = row.get("entities")
+    if isinstance(ent, dict):
+        return (ent.get("entity_name") or "").strip()
+    if isinstance(ent, list) and ent and isinstance(ent[0], dict):
+        return (ent[0].get("entity_name") or "").strip()
+    return ""
+
+
+async def _build_circular_shells(
+    supabase: SupabaseClient,
+    rows: list[dict],
+) -> dict[int, CircularURAResult]:
+    """Build CircularURAResult shells from ``circulars`` table rows.
+
+    ``item_id`` is ``circulars.id`` (persist mints it from the ``circular:<uuid>``
+    ref_id); a NULL item_id falls back to parsing that ref_id (mirrors the
+    regulations shell builder). One batched ``circulars`` fetch pulls circ_ref,
+    title, content, source, and the embedded issuing entity name.
+
+    D11 capped-vs-full split: the shell's ``content`` is the AGGREGATOR view —
+    the full body capped at 4k with the truncation marker (``cap_circular_content``)
+    — so the hover snippet and aggregator parity hold. The UNCAPPED user-facing
+    body is rebuilt lazily by ``source_viewer._build_circular_view`` when a source
+    view is requested, exactly like the case/service views fetch their full body
+    fresh — the 168k outlier never rides in this references-list response.
+    """
+    rows_by_id: dict[str, list[dict]] = {}
+    for row in rows:
+        circ_id = _circular_id_from_row(row)
+        if not circ_id:
+            continue
+        rows_by_id.setdefault(circ_id, []).append(row)
+
+    if not rows_by_id:
+        return {}
+
+    circulars = await asyncio.to_thread(
+        _fetch_circulars_by_id, supabase, list(rows_by_id.keys())
+    )
+
+    shells_by_n: dict[int, CircularURAResult] = {}
+    for circ_id, related_rows in rows_by_id.items():
+        circ = circulars.get(circ_id) or {}
+        title = (circ.get("title") or "").strip()
+        entity_name = _circular_entity_name(circ)
+        # shell.content = 4k-capped aggregator view (snippet/aggregator parity).
+        content = cap_circular_content(circ.get("content"))
+        source_url = (circ.get("source") or "").strip()
+        circ_ref = (circ.get("circ_ref") or "").strip()
+        for row in related_rows:
+            n = int(row["n"])
+            shell = CircularURAResult(
+                # Prefer the row's own ref_id; re-mint from the id otherwise so
+                # source_viewer can re-parse ``circular:<uuid>`` for the full body.
+                ref_id=(row.get("ref_id") or f"circular:{circ_id}"),
+                source_type="circular",
+                relevance=row.get("relevance", "medium"),
+                circ_ref=circ_ref,
+                title=title,
+                entity_name=entity_name,
+                content=content,
+                source_url=source_url,
+            )
+            shells_by_n[n] = shell
+
+    return shells_by_n
+
+
+def _fetch_circulars_by_id(
+    supabase: SupabaseClient,
+    circular_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Batched ``circulars`` fetch keyed by circulars.id UUID.
+
+    Embeds the issuing entity name via the ``circulars_entity_id_fkey`` FK (the
+    same embed reg_search uses at retrieval time). ``content`` is the full body —
+    the shell caps it to the 4k aggregator view; the uncapped user view is
+    rebuilt in source_viewer.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    ids = sorted({cid for cid in circular_ids if cid})
+    for i in range(0, len(ids), _ID_BATCH):
+        batch = ids[i:i + _ID_BATCH]
+        try:
+            resp = (
+                supabase.table("circulars")
+                .select(
+                    "id, circ_ref, title, content, source, "
+                    "entities!circulars_entity_id_fkey(entity_name)"
+                )
+                .in_("id", batch)
+                .execute()
+            )
+            for r in resp.data or []:
+                rid = r.get("id")
+                if rid:
+                    out[str(rid)] = r
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "references_service: _fetch_circulars_by_id batch failed: %s", exc,
+            )
+    return out
 
 
 async def _attach_source_views(
@@ -445,11 +581,15 @@ def _stub_reference(row: dict) -> Reference:
     didn't resolve.
     """
     domain = row.get("domain") or "regulations"
+    _stub_source_type = {
+        "regulations": "regulation",
+        "cases": "case",
+        "compliance": "gov_service",
+        "circulars": "circular",
+    }.get(domain, "regulation")
     return Reference(
         n=int(row["n"]),
-        source_type="regulation" if domain == "regulations" else (
-            "case" if domain == "cases" else "gov_service"
-        ),
+        source_type=_stub_source_type,
         regulation_title=_STUB_TITLE,
         title=_STUB_TITLE,
         snippet="",
@@ -572,6 +712,15 @@ def persist_item_references(
         elif ref.domain == "compliance":
             sref = service_ref_by_ura_ref_id.get(ref.ref_id, "")
             item_uuid = service_id_by_ref.get(sref) if sref else None
+        elif ref.domain == "circulars":
+            # ref_id = "circular:<uuid>" — the circulars.id rides in directly
+            # (like regulations), so strip the prefix and validate as a uuid.
+            candidate = (
+                ref.ref_id[len("circular:"):]
+                if ref.ref_id.startswith("circular:")
+                else ref.ref_id
+            )
+            item_uuid = candidate if _looks_like_uuid(candidate) else None
 
         # Migration 051: per-ref word count of the aggregator-view content
         # (exactly what the LLM grounded against). Derived from the URA

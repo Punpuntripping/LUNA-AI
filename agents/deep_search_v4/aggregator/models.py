@@ -40,6 +40,7 @@ class Reference(BaseModel):
         "regulation",
         "gov_service",
         "form",
+        "circular",
         "case",
     ] = Field(description='Type of source')
     regulation_title: str = Field(description="Parent regulation name (Arabic)")
@@ -65,7 +66,7 @@ class Reference(BaseModel):
         default="",
         description="URA ref_id -- reg:{uuid} | compliance:{hash} | case:{uuid}",
     )
-    domain: Literal["regulations", "compliance", "cases"] = Field(
+    domain: Literal["regulations", "compliance", "circulars", "cases"] = Field(
         default="regulations",
         description="Which executor produced this reference",
     )

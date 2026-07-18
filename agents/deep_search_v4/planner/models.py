@@ -3,7 +3,7 @@
 The planner is a **two-phase** agent:
 
 - **Phase 1 — decide.** ``planner_decider`` emits a :class:`PlannerDecision`:
-  one of four retrieval *modes*, an optional ``support`` flag (modes 1–3),
+  one of three retrieval *modes*, an optional ``support`` flag (modes 1–2),
   a logged rationale, AND the comprehension outputs: ``planner_brief`` (novel
   factual context the planner discovered that isn't already carried by the
   query or other context blocks) and ``context_labels`` (which context blocks
@@ -47,8 +47,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-# The four retrieval modes. ``reg_led`` is the default for ordinary questions.
-Mode = Literal["case_led", "reg_led", "compliance_led", "full"]
+# The three retrieval modes. ``reg_compliance_led`` is the default for ordinary questions.
+# The reg executor now spans the statutory ground AND the compliance/services
+# ground (regulations, appendixes, circulars, e-government services) under the
+# unified ``search_topics`` corpus, so the old ``compliance_led`` mode is gone.
+Mode = Literal["case_led", "reg_compliance_led", "full"]
 
 # Forward-compat seam: what the planner suggests the user do next. Each literal
 # (except "none"/"writer") maps to a future planner tool — see
@@ -76,19 +79,20 @@ class PlannerDecision(BaseModel):
     mode: Mode = Field(
         ...,
         description=(
-            "Exactly one retrieval mode. 'reg_led' is the default for ordinary "
-            "legal questions; 'case_led' when the lawyer asks about a specific "
-            "precedent or an open case; 'compliance_led' for procedural / "
-            "e-government questions; 'full' when the query genuinely needs the "
-            "statute, the procedure, and the case law together."
+            "Exactly one retrieval mode. 'reg_compliance_led' is the default for ordinary "
+            "legal questions — the regulatory executor now covers both the "
+            "statutory rule AND the procedural/e-government side (services, "
+            "forms, circulars); 'case_led' when the lawyer asks about a specific "
+            "precedent or an open case; 'full' when the query genuinely needs "
+            "the regulatory/procedural rule and the case law together."
         ),
     )
     support: bool = Field(
         default=False,
         description=(
-            "When True, modes 1–3 also run their support executor (case_led + "
-            "reg, reg_led + compliance, compliance_led + reg). Ignored when "
-            "mode == 'full' — 'full' has no support role."
+            "When True, modes 1–2 also run their support executor (case_led + "
+            "reg_compliance, reg_compliance_led + cases). Ignored when mode == 'full' — 'full' has no "
+            "support role."
         ),
     )
     query_restatement: str = Field(

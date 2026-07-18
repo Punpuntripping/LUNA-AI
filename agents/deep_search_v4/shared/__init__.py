@@ -15,8 +15,8 @@ schema-vs-domain field leakage).
 from .models import Domain, DomainResult, RerankerQueryResult
 
 # Per-phase async fan-out cap for the per-sub-query search/RPC tasks. Used by
-# case_search, reg_search, and compliance_search so they bound concurrency
-# identically against Supabase + the embedding endpoint.
+# case_search and reg_compliance_search so they bound concurrency identically
+# against Supabase + the embedding endpoint.
 DEFAULT_SEARCH_CONCURRENCY = 10
 
 __all__ = [

@@ -33,7 +33,7 @@ GOLDEN_QUERIES = {5, 12, 14, 19, 27}
 # Default logs root; resolved relative to this file so it works regardless
 # of the cwd a user happens to invoke -m from.
 _THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_LOGS_DIR = (_THIS_DIR.parent / "reg_search" / "reports").resolve()
+DEFAULT_LOGS_DIR = (_THIS_DIR.parent / "reg_compliance_search" / "reports").resolve()
 
 
 # ---------------------------------------------------------------------------

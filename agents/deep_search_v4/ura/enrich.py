@@ -23,8 +23,10 @@ Public surface:
 Per-domain query count:
     regulations -- 4 logical fetches (chunks_v2, regulations_v2,
                    cross_references_v2, articles_v2), each batched by 150.
+                   (Appendix chunks ride this same path — real chunks_v2 rows.)
     cases       -- 2 logical fetches (cases, entities), each batched by 150.
-    compliance  -- 0 (the compliance adapter already carries every field).
+    compliance  -- 0 (the adapter already carries every field).
+    circulars   -- 0 (the adapter carries the capped content + entity name).
 """
 from __future__ import annotations
 
@@ -368,10 +370,16 @@ async def enrich_ura(ura, supabase) -> None:
     for res in kept:
         domain = getattr(res, "domain", None)
         if domain == "regulations":
+            # Includes appendix chunks (corpus="appendix"): they are real
+            # chunks_v2 rows, so reg enrichment fetches them by id normally and
+            # the ``corpus`` marker is left untouched.
             reg_results.append(res)
         elif domain == "cases":
             case_results.append(res)
-        # compliance -> no-op (the adapter already carries every field)
+        # compliance / circulars -> no-op. The type-aware reg_adapter already
+        # carries every field (service_context / structured payload, circular
+        # content). Never route these through chunks_v2 — their ids are
+        # services.id / circulars.id, not chunk ids.
 
     # Enrich each domain (best-effort -- a failure in one must not block the
     # other, and must not crash the pipeline).

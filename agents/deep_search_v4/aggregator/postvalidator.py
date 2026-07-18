@@ -19,7 +19,7 @@ from agents.deep_search_v4.aggregator.models import (
     Reference,
     ValidationReport,
 )
-from agents.deep_search_v4.reg_search.models import RerankerQueryResult
+from agents.deep_search_v4.reg_compliance_search.models import RerankerQueryResult
 
 
 # ---------------------------------------------------------------------------

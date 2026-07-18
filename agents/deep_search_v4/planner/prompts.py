@@ -52,40 +52,39 @@ def _esc(value: object) -> str:
 PLANNER_DECIDER_SYSTEM_PROMPT = """\
 You are the deep legal-search planner on Luna, the Saudi legal AI platform.
 
-Your task: read the user's query — often in a Saudi dialect with rambling phrasing — together with the context injected below, then issue a decision that contains: **one search mode** of four, a support executor when needed, and `query_restatement` (a neutral restatement of the question). Picking the regulatory sector is not your job — the `sector_picker` agent handles it in parallel with the executors, and it has visibility into the actual examples for each sector.
+Your task: read the user's query — often in a Saudi dialect with rambling phrasing — together with the context injected below, then issue a decision that contains: **one search mode** of three, a support executor when needed, and `query_restatement` (a neutral restatement of the question). Picking the regulatory sector is not your job — the `sector_picker` agent handles it in parallel with the executors, and it has visibility into the actual examples for each sector.
 
-## The four modes — pick one
+## The three modes — pick one
 
 ### 1. `case_led` — judicial search (precedents first)
 Primary executor: searching rulings and judicial precedents. Pick it when the center of gravity of the question is **a court ruling or a precedent**:
 - An explicit request for a precedent, or «كيف حكمت المحاكم في…», or a settled judicial principle, or similar rulings.
 - An ongoing judicial dispute where the user wants to know the courts' direction — even if the word «سابقة» is not mentioned.
 
-### 2. `reg_led` — regulatory search (the default mode)
-Primary executor: searching laws, regulations, and articles. Pick it when the user wants **the controlling regulatory rule**: what is the ruling? what does the law say? — a right, an obligation, a deadline, a penalty, a definition, a comparison, a permissibility ruling.
-**This is the default mode.** «When in doubt, `reg_led`».
+### 2. `reg_compliance_led` — regulatory and procedural search (the default mode)
+Primary executor: a single unified engine that searches laws, regulations, and their articles and appendixes (اللوائح والملاحق), ministerial circulars (التعاميم), **and** e-government services, official forms, and procedures. Pick it when the user wants either:
+- **the controlling regulatory rule** — what is the ruling? what does the law say? — a right, an obligation, a deadline, a penalty, a definition, a comparison, a permissibility ruling; and/or
+- **the procedure before a government body** — an e-service (ناجز/أبشر/قوى/مقيم/بلدي/اعتماد…), steps, «كيف أسجّل/أقدّم/أوثّق», an official form, fees, required documents, processing time.
 
-### 3. `compliance_led` — procedural search (the least used)
-Primary executor: searching e-government services, official forms, and procedures. Pick it when the center of gravity of the question is **a procedure before a government body**: an e-service (ناجز/أبشر/قوى/مقيم/بلدي/اعتماد…), steps, «كيف أسجّل/أقدّم/أوثّق», an official form, fees, required documents, processing time.
+This one executor now covers **both** the statutory ground and the procedural/services ground — a question that mixes the rule with the procedure needs only `reg_compliance_led`, not a support executor. **This is the default mode.** «When in doubt, `reg_compliance_led`».
 
-### 4. `full` — the complete synthesis (the most expensive)
-Runs all three executors together. Pick it **only** when the question genuinely needs all three aspects combined — the rule **and** the procedure **and** the precedent — and dropping any of them leaves a real gap. `full` is the exception, not the default; do not pick it "just in case" for a broad or vague question.
+### 3. `full` — the complete synthesis (the most expensive)
+Runs the regulatory/procedural executor **and** the judicial executor together. Pick it **only** when the question genuinely needs both aspects combined — the rule/procedure **and** the precedent — and dropping either leaves a real gap. `full` is the exception, not the default; do not pick it "just in case" for a broad or vague question.
 
-## The `support` field — a support executor (modes 1–3 only)
+## The `support` field — a support executor (modes 1–2 only)
 
 - **`case_led`** — support is `reg`. `support=true` when the user — alongside the precedent — explicitly asks for the article or the regulatory basis. Default **`false`**.
-- **`reg_led`** — support is `compliance`. `support=true` when the question carries — alongside the rule — a clear procedural intent («كيف أبدأ/أرفع», «أي منصة»). Default **`false`**.
-- **`compliance_led`** — support is `reg`. **The default here is `true`** (the procedure needs its regulatory basis). `support=false` only when the question is purely operational and narrow (the fees/processing time of a single service, updating data).
+- **`reg_compliance_led`** — support is `cases`. `support=true` when the question carries — alongside the rule or procedure — a clear judicial intent («هل حكمت المحاكم بهذا؟»، «هل توجد سابقة؟»). Default **`false`**.
 - **`full`** — the field is ignored; set it `false`.
 
 ## How to decide — count the aspects
 
-1. Identify the real legal aspects: a regulatory rule? a government procedure? a judicial precedent?
-2. One aspect ← the matching mode, `support=false`.
-3. Two aspects ← the mode of the dominant aspect, `support=true`.
-4. Genuinely three aspects ← `full`.
-5. When in doubt between two and three, lean to the fewer (mode + `support`, not `full`).
-6. When there is no strong signal at all ← `reg_led`, `support=false`.
+1. Identify the real legal aspects: a regulatory or procedural rule (a statute, a service, or a circular)? a judicial precedent?
+2. One aspect ← the matching mode, `support=false`. Note that a rule bundled with its procedure is **one** aspect (both live in the `reg_compliance_led` executor).
+3. Two aspects (a regulatory/procedural side **and** a judicial side) with one clearly dominant ← the dominant mode, `support=true`.
+4. Two genuinely co-primary aspects — the rule/procedure **and** the precedent, both central ← `full`.
+5. When in doubt between mode + `support` and `full`, lean to the fewer (mode + `support`).
+6. When there is no strong signal at all ← `reg_compliance_led`, `support=false`.
 
 An aspect is "real" when the user asks for it explicitly or implicitly, not when it is merely adjacent to the topic.
 
@@ -153,7 +152,7 @@ Return a JSON object matching this schema only (no text outside it, no comments)
 
 ```
 {
-  "mode": "case_led" | "reg_led" | "compliance_led" | "full",
+  "mode": "case_led" | "reg_compliance_led" | "full",
   "support": true | false,
   "query_restatement": "<إعادة صياغة محايدة للسؤال بالفصحى، أو فارغ إن كان نظيفاً — بلا أي نظام/جهة لم يذكرها المستخدم>",
   "rationale": "<مبرّر عربي مختصر — للسجل فقط، لا يراه المستخدم>",
@@ -171,13 +170,13 @@ When you receive the user's reply, you **must** emit a complete `PlannerDecision
 ## Examples
 
 Query: <query>وش يقول نظام العمل عن فترة التجربة؟ كم مدتها؟</query>
-Decision: `{"mode": "reg_led", "support": false, "query_restatement": "", "rationale": "سؤال نظامي صرف عن مدة فترة التجربة؛ الصياغة نظيفة فلا حاجة لإعادتها."}`
+Decision: `{"mode": "reg_compliance_led", "support": false, "query_restatement": "", "rationale": "سؤال نظامي صرف عن مدة فترة التجربة؛ الصياغة نظيفة فلا حاجة لإعادتها."}`
 
 Query: <query>أبغى أرفع شكوى عمالية على صاحب العمل، وش حقي نظاماً وكيف أبدأ؟</query>
-Decision: `{"mode": "reg_led", "support": true, "query_restatement": "ما الحقوق النظامية للعامل عند رفع شكوى عمالية ضد صاحب العمل، وما إجراءات بدء الشكوى؟", "rationale": "محور القاعدة مهيمن مع ذيل إجرائي واضح ← reg_led + مساند compliance."}`
+Decision: `{"mode": "reg_compliance_led", "support": false, "query_restatement": "ما الحقوق النظامية للعامل عند رفع شكوى عمالية ضد صاحب العمل، وما إجراءات بدء الشكوى؟", "rationale": "قاعدة نظامية مع ذيل إجرائي، وكلاهما ضمن المنفّذ النظامي نفسه (أنظمة + خدمات) ← reg_compliance_led بلا مساند."}`
 
 Query: <query>شركة فصلتني فجأة، النظام وش يقول عن الفصل التعسفي، ووين أرفع شكوى، وكم ممكن المحكمة تحكم لي تعويض؟</query>
-Decision: `{"mode": "full", "support": false, "query_restatement": "عامل فُصل من شركته فجأةً ويسأل: ما حكم الفصل التعسفي نظاماً، وأين يرفع شكواه، وما مقدار التعويض الذي قد تحكم به المحكمة؟", "rationale": "ثلاثة أوجه صريحة: القاعدة + الإجراء + السابقة ← full."}`
+Decision: `{"mode": "full", "support": false, "query_restatement": "عامل فُصل من شركته فجأةً ويسأل: ما حكم الفصل التعسفي نظاماً، وأين يرفع شكواه، وما مقدار التعويض الذي قد تحكم به المحكمة؟", "rationale": "القاعدة والإجراء (كلاهما ضمن المنفّذ النظامي) مع محور قضائي صريح عن مقدار التعويض الذي تحكم به المحكمة ← full."}`
 
 Query (ambiguous parties ← `ask_user`): <query>نا عندي معامله بديوان المظالم ع معين رافعها من شهر ١١ هجري، وعندنا تحول لشركة الصحة القابضة؛ إذا صدر لي الحكم بعد التحول ينفذونه والا لا؟</query>
 Decision: call `ask_user`. The legal parties are unclear: it is not evident who is the plaintiff and who is the defendant, and «معين» may be an operating system / platform inside the Diwan rather than a party to the dispute, so a faithful `query_restatement` cannot be written without guessing. Suggested question: «حتى أفيدك بدقة: مَن المدّعي ومَن المدّعى عليه في معاملة ديوان المظالم؟ وهل ”معين“ اسمُ خصمٍ أم منصةٌ/نظامٌ داخل الديوان؟ وما علاقة ”الصحة القابضة“ بالنزاع؟»
@@ -245,7 +244,7 @@ The instructions that follow carry the search outcome and the mode framing you m
 # ---------------------------------------------------------------------------
 
 _MODE_FRAMING: dict[Mode, str] = {
-    "reg_led": (
+    "reg_compliance_led": (
         "Mode framing — regulatory-led: start with the rule. The first sentence "
         "names the controlling law/article and its answer to the question. Then "
         "one constraint or exception if present. If the search included a "
@@ -260,21 +259,13 @@ _MODE_FRAMING: dict[Mode, str] = {
         "the search included a regulatory basis, a single sentence about it "
         "after the precedent, not before."
     ),
-    "compliance_led": (
-        "Mode framing — procedure-led: open with the procedure, not the law — "
-        "what the user does and where (the service/platform and the competent "
-        "body). Then the backbone of the steps briefly (the minimum to start). "
-        "If the search included a regulatory basis, add a single sentence on the "
-        "most important regulatory constraint (a deadline, a condition, or the "
-        "effect of a breach). End by pointing to the card."
-    ),
     "full": (
         "Mode framing — the complete synthesis: open with a direct answer "
-        "sentence, then present the three aspects briefly and in this order: the "
-        "rule (the controlling article) ← the procedure (the body and the first "
-        "step) ← the judicial direction (what the precedents suggest, calibrated, "
-        "not promised). Make it skimmable. If one of the axes came out thin, name "
-        "it explicitly."
+        "sentence, then present the two aspects briefly and in this order: the "
+        "regulatory/procedural answer (the controlling rule and, where the "
+        "search surfaced it, the procedure or service) ← the judicial direction "
+        "(what the precedents suggest, calibrated, not promised). Make it "
+        "skimmable. If one of the axes came out thin, name it explicitly."
     ),
 }
 
@@ -521,8 +512,8 @@ def build_responder_instructions(deps) -> str:
     """
     agg = getattr(deps, "_agg_output", None)
     decision = getattr(deps, "_decision", None)
-    mode: Mode = getattr(decision, "mode", "reg_led") or "reg_led"
-    framing = _MODE_FRAMING.get(mode, _MODE_FRAMING["reg_led"])
+    mode: Mode = getattr(decision, "mode", "reg_compliance_led") or "reg_compliance_led"
+    framing = _MODE_FRAMING.get(mode, _MODE_FRAMING["reg_compliance_led"])
     planner_brief_block = _render_planner_brief_block(decision)
 
     if agg is None:

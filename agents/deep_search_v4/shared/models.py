@@ -1,9 +1,10 @@
-"""Shared models across the 3 deep_search_v3 executors.
+"""Shared models across the deep_search executors.
 
-Each domain (``reg_search``, ``compliance_search``, ``case_search``) wraps
-its internal reranker output into a ``RerankerQueryResult`` whose
-``results`` list is typed to that domain's URA result subclass. The
-orchestrator (Wave D) then feeds these directly into the single-pass URA
+Each executor (``reg_compliance`` — regulations, appendixes, circulars and
+services — and ``case_search``) wraps its internal reranker output into a
+``RerankerQueryResult`` whose ``results`` list is typed to the matching URA
+result subclass (a single reg_compliance sub-query can carry several types).
+The orchestrator (Wave D) then feeds these directly into the single-pass URA
 merger (Wave B) without any intermediate conversion step.
 """
 from __future__ import annotations
@@ -13,12 +14,15 @@ from typing import Literal, Union
 
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
+    CircularURAResult,
     ComplianceURAResult,
     RegURAResult,
 )
 
-Domain = Literal["regulations", "compliance", "cases"]
-DomainResult = Union[RegURAResult, ComplianceURAResult, CaseURAResult]
+Domain = Literal["regulations", "compliance", "circulars", "cases"]
+DomainResult = Union[
+    RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult
+]
 
 
 @dataclass

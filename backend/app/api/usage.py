@@ -1,8 +1,9 @@
 """Usage limits API — /api/v1/usage.
 
 Read-only snapshot of the four bars rendered by the Settings → Usage limits
-dialog. Backed by shared.quota.current_usage_report; Redis is the hot path
-with PG rehydration on miss.
+dialog. Backed by shared.quota.current_usage_report, which reads the
+get_user_quota_state RPC (migration 093) — the same single source the
+enforcement gate uses, so the dialog always shows exactly what is enforced.
 """
 from __future__ import annotations
 

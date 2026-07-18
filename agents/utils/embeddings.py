@@ -46,8 +46,8 @@ ALIBABA_EMBEDDING_MODEL = "text-embedding-v4"
 ALIBABA_EMBEDDING_DIMS = 1024
 
 # Per-call input cap for the DashScope embeddings endpoint. Used by the
-# batched helper to auto-split oversized lists. Shared across case_search,
-# reg_search, and compliance_search so all three pipelines batch identically.
+# batched helper to auto-split oversized lists. Shared across case_search and
+# reg_compliance_search so both pipelines batch identically.
 MAX_EMBED_BATCH = 25
 
 _alibaba_client: AsyncOpenAI | None = None

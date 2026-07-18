@@ -53,7 +53,7 @@ from .prompts import AGGREGATOR_PROMPTS
 
 # Source of reranker runs this CLI reads from.
 SOURCE_LOGS_DIR = (
-    Path(__file__).resolve().parent.parent / "reg_search" / "reports"
+    Path(__file__).resolve().parent.parent / "reg_compliance_search" / "reports"
 )
 
 # Default 5 golden queries (per the plan).

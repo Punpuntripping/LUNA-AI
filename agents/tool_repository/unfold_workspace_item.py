@@ -7,6 +7,7 @@ returned only ``content_md``, this returns the body PLUS a used-only,
     [1] {regulation name} — {chunk title}      (regulations domain)
     [2] [{case number}] {case summary}          (cases domain)
     [3] {service name}                          (compliance domain)
+    [4] تعميم: {title} — {entity}               (circulars domain)
 
 The numbers match the ``[n]`` citation markers in ``content_md`` (the same
 ``workspace_item_references.n``), so an agent reading the item can map any
@@ -51,6 +52,7 @@ _CHUNKS_TABLE = "chunks_v2"
 _REGS_TABLE = "regulations_v2"
 _CASES_TABLE = "cases"
 _SERVICES_TABLE = "services"
+_CIRCULARS_TABLE = "circulars"
 
 # PostgREST `.in_()` batch size — matches references_service / enrich.py.
 _ID_BATCH = 150
@@ -330,6 +332,76 @@ def _resolve_compliance(supabase, rows: list[dict]) -> list[SourceLine]:
     return lines
 
 
+def _circular_id(row: dict) -> str:
+    """``circulars.id`` for a circulars ref row.
+
+    Prefers the ``item_id`` UUID (persist mints it from the ``circular:<uuid>``
+    ref_id); falls back to stripping the ``circular:`` prefix off ``ref_id`` (the
+    circular ref_id IS the circulars.id uuid). Mirrors :func:`_reg_chunk_id`.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    ref_id = (row.get("ref_id") or "").strip()
+    if ref_id.startswith("circular:"):
+        return ref_id[len("circular:"):]
+    return ""
+
+
+def _circular_entity_name(row: dict) -> str:
+    """Issuing entity name from a fetched circular row.
+
+    The ``entities`` name is embedded via the ``circulars_entity_id_fkey`` FK, so
+    it arrives nested under ``row["entities"]`` — a to-one embed (object), but a
+    list is tolerated defensively. Mirrors reg_search's ``_circular_entity_name``.
+    """
+    ent = row.get("entities")
+    if isinstance(ent, dict):
+        return (ent.get("entity_name") or "").strip()
+    if isinstance(ent, list) and ent and isinstance(ent[0], dict):
+        return (ent[0].get("entity_name") or "").strip()
+    return ""
+
+
+def _resolve_circulars(supabase, rows: list[dict]) -> list[SourceLine]:
+    """Build ``[n] تعميم: {title} — {entity name}`` lines.
+
+    ``item_id`` is ``circulars.id``; a NULL item_id falls back to the
+    ``circular:<uuid>`` ref_id (mirrors the regulations resolver). One batched
+    ``circulars`` fetch pulls the title + the embedded issuing entity name. A row
+    whose circular can't be resolved degrades to a stub so its ``[n]`` is never
+    silently lost.
+    """
+    if not rows:
+        return []
+    n_to_circ: dict[int, str] = {}
+    for r in rows:
+        cid = _circular_id(r)
+        if cid:
+            n_to_circ[int(r["n"])] = cid
+
+    circ_rows = _select_in(
+        supabase, _CIRCULARS_TABLE,
+        "id, title, entities!circulars_entity_id_fkey(entity_name)", "id",
+        list(n_to_circ.values()),
+    )
+    circ_by_id = {str(c["id"]): c for c in circ_rows if c.get("id")}
+
+    lines: list[SourceLine] = []
+    for r in rows:
+        n = int(r["n"])
+        circ = circ_by_id.get(n_to_circ.get(n, ""))
+        if not circ:
+            lines.append(SourceLine(n=n, text=_FALLBACK_LINE, domain="circulars"))
+            continue
+        title = (circ.get("title") or "").strip()
+        entity = _circular_entity_name(circ)
+        head = f"تعميم: {title}" if title else "تعميم"
+        text = f"{head} — {entity}" if entity else head
+        lines.append(SourceLine(n=n, text=text, domain="circulars"))
+    return lines
+
+
 def resolve_used_sources(supabase, wi_id: str) -> list[SourceLine]:
     """Resolve the used-only citation manifest for a WI, sorted by ``n``.
 
@@ -340,7 +412,9 @@ def resolve_used_sources(supabase, wi_id: str) -> list[SourceLine]:
     refs = _fetch_used_refs(supabase, wi_id)
     if not refs:
         return []
-    by_domain: dict[str, list[dict]] = {"regulations": [], "cases": [], "compliance": []}
+    by_domain: dict[str, list[dict]] = {
+        "regulations": [], "cases": [], "compliance": [], "circulars": [],
+    }
     for r in refs:
         dom = r.get("domain")
         if dom in by_domain:
@@ -352,6 +426,7 @@ def resolve_used_sources(supabase, wi_id: str) -> list[SourceLine]:
     lines.extend(_resolve_regulations(supabase, by_domain["regulations"]))
     lines.extend(_resolve_cases(supabase, by_domain["cases"]))
     lines.extend(_resolve_compliance(supabase, by_domain["compliance"]))
+    lines.extend(_resolve_circulars(supabase, by_domain["circulars"]))
     return sorted(lines, key=lambda x: x.n)
 
 
@@ -429,6 +504,7 @@ def register_unfold_workspace_item(agent: Agent) -> None:
             [1] {regulation name} — {chunk title}
             [2] [{case number}] {case summary}
             [3] {service name}
+            [4] تعميم: {title} — {entity}
 
         Only sources actually used in the body appear. If a cited regulation
         matches the name the user is asking about, you can answer about it

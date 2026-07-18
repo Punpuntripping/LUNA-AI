@@ -2,26 +2,30 @@
 
 Wave B of the Loop V2 refactor replaced the legacy two-stage pipeline
 (``reg_reranker_results -> PartialURA -> merge_to_ura``) with a single
-pass that consumes the three shared ``RerankerQueryResult`` streams
-produced by the reg / compliance / case executors and emits a fully
-tiered ``UnifiedRetrievalArtifact``.
+pass that consumes the shared ``RerankerQueryResult`` streams produced by
+the reg_compliance and case executors and emits a fully tiered
+``UnifiedRetrievalArtifact``. The standalone compliance executor was retired
+(Wave 4) — government services now surface inside the reg_compliance stream as
+typed ``ComplianceURAResult`` results (routed by the type-aware reg adapter),
+so the merger still tiers them by their own ``result.domain`` ("compliance").
 
 Identity rules
 --------------
 Each domain emits its own namespaced ``ref_id``:
     - regulations -> ``"reg:<db_id>"``
-    - compliance  -> ``"compliance:<sha1(url)[:16]>"``
+    - compliance  -> ``"compliance:<sha1(service_ref)[:16]>"``  (services)
+    - circulars   -> ``"circular:<circulars.id>"``
     - cases       -> ``"case:<db_id>"``
-Because the prefixes are disjoint, cross-domain dedup is a no-op; the
-merger still uses a single ``grouped`` dict keyed by ``ref_id`` for
-simplicity.
+Because the prefixes are disjoint, cross-DOMAIN dedup is a no-op; the merger
+still uses a single ``grouped`` dict keyed by ``ref_id`` for simplicity. The
+shared ``compliance:`` prefix still lets a service surfaced by more than one
+reg_compliance sub-query dedup to one ref.
 
 Sub-query indexing
 ------------------
-Sub-queries carry a **global** index across the three phases in
-absorption order: regulations first, then compliance, then cases. So if
-reg absorbs 3 sub-queries, the first compliance sub-query lands at
-global index 3, and the first case sub-query lands after compliance.
+Sub-queries carry a **global** index across the phases in absorption order:
+regulations first, then cases. So if reg absorbs 3 sub-queries, the first
+case sub-query lands at global index 3.
 
 Dedup semantics (within a domain)
 --------------------------------
@@ -49,6 +53,7 @@ from typing import Union
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
+    CircularURAResult,
     ComplianceURAResult,
     Domain,
     RegURAResult,
@@ -59,10 +64,12 @@ logger = logging.getLogger(__name__)
 
 # Module-level rank tables. Tweak DOMAIN_RANK in Wave D if the default
 # ordering needs to change (e.g. surface cases before regulations for
-# precedent-heavy queries).
+# precedent-heavy queries). Absolute values are irrelevant -- only the relative
+# order matters (regulations > cases > circulars > compliance).
 DOMAIN_RANK: dict[str, int] = {
-    "regulations": 3,
-    "cases": 2,
+    "regulations": 4,
+    "cases": 3,
+    "circulars": 2,
     "compliance": 1,
 }
 
@@ -80,7 +87,9 @@ _RELEVANCE_RANK: dict[str, int] = {"high": 2, "medium": 1}
 MAX_HIGH_PER_SUBQUERY = 12
 MAX_MEDIUM_PER_SUBQUERY = 4
 
-_DomainResult = Union[RegURAResult, ComplianceURAResult, CaseURAResult]
+_DomainResult = Union[
+    RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult
+]
 
 
 def _max_relevance(a: str, b: str) -> str:
@@ -108,15 +117,14 @@ def _order_key(result: _DomainResult) -> tuple[int, float]:
 
 def build_ura_from_phases(
     reg_rqrs: list[RerankerQueryResult],
-    compliance_rqrs: list[RerankerQueryResult],
-    case_rqrs: list[RerankerQueryResult],
+    case_rqrs: list[RerankerQueryResult] | None = None,
     *,
     original_query: str,
     query_id: int = 0,
     log_id: str = "",
     sector_filter: list[str] | None = None,
 ) -> UnifiedRetrievalArtifact:
-    """Build a URA 2.0 artifact from the three executor phase outputs.
+    """Build a URA 2.0 artifact from the executor phase outputs.
 
     Any phase may be empty (that domain was skipped or failed). Each
     sub-query gets a global index, each result is deduped by ``ref_id``
@@ -125,9 +133,13 @@ def build_ura_from_phases(
 
     Parameters
     ----------
-    reg_rqrs, compliance_rqrs, case_rqrs:
+    reg_rqrs, case_rqrs:
         Shared ``RerankerQueryResult`` lists from each domain's adapter.
-        May be empty.
+        May be empty. Government services arrive inside ``reg_rqrs`` (typed
+        ``ComplianceURAResult`` by the type-aware reg adapter — the standalone
+        compliance executor was retired in Wave 4); the merger still routes
+        each row by its own ``result.domain`` so services tier under
+        ``"compliance"``.
     original_query:
         The user's original query string, copied into URA.
     query_id, log_id:
@@ -223,7 +235,6 @@ def build_ura_from_phases(
                     existing.rrf_max = incoming_rrf
 
     _absorb("regulations", reg_rqrs)
-    _absorb("compliance", compliance_rqrs)
     _absorb("cases", case_rqrs)
 
     if merge_counts:
@@ -261,8 +272,13 @@ def build_ura_from_phases(
         original_query=original_query,
         produced_at=datetime.now(timezone.utc).isoformat(),
         produced_by={
+            # Executor-family keys (data contract — persisted on
+            # retrieval_artifacts.produced_by, read by aggregator domain
+            # derivation). ``compliance_search`` stays in the dict but is always
+            # False now: the standalone compliance executor was retired and its
+            # services ride inside the reg_compliance stream.
             "reg_search": bool(reg_rqrs),
-            "compliance_search": bool(compliance_rqrs),
+            "compliance_search": False,
             "case_search": bool(case_rqrs),
         },
         sub_queries=sub_queries_meta,

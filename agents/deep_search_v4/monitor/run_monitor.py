@@ -11,7 +11,7 @@ Layout per query (``agents/deep_search_v3/monitor/query_{id}/{ts}/``):
     README.md                   <- pipeline flow + index of every stage file
     00_query.md                 <- query text + executor flags + log_ids
 
-    10_reg_search/              (mirror of reg_search/reports/{log_id}/)
+    10_reg_compliance_search/   (mirror of reg_compliance_search/reports/{log_id}/)
         overview.md
         expander/...
         search/...
@@ -22,13 +22,6 @@ Layout per query (``agents/deep_search_v3/monitor/query_{id}/{ts}/``):
         plan.md                 <- human-readable plan: invoke / focus / sectors / rationale
         plan.json               <- raw PlannerOutput model_dump
         derived.md              <- derived caps + aggregator prompt key (FOCUS_PROFILES lookup)
-
-    20_compliance_search/       (mirror of compliance_search/reports/{log_id}/)
-        overview.md
-        expander/...
-        search/...
-        reranker/...
-        rqr_table.md
 
     30_case_search/             (mirror of case_search/reports/{log_id}/)
         overview.md
@@ -229,7 +222,6 @@ def _write_query_md(out_dir: Path, query: dict, ts: str, deps: FullLoopDeps) -> 
         f"- **expander_prompt_key**: {deps.expander_prompt_key}",
         f"- **case_expander_prompt_key**: {deps.case_expander_prompt_key}",
         f"- **use_reranker**: {deps.use_reranker}",
-        f"- **include_compliance**: {deps.include_compliance}",
         f"- **include_cases**: {deps.include_cases}",
         f"- **detail_level**: {deps.detail_level}",
         f"- **unfold_mode**: {deps.unfold_mode}",
@@ -239,7 +231,6 @@ def _write_query_md(out_dir: Path, query: dict, ts: str, deps: FullLoopDeps) -> 
         "## Per-phase log dirs (filled in after run)",
         "",
         f"- reg_log_dir: `{deps._reg_log_dir or '(not set)'}`",
-        f"- comp_log_dir: `{deps._comp_log_dir or '(not set)'}`",
         f"- case_log_dir: `{deps._case_log_dir or '(not set)'}`",
         "",
     ]
@@ -370,7 +361,7 @@ def _write_phase_flow_md(phase_dir: Path, rqrs: list[RerankerQueryResult]) -> No
             lines.append(f"### Reranker → kept={kept}, sufficient={sufficient}, weak_axes={weak_axes}")
             lines.append("")
     else:
-        # Fallback when rounds list is empty (reg_search uses round_trace instead)
+        # Fallback when rounds list is empty (reg_compliance uses round_trace instead)
         all_queries = data.get("result", {}).get("queries", [])
         lines.append("## Expander queries (all rounds)")
         lines.append("")
@@ -539,10 +530,8 @@ def _write_planner_dump(out_dir: Path, deps: FullLoopDeps) -> bool:
         "",
         "| executor | invoked | reranker_max_keep | result_budget |",
         "|----------|---------|-------------------|---------------|",
-        f"| reg | {deps.include_reg} | {deps.reg_max_keep} "
+        f"| reg | {deps.include_reg_compliance} | {deps.reg_max_keep} "
         f"| {(deps.result_budget or {}).get('reg', '-')} |",
-        f"| compliance | {deps.include_compliance} | {deps.compliance_max_keep} "
-        f"| {(deps.result_budget or {}).get('compliance', '-')} |",
         f"| cases | {deps.include_cases} | {deps.case_max_keep} "
         f"| {(deps.result_budget or {}).get('cases', '-')} |",
         "",
@@ -666,7 +655,10 @@ def _write_per_executor_stats(out_dir: Path, deps: FullLoopDeps) -> None:
         "|----------|-------------|-----------------|------------------|",
     ]
     stats = deps._per_executor_stats or {}
-    for name in ("reg_search", "compliance_search", "case_search"):
+    # Executor-family keys as written by the phase wrappers (data contract —
+    # "reg_search" is the family label, not the renamed package). The retired
+    # compliance executor no longer emits stats.
+    for name in ("reg_search", "case_search"):
         s = stats.get(name) or {}
         lines.append(
             f"| {name} | {s.get('duration_ms', '-')} | "
@@ -700,7 +692,6 @@ def _write_summary(
         "## Counts",
         "",
         f"- reg sub-queries (RQRs): {len(deps._reg_rqrs or [])}",
-        f"- compliance sub-queries (RQRs): {len(deps._comp_rqrs or [])}",
         f"- case sub-queries (RQRs): {len(deps._case_rqrs or [])}",
         f"- URA high results: {len(ura.high_results) if ura else 0}",
         f"- URA medium results: {len(ura.medium_results) if ura else 0}",
@@ -767,11 +758,10 @@ def _write_readme(
         "## Pipeline flow",
         "",
         "```",
-        "  reg_search ─┐",
-        "             │",
-        "  compliance ┼─── parallel ───→  URA merge  ───→  Aggregator  ───→  Output",
-        "             │     (gather)        (40_ura)       (50_*)            (summary)",
-        "  case_search┘",
+        "  reg_compliance ─┐",
+        "                  │─── parallel ───→  URA merge  ───→  Aggregator  ───→  Output",
+        "                  │     (gather)        (40_ura)       (50_*)            (summary)",
+        "  case_search ────┘",
         "```",
         "",
         "## Files (in pipeline order)",
@@ -780,8 +770,7 @@ def _write_readme(
         "|-------|------|--------------|",
         "| 00 | [00_query.md](00_query.md) | Query text + executor flags + per-phase log_ids |",
         "| 05 | [05_planner/](05_planner/) | Planner plan + derived caps + aggregator prompt key (only when --enable-planner) |",
-        f"| 10 | [10_reg_search/](10_reg_search/) | Reg phase mirror -- expander + search + reranker. *{mirror_status.get('reg', '-')}* |",
-        f"| 20 | [20_compliance_search/](20_compliance_search/) | Compliance phase mirror. *{mirror_status.get('compliance', '-')}* |",
+        f"| 10 | [10_reg_compliance_search/](10_reg_compliance_search/) | Reg_compliance phase mirror -- expander + search + reranker (regulations, appendixes, circulars, services). *{mirror_status.get('reg', '-')}* |",
         f"| 30 | [30_case_search/](30_case_search/) | Case phase mirror. *{mirror_status.get('case', '-')}* |",
         "| 40 | [40_ura.md](40_ura.md) | Merged UnifiedRetrievalArtifact (high + medium tiers) |",
         "| 50 | [50_aggregator/](50_aggregator/) | AggregatorInput, prompt(s), raw LLM, thinking, synthesis, validation |",
@@ -874,7 +863,6 @@ async def _run_one(
         use_reranker=False,
         concurrency=10,
         unfold_mode="precise",
-        include_compliance=True,
         include_cases=True,
         detail_level="medium",
         aggregator_logger=agg_logger,
@@ -926,18 +914,10 @@ async def _run_one(
 
     def _do_mirror_reg() -> None:
         mirror_status["reg"] = _mirror_phase(
-            "10 -- reg_search",
+            "10 -- reg_compliance_search",
             deps._reg_log_dir,
-            out_dir / "10_reg_search",
+            out_dir / "10_reg_compliance_search",
             deps._reg_rqrs or [],
-        )
-
-    def _do_mirror_compliance() -> None:
-        mirror_status["compliance"] = _mirror_phase(
-            "20 -- compliance_search",
-            deps._comp_log_dir,
-            out_dir / "20_compliance_search",
-            deps._comp_rqrs or [],
         )
 
     def _do_mirror_case() -> None:
@@ -949,8 +929,7 @@ async def _run_one(
         )
 
     _safe("05_planner", lambda: _write_planner_dump(out_dir, deps))
-    _safe("10_reg", _do_mirror_reg)
-    _safe("20_compliance", _do_mirror_compliance)
+    _safe("10_reg_compliance", _do_mirror_reg)
     _safe("30_case", _do_mirror_case)
 
     _safe("40_ura", lambda: (out_dir / "40_ura.md").write_text(

@@ -242,7 +242,7 @@ class RerankerLoopBase:
 
 
 class SinglePassMixin:
-    """Mixin for rerankers that never loop (case_search, compliance_search).
+    """Mixin for rerankers that classify in a single pass and never loop.
 
     ``_feedback`` always returns ``None`` so the loop terminates after
     the first classification round.

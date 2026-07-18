@@ -1,13 +1,14 @@
 """Unified Retrieval Artifact (URA) schema -- v3.0.
 
-URA is the canonical merged retrieval object that flows from the three
-domain executors (reg_search, compliance_search, case_search) into the
+URA is the canonical merged retrieval object that flows from the domain
+executors (reg_search — now spanning regulations, appendixes, circulars and
+services via the unified ``search_topics`` corpus — and case_search) into the
 aggregator. A single ``UnifiedRetrievalArtifact`` carries:
 
 - ``high_results`` / ``medium_results`` -- relevance-tiered buckets.
 - Per-domain result classes -- ``RegURAResult``, ``ComplianceURAResult``,
-  ``CaseURAResult`` -- wired through a Pydantic discriminated union on the
-  ``domain`` field.
+  ``CircularURAResult``, ``CaseURAResult`` -- wired through a Pydantic
+  discriminated union on the ``domain`` field.
 
 v3.0 reshape (URA Two-View Reframe):
 - Each result class holds the **full unfolded data** for its kept result.
@@ -28,7 +29,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
-Domain = Literal["regulations", "compliance", "cases"]
+Domain = Literal["regulations", "compliance", "circulars", "cases"]
 
 
 # -- Cross-ref caps -- applied at projection time, not at fetch time ----------
@@ -36,6 +37,29 @@ Domain = Literal["regulations", "compliance", "cases"]
 MAX_CROSS_REFS_AGG_REG = 5     # reg aggregator view
 MAX_CROSS_REFS_AGG_CASE = 3    # case aggregator view (referenced_regulations)
 MAX_CROSS_REFS_REF = 10        # both domains, reference view
+
+
+# -- Circular content cap (D11) ----------------------------------------------
+# Aggregator view = full circular content capped at 4,000 chars (p90=3,958;
+# max outlier 168,782) with an Arabic truncation marker. The cap is applied at
+# adapter time so the persisted URA never carries the 168k outlier; the user
+# view (uncapped full content) is rebuilt from the DB downstream (Wave 3).
+MAX_CIRCULAR_CONTENT_AGG = 4_000
+CIRCULAR_TRUNCATION_MARKER = "… [اقتُطع النص]"
+
+
+def cap_circular_content(
+    text: str | None, limit: int = MAX_CIRCULAR_CONTENT_AGG
+) -> str:
+    """Return circular content capped at ``limit`` chars with the D11 marker.
+
+    Text at or under the cap is returned trimmed; longer text is cut at the cap
+    and suffixed with :data:`CIRCULAR_TRUNCATION_MARKER`.
+    """
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[:limit].rstrip() + " " + CIRCULAR_TRUNCATION_MARKER
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +110,15 @@ class AggregatorItem(BaseModel):
     reg_scope: str = ""
     chunk_content: str = ""
     cross_refs: list[CrossRef] = Field(default_factory=list)
+    corpus: str = ""  # "appendix" -> (ملحق) tag; "" for the main statutory body
     # compliance
     service_name: str = ""
     service_context: str = ""
     provider_name: str = ""
+    # circulars
+    circular_title: str = ""
+    circular_content: str = ""
+    entity_name: str = ""
     # cases
     case_number: str | None = None
     case_content: str = ""
@@ -112,11 +141,15 @@ class ReferenceView(BaseModel):
     reg_title: str = ""
     landing_url: str = ""
     cross_refs: list[CrossRef] = Field(default_factory=list)
+    corpus: str = ""  # "appendix" -> (ملحق) tag; "" for the main statutory body
     # compliance
     service_name: str = ""
     provider_name: str = ""
     service_url: str = ""
     url: str = ""
+    # circulars (entity_name is shared with cases, below)
+    circular_title: str = ""
+    source_url: str = ""
     # cases
     case_number: str | None = None
     judgment_number: str | None = None
@@ -163,6 +196,7 @@ class RegURAResult(URAResultBase):
     landing_url: str = ""
     pdf_url: str = ""              # stored only
     owns: dict = Field(default_factory=dict)  # stored only
+    corpus: str = ""              # "appendix" -> (ملحق) tag (D13); "" = main body
 
     def for_aggregator(self, n: int = 0) -> AggregatorItem:
         return AggregatorItem(
@@ -174,6 +208,7 @@ class RegURAResult(URAResultBase):
             reg_scope=self.reg_scope,
             chunk_content=self.chunk_content,
             cross_refs=list(self.cross_refs[:MAX_CROSS_REFS_AGG_REG]),
+            corpus=self.corpus,
         )
 
     def for_reference(self) -> ReferenceView:
@@ -185,6 +220,7 @@ class RegURAResult(URAResultBase):
             reg_title=self.reg_title,
             landing_url=self.landing_url,
             cross_refs=list(self.cross_refs[:MAX_CROSS_REFS_REF]),
+            corpus=self.corpus,
         )
 
 
@@ -197,7 +233,7 @@ class ComplianceURAResult(URAResultBase):
 
     domain: Literal["compliance"] = "compliance"
     service_name: str = ""
-    service_context: str = ""
+    service_context: str = ""     # compact user/reference view (D10)
     provider_name: str = ""
     service_url: str = ""
     url: str = ""                 # fallback link for service_url
@@ -205,15 +241,41 @@ class ComplianceURAResult(URAResultBase):
     sectors: list[str] = Field(default_factory=list)  # stored only
     is_most_used: bool = False    # stored only
     is_proactive: bool = False    # stored only
+    # Structured payload for the RICH aggregator view (D10 / §1d). Optional:
+    # absent on old stored refs + references_service-rebuilt shells, in which
+    # case ``for_aggregator`` falls back to ``service_context``.
+    intro_title: str = ""
+    intro_description: str = ""
+    steps: list[str] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    required_documents: list[str] = Field(default_factory=list)
 
     def for_aggregator(self, n: int = 0) -> AggregatorItem:
+        # RICH aggregator view (D10): build from the structured fields, falling
+        # back to the compact ``service_context`` when they are absent.
+        from agents.deep_search_v4.ura.services_unfold import (
+            build_service_aggregator_content,
+        )
+
+        content = build_service_aggregator_content(
+            service_name=self.service_name,
+            intro_title=self.intro_title,
+            provider_name=self.provider_name,
+            intro_description=self.intro_description,
+            steps=self.steps,
+            requirements=self.requirements,
+            required_documents=self.required_documents,
+            service_url=self.service_url,
+            url=self.url,
+            fallback_context=self.service_context,
+        )
         return AggregatorItem(
             ref_id=self.ref_id,
             n=n,
             domain="compliance",
             relevance=self.relevance,
             service_name=self.service_name,
-            service_context=self.service_context,
+            service_context=content,
             provider_name=self.provider_name,
         )
 
@@ -227,6 +289,50 @@ class ComplianceURAResult(URAResultBase):
             provider_name=self.provider_name,
             service_url=self.service_url,
             url=self.url,
+        )
+
+
+class CircularURAResult(URAResultBase):
+    """Circulars-domain URA result (one ministerial circular — تعميم).
+
+    New under the unified ``search_topics`` corpus (D5/D9). Circular rows arrive
+    fully hydrated from the reg_search loop, so the type-aware ``reg_adapter``
+    carries every field below at adapter time — ``ura/enrich.py`` is a no-op for
+    this domain (mirrors compliance).
+
+    ``content`` holds the **aggregator view** (D11): the full circular body
+    capped at :data:`MAX_CIRCULAR_CONTENT_AGG` chars with an Arabic truncation
+    marker. The uncapped user view is rebuilt from the DB downstream (Wave 3).
+    """
+
+    domain: Literal["circulars"] = "circulars"
+    circ_ref: str = ""
+    title: str = ""
+    entity_name: str = ""
+    content: str = ""             # aggregator view: capped 4k + truncation marker
+    source_url: str = ""          # circulars.source
+    sectors: list[str] = Field(default_factory=list)  # stored only
+
+    def for_aggregator(self, n: int = 0) -> AggregatorItem:
+        return AggregatorItem(
+            ref_id=self.ref_id,
+            n=n,
+            domain="circulars",
+            relevance=self.relevance,
+            circular_title=self.title,
+            circular_content=self.content,
+            entity_name=self.entity_name,
+        )
+
+    def for_reference(self) -> ReferenceView:
+        return ReferenceView(
+            ref_id=self.ref_id,
+            domain="circulars",
+            source_type=self.source_type,
+            relevance=self.relevance,
+            circular_title=self.title,
+            entity_name=self.entity_name,
+            source_url=self.source_url,
         )
 
 
@@ -286,7 +392,7 @@ class CaseURAResult(URAResultBase):
 
 
 URAResult = Annotated[
-    Union[RegURAResult, ComplianceURAResult, CaseURAResult],
+    Union[RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult],
     Field(discriminator="domain"),
 ]
 
@@ -321,10 +427,14 @@ __all__ = [
     "URAResultBase",
     "RegURAResult",
     "ComplianceURAResult",
+    "CircularURAResult",
     "CaseURAResult",
     "URAResult",
     "UnifiedRetrievalArtifact",
     "MAX_CROSS_REFS_AGG_REG",
     "MAX_CROSS_REFS_AGG_CASE",
     "MAX_CROSS_REFS_REF",
+    "MAX_CIRCULAR_CONTENT_AGG",
+    "CIRCULAR_TRUNCATION_MARKER",
+    "cap_circular_content",
 ]

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agents.deep_search_v4.aggregator.models import AggregatorInput
-from agents.deep_search_v4.reg_search.models import (
+from agents.deep_search_v4.reg_compliance_search.models import (
     RerankedResult,
     RerankerQueryResult,
 )

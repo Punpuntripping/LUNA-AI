@@ -510,6 +510,50 @@ def import_post_for_user(
 _DEFAULT_IMPORT_SUBTYPE = "legal_synthesis"
 _ITEM_TITLE_MAX = 150
 
+# Must match the default set by conversation_service.create_conversation —
+# the retitle below only ever replaces this placeholder, never a real title.
+_DEFAULT_CONVO_TITLE = "محادثة جديدة"
+
+
+def _retitle_new_conversation(
+    supabase: SupabaseClient,
+    conv: dict,
+    item_title: str,
+) -> None:
+    """Rename a still-pristine «محادثة جديدة» after the blog it now carries.
+
+    Chat-with-blog creates the conversation before the user commits a message,
+    so an abandoned import lingers in the sidebar disguised as a fresh empty
+    chat while silently carrying the blog item. Only fires while the
+    conversation is untouched (default title AND zero messages), and the
+    UPDATE re-checks the title server-side so a concurrent first-message
+    auto-title is never clobbered — if the user does send a message, the
+    stream-end auto-title wins, which is the desired outcome either way.
+
+    Best-effort like ``_materialize_references`` — a rename hiccup must not
+    fail the import.
+    """
+    try:
+        if (conv.get("title_ar") or "").strip() != _DEFAULT_CONVO_TITLE:
+            return
+        if conv.get("message_count"):
+            return
+        title = f"مدونة: {item_title}".strip()
+        if len(title) > 60:
+            title = title[:60].strip() + "..."
+        (
+            supabase.table("conversations")
+            .update({"title_ar": title})
+            .eq("conversation_id", conv["conversation_id"])
+            .eq("title_ar", _DEFAULT_CONVO_TITLE)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "blog import: conversation retitle failed for %s: %s",
+            conv.get("conversation_id"), e,
+        )
+
 
 def _materialize_references(
     supabase: SupabaseClient,
@@ -630,7 +674,7 @@ def create_blog_item(
     from backend.app.services.message_service import verify_conversation_ownership
     from backend.app.services.workspace_service import create_workspace_item
 
-    verify_conversation_ownership(supabase, conversation_id, user_id)
+    conv = verify_conversation_ownership(supabase, conversation_id, user_id)
 
     post = resolve_post_by_token(supabase, token)
     if post is None:
@@ -657,6 +701,11 @@ def create_blog_item(
         logger.exception("Error checking existing blog import: %s", e)
         rows = []
     if rows:
+        # Pre-fix debris: a re-import into a still-abandoned conversation
+        # gets the honest title too.
+        _retitle_new_conversation(
+            supabase, conv, rows[0].get("title") or "مدونة مستوردة",
+        )
         return rows[0], True
 
     question_text = (post.get("question_text") or "").strip()
@@ -680,6 +729,7 @@ def create_blog_item(
     )
 
     _materialize_references(supabase, item["item_id"], post)
+    _retitle_new_conversation(supabase, conv, title)
     return item, False
 
 

@@ -110,7 +110,7 @@ A question that **names a specific نظام** (or a specific article) still usua
 
 Below the system instructions you receive optional context blocks:
 - `<query>` — the original question (always present).
-- `<mode>` — the mode the planner decided (`reg_led` / `case_led` / `compliance_led` / `full`) — treat it as a hint only; it does not bind you to a sector.
+- `<mode>` — the mode the planner decided (`reg_compliance_led` / `case_led` / `full`) — treat it as a hint only; it does not bind you to a sector.
 - `<planner_brief>` — facts the planner injected (present only when non-empty).
 - `<context_blocks>` — other context blocks (case_brief / prior_search_lessons).
 
