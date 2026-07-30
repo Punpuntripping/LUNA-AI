@@ -15,12 +15,20 @@ import { cn } from "@/lib/utils";
 /**
  * Desktop (`lg+`) primary navigation for the global site header.
  *
- * Auth-aware: the pre-conversion «عن ريحان» slot is dropped once a session is
- * confirmed. While the session probe is in flight (`isLoading`) we render the
- * full anonymous nav — that keeps the server HTML and the first client render
- * identical (no hydration mismatch) and matches the discipline in
- * `HeaderAuthActions`: never assume signed-out early, only REMOVE a slot after
- * auth resolves, so a signed-in user never sees a slot flash and disappear.
+ * Auth-aware in principle — `resolveNav` drops any group flagged
+ * `hideWhenAuthed` — but NO slot currently carries the flag, so signed-in and
+ * anonymous visitors get the same bar. «عن ريحان» used to be dropped and was
+ * reinstated: the drop only ran after the session probe resolved, so a signed-in
+ * user watched the slot paint and then vanish.
+ *
+ * If a slot is ever flagged again, that flash is the thing to solve first. While
+ * the probe is in flight (`isLoading`) this renders the full anonymous nav, which
+ * keeps the server HTML and the first client render identical (no hydration
+ * mismatch, and the dropdown links stay in the crawled markup) — but it also
+ * means a hidden-when-authed slot is necessarily painted before it is removed.
+ * `HeaderAuthActions` avoids the equivalent flash by reserving an invisible
+ * same-footprint placeholder during `isLoading`; a nav slot needs the same trick,
+ * or a pre-paint auth marker on `<html>` so CSS can hide it before first paint.
  *
  * Dropdown links are rendered unconditionally into the DOM — only their
  * visibility is toggled — so they sit in the server-rendered HTML and stay

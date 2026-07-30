@@ -15,7 +15,9 @@
 // order as written, top-to-bottom.
 //
 //   • عن ريحان            — hub at /about_us AND a dropdown over the pitch pages.
-//                            Pre-conversion, so still dropped once signed in.
+//                            Kept for signed-in visitors too: the pitch pages stay
+//                            useful after signup, and dropping the slot mid-session
+//                            made it visibly vanish once the auth probe resolved.
 //   • اكتشف ريحان         — how-to / guides. Hub at /learn. Children Phase C, so
 //                            it resolves to a flat link until two of them land.
 //   • المكتبة القانونية   — the SEO corpus dropdown + المدونة. No hub row.
@@ -82,7 +84,7 @@ export const SITE_NAV: NavGroup[] = [
     href: "/about_us",
     hubLabel: "عن ريحان",
     hubDescription: "قصة ريحان ومهمّته",
-    hideWhenAuthed: true,
+    hideWhenAuthed: false,
     children: [
       {
         label: "لمن ريحان؟",
