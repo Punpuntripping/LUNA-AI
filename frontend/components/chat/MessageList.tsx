@@ -322,11 +322,13 @@ export function MessageList({
     return (
       <div className={cn("flex-1 flex flex-col gap-4 p-4", className)}>
         {[1, 2, 3].map((i) => (
+          // Mirrors the settled layout: everything anchors to the inline-start
+          // (right in RTL) — user rows compact, assistant rows wide.
           <div
             key={i}
             className={cn(
-              "rounded-2xl h-16 animate-pulse bg-muted",
-              i % 2 === 0 ? "ms-auto w-3/5" : "me-auto w-2/3"
+              "rounded-2xl h-16 animate-pulse bg-muted me-auto",
+              i % 2 === 0 ? "w-5/6" : "w-1/2"
             )}
           />
         ))}
@@ -425,7 +427,9 @@ export function MessageList({
               );
             }
             return (
-              <div key={msg.message_id} className="flex justify-end mb-4">
+              // Inline-start (right in RTL) — same edge the answer text will
+              // occupy, so the indicator morphs into the response in place.
+              <div key={msg.message_id} className="flex justify-start mb-10">
                 <ThinkingRow />
               </div>
             );
@@ -477,7 +481,7 @@ export function MessageList({
         {/* Typing indicator: streaming started but no content yet — unless an
             empty placeholder row is already showing its own (Layer 1). */}
         {isStreaming && !hasStreamContent && !hasIncompletePlaceholder && (
-          <div className="flex justify-end mb-4">
+          <div className="flex justify-start mb-10">
             <ThinkingRow />
           </div>
         )}

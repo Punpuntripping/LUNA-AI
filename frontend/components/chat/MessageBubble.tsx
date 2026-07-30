@@ -3,7 +3,6 @@
 import {
   Copy,
   Check,
-  Bot,
   BookText,
   FileText,
   FileSearch,
@@ -35,6 +34,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { getRelativeTimeAr } from "@/lib/utils";
+import { useAuthStore } from "@/stores/auth-store";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
@@ -113,6 +113,9 @@ export const MessageBubble = memo(function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  // Narrow selector (a string) so settled bubbles never re-render on other
+  // auth-store changes.
+  const userName = useAuthStore((s) => s.user?.full_name_ar) || "أنت";
 
   const isUser = message.role === "user";
   const isCurrentlyStreaming = message.isStreaming && streamingContent !== undefined;
@@ -225,29 +228,25 @@ export const MessageBubble = memo(function MessageBubble({
   const displayContent = isCurrentlyStreaming ? streamingContent : message.content;
 
   // ==========================================================================
-  // USER MESSAGE — prose style, no bubble
+  // USER MESSAGE — compact tinted bubble at the inline-end. The shrink-wrapped
+  // shape (vs the assistant's full-column prose) is what marks it as the
+  // question; no visible sender chrome — the label is screen-reader-only.
   // ==========================================================================
   if (isUser) {
-    // TODO: wire actual user display name when available
-    const userName = "أنت";
-    const avatarLetter = userName.charAt(0) || "أ";
-
     return (
       <TooltipProvider delayDuration={300}>
         <div
           dir="rtl"
           lang="ar"
           className={cn(
-            "flex flex-col gap-1.5 mb-5 group/bubble",
+            "flex flex-col items-start gap-1.5 mb-3 group/bubble",
             message.isOptimistic && !message.isFailed && "opacity-70"
           )}
         >
-          {/* Header row: avatar + name + timestamp */}
-          <div className="flex items-center gap-2.5">
-            <div className="h-7 w-7 bg-muted text-muted-foreground rounded-full flex items-center justify-center text-xs font-semibold shrink-0">
-              {avatarLetter}
-            </div>
-            <span className="text-[13px] font-semibold text-foreground">
+          {/* Sender name — small caption on the same right rail the bubble
+              starts from */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-medium text-muted-foreground select-none">
               {userName}
             </span>
             {isAgentAnswer && (
@@ -255,14 +254,11 @@ export const MessageBubble = memo(function MessageBubble({
                 (جواب)
               </span>
             )}
-            <span className="text-[11px] text-muted-foreground ms-auto">
-              {getRelativeTimeAr(message.created_at)}
-            </span>
           </div>
 
-          {/* Body / edit mode — indented to align under the name */}
+          {/* Body / edit mode */}
           {isEditing ? (
-            <div className="ps-[38px] space-y-2">
+            <div className="w-full space-y-2">
               <TextareaAutosize
                 ref={editTextareaRef}
                 dir="rtl"
@@ -297,25 +293,90 @@ export const MessageBubble = memo(function MessageBubble({
                 </Button>
               </div>
             </div>
-          ) : isCurrentlyStreaming ? (
-            <div className="ps-[38px] text-sm leading-[1.75] text-foreground">
-              <StreamingText content={streamingContent ?? ""} />
-            </div>
           ) : (
-            <div className="ps-[38px] text-sm leading-[1.75] text-foreground whitespace-pre-wrap">
-              {displayContent}
+            <div className="flex w-full items-center justify-start gap-1">
+              {isCurrentlyStreaming ? (
+                <div
+                  dir="auto"
+                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-[15px] leading-[1.75] text-foreground"
+                >
+                  <StreamingText content={streamingContent ?? ""} />
+                </div>
+              ) : (
+                <div
+                  dir="auto"
+                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-[15px] leading-[1.75] text-foreground whitespace-pre-wrap"
+                >
+                  {displayContent}
+                </div>
+              )}
+
+              {/* Gutter actions — beside the bubble on its outer (inline-end)
+                  side so they consume no vertical space; the question→answer
+                  gap must stay tighter than the between-turns gap */}
+              {isCompleted && !message.isFailed && (
+                <div
+                  className={cn(
+                    "flex items-center gap-0.5",
+                    "opacity-0 group-hover/bubble:opacity-100 group-focus-within/bubble:opacity-100 transition-opacity duration-200",
+                    "max-sm:opacity-100"
+                  )}
+                >
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        onClick={handleCopy}
+                        aria-label="نسخ"
+                      >
+                        {copied ? (
+                          <Check className="h-3.5 w-3.5 text-success-fg" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        onClick={handleStartEdit}
+                        aria-label="تعديل"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      <p className="text-xs">تعديل</p>
+                    </TooltipContent>
+                  </Tooltip>
+
+                  <span className="ps-1 text-[11px] text-muted-foreground select-none max-sm:hidden">
+                    {getRelativeTimeAr(message.created_at)}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
           {/* Failed indicator + retry */}
           {message.isFailed && (
-            <div className="ps-[38px] flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
               <span className="text-xs text-destructive">فشل إرسال الرسالة</span>
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 text-xs px-2 gap-1 border-destructive/50 text-destructive hover:text-destructive hover:bg-destructive/10 ms-auto"
+                className="h-6 text-xs px-2 gap-1 border-destructive/50 text-destructive hover:text-destructive hover:bg-destructive/10"
                 onClick={handleRetry}
               >
                 <RefreshCw className="h-3 w-3" />
@@ -329,79 +390,54 @@ export const MessageBubble = memo(function MessageBubble({
             attachments={message.attachments}
             artifactLookup={artifactLookup}
             onOpenArtifact={onOpenArtifact}
-            className="ps-[38px]"
+            className="justify-end"
           />
 
-          {/* Action bar */}
-          {isCompleted && !message.isFailed && !isEditing && (
-            <div
-              className={cn(
-                "ps-[38px] flex items-center gap-0.5",
-                "opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-200",
-                "max-sm:opacity-100"
-              )}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    onClick={handleCopy}
-                    aria-label="نسخ"
-                  >
-                    {copied ? (
-                      <Check className="h-3.5 w-3.5 text-success-fg" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    onClick={handleStartEdit}
-                    aria-label="تعديل"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">تعديل</p>
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          )}
         </div>
       </TooltipProvider>
     );
   }
 
   // ==========================================================================
-  // ASSISTANT MESSAGE — bubble, RTL start-aligned (right edge)
+  // ASSISTANT MESSAGE — unframed full-column prose on the page background;
+  // the shape asymmetry against the user's compact bubble is what pairs a
+  // question with its answer. Only the agent-question callout and the failed
+  // state keep a card frame.
   // ==========================================================================
+  const isFramed = isAgentQuestion || message.isFailed;
+
   return (
     <TooltipProvider delayDuration={300}>
       <div
         dir="rtl"
         lang="ar"
-        className="flex w-full mb-3.5 justify-start group/bubble"
+        className={cn(
+          "w-full group/bubble",
+          // An agent question binds tightly to the user's upcoming reply;
+          // a settled answer closes the turn with a wide gap before the next.
+          isAgentQuestion ? "mb-3" : "mb-10",
+          message.isOptimistic && !message.isFailed && "opacity-70"
+        )}
       >
+        {/* Sender name — mirrors the user caption, same rail */}
+        <div className="mb-1.5 flex items-center">
+          <span className="text-[11px] font-medium text-muted-foreground select-none">
+            ريحان
+          </span>
+        </div>
         <div
           className={cn(
-            "relative max-w-[85%] rounded-2xl border bg-card px-4 py-3 shadow-sm text-foreground text-sm leading-[1.75]",
+            "text-foreground text-sm leading-[1.75]",
+            // Justified paragraphs (flush at both edges, like a legal document)
+            // + Arabic-comfortable line-height. On the container rather than
+            // MarkdownRenderer so the streaming path gets the same treatment.
+            !isAgentQuestion &&
+              "[text-justify:inter-word] [&_li]:text-justify [&_li]:leading-[1.85] [&_p]:text-justify [&_p]:leading-[1.85]",
+            isFramed &&
+              "relative w-fit max-w-full rounded-2xl border bg-card px-4 py-3 shadow-sm",
             message.isFailed && "border-destructive border-2",
             isAgentQuestion &&
-              "border-primary/40 bg-primary/[0.04] border-r-4 border-r-primary/70",
-            message.isOptimistic && !message.isFailed && "opacity-70"
+              "border-primary/40 bg-primary/[0.04] border-s-4 border-s-primary/70"
           )}
         >
           {/* Agent question header */}
@@ -411,27 +447,6 @@ export const MessageBubble = memo(function MessageBubble({
               <span className="text-[11px] font-semibold text-primary">
                 السؤال
               </span>
-            </div>
-          )}
-
-          {/* Model badge + optional artifact chip */}
-          {!isCurrentlyStreaming && !isAgentQuestion && (message.model || hasArtifacts) && (
-            <div className="flex items-center gap-2 mb-1.5">
-              {message.model && (
-                <div className="flex items-center gap-1">
-                  <Bot className="h-3 w-3 text-muted-foreground" />
-                  <span className="text-[10px] text-muted-foreground">
-                    {message.model}
-                  </span>
-                </div>
-              )}
-              {hasArtifacts && (
-                <ArtifactChip
-                  artifactIds={artifactIds!}
-                  artifactLookup={artifactLookup}
-                  onOpenArtifact={onOpenArtifact}
-                />
-              )}
             </div>
           )}
 
@@ -449,36 +464,38 @@ export const MessageBubble = memo(function MessageBubble({
             />
           )}
 
-          {/* Phase E (§9 O5): chip(s) for prior cards the planner referenced
-              instead of publishing a new one. Stays hidden during streaming
-              — the SSE handler attaches ids to the assistant message_id, and
-              once `done` fires the bubble re-renders with the chip visible. */}
-          {!isCurrentlyStreaming && hasReferencedItems && (
-            <div className="flex flex-wrap gap-1.5 mt-2.5">
-              {referencedItemIds!.map((id) => (
-                <ReferencedItemChip
-                  key={id}
-                  itemId={id}
-                  label={artifactLookup?.[id]?.title}
-                  onJump={onJumpToReferencedItem}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Wave E (writer_planner_user_templates §D6): "save attachment as
-              template" chip. Like the referenced-items chip it stays hidden
-              during streaming and appears once the turn settles — the SSE
-              ``template_save_offer`` event attaches the offer to the assistant
-              message_id and the bubble re-renders with the chip visible. */}
-          {!isCurrentlyStreaming && hasTemplateOffer && (
-            <div className="flex flex-wrap gap-1.5 mt-2.5">
-              <TemplateSaveOfferChip
-                itemId={templateOffer!.itemId}
-                titleHint={templateOffer!.titleHint}
-              />
-            </div>
-          )}
+          {/* Sources + referenced prior cards + template offer — one always-
+              visible row: for a legal answer, source presence is content, not
+              chrome, so it never hides behind hover. All three stay hidden
+              during streaming — their SSE events attach to the assistant
+              message_id and the bubble re-renders with them once settled. */}
+          {!isCurrentlyStreaming &&
+            (hasArtifacts || hasReferencedItems || hasTemplateOffer) && (
+              <div className="flex flex-wrap items-center gap-1.5 mt-3">
+                {hasArtifacts && (
+                  <ArtifactChip
+                    artifactIds={artifactIds!}
+                    artifactLookup={artifactLookup}
+                    onOpenArtifact={onOpenArtifact}
+                  />
+                )}
+                {hasReferencedItems &&
+                  referencedItemIds!.map((id) => (
+                    <ReferencedItemChip
+                      key={id}
+                      itemId={id}
+                      label={artifactLookup?.[id]?.title}
+                      onJump={onJumpToReferencedItem}
+                    />
+                  ))}
+                {hasTemplateOffer && (
+                  <TemplateSaveOfferChip
+                    itemId={templateOffer!.itemId}
+                    titleHint={templateOffer!.titleHint}
+                  />
+                )}
+              </div>
+            )}
 
           {/* Agent question suggestions (read-only chips — the user types their reply
               into the normal chat input; clicking a chip is a future enhancement) */}
@@ -520,12 +537,13 @@ export const MessageBubble = memo(function MessageBubble({
             className="mt-2"
           />
 
-          {/* Action bar */}
+          {/* Action bar — actions at the start, model + timestamp meta at the
+              end; height reserved so the hover reveal never shifts layout */}
           {isCompleted && !message.isFailed && (
             <div
               className={cn(
-                "flex items-center gap-0.5 mt-2",
-                "opacity-0 group-hover/bubble:opacity-100 transition-opacity duration-200",
+                "flex h-8 items-center gap-0.5 mt-1.5",
+                "opacity-0 group-hover/bubble:opacity-100 group-focus-within/bubble:opacity-100 transition-opacity duration-200",
                 "max-sm:opacity-100"
               )}
             >
@@ -620,20 +638,24 @@ export const MessageBubble = memo(function MessageBubble({
                   <p className="text-xs">عدم إعجاب</p>
                 </TooltipContent>
               </Tooltip>
-            </div>
-          )}
 
-          {/* Timestamp row */}
-          {(isCurrentlyStreaming || message.isFailed) && (
-            <div className="flex items-center mt-2">
-              <span className="text-[10px] text-muted-foreground select-none">
-                {getRelativeTimeAr(message.created_at)}
+              <span className="ms-auto flex items-center gap-1.5 text-[11px] text-muted-foreground select-none">
+                {message.model && (
+                  <>
+                    <span dir="ltr" className="[unicode-bidi:isolate]">
+                      {message.model}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                  </>
+                )}
+                <span>{getRelativeTimeAr(message.created_at)}</span>
               </span>
             </div>
           )}
 
-          {isCompleted && !message.isFailed && (
-            <div className="flex items-center mt-1">
+          {/* Failed state keeps its timestamp inside the card */}
+          {message.isFailed && (
+            <div className="flex items-center mt-2">
               <span className="text-[10px] text-muted-foreground select-none">
                 {getRelativeTimeAr(message.created_at)}
               </span>
@@ -656,8 +678,8 @@ interface ArtifactChipProps {
 }
 
 /**
- * Inline "المصدر" chip rendered next to the model badge on assistant
- * bubbles that produced at least one workspace_item.
+ * Inline "المصدر" chip rendered in the chips row under assistant messages
+ * that produced at least one workspace_item.
  *
  * - One artifact → a single ghost button. Click opens it in the pane.
  * - Multiple artifacts → a DropdownMenu trigger; clicking a row opens that id.

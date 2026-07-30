@@ -588,6 +588,8 @@ export function ChatInput({
 
   return (
     <div dir="rtl" lang="ar" className={cn("border-t bg-background px-4 py-3", className)}>
+      {/* Same column rail as MessageList so the composer aligns with the thread */}
+      <div className="mx-auto w-full max-w-3xl">
       {pendingFiles.length > 0 && (
         <FilePreview
           files={pendingFiles}
@@ -677,6 +679,7 @@ export function ChatInput({
             <Send className="h-4 w-4" />
           </Button>
         )}
+      </div>
       </div>
     </div>
   );

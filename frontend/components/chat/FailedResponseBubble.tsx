@@ -31,9 +31,9 @@ export function FailedResponseBubble({
     <div
       dir="rtl"
       lang="ar"
-      className="flex w-full mb-3.5 justify-start"
+      className="flex w-full mb-10 justify-start"
     >
-      <div className="relative max-w-[85%] rounded-2xl border-2 border-destructive bg-card px-4 py-3 shadow-sm text-sm leading-[1.75]">
+      <div className="relative w-fit max-w-[85%] rounded-2xl border-2 border-destructive bg-card px-4 py-3 shadow-sm text-sm leading-[1.75]">
         <div className="flex items-center gap-2">
           <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
           <span className="text-destructive">
