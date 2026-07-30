@@ -18,6 +18,31 @@ tests/
 !backend/tests/
 backend/tests/*
 !backend/tests/test_masking_wiring.py
+# access-tiers / library-gating suites are durable — they pin revenue and
+# entitlement invariants (unlock idempotency, the frozen-library predicate, the
+# شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.
+!backend/tests/test_library_gating.py
+!backend/tests/test_library_enforcement.py
+!backend/tests/test_library_mine.py
+!backend/tests/test_rate_limit_library.py
+!backend/tests/test_reference_source.py
+!backend/tests/test_blog_snapshot_gating.py
+# edge-hardening suites are durable — they pin the deploy gate (origin lock must
+# never 403 /api/v1/health, or every Railway deploy fails), the CORS-ordering
+# invariant that once took production logins down, and the rate-limit bucket
+# identity under forged CF-Connecting-IP / X-Forwarded-For headers.
+!backend/tests/test_origin_lock.py
+!backend/tests/test_client_ip_resolution.py
+# navigation-hardening suites are durable — anon must NEVER be metered per-user
+# (an IP key here would meter the ISR renderer and take the public library down),
+# the 429 must stay a single shared contract, and the filter vocabularies pin the
+# enumeration fix incl. the total_pages oracle.
+!backend/tests/test_library_item_budget.py
+!backend/tests/test_library_filter_hardening.py
+# account-settings suite is durable — it pins that /logout revokes via the
+# SERVICE-ROLE admin API. Depending on the shared anon client there lets one
+# user's logout globally revoke a DIFFERENT user's sessions, silently.
+!backend/tests/test_account_settings.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock
@@ -51,3 +76,6 @@ upload_smoke_*.png
 *_dev.log
 # Deploy-checker verification screenshots — throwaway artifacts
 .claude/deploy-*.png
+
+# graphify knowledge graph output
+graphify-out/

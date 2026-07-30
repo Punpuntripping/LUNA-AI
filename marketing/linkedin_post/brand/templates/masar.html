@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>Rayhan LinkedIn deck — قالب المسار (steps)</title>
+<!-- ============================================================
+  TEMPLATE: masar (المسار) — numbered procedural steps
+  BEST FOR: blogs with numbered إجراءات/خطوات
+  SLIDES: hook · summary · 3–6 × step · sources · cta  (total 7–10)
+
+  SLOT CONTRACT (agent fills deck_plan.json; renderer fills these):
+    hook.eyebrow      ≤ 30 chars   category path e.g. «عقارات · توثيق»
+    hook.headline     ≤ 70 chars   the question, everyday phrasing, standalone hook
+    hook.sub          ≤ 60 chars   promise incl. count e.g. «الإجراء كامل في ٧ خطوات»
+    summary.headline  ≤ 60 chars   the ANSWER in one line (never a generic label)
+    summary.body      ≤ 220 chars  compressed خلاصة, 2 sentences max
+    step[n].title     ≤ 40 chars   verb-first
+    step[n].body      ≤ 170 chars  2 sentences max
+    step[n].cite      ≤ 60 chars   optional chip «نظام … · المادة ٩»
+    sources.refs[3–4] name ≤ 45 + article ≤ 15
+    sources.count     total refs in blog (e.g. «١١»)
+    cta               fixed layout; only blog token varies (link goes to 1st comment)
+  HARD RULES: letter-spacing 0 · ≤2 text blocks/slide · headlines must
+  narrate standalone when read in sequence · Arabic-Indic numerals.
+  DEMO CONTENT: pilot blog ec47e5cc… (representative, not verbatim).
+============================================================ -->
+<link rel="stylesheet" href="../rayhan_brand.css">
+</head>
+<body>
+
+<!-- 1 · HOOK -->
+<div class="slide">
+  <div class="eyebrow">عقارات &middot; توثيق</div>
+  <div style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+    <div class="rule"></div>
+    <h1 class="hook-h">عندك أرض زراعية ما دخلت السجل العقاري&hellip; وتبي تفرغها لشريكك؟</h1>
+    <p class="body-t" style="margin-top:44px;color:var(--muted);">الإجراء النظامي كامل — في ٥ خطوات</p>
+  </div>
+  <div class="swipe"><span>اسحب</span><span class="arr">&larr;</span></div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">١ / ٩</span></div>
+</div>
+
+<!-- 2 · SUMMARY (الجواب المختصر) -->
+<div class="slide">
+  <div class="eyebrow">الجواب المختصر</div>
+  <div class="content">
+  <h2 class="slide-h">الإفراغ يتم بتوثيق التصرف لدى كتابة العدل — حتى خارج السجل العقاري.</h2>
+  <div class="card" style="margin-top:12px;">
+    <p class="body-t">بيع الحصة أو قسمة التراضي بين الشريكين يُوثَّق بصك واحد محدّث، بعد موافقة الجهة المختصة بالأراضي الزراعية، ورفع مساحي معتمد، وتسديد ضريبة التصرفات العقارية.</p>
+  </div>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٢ / ٩</span></div>
+</div>
+
+<!-- 3 · STEP 1 -->
+<div class="slide">
+  <div class="eyebrow">خطوة بخطوة</div>
+  <div class="content">
+  <div style="display:flex;align-items:center;gap:36px;margin-bottom:40px;">
+    <div class="dot">١</div>
+    <h2 class="slide-h" style="margin-bottom:0;">تحقّق من الصك وحصر الشركاء</h2>
+  </div>
+  <p class="body-t">الأساس صك ملكية واحد على الشيوع بين الشريكين. حدّثه إلكترونيًا عبر ناجز قبل أي خطوة — الصكوك الورقية القديمة لا تُقبل في التوثيق.</p>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٣ / ٩</span></div>
+</div>
+
+<!-- 4 · STEP 2 -->
+<div class="slide">
+  <div class="eyebrow">خطوة بخطوة</div>
+  <div class="content">
+  <div style="display:flex;align-items:center;gap:36px;margin-bottom:40px;">
+    <div class="dot">٢</div>
+    <h2 class="slide-h" style="margin-bottom:0;">خذ موافقة الجهة المختصة</h2>
+  </div>
+  <p class="body-t">الأراضي الزراعية لها متطلبات خاصة: موافقة وزارة البيئة والمياه والزراعة (أو الجهة صاحبة الاختصاص) على التصرف قبل الإفراغ.</p>
+  <div class="chiprow"><span class="chip"><b>نظام تملّك العقار</b><span class="art">&middot; المواد ٧–٩</span></span></div>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٤ / ٩</span></div>
+</div>
+
+<!-- 5 · STEP 3 -->
+<div class="slide">
+  <div class="eyebrow">خطوة بخطوة</div>
+  <div class="content">
+  <div style="display:flex;align-items:center;gap:36px;margin-bottom:40px;">
+    <div class="dot">٣</div>
+    <h2 class="slide-h" style="margin-bottom:0;">اعتمد رفعًا مساحيًا للأرض</h2>
+  </div>
+  <p class="body-t">رفع مساحي من مكتب هندسي مرخّص يحدّد الحدود والمساحة الفعلية — شرط لقبول التوثيق، وأساس لأي تسجيل عيني لاحق.</p>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٥ / ٩</span></div>
+</div>
+
+<!-- 6 · STEP 4 -->
+<div class="slide">
+  <div class="eyebrow">خطوة بخطوة</div>
+  <div class="content">
+  <div style="display:flex;align-items:center;gap:36px;margin-bottom:40px;">
+    <div class="dot">٤</div>
+    <h2 class="slide-h" style="margin-bottom:0;">سدّد ضريبة التصرفات العقارية</h2>
+  </div>
+  <p class="body-t">قبل الإفراغ، يُسجَّل التصرف في بوابة الزكاة والضريبة والجمارك وتُسدَّد الضريبة (٥٪) — أو تُوثَّق حالة الإعفاء إن انطبقت.</p>
+  <div class="chiprow"><span class="chip"><b>لائحة ضريبة التصرفات العقارية</b></span></div>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٦ / ٩</span></div>
+</div>
+
+<!-- 7 · STEP 5 -->
+<div class="slide">
+  <div class="eyebrow">خطوة بخطوة</div>
+  <div class="content">
+  <div style="display:flex;align-items:center;gap:36px;margin-bottom:40px;">
+    <div class="dot">٥</div>
+    <h2 class="slide-h" style="margin-bottom:0;">وثّق البيع أو القسمة لدى كتابة العدل</h2>
+  </div>
+  <p class="body-t">الخطوة الأخيرة: توثيق بيع الحصة أو قسمة التراضي، فيصدر صك محدّث باسم المالك الجديد — هذا هو «الإفراغ» نظامًا.</p>
+  <div class="chiprow"><span class="chip"><b>اللائحة التنفيذية لنظام التوثيق</b><span class="art">&middot; المادة ٢</span></span></div>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٧ / ٩</span></div>
+</div>
+
+<!-- 8 · SOURCES -->
+<div class="slide">
+  <div class="eyebrow">نُظهر مصادرنا</div>
+  <div class="content">
+  <h2 class="slide-h">كل خطوة أعلاه&hellip; بمصدرها الرسمي.</h2>
+  <div style="display:flex;flex-direction:column;gap:26px;margin-top:16px;">
+    <span class="chip"><b>اللائحة التنفيذية لنظام التوثيق</b><span class="art">&middot; المادة ٢</span></span>
+    <span class="chip"><b>نظام تملّك العقار</b><span class="art">&middot; المواد ٧–٩</span></span>
+    <span class="chip"><b>نظام التسجيل العيني للعقار</b></span>
+    <span class="chip"><b>لائحة ضريبة التصرفات العقارية</b></span>
+  </div>
+  <div class="card sage" style="margin-top:56px;">
+    <p class="body-s" style="color:var(--sage-deep);">التحليل الكامل يستند إلى <b>١١ مصدرًا رسميًا</b> — أنظمة ولوائح وخدمات حكومية، كل اقتباس يوصلك للنص الأصلي.</p>
+  </div>
+  </div>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٨ / ٩</span></div>
+</div>
+
+<!-- 9 · CTA -->
+<div class="slide" style="align-items:center;text-align:center;justify-content:center;">
+  <div class="mark-tile lg" style="margin-bottom:48px;">ر</div>
+  <h2 class="slide-h" style="margin-bottom:28px;">التحليل الكامل — مجانًا، وبالمصادر.</h2>
+  <p class="body-t" style="color:var(--muted);max-width:760px;">اقرأ الإجراء كاملًا بكل تفاصيله واستثناءاته،<br>واسأل ريحان عن حالتك أنت.</p>
+  <div style="display:flex;gap:22px;margin-top:56px;justify-content:center;">
+    <span class="pill">جرّب ريحان مجانًا &middot; rayhanai.com</span>
+    <span class="pill gold">الرابط في أول تعليق</span>
+  </div>
+  <p class="body-s" style="position:absolute;bottom:130px;right:84px;left:84px;color:var(--subtle);font-size:24px;">محتوى توعوي عام — ليس استشارة قانونية.</p>
+  <div class="foot"><span class="brand"><span class="t">ر</span> ريحان &middot; rayhanai.com</span><span class="pageno">٩ / ٩</span></div>
+</div>
+
+</body>
+</html>

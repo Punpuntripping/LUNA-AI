@@ -11,6 +11,13 @@
       "env": {
         "ESLINT_USE_FLAT_CONFIG": "false"
       }
+    },
+    "graphify": {
+      "command": "C:\\Users\\mhfal\\.graphify-venv\\Scripts\\graphify-mcp.exe",
+      "args": [
+        "--graph",
+        "C:\\Programming\\LUNA_AI\\graphify-out\\graph.json"
+      ]
     }
   }
 }
