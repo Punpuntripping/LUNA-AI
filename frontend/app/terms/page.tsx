@@ -5,6 +5,9 @@ import { LegalPageShell } from "@/components/legal/LegalPageShell";
 export const metadata: Metadata = {
   title: "الشروط والأحكام — ريحان",
   description: "الشروط والأحكام لمنصة ريحان",
+  alternates: {
+    canonical: "/terms",
+  },
 };
 
 // Next.js App Router requires a default export for page files.

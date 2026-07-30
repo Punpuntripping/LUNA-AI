@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   Scale,
   Gavel,
@@ -12,6 +13,8 @@ import {
   Link2,
   Copy,
   Check,
+  Loader2,
+  Sparkles,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -21,19 +24,64 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import {
+  useLibraryBalance,
+  useReferenceSource,
+} from "@/hooks/use-reference-source";
+import type { LibraryBalance } from "@/lib/library/full-content";
+import {
+  balanceCopy,
+  rateLimitedCopy,
+  referenceRevealCopy,
+  refusalCardCopy,
+  revealCopy,
+  sourceUnavailableCopy,
+  staleSessionCopy,
+  transportErrorCopy,
+  unlockedNotice,
+  type RefusalCardCopy,
+} from "@/lib/library/gate-copy";
+import type { ReferenceSourceResult } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { Reference, ReferenceDomain, SourceView } from "@/types";
+import type {
+  Reference,
+  ReferenceDomain,
+  ReferenceUnlockInfo,
+  SourceView,
+} from "@/types";
 
 interface ReferencePanelProps {
   references: Reference[];
   /**
-   * When non-null, the matching ``<li id="ref-{n}">`` is scrolled into view
-   * and briefly flashes. Set by ``openWorkspaceItemAtReference`` in the chat
-   * store; cleared via ``onFlashDone`` (called from the ``<li>`` animation-
-   * end handler) so the same marker can be re-clicked.
+   * The workspace item these references belong to — the in-app address for the
+   * metered source reveal (access-tiers Phase C, §6.2), scoped to
+   * ``GET /workspace/{item_id}/references/{n}/source``.
+   *
+   * Mutually exclusive with ``blogToken``: a reader of someone else's published
+   * post does NOT own the author's workspace item, so that endpoint would 404
+   * them out of their own reading.
+   */
+  itemId?: string;
+  /**
+   * The public blog token, for a reference panel rendered on a published post.
+   *
+   * «عرض المصدر» and the ``[n]`` preview work here exactly as they do in chat —
+   * the click opens the source; it just costs an unlock now. An ANONYMOUS
+   * reader still sees the affordance and gets the «سجّل مجاناً» card on click,
+   * which is the whole point: hiding the button (an earlier pass did) deleted a
+   * feature rather than metering it.
+   */
+  blogToken?: string;
+  /**
+   * When non-null, reference ``n`` is opened: its source dialog is revealed
+   * when a source exists, otherwise the matching ``<li id="ref-{n}">`` is
+   * scrolled into view and briefly flashes. Set by
+   * ``openWorkspaceItemAtReference`` in the chat store; cleared via
+   * ``onFlashDone`` (called from the ``<li>`` animation-end handler, and on
+   * dialog close) so the same marker can be re-clicked.
    */
   focusedReferenceN?: number | null;
-  /** Called after the flash animation completes. */
+  /** Called after the flash animation completes, or the dialog closes. */
   onFlashDone?: () => void;
   /**
    * Migration 049: ``true`` while ``useWorkspaceItemReferences`` is fetching
@@ -65,8 +113,24 @@ const DOMAIN_META: Record<
  * JSON-driven reference list for a deep_search ``agent_search`` artifact.
  *
  * Renders one card per ``Reference`` (from useWorkspaceItemReferences), switching
- * on ``domain``. Each card exposes the primary external link and — when a
- * ``source_view`` payload is present — a popup with the full original source.
+ * on ``domain``. Each card exposes the primary external link and — when the
+ * backend reports ``has_source`` — a popup with the full original source.
+ *
+ * ACCESS-TIERS PHASE C (§6.2). Source bodies LEFT this payload. The list used
+ * to arrive with every ``source_view`` embedded (full case bodies, full chunk
+ * content, uncapped circulars up to 168 KB), which made ``[n]`` and
+ * «عرض المصدر» pure client-side state changes and metering structurally
+ * impossible — no server call happened at reveal time. Now:
+ *
+ * - ``source_view`` on a list entry is ALWAYS null; branch on ``has_source``.
+ * - Opening a source fetches exactly one body, on the click, through
+ *   ``useReferenceSource`` — which is why that hook is `enabled`-gated on the
+ *   open ``n`` and nothing else. Prefetching the panel would spend an unlock
+ *   per card and could burn a free reader's whole month on one artifact.
+ * - The click IS the consent (§5.1): no confirmation dialog, no stored
+ *   decision. The ledger row is the record. What the reader gets instead is a
+ *   passive balance chip beside the list heading and, after a reveal, a quiet
+ *   line naming exactly what was unlocked (D15.1).
  *
  * Window C: each card carries ``id="ref-{n}"`` so chat-bubble citation
  * markers can scroll the matching card into view and trigger a brief flash
@@ -74,15 +138,20 @@ const DOMAIN_META: Record<
  */
 export function ReferencePanel({
   references,
+  itemId,
+  blogToken,
   focusedReferenceN,
   onFlashDone,
   isLoading = false,
 }: ReferencePanelProps) {
-  const [openView, setOpenView] = useState<Reference | null>(null);
+  // The open reference is tracked by ``n``, not by the object: the dialog now
+  // owns a fetch keyed on (itemId, n), and holding a stale Reference across a
+  // list refresh would point that fetch at the wrong citation.
+  const [openN, setOpenN] = useState<number | null>(null);
   // Per-card refs so we can scrollIntoView the focused one without a global
-  // querySelector on every focus change. Only used for the no-source-view
-  // fallback path — references that DO carry a source_view open the popup
-  // dialog directly (same as clicking the «عرض المصدر» button on the card).
+  // querySelector on every focus change. Only used for the no-source fallback
+  // path — references that CAN be revealed open the dialog directly (same as
+  // clicking the «عرض المصدر» button on the card).
   const itemRefs = useRef<Map<number, HTMLLIElement | null>>(new Map());
 
   // Stable sorted list — memoized so the effect below doesn't fire on every
@@ -92,25 +161,52 @@ export function ReferencePanel({
     [references],
   );
 
+  // A source can be revealed when we can ADDRESS it (an owned workspace item,
+  // or a public blog token) and the backend says a body can be built.
+  //
+  // ⚠ Deliberately NOT gated on being signed in. An anonymous reader must still
+  // see «عرض المصدر» and get the «سجّل مجاناً» card when they click — the reveal
+  // was metered, not removed. `has_source` is the authoritative bit; it costs no
+  // request to learn, and `source_view` is null on every list entry now.
+  const canReveal = useCallback(
+    (ref: Reference | undefined | null): boolean =>
+      (!!itemId || !!blogToken) && ref?.has_source === true,
+    [itemId, blogToken],
+  );
+
+  const hasRevealable = useMemo(
+    () => ordered.some((ref) => canReveal(ref)),
+    [ordered, canReveal],
+  );
+
+  // Passive meter — «no prompt, but never a silent meter» (§5.1). Reading the
+  // allowance charges nothing, but it is still gated on there being something
+  // to reveal so a blog panel issues no authed request at all.
+  const { data: balance } = useLibraryBalance({ enabled: hasRevealable });
+
   useEffect(() => {
     if (focusedReferenceN == null) return;
     const ref = ordered.find((r) => r.n === focusedReferenceN);
     if (!ref) return;
     // Preferred path: behave exactly like clicking the card's «عرض المصدر»
-    // button — open the source-view dialog with the full original source.
-    // Same component, same content, same close affordance.
-    if (ref.source_view) {
-      setOpenView(ref);
+    // button — open the dialog, which fetches the source on demand.
+    if (canReveal(ref)) {
+      setOpenN(ref.n);
       return;
     }
-    // Fallback: reference has no source_view payload (legacy rows, manually
-    // authored references, etc). Scroll the card into view and flash it so
-    // the user at least sees which entry was meant.
+    // Fallback: no source can be built for this reference (stub rows, legacy
+    // or anonymous snapshots, manually authored references). Scroll the card
+    // into view and flash it so the user at least sees which entry was meant.
     const el = itemRefs.current.get(focusedReferenceN);
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     el.setAttribute("data-flash", "true");
-  }, [focusedReferenceN, ordered]);
+  }, [focusedReferenceN, ordered, canReveal]);
+
+  const openReference = useMemo(
+    () => (openN === null ? null : ordered.find((r) => r.n === openN) ?? null),
+    [openN, ordered],
+  );
 
   if ((!references || references.length === 0) && isLoading) {
     return (
@@ -138,14 +234,18 @@ export function ReferencePanel({
 
   return (
     <div dir="rtl" className="mt-6 border-t pt-4">
-      <h3 className="mb-3 text-sm font-semibold text-foreground">
-        المراجع <span className="text-muted-foreground">({ordered.length})</span>
-      </h3>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="text-sm font-semibold text-foreground">
+          المراجع <span className="text-muted-foreground">({ordered.length})</span>
+        </h3>
+        <BalanceChip balance={balance ?? null} />
+      </div>
       <ul className="flex flex-col gap-2">
         {ordered.map((ref) => (
           <ReferenceCard
             key={`${ref.n}-${ref.ref_id}`}
             reference={ref}
+            canReveal={canReveal(ref)}
             registerRef={(node) => {
               if (node) {
                 itemRefs.current.set(ref.n, node);
@@ -154,16 +254,19 @@ export function ReferencePanel({
               }
             }}
             onAnimationEnd={() => handleAnimationEnd(ref.n)}
-            onViewSource={() => setOpenView(ref)}
+            onViewSource={() => setOpenN(ref.n)}
           />
         ))}
       </ul>
 
       <Dialog
-        open={openView !== null}
+        // Keyed off the resolved reference, not the raw ``openN``: if the list
+        // refreshes and that ``n`` is gone, the dialog closes instead of
+        // rendering an empty shell with no title (which Radix also flags).
+        open={openReference !== null}
         onOpenChange={(o) => {
           if (o) return;
-          setOpenView(null);
+          setOpenN(null);
           // Mirror the flash-end semantics: tell the parent the focused
           // reference has been consumed so repeat-clicking the same ``[n]``
           // re-opens the dialog instead of going no-op on the unchanged
@@ -172,10 +275,44 @@ export function ReferencePanel({
         }}
       >
         <DialogContent className="max-w-2xl" dir="rtl">
-          {openView && <SourceViewBody reference={openView} />}
+          {openReference && (
+            <SourceRevealBody
+              itemId={itemId}
+              blogToken={blogToken}
+              reference={openReference}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/**
+ * The passive «فتح المصادر» meter beside the list heading. Silent whenever the
+ * allowance could not be read (anonymous, locked account, failed usage call) —
+ * a wrong number next to a spend action is worse than no number at all.
+ */
+function BalanceChip({ balance }: { balance: LibraryBalance | null }) {
+  if (!balance) return null;
+
+  const label =
+    balance.limit === null
+      ? balanceCopy.unlimited
+      : balance.remaining !== null && balance.remaining > 0
+        ? balanceCopy.remaining(balance.remaining, balance.limit)
+        : balanceCopy.exhausted;
+
+  const renews =
+    balance.limit === null ? "" : balanceCopy.renewsOn(balance.resets_at);
+
+  return (
+    <span
+      className="rounded-full bg-pill px-2.5 py-0.5 text-[11px] font-medium tabular-nums text-pill-fg"
+      title={[revealCopy.authedHint, renews].filter(Boolean).join(" ")}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -185,11 +322,13 @@ export function ReferencePanel({
 
 function ReferenceCard({
   reference,
+  canReveal,
   registerRef,
   onAnimationEnd,
   onViewSource,
 }: {
   reference: Reference;
+  canReveal: boolean;
   registerRef: (node: HTMLLIElement | null) => void;
   onAnimationEnd: () => void;
   onViewSource: () => void;
@@ -197,6 +336,14 @@ function ReferenceCard({
   const [expanded, setExpanded] = useState(false);
   const meta = DOMAIN_META[reference.domain] ?? DOMAIN_META.regulations;
   const Icon = meta.icon;
+  // Regulations carry their own Arabic document type (regulations_v2.doc_type_raw
+  // — لائحة / تنظيم / دليل / مواصفة قياسية / …), which is far more informative
+  // than the blanket نظام. Fall back to the domain label when the corpus has no
+  // determined type, and for every other domain (whose meta label is already the
+  // real thing: قضية / تعميم / خدمة حكومية).
+  const typeLabel =
+    (reference.domain === "regulations" && reference.doc_type?.trim()) ||
+    meta.label;
 
   const primaryUrl = referencePrimaryUrl(reference);
   const label = referenceLabel(reference);
@@ -219,7 +366,7 @@ function ReferenceCard({
           <div className="flex items-center gap-1.5">
             <Icon className={cn("h-3.5 w-3.5 shrink-0", meta.tint)} />
             <span className="text-[11px] font-medium text-muted-foreground">
-              {meta.label}
+              {typeLabel}
             </span>
             <span
               className={cn(
@@ -257,7 +404,10 @@ function ReferenceCard({
 
           {/* Actions */}
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            {reference.source_view && (
+            {/* PHASE C: gated on ``has_source`` (via ``canReveal``), NEVER on
+                ``source_view`` — which is null on every list entry now. The
+                click opens the dialog, and the dialog does the fetching. */}
+            {canReveal && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -265,7 +415,7 @@ function ReferenceCard({
                 onClick={onViewSource}
               >
                 <FileText className="h-3 w-3" />
-                عرض المصدر
+                {referenceRevealCopy.cta}
               </Button>
             )}
             {primaryUrl && (
@@ -324,23 +474,267 @@ function ReferenceCard({
 }
 
 // ---------------------------------------------------------------------------
-// Source view dialog body
+// Source reveal dialog — the metered path (§6.2)
 // ---------------------------------------------------------------------------
 
-function SourceViewBody({ reference }: { reference: Reference }) {
-  const view = reference.source_view;
-  if (!view) return null;
+/**
+ * Fetches ONE source and renders whichever of the three states came back:
+ * loading, the source itself, or a refusal/error card.
+ *
+ * The hook is mounted only while the dialog is open, so `enabled` is exactly
+ * "the user asked for this one" — that is the whole metering contract. Nothing
+ * here may run on the panel's mount path.
+ */
+function SourceRevealBody({
+  itemId,
+  blogToken,
+  reference,
+}: {
+  itemId: string | undefined;
+  blogToken: string | undefined;
+  reference: Reference;
+}) {
+  const { data: result, isFetching, refetch } = useReferenceSource(
+    itemId,
+    reference.n,
+    { blogToken },
+  );
+  const fallbackTitle = referenceLabel(reference);
+
+  // Defensive: with no address at all the query is permanently disabled, so a
+  // skeleton here would spin forever. Unreachable today (``canReveal`` requires
+  // one before the dialog can open) — but an eternal spinner is the worst
+  // possible failure mode for a dialog, so it is closed off explicitly.
+  if (!itemId && !blogToken) {
+    return (
+      <RevealRefusal
+        result={{ ok: false, kind: "error", error: "not_found", status: null }}
+        onRetry={() => {}}
+        isRetrying={false}
+      />
+    );
+  }
+
+  if (!result) {
+    return <SourceLoadingBody />;
+  }
+
+  if (result.ok) {
+    const { source_view: view, unlocked, balance } = result.data;
+    return (
+      <RevealedSource
+        view={view}
+        unlocked={unlocked}
+        balanceLimit={balance?.limit ?? null}
+        balanceUsed={balance?.used ?? null}
+        fallbackTitle={fallbackTitle}
+      />
+    );
+  }
+
+  return (
+    <RevealRefusal
+      result={result}
+      onRetry={() => {
+        void refetch();
+      }}
+      isRetrying={isFetching}
+    />
+  );
+}
+
+/** Dialog skeleton while the one source is in flight. */
+function SourceLoadingBody() {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="flex items-center gap-2 text-base">
+          <Loader2 aria-hidden="true" className="h-4 w-4 shrink-0 animate-spin" />
+          {referenceRevealCopy.loading}
+        </DialogTitle>
+      </DialogHeader>
+      <div className="space-y-2.5" aria-busy="true">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            className={cn(
+              "h-3.5 animate-pulse rounded bg-muted/60",
+              i === 0 && "w-2/3",
+              i === 4 && "w-1/2",
+            )}
+          />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/**
+ * The revealed source, plus the two things §5.1 and D15.1 require next to it:
+ * a quiet line naming WHAT was unlocked, and the remaining balance.
+ */
+function RevealedSource({
+  view,
+  unlocked,
+  balanceLimit,
+  balanceUsed,
+  fallbackTitle,
+}: {
+  view: SourceView;
+  unlocked: ReferenceUnlockInfo;
+  balanceLimit: number | null;
+  balanceUsed: number | null;
+  fallbackTitle: string;
+}) {
   const sourceContent = extractSourceContent(view);
+  const notice = unlockedNotice({
+    title: unlocked.title ?? "",
+    articleNo: unlocked.article_no ?? null,
+    contentType: unlocked.content_type ?? "",
+    cost: unlocked.cost ?? 0,
+    reason: unlocked.reason,
+  });
+  // Only a `granted` decision spent anything, so only it earns the emphasized
+  // treatment. `already_unlocked` / `open` render as a plain reassurance line.
+  const charged = unlocked.reason === "granted";
+  const remaining =
+    balanceLimit === null || balanceUsed === null
+      ? null
+      : Math.max(balanceLimit - balanceUsed, 0);
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle className="text-base">{view.title || referenceLabel(reference)}</DialogTitle>
+        <DialogTitle className="text-base">
+          {view.title || fallbackTitle}
+        </DialogTitle>
       </DialogHeader>
-      <div className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground" dir="rtl">
+      <div
+        className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground"
+        dir="rtl"
+      >
         <SourceViewContent view={view} sourceContent={sourceContent} />
       </div>
+
+      {notice && (
+        <p
+          role="status"
+          className={cn(
+            "flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-2 text-[11px] leading-relaxed",
+            charged
+              ? "bg-primary/5 text-foreground ring-1 ring-primary/15"
+              : "bg-muted/50 text-muted-foreground",
+          )}
+        >
+          {charged && (
+            <Sparkles
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 text-primary"
+            />
+          )}
+          <span>{notice}</span>
+          {/* The meter, right where the spend happened. `limit === null` is an
+              unlimited plan — never render it as «٠ متبقٍ». */}
+          {balanceLimit !== null && remaining !== null && (
+            <span className="rounded-full bg-pill px-2 py-0.5 font-medium tabular-nums text-pill-fg">
+              {remaining > 0
+                ? balanceCopy.remaining(remaining, balanceLimit)
+                : balanceCopy.exhausted}
+            </span>
+          )}
+        </p>
+      )}
+
       {sourceContent ? <SourceCopyButton content={sourceContent} /> : null}
+    </>
+  );
+}
+
+/**
+ * Everything that is not a source: the D14 refusal cards and the transport /
+ * session / rate-limit states.
+ *
+ * A 429 is deliberately NOT a quota refusal and must never read as one — the
+ * reader's allowance is untouched, they simply asked faster than the shared
+ * 20/min library budget allows. Showing «رصيدك انتهى» there would be a lie
+ * that pushes a paying user at the pricing page for no reason.
+ */
+function RevealRefusal({
+  result,
+  onRetry,
+  isRetrying,
+}: {
+  result: Extract<ReferenceSourceResult, { ok: false }>;
+  onRetry: () => void;
+  isRetrying: boolean;
+}) {
+  let copy: RefusalCardCopy;
+  let retryable = false;
+
+  if (result.kind === "refusal") {
+    copy = refusalCardCopy({
+      reason: result.refusal.reason,
+      resetsAt: result.refusal.resets_at,
+      storedCount: result.refusal.stored_count,
+    });
+  } else if (result.error === "rate_limited") {
+    copy = rateLimitedCopy;
+    retryable = true;
+  } else if (result.error === "unauthorized" || result.error === "no_token") {
+    copy = staleSessionCopy;
+  } else if (result.error === "not_found") {
+    copy = sourceUnavailableCopy;
+  } else {
+    copy = transportErrorCopy;
+    retryable = true;
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle className="text-base">{copy.title}</DialogTitle>
+      </DialogHeader>
+      <div
+        dir="rtl"
+        role="status"
+        data-testid="reference-source-refusal"
+        className="rounded-xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-5 text-center"
+      >
+        <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
+          <Sparkles aria-hidden="true" className="h-5 w-5" />
+        </div>
+        <p className="mx-auto max-w-sm text-xs leading-relaxed text-muted-foreground">
+          {copy.body}
+        </p>
+        {copy.ctaHref && copy.ctaLabel ? (
+          <Link
+            href={copy.ctaHref}
+            className={cn(
+              buttonVariants({ size: "sm" }),
+              "mt-4 w-full shadow-sm sm:w-auto sm:px-8",
+            )}
+          >
+            {copy.ctaLabel}
+          </Link>
+        ) : retryable ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onRetry}
+            disabled={isRetrying}
+            className="mt-4 w-full sm:w-auto sm:px-8"
+          >
+            {isRetrying && (
+              <Loader2
+                aria-hidden="true"
+                className="h-3.5 w-3.5 shrink-0 animate-spin"
+              />
+            )}
+            {revealCopy.retryCta}
+          </Button>
+        ) : null}
+      </div>
     </>
   );
 }
@@ -358,7 +752,7 @@ function SourceCopyButton({ content }: { content: string }) {
     }
   };
   return (
-    <div className="mt-3 flex justify-start">
+    <div className="mt-1 flex justify-start">
       <Button
         type="button"
         variant="secondary"
@@ -447,10 +841,11 @@ function SourceViewContent({
     );
   }
   if (view.source_type === "circular") {
-    // Full circular body, uncapped — the parent SourceViewBody wraps this in a
+    // Full circular body, uncapped — the parent dialog wraps this in a
     // ``max-h-[60vh] overflow-y-auto`` container, so even a ~168k-char outlier
     // scrolls inside the dialog instead of blowing up the layout (same
-    // constraint the chunk / gov_service views rely on).
+    // constraint the chunk / gov_service views rely on). Phase C also means
+    // those bytes only cross the wire when this one source is asked for.
     return (
       <div className="space-y-3">
         {view.entity_name && (

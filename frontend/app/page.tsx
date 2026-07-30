@@ -1,17 +1,31 @@
 import type { Metadata } from "next";
-import { LandingHeader } from "@/components/landing/LandingHeader";
 import { LandingPageBody } from "@/components/landing/LandingPageBody";
-import { SiteFooter } from "@/components/site/SiteFooter";
+import { SitePageShell } from "@/components/site/SitePageShell";
+
+const OG_TITLE = "ريحان — المساعد القانوني الذكي في الأنظمة السعودية";
+const OG_IMAGE = `/og?title=${encodeURIComponent("المساعد القانوني الذكي في الأنظمة السعودية")}`;
 
 export const metadata: Metadata = {
-  title: "ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
+  title: OG_TITLE,
   description:
     "ريحان يبحث في الأنظمة السعودية والأحكام القضائية والخدمات الحكومية ويعطيك تقريراً قانونياً كاملاً، كل استشهاد فيه مربوط بمصدره الرسمي ورابطه المباشر.",
+  alternates: {
+    canonical: "/",
+  },
   openGraph: {
-    title: "ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
+    title: OG_TITLE,
     description:
       "من سؤالك إلى تقرير قانوني كامل، موثّق بمصادره الرسمية. بحث في الأنظمة والأحكام والخدمات الحكومية السعودية.",
     type: "website",
+    url: "/",
+    siteName: "ريحان",
+    locale: "ar_SA",
+    images: [{ url: OG_IMAGE, width: 1200, height: 630, alt: OG_TITLE }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: OG_TITLE,
+    images: [OG_IMAGE],
   },
 };
 
@@ -22,10 +36,8 @@ export const metadata: Metadata = {
 // eslint-disable-next-line import/no-default-export
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-background">
-      <LandingHeader />
+    <SitePageShell>
       <LandingPageBody />
-      <SiteFooter />
-    </div>
+    </SitePageShell>
   );
 }

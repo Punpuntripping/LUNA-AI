@@ -152,6 +152,11 @@ export function SidebarFooter() {
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
+                {/* «المكتبة القانونية» and «مكتبتي» deliberately do NOT live
+                    here. Settings is for account-level actions; both are
+                    content surfaces, so they belong in the nav — مكتبتي is a
+                    sidebar tab under مدوناتي, and the public library is reached
+                    from the global header. */}
                 <Separator />
                 <Button
                   variant="ghost"

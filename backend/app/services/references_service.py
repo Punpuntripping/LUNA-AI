@@ -17,7 +17,11 @@ Migration 050: two-key design.
   and the forensic-traceability key into ``retrieval_artifacts``.
 
 Public surface:
-    fetch_item_references(supabase, wi_id, *, used_only=False) -> list[Reference]
+    fetch_item_references(supabase, wi_id, *, used_only=False,
+                          with_source_views=False) -> list[Reference]
+    fetch_item_references_payload(supabase, wi_id, *, used_only=False) -> list[dict]
+    fetch_reference_row(supabase, wi_id, n) -> dict | None
+    build_reference_source_view(supabase, row) -> SourceView | None
     persist_item_references(supabase, wi_id, references, ura_results,
                             cited_numbers, ref_to_sub_queries) -> int
 
@@ -25,6 +29,28 @@ The read path explicitly reuses ``for_reference()`` /
 ``preprocessor._reference_from_ura()`` / ``preprocessor.build_snippet`` /
 ``source_viewer.build_source_view`` so the output is byte-for-byte identical
 to what the publisher used to bake into JSONB.
+
+PHASE C — SOURCE BODIES LEFT THE LIST (access-tiers plan §6.1/§6.2)
+-------------------------------------------------------------------
+``fetch_item_references`` used to attach a fully-built ``source_view`` to every
+reference, so one panel load shipped full case bodies, full chunk content and
+UNCAPPED circular bodies (168 KB outliers) before the user clicked anything.
+``[n]`` and «عرض المصدر» were pure client-side state changes, which made metering
+structurally impossible: no server call happened at reveal time.
+
+So ``with_source_views`` now defaults to **False**, and the full body is served
+one-at-a-time by ``GET /api/v1/workspace/{item_id}/references/{n}/source``, which
+runs ``resolve_access`` first. What stays in the list is the citation mesh —
+``n``, ``title``, ``snippet``, ``ref_id``, ``domain``, links, ``cross_refs`` —
+because §1.3 puts citation lists in the NEVER-gated class. Each entry also
+carries ``has_source`` (see ``fetch_item_references_payload``) so the panel knows
+whether to offer the «عرض المصدر» affordance without a probe request.
+
+The default is the safe one on purpose: every caller that snapshots references
+into a durable, anonymously-served artifact (``blog_posts.references_json``)
+inherits the metered shape by DOING NOTHING. Opting back in is an explicit
+keyword at one call site, which is exactly where such a decision should be
+visible.
 """
 from __future__ import annotations
 
@@ -41,7 +67,7 @@ from agents.deep_search_v4.aggregator.preprocessor import (
     build_snippet,
     render_aggregator_content,
 )
-from agents.deep_search_v4.source_viewer import build_source_view
+from agents.deep_search_v4.source_viewer import SourceView, build_source_view
 from agents.deep_search_v4.ura.enrich import (
     _enrich_cases,
     _enrich_regulations,
@@ -59,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "fetch_item_references",
+    "fetch_item_references_payload",
+    "fetch_reference_row",
+    "build_reference_source_view",
     "persist_item_references",
 ]
 
@@ -82,23 +111,85 @@ async def fetch_item_references(
     wi_id: str,
     *,
     used_only: bool = False,
+    with_source_views: bool = False,
 ) -> list[Reference]:
     """Reconstruct ``list[Reference]`` for one workspace_item.
 
     Reads rows from ``workspace_item_references`` filtered by ``wi_id`` (and
     ``used`` when ``used_only=True``), groups by domain, batch-fetches the
     source rows, builds URA result shells, and runs them through the exact
-    same projection pipeline the aggregator uses at publish time. Output
-    matches the pre-migration ``metadata.references`` JSONB byte-for-byte.
+    same projection pipeline the aggregator uses at publish time.
+
+    Args:
+        with_source_views: attach the full ``source_view`` body to every
+            reference. **Defaults to False** (Phase C, §6.2): the full source is
+            metered content now and is served one item at a time by
+            ``GET /workspace/{item_id}/references/{n}/source`` after
+            ``resolve_access``. Pass True only for a caller that genuinely needs
+            every body in one payload AND is not a public/anonymous surface —
+            there is currently no such caller.
 
     Returns:
         References ordered by ``n`` (ascending). Empty list if no rows.
+    """
+    references, _ = await _load_references(
+        supabase, wi_id, used_only=used_only, with_source_views=with_source_views
+    )
+    return references
+
+
+async def fetch_item_references_payload(
+    supabase: SupabaseClient,
+    wi_id: str,
+    *,
+    used_only: bool = False,
+) -> list[dict]:
+    """The JSON-ready citation-list payload — no source bodies (§6.2 step 1).
+
+    Same references as :func:`fetch_item_references`, dumped to plain dicts with
+    one added key per entry:
+
+        ``has_source``: bool — a full source view CAN be built for this ``n``.
+
+    The frontend needs that bit to decide whether to render «عرض المصدر» at all,
+    and it must not cost a probe request to learn it (a probe would either be a
+    charge or a free oracle). It is computed from the enrichment that already
+    happened: a reference whose source row could not be reconstructed renders as
+    a stub card and has no body to reveal.
+
+    ``source_view`` is still present in every entry, always ``null`` — the key is
+    kept so an un-migrated client degrades to "no reveal button" instead of
+    crashing on a missing property.
+    """
+    references, resolvable = await _load_references(
+        supabase, wi_id, used_only=used_only, with_source_views=False
+    )
+    out: list[dict] = []
+    for ref in references:
+        entry = ref.model_dump(mode="json")
+        entry["has_source"] = ref.n in resolvable
+        out.append(entry)
+    return out
+
+
+async def _load_references(
+    supabase: SupabaseClient,
+    wi_id: str,
+    *,
+    used_only: bool = False,
+    with_source_views: bool = False,
+) -> tuple[list[Reference], set[int]]:
+    """Shared read path. Returns ``(references, ns_with_a_resolvable_source)``.
+
+    The second element is what ``has_source`` is derived from: the set of ``n``
+    values whose URA shell was successfully reconstructed, i.e. the references
+    for which ``build_reference_source_view`` has something to build.
     """
     rows = await asyncio.to_thread(
         _select_reference_rows, supabase, wi_id, used_only
     )
     if not rows:
-        return []
+        return [], set()
 
     # Group rows by domain so each source-table fetch can be batched.
     by_domain: dict[str, list[dict]] = {
@@ -132,11 +223,10 @@ async def fetch_item_references(
         )
         shells_by_n.update(circular_shells)
 
-    # Walk rows in order, build Reference per shell, attach source_view in
-    # parallel (mirrors aggregator preprocessor.attach_source_views).
+    # Walk rows in order and build one Reference per shell.
     ordered_rows = sorted(rows, key=lambda r: int(r["n"]))
     references: list[Reference] = []
-    pending_views: list[tuple[Reference, URAResultBase | None]] = []
+    pending_views: list[tuple[Reference, URAResultBase]] = []
 
     for row in ordered_rows:
         n = int(row["n"])
@@ -156,12 +246,13 @@ async def fetch_item_references(
         references.append(ref)
         pending_views.append((ref, shell))
 
-    # Resolve source_view payloads in parallel. Each lookup is wrapped so
-    # one DB failure can't sink the whole panel.
-    if pending_views:
+    # PHASE C: the full bodies stay OUT of this response unless a caller
+    # explicitly asks. `_attach_source_views` survives untouched as the
+    # opt-in path and as the shared per-item builder.
+    if pending_views and with_source_views:
         await _attach_source_views(supabase, pending_views)
 
-    return references
+    return references, {ref.n for ref, _ in pending_views}
 
 
 def _select_reference_rows(
@@ -202,6 +293,98 @@ def _select_reference_rows(
             code=ErrorCode.INTERNAL_ERROR,
             detail="حدث خطأ أثناء جلب المراجع",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# SINGLE-REFERENCE PATH (Phase C — the metered reveal)
+# ---------------------------------------------------------------------------
+
+
+async def fetch_reference_row(
+    supabase: SupabaseClient,
+    wi_id: str,
+    n: int,
+) -> dict | None:
+    """One ``workspace_item_references`` row by ``(wi_id, n)``, or ``None``.
+
+    Deliberately keyed on ``wi_id`` as well as ``n``: the reveal endpoint has
+    already proven the caller owns ``wi_id``, so scoping the lookup to that WI is
+    what makes ``n`` — a small, guessable integer — safe to accept from a client.
+
+    Raises the same 500 envelope as the list read when the SELECT itself fails:
+    "no such reference" and "the database is down" must not look alike here,
+    because the caller turns the former into a 404 and would otherwise mask an
+    outage as a missing citation.
+    """
+    rows = await asyncio.to_thread(_select_reference_row, supabase, wi_id, int(n))
+    return rows[0] if rows else None
+
+
+def _select_reference_row(
+    supabase: SupabaseClient,
+    wi_id: str,
+    n: int,
+) -> list[dict]:
+    """Sync single-row read — runs under ``asyncio.to_thread``."""
+    try:
+        resp = (
+            supabase.table("workspace_item_references")
+            .select(
+                "ref_pk, wi_id, item_id, ref_id, domain, n, relevance, used, sub_queries"
+            )
+            .eq("wi_id", wi_id)
+            .eq("n", int(n))
+            .limit(1)
+            .execute()
+        )
+        return list(resp.data or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "references_service: select row failed for wi_id=%s n=%s: %s", wi_id, n, exc
+        )
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب المرجع",
+        ) from exc
+
+
+async def build_reference_source_view(
+    supabase: SupabaseClient,
+    row: dict,
+) -> SourceView | None:
+    """Build the ONE ``SourceView`` for a single reference row, or ``None``.
+
+    This is the body that used to ride along in the list response. It rebuilds
+    the URA shell through the very same per-domain ``_build_*_shells`` helpers
+    the list read uses (called with a one-row list) and then hands it to
+    ``source_viewer.build_source_view`` — no second implementation of the
+    projection exists, so the reveal payload cannot drift from what the panel
+    used to show.
+
+    ``None`` means the source row is gone / unreconstructable — the same
+    condition that makes the list report ``has_source=False``. Callers must NOT
+    treat it as a refusal (it is not an entitlement outcome).
+    """
+    domain = (row.get("domain") or "").strip()
+    n = int(row.get("n") or 0)
+
+    if domain == "regulations":
+        shells: dict[int, URAResultBase] = await _build_reg_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "cases":
+        shells = await _build_case_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "compliance":
+        shells = await _build_compliance_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "circulars":
+        shells = await _build_circular_shells(supabase, [row])  # type: ignore[assignment]
+    else:
+        logger.warning("build_reference_source_view: unknown domain %r", domain)
+        return None
+
+    shell = shells.get(n)
+    if shell is None:
+        return None
+    return await _safe_build_source_view(supabase, shell)
 
 
 def _reg_chunk_id_from_row(row: dict) -> str:
@@ -534,11 +717,37 @@ def _fetch_circulars_by_id(
     return out
 
 
+async def _safe_build_source_view(
+    supabase: SupabaseClient,
+    shell: URAResultBase,
+) -> SourceView | None:
+    """``build_source_view`` with the failure envelope, for ONE shell.
+
+    Shared by the bulk attach path and the per-item reveal endpoint so both
+    behave identically when a source table hiccups: log, return ``None``, never
+    raise into the caller's response.
+    """
+    try:
+        return await build_source_view(supabase, shell)  # type: ignore[arg-type]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "references_service: build_source_view(%s) failed: %s",
+            getattr(shell, "ref_id", "?"),
+            exc,
+        )
+        return None
+
+
 async def _attach_source_views(
     supabase: SupabaseClient,
     pending: list[tuple[Reference, URAResultBase]],
 ) -> None:
     """Parallel ``build_source_view`` resolution; failures leave source_view=None.
+
+    Phase C note: no longer on the default list path (§6.2) — it runs only when a
+    caller passes ``with_source_views=True``. Kept intact because it is still the
+    right shape for a bulk build, and because the per-item reveal shares its
+    failure envelope via ``_safe_build_source_view``.
 
     The fan-out is bounded by a per-call semaphore so a panel with many refs
     can't open an unbounded number of concurrent source-table reads against a
@@ -553,15 +762,7 @@ async def _attach_source_views(
 
     async def _one(shell: URAResultBase) -> Any:
         async with sem:
-            try:
-                return await build_source_view(supabase, shell)  # type: ignore[arg-type]
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "references_service: build_source_view(%s) failed: %s",
-                    getattr(shell, "ref_id", "?"),
-                    exc,
-                )
-                return None
+            return await _safe_build_source_view(supabase, shell)
 
     views = await asyncio.gather(*(_one(shell) for _, shell in pending))
     for (ref, _), view in zip(pending, views):
@@ -755,16 +956,39 @@ def persist_item_references(
 
     try:
         supabase.table("workspace_item_references").insert(payloads).execute()
+        return len(payloads)
     except Exception as exc:  # noqa: BLE001
         # Mirrors the publisher's forensic-write envelope — log and swallow
         # so a refs-write hiccup never crashes the user-visible publish.
         logger.exception(
-            "persist_item_references: insert failed for wi_id=%s: %s",
-            wi_id, exc,
+            "persist_item_references: batch insert failed for wi_id=%s (%d refs) "
+            "— retrying row-by-row: %s",
+            wi_id, len(payloads), exc,
         )
-        return 0
 
-    return len(payloads)
+    # Per-row fallback. The batch above is ONE atomic INSERT, so a single bad
+    # row takes every other ref down with it and the artifact renders with no
+    # المراجع section at all (ReferencePanel returns null on an empty list).
+    # That is exactly how the ``domain='circulars'`` CHECK gap (migration 102)
+    # silently emptied whole panels. Retrying one row at a time keeps the good
+    # refs and localises the loss to the offending one, which is logged at
+    # ERROR with enough identity to find it.
+    written = 0
+    for payload in payloads:
+        try:
+            supabase.table("workspace_item_references").insert(payload).execute()
+            written += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "persist_item_references: dropping ref n=%s domain=%s ref_id=%s "
+                "for wi_id=%s: %s",
+                payload.get("n"),
+                payload.get("domain"),
+                payload.get("ref_id"),
+                wi_id,
+                exc,
+            )
+    return written
 
 
 _UUID_RE = (

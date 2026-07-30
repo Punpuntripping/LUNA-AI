@@ -5,6 +5,9 @@ import { LegalPageShell } from "@/components/legal/LegalPageShell";
 export const metadata: Metadata = {
   title: "سياسة الخصوصية — ريحان",
   description: "سياسة الخصوصية لمنصة ريحان",
+  alternates: {
+    canonical: "/privacy",
+  },
 };
 
 // Next.js App Router requires a default export for page files.

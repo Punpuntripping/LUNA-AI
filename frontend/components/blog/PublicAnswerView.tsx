@@ -21,6 +21,16 @@ const SUBTYPE_LABEL: Record<string, string> = {
 
 interface PublicAnswerViewProps {
   post: BlogPostPublic;
+  /**
+   * The post's public token — the address for the METERED source reveal
+   * (`GET /public/blog/{token}/references/{n}/source`).
+   *
+   * A reader is not the author, so the workspace reveal endpoint would
+   * 404 them; the unguessable token is the capability here. Passing it
+   * is what keeps «عرض المصدر» and the [n] preview working on a public
+   * post — anonymous readers included, who get the «سجّل مجاناً» card.
+   */
+  blogToken: string;
 }
 
 /**
@@ -40,7 +50,7 @@ interface PublicAnswerViewProps {
  * on the same N re-fire), which drives ReferencePanel's ``focusedReferenceN``
  * (scroll-to-card / open source popup). ``handleFlashDone`` clears it.
  */
-export function PublicAnswerView({ post }: PublicAnswerViewProps) {
+export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
   const [focusedN, setFocusedN] = useState<number | null>(null);
 
   const handleBodyCitationClick = useCallback((n: number) => {
@@ -146,6 +156,7 @@ export function PublicAnswerView({ post }: PublicAnswerViewProps) {
             footer={
               references.length > 0 ? (
                 <ReferencePanel
+              blogToken={blogToken}
                   references={references}
                   focusedReferenceN={focusedN}
                   onFlashDone={handleFlashDone}

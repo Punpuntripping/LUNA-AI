@@ -38,7 +38,7 @@ RETRIES = [
         "agg_id": "3db7d9c8d896dea7",
         "primary_run_id": "79d186e73666c21f",
         "fallback_run_id": "1628204aaa45b7b7",
-        "prompt_key": "prompt_mode_reg",
+        "prompt_key": "prompt_mode_reg_compliance",
         "model_used": "gemini-3-flash",  # final outcome label
         "msg_file": "msgs_79d186e7_primary_3db7d9c8.json",
         "start_timestamp": "2026-05-22T09:37:44Z",
@@ -47,7 +47,7 @@ RETRIES = [
         "agg_id": "cc86f2aa34ebe24c",
         "primary_run_id": "ebe88aa78619e587",
         "fallback_run_id": "a94762c20b0c13e1",
-        "prompt_key": "prompt_mode_reg",
+        "prompt_key": "prompt_mode_reg_compliance",
         "model_used": "gemini-3-flash",
         "msg_file": "msgs_ebe88aa7_primary_cc86f2aa.json",
         "start_timestamp": "2026-05-28T12:51:24Z",
@@ -56,7 +56,11 @@ RETRIES = [
         "agg_id": "bba48cdd2f86c5c7",
         "primary_run_id": "5c22f76cad3d0e07",
         "fallback_run_id": "55f6b23c2e3eb4e7",
-        "prompt_key": "prompt_mode_compliance",
+        # This 2026-05-30 retry historically ran under the retired compliance
+        # aggregator prompt (folded into prompt_mode_reg_compliance in the
+        # reg_compliance merge — D15). Mapped to its live successor so the
+        # structure gate resolves against the current prompt registry.
+        "prompt_key": "prompt_mode_reg_compliance",
         "model_used": "gemini-3-flash",
         "msg_file": "msgs_5c22f76c_primary_bba48cdd.json",
         "start_timestamp": "2026-05-30T12:39:02Z",
@@ -65,7 +69,7 @@ RETRIES = [
         "agg_id": "f9a41800b1f47180",
         "primary_run_id": "818b84c33768fc31",
         "fallback_run_id": "580e5078dc97109d",
-        "prompt_key": "prompt_mode_reg",
+        "prompt_key": "prompt_mode_reg_compliance",
         "model_used": "gemini-3-flash",
         "msg_file": "msgs_818b84c3_primary_f9a41800.json",
         "start_timestamp": "2026-05-31T12:25:16Z",

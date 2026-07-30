@@ -4,8 +4,9 @@ import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { api, conversationsApi } from "@/lib/api";
+import { api, conversationsApi, formsApi } from "@/lib/api";
 import { consumePendingIntent } from "@/lib/post-login-intent";
+import { storeClaimedAnswer } from "@/lib/library/ask";
 import { AccountDeletionPendingScreen } from "@/components/auth/AccountDeletionPendingScreen";
 
 interface Props {
@@ -22,6 +23,28 @@ interface Props {
 // the وضع السرية settings dialog — all reachable before signing up. /about_us
 // is the marketing-landing content at an address that does NOT bounce
 // authenticated users (the bare "/" does) — their way back to the front door.
+// /regulations + /compliance are the public SEO library surfaces (Phase 2) —
+// anon searchers land on them from Google, signed-in users may browse freely.
+// /judgments is the الأحكام القضائية wing — public and anon-viewable like the
+// other library surfaces, but currently `noindex` pending the PDPL
+// anonymization audit (a crawler gate, NOT an auth gate — it must still render
+// for logged-out visitors who reach it from an internal link or a shared URL).
+// NOTE: /cases is the PRIVATE case-workspace route and is a different path — it
+// stays out of this list and stays disallowed in app/robots.ts.
+// /calculators is the public calculators wing (Phase 3) — free, never gated.
+// /circulars is the public التعاميم wing and /forms the public نماذج wing (Phase
+// 5 / Phase 3) — anon-viewable SEO surfaces like the others. /vs-chatgpt is the
+// «ريحان مقابل ChatGPT» comparison page (inside the عن ريحان menu); /library and
+// /learn are the المكتبة القانونية and اكتشف hub endpoints (placeholder today,
+// filled by later phases) — all three are public marketing surfaces the global
+// header links to and must render for anon visitors.
+// Routes that sit UNDER a public prefix but are private. Checked before the
+// prefix list, because the prefix test is a `startsWith` and would otherwise
+// swallow them: /library is a public marketing hub, but /library/mine is the
+// authed «مكتبتي» shelf — a per-user reading history. Left public it renders for
+// anonymous visitors who then watch every shelf call 401.
+const PRIVATE_EXCEPTIONS = ["/library/mine"] as const;
+
 const PUBLIC_PREFIXES = [
   "/blog",
   "/terms",
@@ -30,6 +53,15 @@ const PUBLIC_PREFIXES = [
   "/audiences",
   "/masking",
   "/about_us",
+  "/vs-chatgpt",
+  "/library",
+  "/learn",
+  "/regulations",
+  "/compliance",
+  "/calculators",
+  "/circulars",
+  "/forms",
+  "/judgments",
 ] as const;
 
 function isPublicPath(pathname: string | null): boolean {
@@ -37,6 +69,14 @@ function isPublicPath(pathname: string | null): boolean {
   // The marketing landing page is the public front door. Matched exactly — a
   // bare-prefix "/" would swallow every authenticated route.
   if (pathname === "/") return true;
+  // Private routes nested under a public prefix win over the prefix match.
+  if (
+    PRIVATE_EXCEPTIONS.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    )
+  ) {
+    return false;
+  }
   return PUBLIC_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
@@ -78,25 +118,42 @@ export function AuthGuard({ children }: Props) {
     };
   }, [revalidateSession]);
 
-  // Post-login intent (blog_import plan §D6): an anonymous visitor clicked
-  // «اتحدث مع المدونة» on a public blog page → the intent was stashed in
-  // sessionStorage → they signed in (email, signup, or the OAuth full-page
-  // round-trip — all funnel through an authed render of this guard). This is
-  // the ONE consumer: create a conversation, import the blog as a note, land
-  // in the chat. ``consumePendingIntent`` clears on read, so re-renders and
-  // StrictMode double-effects can't run the flow twice. Best-effort — any
-  // failure (revoked token, network) just leaves the user on /chat normally.
+  // Post-login intent: an anonymous visitor triggered a "resume after login"
+  // action on a public page → the intent was stashed in sessionStorage → they
+  // signed in (email, signup, or the OAuth full-page round-trip — all funnel
+  // through an authed render of this guard). This is the ONE consumer for every
+  // intent type. ``consumePendingIntent`` clears on read, so re-renders and
+  // StrictMode double-effects can't run a flow twice. Best-effort — any failure
+  // (revoked token, network) just leaves the user on their default landing.
+  //
+  //   chat_with_blog      → create a conversation, import the blog, land in chat
+  //                         (blog_import plan §D6).
+  //   claim_anon_answer   → claim the full اسأل ريحان answer, stash it for the
+  //                         widget, return to the source page (continuity moment).
+  //   open_form_in_writer → copy the form into قوالبي, open the writer.
   useEffect(() => {
     if (isLoading || !isAuthenticated) return;
     const intent = consumePendingIntent();
     if (!intent) return;
     void (async () => {
       try {
-        const created = await conversationsApi.create({ case_id: null });
-        const newId = created.conversation.conversation_id;
-        await api.createBlogItem(newId, intent.token);
-        useSidebarStore.getState().setSelectedConversation(newId);
-        router.replace(`/chat/${newId}`);
+        if (intent.type === "chat_with_blog") {
+          const created = await conversationsApi.create({ case_id: null });
+          const newId = created.conversation.conversation_id;
+          await api.createBlogItem(newId, intent.token);
+          useSidebarStore.getState().setSelectedConversation(newId);
+          router.replace(`/chat/${newId}`);
+        } else if (intent.type === "claim_anon_answer") {
+          const claimed = await api.claimAnonAnswer(
+            intent.question_id,
+            intent.session_key,
+          );
+          storeClaimedAnswer(claimed);
+          router.replace(intent.return_to);
+        } else if (intent.type === "open_form_in_writer") {
+          const template = await formsApi.openInWriter(intent.slug);
+          router.replace(`/templates/${template.template_id}`);
+        }
       } catch {
         // Dropped silently — the default post-login landing takes over.
       }

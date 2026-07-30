@@ -5,6 +5,9 @@ import { LegalPageShell } from "@/components/legal/LegalPageShell";
 export const metadata: Metadata = {
   title: "تقنيع المعرّفات — ريحان",
   description: "شرح تقنية تقنيع المعرّفات (وضع السرية) في ريحان",
+  alternates: {
+    canonical: "/masking",
+  },
 };
 
 // Next.js App Router requires a default export for page files.

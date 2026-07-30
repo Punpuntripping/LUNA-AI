@@ -51,7 +51,6 @@ def _build_deps(http_client: httpx.AsyncClient) -> FullLoopDeps:
         case_expander_prompt_key="prompt_3",
         concurrency=10,
         unfold_mode="precise",
-        include_compliance=True,
         enable_planner=True,
     )
 

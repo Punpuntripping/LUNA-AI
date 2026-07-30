@@ -10,10 +10,18 @@ import { SUPPORT_EMAIL } from "@/components/landing/content";
  * copyright bar. Server component — plain links only.
  */
 
+// Footer nav columns mirror the header IA (see lib/nav/site-nav.ts). Keep the
+// «المكتبة» column in sync when a library section flips from placeholder to live.
 const PLATFORM_LINKS = [
   { href: "/about_us", label: "عن ريحان" },
-  { href: "/audiences", label: "ريحان يستهدف مين؟" },
+  { href: "/audiences", label: "لمن ريحان؟" },
+  { href: "/vs-chatgpt", label: "ريحان مقابل ChatGPT" },
   { href: "/pricing", label: "الباقات والأسعار" },
+] as const;
+
+const LIBRARY_LINKS = [
+  { href: "/library", label: "المكتبة القانونية" },
+  { href: "/learn", label: "اكتشف ريحان" },
   { href: "/blog", label: "المدونة" },
 ] as const;
 
@@ -25,7 +33,7 @@ const LEGAL_LINKS = [
 export function SiteFooter() {
   return (
     <footer className="border-t border-border bg-muted/30">
-      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:grid-cols-2 lg:grid-cols-5">
         {/* Brand + company blurb */}
         <div className="flex flex-col gap-3 lg:col-span-2 lg:max-w-sm">
           <div className="flex items-center gap-2.5">
@@ -48,6 +56,20 @@ export function SiteFooter() {
         <nav aria-label="روابط المنصة" className="flex flex-col gap-2.5">
           <h3 className="text-sm font-semibold text-foreground">المنصة</h3>
           {PLATFORM_LINKS.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {link.label}
+            </Link>
+          ))}
+        </nav>
+
+        {/* Library navigation */}
+        <nav aria-label="المكتبة القانونية" className="flex flex-col gap-2.5">
+          <h3 className="text-sm font-semibold text-foreground">المكتبة</h3>
+          {LIBRARY_LINKS.map((link) => (
             <Link
               key={link.href}
               href={link.href}

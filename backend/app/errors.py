@@ -76,6 +76,12 @@ class ErrorCode(str, Enum):
     PLAN_ALREADY_ACTIVE = "PLAN_ALREADY_ACTIVE"  # active paid plan can't be overwritten
     REDEEM_LOCKED = "REDEEM_LOCKED"              # too many failed attempts (24h wall)
 
+    # Library entitlement (access tiers — Layer B refusals, all HTTP 402)
+    LIBRARY_QUOTA_EXCEEDED = "LIBRARY_QUOTA_EXCEEDED"  # period allowance spent
+    LIBRARY_FROZEN = "LIBRARY_FROZEN"                  # paid-era unlock, now on free
+    LIBRARY_ANONYMOUS = "LIBRARY_ANONYMOUS"            # no account → 402, never 401
+    LIBRARY_UNRESOLVABLE = "LIBRARY_UNRESOLVABLE"      # ref_id/item could not be resolved
+
     # Validation
     VALIDATION_ERROR = "VALIDATION_ERROR"
     NO_UPDATE_DATA = "NO_UPDATE_DATA"
@@ -118,4 +124,105 @@ async def luna_exception_handler(request: Request, exc: LunaHTTPException):
             "detail": exc.detail,  # backward compatibility
         },
         headers=headers,
+    )
+
+
+# ==========================================================================
+# LIBRARY ENTITLEMENT REFUSALS (access-tiers plan, DECISIONS D14)
+#
+# ONE payload shape for every refused reveal — the library page gate, the
+# reference-source endpoint (Phase C) and مكتبتي all return exactly this, so the
+# frontend has a single branch. HTTP **402**, never 401: /library/full is
+# reached from PUBLIC pages, and a 401 would trip the frontend's global
+# redirect-to-login and eject a browsing anon visitor.
+#
+# Copy is framed as a plan feature, never a scolding (D10). The meter string
+# itself lives in shared.quota so every surface that mentions فتح المصادر reads
+# the same constant.
+# ==========================================================================
+
+LIBRARY_REFUSAL_STATUS = 402
+
+MSG_LIBRARY_ANONYMOUS = "سجّل مجاناً لعرض النص كاملاً"
+MSG_LIBRARY_FROZEN = "هذا المصدر محفوظ في مكتبتك — رقِّ باقتك لفتحه من جديد."
+MSG_LIBRARY_UNRESOLVABLE = "تعذّر تحديد المصدر المطلوب."
+MSG_LIBRARY_LOCKED = "حسابك غير مفعّل بعد. تواصل معنا لتفعيل اشتراكك."
+
+
+def _frozen_message(stored_count: int) -> str:
+    """«لديك {n} مصدراً محفوظاً …» when we know the shelf size (D10), else the
+    generic per-item line. The count is the whole point of the CTA — it is what
+    makes the upgrade prompt concrete (§5B.4)."""
+    n = int(stored_count or 0)
+    if n > 0:
+        return f"لديك {n} مصدراً محفوظاً في مكتبتك — رقِّ باقتك لفتحها من جديد."
+    return MSG_LIBRARY_FROZEN
+
+
+# reason (AccessDecision.reason) → (ErrorCode, Arabic message)
+_LIBRARY_REFUSAL_CODES: dict[str, ErrorCode] = {
+    "anonymous": ErrorCode.LIBRARY_ANONYMOUS,
+    "quota_exhausted": ErrorCode.LIBRARY_QUOTA_EXCEEDED,
+    "frozen_library": ErrorCode.LIBRARY_FROZEN,
+    "unresolvable": ErrorCode.LIBRARY_UNRESOLVABLE,
+    "locked": ErrorCode.LIBRARY_QUOTA_EXCEEDED,
+}
+
+
+def library_refusal_payload(decision) -> dict:
+    """Build the D14 refusal body from a ``library_service.AccessDecision``.
+
+    Duck-typed on purpose (``reason``/``used``/``limit``/``resets_at``/
+    ``stored_count``) so ``backend.app.errors`` stays import-free of the service
+    layer — errors.py is imported by nearly every module, including
+    library_service itself.
+    """
+    # Imported lazily: shared.quota pulls redis+supabase, and errors.py is on
+    # the import path of essentially the whole backend.
+    from shared.quota import LIBRARY_QUOTA_EXHAUSTED_AR
+
+    reason = str(getattr(decision, "reason", "") or "unresolvable")
+    stored_count = int(getattr(decision, "stored_count", 0) or 0)
+    code = _LIBRARY_REFUSAL_CODES.get(reason, ErrorCode.LIBRARY_UNRESOLVABLE)
+
+    if reason == "anonymous":
+        message = MSG_LIBRARY_ANONYMOUS
+    elif reason == "frozen_library":
+        message = _frozen_message(stored_count)
+    elif reason == "quota_exhausted":
+        message = LIBRARY_QUOTA_EXHAUSTED_AR
+    elif reason == "locked":
+        message = MSG_LIBRARY_LOCKED
+    else:
+        message = MSG_LIBRARY_UNRESOLVABLE
+
+    resets_at = getattr(decision, "resets_at", None)
+    body: dict = {
+        "error": {
+            "code": code.value,
+            "message": message,
+            "status": LIBRARY_REFUSAL_STATUS,
+        },
+        "detail": message,          # backward compatibility with the envelope
+        "reason": reason,
+        "used": int(getattr(decision, "used", 0) or 0),
+        "limit": getattr(decision, "limit", None),
+        "resets_at": resets_at.isoformat() if hasattr(resets_at, "isoformat") else resets_at,
+    }
+    if reason == "frozen_library":
+        body["stored_count"] = stored_count
+    return body
+
+
+def library_refusal_response(decision) -> JSONResponse:
+    """The 402 JSONResponse for a refused reveal (D14).
+
+    ``Cache-Control: private, no-store`` is set here and not left to the caller:
+    a refusal is a per-USER answer, and one of these landing in the shared ISR /
+    CDN cache would pin somebody else's exhausted quota onto every visitor.
+    """
+    return JSONResponse(
+        status_code=LIBRARY_REFUSAL_STATUS,
+        content=library_refusal_payload(decision),
+        headers={"Cache-Control": "private, no-store"},
     )

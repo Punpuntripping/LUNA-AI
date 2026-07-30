@@ -111,6 +111,11 @@ export function AgentSearchViewer({
           <>
             <ReferencePanel
               references={references}
+              // Access-tiers Phase C: source bodies no longer ride the list.
+              // The panel needs the WI id to fetch ONE source on demand from
+              // ``/workspace/{item_id}/references/{n}/source``; without it no
+              // reveal affordance renders at all.
+              itemId={item.item_id}
               focusedReferenceN={focusedN}
               onFlashDone={handleFlashDone}
               isLoading={isLoadingReferences}

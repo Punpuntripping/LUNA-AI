@@ -54,7 +54,11 @@ def _verify_service_key(
         )
 
     supplied = (credentials.credentials if credentials is not None else "").strip()
-    if not supplied or not hmac.compare_digest(supplied, expected):
+    # Compare on bytes: ``compare_digest`` raises TypeError on non-ASCII str,
+    # and this value is attacker-controlled (Authorization header).
+    if not supplied or not hmac.compare_digest(
+        supplied.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise LunaHTTPException(
             status_code=401,
             code=ErrorCode.AUTH_INVALID,

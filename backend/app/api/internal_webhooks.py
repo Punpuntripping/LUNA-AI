@@ -4,6 +4,12 @@ These routes are NOT for end users. They authenticate via a shared secret
 header (``X-Webhook-Secret``) configured both in the app settings and as a
 Postgres GUC (``app.webhook_secret``) on the Supabase side.
 
+"Internal" describes the *caller*, not the network path: Supabase's trigger
+infrastructure reaches this over the public internet, so the prefix is NOT a
+network boundary and the shared secret is the ONLY thing guarding it. Do not
+block ``/internal/*`` at the edge — see
+``.claude/plans/cloudflare_navigation_hardening.md`` (WAF rule 3).
+
 Currently:
 
 * ``POST /internal/summarize-workspace-item`` — invoked by the
@@ -18,6 +24,7 @@ Currently:
 """
 from __future__ import annotations
 
+import hmac
 import logging
 from typing import Optional
 
@@ -67,7 +74,8 @@ class SummarizeWorkspaceItemResponse(BaseModel):
 
 def _verify_webhook_secret(x_webhook_secret: Optional[str] = Header(default=None)) -> None:
     """Shared-secret auth. The trigger attaches the secret as
-    ``X-Webhook-Secret``; missing/mismatched → 401.
+    ``X-Webhook-Secret``; missing/mismatched → 401. Comparison is constant-time
+    (``hmac.compare_digest``), matching ``deepsearch_api.auth._verify_service_key``.
 
     If ``INTERNAL_WEBHOOK_SECRET`` is unset in settings (typical for local
     dev where the trigger isn't wired) the endpoint is effectively closed:
@@ -82,7 +90,10 @@ def _verify_webhook_secret(x_webhook_secret: Optional[str] = Header(default=None
             detail="webhook auth not configured",
         )
     supplied = (x_webhook_secret or "").strip()
-    if supplied != expected:
+    # Compare on bytes, not str: ``compare_digest`` raises TypeError on
+    # non-ASCII str, and this value comes straight from a request header —
+    # a junk header would turn a clean 401 into a 500.
+    if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         raise LunaHTTPException(
             status_code=401,
             code=ErrorCode.AUTH_INVALID,

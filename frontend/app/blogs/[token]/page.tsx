@@ -269,9 +269,9 @@ export default function MyBlogPostPage() {
       {/* Post body — reuses the public reading surfaces (incl. BlogPageShell) */}
       <div className="flex-1 overflow-y-auto">
         {post.display_mode === "title" ? (
-          <BlogArticleView post={post} />
+          <BlogArticleView post={post} blogToken={token!} />
         ) : (
-          <PublicAnswerView post={post} />
+          <PublicAnswerView post={post} blogToken={token!} />
         )}
       </div>
 

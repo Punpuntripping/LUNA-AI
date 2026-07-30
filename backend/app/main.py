@@ -353,7 +353,8 @@ def create_app() -> FastAPI:
     # LAST middleware added is the OUTERMOST (first to see each request). The
     # `@app.middleware("http")` decorators below are added first, so they end
     # up innermost. Effective request order (outer → inner) is:
-    #   CORS → Logfire/OTEL spans → rate limit → security headers → request-id
+    #   CORS → origin lock → Logfire/OTEL spans → rate limit → security headers
+    #   → request-id
     # CORS is added LAST on purpose — see the note at its add_middleware call.
     # ------------------------------------------
 
@@ -384,7 +385,23 @@ def create_app() -> FastAPI:
     # 4. Logfire FastAPI instrumentation — adds request spans + tags
     instrument_fastapi_app(application)
 
-    # 5. CORS middleware — added LAST so it is the OUTERMOST middleware.
+    # 5. Origin lock — added second-to-last, so it sits just INSIDE CORS and
+    #     OUTSIDE everything else. Rationale for that exact slot:
+    #       * It must NOT be outside CORS. CORS stays outermost so it answers
+    #         OPTIONS preflights itself (see the note below — an OTEL preflight
+    #         crash once 500'd every preflight and took production logins down).
+    #         Preflights carry no custom headers, so a lock above CORS would
+    #         403 every one of them and break the browser app entirely.
+    #       * It should be as far OUT as that allows: a request that skipped the
+    #         edge is refused before it can cost a Logfire span, a Redis
+    #         round-trip in the rate limiter, or any routing/DB work.
+    #     Disabled by default (EDGE_SECRET unset ⇒ pure pass-through) — see
+    #     middleware/origin_lock.py. Do not set EDGE_SECRET until the zone's
+    #     records are orange-clouded.
+    from backend.app.middleware.origin_lock import OriginLockMiddleware
+    application.add_middleware(OriginLockMiddleware)
+
+    # 6. CORS middleware — added LAST so it is the OUTERMOST middleware.
     #     CORS MUST wrap the Logfire/OpenTelemetry instrumentation so it can
     #     answer OPTIONS preflights itself and short-circuit BEFORE the request
     #     reaches the OTEL ASGI layer. That layer computes a span name via
@@ -545,6 +562,39 @@ def create_app() -> FastAPI:
         blog_router,
         prefix="/api/v1",
         tags=["blog"],
+    )
+
+    # Public SEO library router (sitemap feed — Phase 0). The public GET
+    # /public/library/sitemap/{section} has no auth dependency by design. The
+    # router already declares prefix="/api/v1" itself, so it is mounted WITHOUT
+    # an extra prefix here (re-adding one would double the path).
+    from backend.app.api.public_library import router as public_library_router
+
+    application.include_router(
+        public_library_router,
+        tags=["library"],
+    )
+
+    # «مكتبتي» — the user's library shelf (access-tiers Phase B2). AUTHED only,
+    # every response `private, no-store` (per-user rows must never reach a
+    # shared/ISR cache). The router declares prefix="/api/v1" itself, so it is
+    # mounted WITHOUT an extra prefix (same as public_library above).
+    from backend.app.api.library_mine import router as library_mine_router
+
+    application.include_router(
+        library_mine_router,
+        tags=["library-mine"],
+    )
+
+    # اسأل ريحان — anonymous ask popup + post-signup claim (SEO Library Phase 4).
+    # POST /public/ask + GET /public/ask/{id} are anon (no auth dep by design);
+    # POST /ask/claim is authed. The router declares prefix="/api/v1" itself, so
+    # it is mounted WITHOUT an extra prefix (same as public_library above).
+    from backend.app.api.public_ask import router as public_ask_router
+
+    application.include_router(
+        public_ask_router,
+        tags=["public-ask"],
     )
 
     # Preferences + Templates router

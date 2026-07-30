@@ -420,7 +420,29 @@ export interface UsageReport {
   };
   ocr: { monthly: UsageBar | null };
   web: { monthly: UsageBar | null };
+  /**
+   * «فتح المصادر» — the library unlock allowance (access tiers Phase B). Counts
+   * WEIGHTED unlocks (SUM of `library_unlocks.cost`) for the current period, so
+   * one نظام can cost more than one مصدر. Optional on the type so a frontend
+   * built against a backend that predates the field still compiles and simply
+   * hides the bar.
+   */
+  library?: { period: UsageBar | null };
 }
+
+/**
+ * The library («فتح المصادر») bar is a `UsageBar` consumer with ONE deliberate
+ * difference from points/OCR: its `resets_at` is present even at zero usage.
+ * Points and OCR ride ROLLING windows anchored on the oldest spend, so with
+ * nothing spent there is no meaningful countdown and the backend sends `null`
+ * («متاحة بالكامل»). The library period is a FIXED calendar/subscription window
+ * (free → first instant of next UTC month; paid → started_at + n×duration_days),
+ * so its boundary is real from the first moment of the period — it is what
+ * «يتجدّد رصيدك في …» renders on an untouched account.
+ *
+ * `limit: null` = unlimited (dev) · `limit: 0` = locked account, no plan yet.
+ */
+export type LibraryUsageBar = UsageBar;
 
 /** POST /api/v1/plans/redeem success payload — the plan the code granted. */
 export interface RedeemCodeResponse {
@@ -616,8 +638,40 @@ export interface Reference {
   url: string;
   details_url: string;
   entity_name: string;
+  /**
+   * `regulations_v2.doc_type_raw` — the document's own Arabic type
+   * (لائحة / تنظيم / دليل / مواصفة قياسية / …). Rendered as the card's type
+   * chip in place of the blanket نظام label. Empty string (or absent, on
+   * pre-existing snapshots) when the corpus has no determined type — the
+   * panel then falls back to `DOMAIN_META.regulations.label`. Regulations
+   * domain only.
+   */
+  doc_type?: string;
   cross_refs: CrossRef[];
+  /**
+   * ACCESS-TIERS PHASE C (§6.2 step 1): **always `null` on the list payload.**
+   * Source bodies left the references list — the full body is metered content
+   * now and is fetched one item at a time from
+   * ``GET /workspace/{item_id}/references/{n}/source`` after ``resolve_access``.
+   * The key is retained on the wire so an un-migrated client degrades to "no
+   * reveal button" instead of crashing on a missing property.
+   *
+   * ⚠ NEVER branch on this to decide whether a source exists — branch on
+   * ``has_source``. This field only ever carries a body for a caller that
+   * explicitly asked the backend for one (none do today).
+   */
   source_view: SourceView | null;
+  /**
+   * ACCESS-TIERS PHASE C: a full source view CAN be built for this ``n``.
+   *
+   * THIS is what decides whether «عرض المصدر» renders and whether a ``[n]``
+   * click opens the reveal dialog. It costs no request to learn (a probe would
+   * be either a charge or a free oracle), and it is false for references whose
+   * source row could not be reconstructed (stub cards) — and for every
+   * reference on an anonymous blog snapshot, whose frozen bodies the backend
+   * strips on read.
+   */
+  has_source: boolean;
   /**
    * Writer-publisher attribution: when this reference was projected onto an
    * ``agent_writing`` workspace item from a source research WI, ``source_wi``
@@ -1093,3 +1147,89 @@ export interface SendMessagePayload {
   content: string;
   attachment_ids?: string[] | null;
 }
+
+// ==========================================
+// ON-DEMAND REFERENCE SOURCE REVEAL (access-tiers Phase C, §6.2)
+// ==========================================
+// GET /api/v1/workspace/{item_id}/references/{n}/source
+//   authed · `Cache-Control: private, no-store` · 20/min per verified caller
+//   (one shared budget with `/library/full/*`, so a 429 is reachable).
+//
+//   200 → { n, ref_id, domain, source_view, unlocked, balance }
+//   402 → the D14 refusal body (parsed by `parseRefusal`, rendered by
+//         `refusalCardCopy` — both in lib/library/*). NO content bytes.
+//   404 → «العنصر غير موجود» / «المرجع غير موجود» / «تعذّر عرض هذا المصدر».
+//         The last one is a corpus gap, not a refusal — the unlock (if one was
+//         spent) is permanent, so a later retry costs nothing.
+
+/**
+ * Why the reveal succeeded. Only `granted` actually spent anything:
+ * - `granted`          — a ledger row was just written; `cost` was charged.
+ * - `already_unlocked` — the item was on the shelf already (free, forever).
+ * - `open`             — policy-open item (compliance service, short تعميم);
+ *                        the quota was never consulted, so `balance` is null.
+ */
+export type ReferenceUnlockReason = 'granted' | 'already_unlocked' | 'open';
+
+/**
+ * WHAT was unlocked — not what was clicked (D15.1).
+ *
+ * ~81% of `reg:` citations resolve to the whole نظام rather than the single
+ * chunk the lawyer clicked, because only 2,140 of 11,455 chunks own exactly one
+ * مادة. The unlock genuinely covers the entire statute (and every مادة under
+ * it, per D5), so the UI must say so: a reader who thinks they spent an unlock
+ * on one paragraph has been tricked by the interface, not by the meter.
+ */
+export interface ReferenceUnlockInfo {
+  /** `regulation` | `article` | `judgment` | `circular` | `service` | … */
+  content_type: string;
+  content_id: string;
+  /** Human title of the unlocked item — the نظام, never the chunk. */
+  title: string;
+  /** Non-null only when the chunk owned exactly one مادة. */
+  article_no: number | null;
+  charged: boolean;
+  /** Weighted cost (§1.2.1): 1 for most items, up to 8 for a large نظام. */
+  cost: number;
+  reason: ReferenceUnlockReason;
+}
+
+/**
+ * The «فتح المصادر» allowance AFTER this reveal (a `granted` decision reports
+ * the post-charge number). `null` on the response — not here — means the quota
+ * was never consulted; `limit: null` means unlimited. Those are different, and
+ * conflating them shows «٠ متبقٍ» to a dev account.
+ */
+export interface ReferenceBalance {
+  used: number;
+  /** `null` = unlimited. */
+  limit: number | null;
+  resets_at: string | null;
+}
+
+/** 200 body of the metered reveal. */
+export interface ReferenceSourceResponse {
+  n: number;
+  ref_id: string;
+  /** `ReferenceDomain` on every real row; typed loosely — it is display-inert. */
+  domain: string;
+  source_view: SourceView;
+  unlocked: ReferenceUnlockInfo;
+  /** `null` for a policy-open item — the meter was never consulted. */
+  balance: ReferenceBalance | null;
+}
+
+/** Why a reveal produced no source, when it was NOT an entitlement refusal. */
+export type ReferenceSourceError =
+  /** No in-memory access token (session never hydrated). */
+  | 'no_token'
+  /** 401/403 — the session died. Card + login CTA, never a forced redirect. */
+  | 'unauthorized'
+  /** 404 — unknown item/ref, or the corpus row is gone. */
+  | 'not_found'
+  /** 429 — the shared 20/min library budget. NOT a quota refusal. */
+  | 'rate_limited'
+  /** Network failure / unparsable body. */
+  | 'network'
+  /** 5xx or any other unexpected status. */
+  | 'server';

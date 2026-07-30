@@ -103,6 +103,51 @@ def make_snippet(content_md: str, max_len: int = 200) -> str:
 # ---------------------------------------------------------------------------
 
 
+def strip_frozen_source_views(references: Any) -> list[dict[str, Any]]:
+    """Drop ``source_view`` from a FROZEN blog snapshot before serving it.
+
+    ``blog_posts.references_json`` is a snapshot taken at publish time and is
+    served by the ANONYMOUS ``GET /public/blog/{token}`` and ``/public/blogs``.
+    Publishes from 2026-07-27 onward no longer capture source views at all
+    (``fetch_item_references`` defaults to ``with_source_views=False``), but 95
+    of the 100 posts published BEFORE that change still carry full case bodies,
+    chunk content and uncapped circular text inside their stored JSON — ~3.4 MB
+    of corpus text readable by anyone with a share link, with no account and no
+    meter. That is a standing bypass around the whole access-tiers design.
+
+    Stripping happens on READ rather than by rewriting the rows: the snapshot is
+    the historical record of what was published, a backfill is irreversible, and
+    a read-time filter also protects any row written by an older deployment
+    during a rolling release.
+
+    What survives is exactly the never-gated class (§1.3): the citation list and
+    its mesh — ``n``, ``title``, ``snippet``, ``ref_id``, ``domain``, links,
+    ``cross_refs`` — plus the official source URL. The public page keeps its
+    credibility layer; only the source BODY is withheld, and reading it now costs
+    an unlock like everywhere else.
+    """
+    out: list[dict[str, Any]] = []
+    for ref in references or []:
+        if not isinstance(ref, dict):
+            continue
+        if ref.get("source_view") is None:
+            out.append(ref)
+            continue
+        # Strip the BODY, keep the FACT that a body exists.
+        #
+        # ``has_source=True`` is deliberate and load-bearing: a legacy row that
+        # carried a ``source_view`` is precisely a row whose source CAN be
+        # rebuilt, so the blog panel must still render «عرض المصدر» for it — the
+        # reader signs in and reveals it through the metered endpoint. Setting
+        # this False (as an earlier pass did) silently deleted the reveal
+        # affordance from every pre-2026-07-27 post.
+        #
+        # ``source_view`` stays present-but-null so an un-migrated client
+        # degrades to "no reveal" instead of crashing on a missing property.
+        out.append({**ref, "source_view": None, "has_source": True})
+    return out
+
+
 def get_public_post(supabase: SupabaseClient, token: str) -> Optional[dict]:
     """Fetch a published post by its unguessable token.
 
@@ -157,7 +202,7 @@ def get_public_post(supabase: SupabaseClient, token: str) -> Optional[dict]:
         "question_text": row.get("question_text") or "",
         "title": row.get("title"),
         "content_md": row.get("content_md") or "",
-        "references": row.get("references_json") or [],
+        "references": strip_frozen_source_views(row.get("references_json")),
         "subtype": row.get("subtype"),
         "created_at": row.get("created_at"),
         "display_mode": row.get("display_mode") or "question",
@@ -472,7 +517,10 @@ def import_post_for_user(
         "question_text": post.get("question_text") or "",
         "title": post.get("title"),
         "content_md": post.get("content_md") or "",
-        "references_json": post.get("references_json") or [],
+        # Strip on COPY as well as on read: importing a pre-2026-07-27 post would
+        # otherwise mint a brand-new snapshot carrying the old full source
+        # bodies, re-creating the unmetered mirror this closes.
+        "references_json": strip_frozen_source_views(post.get("references_json")),
         "display_mode": post.get("display_mode") or "question",
         "is_published": True,
     }

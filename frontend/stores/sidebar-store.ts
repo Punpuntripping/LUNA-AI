@@ -1,6 +1,11 @@
 import { create } from "zustand";
 
-export type SidebarTab = "conversations" | "cases" | "templates" | "blogs";
+export type SidebarTab =
+  | "conversations"
+  | "cases"
+  | "templates"
+  | "blogs"
+  | "library";
 
 interface SidebarState {
   isOpen: boolean;

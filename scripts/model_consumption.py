@@ -34,6 +34,7 @@ from collections import defaultdict
 from shared.db.client import get_supabase_client
 from shared.pricing import load_pricing, get_price
 from agents.utils.agent_models import cost_usd
+from scripts.telemetry_aliases import agent_prefix_variants
 
 # Rows whose `model` column is unreliable for repricing / attribution:
 #   - the bare `deep_search` legacy rollup (one model stamped on a multi-model turn)
@@ -58,7 +59,13 @@ def fetch(client, start_iso: str, end_iso: str, agent_prefix: str | None) -> lis
              .select("agent,model,tokens_in,tokens_out,tokens_reasoning,tokens_cached,cost_usd")
              .gte("created_at", start_iso).lt("created_at", end_iso))
         if agent_prefix:
-            q = q.like("agent", f"{agent_prefix}%")
+            variants = agent_prefix_variants(agent_prefix)
+            if len(variants) == 1:
+                q = q.like("agent", f"{variants[0]}%")
+            else:
+                # reg_search↔reg_compliance rename: match either stem so a single
+                # --agent filter reads the whole series across the cutover date.
+                q = q.or_(",".join(f"agent.like.{v}*" for v in variants))
         r = q.order("created_at").range(page * PAGE, page * PAGE + PAGE - 1).execute()
         d = r.data or []
         rows.extend(d)

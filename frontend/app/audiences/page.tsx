@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import { LandingHeader } from "@/components/landing/LandingHeader";
-import { SiteFooter } from "@/components/site/SiteFooter";
+import { SitePageShell } from "@/components/site/SitePageShell";
 import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
 import { AudiencesHero } from "@/components/audiences/AudiencesHero";
 import { AudienceBlock } from "@/components/audiences/AudienceBlock";
@@ -11,11 +10,15 @@ export const metadata: Metadata = {
   title: "ريحان يستهدف مين؟ — مساعد قانوني لكل القطاعات السعودية",
   description:
     "ريحان ليس للمحامين وحدهم. يبحث في أنظمة وأحكام وخدمات كل قطاعات المملكة لكل من يتعامل مع نظام سعودي: المحامون، والمختصون من أطباء ومهندسين ومحاسبين، ورواد الأعمال والمستثمرون، والأفراد.",
+  alternates: {
+    canonical: "/audiences",
+  },
   openGraph: {
     title: "ريحان يستهدف مين؟",
     description:
       "قاعدة ريحان تغطّي 38 قطاعاً نظامياً — أمثلة حقيقية لما يسأله المحامي والمختص ورائد الأعمال والفرد، كلٌّ موثّق بمصدره الرسمي.",
     type: "website",
+    url: "/audiences",
   },
 };
 
@@ -24,8 +27,7 @@ export const metadata: Metadata = {
 // eslint-disable-next-line import/no-default-export
 export default function AudiencesPage() {
   return (
-    <div className="min-h-screen bg-background">
-      <LandingHeader />
+    <SitePageShell>
       <main>
         <AudiencesHero />
 
@@ -41,7 +43,6 @@ export default function AudiencesPage() {
         <SectorBand />
         <FinalCtaSection />
       </main>
-      <SiteFooter />
-    </div>
+    </SitePageShell>
   );
 }

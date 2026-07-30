@@ -24,6 +24,8 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from scripts.telemetry_aliases import DEEP_SEARCH_PHASE_SPANS  # noqa: E402
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 _ap = argparse.ArgumentParser(description="Extract a Luna conversation from Logfire trace dumps (convo_ffdf format).")
 _ap.add_argument("--conv", required=True, help="conversation_id (used for the output folder name)")
@@ -209,7 +211,10 @@ def render_messages(msgs):
 WF_TEMPLATE = [
     (0, "message.stream"), (1, "router.classify"), (1, "dispatch.specialist"),
     (2, "deep_search.planner"), (2, "deep_search.sector_picker"), (2, "deep_search.run_full_loop"),
-    (3, "deep_search.phase.reg"), (3, "deep_search.phase.compliance"), (3, "deep_search.phase.case"),
+    # Per-phase spans, from the canonical alias map: BOTH the current
+    # reg_compliance label and the historical reg / compliance labels, so a turn
+    # from either side of the rename renders (absent spans are skipped per-turn).
+    *[(3, s) for s in DEEP_SEARCH_PHASE_SPANS],
     (2, "deep_search.aggregator"), (1, "publish.workspace_item"),
 ]
 

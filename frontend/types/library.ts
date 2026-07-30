@@ -1,0 +1,480 @@
+// Shared prop + data types for the SEO Public Library block component library
+// (`components/library/blocks/`). Every block is PRESENTATIONAL — typed props
+// in, JSX out, no data fetching. Page routes (Phase 2+) map backend payloads
+// onto these shapes. Keep everything Arabic-first / RTL where user-visible.
+//
+// Spec: .claude/plans/seo_public_library.md — "PAGE TEMPLATES & BLOCK SYSTEM".
+
+import type { ReactNode } from "react";
+
+// ------------------------------------------------------------------
+// Shared data primitives
+// ------------------------------------------------------------------
+
+/** One row in a metadata / «المعلومات الأساسية» grid. Optional internal link. */
+export interface MetadataItem {
+  label: string;
+  value: string;
+  href?: string;
+}
+
+/**
+ * Lifecycle status of a regulation/document.
+ *   active   → ساري (green)
+ *   amended  → معدَّل (amber)
+ *   repealed → ملغي (red, must be unmissable — never render a repealed law as
+ *              current; hard rule from the plan).
+ */
+export type DocStatus = "active" | "amended" | "repealed";
+
+/** One entry in a table-of-contents / «محتويات النظام» (or numbered steps). */
+export interface TocEntry {
+  id: string;
+  label: string;
+  /**
+   * Anchor/link target. OPTIONAL (added Phase 2, backward-compatible): a locked
+   * TOC row or a plain-text compliance step omits it and renders as
+   * non-interactive text instead of a `<Link>`. Existing callers that always
+   * pass `href` are unaffected.
+   */
+  href?: string;
+  /** Nesting depth (1 = top). Drives indentation. Default 1. */
+  level?: number;
+  /**
+   * When true, the entry renders as muted, non-interactive text with a lock
+   * indicator (a gated regulation section a signed-out reader can't open yet).
+   * Added Phase 2 — backward-compatible (undefined = today's linked behavior).
+   */
+  locked?: boolean;
+}
+
+/** The content type a mesh/reference link points at — drives the kind icon. */
+export type ReferenceKind =
+  | "regulation"
+  | "article"
+  | "judgment"
+  | "circular"
+  | "service"
+  | "blog"
+  | "form"
+  | "external";
+
+/** One cited-source / cross-reference mesh link. */
+export interface ReferenceItem {
+  title: string;
+  href: string;
+  kind: ReferenceKind;
+}
+
+/** One outbound official source (BOE, ناجز, …). */
+export interface OfficialSourceLink {
+  label: string;
+  href: string;
+}
+
+/** One question/answer pair for the FAQ accordion + FAQPage JSON-LD. */
+export interface FaqItem {
+  q: string;
+  a: string;
+}
+
+/** One breadcrumb crumb. Current page usually omits `href`. */
+export interface BreadcrumbItem {
+  label: string;
+  href?: string;
+}
+
+/** A topic chip (small pill link to a `/topics/{slug}` hub). */
+export interface TopicChip {
+  label: string;
+  href: string;
+}
+
+/**
+ * Gate decision surfaced to the client. The hidden text is NEVER shipped —
+ * `hiddenPlaceholderLines` only tells the GateBanner how many DECORATIVE
+ * skeleton bars to draw. Truncation happens server-side in `library_service`.
+ */
+export interface GateInfo {
+  isTruncated: boolean;
+  hiddenPlaceholderLines: number;
+  /** Where the «سجّل مجاناً» CTA links. Default "/login". */
+  ctaHref: string;
+}
+
+// ------------------------------------------------------------------
+// Judgments (الأحكام القضائية) — wire payloads
+// ------------------------------------------------------------------
+//
+// The other wings keep their wire types next to their fetchers in
+// `lib/library/api.ts`. The judgments payloads live HERE instead (they are
+// consumed by the hub view, the cards, the doc page and the cited-regulations
+// block alike) — and they are declared SELF-CONTAINED on purpose: `lib/library/
+// api.ts` already imports `DocStatus` from this file, so importing
+// `DocMetadataRow` / `RegulationOfficialSource` back out of it would create a
+// types↔lib import cycle. The two duplicated row shapes below are three lines
+// each; the cycle would be forever.
+
+/**
+ * Canonical `cases.court_level` vocabulary — the TS mirror of
+ * `agents/deep_search_v4/shared/court_levels.py`. THREE values, not two: every
+ * ad-hoc two-branch copy of this in the Python side silently relabelled all 125
+ * supreme-court rulings as ابتدائي. Wire fields stay `string` (a future DB value
+ * must not break a page); this union types the FILTER vocabulary the UI offers.
+ */
+export type CourtLevel = "first_instance" | "appeal" | "supreme";
+
+/** One label/value row in a judgment's «المعلومات الأساسية» card. */
+export interface JudgmentMetadataRow {
+  label: string;
+  value: string;
+}
+
+/** One outbound official source on a judgment page (ناجز، وزارة العدل، …). */
+export interface JudgmentOfficialSource {
+  title: string;
+  href: string;
+}
+
+/** One card in the /judgments hub grid. */
+export interface JudgmentHubItem {
+  slug: string;
+  /** The composed listing title (subject + court + year). */
+  title: string;
+  court: string;
+  /** Raw enum: `first_instance` | `appeal` | `supreme`. */
+  court_level: string;
+  /** Backend-rendered Arabic label for `court_level` — it owns the vocabulary. */
+  court_level_label: string;
+  city: string | null;
+  date_hijri: string | null;
+  date_gregorian: string | null;
+  domains: string[];
+  snippet: string;
+}
+
+/**
+ * The /judgments hub envelope. NOTE the shape differs from the shared
+ * `LibraryHubResponse` used by the other wings: the judgments contract specifies
+ * only `{ items, page, total_pages }`. `cap_reached` / `max_anon_page` are typed
+ * OPTIONAL so the anon depth-cap wall lights up automatically if/when the
+ * backend starts emitting them (like every sibling hub does) — and, until then,
+ * `?? false` simply means "no cap" and the hub paginates normally.
+ */
+export interface JudgmentHubResponse {
+  items: JudgmentHubItem[];
+  page: number;
+  total_pages: number;
+  cap_reached?: boolean;
+  /** The CALLER's browse-depth cap (access tiers). See `LibraryHubResponse`. */
+  max_page?: number;
+  /** @deprecated same value as `max_page`; removed after one release. */
+  max_anon_page?: number;
+}
+
+/**
+ * One rendered section of a judgment. `text` is ALREADY gate-truncated
+ * server-side — the hidden bytes never reach the client; `hidden_placeholder_
+ * lines` only sizes the GateBanner skeleton. Section ids/labels, in order:
+ *   facts الوقائع (free) · claims الطلبات · plaintiff_grounds أسانيد المدعي ·
+ *   defendant_response رد المدعى عليه · defendant_grounds أسانيد المدعى عليه ·
+ *   reasoning الأسباب والتسبيب · ruling المنطوق (free) ·
+ *   objection_grounds أسباب الاعتراض · appellee_response رد المستأنف ضده ·
+ *   appeal_reasoning تسبيب حكم الاستئناف · appeal_ruling منطوق حكم الاستئناف (free)
+ * Empty sections are omitted by the backend, so never assume the full list.
+ */
+export interface JudgmentSection {
+  id: string;
+  title: string;
+  text: string;
+  is_truncated: boolean;
+  hidden_placeholder_lines: number;
+  /** Backend's own free/gated marker. `is_truncated` is what drives the render. */
+  is_free: boolean;
+}
+
+/**
+ * One «الأنظمة المستند إليها» citation — the judgment page's SEO payload: a link
+ * INTO the /regulations wing. `reg_slug` is null when the cited نظام has no
+ * published page yet (the row then renders as plain, non-link text);
+ * `article_slug` is null when the citation is regulation-level, not مادة-level.
+ */
+export interface JudgmentCitedRegulation {
+  title: string;
+  /** Rendered verbatim into «المادة {n}». */
+  article_no: number | null;
+  reg_slug: string | null;
+  article_slug: string | null;
+}
+
+/**
+ * Full /judgments/{slug} payload. `subject` is the H1; `title` is the longer
+ * composed listing/meta title (subject + court + year). `summary_md` is ALWAYS
+ * free (the ranking lead); `sections` carry the gated body.
+ */
+export interface JudgmentDoc {
+  slug: string;
+  title: string;
+  subject: string;
+  court: string;
+  court_level: string;
+  court_level_label: string;
+  city: string | null;
+  case_number: string | null;
+  judgment_number: string | null;
+  date_hijri: string | null;
+  date_gregorian: string | null;
+  hijri_year: number | null;
+  appeal_result: string | null;
+  domains: string[];
+  metadata: JudgmentMetadataRow[];
+  summary_md: string | null;
+  sections: JudgmentSection[];
+  cited_regulations: JudgmentCitedRegulation[];
+  /** Total citations found — the surplus over `cited_regulations` is gated. */
+  cited_total: number;
+  official_sources: JudgmentOfficialSource[];
+  gate_effective: "open" | "gated";
+  hidden_section_count: number;
+}
+
+/** The page type a page belongs to — used by AskRayhanWidget context params. */
+export type LibraryPageType =
+  | "regulation"
+  | "article"
+  | "judgment"
+  | "circular"
+  | "compliance"
+  | "form"
+  | "blog"
+  | "calculator"
+  | "topic";
+
+// ------------------------------------------------------------------
+// Per-block prop interfaces
+// ------------------------------------------------------------------
+
+export interface TopicBreadcrumbsProps {
+  /** Ordered crumbs from root → current page. */
+  items: BreadcrumbItem[];
+  /** Optional topic chips rendered under the trail. */
+  chips?: TopicChip[];
+  className?: string;
+}
+
+export interface TrustLineProps {
+  /** ISO date string of the last content update. */
+  updatedAt: string;
+  /** Issuing/attribution entity, e.g. «هيئة الخبراء بمجلس الوزراء». */
+  entity?: string;
+  /** AI-disclaimer link target. Default = the shared legal disclaimer route. */
+  disclaimerHref?: string;
+  className?: string;
+}
+
+export interface MetadataCardProps {
+  items: MetadataItem[];
+  /** Optional status badge shown in the card header. */
+  status?: DocStatus;
+  /** Card heading. Default «المعلومات الأساسية». */
+  title?: string;
+  className?: string;
+}
+
+export interface StatusBadgeProps {
+  status: DocStatus;
+  className?: string;
+}
+
+export interface CourtLevelBadgeProps {
+  /** Raw `court_level` enum value. Unknown values render no badge. */
+  level: string;
+  /**
+   * Backend-supplied Arabic label (`court_level_label`). Preferred over the
+   * local map — the backend owns the display vocabulary.
+   */
+  label?: string | null;
+  className?: string;
+}
+
+export interface LeadSummaryProps {
+  /**
+   * The lead summary. Blank-line-separated paragraphs are each rendered as a
+   * `<p>`. Provide EITHER `text` or `children`.
+   */
+  text?: string;
+  children?: ReactNode;
+  /**
+   * When the FIRST rendered block is a heading that duplicates this value
+   * (colon/whitespace-insensitive), drop it — used where a styled section
+   * `<h2>` already renders the same title the summary text repeats.
+   */
+  dedupeHeading?: string;
+  className?: string;
+}
+
+export interface TocListProps {
+  entries: TocEntry[];
+  /** Heading. Default «محتويات النظام». */
+  title?: string;
+  /**
+   * `anchors` (default) → bulleted anchor list.
+   * `steps` → numbered ordered list (compliance «الخطوات»).
+   */
+  variant?: "anchors" | "steps";
+  /** Collapse behind a `<summary>` on mobile. Default true. */
+  collapsible?: boolean;
+  /** Optional count pill in the header, e.g. «391 مادة». */
+  badge?: string;
+  className?: string;
+}
+
+export interface TocRailProps {
+  entries: TocEntry[];
+  /** Panel heading. Default «محتويات النظام». */
+  title?: string;
+  /** Count pill in the header, e.g. «391 مادة». */
+  badge?: string;
+  className?: string;
+}
+
+export interface ArticleBodyProps {
+  /**
+   * The VISIBLE text only (already server-truncated for gated items). Rendered
+   * as markdown by default.
+   */
+  visibleText: string;
+  /** When present + `isTruncated`, a GateBanner renders right after the body. */
+  gate?: GateInfo;
+  /** Render `visibleText` as plain blank-line paragraphs instead of markdown. */
+  plain?: boolean;
+  /**
+   * `plain` only: when the FIRST rendered block is a heading that duplicates
+   * this value (colon/whitespace-insensitive), drop it — used where a styled
+   * section `<h2>` already renders the same title the body text repeats.
+   */
+  dedupeHeading?: string;
+  /**
+   * Render the trailing GateBanner as decorative bars WITHOUT its CTA card, so
+   * a single document-level GateBanner owns the one conversion card. Only has
+   * an effect when the body is truncated.
+   */
+  gateBarsOnly?: boolean;
+  className?: string;
+}
+
+export interface GateBannerProps {
+  /** How many decorative skeleton bars to draw (purely cosmetic). */
+  hiddenPlaceholderLines: number;
+  /** CTA link target. */
+  ctaHref: string;
+  /** CTA card headline. Default «سجّل مجاناً لعرض المحتوى كاملاً». */
+  ctaLabel?: string;
+  /**
+   * Render ONLY the faded skeleton bars, with no CTA card — for per-section
+   * gates when a single document-level GateBanner is the one conversion card.
+   */
+  barsOnly?: boolean;
+  className?: string;
+}
+
+export interface FaqBlockProps {
+  items: FaqItem[];
+  /** Heading. Default «الأسئلة الشائعة». */
+  title?: string;
+  /** Emit FAQPage JSON-LD. Default true. */
+  withJsonLd?: boolean;
+  className?: string;
+}
+
+export interface ReferencesMeshProps {
+  items: ReferenceItem[];
+  /** Heading. Default «استند إلى». */
+  title?: string;
+  /** Count of additional gated references (renders a «+{n} … سجّل» tail). */
+  gatedCount?: number;
+  /** CTA target for the gated tail. Default "/login". */
+  gateCtaHref?: string;
+  className?: string;
+}
+
+export interface CitedRegulationsProps {
+  items: JudgmentCitedRegulation[];
+  /**
+   * TOTAL citations found for the document. The surplus over `items.length`
+   * renders the gated «+{n} … سجّل» tail. Omit for no tail.
+   */
+  total?: number;
+  /** Heading. Default «الأنظمة المستند إليها». */
+  title?: string;
+  /** CTA target for the gated tail. Default "/login". */
+  gateCtaHref?: string;
+  className?: string;
+}
+
+export interface OfficialSourcesProps {
+  sources: OfficialSourceLink[];
+  /** Heading. Default «المصادر الرسمية». */
+  title?: string;
+  className?: string;
+}
+
+export interface ReadAfterProps {
+  items: ReferenceItem[];
+  /** Heading. Default «اقرأ أيضاً». */
+  title?: string;
+  className?: string;
+}
+
+export interface MediaBlockProps {
+  /** Full YouTube URL or bare 11-char video id. */
+  youtubeUrl: string;
+  /** Accessible video title (also the thumbnail alt + play label). */
+  title: string;
+  /** Override thumbnail. Defaults to YouTube's hqdefault image. */
+  thumbnailUrl?: string;
+  className?: string;
+}
+
+export interface PdfViewerBlockProps {
+  /**
+   * `preview` → anon-gated: first-page preview image + lock overlay + CTA.
+   * `full`    → renders an `<iframe>`/`<object>` to `pdfUrl`.
+   */
+  mode: "preview" | "full";
+  pdfUrl: string;
+  title?: string;
+  /** First-page preview image (preview mode). */
+  previewImageUrl?: string;
+  /** CTA target in preview mode. Default "/login". */
+  ctaHref?: string;
+  className?: string;
+}
+
+export interface AskRayhanWidgetProps {
+  pageType: LibraryPageType;
+  pageId: string;
+  pageTitle: string;
+}
+
+export interface CalculatorBlockProps {
+  /**
+   * Registry slug of the calculator to embed (Phase 3). The block resolves the
+   * definition from `lib/calculators/registry` itself — presentational surface,
+   * no data fetching. Renders nothing for an unknown slug.
+   */
+  slug: string;
+  className?: string;
+}
+
+export interface LibraryPageShellProps {
+  children: ReactNode;
+  /**
+   * `doc` → narrow reading column (max-w-3xl).
+   * `hub` → wide directory grid column (max-w-6xl).
+   * Default `doc`.
+   */
+  maxWidth?: "doc" | "hub";
+  /** Show the «جرّب ريحان مجاناً» conversion block above the footer. Default true. */
+  showCta?: boolean;
+}

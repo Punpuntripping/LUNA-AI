@@ -58,8 +58,13 @@ from supabase import Client as SupabaseClient
 
 logger = logging.getLogger(__name__)
 
-Meter = Literal["ocr", "ord", "web"]
-METERS: tuple[Meter, ...] = ("ocr", "ord", "web")
+# "library" (فتح المصادر) is a LEDGER meter, not a Redis-counter meter: its
+# usage is SUM(library_unlocks.cost) for the current period_key, read off the
+# get_user_quota_state RPC. It appears here only so the Meter type, QuotaExceeded
+# and the Arabic message table cover it uniformly — none of the counter helpers
+# below ever see it.
+Meter = Literal["ocr", "ord", "web", "library"]
+METERS: tuple[Meter, ...] = ("ocr", "ord", "web", "library")
 
 # Per-meter day-bucket TTL — one day past the longest window read over the
 # buckets (30-day monthly/ocr/web) → 31d.

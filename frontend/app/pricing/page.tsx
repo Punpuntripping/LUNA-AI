@@ -1,21 +1,22 @@
 import type { Metadata } from "next";
 import { Check } from "lucide-react";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { LandingHeader } from "@/components/landing/LandingHeader";
-import { SiteFooter } from "@/components/site/SiteFooter";
+import { SitePageShell } from "@/components/site/SitePageShell";
 import { PRICING_PLANS } from "@/lib/pricing";
 
 export const metadata: Metadata = {
   title: "الباقات والأسعار — ريحان",
   description: "باقات اشتراك ريحان: الأساسية والاحترافية والقصوى.",
+  alternates: {
+    canonical: "/pricing",
+  },
 };
 
 // Next.js App Router requires a default export for page files.
 // eslint-disable-next-line import/no-default-export
 export default function PricingPage() {
   return (
-    <div className="min-h-screen bg-background">
-      <LandingHeader />
+    <SitePageShell>
       <main className="mx-auto max-w-5xl px-4 py-12">
         {/* Page title */}
         <header className="mb-10 flex flex-col items-center gap-4 text-center">
@@ -114,7 +115,6 @@ export default function PricingPage() {
           السعودي.
         </p>
       </main>
-      <SiteFooter />
-    </div>
+    </SitePageShell>
   );
 }

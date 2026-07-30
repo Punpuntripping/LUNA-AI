@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useUsageLimits } from "@/hooks/use-usage";
+import { usageBarCopy } from "@/lib/library/gate-copy";
 import type { UsageBar } from "@/types";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -53,9 +54,28 @@ interface BarRowProps {
   bar: UsageBar | null;
   now: number;
   fractionDigits?: number;
+  /**
+   * `true` for a FIXED-window meter — one whose period boundary exists whether or
+   * not it has been used (the library allowance: a UTC calendar month for free,
+   * the subscription window for a paid plan).
+   *
+   * The points and OCR bars are ROLLING windows anchored on first use, so at zero
+   * usage they have no meaningful reset instant and the backend sends none —
+   * hence «متاحة بالكامل». The library bar is different: the backend deliberately
+   * sends `resets_at` even at zero usage, and suppressing it here would throw away
+   * the one behaviour implemented specifically for this meter.
+   */
+  fixedWindow?: boolean;
 }
 
-function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
+function BarRow({
+  label,
+  unit,
+  bar,
+  now,
+  fractionDigits = 0,
+  fixedWindow = false,
+}: BarRowProps) {
   if (!bar) return null;
 
   // limit 0 → the feature is not included in the plan at all.
@@ -82,10 +102,12 @@ function BarRow({ label, unit, bar, now, fractionDigits = 0 }: BarRowProps) {
     );
   }
 
-  // used === 0 → the window is fully available; the backend sends no reset
-  // (a "now + window" countdown would be meaningless and clock-skew-fragile).
-  const fullyAvailable = bar.used <= 0;
+  // used === 0 → a ROLLING window is fully available and the backend sends no
+  // reset (a "now + window" countdown would be meaningless and clock-skew-
+  // fragile). A FIXED window still has a real boundary at zero usage, so it
+  // keeps showing it.
   const reset = formatReset(bar.resets_at, now);
+  const fullyAvailable = bar.used <= 0 && !(fixedWindow && reset);
   const tone =
     bar.pct >= 100
       ? "bg-destructive"
@@ -228,6 +250,34 @@ export function UsageLimitsDialog({
             now={now}
           />
         </section>
+
+        {/* «فتح المصادر» — the library unlock allowance (access tiers Phase B).
+            Reuses BarRow verbatim, which already handles limit === null («بلا
+            حد») and limit === 0 («غير متاحة في باقتك الحالية»). Unlike the
+            rolling points/OCR windows this bar's period is a fixed calendar /
+            subscription window, so `resets_at` is present even at zero usage —
+            hence `fixedWindow`, which keeps «يُعاد الاحتساب …» visible on an
+            untouched account instead of collapsing to «متاحة بالكامل».
+            `library` is optional on the payload — a backend that predates the
+            field simply hides the section. */}
+        {data.library && (
+          <section className="flex flex-col gap-3">
+            <h3 className="text-sm font-semibold text-foreground">
+              {usageBarCopy.sectionTitle}
+            </h3>
+            <BarRow
+              label={usageBarCopy.barLabel}
+              unit={usageBarCopy.unit}
+              bar={data.library.period}
+              now={now}
+              fractionDigits={0}
+              fixedWindow
+            />
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {usageBarCopy.note}
+            </p>
+          </section>
+        )}
 
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />

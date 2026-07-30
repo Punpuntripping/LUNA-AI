@@ -41,7 +41,7 @@ from shared.db.client import get_supabase_client
 
 _logfire = get_logfire()
 
-# Diverse spread — should exercise reg_led / compliance_led / full.
+# Diverse spread — should exercise case_led / reg_compliance_led / full.
 # Override from argv: `python scripts/run_planner_5.py 7 13 22`
 QUERY_IDS = [int(a) for a in sys.argv[1:]] or [7, 12, 13, 16, 22]
 

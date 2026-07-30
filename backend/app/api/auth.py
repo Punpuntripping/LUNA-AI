@@ -391,8 +391,9 @@ async def refresh(
 
 @router.post("/logout", response_model=SuccessResponse)
 async def logout(
+    request: Request,
     current_user: AuthUser = Depends(get_current_user),
-    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
+    supabase: SupabaseClient = Depends(get_supabase),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """
@@ -401,15 +402,29 @@ async def logout(
     Always returns 200 even when degraded: the client discards its tokens
     regardless, and a 503 would trap users who just want to log out. Shared-
     device risk is bounded by token expiry. Degradation is logged loudly once.
+
+    ⚠ MUST target the caller's own token via the SERVICE-ROLE admin API, never
+    ``supabase_auth.auth.sign_out()``. ``app.state.supabase_auth`` is an
+    ``lru_cache``d anon client shared by every request, and
+    ``sign_in_with_password`` parks each login's session in its in-memory GoTrue
+    store. ``auth.sign_out()`` acts on whatever session is parked there and
+    revokes it with scope="global" — so one user's logout could revoke a
+    DIFFERENT user's refresh tokens on every device, silently (the exception path
+    below swallows it and still returns 200). ``_verify_password`` avoids the same
+    trap by using a throwaway client; this route avoids it by not touching the
+    shared client at all. Scope is "local" — /logout-all owns "global".
     """
     gotrue_ok = True
     redis_ok = True
     gotrue_err: Optional[Exception] = None
     redis_err: Optional[Exception] = None
 
-    # Sign out from Supabase (invalidates tokens)
+    # Revoke only this session's refresh token. _raw_jwt is inside the try so a
+    # malformed Authorization header degrades to a logged 200 rather than the 401
+    # it raises — get_current_user has already validated the token by here, and a
+    # logout that refuses to log you out is the one failure mode worth avoiding.
     try:
-        await _gotrue_call(supabase_auth.auth.sign_out)
+        await _gotrue_call(supabase.auth.admin.sign_out, _raw_jwt(request), "local")
     except Exception as e:
         gotrue_ok = False
         gotrue_err = e

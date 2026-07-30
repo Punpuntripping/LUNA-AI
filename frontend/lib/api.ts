@@ -43,8 +43,14 @@ import type {
   ImportBlogResponse,
   BlogItemResponse,
   BlogPostPublic,
+  ReferenceSourceResponse,
+  ReferenceSourceError,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
+// Access-tiers Phase C: the metered reference reveal answers with the SAME D14
+// 402 body as `/library/full/*`, so it reuses that module's defensive parser
+// rather than growing a second one that could drift from it.
+import { parseRefusal, type LibraryRefusal } from "@/lib/library/full-content";
 
 interface ApiErrorNested {
   code: string;
@@ -213,6 +219,24 @@ async function apiFetch<T>(
 }
 
 // -----------------------------------------------
+// SEO Library — authed claim + forms→writer handoff
+// -----------------------------------------------
+
+/** Full anon answer revealed to the authed owner (`POST /ask/claim`). */
+export interface AskClaimResponse {
+  question: string;
+  answer_md: string;
+  page_type: string;
+  page_id: string;
+}
+
+/** The freshly-copied قوالبي template from the forms→writer handoff. */
+export interface OpenInWriterResult {
+  template_id: string;
+  title: string;
+}
+
+// -----------------------------------------------
 // Convenience methods
 // -----------------------------------------------
 
@@ -345,6 +369,42 @@ export const api = {
    */
   getPublicBlog: (token: string) =>
     apiFetch<BlogPostPublic>(`/public/blog/${token}`, { method: "GET" }),
+
+  // -----------------------------------------------
+  // اسأل ريحان — authed claim of an anon answer (post-signup continuity moment)
+  // -----------------------------------------------
+
+  /**
+   * Claim the full answer for an anon question the caller asked before signing
+   * up. AUTHED (bearer + 401 retry). The row must match id AND session_key;
+   * idempotent for the same owner. Consumed by the AuthGuard `claim_anon_answer`
+   * intent, which stashes the result for the widget to reveal.
+   */
+  claimAnonAnswer: (questionId: string, sessionKey: string) =>
+    apiFetch<AskClaimResponse>(`/ask/claim`, {
+      method: "POST",
+      body: JSON.stringify({
+        question_id: questionId,
+        session_key: sessionKey,
+      }),
+    }),
+};
+
+// -----------------------------------------------
+// Forms → writer handoff (نماذج «افتح هذا النموذج في ريحان»)
+// -----------------------------------------------
+
+export const formsApi = {
+  /**
+   * Copy a PUBLISHED form into the caller's قوالبي and return the new template
+   * id + title. AUTHED (bearer + 401 retry). The forms→writer conversion CTA
+   * (anon path: post-login intent `open_form_in_writer`) lands the user in the
+   * writer at `/templates/{template_id}`.
+   */
+  openInWriter: (slug: string) =>
+    apiFetch<OpenInWriterResult>(`/forms/${encodeURIComponent(slug)}/open-in-writer`, {
+      method: "POST",
+    }),
 };
 
 // -----------------------------------------------
@@ -710,7 +770,127 @@ export const workspaceApi = {
       `/workspace/${itemId}/references${qs}`,
     );
   },
+
+  /**
+   * ACCESS-TIERS PHASE C — reveal ONE reference's original source (metered).
+   *
+   * The references list above ships the citation mesh only; this is where the
+   * body lives now, and where the charge sits. CALL ONLY FROM A USER GESTURE
+   * (a `[n]` click or «عرض المصدر»): fetching on mount would spend an unlock
+   * for every card in the panel, which is exactly the §5.1 "trick" feeling.
+   *
+   * Deliberately NOT routed through `apiFetch`, for two reasons:
+   *  1. `ApiClientError` keeps only `status`/`code`/`message`, and every
+   *     refusal shares one code (`LIBRARY_QUOTA_EXCEEDED`) — the fields that
+   *     pick the card (`reason`, `resets_at`, `stored_count`) would be thrown
+   *     away, making an exhausted period indistinguishable from a frozen shelf.
+   *  2. `apiFetch` redirects to /login on a dead session. Here that would eject
+   *     a lawyer mid-read over one optional dialog; the caller renders
+   *     «انتهت جلستك» with a login CTA instead. The panel's other requests
+   *     (the references list) still own the refresh-and-retry path.
+   *
+   * Returns a discriminated union — a refusal and a 429 are ANSWERS, not
+   * exceptions, so neither is retried by TanStack Query as a failure.
+   */
+  getReferenceSource: (itemId: string, n: number) =>
+    fetchReferenceSource(
+      `/workspace/${encodeURIComponent(itemId)}/references/${n}/source`,
+      { requireToken: true },
+    ),
 };
+
+/**
+ * Shared transport for BOTH reference-reveal endpoints — the in-app workspace
+ * one and the public-blog one. One implementation so the two surfaces cannot
+ * drift on how a 402 / 404 / 429 is classified.
+ *
+ * `requireToken: false` is what makes the blog surface work for a logged-out
+ * reader: the request goes out WITHOUT an Authorization header, the endpoint's
+ * optional-auth dependency resolves the caller as anonymous, and the server
+ * answers 402 `reason='anonymous'` — which renders as «سجّل مجاناً لعرض المصدر».
+ * Refusing client-side instead would duplicate entitlement policy in the
+ * browser, and the server is the only place that should decide it.
+ *
+ * Plain `fetch`, never `apiFetch`: a dead session must not trigger the global
+ * redirect-to-login while someone is reading a public blog post.
+ */
+async function fetchReferenceSource(
+  path: string,
+  { requireToken }: { requireToken: boolean },
+): Promise<ReferenceSourceResult> {
+  const token = getAccessToken();
+  if (!token && requireToken) {
+    return { ok: false, kind: "error", error: "no_token", status: null };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${API_PREFIX}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    return { ok: false, kind: "error", error: "network", status: null };
+  }
+
+  if (res.status === 402) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+    return { ok: false, kind: "refusal", refusal: parseRefusal(body) };
+  }
+
+  if (!res.ok) {
+    const error: ReferenceSourceError =
+      res.status === 401 || res.status === 403
+        ? "unauthorized"
+        : res.status === 404
+          ? "not_found"
+          : res.status === 429
+            ? "rate_limited"
+            : "server";
+    return { ok: false, kind: "error", error, status: res.status };
+  }
+
+  try {
+    return { ok: true, data: (await res.json()) as ReferenceSourceResponse };
+  } catch {
+    return { ok: false, kind: "error", error: "network", status: res.status };
+  }
+}
+
+/**
+ * Reveal one cited source on a PUBLIC blog post.
+ *
+ * Addressed by `(blog token, n)` rather than a workspace item id: the reader is
+ * not the author, so the workspace endpoint's ownership check would 404 them.
+ * The post's unguessable token is the capability — it already grants the page.
+ */
+export const publicBlogApi = {
+  getReferenceSource: (blogToken: string, n: number) =>
+    fetchReferenceSource(
+      `/public/blog/${encodeURIComponent(blogToken)}/references/${n}/source`,
+      { requireToken: false },
+    ),
+};
+
+/**
+ * Outcome of `workspaceApi.getReferenceSource`. Narrow on `ok`, then `kind`:
+ *   { ok: true,  data }                         → render the source
+ *   { ok: false, kind: "refusal", refusal }     → the D14 refusal card
+ *   { ok: false, kind: "error", error, status } → transport / session / 429
+ */
+export type ReferenceSourceResult =
+  | { ok: true; data: ReferenceSourceResponse }
+  | { ok: false; kind: "refusal"; refusal: LibraryRefusal }
+  | {
+      ok: false;
+      kind: "error";
+      error: ReferenceSourceError;
+      status: number | null;
+    };
 
 // -----------------------------------------------
 // Preferences API
@@ -766,4 +946,211 @@ export const templatesApi = {
   // on a logical failure — the caller branches on ``result.ok``.
   ingest: (itemId: string) =>
     api.post<TemplateIngestResponse>("/templates/ingest", { item_id: itemId }),
+};
+
+// -----------------------------------------------
+// «مكتبتي» API — the user's library shelf
+// (.claude/plans/access_tiers_gating.md PART 5B)
+// -----------------------------------------------
+//
+// Wire types live HERE rather than in types/index.ts on purpose: this whole
+// block is appended as one self-contained unit (D17 file-ownership note), and
+// the shelf shapes have exactly one consumer (hooks/use-my-library.ts →
+// components/library/mine/*).
+//
+// Every endpoint is authed and answers `Cache-Control: private, no-store` —
+// a shelf is per-user by definition and must never reach a shared/ISR cache.
+
+/** Shelf content types. `article` never gets its own tab — مواد nest. */
+export type MyLibraryContentType =
+  | "regulation"
+  | "article"
+  | "judgment"
+  | "circular"
+  | "service"
+  | "form"
+  | "calculator";
+
+/** Ranking. Vocabulary is USAGE («استخدام»), never «فتح» (§5B.3). */
+export type MyLibrarySort = "recent" | "most_used" | "saved";
+
+/** Which item a write endpoint is about — by canonical id, or by public slug. */
+export interface MyLibraryItemRef {
+  content_type: MyLibraryContentType;
+  /** Canonical key: corpus uuid, or `'{regulation_id}#{article_no}'` for a مادة. */
+  content_id?: string;
+  /** Public page slug — resolved server-side when no `content_id` is known. */
+  slug?: string;
+  /** A مادة additionally needs its نظام's slug («المادة-74» repeats across statutes). */
+  parent_slug?: string;
+}
+
+/** Shelf state carried by every row (and every nested مادة). */
+interface MyLibraryShelfState {
+  /** `'auto'` = opened · `'manual'` = pinned · `null` = synthesized نظام header. */
+  source: "auto" | "manual" | null;
+  use_count: number;
+  first_used_at: string | null;
+  last_used_at: string | null;
+  saved_at: string | null;
+  /** A `library_unlocks` row exists (a مادة also counts its parent نظام's row). */
+  was_unlocked: boolean;
+  /** That row exists but the §1.2 access predicate now fails → lock badge. */
+  is_frozen: boolean;
+  /** False = a نظام header synthesized purely to hold orphan مواد. */
+  is_shelf_row: boolean;
+  /** A public URL resolved. False ⇒ still listed, just not linkable. */
+  is_available: boolean;
+}
+
+/** A مادة nested under its parent نظام — never a top-level row (§5B.1). */
+export interface MyLibraryArticle extends MyLibraryShelfState {
+  content_type: "article";
+  content_id: string;
+  slug: string | null;
+  url: string | null;
+  title: string;
+  article_no: number | null;
+  article_label: string | null;
+  reg_slug: string | null;
+}
+
+/**
+ * One shelf row: the public hub card fields (same names the hubs use, so the
+ * existing card components take the row directly) plus the shelf state.
+ * Only the fields belonging to `content_type` are populated.
+ */
+export interface MyLibraryRow extends MyLibraryShelfState {
+  content_type: MyLibraryContentType;
+  content_id: string;
+  slug: string | null;
+  url: string | null;
+  title: string;
+
+  // regulation
+  entity_name?: string | null;
+  status?: string | null;
+  doc_type?: string | null;
+  summary_snippet?: string | null;
+  sectors?: string[] | null;
+  // judgment
+  court?: string | null;
+  court_level?: string | null;
+  court_level_label?: string | null;
+  city?: string | null;
+  date_hijri?: string | null;
+  date_gregorian?: string | null;
+  domains?: string[] | null;
+  snippet?: string | null;
+  // circular
+  source_label?: string | null;
+  body_snippet?: string | null;
+  body_length?: number | null;
+  // service (compliance)
+  provider_name?: string | null;
+  is_most_used?: boolean | null;
+  intro_snippet?: string | null;
+  // form
+  category?: string | null;
+  use_case_snippet?: string | null;
+  // article (only when a مادة could NOT be nested under a نظام)
+  article_no?: number | null;
+  article_label?: string | null;
+  reg_slug?: string | null;
+
+  /** Self + nested مواد — what the ordering uses for a نظام group. */
+  group_use_count: number;
+  group_last_used_at: string | null;
+  child_articles: MyLibraryArticle[];
+}
+
+/** The paged «مكتبتي» envelope (hub-shaped + the shelf totals). */
+export interface MyLibraryResponse {
+  items: MyLibraryRow[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  /** Echoes the filter (`article` is normalized to `regulation`). */
+  content_type: MyLibraryContentType | null;
+  sort: MyLibrarySort;
+  /** WHOLE-shelf row count per type — drives tab visibility. */
+  counts: Partial<Record<MyLibraryContentType, number>>;
+  /** `library_unlocks` ROW count (the «لديك {n} مصدراً» inventory). */
+  stored_library_count: number;
+  /** How many of those the §1.2 predicate now fails (0 when paid). */
+  frozen_count: number;
+  is_paid: boolean;
+}
+
+export interface MyLibraryListParams {
+  content_type?: MyLibraryContentType | null;
+  sort?: MyLibrarySort;
+  page?: number;
+  page_size?: number;
+}
+
+export const myLibraryApi = {
+  list: (params: MyLibraryListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.content_type) qs.set("content_type", params.content_type);
+    if (params.sort) qs.set("sort", params.sort);
+    if (params.page) qs.set("page", String(params.page));
+    if (params.page_size) qs.set("page_size", String(params.page_size));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return api.get<MyLibraryResponse>(`/library/mine${suffix}`);
+  },
+
+  /**
+   * Record ONE use of a library item — the مكتبتي shelf beacon (204).
+   *
+   * Fires for GATED and OPEN items alike (D16.2, REVISED): plan §5B.2 shelves an
+   * item when it is opened, "gated or not", so the page view is the use.
+   * `/library/full` deliberately does NOT write to the shelf — see
+   * `LibraryUseBeacon`'s docstring for why recording in both places would bias
+   * «الأكثر استخداماً» toward gated content.
+   *
+   * ⚠ PLAIN `fetch`, NOT `apiFetch` — deliberate, and it must stay that way.
+   * This beacon fires on PUBLIC library document pages. `apiFetch`'s 401 path
+   * clears tokens and does `window.location.href = "/login"`, so a reader whose
+   * session merely went stale in a background tab would be ejected off
+   * `/regulations/{slug}` by a fire-and-forget shelf write. Every sibling library
+   * call avoids `apiFetch` for exactly this reason (`fetchFullContent`,
+   * `fetchLibraryBalance`, `fetchAuthedHubPage`, `getReferenceSource`).
+   *
+   * Fire-and-forget: a failure is swallowed. A missing shelf row must never
+   * disturb a content read.
+   */
+  recordUse: async (ref: MyLibraryItemRef): Promise<void> => {
+    const token = getAccessToken();
+    if (!token) return;
+    try {
+      await fetch(`${API_BASE}${API_PREFIX}/library/mine/use`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(ref),
+      });
+    } catch {
+      // Swallowed on purpose — see above.
+    }
+  },
+
+  /** Pin an item («حفظ») — free at every tier, grants no access (204). */
+  save: (ref: MyLibraryItemRef) => api.post<void>("/library/mine/save", ref),
+
+  /**
+   * Unpin («إزالة الحفظ») — idempotent (204). Sent as query params because
+   * `api.delete` carries no body; `URLSearchParams` encodes the `#` in a مادة
+   * id (`{reg_id}#74`), which would otherwise be swallowed as a fragment.
+   */
+  unsave: (ref: MyLibraryItemRef) => {
+    const qs = new URLSearchParams({ content_type: ref.content_type });
+    if (ref.content_id) qs.set("content_id", ref.content_id);
+    if (ref.slug) qs.set("slug", ref.slug);
+    if (ref.parent_slug) qs.set("parent_slug", ref.parent_slug);
+    return api.delete<void>(`/library/mine/save?${qs.toString()}`);
+  },
 };

@@ -35,7 +35,6 @@ SUBDIRS = {
     "reg_search": "search/reg",
     "populate_sectors": "search/reg",
     "case_search": "search/case",
-    "compliance_search": "search/compliance",
     "sector_picker": "search/sector_picker",
     "planner": "search/planner",
     "aggregator": "search/aggregator",
@@ -49,9 +48,8 @@ SUBDIRS = {
 
 # (dotted module, agent label) — imported, live values read
 IMPORT_TARGETS = [
-    ("agents.deep_search_v4.reg_search.prompts", "reg_search"),
+    ("agents.deep_search_v4.reg_compliance_search.prompts", "reg_search"),
     ("agents.deep_search_v4.case_search.prompts", "case_search"),
-    ("agents.deep_search_v4.compliance_search.prompts", "compliance_search"),
     ("agents.deep_search_v4.sector_picker.prompts", "sector_picker"),
     ("agents.deep_search_v4.aggregator.prompts", "aggregator"),
     ("agents.deep_search_v4.planner.prompts", "planner"),
@@ -65,10 +63,9 @@ IMPORT_TARGETS = [
 AST_TARGETS = [
     ("agents/artifact_editor/agent.py", "artifact_editor"),
     ("agents/router/router.py", "router"),
-    ("agents/deep_search_v4/reg_search/reranker.py", "reg_search"),
+    ("agents/deep_search_v4/reg_compliance_search/reranker.py", "reg_search"),
     ("agents/deep_search_v4/case_search/reranker.py", "case_search"),
-    ("agents/deep_search_v4/compliance_search/reranker.py", "compliance_search"),
-    ("agents/deep_search_v4/reg_search/populate_sectors.py", "populate_sectors"),
+    ("agents/deep_search_v4/reg_compliance_search/populate_sectors.py", "populate_sectors"),
 ]
 
 _DROP_TOKENS = {"system", "prompt", "prompts", "ar", "en", "text", "the"}

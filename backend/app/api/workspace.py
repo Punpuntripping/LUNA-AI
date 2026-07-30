@@ -18,6 +18,7 @@ Endpoints (new):
     POST   /conversations/{conversation_id}/workspace/references
     PATCH  /workspace/{item_id}/visibility
     GET    /workspace/{item_id}/file
+    GET    /workspace/{item_id}/references/{n}/source   (metered reveal, Phase C)
 """
 from __future__ import annotations
 
@@ -27,13 +28,14 @@ from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Path, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase, validate_uuid
-from backend.app.errors import ErrorCode, LunaHTTPException
+from backend.app.errors import ErrorCode, LunaHTTPException, library_refusal_response
 from shared.observability import get_logfire
+from backend.app.middleware.route_limits import library_rate_limit
 from backend.app.models.responses import (
     DownloadResponse,
     SuccessResponse,
@@ -42,9 +44,14 @@ from backend.app.models.responses import (
     WorkspaceItemResponse,
 )
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
-from backend.app.services import workspace_service
+from backend.app.services import library_service, workspace_service
 from backend.app.services.case_service import get_user_id
-from backend.app.services.references_service import fetch_item_references
+from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
+from backend.app.services.references_service import (
+    build_reference_source_view,
+    fetch_item_references_payload,
+    fetch_reference_row,
+)
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.db.run import run_db
@@ -212,19 +219,222 @@ async def list_workspace_item_references(
     """List the references attached to an ``agent_search`` workspace item.
 
     Replaces the pre-migration-049 ``metadata.references`` JSONB read path.
-    The response shape is the same ``Reference`` list the frontend
-    ``ReferencePanel`` already consumes — the only change is where the data
-    lives. ``get_workspace_item`` is called first to enforce ownership; a
-    cross-user item_id surfaces as 404 before any references are exposed.
+    ``get_workspace_item`` is called first to enforce ownership; a cross-user
+    item_id surfaces as 404 before any references are exposed.
+
+    PHASE C (§6.2 step 1): this is the **citation mesh only** — ``n``, ``title``,
+    ``snippet``, ``ref_id``, ``domain``, links, ``cross_refs``. It carries NO
+    source bodies: ``source_view`` is always ``null`` here, and the full text is
+    fetched one item at a time from
+    ``GET /workspace/{item_id}/references/{n}/source`` (metered). Citation lists
+    are in the never-gated class (§1.3), so this endpoint stays free — only the
+    body moved. Each entry gains ``has_source`` so the panel knows whether a
+    «عرض المصدر» affordance exists without probing for it.
     """
     validate_uuid(item_id, "معرف العنصر")
     # Ownership check via the existing service. Raises 404 if the item is
     # not visible to this user — same envelope as get_workspace_item.
     await run_db(workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id)
-    references = await fetch_item_references(
+    references = await fetch_item_references_payload(
         supabase, item_id, used_only=bool(used) if used is not None else False,
     )
-    return {"references": [r.model_dump(mode="json") for r in references]}
+    return {"references": references}
+
+
+# --- the metered reveal (§6.2 step 2) --------------------------------------
+
+# Every response on the reveal path is a per-USER answer. One of these landing in
+# a shared cache would hand somebody else's unlocked source to the next visitor.
+_SOURCE_CACHE_CONTROL = "private, no-store"
+
+
+async def _record_library_use(
+    supabase: SupabaseClient, user_id: str, content_type: str, content_id: str
+) -> None:
+    """Shelf the revealed source in «مكتبتي» and bump ``use_count`` — D16.2.
+
+    Called EXACTLY ONCE per reveal, inside this handler, for a charged reveal and
+    for a free-because-already-unlocked one alike: the shelf counts USES, not
+    purchases. The frontend must NOT also fire ``POST /library/mine/use`` for a
+    gated item, or one user action would count twice (plan §5B).
+
+    ``library_items_service`` is created by the Phase B2 agent in this same wave,
+    so the import is deferred and a missing module is survivable — a shelf write
+    must never break a content read (D16.2), and neither must its absence.
+    """
+    if not user_id or not content_type or not content_id:
+        return
+    try:
+        from backend.app.services import library_items_service
+    except ImportError:  # pragma: no cover - only until B2 lands this wave
+        logger.debug("library_items_service not present yet — skipping shelf write")
+        return
+    try:
+        await library_items_service.record_use(
+            supabase, user_id, content_type, content_id
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "record_use failed (%s/%s): %s — source read is unaffected",
+            content_type, content_id, e,
+        )
+
+
+class _UnresolvableRef:
+    """Duck-typed stand-in for an ``AccessDecision`` that never happened.
+
+    ``library_refusal_payload`` reads ``.reason``/``.used``/``.limit``/
+    ``.resets_at``/``.stored_count`` off whatever it is handed (D16.1), so a ref
+    we could not resolve refuses through the SAME D14 402 body as a quota
+    refusal. The frontend keeps one branch, and there is no code path where an
+    unresolvable id degrades into content.
+    """
+
+    may_unlock = False
+    charged = False
+    reason = "unresolvable"
+    cost = 0
+    used = 0
+    limit = None
+    resets_at = None
+    stored_count = 0
+
+
+@router.get(
+    "/workspace/{item_id}/references/{n}/source",
+)
+async def get_reference_source(
+    item_id: str,
+    response: Response,
+    n: int = Path(..., ge=1, description="The reference's 1-based [n] citation number."),
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+    _rl=Depends(library_rate_limit),
+):
+    """Reveal ONE reference's full original source — the metered path (§6.2).
+
+    This is where the charge lives now. The references list ships the mesh for
+    free; the body is only ever produced here, after ``resolve_access`` has said
+    yes, so the meter finally has a server call to sit on.
+
+    Order is load-bearing:
+
+    1. **Ownership.** ``get_workspace_item`` first, exactly like
+       ``GET /workspace/{item_id}/references``. Skipping it would be an IDOR that
+       hands out another lawyer's research — and would let an attacker mine the
+       corpus through victims' item_ids.
+    2. **Row lookup**, scoped to that WI. Unknown ``n`` → 404, no charge.
+    3. **Resolve** ``ref_id`` → ``(content_type, content_id)`` (D15). Anything
+       unresolvable FAILS CLOSED: 402 ``reason='unresolvable'``, never content.
+    4. **Entitlement** via ``resolve_access(..., surface='reference')``.
+       ``surface`` is analytics ONLY — it must never change the charge, or this
+       endpoint becomes the bypass it was built to close (migration 104).
+    5. **Build + shelf.** One ``record_use`` call, here (D16.2).
+
+    Returns 200 with ``source_view``, ``unlocked`` (what was unlocked — the نظام,
+    not the chunk, per D15.1) and ``balance``; or the D14 402 refusal body;
+    ``Cache-Control: private, no-store`` on every path. Rate-limited to 20/min
+    per verified caller, sharing ONE budget with ``/library/full/*`` (D13.2).
+    """
+    validate_uuid(item_id, "معرف العنصر")
+
+    # 1. OWNERSHIP — before anything else. 404 (Arabic) for someone else's item.
+    await run_db(
+        workspace_service.get_workspace_item, supabase, current_user.auth_id, item_id
+    )
+
+    # 2. The reference row, scoped to the WI we just proved ownership of.
+    row = await fetch_reference_row(supabase, item_id, n)
+    if row is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المرجع غير موجود",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    # 3. ref_id → the identity the ledger and the sidecar speak. Fail closed.
+    resolved: Optional[ResolvedRef] = await resolve_ref(
+        supabase,
+        row.get("ref_id") or "",
+        domain=row.get("domain"),
+        item_id=row.get("item_id"),
+    )
+    if resolved is None:
+        return library_refusal_response(_UnresolvableRef())
+
+    # 4. ENTITLEMENT. user_id is a users.user_id — NEVER an auth_id.
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+
+    if resolved.always_free:
+        # Policy-open: a compliance service (§1.3) or a short circular that the
+        # public page already serves in full. No charge, no ledger row — and no
+        # quota numbers either, so the balance chip is left alone.
+        decision = library_service.AccessDecision(
+            may_unlock=True, charged=False, reason="open"
+        )
+    else:
+        decision = await library_service.resolve_access(
+            supabase,
+            user_id,
+            resolved.content_type,
+            resolved.content_id,
+            surface="reference",
+            parent_regulation_id=resolved.parent_regulation_id,
+        )
+
+    if not decision.may_unlock:
+        # NOTHING is built, let alone returned. The refusal sets its own
+        # private/no-store header.
+        return library_refusal_response(decision)
+
+    # 5. Build the one source view. A None here is a corpus gap (the same
+    #    condition the list reports as has_source=False), not a refusal — the
+    #    unlock is permanent, so a later retry costs nothing.
+    view = await build_reference_source_view(supabase, row)
+    if view is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="تعذّر عرض هذا المصدر",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    # 6. Shelf the use — once, here, charged or not (D16.2).
+    await _record_library_use(
+        supabase, user_id, resolved.content_type, resolved.content_id
+    )
+
+    response.headers["Cache-Control"] = _SOURCE_CACHE_CONTROL
+    return {
+        "n": int(row.get("n") or n),
+        "ref_id": row.get("ref_id") or "",
+        "domain": row.get("domain") or "",
+        "source_view": view.model_dump(mode="json"),
+        "unlocked": {
+            "content_type": resolved.content_type,
+            "content_id": resolved.content_id,
+            # D15.1: name the نظام, never the chunk. The resolver's label wins
+            # when it has one; otherwise the source view's own title is already
+            # the parent regulation / case / circular title.
+            "title": resolved.title or getattr(view, "title", "") or "",
+            "article_no": resolved.article_no,
+            "charged": bool(decision.charged),
+            "cost": int(decision.cost or 0),
+            "reason": decision.reason,
+        },
+        # None when the quota was never consulted (policy-open item), so the
+        # frontend can tell "unlimited" apart from "not applicable".
+        "balance": None if decision.reason == "open" else {
+            "used": int(decision.used or 0),
+            "limit": decision.limit,
+            "resets_at": (
+                decision.resets_at.isoformat()
+                if hasattr(decision.resets_at, "isoformat")
+                else decision.resets_at
+            ),
+        },
+    }
 
 
 @router.patch(

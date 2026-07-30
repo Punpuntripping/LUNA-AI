@@ -86,6 +86,40 @@ async def get_current_user(
     return user
 
 
+async def get_current_user_optional(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+) -> Optional[AuthUser]:
+    """Tier-aware public endpoints: the caller when a token is present, else ``None``.
+
+    Every public library endpoint is anon today purely by OMITTING
+    ``Depends(get_current_user)``. The access-tiers work needs endpoints that
+    serve anon AND authed callers from the same route, so this dependency
+    resolves a user when one is provable and degrades to anonymous otherwise —
+    it NEVER raises 401/403. An expired or forged token is "anonymous", not an
+    error: ``/public/library/*`` is reached from public pages and a 401 there
+    would trip the frontend's global redirect-to-login.
+
+    ONE exception, deliberately: a **503** from ``get_current_user``
+    (AuthUnavailableError — JWKS unreachable with no cached keys) PROPAGATES.
+    Auth being genuinely down is not the same as "no user"; swallowing it would
+    silently downgrade every subscriber to the anon tier for the duration of the
+    outage, which is both a wrong answer and an invisible one.
+
+    Callers that hit Layer B (``resolve_access``) MUST set
+    ``Cache-Control: private, no-store`` whenever this returns non-None — a
+    per-user byte in the shared ISR/CDN cache leaks to the next visitor.
+    """
+    if credentials is None:
+        return None
+    try:
+        return await get_current_user(request, credentials)
+    except LunaHTTPException as e:
+        if e.status_code >= 500:
+            raise           # 503 auth outage → retryable, never "anonymous"
+        return None         # 401 expired/invalid → anon
+
+
 def get_supabase(request: Request) -> SupabaseClient:
     """Return the service-role Supabase client (bypasses RLS). Use for data operations."""
     return request.app.state.supabase

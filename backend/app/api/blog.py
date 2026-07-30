@@ -40,12 +40,18 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path, Response
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
-from backend.app.deps import get_current_user, get_supabase, validate_uuid
-from backend.app.errors import ErrorCode, LunaHTTPException
+from backend.app.deps import (
+    get_current_user,
+    get_current_user_optional,
+    get_supabase,
+    validate_uuid,
+)
+from backend.app.errors import ErrorCode, LunaHTTPException, library_refusal_response
+from backend.app.middleware.route_limits import library_rate_limit
 from backend.app.models.responses import (
     BlogCardPublic,
     BlogItemResponse,
@@ -59,9 +65,18 @@ from backend.app.models.responses import (
     SuccessResponse,
 )
 from backend.app.api.workspace import _to_response as _wi_to_response
-from backend.app.services import blog_service, workspace_service
+from backend.app.services import (
+    blog_service,
+    library_items_service,
+    library_service,
+    workspace_service,
+)
 from backend.app.services.case_service import get_user_id
-from backend.app.services.references_service import fetch_item_references
+from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
+from backend.app.services.references_service import (
+    build_reference_source_view,
+    fetch_item_references_payload,
+)
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.db.run import run_db
@@ -135,6 +150,168 @@ async def get_public_blog_post(
         created_at=post["created_at"],
         display_mode=post.get("display_mode") or "question",
     )
+
+
+_SOURCE_CACHE_CONTROL = "private, no-store"
+
+
+class _UnresolvableRef:
+    """Duck-typed stand-in so an unresolvable ref_id reuses the D14 refusal body."""
+
+    may_unlock = False
+    charged = False
+    reason = "unresolvable"
+    cost = 0
+    used = 0
+    limit = None
+    resets_at = None
+    stored_count = 0
+
+
+@router.get("/public/blog/{token}/references/{n}/source")
+async def get_blog_reference_source(
+    token: str,
+    response: Response,
+    n: int = Path(..., ge=1, description="The reference's 1-based [n] citation number."),
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+    _rl=Depends(library_rate_limit),
+):
+    """Reveal ONE cited source on a PUBLIC blog post — metered, same as in-app.
+
+    «عرض المصدر» and the ``[n]`` preview behave exactly as they always did: the
+    click opens the source. The only change is that opening it now COSTS an
+    unlock, which is why this endpoint exists — the frozen snapshot no longer
+    carries bodies, so there is finally a server call for the meter to sit on.
+
+    Why this is not the workspace endpoint: a blog reader is not the author, so
+    ``get_workspace_item``'s ownership check would 404 them out of their own
+    reading. The post's token IS the capability here — it is unguessable and
+    already grants the page — so the reference is addressed by
+    ``(token, n)`` against the frozen ``references_json``.
+
+    Entitlement is evaluated against the READER, not the author:
+      * anonymous → 402 ``reason='anonymous'`` → the panel shows «سجّل مجاناً».
+        Deliberately a 402 and not a 401, so the frontend's global
+        redirect-to-login never fires on a public page (D14).
+      * signed-in → ``resolve_access(..., surface='reference')`` charges once,
+        permanently; re-opening is free forever.
+
+    So a published post can be read by anyone, and its SOURCES cost the reader
+    what they would have cost in chat — closing the bypass where one publish
+    would otherwise mint an unmetered public mirror of every source it cites.
+    """
+    post = await run_db(blog_service.get_public_post, supabase, token)
+    if post is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المنشور غير موجود",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    # The frozen snapshot entry stands in for the workspace_item_references row.
+    # It carries ref_id + domain, which is all the resolver and the shell
+    # builders need (they fall back to parsing ref_id when item_id is absent).
+    entry = next(
+        (
+            r
+            for r in (post.get("references") or [])
+            if isinstance(r, dict) and int(r.get("n") or 0) == int(n)
+        ),
+        None,
+    )
+    if entry is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المرجع غير موجود",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    row = {
+        "n": int(n),
+        "ref_id": entry.get("ref_id") or "",
+        "domain": entry.get("domain") or "",
+        "item_id": entry.get("item_id"),
+    }
+
+    resolved: Optional[ResolvedRef] = await resolve_ref(
+        supabase, row["ref_id"], domain=row["domain"], item_id=row["item_id"]
+    )
+    if resolved is None:
+        return library_refusal_response(_UnresolvableRef())
+
+    user_id = (
+        await run_db(get_user_id, supabase, current_user.auth_id)
+        if current_user
+        else None
+    )
+
+    if resolved.always_free:
+        # Policy-open (a compliance service, or a short تعميم the public page
+        # already serves in full). No charge, no ledger row, no balance numbers.
+        decision = library_service.AccessDecision(
+            may_unlock=True, charged=False, reason="open"
+        )
+    else:
+        decision = await library_service.resolve_access(
+            supabase,
+            user_id,
+            resolved.content_type,
+            resolved.content_id,
+            surface="reference",
+            parent_regulation_id=resolved.parent_regulation_id,
+        )
+
+    if not decision.may_unlock:
+        return library_refusal_response(decision)
+
+    view = await build_reference_source_view(supabase, row)
+    if view is None:
+        # Corpus gap, not a refusal — the unlock is permanent, so a retry is free.
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="تعذّر عرض هذا المصدر",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    if user_id:
+        # Shelf the use once (D16.2). No document page is involved here, so this
+        # reveal is the only thing that can record it.
+        try:
+            await library_items_service.record_use(
+                supabase, user_id, resolved.content_type, resolved.content_id
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("blog reference record_use failed: %s", e)
+
+    response.headers["Cache-Control"] = _SOURCE_CACHE_CONTROL
+    return {
+        "n": int(n),
+        "ref_id": row["ref_id"],
+        "domain": row["domain"],
+        "source_view": view.model_dump(mode="json"),
+        "unlocked": {
+            "content_type": resolved.content_type,
+            "content_id": resolved.content_id,
+            "title": resolved.title or getattr(view, "title", "") or "",
+            "article_no": resolved.article_no,
+            "charged": bool(decision.charged),
+            "cost": int(decision.cost or 0),
+            "reason": decision.reason,
+        },
+        "balance": None if decision.reason == "open" else {
+            "used": int(decision.used or 0),
+            "limit": decision.limit,
+            "resets_at": (
+                decision.resets_at.isoformat()
+                if hasattr(decision.resets_at, "isoformat")
+                else decision.resets_at
+            ),
+        },
+    }
 
 
 # ============================================
@@ -234,11 +411,28 @@ async def share_artifact(
             )
         title = item.get("title")
 
-    # Resolve the cited references the synthesis grounded against. Snapshot the
-    # full Reference payload (incl. source_view) so the public page renders the
-    # same fluid citations as the in-app artifact view.
-    references = await fetch_item_references(supabase, item_id, used_only=True)
-    references_json = [r.model_dump(mode="json") for r in references]
+    # Resolve the cited references the synthesis grounded against and snapshot
+    # them onto the post.
+    #
+    # PHASE C (access-tiers §6.2): this snapshot deliberately carries NO
+    # ``source_view`` — ``fetch_item_references`` defaults to the metered shape.
+    # ``blog_posts.references_json`` is served by the ANONYMOUS
+    # ``GET /public/blog/{token}`` and ``/public/blogs``, so keeping the bodies
+    # would mint a permanent, unmetered, anon-readable mirror of full case /
+    # chunk / circular text — one publish per source and the whole ledger is
+    # moot. What remains is the citation mesh (title, snippet, links,
+    # cross_refs), which §1.3 puts in the never-gated class, plus the official
+    # source URL. A reader who wants the full text signs in and reveals it
+    # through ``GET /public/blog/{token}/references/{n}/source``, which meters it
+    # exactly like the in-app panel does.
+    #
+    # ``fetch_item_references_payload`` (not ``fetch_item_references``) so each
+    # entry carries ``has_source``: that flag is what tells the blog panel to
+    # render «عرض المصدر» at all, and it must be in the FROZEN snapshot — a
+    # reader has no workspace item to probe.
+    references_json = await fetch_item_references_payload(
+        supabase, item_id, used_only=True
+    )
 
     token = await run_db(
         blog_service.insert_post,

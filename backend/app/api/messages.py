@@ -71,7 +71,10 @@ async def send_message(
         ),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            # no-transform stops an intermediary (Cloudflare, once the zone is
+            # proxied) from compressing or otherwise rewriting the stream —
+            # the usual cause of SSE arriving buffered behind a CDN.
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },

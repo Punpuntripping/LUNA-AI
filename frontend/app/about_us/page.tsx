@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
-import { LandingHeader } from "@/components/landing/LandingHeader";
 import { LandingPageBody } from "@/components/landing/LandingPageBody";
-import { SiteFooter } from "@/components/site/SiteFooter";
+import { SitePageShell } from "@/components/site/SitePageShell";
 
 export const metadata: Metadata = {
   title: "عن ريحان — المساعد القانوني الذكي في الأنظمة السعودية",
@@ -23,10 +22,8 @@ export const metadata: Metadata = {
 // eslint-disable-next-line import/no-default-export
 export default function AboutUsPage() {
   return (
-    <div className="min-h-screen bg-background">
-      <LandingHeader />
+    <SitePageShell>
       <LandingPageBody />
-      <SiteFooter />
-    </div>
+    </SitePageShell>
   );
 }

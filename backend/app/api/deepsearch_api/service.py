@@ -450,6 +450,9 @@ async def _snapshot_to_blog_post(
             wi_title = wi.get("title")
             content_md = wi.get("content_md") or ""
         # Cited references only (used_only=True) — same as the in-app share.
+        # Phase C: no ``source_view`` rides along (the default is the metered
+        # shape). This snapshot lands in ``blog_posts.references_json``, which
+        # anonymous readers fetch — see the note in ``api/blog.py``.
         try:
             references = await fetch_item_references(supabase, wi_id, used_only=True)
         except Exception:  # noqa: BLE001

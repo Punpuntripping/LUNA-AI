@@ -62,7 +62,7 @@ async def _standalone_picker_call() -> list[str] | None:
     t0 = time.perf_counter()
     out = await run_sector_picker(
         query=COMPANIES_LAW_QUERY,
-        mode="reg_led",
+        mode="reg_compliance_led",
         planner_brief="",
         context_blocks=[],
     )

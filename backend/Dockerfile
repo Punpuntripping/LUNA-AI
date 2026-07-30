@@ -30,4 +30,15 @@ USER appuser
 WORKDIR /app/backend
 ENV PORT=8000
 EXPOSE ${PORT}
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
+# Listen on BOTH stacks. Railway's public edge proxy reaches the container over
+# IPv4 (the old `0.0.0.0` bind), but private networking — `luna-backend.railway.
+# internal`, which the frontend's server-side ISR fetches now use — is IPv6-only
+# on legacy environments, so an IPv4-only socket resolves and then refuses every
+# private connection.
+# The empty host is what actually binds both: asyncio's `create_server` maps
+# `host == ""` to "all interfaces" and opens one socket PER family
+# (0.0.0.0 + [::]). ⚠ Do NOT "simplify" this to `--host ::` — CPython sets
+# IPV6_V6ONLY=1 on every AF_INET6 listener it creates, so `::` alone is
+# IPv6-ONLY and the public domain would start 502'ing "Application failed to
+# respond" while looking correct in review.
+CMD uvicorn app.main:app --host "" --port ${PORT}

@@ -99,7 +99,7 @@ def _safe(s):
 def agent_label(chat):
     """The agent that owns a ``chat`` span — read from the nearest ``agent run``
     ancestor's ``agent_name`` (e.g. router_agent, aggregator, planner_decider,
-    writer_executor, reg_search_reranker). Trailing ``_agent`` is trimmed."""
+    writer_executor, reg_compliance_reranker). Trailing ``_agent`` is trimmed."""
     cur = chat
     for _ in range(8):
         p = byid.get(cur.get("parent_span_id"))

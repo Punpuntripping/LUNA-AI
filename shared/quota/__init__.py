@@ -23,6 +23,13 @@ Meters and windows:
     ord (الاستخدام)  — fixed 5h *session* block anchored at the first message
                        (migration 083; points) + rolling last-7d *weekly* (points)
     ocr (الاستخراج)  — rolling last-30d (pages)
+    library (فتح المصادر)
+                     — per-period allowance, counted as SUM(library_unlocks.cost)
+                       for the CURRENT period_key. Both the key and its reset
+                       instant come from the RPC (migration 105) — never
+                       re-derived in Python. Read via ``library_state()``;
+                       enforced by backend.app.services.library_service
+                       (Layer B), not by ``check()``.
 
 A NULL limit = unlimited (window not enforced); 0 = feature not included.
 
@@ -51,7 +58,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
@@ -128,17 +135,28 @@ class PlanInactive(Exception):
         }
 
 
-_AR_METER = {"ocr": "استخراج النص", "ord": "الاستخدام", "web": "البحث على الإنترنت"}
+_AR_METER = {
+    "ocr": "استخراج النص",
+    "ord": "الاستخدام",
+    "web": "البحث على الإنترنت",
+    "library": "فتح المصادر",
+}
 _AR_MONTHLY = {
     "ord": "تم تجاوز الحدّ الشهري للاستخدام.",
     "ocr": "تم تجاوز الحدّ الشهري لاستخراج النص.",
     "web": "تم تجاوز الحدّ الشهري للبحث على الإنترنت.",
 }
 
+# The library meter's single period is the subscription/calendar window carried
+# on library_unlocks.period_key (D8/D9) — one label, hence period == "period".
+LIBRARY_QUOTA_EXHAUSTED_AR = "تم استهلاك رصيد فتح المصادر لهذه الفترة."
+
 
 def _arabic_message(meter: Meter, period: Period, limit: float) -> str:
     if limit <= 0:
         return f"باقتك الحالية لا تشمل {_AR_METER.get(meter, meter)}."
+    if meter == "library":
+        return LIBRARY_QUOTA_EXHAUSTED_AR
     if period == "session":
         return "تم تجاوز حدّ الاستخدام لكل ٥ ساعات."
     if period == "weekly":
@@ -208,6 +226,101 @@ def _rolling_reset(oldest_iso: Any, window_seconds: int) -> datetime:
         except Exception:
             pass
     return now + timedelta(seconds=window_seconds)
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    """Parse a PostgREST timestamptz string into an aware datetime, or None."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ── the library meter (فتح المصادر) ──────────────────────────────────────────
+#
+# Unlike ord/ocr this meter is NOT a rolling window over llm_calls: it is a
+# per-period allowance counted as SUM(library_unlocks.cost) for the CURRENT
+# period_key. Both the key and its reset instant are derived in SQL (migration
+# 105) precisely so Python never re-derives a period boundary and drifts from
+# what the ledger rows were stamped with. Read them off the RPC row; never
+# recompute them here.
+
+
+@dataclass
+class LibraryQuotaState:
+    """The library allowance for one user, as of one RPC read.
+
+    ``limit``      — None = unlimited (dev); 0 = the account is locked/not
+                     entitled. Never negative.
+    ``used``       — SUM(cost) already charged to ``period_key``.
+    ``period_key`` — the period a NEW unlock would be stamped with. None means
+                     there is no chargeable period (locked account) — a ledger
+                     row cannot even be written (period_key is NOT NULL).
+    ``is_paid``    — the §1.2 access predicate's first clause: the EFFECTIVE
+                     plan (post expired→free fallback) is not free/None.
+    """
+
+    limit: Optional[int]
+    used: int
+    period_key: Optional[str]
+    resets_at: Optional[datetime]
+    effective_plan_id: Optional[str]
+    locked: bool
+    is_paid: bool
+
+    @property
+    def remaining(self) -> Optional[int]:
+        """Unlocks left this period; ``None`` when unlimited."""
+        if self.limit is None:
+            return None
+        return max(0, int(self.limit) - int(self.used))
+
+    def has_room(self, cost: int) -> bool:
+        """Whether a charge of ``cost`` fits in the current period.
+
+        Unlimited (``limit is None``) always fits. A locked account never does
+        — it has no period_key to stamp a row with.
+        """
+        if self.locked or self.period_key is None:
+            return False
+        if self.limit is None:
+            return True
+        return int(self.used) + max(0, int(cost)) <= int(self.limit)
+
+
+def _library_state_from_row(st: dict[str, Any] | None) -> LibraryQuotaState:
+    """Project a get_user_quota_state row onto the library meter. Pure."""
+    if st is None or st.get("locked"):
+        return LibraryQuotaState(
+            limit=0, used=0, period_key=None, resets_at=None,
+            effective_plan_id=None, locked=True, is_paid=False,
+        )
+    raw_limit = st.get("library_unlocks_limit")
+    limit = None if raw_limit is None else max(0, int(raw_limit))
+    period_key = st.get("library_period_key") or None
+    effective_plan_id = st.get("effective_plan_id") or None
+    return LibraryQuotaState(
+        limit=limit,
+        used=int(st.get("library_unlocks_used") or 0),
+        period_key=period_key,
+        resets_at=_parse_ts(st.get("library_period_resets_at")),
+        effective_plan_id=effective_plan_id,
+        # No period_key => nothing can be charged; treat it as locked rather
+        # than as "unlimited free unlocks".
+        locked=period_key is None,
+        is_paid=effective_plan_id not in (None, "free"),
+    )
+
+
+async def library_state(supabase: SupabaseClient, user_id: str) -> LibraryQuotaState:
+    """The user's current library allowance — ONE read of the same RPC row the
+    points/OCR gate and the usage dialog use. Raises on DB failure (the caller
+    decides: Layer B refuses the reveal rather than granting it for free)."""
+    return _library_state_from_row(await _quota_state(supabase, user_id))
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -312,7 +425,8 @@ async def current_usage_report(
             "monthly": null                # retired window — kept null for contract
           },
           "ocr": {"monthly": {...}},       # pages
-          "web": {"monthly": null}         # retired feature — kept null for contract
+          "web": {"monthly": null},        # retired feature — kept null for contract
+          "library": {"period": {...}}     # فتح المصادر — unlocks, weighted cost
         }
 
     ``limit: null`` = unlimited; ``limit: 0`` = feature not in the plan.
@@ -329,6 +443,7 @@ async def current_usage_report(
             "points": {"session": None, "weekly": None, "monthly": None},
             "ocr": {"monthly": None},
             "web": {"monthly": None},
+            "library": {"period": None},
         }
 
     def _points_bar(used_cost: Any, limit: int | None, oldest: Any, window_s: int) -> dict:
@@ -357,6 +472,19 @@ async def current_usage_report(
             "approximate": False,
         }
 
+    lib = _library_state_from_row(st)
+    library_bar = {
+        "used": lib.used,
+        "limit": lib.limit,
+        "pct": _pct(lib.used, lib.limit),
+        # DELIBERATELY unlike _points_bar / _count_bar: the library period is a
+        # FIXED calendar/subscription window (D8), not a rolling window anchored
+        # on first use, so its reset instant is meaningful at zero usage — it is
+        # what «يتجدّد رصيدك …» renders before the user has spent anything.
+        "resets_at": lib.resets_at.isoformat() if lib.resets_at else None,
+        "approximate": False,
+    }
+
     return {
         "locked": False,
         "plan": {
@@ -382,6 +510,7 @@ async def current_usage_report(
             st.get("ocr_pages"), st.get("ocr_pages_monthly"), st.get("ocr_oldest"), MONTH_WINDOW_S,
         )},
         "web": {"monthly": None},   # retired feature — kept null for the frontend contract
+        "library": {"period": library_bar},
     }
 
 
@@ -422,6 +551,9 @@ __all__ = [
     "PlanInactive",
     "PLAN_INACTIVE_AR",
     "QUOTA_UNAVAILABLE_AR",
+    "LIBRARY_QUOTA_EXHAUSTED_AR",
+    "LibraryQuotaState",
+    "library_state",
     "check",
     "current_usage_report",
     "settle_ord",

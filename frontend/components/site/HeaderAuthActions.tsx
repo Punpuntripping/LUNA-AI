@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
  * the site render TWO header variants from one shell:
  *
  *   - signed-out → تسجيل الدخول (ghost) + ابدأ الآن (primary), both to /login
- *   - signed-in  → العودة إلى ريحان (primary), straight to /chat
+ *   - signed-in  → اسأل ريحان (primary, same shape as ابدأ الآن), straight to /chat
  *
  * Public pages render inside AuthGuard, which always fires ``loadUser()`` —
  * so the store is populated here even for anonymous visitors. While the
@@ -32,7 +32,7 @@ export function HeaderAuthActions() {
         href="/chat"
         className={cn(buttonVariants({ size: "sm" }), "text-sm font-semibold")}
       >
-        العودة إلى ريحان
+        اسأل ريحان
       </Link>
     );
   }

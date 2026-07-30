@@ -9,12 +9,14 @@ import { useConversations } from "@/hooks/use-conversations";
 import { useCases } from "@/hooks/use-cases";
 import { useTemplates } from "@/hooks/use-templates";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
+import { useMyLibrary } from "@/hooks/use-my-library";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { ConversationList } from "@/components/sidebar/ConversationList";
 import { CaseList } from "@/components/sidebar/CaseList";
 import { TemplateList } from "@/components/sidebar/TemplateList";
 import { BlogList } from "@/components/sidebar/BlogList";
+import { LibraryShelfList } from "@/components/sidebar/LibraryShelfList";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { CASES_ENABLED } from "@/lib/features";
@@ -156,11 +158,20 @@ export function Sidebar() {
   const { data: caseData } = useCases("active");
   const { data: templateData } = useTemplates();
   const { data: myBlogsData } = useMyBlogs();
+  const { data: shelfData } = useMyLibrary({
+    contentType: null,
+    sort: "recent",
+    page: 1,
+    pageSize: 1,
+  });
 
   const conversationCount = convData?.conversations?.length;
   const caseCount = caseData?.cases?.length;
   const templateCount = templateData?.templates?.length;
   const myBlogsCount = myBlogsData?.posts?.length;
+  // Shelf size for the pill badge. `total` is the WHOLE shelf, not the page,
+  // so the badge does not lie when the peek list is capped at 8.
+  const shelfCount = shelfData?.total;
 
   useEffect(() => {
     const handleResize = () => {
@@ -271,6 +282,15 @@ export function Sidebar() {
             onCreate={handleImportBlog}
             createTooltip="إضافة مدونة برابط"
           />
+          {/* «مكتبتي» sits directly under «مدوناتي» — both are "things I've
+              collected", as opposed to the work surfaces above them. No create
+              action: the shelf fills itself from what you open. */}
+          <NavPill
+            label="مكتبتي"
+            count={shelfCount}
+            active={activeTab === "library"}
+            onSelect={() => setActiveTab("library")}
+          />
         </div>
 
         {/* Single panel — swaps content based on active tab */}
@@ -281,6 +301,8 @@ export function Sidebar() {
             <TemplateList />
           ) : activeTab === "blogs" ? (
             <BlogList />
+          ) : activeTab === "library" ? (
+            <LibraryShelfList />
           ) : (
             <ConversationList />
           )}

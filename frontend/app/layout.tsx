@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Noto_Naskh_Arabic } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { JsonLd } from "@/components/seo/JsonLd";
+import { buildOrganization, buildWebSite } from "@/lib/seo/schema";
 
 const notoNaskhArabic = Noto_Naskh_Arabic({
   subsets: ["arabic"],
@@ -24,6 +26,8 @@ export default function RootLayout({
   return (
     <html lang="ar" dir="rtl" suppressHydrationWarning>
       <body className={`${notoNaskhArabic.variable} font-sans antialiased`}>
+        {/* Site-wide structured data — rendered once, brand + site identity. */}
+        <JsonLd data={[buildOrganization(), buildWebSite()]} />
         <Providers>{children}</Providers>
       </body>
     </html>

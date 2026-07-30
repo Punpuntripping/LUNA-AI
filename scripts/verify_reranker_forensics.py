@@ -1,14 +1,18 @@
 """Offline sanity check for reranker_runs forensic dicts (no DB, no network).
 
 Builds fake per-domain reranker outputs, runs them through the URA adapters and
-the service-layer _build_row, and asserts the persisted shape for ALL three
-domains: bare-UUID ref_id, source_table, title, and dropped_results (llm + cap).
+the service-layer _build_row, and asserts the persisted shape for all three
+target tables: bare-UUID ref_id, source_table, title, and dropped_results
+(llm + cap). Since Wave 4 the standalone compliance executor is retired —
+government services now surface inside the reg_compliance stream and route
+through ``reg_compliance_to_rqr`` (source_type="service" -> services table), so
+the service check exercises that unified path.
 
 Run: PYTHONPATH=. PYTHONIOENCODING=utf-8 python scripts/verify_reranker_forensics.py
 """
 from __future__ import annotations
 
-from agents.deep_search_v4.reg_search.models import (
+from agents.deep_search_v4.reg_compliance_search.models import (
     RerankedResult,
     RerankerQueryResult as RegRQR,
 )
@@ -16,13 +20,8 @@ from agents.deep_search_v4.case_search.models import (
     RerankedCaseResult,
     RerankerQueryResult as CaseRQR,
 )
-from agents.deep_search_v4.compliance_search.models import (
-    ComplianceSearchResult,
-    RerankedServiceResult,
-)
-from agents.deep_search_v4.ura.reg_adapter import reg_to_rqr
+from agents.deep_search_v4.ura.reg_adapter import reg_compliance_to_rqr
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
-from agents.deep_search_v4.ura.compliance_adapter import compliance_to_rqr
 from backend.app.services.retrieval_artifacts_service import _build_row
 
 UUID_A = "b9b463fd-e358-52b3-beb9-dfbd62bcc3d7"
@@ -55,7 +54,7 @@ def check_reg() -> dict:
              "reasoning": "", "drop_reason": "cap", "source_type": "chunk"},
         ],
     )
-    shared = reg_to_rqr([rqr])[0]
+    shared = reg_compliance_to_rqr([rqr])[0]
     row = _build_row(ura_id="u", agent_family="reg_search", sub_query_index=0, rqr=shared)
     _check_row(row, source_table="chunks", expect_drops=2)
     return row
@@ -82,39 +81,45 @@ def check_case() -> dict:
     return row
 
 
-def check_compliance() -> dict:
-    svc = RerankedServiceResult(
-        service_ref="SR-1", service_id=UUID_A, title="خدمة حكومية",
-        content="...", provider_name="جهة", relevance="high", reasoning="مطابق",
-        score=0.7,
+def check_service() -> dict:
+    # A government service now arrives INSIDE the reg_compliance stream as a
+    # RerankedResult(source_type="service"); reg_compliance_to_rqr routes it to
+    # the services table with the real services.id as the forensic ref_id.
+    rqr = RegRQR(
+        query="q", rationale="r", sufficient=True,
+        results=[RerankedResult(
+            source_type="service", title="خدمة حكومية", relevance="high",
+            reasoning="مطابق", db_id=UUID_A, rrf=0.7,
+            source_row={
+                "source_type": "service",
+                "service_ref": "SR-1",
+                "service_name_ar": "خدمة حكومية",
+                "provider_name": "جهة",
+                "service_context": "...",
+            },
+        )],
+        dropped_count=2, summary_note="n",
+        dropped_results=[
+            {"db_id": "44444444-4444-4444-4444-444444444444", "title": "d",
+             "reasoning": "خارج النطاق", "drop_reason": "llm", "source_type": "service"},
+            {"db_id": "55555555-5555-5555-5555-555555555555", "title": "e",
+             "reasoning": "", "drop_reason": "cap", "source_type": "service"},
+        ],
     )
-    result = ComplianceSearchResult(
-        kept_results=[svc], quality="strong", queries_used=["q1"], rounds_used=1,
-    )
-    shared = compliance_to_rqr(
-        result,
-        per_query_service_refs={"q1": ["SR-1"]},
-        per_query_dropped={"q1": [
-            {"service_id": "44444444-4444-4444-4444-444444444444", "title": "d",
-             "reasoning": "خارج النطاق", "drop_reason": "llm"},
-            {"service_id": "55555555-5555-5555-5555-555555555555", "title": "e",
-             "reasoning": "", "drop_reason": "cap"},
-        ]},
-        original_focus_instruction="q1",
-    )[0]
-    row = _build_row(ura_id="u", agent_family="compliance_search", sub_query_index=0, rqr=shared)
+    shared = reg_compliance_to_rqr([rqr])[0]
+    row = _build_row(ura_id="u", agent_family="reg_search", sub_query_index=0, rqr=shared)
     _check_row(row, source_table="services", expect_drops=2)
     assert row["kept_results"][0]["ref_id"] == UUID_A  # real services.id, not the hash
     return row
 
 
 def main() -> None:
-    reg, case, comp = check_reg(), check_case(), check_compliance()
-    print("OK — all 3 domains: bare uuid + source_table + title + llm/cap drops")
+    reg, case, svc = check_reg(), check_case(), check_service()
+    print("OK — reg + case + service: bare uuid + source_table + title + llm/cap drops")
     print("reg  kept :", reg["kept_results"][0])
     print("case kept :", case["kept_results"][0])
-    print("comp kept :", comp["kept_results"][0])
-    print("comp drops:", comp["dropped_results"])
+    print("svc  kept :", svc["kept_results"][0])
+    print("svc  drops:", svc["dropped_results"])
 
 
 if __name__ == "__main__":

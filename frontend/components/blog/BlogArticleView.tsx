@@ -42,6 +42,16 @@ function formatBylineDate(iso: string): string {
 
 interface BlogArticleViewProps {
   post: BlogPostPublic;
+  /**
+   * The post's public token — the address for the METERED source reveal
+   * (`GET /public/blog/{token}/references/{n}/source`).
+   *
+   * A reader is not the author, so the workspace reveal endpoint would
+   * 404 them; the unguessable token is the capability here. Passing it
+   * is what keeps «عرض المصدر» and the [n] preview working on a public
+   * post — anonymous readers included, who get the «سجّل مجاناً» card.
+   */
+  blogToken: string;
 }
 
 /**
@@ -62,7 +72,7 @@ interface BlogArticleViewProps {
  * The brand header, «جرّب ريحان مجاناً» CTA, and footer come from
  * ``BlogPageShell`` — they are NOT duplicated here.
  */
-export function BlogArticleView({ post }: BlogArticleViewProps) {
+export function BlogArticleView({ post, blogToken }: BlogArticleViewProps) {
   const [focusedN, setFocusedN] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -190,6 +200,7 @@ export function BlogArticleView({ post }: BlogArticleViewProps) {
         {references.length > 0 && (
           <div className="mx-auto mt-8 max-w-3xl">
             <ReferencePanel
+              blogToken={blogToken}
               references={references}
               focusedReferenceN={focusedN}
               onFlashDone={handleFlashDone}

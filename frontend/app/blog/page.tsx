@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Eye } from "lucide-react";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
+import { SERVER_API_BASE, serverFetchInit } from "@/lib/library/api";
 import type { BlogCardPublic, PublicBlogsResponse } from "@/types";
 
 // This is a PUBLIC, anon-accessible route — the SEO-indexable مدونة gallery.
@@ -9,10 +10,15 @@ import type { BlogCardPublic, PublicBlogsResponse } from "@/types";
 // backend with a plain ``fetch`` (no auth header), NOT through the token-aware
 // ``apiFetch`` client. The route is dynamic (``cache: "no-store"``) so the
 // build never tries to pre-render it against a backend that may be offline.
+//
+// SERVER→SERVER (plan 3.2 / 3.4): the origin is ``SERVER_API_BASE``
+// (``INTERNAL_API_URL`` → ``NEXT_PUBLIC_API_URL`` → localhost), so once the
+// Railway private network is wired this call leaves the edge entirely — and
+// therefore no longer picks up Cloudflare's ``X-Edge-Secret``. ``serverFetchInit``
+// re-attaches it from the server-only ``EDGE_SECRET``; without that the origin
+// lock would 403 the whole gallery into an empty state.
 
 export const dynamic = "force-dynamic";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Subtype → Arabic chip label. Copied from PublicAnswerView.tsx so the gallery
 // speaks the same vocabulary as the public article surfaces.
@@ -42,8 +48,14 @@ function formatDate(iso: string): string {
 
 async function fetchGallery(): Promise<BlogCardPublic[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/v1/public/blogs`, {
+    // Only the HEADERS are taken from `serverFetchInit` — its `next.revalidate`
+    // window is meaningless on a `force-dynamic` route, and mixing it with
+    // `cache: "no-store"` would change this fetch's caching semantics. With
+    // `EDGE_SECRET` unset the value is `undefined`, which `fetch` treats exactly
+    // as an absent key, so the request on the wire is unchanged.
+    const res = await fetch(`${SERVER_API_BASE}/api/v1/public/blogs`, {
       cache: "no-store",
+      headers: serverFetchInit(0).headers,
     });
     if (!res.ok) return [];
     const data = (await res.json()) as PublicBlogsResponse;
@@ -62,12 +74,16 @@ export function generateMetadata(): Metadata {
   return {
     title,
     description,
+    alternates: {
+      canonical: "/blog",
+    },
     openGraph: {
       title,
       description,
       siteName: "ريحان",
       type: "website",
       locale: "ar_SA",
+      url: "/blog",
     },
     twitter: {
       card: "summary",
