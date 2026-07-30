@@ -2,6 +2,12 @@
 
 Runs one LLM classification call per sub-query (concurrent, not pooled).
 Cases are flat documents — only keep/drop (no unfold unlike reg_search).
+
+Since Wave 3 of the case-topics plan (§7 / decision D6) the reranker is no
+longer a zero-context surface: ``run_reranker_for_query`` accepts the planner's
+``planner_brief`` and renders it at the HEAD of the *user* message. The system
+prompt (``create_reranker_agent``'s ``instructions=``) stays per-run constant —
+it is the primary prompt-cache prefix and must not vary per turn.
 """
 from __future__ import annotations
 
@@ -12,6 +18,10 @@ from typing import Any
 from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
+from agents.deep_search_v4.shared.court_levels import (
+    COURT_LEVEL_FROM_AR,
+    normalize_court_level,
+)
 from agents.utils.agent_models import get_agent_model
 from agents.utils.structured_output import make_json_salvager
 
@@ -20,7 +30,11 @@ from .models import (
     RerankedCaseResult,
     RerankerQueryResult,
 )
-from .prompts import build_reranker_user_message, get_reranker_prompt
+from .prompts import (
+    DEFAULT_RERANKER_PROMPT,
+    build_reranker_user_message,
+    get_reranker_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +68,18 @@ def _case_text_output() -> TextOutput:
 
 
 def create_reranker_agent(
-    prompt_key: str = "prompt_1",
+    prompt_key: str = DEFAULT_RERANKER_PROMPT,
     model_override: str | None = None,
 ) -> Agent[None, CaseRerankerClassification]:
     """Create a per-query classification reranker agent. No tools, no deps.
 
     ``model_override`` is a tier override token (``qwen``/``deepseek``/
     ``alibaba``/``openrouter``) applied to the slot's policy; tier stays fixed.
+
+    Takes **no per-turn input on purpose.** ``instructions=`` is the primary
+    prompt-cache prefix; a turn-scoped argument here (a ``planner_brief``, the
+    user's question, …) would invalidate the cache on every single call. Per-turn
+    context belongs in the user message — see ``build_reranker_user_message``.
     """
     system_prompt = get_reranker_prompt(prompt_key)
     model = get_agent_model("case_search_reranker", model_override)
@@ -93,6 +112,22 @@ _RESULT_HEADER_RE = re.compile(
 
 _RRF_RE = re.compile(r"RRF:\s*([\d.]+)")
 
+# Court level, parsed out of the header parenthetical. Built from the CANONICAL
+# Arabic vocabulary (`shared/court_levels.py`) rather than an inline
+# `(ابتدائي|استئناف)` alternation: that two-value regex — plus the two-branch
+# ternary behind it — could not match `(عليا)` and relabelled all 125
+# supreme-court rulings as `first_instance`. This was the THIRD copy of that bug
+# (unfold_ura.py and search.py were the other two). Never re-derive the map here.
+_COURT_LEVEL_RE = re.compile(
+    r"\((" + "|".join(re.escape(ar) for ar in COURT_LEVEL_FROM_AR) + r")\)"
+)
+
+# The sectioned formatter's court line: `المحكمة: {court} — {city} ({level})`
+# (unfold_reranker.format_candidate_for_reranker). The legacy `### [N] حكم: …`
+# header regexes below no longer match that shape at all, so without this the
+# fallback path would assemble a court-less, level-less result.
+_SECTIONED_COURT_RE = r"^المحكمة:\s*(.+?)(?:\s+—|\s+\(|$)"
+
 
 def _parse_case_blocks(markdown: str) -> list[dict[str, Any]]:
     """Parse case search results markdown into individual result blocks."""
@@ -123,17 +158,40 @@ def _parse_case_blocks(markdown: str) -> list[dict[str, Any]]:
 
 
 def _assemble_case_result(block: dict, decision: dict) -> RerankedCaseResult:
-    """Assemble a RerankedCaseResult from a block + its LLM decision."""
+    """Assemble a RerankedCaseResult from a block + its LLM decision.
+
+    Reads back the markdown the LLM was shown. Two shapes reach it:
+
+    1. the **legacy** hybrid-search block (`### [N] حكم: {court} — {city}
+       ({level})` + `**رقم القضية:**` … ), still emitted by
+       ``search._format_case_result`` on the non-sectioned CLI path;
+    2. the **sectioned** `case_topics` block (`المحكمة: {court} — {city}
+       ({level})` + matched topics + `الملخص:`), where this is only the
+       *fallback* — ``assemble_kept_cases`` normally replaces these results with
+       rows re-fetched from the DB, and falls through to here only when it
+       returns nothing.
+
+    The per-field metadata regexes stay legacy-only (the sectioned payload
+    carries no `رقم القضية` / `المجالات القانونية` — they were deliberately
+    dropped from the reranker view), but court / city / level are parsed for
+    both, so the fallback still names a court instead of an empty string.
+    """
     relevance = decision.get("relevance") or "medium"
     if relevance not in ("high", "medium"):
         relevance = "medium"
 
     md = block.get("markdown", "")
 
-    court = _extract_field(md, r"حكم:\s+(.+?)(?:\s+—|$)")
+    court = (
+        _extract_field(md, r"حكم:\s+(.+?)(?:\s+—|$)")
+        or _extract_field(md, _SECTIONED_COURT_RE)
+    )
     city = _extract_field(md, r"—\s+(.+?)\s+\(")
-    court_level_raw = _extract_field(md, r"\((ابتدائي|استئناف)\)")
-    court_level = "appeal" if court_level_raw == "استئناف" else "first_instance"
+    # Three-value passthrough via the canonical map — `عليا` must survive.
+    level_match = _COURT_LEVEL_RE.search(md)
+    court_level = normalize_court_level(
+        COURT_LEVEL_FROM_AR.get(level_match.group(1)) if level_match else None
+    )
     case_number = _extract_field(md, r"\*\*رقم القضية:\*\*\s+(.+?)(?:\s+\||$)")
     judgment_number = _extract_field(md, r"\*\*رقم الحكم:\*\*\s+(.+?)(?:\s+\||$)")
     date_hijri = _extract_field(md, r"\*\*التاريخ:\*\*\s+(.+?)$")
@@ -194,10 +252,11 @@ async def run_reranker_for_query(
     rationale: str,
     raw_markdown: str,
     model_override: str | None = None,
-    prompt_key: str = "prompt_1",
+    prompt_key: str = DEFAULT_RERANKER_PROMPT,
     *,
     max_keep: int = 10,
     round_trace: list[dict] | None = None,
+    planner_brief: str | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
     """Run per-query LLM reranker classification for a single sub-query.
 
@@ -208,9 +267,21 @@ async def run_reranker_for_query(
         model_override: Optional model registry key.
         prompt_key: Which reranker prompt variant to use.
         max_keep: Max results to keep per sub-query (single flat cap).
+        round_trace: Optional list; one trace dict appended per pass.
+        planner_brief: Optional planner-distilled background (the
+            ``planner_brief`` ``ContextBlock.body`` only — never ``case_brief``
+            / ``prior_search_lessons``). Rendered at the HEAD of the user
+            message; empty/None renders nothing.
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
+
+    Prompt-cache discipline: the brief goes into the USER message only. The
+    system prompt (``create_reranker_agent``'s ``instructions=``) stays per-run
+    constant — it is the primary cache prefix, and varying it per turn would
+    invalidate the cache on every call. The brief is placed ahead of the
+    sub-query so the N concurrent calls of one turn share the longest possible
+    prefix. See ``build_reranker_user_message``.
     """
     blocks = _parse_case_blocks(raw_markdown)
 
@@ -228,13 +299,15 @@ async def run_reranker_for_query(
     user_msg = build_reranker_user_message(
         query, rationale, raw_markdown,
         max_keep=max_keep,
+        planner_brief=planner_brief,
     )
 
     logger.info(
-        "Reranker [%s]: %d blocks, %d chars",
+        "Reranker [%s]: %d blocks, %d chars, planner_brief=%s",
         query[:40],
         len(blocks),
         len(raw_markdown),
+        bool((planner_brief or "").strip()),
     )
 
     usage_entries: list[dict] = []

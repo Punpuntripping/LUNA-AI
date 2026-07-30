@@ -1,15 +1,24 @@
 """Aggregator-side unfolder for case_search (sectioned pipeline).
 
-What the URA / aggregator sees — full ruling content with
-referenced_regulations and appeal history. This runs AFTER the reranker has
-picked the keepers, batch-fetches the full case rows, and builds
-`RerankedCaseResult` objects for the shared deep_search_v3 aggregator to
-synthesize from.
+What the URA / aggregator sees — the case's **structured summary**
+(`cases.summary`) with court metadata, referenced_regulations and appeal
+history. This runs AFTER the reranker has picked the keepers, batch-fetches
+the case rows, and builds `RerankedCaseResult` objects for the shared
+deep_search_v3 aggregator to synthesize from.
 
-Counterpart to `unfold_reranker.py`, which produces the compact section-only
-markdown the reranker LLM grades. Here we hand the aggregator everything it
-needs to write the synthesis: full content (clipped), legal_domains,
+Counterpart to `unfold_reranker.py`, which produces the compact markdown the
+reranker LLM grades. Here we hand the aggregator everything it needs to write
+the synthesis: the summary (clipped), court / court_level, legal_domains,
 referenced_regulations (clipped), and appeal_result.
+
+`summary` replaces `cases.content` as the synthesis payload (plan
+`case_topics_loop.md` §8.1, decision D2 — a HARD replacement). `summary` is
+structured markdown (`## الملخص / ## الوقائع / ## المطالبات / ## اسانيد … /
+## التسبيب / ## المنطوق`), ~4× cheaper than the raw ruling text and better
+organised. Accepted consequence of D2: the aggregator post-validator grounds
+against the summary, so summaries are now the citable substrate. The full
+ruling text is still served to the *user* view by `source_viewer.py`, which
+re-fetches `cases.content` from the DB.
 
 Shapes this module produces:
     - `fetch_full_cases` — batched `cases` SELECT with all aggregator fields.
@@ -29,12 +38,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_AGGREGATOR_CONTENT_CHARS = 8_000
+# Cap for the aggregator payload (now `cases.summary`, not `cases.content`).
+# Measured over 30,531 rows: summary p50 = 2,035 / p90 = 3,290 / p99 = 4,856 /
+# max = 21,735 chars. 6,000 clears p99 and clips only the long tail.
+MAX_AGGREGATOR_CONTENT_CHARS = 6_000
 
 # How many referenced-regulation entries to surface. Most cases cite 2–5.
 MAX_REFERENCED_REGULATIONS = 8
 
+# `cases.court_level` vocabulary + the three-value passthrough live in
+# `shared/court_levels.py` — the single canonical home. Re-exported here for
+# the callers/tests that already import them from this module.
+#
+# History: the two-value coercion this replaced
+# (``"appeal" if raw == "appeal" else "first_instance"``) silently relabelled
+# all 125 supreme-court rulings as first_instance, so the aggregator told the
+# user a court-of-last-resort ruling came from a court of first instance. The
+# same collapse existed independently in three other modules — hence one
+# shared home rather than a per-module constant.
+from agents.deep_search_v4.shared.court_levels import (  # noqa: E402
+    CASE_COURT_LEVELS,
+    normalize_court_level,
+)
+
 # Fields the aggregator actually reads. Everything else stays in the DB.
+# `summary` (not `content`) is the synthesis payload — D2. `short_summary` is
+# carried only as the NULL-summary fallback (summary is NULL on 18 of 30,531
+# cases; short_summary is NULL/empty on 964).
 AGGREGATOR_CASE_FIELDS = (
     "id",
     "case_ref",
@@ -46,6 +76,10 @@ AGGREGATOR_CASE_FIELDS = (
     "date_hijri",
     "date_gregorian",
     "details_url",
+    "summary",
+    "short_summary",
+    # Last-resort payload only (see _resolve_summary): 18 cases have neither
+    # summary field. NOT the synthesis payload — D2 replaced it with `summary`.
     "content",
     "legal_domains",
     "referenced_regulations",
@@ -114,6 +148,40 @@ def _assemble_title(row: dict[str, Any]) -> str:
     return " | ".join(p for p in (court, case_num, date) if p)
 
 
+def _resolve_summary(full_row: dict[str, Any]) -> str:
+    """Return the aggregator payload for one case row, clipped.
+
+    `summary` → `short_summary` → `content` → ``""``. Never returns ``None``
+    and never stringifies a NULL into ``"None"``: `summary` is NULL on 18 of
+    30,531 rows and `short_summary` on a further 964, and either would
+    otherwise land in the synthesis prompt verbatim.
+
+    The `content` rung is a deliberate carve-out from decision D2 ("summary is
+    a hard replacement for content"). D2's intent is that the aggregator reads
+    the structured summary instead of raw ruling text — NOT that a case with no
+    summary ships as an empty citable reference. 18 cases have neither summary
+    field; 17 of them do have `content`. Without this rung those 17 reach the
+    aggregator as a numbered `<reference>` with an empty `<content>`, which is
+    strictly worse than the pre-D2 behaviour: the model can cite them and has
+    nothing to ground the citation in.
+
+    This matters more than 18/30,531 suggests. Every one of those rows sits
+    inside the 9,861-case dark set that this whole retarget exists to make
+    reachable — the null-payload rows and the newly-reachable rows are the SAME
+    rows. Before Wave 1 they were unreachable, so the empty-payload path could
+    never fire; after Wave 1 it fires for the first time.
+
+    The 18th case has empty `content` too and legitimately yields ``""``.
+    """
+    summary = str(full_row.get("summary") or "").strip()
+    if not summary:
+        summary = str(full_row.get("short_summary") or "").strip()
+    if not summary:
+        # Last resort only — see the D2 carve-out above.
+        summary = str(full_row.get("content") or "").strip()
+    return _truncate(summary, MAX_AGGREGATOR_CONTENT_CHARS)
+
+
 def _build_reranked_case_result(
     full_row: dict[str, Any],
     *,
@@ -122,11 +190,14 @@ def _build_reranked_case_result(
     relevance: str,
     reasoning: str,
 ) -> "RerankedCaseResult":
-    """Construct one RerankedCaseResult from a full-case row + reranker decision."""
+    """Construct one RerankedCaseResult from a case row + reranker decision.
+
+    ``RerankedCaseResult.content`` carries the **summary** (D2), not the ruling
+    text — the field name is historical.
+    """
     from .models import RerankedCaseResult
 
-    court_level_raw = full_row.get("court_level", "") or ""
-    court_level = "appeal" if court_level_raw == "appeal" else "first_instance"
+    court_level = normalize_court_level(full_row.get("court_level"))
 
     legal_domains = full_row.get("legal_domains") or []
     if isinstance(legal_domains, str):
@@ -138,7 +209,8 @@ def _build_reranked_case_result(
     else:
         refs = []
 
-    content = _truncate(full_row.get("content", "") or "", MAX_AGGREGATOR_CONTENT_CHARS)
+    # D2: `cases.summary` replaces `cases.content` as the synthesis payload.
+    content = _resolve_summary(full_row)
 
     return RerankedCaseResult(
         title=_assemble_title(full_row),

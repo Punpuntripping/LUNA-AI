@@ -1,143 +1,224 @@
-"""Reranker-side unfolder for case_search (sectioned pipeline).
+"""Reranker-side renderer for case_search (sectioned pipeline).
 
-The `search_case_sections` RPC returns only four fields per row:
-    (case_id, case_ref, score, section_text)
+What the reranker LLM grades, post-Wave-1 (`.claude/plans/case_topics_loop.md`
+§6.1):
 
-The reranker LLM is fed pure ruling text — no court/case#/date/RRF/URL
-metadata, no channel labels, no legal-domain tags. Each candidate is
-rendered as just `### [N]` followed by the full `cases.content`. The
-reranker's question is "does this text answer the sub-query?", and giving
-it raw text without metadata anchors keeps it from latching onto surface
-features (court name, RRF rank) instead of substance.
+    ### [3]
+    المحكمة: التجارية — الرياض (ابتدائي)
+    الموضوعات المطابقة:
+    - [اسانيد · المدعي · أساس الحكم] الاستناد إلى كشف حساب ومصادقة رصيد
+    - [اسانيد · المدعى عليه · لم يُعتد به] الاستناد إلى أن المخلص اختار الناقل
+    الملخص: - نزاع على استرداد جزء من عمولة سمسرة عقارية.
 
-The full ruling (not the matching section) is used so the reranker sees the
-whole picture — تسبيب + منطوق + وقائع + اسانيد in one block — instead of
-guessing keep/drop from one channel slice.
+Why this replaced 10,000 chars of raw `cases.content`:
 
-Position N is preserved as the only stable handle: `assemble_kept_cases`
-(unfold_ura.py) maps position → case_id via the bucket order, then
-re-fetches every keeper from the DB. Nothing is parsed back out of the
-markdown.
+- Raw ruling text does not say **whether the court actually relied on** the
+  matching argument. `case_topics.attrs` says it atomically —
+  `موقف المحكمة` ∈ {أساس الحكم, قُبل, رُفض, لم يُعتد به, لم تُناقَش …} for a
+  `basis` topic, `النوع` ∈ {موضوعي, شكلي} for a `principle`.
+- 15 candidates × N sub-queries of full ruling text was the dominant token
+  cost of the case executor. ~600–800 chars/candidate here is a ~15× cut.
+- `attrs` is a SIGNAL, never a filter (D4): a `رُفض` / `لم يُعتد به` basis is
+  exactly what a user asking "will this defence fail?" needs. The prompt owns
+  that reading; this module only renders it faithfully.
+- Court / city / level are context only (D5) — no ordering or boost here.
 
-Shapes this module produces:
-    - `enrich_candidates` — decorates ChannelCandidate.row in place with
-      `cases.content` via one batched SELECT.
-    - `format_bucket_for_reranker` — top-level markdown rendering (the string
-      consumed by `build_reranker_user_message`).
+There is no DB round trip left in this module. The `search_case_topics` RPC
+joins the case header onto every topic row, so `ChannelCandidate.row` is
+already the header and `ChannelCandidate.topics` is already score-desc — the
+old `fetch_case_headers` / `enrich_candidates` pair (and its `cases.content`
+SELECT) is deleted.
+
+Position N remains the only handle the reranker returns: `assemble_kept_cases`
+(unfold_ura.py) maps position → case_id via bucket order and re-fetches every
+keeper. Nothing is parsed back out of this markdown.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any
+
+# `court_level` → Arabic label, from the CANONICAL vocabulary. All three values
+# are mapped there, including `supreme` (125 rulings), which four independent
+# two-branch ternaries used to collapse into `first_instance`. Do not re-derive
+# a local map here — that is exactly how the bug propagated.
+from agents.deep_search_v4.shared.court_levels import COURT_LEVEL_AR, court_level_ar
 
 if TYPE_CHECKING:
-    from supabase import Client as SupabaseClient
     from .models import ChannelCandidate, FusedCandidate
 
 logger = logging.getLogger(__name__)
 
-# Per-candidate content cap. Saudi rulings are typically 1.5-3k chars; 10k
-# absorbs the long tail without blowing reranker context.
-MAX_CONTENT_CHARS = 10_000
+# `case_topic_kind` → Arabic tag head. Mirrors the corpus vocabulary the
+# reranker prompt teaches.
+TOPIC_KIND_AR: dict[str, str] = {
+    "basis": "اسانيد",
+    "principle": "مبدأ",
+    "fact": "وقائع",
+    # `facts` is the agent-side channel spelling; tolerated so a mis-tagged
+    # row still renders a sane label instead of leaking the raw key.
+    "facts": "وقائع",
+}
 
-# Only `id` (for the join) and `content` (for the body) are needed. Header
-# fields (court/city/case_number/...) are intentionally NOT pulled — the
-# reranker sees text-only.
-RERANKER_CASE_FIELDS = (
-    "id",
-    "case_ref",
-    "content",
-)
+# Which `attrs` keys to append to the tag, per kind, in order. Missing keys are
+# omitted — never rendered as `None`. `fact` carries `attrs == {}`.
+TOPIC_ATTR_KEYS: dict[str, tuple[str, ...]] = {
+    "basis": ("الطرف", "موقف المحكمة"),
+    "principle": ("النوع",),
+    "fact": (),
+    "facts": (),
+}
+
+_NO_DATA = "(لا توجد بيانات لهذا الحكم)"
+
+# Re-exported so importers of this module (and its tests) see the same map the
+# rest of the pipeline uses.
+__all__ = [
+    "COURT_LEVEL_AR",
+    "TOPIC_ATTR_KEYS",
+    "TOPIC_KIND_AR",
+    "format_bucket_for_reranker",
+    "format_candidate_for_reranker",
+]
 
 
-# ─── DB enrichment ────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-async def fetch_case_headers(
-    supabase: "SupabaseClient",
-    case_ids: Iterable[str],
-) -> dict[str, dict[str, Any]]:
-    """Batch-fetch `cases.content` for the given case_ids.
+def _clean(value: Any) -> str:
+    """Coerce a possibly-None DB value to a stripped string."""
+    if value is None:
+        return ""
+    return str(value).strip()
 
-    Returns:
-        Mapping case_id → row dict containing `id`, `case_ref`, `content`.
-        Missing case_ids are simply absent from the dict.
+
+def _coerce_attrs(attrs: Any) -> dict[str, Any]:
+    """Normalise a topic's `attrs` to a dict.
+
+    jsonb normally arrives as a dict, but a string (double-encoded jsonb, or a
+    mock fixture) must not blow up the formatter.
     """
-    ids = [cid for cid in {*case_ids} if cid]
-    if not ids:
-        return {}
-
-    def _call() -> list[dict]:
+    if isinstance(attrs, dict):
+        return attrs
+    if isinstance(attrs, str) and attrs.strip():
         try:
-            resp = (
-                supabase.table("cases")
-                .select(",".join(RERANKER_CASE_FIELDS))
-                .in_("id", ids)
-                .execute()
-            )
-            return resp.data or []
-        except Exception as e:
-            logger.warning("fetch_case_headers failed for %d ids: %s", len(ids), e)
-            return []
-
-    rows = await asyncio.to_thread(_call)
-    by_id: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        cid = r.get("id")
-        if cid:
-            by_id[str(cid)] = r
-    return by_id
+            parsed = json.loads(attrs)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
-async def enrich_candidates(
-    supabase: "SupabaseClient",
-    candidates: list["ChannelCandidate"],
-) -> None:
-    """Populate ChannelCandidate.row in place with `cases.content`.
+def _topic_tag(topic: dict[str, Any], *, kind_hint: str = "") -> str:
+    """Build the bracketed tag for one matched topic.
 
-    The RPC row carries `case_id`, `case_ref`, `score`, `section_text`. We
-    overwrite that with the full ruling content from `cases` (what the
-    reranker actually grades) while keeping `score` so downstream order/log
-    code that reads it still works.
+    `basis`     → `اسانيد · {الطرف} · {موقف المحكمة}`
+    `principle` → `مبدأ · {النوع}`
+    `fact`      → `وقائع`
+
+    Missing `attrs` keys drop their segment. An unknown kind falls back to the
+    raw kind string so a new enum value is visible rather than silently blank.
     """
-    case_ids = {c.case_id for c in candidates}
-    headers = await fetch_case_headers(supabase, case_ids)
+    kind = _clean(topic.get("kind")) or _clean(kind_hint)
+    head = TOPIC_KIND_AR.get(kind, kind)
+    segments: list[str] = [head] if head else []
 
-    for c in candidates:
-        hdr = headers.get(c.case_id)
-        if hdr:
-            c.row = {
-                "case_ref": hdr.get("case_ref") or c.row.get("case_ref", ""),
-                "content": hdr.get("content") or "",
-                "score": c.score,
-            }
-        else:
-            logger.debug("enrich_candidates: no cases row for %s", c.case_id)
+    attrs = _coerce_attrs(topic.get("attrs"))
+    for key in TOPIC_ATTR_KEYS.get(kind, ()):
+        val = _clean(attrs.get(key))
+        if val:
+            segments.append(val)
+
+    return " · ".join(segments)
+
+
+def _format_court_line(row: dict[str, Any]) -> str:
+    """`المحكمة: {court} — {city} ({level})`, omitting whatever is missing."""
+    court = _clean(row.get("court"))
+    city = _clean(row.get("city"))
+    # strict=True: this is a DISPLAY path — an unrecognised level must print
+    # nothing rather than assert a false ابتدائي.
+    level = court_level_ar(row.get("court_level"), strict=True)
+
+    if not court and not city:
+        # Level alone carries no identity — skip the line entirely rather than
+        # emit `المحكمة:  (ابتدائي)`.
+        return ""
+
+    line = f"المحكمة: {court or city}"
+    if court and city:
+        line += f" — {city}"
+    if level:
+        line += f" ({level})"
+    return line
+
+
+def _format_topics_block(
+    topics: list[dict[str, Any]],
+    *,
+    kind_hint: str = "",
+) -> list[str]:
+    """`الموضوعات المطابقة:` + one `- [tag] text` line per matched topic."""
+    lines: list[str] = []
+    for topic in topics or []:
+        text = _clean(topic.get("text"))
+        if not text:
+            continue
+        tag = _topic_tag(topic, kind_hint=kind_hint)
+        lines.append(f"- [{tag}] {text}" if tag else f"- {text}")
+
+    if not lines:
+        return []
+    return ["الموضوعات المطابقة:", *lines]
 
 
 # ─── Formatters ───────────────────────────────────────────────────────────────
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    if not text or len(text) <= max_chars:
-        return text or ""
-    return text[:max_chars] + "..."
 
 
 def format_candidate_for_reranker(
     cand: "FusedCandidate | ChannelCandidate",
     position: int,
 ) -> str:
-    """Render one candidate as `### [N]` + full ruling content.
+    """Render one candidate: header + matched topics (+ short_summary).
 
-    No metadata, no scores, no URLs, no domain tags. Position is the only
-    handle the reranker uses; `assemble_kept_cases` resolves it back to a
-    `case_id` via the bucket order.
+    Shape (plan §6.1) — the reranker prompt is written against this exactly:
+
+        ### [N]
+        المحكمة: {court} — {city} ({level})
+        الموضوعات المطابقة:
+        - [{tag}] {topic text}
+        الملخص: {short_summary}
+
+    Every line is conditional. `short_summary` is NULL/empty on 964 cases →
+    the `الملخص:` line is omitted with no placeholder (trap 6). A candidate
+    with neither header nor topics renders a short marker so the block is
+    never empty.
     """
-    content = (cand.row.get("content") or "").strip()
-    body = _truncate(content, MAX_CONTENT_CHARS) if content else "(لا يوجد نص للحكم)"
-    return f"### [{position}]\n\n{body}\n"
+    row = cand.row or {}
+    # `topics` lives on ChannelCandidate; a FusedCandidate wrapper has none, so
+    # fall back to the row (and then to empty) rather than raising.
+    topics = list(getattr(cand, "topics", None) or row.get("topics") or [])
+
+    lines: list[str] = [f"### [{position}]"]
+
+    court_line = _format_court_line(row)
+    if court_line:
+        lines.append(court_line)
+
+    kind_hint = _clean(getattr(cand, "channel", "")) or _clean(row.get("kind"))
+    topic_lines = _format_topics_block(topics, kind_hint=kind_hint)
+    lines.extend(topic_lines)
+
+    short_summary = _clean(row.get("short_summary"))
+    if short_summary:
+        lines.append(f"الملخص: {short_summary}")
+
+    if len(lines) == 1:
+        lines.append(_NO_DATA)
+
+    return "\n".join(lines) + "\n"
 
 
 def format_bucket_for_reranker(

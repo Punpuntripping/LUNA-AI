@@ -369,8 +369,14 @@ class LoopState:
     # ``None`` from the future means "picker said no filter" → run unfiltered.
     sectors_future: "asyncio.Future[list[str] | None] | None" = None
     # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
-    # the expander user message; the reranker is hardcoded to receive zero
-    # blocks. Empty list → no <context_blocks> XML in the prompt.
+    # the expander user message as <context_blocks> XML (empty list → no XML).
+    #
+    # SUPERSEDED 2026-07-24 (plan §7 / decision D6): the reranker no longer
+    # receives zero blocks. ``RerankerNode`` picks the ``planner_brief`` body
+    # out of this list and passes it to ``run_reranker_for_query``, which
+    # renders it as a <planner_brief> block at the head of the user message.
+    # Still filtered to that ONE label — ``case_brief`` and
+    # ``prior_search_lessons`` never reach a reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
     step_timings: dict = field(default_factory=dict)  # {expander: float, search: float, reranker: float, aggregator: float}
 

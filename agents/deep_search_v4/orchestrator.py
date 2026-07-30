@@ -139,7 +139,9 @@ class FullLoopDeps:
     # results; within the cap, high-relevance results are ordered ahead of
     # medium, ties broken by score (descending), before truncation.
     reg_max_keep: int = 8
-    case_max_keep: int = 10
+    # Cases: 7 total per sub-query (high + medium together, NOT per tier).
+    # Clamped by ``case_search.loop.MAX_KEEP_PER_SUBQUERY`` — see that constant.
+    case_max_keep: int = 7
     # Optional logger injected by the monitor harness so the aggregator's
     # exact prompt + raw LLM output + thinking + validation all land on disk
     # alongside the per-phase logs. Production callers leave this None.
@@ -548,8 +550,15 @@ async def _run_case_phase(
             expander_prompt_key=deps.case_expander_prompt_key,
             model_override=deps.model_override,
             concurrency=deps.concurrency,
+            # Wave 5 (plan §9 / decision D3): the case executor no longer
+            # consumes the sector_picker. `sectors_future` is gone from
+            # run_case_search entirely — case retrieval runs unfiltered because
+            # the 9,860 cases with an empty `legal_domains` are exactly the
+            # batch the retarget was built to recover, and `legal_domains &&
+            # p_sectors` drops every one of them. `sectors_override` survives
+            # as a CLI-only hatch. The picker still runs for reg_search — do
+            # not re-thread it here.
             sectors_override=deps.sectors_override,
-            sectors_future=deps.sectors_future,
             score_threshold=deps.case_score_threshold,
             context_blocks=list(deps.context_blocks) if deps.context_blocks else None,
         )
@@ -989,8 +998,17 @@ async def run_retrieval(
     # force-forwarded when non-empty regardless of the planner's declared
     # context_labels (see _select_forwarded_blocks); prior_search_lessons is
     # opt-in. The SAME bundle flows to all executor expanders AND the aggregator
-    # (§3.6). The reranker continues to receive zero blocks -- enforced by the
-    # executors not threading context_blocks into reranker calls (Wave 3A).
+    # (§3.6).
+    #
+    # Reranker exposure — SUPERSEDED 2026-07-24 (plan §7 / decision D6). This
+    # used to read "the reranker continues to receive zero blocks -- enforced by
+    # the executors not threading context_blocks into reranker calls (Wave 3A)".
+    # BOTH executors now pass exactly ONE block to their reranker: the
+    # ``planner_brief`` body, selected inside each executor's RerankerNode and
+    # rendered as a <planner_brief> tag at the head of the reranker user message
+    # (head placement keeps the prefix cacheable across the N concurrent calls
+    # in a turn). ``case_brief`` and ``prior_search_lessons`` still never reach a
+    # reranker. Do not "restore" the zero-blocks rule.
     decision = deps._decision
     selected_blocks: list[ContextBlock] = _select_forwarded_blocks(
         decision, deps, include_planner_brief=True

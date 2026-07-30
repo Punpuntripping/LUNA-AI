@@ -75,17 +75,34 @@ DOMAIN_RANK: dict[str, int] = {
 
 _RELEVANCE_RANK: dict[str, int] = {"high": 2, "medium": 1}
 
-# Per-sub-query keep caps (post Wave-D monitor findings).
-# q27 had one reg sub-query supply 31 of 76 URA refs because the reranker
-# kept 35 of 38 candidates without an upper bound. The aggregator cited
-# only ~24% of URA refs inline; the rest were dead weight.
-# Safety-net caps applied by the merger AFTER the per-domain rerankers.
-# The primary keep caps live in each domain's reranker (reg: 8/4, case: 6/4,
-# compliance: 6/4) and are applied before the results reach here. These
-# merger caps are a last-resort backstop (12 high >> 8 default, so they
-# normally never fire). Order of selection: rrf_max desc, then array order.
-MAX_HIGH_PER_SUBQUERY = 12
-MAX_MEDIUM_PER_SUBQUERY = 4
+# ── The merger does NOT discard kept results (2026-07-25) ────────────────────
+#
+# It used to. Historic caps were MAX_HIGH_PER_SUBQUERY = 12 and
+# MAX_MEDIUM_PER_SUBQUERY = 4, applied here AFTER each domain's reranker had
+# already decided (and paid tokens for) its keeps. That was wrong on two counts:
+#
+#   1. **It silently deleted work.** The tier split meant a sub-query with 8
+#      legitimate `medium` keeps surfaced only 4 — while up to 12 `high` slots
+#      sat unused. Cases were hit hardest: the cross-forum rule (a
+#      non-specialised court applying the same principle is a KEEP at `medium`)
+#      deliberately produces mostly mediums, so the cap deleted exactly the
+#      material it exists to surface. Same shape for reg, whose reranker cap is
+#      8 total: 8 mediums in, 4 out.
+#   2. **It truncated on the wrong signal.** Survival was ordered by `rrf_max`
+#      — retrieval cosine similarity — discarding the reranker's own judgement
+#      of which results mattered. A semantic decision undone by a lexical score.
+#
+# The caps' own docstring conceded they were "a last-resort backstop" from an
+# era before the domain rerankers had caps of their own. They do now (cases 7,
+# reg 8, and each is applied where the decision belongs — at the reranker, with
+# the candidate text in view). So the backstop is obsolete, and the merger's job
+# is now purely: dedupe by ref_id, lift relevance, union sub-query indices,
+# tier-order.
+#
+# What replaces the cap: a diagnostic. If a sub-query ever arrives with an
+# implausible number of keeps, that is a RERANKER regression and must be visible
+# in logs — not hidden by silent truncation here.
+SUBQUERY_KEEP_WARN_THRESHOLD = 15
 
 _DomainResult = Union[
     RegURAResult, ComplianceURAResult, CircularURAResult, CaseURAResult
@@ -164,9 +181,17 @@ def build_ura_from_phases(
     # and unpopulated at merge time -- enrich.py runs later and owns the
     # post-fetch empty-drop. The merger keeps only the ref_id-presence check.
 
-    def _cap(results: list) -> list:
-        """Keep top ``MAX_HIGH_PER_SUBQUERY`` high + ``MAX_MEDIUM_PER_SUBQUERY``
-        medium per sub-query, sorted by ``rrf_max`` desc (ties: input order).
+    def _order(results: list) -> list:
+        """Order one sub-query's keeps: `high` first, then `medium`.
+
+        **Never truncates** — every kept result reaches the artifact. The
+        reranker already decided what to keep, with the candidate text in view;
+        re-deciding that here on a retrieval score would overrule a semantic
+        judgement with a lexical one. See the module-level note above.
+
+        Ordering still matters: the preprocessor numbers citations in tier
+        order, so `high` must precede `medium`. Within a tier, `rrf_max` desc
+        (ties: input order).
         """
         if not results:
             return []
@@ -174,24 +199,35 @@ def build_ura_from_phases(
         meds: list = [r for r in results if getattr(r, "relevance", "") != "high"]
         highs.sort(key=lambda r: -float(getattr(r, "rrf_max", 0.0) or 0.0))
         meds.sort(key=lambda r: -float(getattr(r, "rrf_max", 0.0) or 0.0))
-        return highs[:MAX_HIGH_PER_SUBQUERY] + meds[:MAX_MEDIUM_PER_SUBQUERY]
+        return highs + meds
 
-    capped_total = 0
+    overflow_subqueries = 0
 
     def _absorb(domain: Domain, rqrs: list[RerankerQueryResult]) -> None:
-        nonlocal capped_total
+        nonlocal overflow_subqueries
         for sq in rqrs or []:
             sq_index = len(sub_queries_meta)
             raw_results = list(sq.results or [])
-            capped_results = _cap(raw_results)
-            capped_total += max(0, len(raw_results) - len(capped_results))
+            ordered_results = _order(raw_results)
+            if len(raw_results) > SUBQUERY_KEEP_WARN_THRESHOLD:
+                # Not truncated — surfaced. An implausible keep count is a
+                # reranker-side regression (e.g. doctrinal saturation filling a
+                # window with restatements of one holding) and must be
+                # diagnosable rather than silently trimmed here.
+                overflow_subqueries += 1
+                logger.warning(
+                    "ura.merger: sub-query %d [%s] kept %d results (> %d) — "
+                    "NOT truncated; check the %s reranker's keep cap",
+                    sq_index, domain, len(raw_results),
+                    SUBQUERY_KEEP_WARN_THRESHOLD, domain,
+                )
             meta: dict = {
                 "index": sq_index,
                 "query": sq.query,
                 "rationale": sq.rationale,
                 "domain": domain,
                 "sufficient": bool(sq.sufficient),
-                "kept_count": len(capped_results),
+                "kept_count": len(ordered_results),
                 "raw_kept_count": len(raw_results),
                 "dropped_count": int(sq.dropped_count or 0),
             }
@@ -199,7 +235,7 @@ def build_ura_from_phases(
                 meta["summary_note"] = sq.summary_note
             sub_queries_meta.append(meta)
 
-            for result in capped_results:
+            for result in ordered_results:
                 ref_id = getattr(result, "ref_id", "") or ""
                 if not ref_id:
                     continue
@@ -248,10 +284,10 @@ def build_ura_from_phases(
 
     logger.info(
         "ura.merger: kept=%d unique  dedup_merges=%d  "
-        "subquery_overflow_capped=%d",
+        "subqueries_over_warn_threshold=%d (none truncated)",
         len(grouped),
         total_dedup_merges,
-        capped_total,
+        overflow_subqueries,
     )
 
     high: list[_DomainResult] = []

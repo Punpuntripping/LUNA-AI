@@ -5,8 +5,17 @@ Two pipelines live here:
 - `search_cases_pipeline` — legacy (prompt_1 / prompt_2): single-vector
   hybrid search via `hybrid_search_cases` RPC, returns formatted markdown.
 - `search_case_section` — sectioned (prompt_3+): per-channel pure-semantic
-  search via `search_case_sections` RPC, returns structured ChannelCandidates
-  for the fusion layer to merge.
+  search via the `search_case_topics` RPC (migration 101), grouped by case
+  into structured ChannelCandidates for the reranker + fusion layers.
+
+Wave 1 retarget (`.claude/plans/case_topics_loop.md` §5): the sectioned path
+used to hit `search_case_sections`, which reaches only 20,669 of 30,531 cases.
+`case_topics` reaches 29,734 — +43% corpus. The RPC returns FLAT topic rows
+(deliberately not deduped) joined to the case header, so:
+
+- grouping by `case_id` happens here (`group_topic_rows`), keeping EVERY
+  matched topic per case (decision D1) instead of one row per case, and
+- there is no enrichment round trip anymore — the header comes off the join.
 
 Both share the same score-fallback / formatting helpers at the bottom.
 """
@@ -16,7 +25,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
+from agents.deep_search_v4.shared.court_levels import court_level_ar
 
 if TYPE_CHECKING:
     from .models import CaseSearchDeps, ChannelCandidate, TypedQuery
@@ -27,10 +36,38 @@ logger = logging.getLogger(__name__)
 CASES_TOP_N = 10
 MATCH_COUNT = 30
 
-# Sectioned pipeline — how many hits to pull from each channel RPC before fusion.
-# Fusion works on ranks so pulling more candidates costs little; the HNSW
-# index handles it efficiently.
-SECTION_MATCH_COUNT = 30
+# Sectioned pipeline — how many TOPIC rows to pull from the per-kind RPC before
+# grouping. Rows are topics, not cases: a case averages 2.1 principle / 3.6 fact
+# / 3.7 basis topics, so N rows collapse to fewer than N distinct cases. 60 is
+# the plan's calibrated floor (§4.3) so the grouped output reliably yields ≥ 25
+# distinct cases — more than the 15 the reranker is shown. Grouping and fusion
+# work on ranks, so pulling more costs nothing downstream.
+SECTION_MATCH_COUNT = 60
+
+# Channel (agent vocabulary) → `case_topic_kind` (DB enum).
+#
+# ⚠ THE ONLY TRANSLATION POINT. `facts` is PLURAL in the agent/expander
+# vocabulary and SINGULAR (`fact`) in the DB enum. A mismatch makes the RPC
+# return zero rows with NO error — a silent recall wipe-out. Never inline this
+# mapping anywhere else; import the constant. See plan §5.2 / trap 1.
+CHANNEL_TO_KIND: dict[str, str] = {
+    "principle": "principle",
+    "facts": "fact",
+    "basis": "basis",
+}
+
+# Case-header columns the `search_case_topics` RPC joins onto every topic row.
+# Lifted verbatim into `ChannelCandidate.row` by `group_topic_rows`, which is
+# what the reranker formatter renders.
+CASE_HEADER_FIELDS: tuple[str, ...] = (
+    "case_ref",
+    "court",
+    "city",
+    "court_level",
+    "case_number",
+    "date_hijri",
+    "short_summary",
+)
 
 # Content truncation for case formatting
 MAX_CONTENT_CHARS = 5_000
@@ -219,8 +256,10 @@ def _format_case_result(row: dict[str, Any], position: int) -> str:
     city = row.get("city", "")
     court_level = row.get("court_level", "")
 
-    # Header
-    level_label = "استئناف" if court_level == "appeal" else "ابتدائي"
+    # Header. `court_level` has THREE values in prod — the two-branch ternary
+    # that used to live here relabelled all 125 supreme-court rulings as
+    # ابتدائي. Canonical map only (agents/deep_search_v4/shared/court_levels.py).
+    level_label = court_level_ar(court_level)
     header = f"### [{position}] حكم: {court}"
     if city:
         header += f" — {city}"
@@ -331,43 +370,44 @@ async def search_case_section(
     precomputed_embedding: list[float] | None = None,
     match_count: int = SECTION_MATCH_COUNT,
     semaphore: asyncio.Semaphore | None = None,
-    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list["ChannelCandidate"]:
-    """Retrieve case-sections for one channel-tagged query.
+    """Retrieve case topics for one channel-tagged query, grouped by case.
 
-    Calls the `search_case_sections` RPC (Wave 1 migration) against the
-    single channel specified by `query.channel`, optionally pre-filtered by
-    `legal_domains` overlap with `sectors`. The RPC is expected to return
-    case-level metadata joined onto each `case_sections` hit so downstream
-    formatting can render results without an N+1 follow-up.
+    Calls the `search_case_topics` RPC (migration 101) against the single
+    `case_topic_kind` that `query.channel` maps to via `CHANNEL_TO_KIND`, then
+    groups the flat topic rows by `case_id` so each returned candidate carries
+    EVERY topic of that case inside this sub-query's result window (D1).
+
+    The RPC joins the case header onto each topic row, so the returned rows are
+    already complete — there is no enrichment round trip downstream.
 
     Args:
         query: TypedQuery with `text` and `channel`.
         deps: CaseSearchDeps — embedding fn, supabase client, mocks.
         sectors: Canonicalized legal-domain names; None / empty = no filter.
-            Used when ``sectors_future`` is None (CLI / smoke paths).
+            **Always None on the production path** (decision D3 / plan §1.2):
+            the case executor no longer consumes `sector_picker`, because the
+            9,860 cases with an empty `legal_domains` array are exactly the
+            batch this retarget was built to recover, and 91% of the tagged
+            cases carry المعاملات التجارية (near-zero selectivity). The
+            argument survives only as a CLI experiment hatch (`--sectors`),
+            and `p_sectors` survives in the RPC so the filter can be
+            re-enabled after a `legal_domains` backfill.
         precomputed_embedding: Skip embedding if provided (batched upstream).
-        match_count: Upper bound on RPC rows returned.
+        match_count: Upper bound on RPC topic rows returned (pre-grouping).
         semaphore: Concurrency limiter for the sectioned search node.
-        sectors_future: Optional ``asyncio.Future`` resolving to the sector
-            list emitted by the parallel ``sector_picker`` agent. When
-            present, awaited after the embed step and before the RPC call —
-            case_search applies sectors at the RPC layer (``p_sectors``), so
-            this must be resolved before the RPC fires. Resolved ``None`` =
-            picker said no filter → unfiltered.
 
     Returns:
-        Ranked list of ChannelCandidate. Empty list on zero hits or error.
+        Ranked list of ChannelCandidate (one per case). Empty on zero hits
+        or error.
     """
     if semaphore:
         async with semaphore:
             return await _search_case_section_inner(
                 query, deps, sectors, precomputed_embedding, match_count,
-                sectors_future,
             )
     return await _search_case_section_inner(
         query, deps, sectors, precomputed_embedding, match_count,
-        sectors_future,
     )
 
 
@@ -377,24 +417,19 @@ async def _search_case_section_inner(
     sectors: list[str] | None,
     precomputed_embedding: list[float] | None,
     match_count: int,
-    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
 ) -> list["ChannelCandidate"]:
-    """Inner worker: embed → RPC → ChannelCandidate list."""
-    from .models import ChannelCandidate
-
-    # Mock hook (used by CLI --mock)
-    if deps.mock_results and "case_sections" in deps.mock_results:
-        mock_rows = deps.mock_results["case_sections"].get(query.channel, [])
-        return [
-            ChannelCandidate(
-                case_id=r.get("case_id", ""),
-                channel=query.channel,
-                rank=i + 1,
-                score=float(r.get("score", 0.0)),
-                row=r,
-            )
-            for i, r in enumerate(mock_rows)
-        ]
+    """Inner worker: embed → RPC → group topic rows → ChannelCandidate list."""
+    # Mock hook (used by CLI --mock). Accepts either the legacy
+    # ``case_sections`` key or the current ``case_topics`` key; values are
+    # per-channel lists of RPC-shaped TOPIC rows.
+    mock_topics = None
+    if deps.mock_results:
+        mock_topics = (
+            deps.mock_results.get("case_topics")
+            or deps.mock_results.get("case_sections")
+        )
+    if isinstance(mock_topics, dict):
+        return group_topic_rows(mock_topics.get(query.channel, []), query.channel)
 
     events = deps._events
     topic_ev = {
@@ -419,127 +454,195 @@ async def _search_case_section_inner(
         logger.error("Embedding failed for [%s] %s: %s", query.channel, query.text[:60], e)
         return []
 
-    # Step 1b: resolve the sector filter. The picker future was launched
-    # concurrently with the executors back in ``run_retrieval`` — it has been
-    # running alongside the expander + embed above. case_search bakes sectors
-    # into the RPC (``p_sectors``), so resolution must happen BEFORE the RPC
-    # call. We grant the picker a bounded grace here and run unfiltered if it
-    # has not resolved (``None`` → no filter); it is NOT cancelled — a slower
-    # executor may still use it.
-    if sectors_future is not None:
-        sectors = await resolve_sector_filter(
-            sectors_future, label=str(getattr(query, "channel", "")),
+    # Step 2: RPC call. `kind` is the ONE place the channel vocabulary is
+    # translated to the DB enum (`facts` → `fact`).
+    kind = CHANNEL_TO_KIND.get(query.channel)
+    if kind is None:
+        logger.error(
+            "search_case_section: unknown channel %r (expected one of %s) — "
+            "no RPC call made",
+            query.channel, sorted(CHANNEL_TO_KIND),
         )
+        return []
 
-    # Step 2: RPC call
-    rows = await _case_sections_rpc(
+    rows = await search_case_topics_rpc(
         deps.supabase,
-        channel=query.channel,
+        kind=kind,
         embedding=embedding,
         sectors=sectors or None,
         match_count=match_count,
     )
+    # NOTE: there is deliberately NO "filter returned 0 rows → retry
+    # unfiltered" fallback here. It used to hide the sector filter's damage —
+    # a partial wipe-out looked like a successful filter in the logs, so the
+    # 9,860 untagged cases stayed invisible. Plan §1.2 / trap 4: do not
+    # reintroduce it. If a sector filter ever comes back, its zero-row cases
+    # must be loud.
 
-    if not rows and sectors:
-        # Sector filter may have wiped out all rows — retry without filter.
-        logger.info(
-            "search_case_section [%s]: sector filter %s returned 0 -- retrying without filter",
-            query.channel, sectors,
-        )
-        rows = await _case_sections_rpc(
-            deps.supabase,
-            channel=query.channel,
-            embedding=embedding,
-            sectors=None,
-            match_count=match_count,
-        )
-
-    # Step 3: score threshold filter (reuse same knob as legacy pipeline)
+    # Step 3: score threshold filter, applied to TOPIC rows before grouping
+    # (a case survives if any of its matched topics clears the threshold).
     if deps.score_threshold > 0:
         before = len(rows)
         rows = [r for r in rows if (r.get("score") or 0.0) >= deps.score_threshold]
         if before != len(rows):
             logger.debug(
-                "search_case_section [%s]: score>=%.4f filtered %d -> %d",
+                "search_case_section [%s]: score>=%.4f filtered %d -> %d topic rows",
                 query.channel, deps.score_threshold, before, len(rows),
             )
 
-    # Step 4: assemble candidates with 1-based rank
-    candidates: list[ChannelCandidate] = []
-    for i, row in enumerate(rows, start=1):
-        case_id = row.get("case_id") or row.get("id") or ""
-        if not case_id:
-            continue
-        candidates.append(
-            ChannelCandidate(
-                case_id=str(case_id),
-                channel=query.channel,
-                rank=i,
-                score=float(row.get("score") or 0.0),
-                row=row,
-            )
-        )
+    # Step 4: group flat topic rows into one candidate per case (D1)
+    candidates = group_topic_rows(rows, query.channel)
 
     logger.info(
-        "search_case_section [%s]: %d candidates for '%s'",
-        query.channel, len(candidates), query.text[:60],
+        "search_case_section [%s/%s]: %d topic rows -> %d cases for '%s'",
+        query.channel, kind, len(rows), len(candidates), query.text[:60],
     )
     return candidates
 
 
-async def _case_sections_rpc(
+def group_topic_rows(
+    rows: list[dict[str, Any]],
+    channel: str,
+) -> list["ChannelCandidate"]:
+    """Group flat `search_case_topics` rows into one candidate per case.
+
+    Decision D1: a case that surfaces via 2+ topics inside the same sub-query
+    window is rendered ONCE with ALL of its matched topics, not once per topic.
+    This replaces the old `enrich_candidates` hop — the case header rides along
+    on every topic row (RPC join), so there is nothing left to fetch.
+
+    - `topics` is score-desc, so `topics[0]` is always the best match.
+    - case score = max topic score.
+    - cases are ranked by that score, 1-based, insertion order breaking ties
+      (the RPC already returns rows in ANN order).
+
+    Args:
+        rows: RPC rows — `case_id`, `topic_ref`, `topic_index`, `topic_text`,
+            `attrs`, `score` + the CASE_HEADER_FIELDS join.
+        channel: agent-facing channel name stamped onto each candidate.
+
+    Returns:
+        Ranked list of ChannelCandidate (one per distinct case_id).
+    """
+    from .models import ChannelCandidate
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        case_id = str(row.get("case_id") or row.get("id") or "").strip()
+        if not case_id:
+            continue
+        score = float(row.get("score") or 0.0)
+        entry = grouped.get(case_id)
+        if entry is None:
+            header = {f: row.get(f) for f in CASE_HEADER_FIELDS}
+            entry = {
+                "header": header,
+                "topics": [],
+                "score": score,
+                "order": len(grouped),
+            }
+            grouped[case_id] = entry
+        if score > entry["score"]:
+            entry["score"] = score
+        entry["topics"].append({
+            "topic_ref": row.get("topic_ref") or "",
+            "topic_index": row.get("topic_index"),
+            "text": (row.get("topic_text") or row.get("text") or "").strip(),
+            "attrs": row.get("attrs") or {},
+            "score": score,
+            # DB `case_topic_kind` verbatim (`fact`, not `facts`). Carried so
+            # the reranker formatter can tag the topic without re-deriving the
+            # kind from the channel — i.e. without a SECOND channel→kind
+            # translation point (trap 1).
+            "kind": row.get("kind") or "",
+        })
+
+    ordered = sorted(
+        grouped.items(),
+        key=lambda kv: (-kv[1]["score"], kv[1]["order"]),
+    )
+
+    candidates: list[ChannelCandidate] = []
+    for i, (case_id, entry) in enumerate(ordered, start=1):
+        topics = sorted(
+            entry["topics"],
+            key=lambda t: float(t.get("score") or 0.0),
+            reverse=True,
+        )
+        row = dict(entry["header"])
+        # `score` on the row mirrors ChannelCandidate.score — kept for the
+        # forensic dumps / fusion row-merge heuristic that read row dicts.
+        row["score"] = entry["score"]
+        candidates.append(
+            ChannelCandidate(
+                case_id=case_id,
+                channel=channel,
+                rank=i,
+                score=entry["score"],
+                row=row,
+                topics=topics,
+            )
+        )
+    return candidates
+
+
+async def search_case_topics_rpc(
     supabase: Any,
     *,
-    channel: str,
+    kind: str,
     embedding: list[float],
     sectors: list[str] | None,
     match_count: int,
 ) -> list[dict]:
-    """Call the `search_case_sections` RPC (Wave 1 migration).
+    """Call the `search_case_topics` RPC (migration 101).
 
-    Expected RPC signature (for the DB side to match):
+    RPC signature (live on prod):
 
-        search_case_sections(
-            p_channel          case_channel,
-            p_query_embedding  VECTOR(1024),
-            p_sectors          TEXT[]  DEFAULT NULL,
-            p_match_count      INT     DEFAULT 30
+        search_case_topics(
+            p_kind            case_topic_kind,   -- principle | fact | basis
+            p_query_embedding vector(1024),
+            p_sectors         text[] DEFAULT NULL,
+            p_match_count     int    DEFAULT 60
         )
         RETURNS TABLE (
-            case_id                UUID,
-            case_ref               TEXT,
-            score                  REAL,       -- 1 - cosine_distance
-            section_text           TEXT,       -- channel text (for debugging / reranker)
-            court                  TEXT,
-            city                   TEXT,
-            court_level            TEXT,
-            case_number            TEXT,
-            judgment_number        TEXT,
-            date_hijri             TEXT,
-            details_url            TEXT,
-            legal_domains          JSONB,
-            referenced_regulations JSONB,
-            appeal_result          TEXT,
-            appeal_court           TEXT,
-            appeal_date_hijri      TEXT,
-            content                TEXT        -- full concatenated ruling for reranker
+            topic_id      uuid,
+            topic_ref     text,
+            case_id       uuid,
+            case_ref      text,
+            entity_ref    text,
+            kind          text,
+            topic_index   int,
+            topic_text    text,
+            attrs         jsonb,
+            score         real,      -- 1 - cosine_distance
+            court         text,      -- ↓ case header, joined once
+            city          text,
+            court_level   text,
+            case_number   text,
+            date_hijri    text,
+            short_summary text
         );
 
-    Filter semantics: `p_sectors IS NULL` means no filter; otherwise retain
-    rows whose `legal_domains ?| p_sectors` (JSONB any-key-exists).
+    Rows are FLAT topic rows, NOT deduped by case — grouping happens in
+    `group_topic_rows` so a case can carry >1 matched topic (D1).
+
+    `kind` must already be a `case_topic_kind` value; callers map from the
+    channel vocabulary via `CHANNEL_TO_KIND` (`facts` → `fact`).
     """
     def _call() -> list[dict]:
         try:
             params = {
-                "p_channel": channel,
+                "p_kind": kind,
                 "p_query_embedding": embedding,
+                # D3: always NULL from the executor. Kept in the signature so
+                # the filter can be re-enabled after a legal_domains backfill.
                 "p_sectors": sectors,
                 "p_match_count": match_count,
             }
-            result = supabase.rpc("search_case_sections", params).execute()
+            result = supabase.rpc("search_case_topics", params).execute()
             return result.data or []
         except Exception as e:
-            logger.warning("search_case_sections RPC failed (%s): %s", channel, e)
+            logger.warning("search_case_topics RPC failed (kind=%s): %s", kind, e)
             return []
 
     return await asyncio.to_thread(_call)

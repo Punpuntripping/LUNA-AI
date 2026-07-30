@@ -70,14 +70,16 @@ def _fetch_chunks(supabase, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def _fetch_regulations(supabase, regulation_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """`regulations_v2` rows keyed by id -- title/scope/landing_url/pdf_url."""
+    """`regulations_v2` rows keyed by id -- title/scope/landing_url/pdf_url/doc_type."""
     ids = sorted({rid for rid in regulation_ids if rid})
     out: dict[str, dict[str, Any]] = {}
     for batch in _batched(ids, _ID_BATCH):
         try:
             resp = (
                 supabase.table("regulations_v2")
-                .select("id, clean_title, title, scope, landing_url, pdf_url")
+                .select(
+                    "id, clean_title, title, scope, landing_url, pdf_url, doc_type_raw"
+                )
                 .in_("id", batch)
                 .execute()
             )
@@ -86,6 +88,19 @@ def _fetch_regulations(supabase, regulation_ids: list[str]) -> dict[str, dict[st
         except Exception as e:
             logger.warning("enrich_ura: _fetch_regulations batch failed: %s", e)
     return out
+
+
+# ``regulations_v2.doc_type_raw`` is the ingestion-time Arabic document type
+# (لائحة / تنظيم / دليل / مواصفة قياسية / …, 21 values live). The corpus uses
+# "غير محدد" as its not-determined sentinel; it is normalised away here so the
+# UI falls back to its generic نظام chip instead of labelling a card "غير محدد".
+_DOC_TYPE_UNSPECIFIED = "غير محدد"
+
+
+def _doc_type_label(raw: str | None) -> str:
+    """Displayable ``doc_type_raw``; ``""`` when absent or unspecified."""
+    value = (raw or "").strip()
+    return "" if value == _DOC_TYPE_UNSPECIFIED else value
 
 
 def _fetch_cross_refs(supabase, chunk_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -271,6 +286,7 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
         res.reg_scope = reg.get("scope") or ""
         res.landing_url = reg.get("landing_url") or ""
         res.pdf_url = reg.get("pdf_url") or ""
+        res.doc_type = _doc_type_label(reg.get("doc_type_raw"))
 
         # Build deduped cross-refs for this chunk (dedup by target_id).
         rows = cross_refs.get(chunk_id, []) if chunk_id else []

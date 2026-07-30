@@ -93,6 +93,13 @@ def case_to_rqr(
                 "drop_reason": d.get("drop_reason", "llm"),
                 "reasoning": d.get("reasoning", "") or "",
                 "source_type": d.get("source_type", "case"),
+                # Which case_topics row actually matched this candidate. Without
+                # it a forensic reader sees "case X was dropped" but not WHAT
+                # matched, which is the whole question when grading a reranker
+                # over atomic topics. This projection is key-by-key, so a new
+                # key in loop.py's descriptor is silently lost unless added
+                # here too (plan §6.3).
+                "topic_ref": d.get("topic_ref", "") or "",
             }
             for d in (getattr(sq, "dropped_results", None) or [])
             if (d.get("ref_id", "") or d.get("db_uuid", "") or "").strip()

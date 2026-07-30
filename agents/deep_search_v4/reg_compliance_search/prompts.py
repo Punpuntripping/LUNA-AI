@@ -266,8 +266,12 @@ def build_expander_user_message(
 
     When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
     appended after the user context carrying the planner-curated bundle (§5.1).
-    The reranker continues to receive zero blocks — only this expander surface
-    sees them on the executor side.
+
+    The reranker is no longer a zero-context surface: since Wave 3 of the
+    case-topics plan it receives the ``planner_brief`` block ONLY (never
+    ``case_brief`` / ``prior_search_lessons``) via
+    :func:`build_reranker_user_message`. Do not "restore" the old
+    zero-blocks invariant here.
     """
     parts = [
         "Focus instructions:",
@@ -332,6 +336,16 @@ Header `### [Cn] خدمة: <name> [ref:…]`, then **الجهة** (the providing
 **No candidate block carries a sector list.** Judge scope from **النظام / نطاق النظام** (for a chunk) or from **الجهة** (for a circular or a service) — never from a sector tag.
 
 Long fields may be truncated and end with `...`; treat truncated text as classifiable text and do not ask for more.
+
+## The planner brief
+
+The user message may **open** with a `<planner_brief>` block. It is supporting background about the user's situation that the planner distilled upstream — it exists to help you **judge** relevance, and nothing more.
+
+- It is **not** a directive, and it does **not** replace the sub-query. The sub-query remains the thing every candidate is graded against; the brief only tells you what situation that sub-query serves.
+- Use it to settle the scope questions the sub-query alone leaves open — who the parties are and in what capacity, the nature of their relationship, the stage the matter has reached. That is exactly what the scope gate below needs in order to decide whether a parent system (or an issuing جهة) actually governs the matter.
+- Do **not** keep a candidate merely because it echoes wording from the brief, and do **not** drop one merely because the brief does not mention its subject. The brief is background, never a checklist and never a keyword list.
+- Do not copy the brief's text into `reasoning` or `query_axes`, and do not classify the brief itself.
+- When no `<planner_brief>` block is present, nothing changes — judge from the sub-query alone.
 
 ## Mandatory first step: does the system scope apply to the query?
 
@@ -433,6 +447,8 @@ def build_reranker_user_message(
     rationale: str,
     results_markdown: str,
     round_num: int = 1,
+    *,
+    planner_brief: str | None = None,
 ) -> str:
     """Build the user message for the single reranker classification pass.
 
@@ -442,15 +458,39 @@ def build_reranker_user_message(
         results_markdown: Search results markdown.
         round_num: Vestigial single-pass marker (always 1). Kept in the
             signature for caller compatibility; no round wording is emitted.
+        planner_brief: Optional ``ContextBlock.body`` of the planner's
+            ``planner_brief`` (never ``case_brief`` / ``prior_search_lessons``).
+
+    ``planner_brief`` is rendered FIRST, ahead of the sub-query. This ordering
+    is load-bearing, not cosmetic: every one of the N concurrent reranker calls
+    in a turn carries the IDENTICAL brief while the sub-query differs per call,
+    so heading the message with the brief maximises the shared prefix under
+    DeepSeek/Qwen prefix-caching. Moving it below the sub-query would defeat
+    caching entirely. It goes in the USER message only — the system prompt is
+    the primary cache prefix and must stay per-run constant.
+
+    An empty / whitespace-only / ``None`` brief emits nothing at all (not even
+    an empty tag), so the message stays byte-identical to the pre-brief output.
 
     No keep-cap instruction is injected. The cap is a downstream resource limit
     enforced in code (`reranker.py`); telling the LLM about it only makes it
     self-limit to a quota.
     """
-    lines: list[str] = [
+    lines: list[str] = []
+
+    # Head of the message — see the prefix-caching note above. Escaped so a
+    # brief containing `<`/`>`/`&` cannot forge a structural tag.
+    brief = (planner_brief or "").strip()
+    if brief:
+        lines.append("<planner_brief>")
+        lines.append(f"  {_esc(brief)}")
+        lines.append("</planner_brief>")
+        lines.append("")
+
+    lines.extend([
         "## Sub-query",
         query,
-    ]
+    ])
     if rationale:
         lines.append(f"**Rationale:** {rationale}")
     lines.append("")

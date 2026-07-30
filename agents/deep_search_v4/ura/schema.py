@@ -83,6 +83,66 @@ class CrossRef(BaseModel):
     content: str = ""  # resolved body; "" when unresolved / null target_id
 
 
+# Parity with the PUBLIC article page's free window
+# (``library_service.ARTICLE_FREE_CHARS``). Deliberately duplicated rather than
+# imported: agents/ must not depend on backend/.
+CROSS_REF_REFERENCE_FREE_CHARS = 500
+
+
+def _cut_cross_ref_body(body: str) -> str:
+    """Cut one body to the free window on a word boundary."""
+    if len(body) <= CROSS_REF_REFERENCE_FREE_CHARS:
+        return body
+    cut = body[:CROSS_REF_REFERENCE_FREE_CHARS]
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip() + " …"
+
+
+def gate_cross_refs_for_reference(refs: list) -> list:
+    """Truncate cross-referenced مادة bodies on the way into a REFERENCE view.
+
+    The access-tiers work moved full source bodies behind a metered reveal, but
+    ``cross_refs[].content`` carries the resolved body of each cross-referenced
+    مادة -- up to ``MAX_CROSS_REFS_REF`` of them per reference, shipped free in
+    the citation-list payload. Measured on live panels that was 21.7% of the
+    remaining payload (one panel 64.7%), i.e. a free side-channel to exactly the
+    مواد bodies an ``article`` unlock costs 1 to open.
+
+    The plan (§6.2) says keep ``cross_refs``, and §1.3 puts *citation lists (the
+    mesh)* in the never-gated class -- but it puts *regulation article bodies* in
+    the PARTIALLY GATED class (§1.4). Both hold: the mesh survives intact
+    (target_reg_title, target_type, target_number, relation), while the body is
+    cut to the same window the public article page already shows anonymously.
+    Chat therefore leaks nothing a logged-out visitor cannot already read, and
+    the panel keeps the context that makes a cross-reference useful.
+
+    ``for_aggregator`` is deliberately NOT gated -- the model needs the full text
+    to reason, and that payload never reaches the user.
+
+    Handles BOTH shapes that feed ``ReferenceView``: the regulation domain passes
+    ``CrossRef`` models, while the case domain's ``referenced_regulations`` is a
+    ``list[dict]``. Both land in the same panel, so both must be gated.
+    """
+    out: list = []
+    for cr in refs:
+        if isinstance(cr, dict):
+            body = str(cr.get("content") or "")
+            if len(body) <= CROSS_REF_REFERENCE_FREE_CHARS:
+                out.append(cr)
+            else:
+                out.append({**cr, "content": _cut_cross_ref_body(body)})
+            continue
+
+        body = getattr(cr, "content", "") or ""
+        if len(body) <= CROSS_REF_REFERENCE_FREE_CHARS:
+            out.append(cr)
+        else:
+            out.append(cr.model_copy(update={"content": _cut_cross_ref_body(body)}))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Projection target models
 # ---------------------------------------------------------------------------
@@ -121,7 +181,14 @@ class AggregatorItem(BaseModel):
     entity_name: str = ""
     # cases
     case_number: str | None = None
+    # DERIVED SUMMARY, not the ruling text: `cases.summary` (structured markdown
+    # — ## الملخص / ## الوقائع / ## المطالبات / ## اسانيد … / ## التسبيب /
+    # ## المنطوق), clipped to 6k by `case_search/unfold_ura.py`. Decision D2 in
+    # `.claude/plans/case_topics_loop.md`. The full ruling text is no longer in
+    # the synthesis prompt — do NOT assert findings the summary does not state.
     case_content: str = ""
+    court: str = ""
+    court_level: str = ""  # first_instance | appeal | supreme (informational, D5)
     referenced_regulations: list[dict] = Field(default_factory=list)
 
 
@@ -140,6 +207,10 @@ class ReferenceView(BaseModel):
     # regulations
     reg_title: str = ""
     landing_url: str = ""
+    # regulations_v2.doc_type_raw (لائحة / تنظيم / دليل / …) — the reference
+    # card's type chip. "" when the corpus has no determined type; the UI then
+    # falls back to its generic نظام label.
+    doc_type: str = ""
     cross_refs: list[CrossRef] = Field(default_factory=list)
     corpus: str = ""  # "appendix" -> (ملحق) tag; "" for the main statutory body
     # compliance
@@ -194,6 +265,10 @@ class RegURAResult(URAResultBase):
     chunk_context: str = ""        # stored only
     cross_refs: list[CrossRef] = Field(default_factory=list)
     landing_url: str = ""
+    # regulations_v2.doc_type_raw — display-only (reference card type chip).
+    # Deliberately NOT projected into for_aggregator(): the synthesis prompt
+    # surface is unchanged, so the prompt-cache prefix stays intact.
+    doc_type: str = ""
     pdf_url: str = ""              # stored only
     owns: dict = Field(default_factory=dict)  # stored only
     corpus: str = ""              # "appendix" -> (ملحق) tag (D13); "" = main body
@@ -219,7 +294,10 @@ class RegURAResult(URAResultBase):
             relevance=self.relevance,
             reg_title=self.reg_title,
             landing_url=self.landing_url,
-            cross_refs=list(self.cross_refs[:MAX_CROSS_REFS_REF]),
+            doc_type=self.doc_type,
+            cross_refs=gate_cross_refs_for_reference(
+                self.cross_refs[:MAX_CROSS_REFS_REF]
+            ),
             corpus=self.corpus,
         )
 
@@ -342,11 +420,16 @@ class CaseURAResult(URAResultBase):
     The case adapter carries case content / metadata; ``enrich_ura`` adds the
     reference-view fields the reranker output lacks (``details_url`` and the
     resolved ``entity_name``).
+
+    ``case_content`` holds the **aggregator view** (D2): `cases.summary`
+    clipped to 6k chars by ``case_search/unfold_ura.py`` — a derived structured
+    summary, NOT the raw ruling text. The full ruling is rebuilt from the DB for
+    the user-facing source view (``source_viewer.py``).
     """
 
     domain: Literal["cases"] = "cases"
     case_number: str | None = None
-    case_content: str = ""
+    case_content: str = ""        # aggregator view: cases.summary, clipped 6k
     referenced_regulations: list[dict] = Field(default_factory=list)
     judgment_number: str | None = None
     court: str | None = None
@@ -355,7 +438,10 @@ class CaseURAResult(URAResultBase):
     entity_name: str = ""
     entity_id: str | None = None  # stored only -- entity_name resolve key
     title: str = ""               # stored only
-    court_level: str | None = None  # stored only
+    # first_instance | appeal | supreme -- surfaced in the aggregator view as
+    # ``المحكمة: {court} ({level})``. Informational only (D5): no retrieval
+    # boost, no reranker instruction to prefer appeal/supreme.
+    court_level: str | None = None
     date_hijri: str | None = None   # stored only
     legal_domains: list[str] = Field(default_factory=list)  # stored only
     appeal_result: str | None = None  # stored only
@@ -368,6 +454,8 @@ class CaseURAResult(URAResultBase):
             relevance=self.relevance,
             case_number=self.case_number,
             case_content=self.case_content,
+            court=self.court or "",
+            court_level=self.court_level or "",
             referenced_regulations=list(
                 self.referenced_regulations[:MAX_CROSS_REFS_AGG_CASE]
             ),
@@ -385,7 +473,7 @@ class CaseURAResult(URAResultBase):
             city=self.city,
             details_url=self.details_url,
             entity_name=self.entity_name,
-            referenced_regulations=list(
+            referenced_regulations=gate_cross_refs_for_reference(
                 self.referenced_regulations[:MAX_CROSS_REFS_REF]
             ),
         )
@@ -434,6 +522,8 @@ __all__ = [
     "MAX_CROSS_REFS_AGG_REG",
     "MAX_CROSS_REFS_AGG_CASE",
     "MAX_CROSS_REFS_REF",
+    "CROSS_REF_REFERENCE_FREE_CHARS",
+    "gate_cross_refs_for_reference",
     "MAX_CIRCULAR_CONTENT_AGG",
     "CIRCULAR_TRUNCATION_MARKER",
     "cap_circular_content",

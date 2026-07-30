@@ -50,6 +50,7 @@ __all__ = [
     "build_snippet",
     "render_aggregator_content",
     "render_cross_ref",
+    "COURT_LEVEL_AR",
     "_identity_key",
     "_merge_duplicates",
 ]
@@ -192,6 +193,15 @@ def _build_snippet_text(text: str, max_chars: int = 500) -> str:
 # ``Reference.snippet`` is a truncated derivative for UI hover only.
 
 
+# Arabic labels for `cases.court_level` — canonical map lives in
+# `shared/court_levels.py`, re-exported here for existing importers. The three
+# DB values are first_instance (23,932 rows), appeal (6,474) and supreme (125).
+# An unrecognised or empty level renders no parenthetical rather than leaking an
+# English token into the Arabic prompt (see the `.get(..., "")` at the call site
+# below — deliberately NOT a default label).
+from agents.deep_search_v4.shared.court_levels import COURT_LEVEL_AR  # noqa: E402
+
+
 def render_cross_ref(cr: CrossRef) -> str:
     """Render one resolved cross-reference.
 
@@ -217,7 +227,11 @@ def render_aggregator_content(item: AggregatorItem) -> str:
     - regulations: ``chunk_content`` followed by rendered ``cross_refs``.
     - compliance:  ``service_context``.
     - circulars:   ``تعميم: {title}`` / ``الجهة: {entity}`` / body (capped 4k).
-    - cases:       ``case_content`` followed by ``referenced_regulations``.
+    - cases:       ``المحكمة: {court} ({court_level_ar})`` header, then
+      ``case_content``, then ``referenced_regulations``. ``case_content`` is
+      `cases.summary` — a DERIVED structured summary, not the ruling text (D2).
+      The header line is omitted when ``court`` is empty; the parenthetical is
+      omitted when ``court_level`` is empty or unrecognised.
     """
     parts: list[str] = []
     if item.domain == "regulations":
@@ -241,6 +255,12 @@ def render_aggregator_content(item: AggregatorItem) -> str:
         if item.circular_content:
             parts.append(item.circular_content.strip())
     elif item.domain == "cases":
+        court = (item.court or "").strip()
+        if court:
+            level_ar = COURT_LEVEL_AR.get((item.court_level or "").strip(), "")
+            parts.append(
+                f"المحكمة: {court} ({level_ar})" if level_ar else f"المحكمة: {court}"
+            )
         if item.case_content:
             parts.append(item.case_content.strip())
         for rr in item.referenced_regulations or []:
@@ -339,6 +359,7 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             ref_id=view.ref_id,
             domain="regulations",
             landing_url=view.landing_url or "",
+            doc_type=view.doc_type or "",
             cross_refs=list(view.cross_refs or []),
         )
 

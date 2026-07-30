@@ -415,9 +415,30 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
             except Exception:  # pragma: no cover - defensive
                 logger.debug("RerankerNode: emit_sse failed", exc_info=True)
 
+        # Wave 3 (plan §7 / decision D6): the reranker now receives the
+        # planner's distilled brief. ONLY the ``planner_brief`` label — never
+        # ``case_brief`` (raw case memory) or ``prior_search_lessons``; the
+        # reranker grades one sub-query against candidates and must not be
+        # handed the whole context bundle.
+        #
+        # Hoisted OUT of ``_process_one`` deliberately: every one of the N
+        # concurrent reranker calls in this round carries the identical brief,
+        # and it is rendered at the HEAD of the user message so the shared
+        # prefix stays cacheable (see build_reranker_user_message). Resolving it
+        # per task would be pure repeat work.
+        planner_brief = next(
+            (
+                b.body
+                for b in (state.context_blocks or [])
+                if b.label == "planner_brief" and (b.body or "").strip()
+            ),
+            None,
+        )
+
         logger.info(
-            "RerankerNode: launching %d parallel reranker tasks",
+            "RerankerNode: launching %d parallel reranker tasks (planner_brief=%s)",
             len(current_round_results),
+            planner_brief is not None,
         )
 
         # Build tasks for parallel execution
@@ -447,6 +468,7 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                     max_keep=reranker_max_keep,
                     model_override=state.model_override,
                     round_trace=round_trace,
+                    planner_brief=planner_brief,
                 )
 
                 # Capture usage entries

@@ -5,8 +5,17 @@ the downstream stages (expanders + aggregator) of the deep_search v4 pipeline.
 The planner emits **one** ``context_labels`` list per turn; the runner derives
 ``ContextBlock`` objects from that list and threads the SAME filtered bundle
 through every executor's ``LoopState.context_blocks`` AND
-``AggregatorInput.context_blocks``. The reranker is hardcoded to receive zero
-blocks regardless of opt-in.
+``AggregatorInput.context_blocks``.
+
+Reranker exposure (CHANGED 2026-07-24 — plan §7 / decision D6 of
+``.claude/plans/case_topics_loop.md``): rerankers used to receive **zero**
+blocks regardless of opt-in. They now receive exactly ONE — the
+``planner_brief`` body — rendered as a ``<planner_brief>`` block at the head of
+the reranker user message (head placement is load-bearing: all N concurrent
+reranker calls in a turn share that prefix, so it stays cacheable). Both
+rerankers (``reg_compliance_search`` and ``case_search``) do this. ``case_brief``
+and ``prior_search_lessons`` still never reach a reranker. Do not "restore" the
+zero-blocks rule — it is superseded, not forgotten.
 
 Frozen vocabulary (§4.2 — re-quoted verbatim so the contract lives next to the
 type):

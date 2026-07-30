@@ -152,9 +152,17 @@ class CaseRerankerClassification(BaseModel):
 
     sufficient: bool = Field(
         description=(
-            "True ONLY if the kept set covers EVERY axis in query_axes; "
-            "any uncovered axis => False"
+            "The 80% rule: True if the kept rulings suffice >=80% to answer the "
+            "sub-query, False if coverage is incomplete. An uncovered MAIN axis "
+            "from query_axes tilts toward False but is a guide, not an "
+            "all-or-nothing test."
         ),
+        # This description is part of the JSON schema the model actually sees, so
+        # it must not contradict the system prompt. It previously read "True ONLY
+        # if the kept set covers EVERY axis" — the pre-2026-07-25 all-or-nothing
+        # rule. `prompts.py` prompt_2 moved to the reg reranker's 80% rule, and
+        # leaving this text behind gave the model two conflicting definitions of
+        # the same field in one request. Keep the two in lockstep.
     )
     query_axes: list[str] = Field(
         default_factory=list,
@@ -197,7 +205,14 @@ class RerankedCaseResult(BaseModel):
     content: str = Field(default="", description="Ruling text (truncated)")
     court: Optional[str] = Field(default=None, description="Court name")
     city: Optional[str] = Field(default=None, description="City")
-    court_level: Optional[str] = Field(default=None, description="first_instance or appeal")
+    court_level: Optional[str] = Field(
+        default=None,
+        description=(
+            "first_instance, appeal, or supreme — all THREE are real values "
+            "(supreme = 125 rulings). See shared/court_levels.py; never "
+            "collapse this to a two-branch conditional."
+        ),
+    )
     case_number: Optional[str] = Field(default=None, description="Case number")
     judgment_number: Optional[str] = Field(default=None, description="Judgment number")
     date_hijri: Optional[str] = Field(default=None, description="Hijri date")
@@ -256,17 +271,30 @@ class SearchResult:
 
 @dataclass
 class ChannelCandidate:
-    """One case-section hit returned by search_case_sections RPC.
+    """One CASE surfaced by the `search_case_topics` RPC, with its matched topics.
 
-    Carries the raw row payload so downstream stages (fusion, formatting)
-    can assemble buckets without re-querying the DB.
+    The RPC returns flat topic rows joined to the case header;
+    `search.group_topic_rows` collapses them to one candidate per case and
+    keeps every matched topic (decision D1 — plan §2). There is no enrichment
+    round trip: `row` is the joined header, so downstream stages (reranker
+    formatting, fusion, forensics) never re-query the DB.
     """
 
     case_id: str
     channel: str
-    rank: int           # 1-based rank within the channel's result list
-    score: float        # cosine similarity (1 - distance)
-    row: dict           # full RPC row — case_ref, case metadata, section_text
+    rank: int           # 1-based rank within this query's / channel's list
+    score: float        # best matched-topic score for this case (1 - distance)
+    row: dict           # RPC-joined case header — case_ref, court, city,
+                        # court_level, case_number, date_hijri, short_summary
+                        # (+ `score` mirrored for forensic dumps)
+    topics: list[dict] = field(default_factory=list)
+    # Every topic of THIS case appearing in THIS sub-query's result window,
+    # score-desc (so topics[0] is the best match). Each entry:
+    #   {topic_ref, topic_index, text, attrs, score, kind}
+    # `attrs` is kind-shaped: basis → {الطرف, موقف المحكمة};
+    # principle → {النوع}; fact → {}. Keys may be missing on any given row.
+    # `kind` is the DB `case_topic_kind` verbatim (`fact`, NOT the `facts`
+    # channel spelling) so the reranker formatter needs no second translation.
 
 
 @dataclass
@@ -319,14 +347,16 @@ class LoopState:
     focus_instruction: str
     user_context: str
     expander_prompt_key: str = "prompt_3"
-    # Planner-supplied sector list applied at search time. None → no filter.
+    # Sector list applied at search time. None → no filter.
+    #
+    # The case path no longer consumes ``sector_picker`` at all (decision D3 /
+    # plan §§1.2, 9): sector filtering dropped the entire untagged batch —
+    # exactly the 9,861 cases the `case_topics` retarget exists to recover —
+    # while buying almost no selectivity (91% of tagged cases are
+    # المعاملات التجارية). There is no ``sectors_future`` here anymore; this
+    # field survives ONLY as the CLI ``--sectors`` experiment hatch and is
+    # None on every production run.
     sectors_override: list[str] | None = None
-    # Sector AND-filter as an in-flight future. Awaited at the case-search
-    # filter step so the search RPC overlaps with the ``sector_picker`` LLM
-    # call. ``None`` (default) means "no future spawned" → fall back to the
-    # static ``sectors_override``. A resolved value of ``None`` from the
-    # future means "picker said no filter" → run unfiltered.
-    sectors_future: "asyncio.Future[list[str] | None] | None" = None
     model_override: str | None = None
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     round_count: int = 0
@@ -352,8 +382,14 @@ class LoopState:
     inner_usage: list[dict] = field(default_factory=list)
     search_results_log: list[dict] = field(default_factory=list)
     # Structured context bundle from the planner (§4 / §5.1.A). Threaded into
-    # the expander user message; the reranker is hardcoded to receive zero
-    # blocks. Empty list → no <context_blocks> XML in the prompt.
+    # the expander user message as <context_blocks> XML (empty list → no XML).
+    #
+    # SUPERSEDED 2026-07-24 (plan §7 / decision D6): the reranker no longer
+    # receives zero blocks. ``SectionedRerankerNode`` picks the ``planner_brief``
+    # body out of this list and passes it to ``run_reranker_for_query``, which
+    # renders it as a <planner_brief> block at the head of the user message.
+    # Still filtered to that ONE label — ``case_brief`` and
+    # ``prior_search_lessons`` never reach a reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
 
 
@@ -375,7 +411,10 @@ class CaseSearchDeps:
     score_threshold: float = 0.005
     mock_results: dict | None = None
     cli_channels: list[str] | None = None
-    reranker_max_keep: int = 10  # Max results per sub-query — single flat cap
+    # Max results per sub-query — a single flat cap on the TOTAL kept
+    # (high + medium together), never per tier. Clamped by
+    # ``loop.MAX_KEEP_PER_SUBQUERY`` (7); see that constant for why.
+    reranker_max_keep: int = 7
     # Dynamic result-budget model (MODE_PROFILES.md §1). When set by the
     # planner/orchestrator, the per-sub-query reranker keep is derived at
     # runtime as ceil(result_budget / max(N, 3)) from the expander's actual

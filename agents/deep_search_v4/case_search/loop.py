@@ -31,27 +31,48 @@ from agents.deep_search_v4.shared.context import ContextBlock
 # expander's actual emitted query count.
 MIN_EXPANDER_DIVISOR = 3
 
+# Hard ceiling on kept cases per sub-query — **total**, high + medium together.
+# NOT a per-tier cap.
+#
+# Set to 7 (was an effective 10 fixed / up to 10 dynamic) for two reasons:
+#   1. The tier-split caps downstream (ura/merger.py) starved `medium`: 12 high
+#      but only 4 medium, so the cross-forum `medium` keeps that decision D4 and
+#      the cross-forum rule exist to surface were silently truncated while high
+#      slots went unused. A single total cap removes the asymmetry.
+#   2. Measured saturation: one `principle` sub-query returned 14 keeps, all
+#      `high`, from 13 near-verbatim copies of ONE holding. Volume was not
+#      buying coverage.
+#
+# This clamps the planner's dynamic budget too. `case_led` mode with 6
+# sub-queries would otherwise compute ceil(60/6)=10, keep 10, and have the
+# merger discard 3 AFTER the tokens were already spent — the cap has to bind at
+# the reranker, not after it.
+MAX_KEEP_PER_SUBQUERY = 7
+
 
 def _resolve_reranker_max_keep(deps: "CaseSearchDeps", n_queries: int) -> int:
-    """Per-sub-query keep: dynamic from ``result_budget`` or fixed fallback.
+    """Per-sub-query keep (total, high+medium): dynamic budget or fixed fallback,
+    clamped to :data:`MAX_KEEP_PER_SUBQUERY`.
 
     When ``deps.result_budget`` is set (planner / orchestrator path), derive
     the keep from the expander's ACTUAL emitted query count ``n_queries``.
-    When it is None (CLI path), return the fixed ``deps.reranker_max_keep``
-    unchanged.
+    When it is None (CLI path), use the fixed ``deps.reranker_max_keep``.
+    Either way the result is clamped — the ceiling is a hard product decision,
+    not a per-mode knob.
     """
     if deps.result_budget is None:
-        return deps.reranker_max_keep
+        return min(deps.reranker_max_keep, MAX_KEEP_PER_SUBQUERY)
     keep = math.ceil(deps.result_budget / max(n_queries, MIN_EXPANDER_DIVISOR))
+    clamped = min(keep, MAX_KEEP_PER_SUBQUERY)
     logger.info(
-        "case_search dynamic keep — result_budget=%d, N=%d -> max_keep=%d",
-        deps.result_budget, n_queries, keep,
+        "case_search dynamic keep — result_budget=%d, N=%d -> max_keep=%d%s",
+        deps.result_budget, n_queries, clamped,
+        f" (clamped from {keep})" if clamped != keep else "",
     )
-    return keep
+    return clamped
 
 from .unfold_ura import assemble_kept_cases
 from .unfold_reranker import (
-    enrich_candidates,
     format_bucket_for_reranker,
     format_candidate_for_reranker,
 )
@@ -86,6 +107,90 @@ from .reranker import run_reranker_for_query
 from .search import search_case_section, search_cases_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+# -- Channel merge helpers (sectioned path) ------------------------------------
+
+
+def _topic_key(topic: dict) -> object:
+    """Stable identity for a matched topic — `topic_ref`, else index+text."""
+    ref = str(topic.get("topic_ref") or "").strip()
+    if ref:
+        return ref
+    return (topic.get("topic_index"), str(topic.get("text") or "").strip())
+
+
+def union_topics(*topic_lists: list[dict]) -> list[dict]:
+    """Union matched-topic lists, deduped by topic identity, score-desc.
+
+    Two sub-queries on the same channel can surface the same case via
+    DIFFERENT topics. The channel merge keeps one candidate per case, so the
+    topic lists must be unioned — overwriting would silently shrink the
+    reranker payload (decision D1). On a duplicate topic the higher score wins.
+    """
+    merged: dict[object, dict] = {}
+    for topics in topic_lists:
+        for topic in topics or []:
+            key = _topic_key(topic)
+            prev = merged.get(key)
+            if prev is None or float(topic.get("score") or 0.0) > float(
+                prev.get("score") or 0.0
+            ):
+                merged[key] = topic
+    return sorted(
+        merged.values(),
+        key=lambda t: float(t.get("score") or 0.0),
+        reverse=True,
+    )
+
+
+def merge_channel_candidates(
+    queries: list["TypedQuery"],
+    per_query_candidates: list[list["ChannelCandidate"]],
+) -> dict[str, list["ChannelCandidate"]]:
+    """Merge per-sub-query candidate lists into per-channel ranked lists.
+
+    Best-rank-wins for the case's rank/row (a case that placed #1 for any
+    sub-query keeps rank 1), max score, and a UNION of the matched topics.
+    Ranks are renumbered 1..N per channel after merging.
+
+    A NEW ChannelCandidate is built for every merge — the per-sub-query lists
+    stay untouched because they are what each reranker call actually sees, and
+    their topic sets must stay query-scoped.
+    """
+    by_channel: dict[str, dict[str, "ChannelCandidate"]] = {}
+    for q, cands in zip(queries, per_query_candidates):
+        bucket = by_channel.setdefault(q.channel, {})
+        for c in cands:
+            existing = bucket.get(c.case_id)
+            if existing is None:
+                bucket[c.case_id] = c
+                continue
+            winner = c if c.rank < existing.rank else existing
+            bucket[c.case_id] = ChannelCandidate(
+                case_id=winner.case_id,
+                channel=winner.channel,
+                rank=winner.rank,
+                score=max(existing.score, c.score),
+                row=winner.row or existing.row or c.row,
+                topics=union_topics(existing.topics, c.topics),
+            )
+
+    channel_candidates: dict[str, list["ChannelCandidate"]] = {}
+    for channel, by_case in by_channel.items():
+        merged = sorted(by_case.values(), key=lambda c: c.rank)
+        channel_candidates[channel] = [
+            ChannelCandidate(
+                case_id=c.case_id,
+                channel=c.channel,
+                rank=i + 1,
+                score=c.score,
+                row=c.row,
+                topics=list(c.topics),
+            )
+            for i, c in enumerate(merged)
+        ]
+    return channel_candidates
 
 
 # -- ExpanderNode --------------------------------------------------------------
@@ -556,10 +661,12 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
             logger.warning("SectionedSearchNode: no queries to execute")
             return FusionNode()
 
-        # Sector filter: either the parallel ``sector_picker`` future (planner
-        # path) or the static ``sectors_override`` (CLI / smoke paths). case
-        # search bakes sectors into the RPC, so per-query workers await the
-        # future inside ``_search_case_section_inner`` right before the RPC.
+        # Sector filter: CLI ``--sectors`` experiment hatch only. The case path
+        # does NOT consume ``sector_picker`` anymore (decision D3 / plan §§1.2,
+        # 9) — filtering on ``legal_domains`` dropped the whole untagged batch,
+        # i.e. exactly the cases this retarget recovers, for ~no selectivity.
+        # There is no picker future to await here, which also takes the bounded
+        # picker grace off the case critical path.
         sectors: list[str] | None = (
             list(state.sectors_override) if state.sectors_override else None
         )
@@ -567,8 +674,7 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
         logger.info(
             "SectionedSearchNode: %d queries, sectors_source=%s, concurrency=%d",
             len(queries),
-            "picker_future" if state.sectors_future is not None
-                else ("override" if sectors else "none"),
+            "cli_override" if sectors else "none",
             state.concurrency,
         )
         # Count DISTINCT channels — not query count — so the status reflects
@@ -591,7 +697,6 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
                 query=q,
                 deps=deps,
                 sectors=sectors,
-                sectors_future=state.sectors_future,
                 precomputed_embedding=emb,
                 semaphore=sem,
             )
@@ -599,75 +704,24 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
         ]
         per_query_candidates: list[list[ChannelCandidate]] = await asyncio.gather(*tasks)
 
-        # Group candidates by channel. If multiple typed queries share a
-        # channel, keep each query's list intact but merge by case_id —
-        # best rank wins so a case that placed #1 for any query keeps rank 1.
-        by_channel: dict[str, dict[str, ChannelCandidate]] = {}
-        for q, cands in zip(queries, per_query_candidates):
-            bucket = by_channel.setdefault(q.channel, {})
-            for c in cands:
-                existing = bucket.get(c.case_id)
-                if existing is None or c.rank < existing.rank:
-                    bucket[c.case_id] = c
-
-        # Re-rank within each channel so ranks are 1..N after merging
-        channel_candidates: dict[str, list[ChannelCandidate]] = {}
-        for channel, by_case in by_channel.items():
-            merged = sorted(by_case.values(), key=lambda c: c.rank)
-            channel_candidates[channel] = [
-                ChannelCandidate(
-                    case_id=c.case_id,
-                    channel=c.channel,
-                    rank=i + 1,
-                    score=c.score,
-                    row=c.row,
-                )
-                for i, c in enumerate(merged)
-            ]
-
-        # Enrich every candidate with minimal case-header metadata in ONE
-        # batched `cases` SELECT. The search RPC only returns
-        # (case_id, case_ref, score, section_text) — the reranker needs
-        # court / date / case_number / legal_domains on top of that.
-        all_cands = [c for lst in channel_candidates.values() for c in lst]
-        if all_cands:
-            await enrich_candidates(deps.supabase, all_cands)
-
+        # Merge per-sub-query lists into per-channel ranked lists (analytics /
+        # fusion input): best-rank-wins per case, with the matched-topic lists
+        # UNIONed rather than overwritten (D1).
+        channel_candidates = merge_channel_candidates(queries, per_query_candidates)
         state.channel_candidates = channel_candidates
 
-        # Build per-query enriched candidate lists (for the per-query reranker
-        # path, mirroring reg_search). Each list preserves the query's own
-        # 1..N rank; only the row metadata is lifted from the channel-merged
-        # enriched copies so reranker markdown carries court/date/domains.
-        per_query_enriched: list[tuple[TypedQuery, list[ChannelCandidate]]] = []
-        for q, cands in zip(queries, per_query_candidates):
-            enriched_by_id = {
-                c.case_id: c
-                for c in channel_candidates.get(q.channel, [])
-            }
-            enriched_q_cands: list[ChannelCandidate] = []
-            for c in cands:
-                merged = enriched_by_id.get(c.case_id)
-                if merged is not None:
-                    # Keep query-scoped rank/score; adopt merged row metadata.
-                    enriched_q_cands.append(
-                        ChannelCandidate(
-                            case_id=c.case_id,
-                            channel=c.channel,
-                            rank=c.rank,
-                            score=c.score,
-                            row=merged.row,
-                        )
-                    )
-                else:
-                    enriched_q_cands.append(c)
-            per_query_enriched.append((q, enriched_q_cands))
-        state.per_query_candidates = per_query_enriched
+        # No enrichment hop: the `search_case_topics` RPC joins the case header
+        # onto every topic row, so each candidate already carries court / city /
+        # court_level / case_number / date_hijri / short_summary AND its matched
+        # topics. The per-sub-query lists therefore ARE the reranker payload,
+        # each with its own query-scoped rank and its own topic set (mirroring
+        # reg_search's per-query reranker pattern — no cross-query blending).
+        state.per_query_candidates = list(zip(queries, per_query_candidates))
 
         # Record per-query search results for logging parity with legacy path
         for qi, (q, cands) in enumerate(zip(queries, per_query_candidates), start=1):
-            # Pull the enriched version for this query from the list we just built
-            display = per_query_enriched[qi - 1][1][:15]
+            # Same cap the reranker sees, so the forensic dump matches its input.
+            display = cands[: SectionedRerankerNode._TOP_N_PER_QUERY]
 
             if display:
                 header = f"## {q.channel} — {q.text} ({len(cands)} نتيجة)\n"
@@ -841,6 +895,33 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             ),
         })
 
+        # Wave 3 (plan §7 / decision D6): the reranker now receives the
+        # planner's distilled brief. ONLY the ``planner_brief`` label — never
+        # ``case_brief`` (raw case memory) or ``prior_search_lessons``; the
+        # reranker grades one sub-query against candidates and must not be
+        # handed the whole context bundle.
+        #
+        # Hoisted OUT of ``_process_one`` deliberately: every one of the N
+        # concurrent reranker calls in this round carries the identical brief,
+        # and it is rendered at the HEAD of the user message so the shared
+        # prefix stays cacheable (see build_reranker_user_message). Resolving it
+        # per task would be pure repeat work.
+        planner_brief = next(
+            (
+                b.body
+                for b in (state.context_blocks or [])
+                if b.label == "planner_brief" and (b.body or "").strip()
+            ),
+            None,
+        )
+
+        logger.info(
+            "SectionedRerankerNode: launching %d parallel reranker tasks "
+            "(planner_brief=%s)",
+            len(capped_per_query),
+            planner_brief is not None,
+        )
+
         async def _process_one(
             qi: int,
             q: TypedQuery,
@@ -874,6 +955,7 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                     model_override=state.model_override,
                     max_keep=reranker_max_keep,
                     round_trace=_rt,
+                    planner_brief=planner_brief,
                 )
                 reranker_result._round_trace = _rt  # type: ignore[attr-defined]
             except Exception as e:
@@ -898,6 +980,34 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             # ChannelCandidates as FusedCandidate-shape so the shared
             # `assemble_kept_cases` API works unchanged.
             keep_decisions = [d for d in decision_log if d.get("action") == "keep"]
+
+            # Re-apply the keep cap to the DECISION LOG before rebuilding.
+            #
+            # `run_reranker_for_query` already truncated `reranker_result.results`
+            # to `max_keep`, but `decision_log` is the raw, UNCAPPED list of the
+            # LLM's keeps — and the substitution below overwrites `.results`
+            # wholesale from it. Without this, the cap is silently undone:
+            # measured on R-INS-05, one sub-query emitted 9 keeps against a
+            # ceiling of 7 and all 9 reached the aggregator.
+            #
+            # Ordering mirrors reranker.py exactly (high before medium, then
+            # retrieval score desc) so the same results survive here as there.
+            if len(keep_decisions) > reranker_max_keep:
+                score_by_pos = {i + 1: c.score for i, c in enumerate(cands)}
+                keep_decisions.sort(
+                    key=lambda d: (
+                        (d.get("relevance") or "") != "high",
+                        -score_by_pos.get(int(d.get("position", 0) or 0), 0.0),
+                    )
+                )
+                logger.info(
+                    "SectionedRerankerNode q%d [%s]: cap truncated keep_decisions "
+                    "%d -> %d (max_keep=%d)",
+                    qi, q.channel, len(keep_decisions), reranker_max_keep,
+                    reranker_max_keep,
+                )
+                keep_decisions = keep_decisions[:reranker_max_keep]
+
             if keep_decisions:
                 try:
                     pseudo_bucket = wrap_as_fused(cands)
@@ -945,6 +1055,17 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                     )
                     return title or (row.get("case_ref", "") or "")
 
+                def _cand_topic_ref(candidate: ChannelCandidate) -> str:
+                    """`topic_ref` of the TOP matched topic (topics are score-desc).
+
+                    Lets @reranker-run-judge see WHAT matched on a dropped
+                    case, not just which case was dropped (plan §6.3).
+                    """
+                    topics = getattr(candidate, "topics", None) or []
+                    if not topics:
+                        return ""
+                    return str(topics[0].get("topic_ref") or "")
+
                 # UUIDs of cases that actually survived into the final results.
                 survived: set[str] = set()
                 for res in reranker_result.results:
@@ -966,6 +1087,7 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                         continue
                     action = entry.get("action")
                     title = _cand_title(cand.row or {})
+                    topic_ref = _cand_topic_ref(cand)
                     if action in ("drop", "undecided"):
                         dropped.append({
                             "source_table": "cases",
@@ -974,6 +1096,7 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                             "drop_reason": "llm",
                             "reasoning": entry.get("reasoning", "") or "",
                             "source_type": "case",
+                            "topic_ref": topic_ref,
                         })
                         seen_refs.add(ref_id)
                     elif action == "keep" and survived:
@@ -992,6 +1115,7 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                             "drop_reason": "cap",
                             "reasoning": "",
                             "source_type": "case",
+                            "topic_ref": topic_ref,
                         })
                         seen_refs.add(ref_id)
 
@@ -1079,7 +1203,6 @@ async def run_case_search(
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY,
     sectioned: bool | None = None,
     sectors_override: list[str] | None = None,
-    sectors_future: "asyncio.Future[list[str] | None] | None" = None,
     score_threshold: float | None = None,
     context_blocks: list[ContextBlock] | None = None,
 ) -> CaseSearchResult:
@@ -1098,6 +1221,10 @@ async def run_case_search(
         concurrency: Max concurrent search pipelines.
         sectioned: Force sectioned pipeline regardless of prompt key.
             Default (None) routes by `is_sectioned_prompt(expander_prompt_key)`.
+        sectors_override: CLI-only sector experiment hatch. There is no
+            ``sectors_future`` parameter anymore — the case path stopped
+            consuming ``sector_picker`` (decision D3 / plan §9), so nothing
+            populates this on the production path.
 
     Returns:
         CaseSearchResult with reranker_results for the shared aggregator.
@@ -1130,7 +1257,6 @@ async def run_case_search(
         model_override=model_override,
         concurrency=concurrency,
         sectors_override=list(sectors_override) if sectors_override else None,
-        sectors_future=sectors_future,
         context_blocks=list(context_blocks) if context_blocks else [],
     )
 

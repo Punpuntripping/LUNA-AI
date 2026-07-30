@@ -224,6 +224,11 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # two-field output as text → a TextOutput JSON salvager avoids the retry.
     # See .claude/plans/writer_planner_user_templates.md §Wave D.
     "template_ingester":          ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — the anonymous «اسأل ريحان» popup on public SEO
+    # library pages (backend/app/services/ask_service.py). One short call per
+    # anon question, grounded ONLY in the current page's content (no
+    # deep_search). Kill-switched via ANON_ASK_ENABLED (default off).
+    "anon_ask":                   ModelPolicy("tier_2", primary="deepseek"),
     # Tier_2 DeepSeek-primary — runs once per deep_search invocation, in parallel
     # with the expanders, to pick the 2-5 sector AND-filter. Replaces the old
     # planner_decider.sectors output (decider had no visibility into per-sector
@@ -235,6 +240,25 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the
     # edits need without max-effort latency. See .claude/plans/artifact_editor.md.
     "artifact_editor":            _FLASH_MEDIUM,
+    # Tier_1 qwen-primary — the OFFLINE forms drafter (scripts/draft_forms.py,
+    # SEO library Phase 3 نماذج wing). One capable-tier call per legal-form
+    # template: it writes a formal, placeholder'd Saudi legal template plus its
+    # free SEO layer (use-case + intro) and legal-basis citations. NOT in any
+    # live chat path — it's a batch review-queue filler, and every drafted row is
+    # written review_status='draft'/is_published=false pending human legal review.
+    # Legal drafting wants the capable tier + real reasoning, so tier_1 with
+    # medium reasoning (baked per family by _reasoning_settings, like the flash
+    # medium slots); the multi-field structured output is salvaged via TextOutput
+    # when a fallback cell emits JSON as text (same pattern as template_ingester).
+    "form_drafter":               ModelPolicy("tier_1", primary="qwen", reasoning="medium"),
+    # Tier_2 DeepSeek-primary (deepseek-v4-flash) — the OFFLINE شرح generator
+    # (scripts/generate_sharh.py, SEO library Phase 3 مادة pages). One cheap flash
+    # call per مادة produces a short (150–300 word) Arabic explanation cached in
+    # seo_sharh. PREGENERATED for open-tier regs only — NOT in any live/anon path
+    # (anon مادة pages render only the cached teaser; no LLM call on read). Output
+    # is a single free-text field (no JSON schema → no salvager needed), so a plain
+    # str-output Agent suffices. Flash is plenty for this templated explainer.
+    "sharh_generator":            ModelPolicy("tier_2", primary="deepseek"),
 }
 
 

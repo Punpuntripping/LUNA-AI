@@ -313,6 +313,7 @@ async def run_reranker_for_query(
     max_keep: int = 8,
     model_override: str | None = None,
     round_trace: list[dict] | None = None,
+    planner_brief: str | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
     """Run a single keep-only classification pass and derive the drop set.
 
@@ -332,9 +333,20 @@ async def run_reranker_for_query(
         max_keep: Per-sub-query keep cap — a single flat cap (default 8).
         model_override: Optional model registry key.
         round_trace: Optional list; one trace dict appended for the pass.
+        planner_brief: Optional planner-distilled background (the
+            ``planner_brief`` ``ContextBlock.body`` only — never ``case_brief``
+            / ``prior_search_lessons``). Rendered at the HEAD of the user
+            message; empty/None renders nothing.
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
+
+    Prompt-cache discipline: the brief goes into the USER message only. The
+    system prompt (``create_reranker_agent``'s ``instructions=``) stays
+    per-run constant — it is the primary cache prefix, and varying it per turn
+    would invalidate the cache on every call. The brief is placed ahead of the
+    sub-query so the N concurrent calls of one turn share the longest possible
+    prefix. See ``build_reranker_user_message``.
     """
     agent = create_reranker_agent(model_override=model_override)
 
@@ -379,11 +391,14 @@ async def run_reranker_for_query(
 
     by_label = {b["label"]: b for b in active_blocks}
     trimmed_md = _assemble_markdown(active_blocks)
-    user_msg = build_reranker_user_message(query, rationale, trimmed_md)
+    user_msg = build_reranker_user_message(
+        query, rationale, trimmed_md, planner_brief=planner_brief,
+    )
 
     logger.info(
-        "Reranker: %d candidate blocks, %d chars",
+        "Reranker: %d candidate blocks, %d chars, planner_brief=%s",
         len(active_blocks), len(trimmed_md),
+        bool((planner_brief or "").strip()),
     )
 
     # Run the agent with retries. The integrity gate (kept==0 of N>0) may append

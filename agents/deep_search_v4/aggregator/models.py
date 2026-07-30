@@ -77,6 +77,15 @@ class Reference(BaseModel):
         default="",
         description="Regulation landing URL (reg domain)",
     )
+    doc_type: str = Field(
+        default="",
+        description=(
+            "regulations_v2.doc_type_raw — the document's own Arabic type "
+            "(لائحة / تنظيم / دليل / مواصفة قياسية / …). Drives the reference "
+            "card's type chip instead of the blanket نظام label. Empty when "
+            "the corpus has no determined type (reg domain)"
+        ),
+    )
     service_url: str = Field(
         default="",
         description="Government service URL (compliance domain)",
