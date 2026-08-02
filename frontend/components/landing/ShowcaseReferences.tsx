@@ -158,7 +158,7 @@ function CitationCard({
               className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-primary transition-colors hover:bg-accent"
             >
               <ExternalLink className="h-3 w-3" />
-              فتح الرابط
+              فتح المصدر الرسمي
             </a>
           </div>
         </div>

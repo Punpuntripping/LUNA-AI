@@ -98,9 +98,12 @@ class ChunkSourceView(BaseModel):
     (blank line separated) when both are present."""
     regulation_title: str = ""
     regulation_source_url: str = ""
-    """Parent regulation's ``landing_url`` -- main click target."""
-    regulation_pdf_link: dict | None = None
-    """Fallback link object, derived from ``RegURAResult.pdf_url``."""
+    """Parent regulation's ``landing_url`` -- the ONE external click target.
+
+    No PDF companion: the source popup offers exactly two ways out (the official
+    link, and the item's page in our own library), so a raw file link was a third
+    exit that led out of the product for content we already publish ourselves.
+    """
 
 
 class ArticleSourceView(BaseModel):
@@ -118,12 +121,6 @@ class ArticleSourceView(BaseModel):
     regulation_title: str = ""
     regulation_source_url: str = ""
     """Parent regulation's ``source_url`` -- main click target when present."""
-    regulation_pdf_link: dict | None = None
-    """Fallback link object when ``source_url`` is empty.
-
-    Shape mirrors what ``regulations.pdf_link`` stores -- typically
-    ``{"url": "...", "filename": "...", ...}``.
-    """
 
 
 class SectionSourceView(BaseModel):
@@ -140,7 +137,6 @@ class SectionSourceView(BaseModel):
     (with a blank line separator) when both are present."""
     regulation_title: str = ""
     regulation_source_url: str = ""
-    regulation_pdf_link: dict | None = None
 
 
 class RegulationSourceView(BaseModel):
@@ -153,7 +149,6 @@ class RegulationSourceView(BaseModel):
     source_type: Literal["regulation"] = "regulation"
     title: str = ""
     source_url: str = ""
-    pdf_link: dict | None = None
 
 
 class CaseSourceView(BaseModel):
@@ -389,19 +384,6 @@ async def _fetch_circular_by_id(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_pdf_link(raw: Any) -> dict | None:
-    """Return a dict-shaped pdf_link or ``None``.
-
-    ``regulations.pdf_link`` is jsonb. Defensively coerce string variants to
-    a one-key dict so the frontend always sees the same shape.
-    """
-    if isinstance(raw, dict) and raw:
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        return {"url": raw.strip()}
-    return None
-
-
 def _strip_line_indent(text: str) -> str:
     """Strip leading whitespace from every line.
 
@@ -427,8 +409,9 @@ async def _build_reg_view(
 
     The reg domain is chunk-shaped now. ``ura/enrich.py`` has already filled
     every field this view needs (``chunk_content``, ``chunk_context``,
-    ``reg_title``, ``landing_url``, ``pdf_url``), so no Supabase round-trip is
-    required -- ``supabase`` is accepted for signature symmetry only.
+    ``reg_title``, ``landing_url``), so no Supabase round-trip is required --
+    ``supabase`` is accepted for signature symmetry only. ``RegURAResult.pdf_url``
+    is deliberately NOT projected: the popup no longer offers a PDF exit.
     """
     _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 
@@ -444,7 +427,6 @@ async def _build_reg_view(
         content=content,
         regulation_title=ura.reg_title or "",
         regulation_source_url=ura.landing_url or "",
-        regulation_pdf_link=_normalize_pdf_link(ura.pdf_url),
     )
 
 
@@ -701,7 +683,9 @@ def _self_test() -> None:
         assert isinstance(v, ChunkSourceView), v
         assert v.regulation_source_url.startswith("https://")
         assert "نص المقطع الكامل" in v.content and "سياق المقطع" in v.content
-        assert v.regulation_pdf_link == {"url": "https://files/x.pdf"}
+        # The URA still CARRIES pdf_url (it is corpus metadata); the view must
+        # not project it — the popup has no PDF exit any more.
+        assert not hasattr(v, "regulation_pdf_link")
 
         # 2) case
         case = CaseURAResult(

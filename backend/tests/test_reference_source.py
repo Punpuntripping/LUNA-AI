@@ -912,3 +912,143 @@ def test_case_referenced_regulations_are_gated_too():
     out = ura.for_reference().referenced_regulations[0]
     assert len(out["content"]) <= CROSS_REF_REFERENCE_FREE_CHARS + 2
     assert out["target_reg_title"] == "نظام"
+
+
+# ===========================================================================
+# 5. «فتح ال… في ريحان» — the citation → library-page link (2026-08-01)
+#
+# The other half of the D15 resolver: `reference_resolver` maps a citation onto
+# the (content_type, content_id) pair the ledger speaks; `public_page_url` maps
+# that pair onto the page a reader can actually open in our own library. A
+# citation and a library page are the SAME document reached two ways, and this
+# link is what finally says so in the product.
+# ===========================================================================
+
+
+def _meta(content_type: str, content_id: str, slug: str) -> dict[str, Any]:
+    return {"content_type": content_type, "content_id": content_id, "slug": slug}
+
+
+def test_each_wing_maps_to_its_public_page() -> None:
+    from backend.app.services import library_items_service as lis
+
+    supabase = base_supabase(
+        seo_item_meta=[
+            _meta("regulation", REG_ID, "nizam-al-amal"),
+            _meta("judgment", CASE_ID, "hukm-tijari-123"),
+            _meta("circular", CIRC_ID, "taamim-muhim"),
+            _meta("service", SVC_ID, "istikhraj-sak"),
+        ]
+    )
+
+    assert run(lis.public_page_url(supabase, "regulation", REG_ID)) == (
+        "/regulations/nizam-al-amal"
+    )
+    assert run(lis.public_page_url(supabase, "judgment", CASE_ID)) == (
+        "/judgments/hukm-tijari-123"
+    )
+    assert run(lis.public_page_url(supabase, "circular", CIRC_ID)) == (
+        "/circulars/taamim-muhim"
+    )
+    # Services are never gated (§1.3) but they DO have a page — «فتح الخدمة في
+    # ريحان» must work on a free reveal exactly as it does on a charged one.
+    assert run(lis.public_page_url(supabase, "service", SVC_ID)) == (
+        "/compliance/istikhraj-sak"
+    )
+
+
+def test_madda_citation_links_to_its_nizam_page() -> None:
+    """User decision 2026-08-01: a مادة-level citation opens the نظام page, NOT
+    ``/regulations/{reg}/{article}``.
+
+    81% of ``reg:`` refs already lift to the whole statute (D15.1), so deep
+    linking the other 19% would make one button land in two structurally
+    different places for a difference the reader cannot see — and the نظام page
+    carries the مادة anyway."""
+    from backend.app.services import library_items_service as lis
+
+    supabase = base_supabase(
+        seo_item_meta=[
+            _meta("regulation", REG_ID, "nizam-al-amal"),
+            # A published مادة page EXISTS and is still not what we link to.
+            _meta("article", f"{REG_ID}#6", "al-madda-6"),
+        ]
+    )
+    url = run(lis.public_page_url(supabase, "article", f"{REG_ID}#6", REG_ID))
+    assert url == "/regulations/nizam-al-amal"
+
+
+def test_unpublished_item_has_no_library_url() -> None:
+    """No sidecar slug ⇒ no page ⇒ `None`, and the panel drops the button.
+
+    Never a hub fallback: a button that promises the document and delivers a
+    list is worse than one that isn't there."""
+    from backend.app.services import library_items_service as lis
+
+    supabase = base_supabase(seo_item_meta=[])
+    assert run(lis.public_page_url(supabase, "regulation", REG_ID)) is None
+    assert run(lis.public_page_url(supabase, "judgment", CASE_ID)) is None
+    # An unknown / non-library type can never mint a URL either.
+    assert run(lis.public_page_url(supabase, "calculator", REG_ID)) is None
+    assert run(lis.public_page_url(supabase, "regulation", "")) is None
+
+
+def test_reveal_response_carries_the_library_url(monkeypatch) -> None:
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_MULTI}")],
+        seo_item_meta=[_meta("regulation", REG_ID, "nizam-al-amal")],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    body = client.get(_url()).json()
+    assert body["library_url"] == "/regulations/nizam-al-amal"
+
+
+def test_reveal_library_url_is_null_when_nothing_is_published(monkeypatch) -> None:
+    """A missing link must never cost the reader the source they just paid for."""
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_MULTI}")],
+        seo_item_meta=[],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["library_url"] is None
+    # The content itself is untouched by the absent link.
+    assert body["source_view"]["content"] == "النص الكامل"
+
+
+def test_reveal_survives_a_sidecar_failure(monkeypatch) -> None:
+    """Fail-soft, in the direction that keeps the paid content flowing."""
+    from backend.app.services import library_items_service as lis
+
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_MULTI}")],
+    )
+    _install_fake_library_items(monkeypatch)
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("sidecar down")
+
+    monkeypatch.setattr(lis, "public_page_url", _boom)
+    client = _client(monkeypatch, supabase)
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    assert res.json()["library_url"] is None
+    assert res.json()["source_view"]["content"] == "النص الكامل"
+
+
+def test_the_source_view_has_no_pdf_exit() -> None:
+    """PDF signals were removed from the reference surface (2026-08-01): the
+    popup exits to exactly two places, the official link and our own page."""
+    view = ChunkSourceView(
+        title="نظام العمل", content="النص", regulation_title="نظام العمل"
+    )
+    dumped = view.model_dump(mode="json")
+    assert "regulation_pdf_link" not in dumped
+    assert not any("pdf" in k.lower() for k in dumped)

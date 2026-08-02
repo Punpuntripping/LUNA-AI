@@ -159,9 +159,6 @@ export default async function ComplianceDocPage({ params }: PageProps) {
       href: doc.official_url,
     });
   }
-  if (doc.pdf_link) {
-    officialSources.push({ label: "دليل PDF", href: doc.pdf_link });
-  }
 
   // JSON-LD: HowTo (steps) + VideoObject when an explainer video is present.
   const howTo = buildHowTo({

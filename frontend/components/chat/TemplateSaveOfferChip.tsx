@@ -61,7 +61,9 @@ export function TemplateSaveOfferChip({
       if (result.ok) {
         setState({ kind: "saved", title: result.title });
         // Refresh قوالبي so the new template appears without a manual reload.
-        void qc.invalidateQueries({ queryKey: templateKeys.list() });
+        // `lists()`, not `list()` — the prefix covers the unfiltered listing AND
+        // any live search cache, so a reader searching قوالبي sees it too.
+        void qc.invalidateQueries({ queryKey: templateKeys.lists() });
       } else {
         setState({ kind: "failed", message: result.error || FAILURE_MESSAGE });
       }

@@ -10,7 +10,7 @@ import {
   ExternalLink,
   ChevronDown,
   FileText,
-  Link2,
+  BookOpen,
   Copy,
   Check,
   Loader2,
@@ -429,7 +429,7 @@ function ReferenceCard({
                 )}
               >
                 <ExternalLink className="h-3 w-3" />
-                فتح الرابط
+                فتح المصدر الرسمي
               </a>
             )}
             {crossRefs.length > 0 && (
@@ -520,7 +520,7 @@ function SourceRevealBody({
   }
 
   if (result.ok) {
-    const { source_view: view, unlocked, balance } = result.data;
+    const { source_view: view, unlocked, balance, library_url } = result.data;
     return (
       <RevealedSource
         view={view}
@@ -528,6 +528,8 @@ function SourceRevealBody({
         balanceLimit={balance?.limit ?? null}
         balanceUsed={balance?.used ?? null}
         fallbackTitle={fallbackTitle}
+        reference={reference}
+        libraryUrl={library_url ?? null}
       />
     );
   }
@@ -572,6 +574,14 @@ function SourceLoadingBody() {
 /**
  * The revealed source, plus the two things §5.1 and D15.1 require next to it:
  * a quiet line naming WHAT was unlocked, and the remaining balance.
+ *
+ * EXITS ARE EXACTLY TWO (2026-08-01). «فتح المصدر الرسمي» goes to the official
+ * government page; «فتح ال… في ريحان» goes to the same document inside our own
+ * library. Everything else that used to hang off this dialog — «رابط النظام»،
+ * «ملف PDF»، «تفاصيل الحكم»، «المنصة الوطنية»، «رابط الخدمة»، «رابط التعميم» —
+ * was a per-domain variation on those same two ideas, plus a raw-file exit for
+ * content we now publish ourselves. One pair of buttons, identical in every
+ * domain, is the whole point: the reader learns it once.
  */
 function RevealedSource({
   view,
@@ -579,12 +589,16 @@ function RevealedSource({
   balanceLimit,
   balanceUsed,
   fallbackTitle,
+  reference,
+  libraryUrl,
 }: {
   view: SourceView;
   unlocked: ReferenceUnlockInfo;
   balanceLimit: number | null;
   balanceUsed: number | null;
   fallbackTitle: string;
+  reference: Reference;
+  libraryUrl: string | null;
 }) {
   const sourceContent = extractSourceContent(view);
   const notice = unlockedNotice({
@@ -601,6 +615,13 @@ function RevealedSource({
     balanceLimit === null || balanceUsed === null
       ? null
       : Math.max(balanceLimit - balanceUsed, 0);
+
+  // The reference row's own link wins (it is what the card's «فتح المصدر الرسمي»
+  // targets, so the two surfaces agree); the source view is the fallback for
+  // rows whose URL columns were never filled.
+  const externalUrl =
+    referencePrimaryUrl(reference) || sourceViewExternalUrl(view);
+  const definiteType = referenceDefiniteType(reference);
 
   return (
     <>
@@ -645,7 +666,41 @@ function RevealedSource({
         </p>
       )}
 
-      {sourceContent ? <SourceCopyButton content={sourceContent} /> : null}
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        {externalUrl && (
+          <a
+            href={externalUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(
+              buttonVariants({ variant: "outline", size: "sm" }),
+              "h-8 gap-1.5 px-3 text-xs",
+            )}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            فتح المصدر الرسمي
+          </a>
+        )}
+        {/* Dropped entirely when the item has no published page — never a hub
+            fallback (§ the reader asked for THIS document, not a list). New tab
+            on purpose: this dialog can be open over a streaming chat, and
+            navigating the tab away would kill the stream behind it. */}
+        {libraryUrl && (
+          <Link
+            href={libraryUrl}
+            target="_blank"
+            rel="noopener"
+            className={cn(
+              buttonVariants({ size: "sm" }),
+              "h-8 gap-1.5 px-3 text-xs",
+            )}
+          >
+            <BookOpen className="h-3.5 w-3.5" />
+            فتح {definiteType} في ريحان
+          </Link>
+        )}
+        {sourceContent ? <SourceCopyButton content={sourceContent} /> : null}
+      </div>
     </>
   );
 }
@@ -751,28 +806,27 @@ function SourceCopyButton({ content }: { content: string }) {
       // still highlight & copy by hand.
     }
   };
+  // No wrapper — the caller owns the action-bar layout.
   return (
-    <div className="mt-1 flex justify-start">
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        className="h-7 gap-1.5 px-2 text-[11px]"
-        onClick={handleCopy}
-      >
-        {copied ? (
-          <>
-            <Check className="h-3 w-3" />
-            تم النسخ
-          </>
-        ) : (
-          <>
-            <Copy className="h-3 w-3" />
-            نسخ المحتوى
-          </>
-        )}
-      </Button>
-    </div>
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="h-8 gap-1.5 px-3 text-xs"
+      onClick={handleCopy}
+    >
+      {copied ? (
+        <>
+          <Check className="h-3.5 w-3.5" />
+          تم النسخ
+        </>
+      ) : (
+        <>
+          <Copy className="h-3.5 w-3.5" />
+          نسخ المحتوى
+        </>
+      )}
+    </Button>
   );
 }
 
@@ -788,20 +842,13 @@ function SourceViewContent({
   view: SourceView;
   sourceContent: string;
 }) {
-  if (view.source_type === "chunk") {
+  // NOTE (2026-08-01): no per-domain link lists in here any more. Every exit
+  // lives in the dialog's single action bar — «فتح المصدر الرسمي» + «فتح ال… في ريحان»
+  // — so this function renders CONTENT only.
+  if (view.source_type === "chunk" || view.source_type === "case") {
     return (
       <div className="space-y-3">
         {sourceContent && <MarkdownRenderer content={sourceContent} />}
-        <SourceLink label="رابط النظام" url={view.regulation_source_url} />
-        <SourceLink label="ملف PDF" url={view.regulation_pdf_link?.url} />
-      </div>
-    );
-  }
-  if (view.source_type === "case") {
-    return (
-      <div className="space-y-3">
-        {sourceContent && <MarkdownRenderer content={sourceContent} />}
-        <SourceLink label="تفاصيل الحكم" url={view.details_url} />
       </div>
     );
   }
@@ -832,11 +879,6 @@ function SourceViewContent({
         <ServiceSection title="الخطوات" items={view.steps} ordered />
         <ServiceSection title="المتطلبات" items={view.requirements} />
         <ServiceSection title="المستندات المطلوبة" items={view.required_documents} />
-
-        <div className="space-y-2 pt-1">
-          <SourceLink label="المنصة الوطنية" url={view.national_platform_url} />
-          <SourceLink label="رابط الخدمة" url={view.service_url} />
-        </div>
       </div>
     );
   }
@@ -854,7 +896,6 @@ function SourceViewContent({
           </p>
         )}
         {sourceContent && <MarkdownRenderer content={sourceContent} />}
-        <SourceLink label="رابط التعميم" url={view.url} />
       </div>
     );
   }
@@ -863,21 +904,6 @@ function SourceViewContent({
     <div className="space-y-3">
       {sourceContent && <MarkdownRenderer content={sourceContent} />}
     </div>
-  );
-}
-
-function SourceLink({ label, url }: { label: string; url?: string }) {
-  if (!url) return null;
-  return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-    >
-      <Link2 className="h-3 w-3" />
-      {label}
-    </a>
   );
 }
 
@@ -931,7 +957,83 @@ export function referenceLabel(ref: Reference): string {
   return ref.regulation_title || ref.ref_id || "مرجع";
 }
 
-/** The single external URL a card's "فتح الرابط" button targets. */
+/**
+ * Fallback external URL, read off the revealed source view.
+ *
+ * Only consulted when the reference row itself carries no URL — the row is the
+ * authority, so the card and the dialog can never point at different places.
+ * The gov_service view holds two candidates; the service's own page wins for the
+ * same reason the card prefers it (the national platform is a portal, not the
+ * document).
+ */
+function sourceViewExternalUrl(view: SourceView): string {
+  switch (view.source_type) {
+    case "chunk":
+      return view.regulation_source_url || "";
+    case "case":
+      return view.details_url || "";
+    case "gov_service":
+      return view.service_url || view.national_platform_url || "";
+    case "circular":
+      return view.url || "";
+    default:
+      return "";
+  }
+}
+
+/**
+ * Arabic doc type WITH the definite article, for «فتح ال… في ريحان».
+ *
+ * `regulations_v2.doc_type_raw` is a closed 21-value corpus vocabulary, so this
+ * is a lookup rather than morphology: prefixing «ال» programmatically mangles
+ * every multi-word entry («تقرير/وثيقة» → «التقرير/الوثيقة», not
+ * «التقرير/والثيقة»; «مبادئ وأحكام» takes the article on BOTH words). An
+ * unknown single word still gets the naive prefix — a new corpus value should
+ * read slightly plain, never broken.
+ */
+const DEFINITE_DOC_TYPE: Record<string, string> = {
+  نظام: "النظام",
+  لائحة: "اللائحة",
+  "لائحة تنفيذية": "اللائحة التنفيذية",
+  "لائحة فنية": "اللائحة الفنية",
+  تنظيم: "التنظيم",
+  دليل: "الدليل",
+  قواعد: "القواعد",
+  ضوابط: "الضوابط",
+  متطلبات: "المتطلبات",
+  "مواصفة قياسية": "المواصفة القياسية",
+  إجراءات: "الإجراءات",
+  سياسة: "السياسة",
+  "جدول/قائمة": "الجدول/القائمة",
+  تعليمات: "التعليمات",
+  "مبادئ وأحكام": "المبادئ والأحكام",
+  اتفاقية: "الاتفاقية",
+  "تقرير/وثيقة": "التقرير/الوثيقة",
+  "برنامج/خطة": "البرنامج/الخطة",
+  ترجمة: "الترجمة",
+  "قرار/مرسوم": "القرار/المرسوم",
+};
+
+/** Per-domain default when the row carries no usable `doc_type`. */
+const DEFINITE_DOMAIN_TYPE: Record<ReferenceDomain, string> = {
+  regulations: "النظام",
+  cases: "الحكم",
+  compliance: "الخدمة",
+  circulars: "التعميم",
+};
+
+export function referenceDefiniteType(ref: Reference): string {
+  // `doc_type` is a regulations-only column, and «غير محدد» is the corpus's
+  // "we could not determine one" bucket — a sentinel, not a document type.
+  const raw =
+    ref.domain === "regulations" ? (ref.doc_type ?? "").trim() : "";
+  if (!raw || raw === "غير محدد") return DEFINITE_DOMAIN_TYPE[ref.domain];
+  const known = DEFINITE_DOC_TYPE[raw];
+  if (known) return known;
+  return raw.startsWith("ال") ? raw : `ال${raw}`;
+}
+
+/** The single external URL a card's "فتح المصدر الرسمي" button targets. */
 function referencePrimaryUrl(ref: Reference): string {
   switch (ref.domain) {
     case "regulations":

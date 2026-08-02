@@ -13,7 +13,7 @@ import { ShowcaseReferences } from "./ShowcaseReferences";
  * The landing centerpiece — a faithful, static rendering of a real Rayhan
  * search result (blog share c6f6b05f…). It mirrors the in-app
  * ``ReferencePanel`` card anatomy ([n] badge, domain icon + label, relevance
- * dot, snippet, «عرض المصدر» / «فتح الرابط») so prospects see the actual
+ * dot, snippet, «عرض المصدر» / «فتح المصدر الرسمي») so prospects see the actual
  * product surface: a complete answer where every citation links back to its
  * official source — here across both regulations and government services.
  */

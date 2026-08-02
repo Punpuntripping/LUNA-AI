@@ -280,6 +280,31 @@ async def _record_library_use(
         )
 
 
+async def _library_page_url(supabase: SupabaseClient, resolved: ResolvedRef) -> Optional[str]:
+    """The cited item's page in OUR library, for «فتح ... في ريحان». Fail-soft.
+
+    ``None`` whenever the item has no published page — the panel then renders the
+    external link alone rather than a fallback that goes nowhere. A failure here
+    must never cost the reader the source they just unlocked, so every error
+    degrades to "no in-app link".
+    """
+    try:
+        from backend.app.services import library_items_service
+
+        return await library_items_service.public_page_url(
+            supabase,
+            resolved.content_type,
+            resolved.content_id,
+            resolved.parent_regulation_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "library page url failed (%s/%s): %s",
+            resolved.content_type, resolved.content_id, e,
+        )
+        return None
+
+
 class _UnresolvableRef:
     """Duck-typed stand-in for an ``AccessDecision`` that never happened.
 
@@ -411,6 +436,10 @@ async def get_reference_source(
         "ref_id": row.get("ref_id") or "",
         "domain": row.get("domain") or "",
         "source_view": view.model_dump(mode="json"),
+        # The in-app twin of the external link: where this citation lives in our
+        # own library. ``None`` when the item has no published page — the panel
+        # drops the button rather than linking into a 404.
+        "library_url": await _library_page_url(supabase, resolved),
         "unlocked": {
             "content_type": resolved.content_type,
             "content_id": resolved.content_id,

@@ -20,7 +20,6 @@ export { CitedRegulations } from "./CitedRegulations";
 export { OfficialSources } from "./OfficialSources";
 export { ReadAfter } from "./ReadAfter";
 export { MediaBlock } from "./MediaBlock";
-export { PdfViewerBlock } from "./PdfViewerBlock";
 export { AskRayhanWidget } from "./AskRayhanWidget";
 export { OpenInRayhanCta } from "./OpenInRayhanCta";
 export { LibraryPageShell } from "./LibraryPageShell";

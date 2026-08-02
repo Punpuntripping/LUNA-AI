@@ -55,6 +55,7 @@ from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services import library_service as ls
+from backend.app.services import search_service
 from shared import quota as _quota
 from shared.db.run import run_db
 from shared.seo.judgment_naming import court_level_label, judgment_display_title
@@ -70,10 +71,13 @@ __all__ = [
     "normalize_content_type",
     "normalize_sort",
     "resolve_content_id",
+    "public_page_url",
     "record_use",
     "save_item",
     "unsave_item",
     "list_items",
+    "search_shelf",
+    "shelf_rank",
 ]
 
 # Everything that can land on the shelf. ``calculator`` has no corpus table yet
@@ -801,6 +805,66 @@ def _url_for(content_type: str, slug: Optional[str]) -> Optional[str]:
     return f"{prefix}/{slug}"
 
 
+def _public_page_url(
+    supabase: SupabaseClient,
+    content_type: str,
+    content_id: str,
+    parent_regulation_id: Optional[str] = None,
+) -> Optional[str]:
+    """``(content_type, content_id)`` → its page in OUR library, or ``None``. SYNC.
+
+    The other half of :mod:`reference_resolver`: that module maps a chat
+    citation's ``ref_id`` onto the ``(content_type, content_id)`` pair the ledger
+    and the sidecar speak; this maps that pair onto the in-app address a reader
+    can actually open («فتح ... في ريحان»).
+
+    A **مادة resolves to its نظام page** (user decision 2026-08-01), NOT to
+    ``/regulations/{reg}/{article}``. The chunk behind a citation is an arbitrary
+    slice — 81% of ``reg:`` refs already lift to the whole statute (D15.1) — so
+    sending the other 19% somewhere structurally different would make the same
+    button land in two different places for no reason the reader can see. The
+    نظام page carries the مادة anyway, and it is exactly what the unlock grants.
+
+    ``None`` is a normal answer, not a failure: an item with no ``seo_item_meta``
+    slug has no published page, and the caller must then render NO in-app link
+    (never a hub fallback, never a guessed URL — both are dead ends dressed up as
+    navigation). Fail-soft on every sidecar error for the same reason a shelf
+    write is fail-soft: a missing link must not break a paid content reveal.
+    """
+    ct = (content_type or "").strip()
+    cid = str(content_id or "").strip()
+    if not ct or not cid:
+        return None
+
+    if ct == "article":
+        parent = ls.parent_regulation_of_article(cid, parent_regulation_id)
+        if not parent:
+            return None
+        ct, cid = "regulation", parent
+
+    if ct not in _URL_PREFIX:
+        return None
+
+    try:
+        slug = ls._slug_map(supabase, ct, [cid]).get(cid)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("library_items: public url lookup failed (%s/%s): %s", ct, cid, e)
+        return None
+    return _url_for(ct, slug)
+
+
+async def public_page_url(
+    supabase: SupabaseClient,
+    content_type: str,
+    content_id: str,
+    parent_regulation_id: Optional[str] = None,
+) -> Optional[str]:
+    """Async wrapper over :func:`_public_page_url` (sync client via ``run_db``)."""
+    return await run_db(
+        _public_page_url, supabase, content_type, content_id, parent_regulation_id
+    )
+
+
 def _hydrate(
     supabase: SupabaseClient, by_type: dict[str, list[str]]
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -1045,6 +1109,140 @@ def _virtual_parent(content_id: str, card: dict[str, Any],
     return view
 
 
+# ==========================================================================
+# SHELF SEARCH (bm25_navigation_search.md §5.2 · §6.2)
+#
+# مكتبتي is a JOIN, not a corpus: its rows are public documents the caller
+# happened to open or pin. So searching it is "rank the public corpora, keep what
+# is on this shelf" — which is why there is no ``owner_user_id`` on those
+# ``search_index`` rows and why ``bm25_search`` is called with ``p_owner=None``
+# here. The user-scoping is the intersection, done below, in this process.
+#
+# ⚠ KNOWN RECALL BOUND, and it is inherent rather than lazy. ``bm25_search``
+# cannot be handed a candidate id list, so the intersection runs against the top
+# ``MAX_RESULTS`` (200) hits of the whole public index. A shelf item that matches
+# the query but ranks 201st for the corpus at large will not be found. With the
+# index holding ~100 slugged rows per wing that is unreachable today; when the
+# slug backfill lands it becomes reachable for very common terms on a very large
+# shelf. The fix is a candidate-id parameter on the RPC — Wave F, not a Python
+# workaround here, because any workaround means a second ranking path.
+#
+# مواد: NOT indexed (D6). A shelf مادة matches when its PARENT نظام matches,
+# which is also how the shelf DISPLAYS it (§5B.1 nests مواد under their statute),
+# so the two rules agree. ``form``/``calculator`` are out of the index entirely
+# (D7) and therefore never match a search — documented, not silent.
+# ==========================================================================
+
+
+def _shelf_keys(supabase: SupabaseClient, user_id: str) -> set[tuple[str, str]]:
+    """``{(content_type, content_id)}`` for the caller's whole shelf. SYNC.
+
+    Reuses ``_scan_shelf`` (chunked + capped + fail-soft) rather than issuing its
+    own query, so the search view of the shelf can never see rows the listing
+    view cannot.
+    """
+    return {
+        (str(r.get("content_type")), str(r.get("content_id")))
+        for r in _scan_shelf(supabase, str(user_id), None)
+        if r.get("content_type") and r.get("content_id")
+    }
+
+
+def shelf_rank(
+    supabase: SupabaseClient, user_id: str, query: str
+) -> tuple[dict[tuple[str, str], int], bool]:
+    """``({(content_type, content_id): rank}, total_is_exact)`` for a shelf search. SYNC.
+
+    Rank 0 is the best match. A مادة inherits its نظام's rank (see the block
+    comment); a shelf row whose type is not indexed simply never appears.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {}, True
+
+    keys = _shelf_keys(supabase, str(user_id))
+    if not keys:
+        return {}, True
+
+    page = search_service.run_bm25(
+        supabase,
+        corpora=search_service.PUBLIC_CORPORA,
+        query=query,
+        owner_user_id=None,
+        limit=search_service.MAX_RESULTS,
+        offset=0,
+    )
+
+    # corpus id → rank, then project onto the shelf's (type, id) key space.
+    hit_rank = {
+        (str(h.get("corpus")), str(h.get("content_id"))): i
+        for i, h in enumerate(page.hits)
+    }
+
+    out: dict[tuple[str, str], int] = {}
+    for ct, cid in keys:
+        if ct == "article":
+            parent = ls.parent_regulation_of_article(cid)
+            rank = hit_rank.get(("regulation", str(parent))) if parent else None
+        else:
+            rank = hit_rank.get((ct, cid))
+        if rank is not None:
+            out[(ct, cid)] = rank
+    return out, page.total_is_exact
+
+
+def search_shelf(
+    supabase: SupabaseClient, user_id: str, query: str
+) -> tuple[list[dict[str, Any]], bool]:
+    """Shelf hits in ``search_service`` hit shape — backs ``GET /search/mine``. SYNC.
+
+    Returns ``(hits, total_is_exact)``. The hits carry the slug resolved from the
+    sidecar so ``/search/mine`` can build a URL without a second lookup per row;
+    a shelf item with no published page yields no slug and therefore no link,
+    which is the same answer ``_public_page_url`` gives the listing.
+    """
+    ranks, exact = shelf_rank(supabase, str(user_id), query)
+    if not ranks:
+        return [], exact
+
+    # مواد resolve to their نظام's page (the rule ``_public_page_url`` states),
+    # so they are folded into the parent rather than emitted as their own hit —
+    # otherwise one نظام could occupy five result rows.
+    by_item: dict[tuple[str, str], int] = {}
+    for (ct, cid), rank in ranks.items():
+        if ct == "article":
+            parent = ls.parent_regulation_of_article(cid)
+            if not parent:
+                continue
+            ct, cid = "regulation", str(parent)
+        by_item[(ct, cid)] = min(by_item.get((ct, cid), rank), rank)
+
+    by_type: dict[str, list[str]] = {}
+    for ct, cid in by_item:
+        by_type.setdefault(ct, []).append(cid)
+    cards = _hydrate(supabase, by_type)
+
+    hits: list[dict[str, Any]] = []
+    for (ct, cid), rank in sorted(by_item.items(), key=lambda kv: kv[1]):
+        card = cards.get((ct, cid), {})
+        hits.append(
+            {
+                "corpus": ct,
+                "content_id": cid,
+                "slug": card.get("slug"),
+                "title": card.get("title") or "",
+                "facets": {},
+                # A DESCENDING pseudo-score so the merge in ``/search/mine``
+                # interleaves shelf hits with blog/template hits sensibly. The
+                # real BM25 score is not carried through the shelf intersection
+                # (rank is what survives), and mixing a raw score with a
+                # rank-derived one would be worse than being explicit about it.
+                "score": float(search_service.MAX_RESULTS - rank),
+            }
+        )
+    return hits, exact
+
+
 async def list_items(
     supabase: SupabaseClient,
     user_id: str,
@@ -1053,6 +1251,7 @@ async def list_items(
     sort: str = "recent",
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
+    q: Optional[str] = None,
 ) -> dict[str, Any]:
     """One page of «مكتبتي» — the hub-shaped envelope (§5B.5).
 
@@ -1100,10 +1299,18 @@ async def list_items(
     ``is_paid=False``, ``frozen_count=0``) but the listing does not — an unknown
     predicate over never-gated metadata leaks nothing, whereas an empty shelf
     would be a visible product failure.
+
+    ``q`` (BM25 over the shelf, see ``shelf_rank``) narrows the rows AND replaces
+    ``sort`` for that request — a result list ordered by "recently used" is not a
+    result list. ``counts`` deliberately stays whole-shelf: it drives TAB
+    VISIBILITY, and tabs vanishing mid-search would make the shelf look emptied.
+    ``total``/``total_pages`` do reflect the filter, because those describe the
+    list the caller is paging.
     """
     page = max(1, int(page or 1))
     page_size = max(1, min(MAX_PAGE_SIZE, int(page_size or DEFAULT_PAGE_SIZE)))
     sort = normalize_sort(sort)
+    q = (q or "").strip() or None
 
     # مواد ride along with the نظام tab (and with the unfiltered view).
     if content_type is None:
@@ -1191,7 +1398,30 @@ async def list_items(
              "saved": _sort_ts(r.get("saved_at"))}
         )
 
-    if sort == "most_used":
+    if q:
+        # ---- SEARCH MODE (§5.2) — narrow, then order by relevance ---------
+        # A GROUP matches when the نظام itself matches OR any of its nested مواد
+        # do: the مادة is displayed inside the نظام card, so hiding the group
+        # would hide a genuine hit. The group's rank is the best of the two.
+        ranks, _exact = await run_db(shelf_rank, supabase, str(user_id), q)
+        if ranks:
+            def _entry_rank(e: dict[str, Any]) -> Optional[int]:
+                cid = str(e["content_id"])
+                candidates = [ranks.get((str(e["content_type"]), cid))]
+                if e["content_type"] == "regulation":
+                    candidates += [
+                        ranks.get(("article", str(k.get("content_id"))))
+                        for k in children.get(cid, [])
+                    ]
+                found = [r for r in candidates if r is not None]
+                return min(found) if found else None
+
+            ranked = [(r, e) for e in entries if (r := _entry_rank(e)) is not None]
+            ranked.sort(key=lambda pair: pair[0])
+            entries = [e for _r, e in ranked]
+        else:
+            entries = []
+    elif sort == "most_used":
         entries.sort(key=lambda e: (e["use"], e["last"]), reverse=True)
     elif sort == "saved":
         entries.sort(key=lambda e: (e["saved"], e["last"]), reverse=True)
@@ -1289,6 +1519,9 @@ async def list_items(
         "total_pages": total_pages,
         "content_type": content_type,
         "sort": sort,
+        # Echoed so the client can tell "the shelf is empty" from "this SEARCH is
+        # empty" without re-reading its own query string.
+        "q": q,
         "counts": counts,
         "stored_library_count": stored,
         "frozen_count": frozen,

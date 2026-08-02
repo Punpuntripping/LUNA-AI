@@ -570,8 +570,13 @@ export type SourceView =
       title: string;
       content: string;
       regulation_title: string;
+      /**
+       * Parent regulation's landing page — the ONE external exit. The PDF
+       * companion was removed with the reference redesign (2026-08-01): the
+       * source popup offers exactly two ways out, the official link and the
+       * item's page in our own library.
+       */
       regulation_source_url: string;
-      regulation_pdf_link: { url?: string; [k: string]: unknown } | null;
     }
   | {
       source_type: 'case';
@@ -1217,6 +1222,22 @@ export interface ReferenceSourceResponse {
   unlocked: ReferenceUnlockInfo;
   /** `null` for a policy-open item — the meter was never consulted. */
   balance: ReferenceBalance | null;
+  /**
+   * The cited item's page in OUR library — `/regulations/{slug}`,
+   * `/judgments/{slug}`, `/circulars/{slug}` or `/compliance/{slug}` — for the
+   * «فتح ... في ريحان» button beside the official link.
+   *
+   * `null` means the item has NO published page (no `seo_item_meta` slug yet),
+   * and the button must then be dropped entirely. Never substitute the wing hub:
+   * a button that promises the document and delivers a list is worse than one
+   * that isn't there.
+   *
+   * A مادة-level citation resolves to its **نظام** page, not to
+   * `/regulations/{reg}/{article}` — the chunk behind a citation is an arbitrary
+   * slice and 81% of them already lift to the whole statute, so the button
+   * always lands in the same place.
+   */
+  library_url: string | null;
 }
 
 /** Why a reveal produced no source, when it was NOT an entitlement refusal. */
