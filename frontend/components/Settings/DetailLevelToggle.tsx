@@ -10,11 +10,15 @@ interface DetailLevelOption {
   label: string;
 }
 
-const OPTIONS: readonly DetailLevelOption[] = [
+/** Shared source for every surface that renders the detail-level choice —
+ *  the settings segmented control here and the composer «+» menu submenu. */
+export const DETAIL_LEVEL_OPTIONS: readonly DetailLevelOption[] = [
   { value: "low", label: "مختصر" },
   { value: "medium", label: "متوسط" },
   { value: "high", label: "مفصّل" },
 ] as const;
+
+const OPTIONS = DETAIL_LEVEL_OPTIONS;
 
 interface DetailLevelToggleProps {
   /** Optional extra classes for the outer wrapper */

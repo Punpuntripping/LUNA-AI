@@ -2,14 +2,13 @@
 
 import { useState } from "react";
 import {
+  ChevronDown,
   CreditCard,
-  FileText,
   Gauge,
   Info,
   KeyRound,
   LogOut,
   Settings,
-  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   User,
@@ -19,6 +18,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { LEGAL_ROUTES } from "@/lib/legal";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -37,6 +37,31 @@ import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 import { ConversationSettingsDialog } from "@/components/Settings/ConversationSettingsDialog";
 import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
 
+/**
+ * عن ريحان expandable — a mirror of the public header's «عن ريحان» dropdown
+ * with «السياسات» folded in, so the settings popover reflects the header
+ * instead of duplicating loose rows (bottom group reduced 5 → 3, 2026-08-02).
+ */
+const ABOUT_LINKS = [
+  { label: "عن ريحان", href: "/about_us", testId: "sidebar-settings-about-hub" },
+  { label: "لمن ريحان؟", href: "/audiences", testId: "sidebar-settings-audiences" },
+  {
+    label: "ريحان مقابل ChatGPT",
+    href: "/vs-chatgpt",
+    testId: "sidebar-settings-vs-chatgpt",
+  },
+  {
+    label: "الشروط والأحكام",
+    href: LEGAL_ROUTES.terms,
+    testId: "sidebar-settings-terms",
+  },
+  {
+    label: "سياسة الخصوصية",
+    href: LEGAL_ROUTES.privacy,
+    testId: "sidebar-settings-privacy",
+  },
+] as const;
+
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
@@ -44,6 +69,7 @@ export function SidebarFooter() {
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -66,7 +92,13 @@ export function SidebarFooter() {
         </div>
 
         <div className="flex items-center gap-1">
-          <Popover>
+          <Popover
+            onOpenChange={(open) => {
+              // Reopen collapsed — a stale-expanded عن ريحان section can push
+              // the popover taller than a short viewport and clip its top rows.
+              if (!open) setAboutOpen(false);
+            }}
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <PopoverTrigger asChild>
@@ -88,7 +120,7 @@ export function SidebarFooter() {
             <PopoverContent
               side="top"
               align="end"
-              className="w-72"
+              className="max-h-[min(80vh,34rem)] w-72 overflow-y-auto"
               data-testid="sidebar-settings-popover"
             >
               <div className="flex flex-col gap-3" dir="rtl">
@@ -148,7 +180,7 @@ export function SidebarFooter() {
                 >
                   <span className="flex items-center gap-2">
                     <CreditCard className="h-4 w-4" />
-                    الباقات والأسعار
+                    ترقية باقتك
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
@@ -158,54 +190,66 @@ export function SidebarFooter() {
                     sidebar tab under مدوناتي, and the public library is reached
                     from the global header. */}
                 <Separator />
-                <Button
-                  variant="ghost"
-                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => useOnboardingStore.getState().open()}
-                  data-testid="sidebar-settings-onboarding-trigger"
-                >
-                  <span className="flex items-center gap-2">
+                {/* Bottom group = 3 rows mirroring the public header:
+                    عن ريحان (expandable, السياسات folded in) · اكتشف ريحان
+                    (tour popup + أدلة /learn) — replaced the loose عن ريحان /
+                    الشروط / الخصوصية rows (5 → 3, 2026-08-02). */}
+                <div>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                    onClick={() => setAboutOpen((open) => !open)}
+                    aria-expanded={aboutOpen}
+                    data-testid="sidebar-settings-about"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Info className="h-4 w-4" />
+                      عن ريحان والسياسات
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 text-muted-foreground transition-transform",
+                        aboutOpen && "rotate-180",
+                      )}
+                    />
+                  </Button>
+                  {aboutOpen && (
+                    <div className="flex flex-col gap-0.5 pb-1 pe-2 ps-8">
+                      {ABOUT_LINKS.map((link) => (
+                        <button
+                          key={link.href}
+                          type="button"
+                          onClick={() => window.open(link.href, "_blank")}
+                          data-testid={link.testId}
+                          className="rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          {link.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    className="flex-1 justify-start gap-2 px-2 text-sm font-medium"
+                    onClick={() => useOnboardingStore.getState().open()}
+                    data-testid="sidebar-settings-onboarding-trigger"
+                  >
                     <Sparkles className="h-4 w-4" />
-                    اتعرف على ريحان
-                  </span>
-                  <span className="text-muted-foreground">›</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => window.open("/about_us", "_blank")}
-                  data-testid="sidebar-settings-about"
-                >
-                  <span className="flex items-center gap-2">
-                    <Info className="h-4 w-4" />
-                    عن ريحان
-                  </span>
-                  <span className="text-muted-foreground">›</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => window.open(LEGAL_ROUTES.terms, "_blank")}
-                  data-testid="sidebar-settings-terms"
-                >
-                  <span className="flex items-center gap-2">
-                    <FileText className="h-4 w-4" />
-                    الشروط والأحكام
-                  </span>
-                  <span className="text-muted-foreground">›</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => window.open(LEGAL_ROUTES.privacy, "_blank")}
-                  data-testid="sidebar-settings-privacy"
-                >
-                  <span className="flex items-center gap-2">
-                    <ShieldCheck className="h-4 w-4" />
-                    سياسة الخصوصية
-                  </span>
-                  <span className="text-muted-foreground">›</span>
-                </Button>
+                    اكتشف ريحان
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 px-2 text-xs text-muted-foreground"
+                    onClick={() => window.open("/learn", "_blank")}
+                    aria-label="أدلة اكتشف ريحان"
+                    data-testid="sidebar-settings-learn"
+                  >
+                    المزيد
+                  </Button>
+                </div>
               </div>
             </PopoverContent>
           </Popover>

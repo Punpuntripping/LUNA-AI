@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BookText,
+  Check,
   LayoutTemplate,
   Link2,
   Loader2,
   Paperclip,
   Plus,
+  SlidersHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +32,8 @@ import {
 } from "@/components/ui/dialog";
 import { useTemplates } from "@/hooks/use-templates";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
+import { usePreferencesStore } from "@/stores/preferences-store";
+import { DETAIL_LEVEL_OPTIONS } from "@/components/Settings/DetailLevelToggle";
 import type { PendingTemplate } from "@/types";
 
 interface ComposerPlusMenuProps {
@@ -149,6 +153,11 @@ function MyBlogMenuList({ onPick }: { onPick: (token: string) => void }) {
  *   - مرفق  → the unchanged file picker (FilePreview cards).
  *   - قالب  → scrollable قوالبي list → single template chip.
  *   - مدونة → «إضافة رابط» dialog + scrollable «من مدوناتي» list → blog chips.
+ *
+ * Plus one setting, below a separator:
+ *
+ *   - مستوى التفصيل → the deep-search verbosity preference (same
+ *     `user_preferences.detail_level` the إعدادات المحادثة dialog edits).
  */
 export function ComposerPlusMenu({
   disabled,
@@ -160,6 +169,27 @@ export function ComposerPlusMenu({
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [linkValue, setLinkValue] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
+
+  // مستوى التفصيل — the same preference إعدادات المحادثة edits
+  // (user_preferences.detail_level); surfaced here so it is one tap away when
+  // composing a deep-search question. Both surfaces read one store slice, so
+  // they can never disagree.
+  const detailLevel = usePreferencesStore((s) => s.detailLevel);
+  const detailHydrated = usePreferencesStore((s) => s.isHydrated);
+  const detailSaving = usePreferencesStore((s) => s.isSaving);
+  const hydratePreferences = usePreferencesStore((s) => s.hydrate);
+  const setDetailLevel = usePreferencesStore((s) => s.setDetailLevel);
+
+  // One-shot hydration on mount (the store guards against double-loads), so
+  // the submenu shows the real value even before settings is ever opened.
+  useEffect(() => {
+    if (!detailHydrated) {
+      void hydratePreferences();
+    }
+  }, [detailHydrated, hydratePreferences]);
+
+  const activeDetailLabel =
+    DETAIL_LEVEL_OPTIONS.find((o) => o.value === detailLevel)?.label ?? "";
 
   const handleLinkSubmit = useCallback(() => {
     const token = extractBlogToken(linkValue);
@@ -239,6 +269,42 @@ export function ComposerPlusMenu({
               <div className="max-h-60 overflow-y-auto">
                 <MyBlogMenuList onPick={(token) => onAddBlogTokens([token])} />
               </div>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSeparator />
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              className="gap-2"
+              data-testid="composer-detail-level-trigger"
+            >
+              <SlidersHorizontal className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span>مستوى التفصيل</span>
+              {activeDetailLabel && (
+                <span className="ms-auto text-xs text-muted-foreground">
+                  {activeDetailLabel}
+                </span>
+              )}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-52">
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                اختر مستوى التفصيل للإجابة
+              </DropdownMenuLabel>
+              {DETAIL_LEVEL_OPTIONS.map((opt) => (
+                <DropdownMenuItem
+                  key={opt.value}
+                  className="justify-between gap-2"
+                  disabled={detailSaving || !detailHydrated}
+                  data-testid={`composer-detail-level-${opt.value}`}
+                  onSelect={() => void setDetailLevel(opt.value)}
+                >
+                  <span>{opt.label}</span>
+                  {detailLevel === opt.value && (
+                    <Check className="h-4 w-4 shrink-0 text-primary" />
+                  )}
+                </DropdownMenuItem>
+              ))}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         </DropdownMenuContent>
