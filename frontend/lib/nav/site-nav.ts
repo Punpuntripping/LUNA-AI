@@ -111,7 +111,7 @@ export const SITE_NAV: NavGroup[] = [
         label: "كيف يعمل ريحان",
         href: "/learn/how-it-works",
         description: "من السؤال إلى التقرير الموثّق",
-        enabled: false,
+        enabled: true,
       },
       {
         label: "دليل الاستخدام",
