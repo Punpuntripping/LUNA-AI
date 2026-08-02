@@ -3,7 +3,8 @@ import { TopicBreadcrumbs } from "@/components/library/blocks/TopicBreadcrumbs";
 import { CircularCard } from "@/components/library/hub/CircularCard";
 import { HubPagination } from "@/components/library/hub/HubPagination";
 import { HubCtaWall } from "@/components/library/hub/HubCtaWall";
-import { getCircularsHub } from "@/lib/library/api";
+import { HubSearchPanel } from "@/components/library/hub/HubSearchPanel";
+import { getCircularsHub, getSectorSlugMap } from "@/lib/library/api";
 import type { BreadcrumbItem } from "@/types/library";
 
 /**
@@ -23,7 +24,12 @@ export async function CircularsHubView({
   page: number;
   verifiedBot?: boolean;
 }) {
-  const data = await getCircularsHub(page, undefined, { verifiedBot });
+  // `getSectorSlugMap` soft-fails to `{}` — a missing map costs the sector
+  // pills their links, never the hub its render.
+  const [data, sectorSlugs] = await Promise.all([
+    getCircularsHub(page, undefined, { verifiedBot }),
+    getSectorSlugMap(),
+  ]);
   const items = data?.items ?? [];
   const isCap = data?.cap_reached ?? false;
   // Unauthenticated + ISR-cached ⇒ always the ANON cap (PART 9 trap 2). The
@@ -54,34 +60,44 @@ export async function CircularsHubView({
           </p>
         </header>
 
-        {isCap ? (
-          <HubCtaWall
-            section="circulars"
-            basePath="/circulars"
-            page={page}
-            totalPages={data?.total_pages ?? 0}
-            anonMaxPage={anonMaxPage}
-          />
-        ) : items.length === 0 ? (
-          <p className="py-16 text-center text-sm text-muted-foreground">
-            لا توجد تعاميم لعرضها حالياً.
-          </p>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {items.map((item) => (
-                <CircularCard key={item.slug} item={item} />
-              ))}
+        {/* The wing's first search box (bm25_navigation_search.md §6.2) — see
+            `HubSearchPanel` for why the query runs client-side and why `q`
+            never reaches the ISR-cached fetch above. */}
+        <HubSearchPanel section="circulars" sectorSlugs={sectorSlugs}>
+          {isCap ? (
+            <HubCtaWall
+              section="circulars"
+              basePath="/circulars"
+              page={page}
+              totalPages={data?.total_pages ?? 0}
+              anonMaxPage={anonMaxPage}
+              sectorSlugs={sectorSlugs}
+            />
+          ) : items.length === 0 ? (
+            <p className="py-16 text-center text-sm text-muted-foreground">
+              لا توجد تعاميم لعرضها حالياً.
+            </p>
+          ) : (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {items.map((item) => (
+                  <CircularCard
+                    key={item.slug}
+                    item={item}
+                    sectorSlugs={sectorSlugs}
+                  />
+                ))}
+              </div>
+              {data && (
+                <HubPagination
+                  basePath="/circulars"
+                  currentPage={data.page}
+                  totalPages={data.total_pages}
+                />
+              )}
             </div>
-            {data && (
-              <HubPagination
-                basePath="/circulars"
-                currentPage={data.page}
-                totalPages={data.total_pages}
-              />
-            )}
-          </>
-        )}
+          )}
+        </HubSearchPanel>
       </div>
     </LibraryPageShell>
   );

@@ -120,8 +120,16 @@ LIBRARY_FULL_PREFIX = "/api/v1/library/full/"
 
 # Sections whose item tail is dynamic. `sitemap` is deliberately NOT here: it is
 # a small fixed set of feeds, and keeping per-section keys costs nothing.
+#
+# `sectors` IS here (added 2026-08-01): `/public/library/sectors/{slug}` has 38
+# tails, and each one left uncollapsed carries its own DEFAULT_RATE_LIMIT — 38 ×
+# 60/min instead of the one shared 600/min bucket. That endpoint runs all four
+# hub listers per request (~15-20 PostgREST round-trips), so it is the most
+# expensive per-call surface in the wing and the least suitable one to hand a
+# per-slug budget. The flat `/public/library/sectors` list has no tail and keeps
+# its own key, like every other hub list path.
 PUBLIC_LIBRARY_SECTIONS = frozenset(
-    {"regulations", "compliance", "circulars", "judgments", "forms"}
+    {"regulations", "compliance", "circulars", "judgments", "forms", "sectors"}
 )
 
 ITEM_PLACEHOLDER = ":item"

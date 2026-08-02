@@ -12,36 +12,21 @@ import {
   rateLimitedCopy,
   type RefusalCardCopy,
 } from "@/lib/library/gate-copy";
-import { RegulationCard } from "@/components/library/hub/RegulationCard";
-import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
-import { CircularCard } from "@/components/library/hub/CircularCard";
-import { JudgmentCard } from "@/components/library/hub/JudgmentCard";
-import { FormCard } from "@/components/library/hub/FormCard";
 import { HubPagination } from "@/components/library/hub/HubPagination";
-import type {
-  RegulationHubItem,
-  ComplianceHubItem,
-  CircularHubItem,
-  FormHubItem,
-} from "@/lib/library/api";
-import type { JudgmentHubItem } from "@/types/library";
+import {
+  HubCards,
+  type HubItem,
+  type HubSection,
+} from "@/components/library/hub/HubCards";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-/** The five public wings, named exactly as their backend path segment. */
-export type HubSection =
-  | "regulations"
-  | "compliance"
-  | "circulars"
-  | "judgments"
-  | "forms";
-
-type HubItem =
-  | RegulationHubItem
-  | ComplianceHubItem
-  | CircularHubItem
-  | JudgmentHubItem
-  | FormHubItem;
+/**
+ * Re-exported for callers that predate the split. The type — and the card
+ * switch that used to live here — moved to `HubCards.tsx` when the live search
+ * panel became a second client-side producer of hub cards.
+ */
+export type { HubSection };
 
 /** The hub envelope, as read from the CLIENT-side authed call. */
 interface AuthedHubPayload {
@@ -67,8 +52,22 @@ interface HubCtaWallProps {
    * fallback for when the authed call cannot report a better one.
    */
   anonMaxPage: number;
-  /** Already-encoded filter query (no leading "?") to carry across page links. */
+  /**
+   * Already-encoded filter query (no leading "?") sent with the AUTHED FETCH,
+   * so a revealed page shows the same filtered slice the server render asked
+   * for.
+   */
   query?: string;
+  /**
+   * Query carried on the revealed PAGINATION LINKS. Defaults to `query`.
+   *
+   * Pass `""` when the filter lives in the PATH rather than the query string —
+   * `/library/{sector}/{type}` already says which sector it is, and appending
+   * `?sector_slug=…` to those links would mint a second URL for one page.
+   */
+  linkQuery?: string;
+  /** `name_ar → slug` for the sector pills on the revealed cards (D11). */
+  sectorSlugs?: Record<string, string>;
 }
 
 type Phase = "loading" | "ready" | "capped" | "error" | "rate_limited";
@@ -110,6 +109,8 @@ export function HubCtaWall({
   totalPages,
   anonMaxPage,
   query,
+  linkQuery,
+  sectorSlugs,
 }: HubCtaWallProps) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const [phase, setPhase] = useState<Phase>("loading");
@@ -189,13 +190,17 @@ export function HubCtaWall({
   return (
     <>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <HubCards section={section} items={data.items} />
+        <HubCards
+          section={section}
+          items={data.items}
+          sectorSlugs={sectorSlugs}
+        />
       </div>
       <HubPagination
         basePath={basePath}
         currentPage={data.page}
         totalPages={data.total_pages || totalPages}
-        query={query}
+        query={linkQuery ?? query}
       />
     </>
   );
@@ -220,6 +225,9 @@ function Wall({ copy }: { copy: RefusalCardCopy }) {
   return (
     <section
       dir="rtl"
+      // Tagged for the anon conversion POPUP's gate 5 (T6) — never two calls to
+      // action on screen at once.
+      data-anon-cta
       className="mx-auto my-8 max-w-xl overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-8 text-center shadow-md sm:p-10"
     >
       <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
@@ -239,67 +247,6 @@ function Wall({ copy }: { copy: RefusalCardCopy }) {
       )}
     </section>
   );
-}
-
-// ------------------------------------------------------------------
-// Per-wing card rendering
-// ------------------------------------------------------------------
-
-/**
- * The wire is JSON, so the item shape is narrowed by `section` rather than by
- * the type system — the same boundary assertion `lib/library/api.ts` makes on
- * its own fetchers. Each branch renders the SAME card component the server hub
- * view uses, so a revealed page is pixel-identical to an in-cap one.
- */
-function HubCards({
-  section,
-  items,
-}: {
-  section: HubSection;
-  items: HubItem[];
-}) {
-  switch (section) {
-    case "regulations":
-      return (
-        <>
-          {(items as RegulationHubItem[]).map((item) => (
-            <RegulationCard key={item.slug} item={item} />
-          ))}
-        </>
-      );
-    case "compliance":
-      return (
-        <>
-          {(items as ComplianceHubItem[]).map((item) => (
-            <ComplianceCard key={item.slug} item={item} />
-          ))}
-        </>
-      );
-    case "circulars":
-      return (
-        <>
-          {(items as CircularHubItem[]).map((item) => (
-            <CircularCard key={item.slug} item={item} />
-          ))}
-        </>
-      );
-    case "judgments":
-      return (
-        <>
-          {(items as JudgmentHubItem[]).map((item) => (
-            <JudgmentCard key={item.slug} item={item} />
-          ))}
-        </>
-      );
-    case "forms":
-      return (
-        <>
-          {(items as FormHubItem[]).map((item) => (
-            <FormCard key={item.slug} item={item} />
-          ))}
-        </>
-      );
-  }
 }
 
 // ------------------------------------------------------------------

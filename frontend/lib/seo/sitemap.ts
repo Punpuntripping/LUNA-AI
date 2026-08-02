@@ -4,6 +4,13 @@
 // one-line edit here plus a case in the section route.
 
 import { CALCULATORS } from "@/lib/calculators/registry";
+import { getSectors } from "@/lib/library/api";
+import {
+  LIBRARY_TYPES,
+  sectorPath,
+  sectorTypePath,
+  sectorTypeRobots,
+} from "@/lib/library/sectors";
 // Backend origin + request init for the anon sitemap feed endpoints. Server-only,
 // and deliberately the SAME pair the library fetchers use: `INTERNAL_API_URL`
 // (runtime, Railway private network) → `NEXT_PUBLIC_API_URL` (Docker build ARG)
@@ -40,6 +47,7 @@ export const SITEMAP_SECTIONS = [
   "circulars",
   "forms",
   "calculators",
+  "sectors",
 ] as const;
 
 export type SitemapSection = (typeof SITEMAP_SECTIONS)[number];
@@ -77,10 +85,15 @@ ${entries}
 </urlset>`;
 }
 
-/** Hardcoded marketing + legal pages — the `static` section. `/library` and
- *  `/learn` are intentionally EXCLUDED while they are placeholder hubs (they
- *  carry `robots: noindex` until real content lands); `/vs-chatgpt` ships with
- *  full content, so it is indexable and listed here. */
+/** Hardcoded marketing + legal pages — the `static` section. `/learn` is
+ *  intentionally EXCLUDED while it is a placeholder hub (it carries
+ *  `robots: noindex` until real content lands); `/vs-chatgpt` ships with full
+ *  content, so it is indexable and listed here.
+ *
+ *  `/library` WAS excluded for the same placeholder reason and is now listed:
+ *  `library_sectors.md` D1 replaced the `ComingSoonHub` with the real unified
+ *  hub and dropped its `robots: noindex`. Its 38 sector pages and their
+ *  sector×type lists live in the `sectors` section below, not here. */
 export function getStaticUrls(): SitemapUrl[] {
   const paths = [
     "/",
@@ -91,6 +104,7 @@ export function getStaticUrls(): SitemapUrl[] {
     "/about_us",
     "/vs-chatgpt",
     "/blog",
+    "/library",
   ];
   return paths.map((path) => ({
     loc: path === "/" ? `${SITE_URL}/` : `${SITE_URL}${path}`,
@@ -110,6 +124,48 @@ export function getCalculatorUrls(): SitemapUrl[] {
       loc: `${SITE_URL}/calculators/${encodeURIComponent(calc.slug)}`,
     })),
   ];
+}
+
+/**
+ * The sector wing — `/library/{sector}` plus every INDEXABLE
+ * `/library/{sector}/{type}` list (`library_sectors.md` §12.6).
+ *
+ * Built LOCALLY from the `/sectors` counts endpoint rather than from a backend
+ * sitemap feed, because that endpoint already carries everything the decision
+ * needs: the slugs, and the 152 per-type counts. A second feed would be a second
+ * copy of the indexability rule, and the two would drift.
+ *
+ * WHICH URLS QUALIFY — the filter is `sectorTypeRobots()`, THE SAME PREDICATE
+ * THE PAGES THEMSELVES USE for their `<meta name="robots">`. That shared call is
+ * the point: a sitemap that lists a URL the page marks `noindex` is a
+ * self-contradiction Search Console reports as "Submitted URL marked noindex",
+ * and it is the exact drift that happens when the rule gets restated here.
+ * `capped: false` is correct — only page 1 of each list is ever listed, and page
+ * 1 is inside every tier's depth cap.
+ *
+ * That currently yields 147 URLs (verified against the live corpus 2026-08-01):
+ * 38 overviews + 109 sector×type lists. The plan's "~142" estimate predates two
+ * exclusions it did not account for — the 38 أحكام combinations held back by the
+ * PDPL gate, and 4 more under the D9 thin-page threshold.
+ *
+ * Fail-safe: `getSectors()` returns [] rather than throwing when the backend is
+ * unreachable, so this degrades to an empty-but-valid <urlset>, never a 5xx.
+ */
+export async function getSectorUrls(): Promise<SitemapUrl[]> {
+  const sectors = await getSectors();
+  const urls: SitemapUrl[] = [];
+
+  for (const sector of sectors) {
+    urls.push({ loc: `${SITE_URL}${sectorPath(sector.slug)}` });
+    for (const type of LIBRARY_TYPES) {
+      const count = sector.counts[type] ?? 0;
+      if (count === 0) continue; // renders no tab, 404s on a direct hit (D9)
+      if (sectorTypeRobots(type, count, false)) continue; // noindex — do not list
+      urls.push({ loc: `${SITE_URL}${sectorTypePath(sector.slug, type)}` });
+    }
+  }
+
+  return urls;
 }
 
 /** Shape of one page of a backend sitemap feed (shared by every section). */

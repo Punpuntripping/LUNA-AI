@@ -74,14 +74,49 @@ export const revealCopy = {
    * The sub-line under the anonymous CTA. When the page knows how many sections
    * are entirely behind the gate, say so — a concrete number converts far better
    * than a generic promise.
+   *
+   * ⚠ It does NOT quote the monthly allowance any more (user, 2026-08-01). The
+   * sub-line sits under a CTA about THIS document; naming a ten-a-month cap there
+   * answers a question nobody asked and sets a ceiling before the reader has seen
+   * a single مصدر. The allowance still shows where it belongs — the balance chip
+   * and إعدادات → حدود الاستخدام, for readers who already have an account.
    */
   anonHint: (hiddenSections?: number): string =>
     hiddenSections && hiddenSections > 0
-      ? `${arSections(hiddenSections)} بانتظارك — أنشئ حسابك المجاني وافتح عشرة مصادر كاملة كل شهر.`
-      : "أنشئ حسابك المجاني وافتح عشرة مصادر كاملة كل شهر.",
+      ? `${arSections(hiddenSections)} بانتظارك — افتح حسابك المجاني واعرض المصدر`
+      : "افتح حسابك المجاني واعرض المصدر",
   authedHint: "يُحتسب المصدر مرة واحدة فقط — العودة إليه لاحقاً مجانية.",
   retryCta: "إعادة المحاولة",
 } as const;
+
+/**
+ * The شرح variant of the same action.
+ *
+ * On a مادة of an OPEN نظام the نص is already whole on the page — only the AI شرح
+ * sits behind the gate (it is Rayhan's own value-add, gated independently of the
+ * article's tier). «اعرض النص كاملاً» there would promise the reader exactly what
+ * they are already reading, which is the one thing a gate CTA must never do.
+ *
+ * Same shape as `revealCopy` so `RevealPanel` can swap the whole object.
+ */
+export const sharhRevealCopy = {
+  authedCta: "اعرض الشرح كاملاً",
+  anonCta: "سجّل مجاناً لعرض الشرح كاملاً",
+  loadingCta: "جارٍ الفتح…",
+  // «الشرح», not «المصدر» — this gate opens the شرح, and the sub-line has to name
+  // what the click actually buys, same rule as the CTA above it.
+  anonHint: (_hiddenSections?: number): string =>
+    "شرح مبسّط موثّق من ريحان — افتح حسابك المجاني واعرض الشرح",
+  authedHint: revealCopy.authedHint,
+  retryCta: revealCopy.retryCta,
+} as const;
+
+/** What a given reveal action actually buys — picks the CTA wording. */
+export type RevealTarget = "content" | "sharh";
+
+export function revealCopyFor(target: RevealTarget) {
+  return target === "sharh" ? sharhRevealCopy : revealCopy;
+}
 
 // ------------------------------------------------------------------
 // The passive balance chip — «no prompt, but never a silent meter» (§5.1)
@@ -278,7 +313,9 @@ export const rateLimitedCopy: RefusalCardCopy = {
  */
 export const sourceUnavailableCopy: RefusalCardCopy = {
   title: "تعذّر عرض هذا المصدر",
-  body: "لا يتوفر نص هذا المصدر حالياً. يمكنك فتح الرابط الرسمي من بطاقة المرجع.",
+  // Names the card's button verbatim («فتح المصدر الرسمي») — copy that points at
+  // an affordance must use the affordance's own words.
+  body: "لا يتوفر نص هذا المصدر حالياً. يمكنك فتح المصدر الرسمي من بطاقة المرجع.",
 };
 
 export interface UnlockedNoticeInput {

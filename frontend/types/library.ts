@@ -436,21 +436,6 @@ export interface MediaBlockProps {
   className?: string;
 }
 
-export interface PdfViewerBlockProps {
-  /**
-   * `preview` → anon-gated: first-page preview image + lock overlay + CTA.
-   * `full`    → renders an `<iframe>`/`<object>` to `pdfUrl`.
-   */
-  mode: "preview" | "full";
-  pdfUrl: string;
-  title?: string;
-  /** First-page preview image (preview mode). */
-  previewImageUrl?: string;
-  /** CTA target in preview mode. Default "/login". */
-  ctaHref?: string;
-  className?: string;
-}
-
 export interface AskRayhanWidgetProps {
   pageType: LibraryPageType;
   pageId: string;

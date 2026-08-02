@@ -26,11 +26,13 @@ import {
   balanceCopy,
   refusalCardCopy,
   revealCopy,
+  revealCopyFor,
   rateLimitedCopy,
   sourceUnavailableCopy,
   staleSessionCopy,
   transportErrorCopy,
   type RefusalCardCopy,
+  type RevealTarget,
 } from "@/lib/library/gate-copy";
 
 /**
@@ -59,6 +61,12 @@ interface FullContentGateProps {
    * string itself lives in `gate-copy.ts` like every other gate string.
    */
   hiddenSections?: number;
+  /**
+   * What the reveal actually buys, which is what its CTA must say. `"content"`
+   * (default) → «اعرض النص كاملاً». `"sharh"` → «اعرض الشرح كاملاً», for a مادة
+   * whose نص already renders in full and whose only gated region is the AI شرح.
+   */
+  revealTarget?: RevealTarget;
   /** The ANON, gate-truncated render — shown on server + for signed-out readers. */
   children: ReactNode;
 }
@@ -97,6 +105,7 @@ export function FullContentGate({
   kind,
   gated = true,
   hiddenSections,
+  revealTarget = "content",
   children,
 }: FullContentGateProps) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -204,6 +213,7 @@ export function FullContentGate({
           balance={balance}
           card={card}
           hiddenSections={hiddenSections}
+          revealTarget={revealTarget}
           onReveal={reveal}
         />
       )}
@@ -221,6 +231,7 @@ interface RevealPanelProps {
   balance: LibraryBalance | null;
   card: RefusalCardCopy | null;
   hiddenSections?: number;
+  revealTarget: RevealTarget;
   onReveal: () => void;
 }
 
@@ -230,8 +241,12 @@ function RevealPanel({
   balance,
   card,
   hiddenSections,
+  revealTarget,
   onReveal,
 }: RevealPanelProps) {
+  // «النص» vs «الشرح» — the CTA has to name what is actually behind the gate.
+  const copy = revealCopyFor(revealTarget);
+
   // A refusal REPLACES the action: re-offering a button that cannot succeed is
   // exactly the "trick" feeling §5.1 forbids. A retryable transport error is the
   // one exception — it carries its own retry affordance instead of a link CTA.
@@ -245,6 +260,10 @@ function RevealPanel({
     return (
       <section
         dir="rtl"
+        // Tagged for the anon conversion POPUP's gate 5 (T6): while this panel
+        // is on screen the popup drops its fire, so a reader looking at «سجّل
+        // مجاناً لعرض النص كاملاً» never gets a modal saying the same thing.
+        data-anon-cta
         className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-5 text-center shadow-xs"
       >
         <Link
@@ -252,10 +271,10 @@ function RevealPanel({
           className={cn(buttonVariants({ size: "lg" }), "shadow-sm")}
         >
           <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />
-          {revealCopy.anonCta}
+          {copy.anonCta}
         </Link>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          {revealCopy.anonHint(hiddenSections)}
+          {copy.anonHint(hiddenSections)}
         </p>
       </section>
     );
@@ -282,13 +301,13 @@ function RevealPanel({
         ) : (
           <BookOpen aria-hidden="true" className="h-4 w-4 shrink-0" />
         )}
-        {isRevealing ? revealCopy.loadingCta : revealCopy.authedCta}
+        {isRevealing ? copy.loadingCta : copy.authedCta}
       </Button>
 
       <BalanceChip balance={balance} />
 
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {revealCopy.authedHint}
+        {copy.authedHint}
       </p>
     </section>
   );

@@ -3,7 +3,8 @@ import { TopicBreadcrumbs } from "@/components/library/blocks/TopicBreadcrumbs";
 import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
 import { HubPagination } from "@/components/library/hub/HubPagination";
 import { HubCtaWall } from "@/components/library/hub/HubCtaWall";
-import { getComplianceHub } from "@/lib/library/api";
+import { HubSearchPanel } from "@/components/library/hub/HubSearchPanel";
+import { getComplianceHub, getSectorSlugMap } from "@/lib/library/api";
 import type { BreadcrumbItem } from "@/types/library";
 
 /**
@@ -22,7 +23,12 @@ export async function ComplianceHubView({
   page: number;
   verifiedBot?: boolean;
 }) {
-  const data = await getComplianceHub(page, undefined, { verifiedBot });
+  // `getSectorSlugMap` soft-fails to `{}` — a missing map costs the sector
+  // pills their links, never the hub its render.
+  const [data, sectorSlugs] = await Promise.all([
+    getComplianceHub(page, undefined, { verifiedBot }),
+    getSectorSlugMap(),
+  ]);
   const items = data?.items ?? [];
   const isCap = data?.cap_reached ?? false;
   // Unauthenticated + ISR-cached ⇒ always the ANON cap (PART 9 trap 2). The
@@ -52,34 +58,44 @@ export async function ComplianceHubView({
           </p>
         </header>
 
-        {isCap ? (
-          <HubCtaWall
-            section="compliance"
-            basePath="/compliance"
-            page={page}
-            totalPages={data?.total_pages ?? 0}
-            anonMaxPage={anonMaxPage}
-          />
-        ) : items.length === 0 ? (
-          <p className="py-16 text-center text-sm text-muted-foreground">
-            لا توجد خدمات لعرضها حالياً.
-          </p>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {items.map((item) => (
-                <ComplianceCard key={item.slug} item={item} />
-              ))}
+        {/* The wing's first search box (bm25_navigation_search.md §6.2). D4:
+            «/services» IS this wing — the `services` table backs it, and the
+            search corpus is named `service` for that reason. */}
+        <HubSearchPanel section="compliance" sectorSlugs={sectorSlugs}>
+          {isCap ? (
+            <HubCtaWall
+              section="compliance"
+              basePath="/compliance"
+              page={page}
+              totalPages={data?.total_pages ?? 0}
+              anonMaxPage={anonMaxPage}
+              sectorSlugs={sectorSlugs}
+            />
+          ) : items.length === 0 ? (
+            <p className="py-16 text-center text-sm text-muted-foreground">
+              لا توجد خدمات لعرضها حالياً.
+            </p>
+          ) : (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {items.map((item) => (
+                  <ComplianceCard
+                    key={item.slug}
+                    item={item}
+                    sectorSlugs={sectorSlugs}
+                  />
+                ))}
+              </div>
+              {data && (
+                <HubPagination
+                  basePath="/compliance"
+                  currentPage={data.page}
+                  totalPages={data.total_pages}
+                />
+              )}
             </div>
-            {data && (
-              <HubPagination
-                basePath="/compliance"
-                currentPage={data.page}
-                totalPages={data.total_pages}
-              />
-            )}
-          </>
-        )}
+          )}
+        </HubSearchPanel>
       </div>
     </LibraryPageShell>
   );

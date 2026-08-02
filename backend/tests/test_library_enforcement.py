@@ -716,10 +716,28 @@ def test_anon_hub_caps_at_page_one(stub_hubs, path) -> None:
     # backend/tests/test_library_filter_hardening.py §3.
     assert walled.json()["total_pages"] == 40
 
-    filtered = client.get(path, params={"page": 2, "q": "نظام"})
+    # ⚠ THE PROBE IS NO LONGER ``q`` (bm25_navigation_search.md D9): search is
+    # registered-only and an anonymous ``?q=`` is DROPPED, which leaves an
+    # UNFILTERED request — so it reports the real section total, and the flat
+    # ceiling has to be probed with a filter anon can still send. One per wing;
+    # the ceiling behaviour itself is unchanged.
+    anon_filter = {
+        HUBS[0][0]: {"doc_type": "law_statute"},
+        HUBS[1][0]: {"provider": "وزارة"},
+        HUBS[2][0]: {"entity": "3f8c1d2e-0000-4000-8000-000000000001"},
+        HUBS[3][0]: {"court_level": "appeal"},
+        HUBS[4][0]: {"category": ls.FORM_CATEGORIES[0]},
+    }[path]
+    filtered = client.get(path, params={"page": 2, **anon_filter})
     assert filtered.json()["cap_reached"] is True
     assert filtered.json()["total_pages"] == pl._ANON_WALL_TOTAL_PAGES
     assert filtered.json()["total_pages"] < 40
+
+    # And the D9 half: a dropped ``q`` is not a filter, so the wall answers with
+    # the section total — the same number for every query string.
+    dropped = client.get(path, params={"page": 2, "q": "نظام"})
+    assert dropped.json()["cap_reached"] is True
+    assert dropped.json()["total_pages"] == 40
 
 
 @pytest.mark.parametrize("path", [h[0] for h in HUBS])
@@ -962,17 +980,16 @@ def test_article_and_form_reveals_carry_no_official_sources(monkeypatch) -> None
     assert res.json()["official_sources"] == []
 
 
-def test_an_OPEN_tier_page_still_withholds_its_official_sources(monkeypatch) -> None:
-    """The tier earns NO exemption — open-tier is withheld too.
+def test_an_OPEN_tier_page_PUBLISHES_its_official_sources(monkeypatch) -> None:
+    """An open نظام is open end-to-end — the source link included (2026-08-01).
 
-    The block is a slug → official-ID crosswalk, and that is just as true of an
-    open-tier نظام as a gated one — more so, since those are the flagship indexed
-    pages a crawler reaches first. An earlier pass withheld only when
-    ``gate == 'gated'``, which left the 54 open-tier أنظمة publishing their
-    crosswalk anonymously.
+    Withholding exists to keep the slug → official-ID crosswalk out of anonymous
+    hands. An open-tier نظام has no crosswalk left to protect: this same payload
+    already ships its entire text to crawlers, so hiding the link to its own
+    official source protects nothing and just makes the page worse.
 
-    Withholding on EVERY item also makes the reveal the single renderer, so
-    «المصادر الرسمية» can never appear twice on one page.
+    The "exactly one renderer" invariant survives because an open item never
+    reveals — nothing on it is gated — so the block cannot appear twice.
     """
     fake = _open_tier_corpus()
     fake.tables["regulations_v2"] = [
@@ -981,8 +998,103 @@ def test_an_OPEN_tier_page_still_withholds_its_official_sources(monkeypatch) -> 
 
     doc = ls.get_regulation_doc(fake, REG_SLUG)
     assert doc["gate"] == "open", "fixture is not open-tier — test proves nothing"
+    assert doc["official_sources"] == [
+        {"title": "الموقع الرسمي", "href": "https://laws.boe.gov.sa/x/1"}
+    ]
+
+
+def test_a_GATED_page_still_withholds_its_official_sources(monkeypatch) -> None:
+    """The withholding rule is unchanged for everything that IS gated — which is
+    the whole corpus bar the 54 open-tier أنظمة."""
+    fake = _corpus()
+    fake.tables["regulations_v2"] = [
+        {"id": REG_ID, "landing_url": "https://laws.boe.gov.sa/x/1", "pdf_url": None}
+    ]
+
+    doc = ls.get_regulation_doc(fake, REG_SLUG)
+    assert doc["gate"] == "gated", "fixture is not gated — test proves nothing"
     assert doc["official_sources"] == []
     assert "laws.boe.gov.sa" not in json.dumps(doc, ensure_ascii=False)
+
+
+def test_an_OPEN_regulation_ships_EVERY_article_to_anon() -> None:
+    """The open tier's whole point: crawlers and signed-out readers get the
+    entire نظام, and the page has nothing left to offer a reveal for.
+
+    This is the regression the 3-مادة preview caused — it ran unconditionally, so
+    نظام العمل published 3 of its 232 مواد and wore a «سجّل مجانًا لعرض النظام
+    كاملًا» gate over a document nothing gates. `gated` is derived downstream from
+    exactly the three values asserted here, so proving them proves the CTA is off.
+    """
+    fake = _open_tier_corpus()
+    fake.tables["regulations_v2"] = [{"id": REG_ID, "landing_url": None}]
+
+    doc = ls.get_regulation_doc(fake, REG_SLUG)
+
+    assert doc["gate"] == "open", "fixture is not open-tier — test proves nothing"
+    assert len(doc["visible_sections"]) == 18, "an open نظام must ship every مادة"
+    assert doc["hidden_section_count"] == 0
+    assert not any(s["is_truncated"] for s in doc["visible_sections"])
+    # Set, not list: the stand-in orders `article_no` as TEXT (1, 10, 11, 2…),
+    # while Postgres orders the real integer column. Coverage of the ORDER
+    # itself belongs where a real DB is in play, not here.
+    assert {s["id"] for s in doc["visible_sections"]} == {
+        f"art-{i}" for i in range(1, 19)
+    }
+
+
+def test_a_GATED_regulation_still_ships_only_the_three_article_preview() -> None:
+    """The preview is untouched for everything that IS gated."""
+    fake = _corpus()
+    fake.tables["regulations_v2"] = [{"id": REG_ID, "landing_url": None}]
+
+    doc = ls.get_regulation_doc(fake, REG_SLUG)
+
+    assert doc["gate"] == "gated", "fixture is not gated — test proves nothing"
+    assert len(doc["visible_sections"]) == 3
+    assert doc["hidden_section_count"] == 15
+
+
+def test_an_OPEN_regulation_renders_a_shared_fallback_chunk_ONCE() -> None:
+    """A multi-مادة fallback chunk must not repeat itself once per مادة.
+
+    ``extraction_status != 'extracted'`` means the body IS the owning chunk, and
+    such a chunk spans a run of مواد («المادة (1) – المادة (4): …»). At 3 sections
+    the duplication was invisible; across a whole open نظام it is tens of
+    thousands of characters of the same paragraphs. The run collapses to one
+    section titled by the chunk, and the swallowed مواد survive as ``also_ids`` so
+    every TOC row still has an anchor to land on.
+    """
+    fake = _corpus(
+        seo_item_meta=[
+            {"content_type": "regulation", "content_id": REG_ID, "slug": REG_SLUG,
+             "seo_tier": "open", "gate_override": None},
+        ],
+        seo_articles=[
+            {"regulation_id": REG_ID, "article_no": i, "article_label": f"المادة {i}",
+             "slug": f"madda-{i}", "chunk_id": "ch-run", "article_text": None,
+             "extraction_status": "chunk_fallback"}
+            for i in range(1, 5)
+        ],
+        chunks_v2=[
+            {"id": "ch-run", "regulation_id": REG_ID,
+             "title": "المادة (1) – المادة (4): التعاريف",
+             "content": f"{CANARY} — نص المواد ١–٤"},
+        ],
+        regulations_v2=[{"id": REG_ID, "landing_url": None}],
+    )
+
+    doc = ls.get_regulation_doc(fake, REG_SLUG)
+
+    assert doc["gate"] == "open"
+    assert len(doc["visible_sections"]) == 1, "the shared chunk rendered per-مادة"
+    section = doc["visible_sections"][0]
+    assert section["id"] == "art-1"
+    assert section["title"] == "المادة (1) – المادة (4): التعاريف"
+    assert section["also_ids"] == ["art-2", "art-3", "art-4"]
+    assert doc["hidden_section_count"] == 0
+    # One copy of the body, not four.
+    assert json.dumps(doc, ensure_ascii=False).count(CANARY) == 1
 
 
 def test_an_OPEN_tier_reveal_DOES_return_the_official_sources(monkeypatch) -> None:

@@ -37,15 +37,23 @@ of it in this file because only the origin knows what a legal request looks like
           until §3.2 puts the frontend's server→server calls on the private
           network.
   - §3.7  verified search crawlers browse the hubs past the anonymous depth cap.
+
+BM25 SEARCH (``.claude/plans/bm25_navigation_search.md``, Wave B): the hub ``q``
+param now runs the shared ``bm25_search()`` RPC instead of a per-wing
+``ILIKE '%q%'`` — same param, same 3-char floor, same URLs, same response shape
+(D8) — and it is REGISTERED-ONLY (D9). An anonymous ``q`` is DROPPED, not
+refused, so a shared search link degrades to the unfiltered wing. See the
+``_search_query`` block comment; that function is the enforcement point.
 """
 from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import os
 import re
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -60,10 +68,17 @@ from backend.app.services import (
     case_service,
     library_budget_service as library_budget,
     library_service,
+    search_service,
 )
+from agents.deep_search_v4.shared.sector_vocab.unified import VALID_SECTORS
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.db.run import run_db
+from shared.library.sectors import (
+    SECTOR_SLUGS,
+    sector_for_slug,
+    slug_for_sector,
+)
 from shared.quota import library_state
 from shared.seo.judgment_naming import COURT_LEVEL_LABELS
 
@@ -206,6 +221,7 @@ def _apply_hub_cache_headers(
     current_user: Optional[AuthUser],
     *,
     crawler_bypass: bool = False,
+    search_dropped: bool = False,
 ) -> None:
     """Set the hub ``Cache-Control`` per the rule above. Call on EVERY hub path
     (the CTA-wall early return included) — a hub response that leaves without a
@@ -218,8 +234,14 @@ def _apply_hub_cache_headers(
     human who asks for page 9 for the next hour — silently undoing the depth cap
     the exemption was only ever meant to lift FOR THE CRAWLER. Same leak shape as
     the authed one above, different trigger.
+
+    ``search_dropped`` is D9 having ignored an anonymous caller's ``q``. Not a
+    leak — the body is the ordinary unfiltered page — but the URL space is
+    attacker-chosen and unbounded, so caching it would fill the edge with one
+    entry per distinct query string, every one of them the same page. See
+    ``_search_was_dropped``.
     """
-    if current_user is not None or crawler_bypass:
+    if current_user is not None or crawler_bypass or search_dropped:
         response.headers["Cache-Control"] = _PRIVATE_CACHE_CONTROL
         return
     response.headers["Cache-Control"] = _LIBRARY_CACHE_CONTROL
@@ -363,6 +385,7 @@ def _hub_page_visible(
     page: int,
     tier: str,
     current_user: Optional[AuthUser],
+    search_dropped: bool = False,
 ) -> bool:
     """Depth-cap decision + the ``Cache-Control`` header, in one call.
 
@@ -380,7 +403,9 @@ def _hub_page_visible(
             "Hub depth cap waived for a verified crawler (page=%s ua=%r)",
             page, (request.headers.get("user-agent") or "")[:120],
         )
-    _apply_hub_cache_headers(response, current_user, crawler_bypass=bypass)
+    _apply_hub_cache_headers(
+        response, current_user, crawler_bypass=bypass, search_dropped=search_dropped
+    )
     return allowed
 
 
@@ -393,12 +418,13 @@ def _hub_page_visible(
 # for page 2 with any filter and read off exactly how many rows match it, 9 at a
 # time, without ever being served a single item.
 #
-# THE LINE IS *FILTERED* vs *UNFILTERED*, not anon vs authed (revised 2026-07-30):
+# THE LINE IS *FILTERED* vs *SECTION*, not anon vs authed (revised 2026-07-30,
+# amended 2026-08-01 by ``library_sectors.md`` §5 / D8):
 #
-#   · FILTERED (any q / entity / sector / doc_type / provider / court_level /
-#     domain / category) → anon gets the flat ceiling and the count is not even
-#     issued. This is the oracle, and it stays shut: the answer MOVES with the
-#     filter, so one request per probe reads the corpus a slice at a time.
+#   · FILTERED (any q / entity / doc_type / provider / court_level / category)
+#     → anon gets the flat ceiling and the count is not even issued. This is the
+#     oracle, and it stays shut: the answer MOVES with the filter, so one request
+#     per probe reads the corpus a slice at a time.
 #   · UNFILTERED → everyone, anon included, gets the real total. The size of the
 #     whole corpus is not a secret and never was: it is in the header nav copy
 #     («أكثر من 3,000 نظام ولائحة»), in the hub blurbs, and in the sitemap. One
@@ -406,6 +432,21 @@ def _hub_page_visible(
 #     cost us the thing the hub is FOR — a paginator that reads «1 2 3 … 169»
 #     shows the scale of the library; one that dead-ends at «2» makes a
 #     30,000-judgment corpus look like eighteen.
+#   · A VALIDATED SECTOR is a SECTION, not a filter — and therefore behaves like
+#     the unfiltered case: real counts, real ``total_pages``. ⚠ ``sector`` /
+#     ``domain`` used to be in the FILTERED bullet above; they were moved here on
+#     2026-08-01 and the reason is the whole argument of §5, so do not "restore"
+#     them without reading it. The oracle §2.1 closes is free-text ``q``, whose
+#     answer moves with attacker-chosen input, one probe per slice. A CLOSED
+#     38-value vocabulary validated server-side (``shared/library/sectors.py``)
+#     yields 152 FIXED numbers that move only when the corpus does — the same
+#     argument that already lets anon see real section totals. Shipping a sector
+#     page under the old rule would have printed «1 2» over 20,182 items, which
+#     is the exact failure the 2026-07-30 revision was written to fix.
+#     Combining a sector WITH a free-text/entity filter is filtered again: the
+#     section is the base set, the rest is still a probe.
+#   · DEPTH IS UNCHANGED by all of this. anon 1 · free 3 · paid unbounded, on a
+#     sector page exactly as on any other hub. Real numbers, same walls.
 #
 # Authenticated callers keep the real number throughout: they have an identity,
 # they are metered by the per-user item budget (§2.2), and their CTA wall is an
@@ -424,6 +465,39 @@ _ANON_WALL_TOTAL_PAGES = library_service.ANON_HUB_MAX_PAGE + 1
 # caller's is already behind the item budget.
 _TOTAL_PAGES_TTL_SECONDS = 300
 _total_pages_memo: dict[str, tuple[float, int]] = {}
+
+# ── Sector counts (§5) ──────────────────────────────────────────────────────
+# The 152 sector×wing counts + the 4 unfiltered corpus totals, all behind the
+# same 5-minute TTL. THE POINT OF THE STRUCTURE: one ``library_sector_counts()``
+# RPC per refresh fills EVERY entry of both dicts at once (migration 109). §5 is
+# explicit that a sector page must not cost its own COUNT — 152 lazily-filled
+# entries would be 152 queries in the first five minutes after a deploy, on the
+# anon path, which is exactly the round-trip §2.1 removed.
+#
+#   _sector_counts_memo      slug -> {regulations, judgments, compliance,
+#                                     circulars, total}   (ITEM counts, /sectors)
+#   _sector_total_pages_memo "{section}:{slug}" -> page count  (the CTA wall)
+#
+# The page-count dict is keyed per section×sector exactly as §5 specifies, and is
+# derived, not separately queried.
+_sector_counts_memo: dict[str, dict[str, int]] = {}
+_sector_total_pages_memo: dict[str, int] = {}
+# ``at`` is the refresh timestamp shared by both dicts; a dict holder rather than
+# a module-level float so the refresh does not need ``global``.
+_sector_memo_at: dict[str, float] = {"at": 0.0}
+
+# The unfiltered per-wing corpus totals (§7.3) — same TTL, its own query set,
+# because the sector columns do not sum to them (see ``library_corpus_counts``).
+_corpus_counts_memo: dict[str, Any] = {"at": 0.0, "value": None}
+
+
+def _reset_sector_memos() -> None:
+    """Drop every sector/corpus memo. Test helper — never called in production."""
+    _sector_counts_memo.clear()
+    _sector_total_pages_memo.clear()
+    _sector_memo_at["at"] = 0.0
+    _corpus_counts_memo["at"] = 0.0
+    _corpus_counts_memo["value"] = None
 
 
 async def _unfiltered_total_pages(
@@ -444,6 +518,77 @@ async def _unfiltered_total_pages(
     return total
 
 
+def _sector_counts_snapshot() -> dict[str, dict[str, int]]:
+    """A COPY of the sector-count memo — never the live dict.
+
+    Handing a request handler the module-level dict by reference means one
+    handler (or one pydantic model doing something clever) can mutate what every
+    other request reads for the rest of the TTL. The memo is 38 × 5 ints; copying
+    it is free, and the alternative is a bug class nobody would look for here.
+    """
+    return {slug: dict(per_wing) for slug, per_wing in _sector_counts_memo.items()}
+
+
+async def _sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
+    """All 38 sectors' per-wing ITEM counts, memoised for 5 minutes (§5).
+
+    ONE refresh fills both sector memos — the item counts returned here and the
+    derived ``{section}:{slug}`` page counts the CTA wall reads. What the refresh
+    costs depends on how much of the corpus is published: a sampled wing is one
+    small ``id IN (...)`` read, a steady-state wing rides the single grouped RPC.
+    See ``library_service.sector_counts``.
+    """
+    now = time.monotonic()
+    if _sector_counts_memo and now - _sector_memo_at["at"] < _TOTAL_PAGES_TTL_SECONDS:
+        return _sector_counts_snapshot()
+
+    counts = await run_db(library_service.sector_counts, supabase)
+
+    page_size = library_service.HUB_PAGE_SIZE
+    _sector_counts_memo.clear()
+    _sector_counts_memo.update(counts)
+    _sector_total_pages_memo.clear()
+    for slug, per_wing in counts.items():
+        for section in library_service.SECTOR_COUNT_SECTIONS:
+            items = int(per_wing.get(section) or 0)
+            # Empty section still reports 1 page — the hub listers do the same
+            # (``max(1, ...) if total else 1``), so an empty sector tab renders a
+            # single "no results" page rather than a zero-page paginator.
+            _sector_total_pages_memo[f"{section}:{slug}"] = (
+                max(1, math.ceil(items / page_size)) if items else 1
+            )
+    _sector_memo_at["at"] = now
+    return _sector_counts_snapshot()
+
+
+async def _corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """The four servable wing totals, memoised for 5 minutes (§7.3)."""
+    now = time.monotonic()
+    cached = _corpus_counts_memo["value"]
+    if cached is not None and now - _corpus_counts_memo["at"] < _TOTAL_PAGES_TTL_SECONDS:
+        return dict(cached)
+    value = await run_db(library_service.library_corpus_counts, supabase)
+    _corpus_counts_memo["value"] = value
+    _corpus_counts_memo["at"] = now
+    return dict(value)
+
+
+async def _sector_total_pages(
+    supabase: SupabaseClient, section: str, sector_slug: str
+) -> int:
+    """Memoised real page count for one section×sector (§5).
+
+    Counts what the wing can actually SERVE, exactly as the lister does: the
+    published sample while a wing is sampled, the corpus once it is complete
+    (``library_service.sector_counts``). That equality is load-bearing — the two
+    numbers meet at the same page in the same paginator, so a page-1 body
+    reporting the lister's total and a page-2 wall reporting a different one is a
+    visible contradiction, and §12.2 failed on precisely that.
+    """
+    await _sector_counts(supabase)
+    return _sector_total_pages_memo.get(f"{section}:{sector_slug}", 1)
+
+
 async def _wall_total_pages(
     tier: str,
     counter: Callable[..., int],
@@ -451,16 +596,22 @@ async def _wall_total_pages(
     *args,
     section: str,
     filtered: bool,
+    sector_slug: Optional[str] = None,
     **kwargs,
 ) -> int:
     """``total_pages`` for a cap_reached body — see the block comment above.
 
     Anon + a filter is the only case that gets the flat ceiling; the count query
-    is skipped entirely there.
+    is skipped entirely there. Anon + a validated SECTION (``sector_slug``, and
+    no other filter) gets the memoised real per-sector count instead — that is
+    the §5 amendment, and it is the whole difference between a sector page whose
+    paginator reads «1 2» and one that reads «1 2 3 … 2243».
     """
     if tier == "anon":
         if filtered:
             return _ANON_WALL_TOTAL_PAGES
+        if sector_slug:
+            return await _sector_total_pages(supabase, section, sector_slug)
         return await _unfiltered_total_pages(counter, supabase, section)
     return await run_db(counter, supabase, *args, **kwargs)
 
@@ -474,8 +625,10 @@ def _visible_total_pages(tier: str, real_total: int, *, filtered: bool) -> int:
     2026-07-28 — `q='نظام'` → 4, `'قرار'` → 5, `'zzzqqq'` → 1, moving with the
     result set. So a FILTERED anon page 1 is clamped here too.
 
-    Unfiltered, the real total is returned to everyone — that is the number the
-    paginator needs in order to show the last page.
+    Unfiltered — and, since §5, a validated SECTION, which the callers express by
+    keeping ``sector`` out of their ``filtered`` flag — the real total is
+    returned to everyone. That is the number the paginator needs in order to show
+    the last page.
     """
     if tier != "anon" or not filtered:
         return real_total
@@ -539,26 +692,52 @@ async def _charge_hub_yield(
 #
 # Two rules, applied before any DB work:
 #
-#   * FREE-TEXT filters (``ilike '%…%'``) need >= 3 characters. Two characters
-#     partition an Arabic corpus efficiently; three overlap heavily and return
-#     9 items a time. Blank/absent stays a NO-OP — an unfiltered hub is the
-#     normal case and must not 400.
+#   * FREE-TEXT filters need >= 3 characters. Two characters partition an Arabic
+#     corpus efficiently; three overlap heavily and return 9 items a time.
+#     Blank/absent stays a NO-OP — an unfiltered hub is the normal case and must
+#     not 400. ⚠ Since D9 this rule applies to an AUTHENTICATED caller's ``q``:
+#     an anonymous ``q`` never gets as far as being measured, because it is
+#     dropped (``_search_query``). The other free-text filters — ``provider``,
+#     ``entity`` — are unchanged and still 400 for everyone.
 #   * CLOSED-VOCABULARY filters are checked against the real vocabulary. Junk no
 #     longer reaches PostgREST at all, and each rejected value is one fewer
 #     cache key at the edge.
 #
-# Sector / domain filters are deliberately NOT bounded here: they are exact
-# array-contains matches over a small facet vocabulary (a wrong value returns
-# nothing), so validating them would remove junk without removing reach.
+# ⚠ SECTOR / DOMAIN ARE NOW VALIDATED TOO (changed 2026-08-01 —
+# ``library_sectors.md`` §5, trap T4). This comment used to say the opposite:
+# that they were deliberately left unbounded because they are exact
+# array-contains matches over a small facet vocabulary that nothing linked, so
+# validating them would remove junk without removing reach. THAT PREMISE IS
+# GONE — the plan links all 38 sectors as real, indexed pages, which makes the
+# sector axis a navigation surface rather than a dead query param. Validating it
+# is what:
+#
+#   1. lets a sector be treated as a SECTION rather than a filter (§5 / D8), so
+#      a sector page can report real counts without opening a counting oracle,
+#      and lets those counts be MEMOISED (an unvalidated value is unbounded, so
+#      it can neither be memoised nor bounded);
+#   2. closes "every distinct filter value is a fresh page 1" for this axis, the
+#      same hole the free-text rule closes for ``q``.
+#
+# BEHAVIOUR CHANGE, deliberate: an unrecognised sector/domain value used to
+# return an empty list and now 400s. Nothing links those raw params (§4 — the
+# canonical form is the ``/library/{sector}/{type}`` path, which travels as
+# ``sector_slug``), so the blast radius is nil.
 # ============================================
 
-_MIN_SEARCH_CHARS = 3
+# The free-text floor and its message now live in ``search_service`` (the module
+# that owns search), and are re-exported here rather than re-declared: the hubs,
+# ``/api/v1/search`` and ``/library/mine`` must refuse at the SAME length with the
+# SAME Arabic sentence, and two copies of a constant is how that stops being true.
+_MIN_SEARCH_CHARS = search_service.MIN_QUERY_CHARS
 
-MSG_SEARCH_TOO_SHORT = "اكتب ٣ أحرف على الأقل للبحث"
+MSG_SEARCH_TOO_SHORT = search_service.MSG_SEARCH_TOO_SHORT
 MSG_INVALID_ENTITY = "جهة غير معروفة"
 MSG_INVALID_DOC_TYPE = "نوع وثيقة غير معروف"
 MSG_INVALID_COURT_LEVEL = "درجة محكمة غير معروفة"
 MSG_INVALID_CATEGORY = "تصنيف غير معروف"
+MSG_INVALID_SECTOR = "قطاع غير معروف"
+MSG_SECTOR_NOT_FOUND = "القطاع غير موجود"
 
 # THE REAL VOCABULARIES — every one of these is imported from the module that
 # owns it, never retyped, so a new pipeline bucket or court level cannot become a
@@ -573,6 +752,13 @@ _DOC_TYPE_VOCAB = frozenset(library_service.DOC_TYPE_BUCKET_LABELS)
 _COURT_LEVEL_VOCAB = frozenset(COURT_LEVEL_LABELS)
 # ``forms.category`` — the wing's own tuple (the forms table is the only writer).
 _FORM_CATEGORY_VOCAB = frozenset(library_service.FORM_CATEGORIES)
+# The RAW Arabic sector names stored in ``regulations_v2.sectors[]`` /
+# ``services.sectors[]`` / ``circulars.sectors[]`` / ``cases.legal_domains[]``.
+# Imported from the module that OWNS the taxonomy (the agents-side pipeline
+# vocabulary), never retyped — a 39th sector added there must not become a 400
+# here. ``shared/library/sectors.py`` reconciles the same list against the Latin
+# slug map and is what ``sector_for_slug`` / ``slug_for_sector`` read.
+_SECTOR_NAME_VOCAB = frozenset(VALID_SECTORS)
 
 # ``regulations_v2.entity_ref`` is a numeric source token ("17900", "5000"): 132
 # distinct values in the live corpus, ALL digits, longest 6 (verified
@@ -610,11 +796,75 @@ def _clean(value: Optional[str]) -> Optional[str]:
 
 
 def _search_text(value: Optional[str]) -> Optional[str]:
-    """Validate a free-text (``ilike``) filter: absent, or >= 3 characters."""
+    """Validate a free-text filter: absent, or >= 3 characters.
+
+    Still used directly by the NON-search free-text filters — ``provider`` on
+    /compliance and ``entity`` on /circulars. Those are facet lookups the caller
+    types, not the search box, so D9 does not touch them and they keep the 400.
+    """
     value = _clean(value)
     if value is not None and len(value) < _MIN_SEARCH_CHARS:
         raise _reject(MSG_SEARCH_TOO_SHORT)
     return value
+
+
+# ============================================
+# D9 — SEARCH IS REGISTERED-ONLY, AND THIS IS WHERE THAT IS TRUE
+# (.claude/plans/bm25_navigation_search.md D9)
+#
+# ``q`` now runs BM25 over ``search_index`` instead of a per-wing ``ILIKE``, and
+# it is available to signed-in callers only. Two reasons, and the second is the
+# one that matters:
+#
+#   1. RECALL. Public search ranks over SLUGGED rows only, and the slug backfill
+#      stalled at ~100 per wing (plan §2). Anon search over 100 of 3,373 أنظمة
+#      would look broken — to a reader and to Google. Gating buys the backfill
+#      time; the nightly ``refresh_search_index()`` picks up new slugs with no
+#      code change.
+#   2. ENUMERATION. A search box is a FILTER DIMENSION stacked on top of the page
+#      -depth cap, which is exactly the hole ``navigation_enumeration_defence.md``
+#      documents: every distinct ``q`` is a fresh page 1. Requiring an account
+#      puts every search hit on an item budget tied to a real user (§5.4).
+#
+# ⚠ AN ANON ``?q=`` IS DROPPED, NOT REFUSED. A registered user WILL share a
+# search URL, and the anonymous recipient must land on "here is the wing", not on
+# an Arabic error page for a query they never typed. So the param is silently
+# ignored and the unfiltered page 1 is served. The 3-char floor and its 400 still
+# apply — to AUTHENTICATED callers, who are the only ones whose ``q`` does
+# anything.
+#
+# ⚠ THIS IS THE ENFORCEMENT POINT. The UI gate (a CTA modal on focus) is
+# decoration: it cannot bind anyone calling the API directly. Nothing downstream
+# re-checks — ``library_service`` treats a non-None ``q`` as proof that an
+# authenticated caller asked for it.
+# ============================================
+
+
+def _search_query(
+    value: Optional[str], current_user: Optional[AuthUser]
+) -> Optional[str]:
+    """The hub ``q`` param under D9: validated for a user, dropped for anon.
+
+    Call this INSTEAD of ``_search_text`` for ``q`` on every hub, and call it
+    before tier resolution so an anon request costs no DB work either way.
+    """
+    if current_user is None:
+        return None
+    return _search_text(value)
+
+
+def _search_was_dropped(
+    raw_q: Optional[str], current_user: Optional[AuthUser]
+) -> bool:
+    """Whether this request carried a ``q`` that D9 ignored.
+
+    Feeds ``Cache-Control`` only. A dropped-``q`` response is byte-identical to
+    the unfiltered page but lives at a DIFFERENT URL, and the ``q`` space is
+    unbounded — shared-caching it would mint an edge entry per distinct query
+    string, all holding the same page 1. That is cache-key churn with no hit-rate
+    upside (trap #8 in reverse), so these responses are not shared-cached at all.
+    """
+    return current_user is None and bool((raw_q or "").strip())
 
 
 def _vocab_value(
@@ -637,6 +887,69 @@ def _entity_token(value: Optional[str]) -> Optional[str]:
     if _UUID_RE.match(value) or _ENTITY_REF_RE.match(value):
         return value
     raise _reject(MSG_INVALID_ENTITY)
+
+
+def _sector_section(
+    sector_slug: Optional[str], raw_sector: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the SECTION axis of a hub request → ``(name_ar, slug)``.
+
+    Two spellings of ONE axis, and both are validated before any DB work (§5):
+
+      * ``sector_slug`` — the Latin slug (``labor-employment``). This is the
+        canonical, LINKED form: it is what ``/library/{sector}/{type}`` travels
+        as, and it is the only one the frontend sends.
+      * ``sector`` / ``domain`` — the raw Arabic name. The pre-existing
+        API-level filter (§4). Nothing links it, but it selects the same rows,
+        so it must resolve to the same section — otherwise capping one form and
+        not the other would be theatre: an anon caller would simply switch
+        spelling to get the real count.
+
+    ``(None, None)`` means no section was requested — the normal, unfiltered hub.
+    Raises 400 «قطاع غير معروف» for a value outside the 38, for a RESERVED
+    segment (``mine`` / ``page``, T2), and for the two params disagreeing.
+
+    ⚠ The returned SLUG may be ``None`` while the NAME is not, in the drift case
+    where a sector exists in ``VALID_SECTORS`` but has no Latin slug yet
+    (``shared/library/sectors.py`` degrades rather than raising). Such a request
+    still filters correctly, but it has no memo key — so it must NOT be treated
+    as a section, or the wall would answer with the whole wing's total while the
+    rows are scoped to one sector. ``_sector_is_unslugged`` is what makes that
+    true; every caller ORs it into ``filtered``. Unreachable today (all 38 are
+    slugged, and ``test_library_sectors.py`` fails in CI the moment they are
+    not), which is exactly why the fail-safe has to be code rather than prose.
+    """
+    slug_name = None
+    slug = _clean(sector_slug)
+    if slug is not None:
+        slug = slug.lower()
+        slug_name = sector_for_slug(slug)
+        if slug_name is None:
+            raise _reject(MSG_INVALID_SECTOR)
+
+    raw = _vocab_value(raw_sector, _SECTOR_NAME_VOCAB, MSG_INVALID_SECTOR)
+
+    if slug_name is not None and raw is not None and raw != slug_name:
+        # Same axis, two answers. Refuse rather than silently pick one: a query
+        # that means two things is a bug in the caller, and guessing would make
+        # the memo key disagree with the rows actually returned.
+        raise _reject(MSG_INVALID_SECTOR)
+
+    name = slug_name or raw
+    if name is None:
+        return None, None
+    return name, (slug if slug_name is not None else slug_for_sector(name))
+
+
+def _sector_is_unslugged(name: Optional[str], slug: Optional[str]) -> bool:
+    """A real sector that has no Latin slug — see ``_sector_section``.
+
+    ORed into every hub's ``filtered`` flag so a sector the slug map does not
+    know falls back to the FILTERED branch (flat anon ceiling) rather than the
+    section branch, whose count would describe the whole wing. Always ``False``
+    today; it costs one comparison and removes a wrong-number failure mode.
+    """
+    return name is not None and slug is None
 
 
 def _entity_name_or_id(value: Optional[str]) -> Optional[str]:
@@ -692,7 +1005,26 @@ class RegHubItem(BaseModel):
     sectors: list[str] = Field(default_factory=list)
 
 
-class RegHubResponse(BaseModel):
+class HubSearchTotals(BaseModel):
+    """The two search fields every hub envelope carries. Base class, not a
+    per-wing copy, because five drifting definitions of "how many results" is
+    exactly how a UI ends up printing two different numbers for one query.
+
+    ⚠ BOTH ARE NULL/UNSET WHEN THERE IS NO ``q``. A browse listing is described
+    by ``total_pages``; only a SEARCH has a result count worth stating.
+
+    ⚠ ``total_count`` IS NOT ALWAYS EXACT, and that is not a defect to paper
+    over. ``bm25_search`` cuts to ``p_candidates`` (500) by ``ts_rank_cd`` before
+    scoring, and the hub then takes at most ``HUB_SEARCH_LIMIT`` (200) ranked ids.
+    When either cut binds, ``total_count`` is a FLOOR and
+    ``total_count_is_exact`` is false — render «أفضل ٢٠٠ نتيجة», never «٢٠٠ نتيجة».
+    """
+
+    total_count: Optional[int] = None
+    total_count_is_exact: bool = True
+
+
+class RegHubResponse(HubSearchTotals):
     """A page of the /regulations hub. ``cap_reached`` is true past the caller's
     depth cap (items empty; the frontend renders the «سجّل مجاناً» wall). The
     SAME body is served to Googlebot — no cloaking.
@@ -732,6 +1064,11 @@ class VisibleSection(BaseModel):
     text: str
     is_truncated: bool
     hidden_placeholder_lines: int
+    # Extra section ids this ONE section stands in for. Non-empty only on an open
+    # نظام whose fallback chunk covers a run of مواد («المادة (1) – المادة (4)»):
+    # the run renders once, and these are the مواد it swallowed. The page emits an
+    # empty anchor per id so every TOC row still has a target to scroll to.
+    also_ids: list[str] = Field(default_factory=list)
 
 
 class OfficialSource(BaseModel):
@@ -749,11 +1086,14 @@ class ArticleIndexEntry(BaseModel):
 
 
 class RegulationDocResponse(BaseModel):
-    """Full /regulations/{slug} payload. ``toc`` lists ALL chunks (always free);
-    ``visible_sections`` is the first 3 chunks, truncated when ``gate='gated'``.
-    ``status`` is the mapped label; ``draft_notice`` flags non-enacted (مشروع
-    نظام) regulations for the frontend warning. ``article_index`` links each مادة
-    page (additive; empty until the seo_articles index is built)."""
+    """Full /regulations/{slug} payload. ``toc`` lists ALL مواد/chunks (always
+    free). ``visible_sections`` is the WHOLE document when ``gate='open'`` (with
+    ``hidden_section_count=0`` and nothing truncated — an open نظام is open to
+    crawlers and anonymous readers alike, and the page then offers no reveal), and
+    the first 3 sections, truncated, when ``gate='gated'``. ``status`` is the
+    mapped label; ``draft_notice`` flags non-enacted (مشروع نظام) regulations for
+    the frontend warning. ``article_index`` links each مادة page (additive; empty
+    until the seo_articles index is built)."""
 
     slug: str
     title: str
@@ -842,7 +1182,7 @@ class ComplianceHubItem(BaseModel):
     intro_snippet: str = ""
 
 
-class ComplianceHubResponse(BaseModel):
+class ComplianceHubResponse(HubSearchTotals):
     """Same envelope as ``RegHubResponse`` — see it for ``max_page`` /
     ``max_anon_page`` (the deprecated alias)."""
 
@@ -867,7 +1207,6 @@ class ComplianceServiceResponse(BaseModel):
     steps: list[str] = Field(default_factory=list)
     youtube_url: Optional[str] = None
     official_url: Optional[str] = None
-    pdf_link: Optional[str] = None
     sectors: list[str] = Field(default_factory=list)
 
 
@@ -889,7 +1228,7 @@ class CircularHubItem(BaseModel):
     body_length: int = 0
 
 
-class CircularHubResponse(BaseModel):
+class CircularHubResponse(HubSearchTotals):
     """A page of the /circulars hub. Shape is IDENTICAL to the regulations hub:
     ``cap_reached`` is true past the caller's depth cap (items empty; frontend
     renders the «سجّل مجاناً» wall — same body served to Googlebot, no cloaking),
@@ -958,7 +1297,7 @@ class JudgmentHubItem(BaseModel):
     snippet: str = ""
 
 
-class JudgmentHubResponse(BaseModel):
+class JudgmentHubResponse(HubSearchTotals):
     """A page of the /judgments hub (newest first, dateless judgments last).
 
     Same envelope as every other hub: ``cap_reached`` is true past the caller's
@@ -1060,7 +1399,7 @@ class FormHubItem(BaseModel):
     use_case_snippet: str = ""
 
 
-class FormHubResponse(BaseModel):
+class FormHubResponse(HubSearchTotals):
     """A page of the /forms hub — PUBLISHED forms only (the liability hard gate:
     ``review_status='approved' AND is_published``; empty today, correct). Same
     envelope as the other hubs: ``cap_reached`` true past the caller's depth cap
@@ -1109,6 +1448,88 @@ class FormDetailResponse(BaseModel):
     body_preview: FormBodyPreview
     legal_basis: list[FormLegalBasisEntry] = Field(default_factory=list)
     has_docx: bool = False
+
+
+# --- Unified hub + sector wing (library_sectors.md §7.2 / §7.3) ------------
+
+
+class LibraryCounts(BaseModel):
+    """The four tab counts of the unified «المكتبة القانونية» hub.
+
+    ⚠ ``judgments`` is the TRUE UNFILTERED corpus total (30,531) and is NOT
+    derivable from ``SectorSummary.counts`` — in either direction, both verified
+    live 2026-08-01. Only 20,671 judgments (67.7%) carry a sector at all; the
+    other 9,860 are reachable only through the unfiltered /judgments hub (plan
+    D10). Meanwhile the per-sector judgment column SUMS to 31,924, because a
+    judgment can carry several domains. This model sizes a tab whose paginator
+    walks the whole corpus, so it counts the corpus. The figures are supposed to
+    differ; do not "reconcile" them."""
+
+    regulations: int = 0
+    judgments: int = 0
+    compliance: int = 0
+    circulars: int = 0
+
+
+class LibraryHubResponse(BaseModel):
+    """``GET /public/library`` — the unified hub's tab counts. Memoised (§5)."""
+
+    counts: LibraryCounts
+
+
+class SectorCounts(LibraryCounts):
+    """Per-sector item counts + their sum. ``total`` is what the browse grid
+    labels and orders by (the order itself is the server's — see
+    ``SectorListResponse``)."""
+
+    total: int = 0
+
+
+class SectorSummary(BaseModel):
+    """One tile of the «تصفّح حسب القطاع» grid. ``name_ar`` is the display name
+    (D6 — the Arabic is where the SEO weight lives); ``slug`` is the structural
+    URL segment (D4/D5)."""
+
+    slug: str
+    name_ar: str
+    counts: SectorCounts
+
+
+class SectorListResponse(BaseModel):
+    """``GET /public/library/sectors`` — all 38, memoised (§5).
+
+    ⚠ THE SERVER OWNS THE ORDER: corpus volume descending, i.e. the insertion
+    order of ``SECTOR_SLUGS``. Do not re-sort on the client — alphabetical would
+    bury المعاملات التجارية (20,182 items) under الأمن الغذائي (753)."""
+
+    sectors: list[SectorSummary] = Field(default_factory=list)
+
+
+class SectorPreview(BaseModel):
+    """A first slice (<= 3) of each of the four wings, scoped to one sector.
+
+    The items are the EXISTING hub item models — byte-identical shapes to what
+    ``/public/library/{wing}`` already returns — so the frontend reuses its
+    existing cards and TS types verbatim (§8.1's rule: a filtered hub is not a
+    new design system)."""
+
+    regulations: list[RegHubItem] = Field(default_factory=list)
+    judgments: list[JudgmentHubItem] = Field(default_factory=list)
+    compliance: list[ComplianceHubItem] = Field(default_factory=list)
+    circulars: list[CircularHubItem] = Field(default_factory=list)
+
+
+class SectorDetailResponse(BaseModel):
+    """``GET /public/library/sectors/{slug}`` — the ``/library/{sector}``
+    overview. Counts size the tab chips (and the D9 thin-page decision); the
+    preview fills the first row of each tab. The paginated lists themselves are
+    the EXISTING wing endpoints with ``sector_slug`` applied (§7.2) — there is no
+    second list path and no second gating path."""
+
+    slug: str
+    name_ar: str
+    counts: SectorCounts
+    preview: SectorPreview
 
 
 class OpenInWriterResponse(BaseModel):
@@ -1362,6 +1783,154 @@ async def get_library_sitemap(
 # ============================================
 
 
+# --- The unified hub + the sector wing (library_sectors.md §7.2 / §7.3) ----
+#
+# Three read-only, optional-auth endpoints. None of them lists past the first
+# slice, so none of them touches the depth cap; the paginated per-type lists are
+# the EXISTING wing endpoints with ``sector_slug`` applied (§7.2), which is what
+# keeps ``resolve_gate`` / ``truncate_for_gate`` / ``library_budget`` on ONE code
+# path instead of two.
+
+
+# How many cards the sector overview previews per wing. Small on purpose: the
+# overview is a launchpad into the four scoped tabs, not a fifth hub. It also
+# bounds what this endpoint yields into the §2.2 item budget — 4 × 3 items.
+_SECTOR_PREVIEW_ITEMS = 3
+
+
+@router.get("/public/library", response_model=LibraryHubResponse)
+async def get_library_hub(
+    response: Response,
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Unified-hub tab counts — the four UNFILTERED wing totals (§7.3).
+
+    Memoised for 5 minutes (§5): these move only when the corpus is re-ingested,
+    and they are already public in the nav copy, the hub blurbs and the sitemap.
+    No items, so nothing to meter and no depth cap to apply."""
+    counts = await _corpus_counts(supabase)
+    _apply_hub_cache_headers(response, current_user)
+    return LibraryHubResponse(counts=LibraryCounts(**counts))
+
+
+@router.get("/public/library/sectors", response_model=SectorListResponse)
+async def list_library_sectors(
+    response: Response,
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """All 38 sectors with per-wing counts — the browse grid + the switcher.
+
+    ORDER IS THE SERVER'S (corpus volume descending, ``SECTOR_SLUGS`` insertion
+    order) and the frontend renders it as given. Counts come from ONE grouped
+    query behind a 5-minute memo (§5, migration 109); the slugs and Arabic names
+    come from ``shared/library/sectors.py``, never from the corpus — a sector
+    value the pipeline invents has no slug, therefore no page, therefore no row
+    here. No items, so nothing to meter."""
+    counts = await _sector_counts(supabase)
+    _apply_hub_cache_headers(response, current_user)
+    return SectorListResponse(
+        sectors=[
+            SectorSummary(
+                slug=slug,
+                name_ar=name,
+                counts=SectorCounts(**counts.get(slug, {})),
+            )
+            for name, slug in SECTOR_SLUGS.items()
+        ]
+    )
+
+
+@router.get("/public/library/sectors/{slug}", response_model=SectorDetailResponse)
+async def get_library_sector(
+    slug: str,
+    request: Request,
+    response: Response,
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """One sector's overview — counts for the four tabs + a <= 3-item preview each.
+
+    ⚠ THE SLUG IS RESOLVED IN MEMORY FIRST (§12.7). An unknown slug — and the
+    RESERVED segments ``mine`` / ``page`` (T2: ``/library/mine`` is the authed
+    shelf and must never be shadowed by a sector) — is a 404 «القطاع غير موجود»
+    with NO database round-trip, so probing the 38-value namespace costs a string
+    lookup and never a query.
+
+    The preview yields real items, so it is metered like any other hub response
+    (§2.2): the budget is enforced before the queries and the yielded ids are
+    charged after. Without that, 38 overview pages would be 456 unmetered items.
+    Anonymous callers are never metered here — see the §2.2 block comment."""
+    name_ar = sector_for_slug(slug)
+    if name_ar is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=MSG_SECTOR_NOT_FOUND,
+            # A 404 parked in the shared cache would outlive the deploy that
+            # adds the sector — same reasoning as the reveal endpoint's 404s.
+            headers={"Cache-Control": _PRIVATE_CACHE_CONTROL},
+        )
+    # Index, do NOT fall back to the request's own path segment. The two maps are
+    # exact inverses, so this cannot raise — but if that invariant ever broke, a
+    # fallback would put a raw, user-controlled URL segment into a field the
+    # frontend interpolates into `href`s and `og:url`. A KeyError (→ 500) is the
+    # correct failure for a broken invariant; a laundered path segment is not.
+    canonical = SECTOR_SLUGS[name_ar]
+
+    _tier, user_id = await _hub_caller(supabase, current_user)
+    _apply_hub_cache_headers(response, current_user)
+
+    await library_budget.enforce_item_budget(request, user_id)
+
+    counts = await _sector_counts(supabase)
+
+    # Page 1 of each wing, scoped to this sector. Sequential rather than gathered
+    # on purpose: this page is ISR-baked hourly, so latency is not the constraint,
+    # and four concurrent hub listers would quadruple the burst on PostgREST for
+    # every cold sector at once.
+    regs = await run_db(
+        library_service.list_regulations_hub, supabase, page=1, sector=name_ar
+    )
+    juds = await run_db(
+        library_service.list_judgments_hub, supabase, page=1, domain=name_ar
+    )
+    svcs = await run_db(
+        library_service.list_compliance_hub, supabase, page=1, sector=name_ar
+    )
+    circs = await run_db(
+        library_service.list_circulars_hub, supabase, page=1, sector=name_ar
+    )
+
+    reg_items = regs["items"][:_SECTOR_PREVIEW_ITEMS]
+    jud_items = juds["items"][:_SECTOR_PREVIEW_ITEMS]
+    svc_items = svcs["items"][:_SECTOR_PREVIEW_ITEMS]
+    circ_items = circs["items"][:_SECTOR_PREVIEW_ITEMS]
+
+    # Charge only what is actually SERVED — the slice, never the whole page the
+    # lister happened to fetch (§2.2: never charge for items not yielded).
+    for section, items in (
+        ("regulations", reg_items),
+        ("judgments", jud_items),
+        ("compliance", svc_items),
+        ("circulars", circ_items),
+    ):
+        await _charge_hub_yield(request, supabase, user_id, section, items)
+
+    return SectorDetailResponse(
+        slug=canonical,
+        name_ar=name_ar,
+        counts=SectorCounts(**counts.get(canonical, {})),
+        preview=SectorPreview(
+            regulations=[RegHubItem(**it) for it in reg_items],
+            judgments=[JudgmentHubItem(**it) for it in jud_items],
+            compliance=[ComplianceHubItem(**it) for it in svc_items],
+            circulars=[CircularHubItem(**it) for it in circ_items],
+        ),
+    )
+
+
 @router.get("/public/library/regulations", response_model=RegHubResponse)
 async def list_regulations(
     request: Request,
@@ -1369,8 +1938,15 @@ async def list_regulations(
     page: int = Query(1, description="1-based page index; 9 items per page."),
     entity: Optional[str] = Query(None, description="entity_ref or entity_id"),
     doc_type: Optional[str] = Query(None, description="doc_type_bucket"),
-    sector: Optional[str] = Query(None, description="matches sectors[] (contains)"),
-    q: Optional[str] = Query(None, description="ilike on clean_title (>= 3 chars)"),
+    sector: Optional[str] = Query(
+        None, description="raw Arabic sector name; matches sectors[] (contains)"
+    ),
+    sector_slug: Optional[str] = Query(
+        None, description="Latin sector slug — the SECTION axis (§5)"
+    ),
+    q: Optional[str] = Query(
+        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
+    ),
     current_user: Optional[AuthUser] = Depends(get_current_user_optional),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
@@ -1378,21 +1954,38 @@ async def list_regulations(
 
     Filters are validated first (§2.1): ``q`` needs >= 3 chars, ``entity`` must be
     an entity UUID or a numeric ``entity_ref``, ``doc_type`` must be a live
-    ``doc_type_bucket``. Junk is a 400 (Arabic), never a fresh page 1.
+    ``doc_type_bucket``, and the sector (either spelling) must be one of the 38.
+    Junk is a 400 (Arabic), never a fresh page 1.
+
+    ``q`` runs BM25 (``bm25_search``) and is REGISTERED-ONLY (D9) — an anonymous
+    caller's ``q`` is dropped and the unfiltered page is served, so a shared
+    search link degrades to the wing rather than to an error. Results are ordered
+    by relevance, which replaces the in-force-first ordering for that request.
+
+    ``sector_slug`` is the SECTION axis (``library_sectors.md`` §5): a request
+    whose only narrowing is a validated sector is NOT "filtered" for cap
+    purposes, so it reports real counts. Depth caps are untouched.
 
     A signed-in caller's yielded items are metered (§2.2) — 429 past the
-    per-user budget."""
+    per-user budget. Search results charge that budget identically to browse
+    results; there is no search exemption (§5.4)."""
     entity = _entity_token(entity)
     doc_type = _vocab_value(doc_type, _DOC_TYPE_VOCAB, MSG_INVALID_DOC_TYPE)
-    sector = _clean(sector)
-    q = _search_text(q)
-    filtered = bool(entity or doc_type or sector or q)
+    sector, sector_key = _sector_section(sector_slug, sector)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
+    # ⚠ ``sector`` is deliberately ABSENT from this expression (§5 / D8) — it is a
+    # section, not a filter. See the CTA-wall block comment above before adding
+    # it back. The ``_sector_is_unslugged`` term is the drift fail-safe: a sector
+    # with no memo key must take the FILTERED branch, never the section one.
+    filtered = bool(entity or doc_type or q) or _sector_is_unslugged(sector, sector_key)
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
 
     if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -1404,6 +1997,7 @@ async def list_regulations(
             q,
             section="regulations",
             filtered=filtered,
+            sector_slug=sector_key,
         )
         return RegHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -1427,6 +2021,9 @@ async def list_regulations(
         page=data["page"],
         total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
         cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
 
@@ -1487,26 +2084,38 @@ async def list_compliance(
     provider: Optional[str] = Query(
         None, description="ilike on provider_name (>= 3 chars)"
     ),
-    sector: Optional[str] = Query(None, description="matches sectors[] (contains)"),
-    q: Optional[str] = Query(None, description="ilike on service_name_ar (>= 3 chars)"),
+    sector: Optional[str] = Query(
+        None, description="raw Arabic sector name; matches sectors[] (contains)"
+    ),
+    sector_slug: Optional[str] = Query(
+        None, description="Latin sector slug — the SECTION axis (§5)"
+    ),
+    q: Optional[str] = Query(
+        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
+    ),
     current_user: Optional[AuthUser] = Depends(get_current_user_optional),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """/compliance hub list (9 cards/page). Anon-cacheable, authed no-store.
 
-    ``provider`` is an ``ilike`` on ``provider_name``, i.e. a second free-text
-    search, so it takes the same >= 3-char rule as ``q`` (§2.1). A signed-in
-    caller's yielded items are metered (§2.2)."""
+    ``provider`` is an ``ilike`` on ``provider_name`` — a FACET the caller types,
+    not the search box — so it keeps the >= 3-char rule and the 400 for everyone
+    (§2.1). ``q`` is the search box: BM25, registered-only, dropped for anon (D9).
+    ``sector_slug`` is the SECTION axis (§5) — not a filter for cap purposes. A
+    signed-in caller's yielded items are metered (§2.2)."""
     provider = _search_text(provider)
-    sector = _clean(sector)
-    q = _search_text(q)
-    filtered = bool(provider or sector or q)
+    sector, sector_key = _sector_section(sector_slug, sector)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
+    # ``sector`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
+    filtered = bool(provider or q) or _sector_is_unslugged(sector, sector_key)
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
 
     if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -1517,6 +2126,7 @@ async def list_compliance(
             q,
             section="compliance",
             filtered=filtered,
+            sector_slug=sector_key,
         )
         return ComplianceHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -1539,6 +2149,9 @@ async def list_compliance(
         page=data["page"],
         total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
         cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
 
@@ -1578,24 +2191,42 @@ async def list_circulars(
             "or entity UUID"
         ),
     ),
-    q: Optional[str] = Query(None, description="ilike on title (>= 3 chars)"),
+    sector: Optional[str] = Query(
+        None, description="raw Arabic sector name; matches sectors[] (contains)"
+    ),
+    sector_slug: Optional[str] = Query(
+        None, description="Latin sector slug — the SECTION axis (§5)"
+    ),
+    q: Optional[str] = Query(
+        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
+    ),
     current_user: Optional[AuthUser] = Depends(get_current_user_optional),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """/circulars hub list (9 cards/page, title-ordered). Authed → no-store.
 
     ``entity`` is a UUID or an authority-name substring (>= 3 chars — it resolves
-    through an ``ilike``, so it is free text); ``q`` >= 3 chars (§2.1). A
-    signed-in caller's yielded items are metered (§2.2)."""
+    through an ``ilike``, so it is free text and keeps its 400 for everyone);
+    ``q`` is the BM25 search box, registered-only, dropped for anon (D9).
+
+    The sector filter landed here LAST (``library_sectors.md`` §7.1): this wing
+    was ``entity`` + ``q`` only despite ``circulars.sectors`` being 100%
+    populated (1,843 of 1,843), so the التعاميم tab on a sector page had no way
+    to scope. ``sector_slug`` is the SECTION axis (§5) — not a filter for cap
+    purposes. A signed-in caller's yielded items are metered (§2.2)."""
     entity = _entity_name_or_id(entity)
-    q = _search_text(q)
-    filtered = bool(entity or q)
+    sector, sector_key = _sector_section(sector_slug, sector)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
+    # ``sector`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
+    filtered = bool(entity or q) or _sector_is_unslugged(sector, sector_key)
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
 
     if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -1603,8 +2234,10 @@ async def list_circulars(
             supabase,
             entity,
             q,
+            sector,
             section="circulars",
             filtered=filtered,
+            sector_slug=sector_key,
         )
         return CircularHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -1619,6 +2252,7 @@ async def list_circulars(
         page=page,
         entity=entity,
         q=q,
+        sector=sector,
     )
     await _charge_hub_yield(request, supabase, user_id, "circulars", data["items"])
     return CircularHubResponse(
@@ -1626,6 +2260,9 @@ async def list_circulars(
         page=data["page"],
         total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
         cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
 
@@ -1665,28 +2302,49 @@ async def list_judgments(
     court_level: Optional[str] = Query(
         None, description="exact match: first_instance | appeal | supreme"
     ),
-    domain: Optional[str] = Query(None, description="matches legal_domains[] (contains)"),
-    q: Optional[str] = Query(None, description="ilike on short_summary (>= 3 chars)"),
+    domain: Optional[str] = Query(
+        None, description="raw Arabic sector name; matches legal_domains[] (contains)"
+    ),
+    sector_slug: Optional[str] = Query(
+        None, description="Latin sector slug — the SECTION axis (§5)"
+    ),
+    q: Optional[str] = Query(
+        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
+    ),
     current_user: Optional[AuthUser] = Depends(get_current_user_optional),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """/judgments hub list (9 cards/page, newest first). Authed → no-store.
 
     Dateless judgments sort LAST (not first, which is what Postgres would do by
-    default on a DESC order). Only published (slugged) judgments are listed.
-    ``court_level`` is checked against the ``COURT_LEVEL_LABELS`` vocabulary and
-    ``q`` needs >= 3 chars (§2.1). A signed-in caller's yielded items are metered
-    (§2.2)."""
+    default on a DESC order) — for BROWSE. A ``q`` request is ordered by
+    relevance instead. Only published (slugged) judgments are listed.
+    ``court_level`` is checked against the ``COURT_LEVEL_LABELS`` vocabulary;
+    ``q`` needs >= 3 chars and is registered-only (D9, §2.1). The BM25 index
+    carries the same always-free ``short_summary`` the old ``ilike`` matched on,
+    so search still cannot be used as an oracle for a gated section.
+
+    ``domain`` is this wing's spelling of the sector axis (the column is
+    ``cases.legal_domains``, but the vocabulary is the same 38), and
+    ``sector_slug`` is its canonical Latin form — the SECTION axis (§5), not a
+    filter for cap purposes. ⚠ Only 67.7% of ``cases`` carry a domain (plan D10):
+    the 9,860 sector-less judgments are reachable ONLY through the unfiltered
+    hub, which is why the sector page count and the corpus total differ.
+
+    A signed-in caller's yielded items are metered (§2.2)."""
     court_level = _vocab_value(court_level, _COURT_LEVEL_VOCAB, MSG_INVALID_COURT_LEVEL)
-    domain = _clean(domain)
-    q = _search_text(q)
-    filtered = bool(court_level or domain or q)
+    domain, sector_key = _sector_section(sector_slug, domain)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
+    # ``domain`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
+    filtered = bool(court_level or q) or _sector_is_unslugged(domain, sector_key)
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
 
     if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -1697,6 +2355,7 @@ async def list_judgments(
             q=q,
             section="judgments",
             filtered=filtered,
+            sector_slug=sector_key,
         )
         return JudgmentHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -1719,6 +2378,9 @@ async def list_judgments(
         page=data["page"],
         total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
         cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
 
@@ -1760,7 +2422,13 @@ async def list_forms(
     response: Response,
     page: int = Query(1, description="1-based page index; 9 items per page."),
     category: Optional[str] = Query(None, description="exact match on category"),
-    q: Optional[str] = Query(None, description="ilike on title_ar (>= 3 chars)"),
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "ilike on title_ar, signed-in only (>= 3 chars; ignored for anon). "
+            "Still ILIKE: نماذج are out of the BM25 index (plan D7)."
+        ),
+    ),
     current_user: Optional[AuthUser] = Depends(get_current_user_optional),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
@@ -1768,17 +2436,22 @@ async def list_forms(
     reviewer approves + publishes a drafted form. Authed → no-store.
 
     ``category`` is checked against ``library_service.FORM_CATEGORIES`` and ``q``
-    needs >= 3 chars (§2.1). A signed-in caller's yielded items are metered
+    needs >= 3 chars (§2.1). ``q`` follows the SAME D9 rule as the indexed wings
+    — dropped for anon — even though نماذج are not in the BM25 index (D7): one
+    rule for "the search box" across the library, or the exception becomes the
+    thing nobody remembers. A signed-in caller's yielded items are metered
     (§2.2)."""
     category = _vocab_value(category, _FORM_CATEGORY_VOCAB, MSG_INVALID_CATEGORY)
-    q = _search_text(q)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
     filtered = bool(category or q)
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
 
     if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -1809,6 +2482,9 @@ async def list_forms(
         page=data["page"],
         total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
         cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
 

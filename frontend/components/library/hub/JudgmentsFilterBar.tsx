@@ -1,167 +1,148 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
-import { Search, X } from "lucide-react";
+import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { COURT_LEVEL_FILTERS } from "@/lib/library/court-levels";
 import { hrefWithFilters } from "@/lib/library/hub-query";
+import { HubSearchPanel } from "@/components/library/hub/HubSearchPanel";
 import type { JudgmentsFilters } from "@/lib/library/api";
 
 const BASE_PATH = "/judgments";
 
-/** Ties the too-short hint to the search box for assistive tech. */
-const HINT_ID = "judgments-q-hint";
-
-/** The server's floor for any free-text hub filter (navigation hardening 2.1). */
-const MIN_QUERY_LENGTH = 3;
-
 /**
- * The /judgments hub filter row: درجة المحكمة chips + a free-text search box.
+ * The /judgments hub filter row: درجة المحكمة chips + the shared search box —
+ * and, while a search is live, the results that replace the grid.
  *
- * NO CLIENT STATE — and this is deliberate, not a shortcut. Every other library
- * hub is a pure server component, and a filter here is just a URL: the court
- * level chips are plain `<Link>`s that rewrite the query string, and the search
- * box is a plain HTML GET `<form>` whose submission navigates to
- * `/judgments?q=…`. That keeps the filtered views crawlable, shareable,
- * back-button-correct and ISR-cacheable (the fetch layer still caches per
- * filter combination), and it works with JS disabled. A `"use client"` island
- * would buy nothing here and would break the server-rendered card grid.
+ * ── WHAT CHANGED, AND WHAT DID NOT (bm25_navigation_search.md §6.1/§6.2) ────
+ * The court-level chips are UNTOUCHED: still plain `<Link>`s that rewrite the
+ * query string, still no client state, still crawlable, shareable,
+ * back-button-correct and working with JS disabled. Every filter change still
+ * RESETS to page 1 by targeting the base path — landing on `/judgments/page/7`
+ * of a freshly-narrowed result set would show an empty page.
  *
- * Every filter change RESETS to page 1 by targeting the base path — landing on
- * `/judgments/page/7` of a freshly-narrowed result set would show an empty page.
- * The form carries the other active filters as hidden inputs so searching never
- * silently drops the court-level selection.
+ * What changed is the search box. It used to be a GET `<form>` that navigated
+ * to `/judgments?q=…` and let the server `ilike` the summary column. D9 makes
+ * search registered-only, which means the server-side (anonymous, ISR-cached)
+ * fetch can no longer answer a search at all — so the box is now the app-wide
+ * `SearchBar`, live and debounced, querying with the reader's own bearer from
+ * the browser. It is the same component `/regulations`, `/circulars` and
+ * `/compliance` grew in the same wave, with the RTL layout disagreement between
+ * the old box and `ConversationSearch` settled in its favour (icon at
+ * `start-3`, clear at `end-2.5`).
  *
- * The search box also carries the server's 3-character floor (navigation
- * hardening 2.1) as a native `minLength` plus an inline Arabic hint, so a
- * one-letter search reads as «اكتب ٣ أحرف على الأقل للبحث» instead of a 400.
- * Native constraint validation only — nothing is disabled, and an EMPTY box
- * still submits, which is how a reader clears the search.
+ * Two consequences worth naming:
+ *
+ *   · The `:tooShort` CSS hint and the `minLength` attribute are gone with the
+ *     `<form>`. `SearchBar` renders the same 3-character message from
+ *     `lib/search/copy.ts`, driven by the value rather than by native
+ *     constraint validation, so every surface says it identically.
+ *   · The chips no longer carry `q`. A live query is client state mirrored onto
+ *     the URL; a chip is a full navigation, and preserving a query the
+ *     server-rendered href cannot see would restore it stale. Changing the
+ *     court level is a fresh browse — which is what «reset to page 1» already
+ *     means here.
+ *
+ * The active-filter row survives for `domain`, which is still the only place a
+ * domain filter can be cleared (hub cards can't carry filter links: they are
+ * themselves one `<Link>`). Its `q` chip is gone — the box's own × is the clear
+ * action now, and two dismiss controls for one filter is one too many.
  */
-export function JudgmentsFilterBar({ filters }: { filters: JudgmentsFilters }) {
-  const { court_level = "", domain = "", q = "" } = filters;
-  // The court level needs no removable chip below — its own «الكل» option is
-  // the clear action. Only the domain + free-text filters get a dismiss row.
-  const hasDismissable = Boolean(domain || q);
+export function JudgmentsFilterBar({
+  filters,
+  sectorSlugs,
+  children,
+}: {
+  filters: JudgmentsFilters;
+  /** `name_ar → slug` for the sector pills on search result cards (D11). */
+  sectorSlugs?: Record<string, string>;
+  /** The hub's normal body — shown whenever no search is live. */
+  children: ReactNode;
+}) {
+  const { court_level = "", domain = "" } = filters;
 
   return (
-    <div dir="rtl" className="space-y-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        {/* درجة المحكمة — three real values plus «الكل». The vocabulary comes
-            from lib/library/court-levels (never re-derived inline: the two-branch
-            copy is the bug that dropped every supreme-court ruling). */}
-        <ul className="flex flex-wrap items-center gap-1.5">
-          {COURT_LEVEL_FILTERS.map((option) => {
-            const isActive = option.value === court_level;
-            return (
-              <li key={option.value || "all"}>
-                <Link
-                  href={hrefWithFilters(BASE_PATH, {
-                    court_level: option.value,
-                    domain,
-                    q,
-                  })}
-                  aria-current={isActive ? "true" : undefined}
-                  className={cn(
-                    "inline-flex h-8 items-center rounded-full border px-3 text-[13px] font-medium transition-colors",
-                    isActive
-                      ? "border-primary bg-primary text-primary-foreground shadow-xs"
-                      : "border-border bg-card text-text-secondary hover:border-primary/40 hover:text-primary",
-                  )}
-                >
-                  {option.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+    <HubSearchPanel
+      section="judgments"
+      sectorSlugs={sectorSlugs}
+      // Searching INSIDE the active chips, not around them: a reader who picked
+      // «محكمة الاستئناف» and then typed expects both to apply.
+      filters={{ court_level, domain }}
+      leading={<CourtLevelChips courtLevel={court_level} domain={domain} />}
+      below={
+        domain ? <ActiveFilters courtLevel={court_level} domain={domain} /> : null
+      }
+    >
+      {children}
+    </HubSearchPanel>
+  );
+}
 
-        {/* Plain GET form → full navigation to /judgments?q=… (page 1). */}
-        <form
-          action={BASE_PATH}
-          method="get"
-          role="search"
-          className="flex w-full items-center gap-2 sm:w-auto"
-        >
-          {court_level && (
-            <input type="hidden" name="court_level" value={court_level} />
-          )}
-          {domain && <input type="hidden" name="domain" value={domain} />}
-
-          <div className="relative flex-1 sm:w-64 sm:flex-none">
-            {/* RTL: `start-3` is the physical RIGHT edge — the icon leads the
-                text the way the reader enters it. */}
-            <Search
-              aria-hidden="true"
-              className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted"
-            />
-            {/* `minLength` mirrors the server's own floor (navigation hardening
-                2.1: a free-text hub filter under 3 characters is refused with a
-                400). Catching it here turns a round-trip refusal into an inline
-                hint — but it is deliberately the ONLY guard: the submit button
-                stays live, and an empty box still submits, so clearing the
-                search to see everything again always works. */}
-            <input
-              type="search"
-              name="q"
-              defaultValue={q}
-              minLength={MIN_QUERY_LENGTH}
-              aria-describedby={HINT_ID}
-              placeholder="ابحث في الأحكام…"
-              aria-label="ابحث في الأحكام القضائية"
-              className="peer h-9 w-full rounded-full border border-border bg-card ps-9 pe-4 text-[13px] text-foreground outline-none transition-colors placeholder:text-text-muted focus:border-primary/50"
-            />
-            {/* Shown ONLY while the reader's own typing is too short —
-                `:tooShort` needs a dirty, non-empty value, so this never fires
-                on load and never nags an untouched box. Absolutely positioned so
-                appearing costs no layout shift in the filter row. */}
-            <p
-              id={HINT_ID}
-              className="pointer-events-none absolute inset-x-0 top-full z-10 mt-1 hidden ps-9 pe-4 text-[11px] leading-tight text-text-muted peer-invalid:block"
-            >
-              اكتب ٣ أحرف على الأقل للبحث
-            </p>
-          </div>
-          <button
-            type="submit"
-            className="h-9 shrink-0 rounded-full bg-primary px-4 text-[13px] font-semibold text-primary-foreground transition-colors hover:bg-primary-hover"
-          >
-            بحث
-          </button>
-        </form>
-      </div>
-
-      {/* Active-filter summary — the only place a domain filter can be cleared
-          (hub cards can't carry filter links: they are themselves one <Link>). */}
-      {hasDismissable && (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <span>الفلاتر النشطة:</span>
-          {domain && (
+/**
+ * درجة المحكمة — three real values plus «الكل». The vocabulary comes from
+ * `lib/library/court-levels` (never re-derived inline: the two-branch copy is
+ * the bug that dropped every supreme-court ruling). The «الكل» option is this
+ * filter's own clear action, which is why it gets no dismiss chip below.
+ */
+function CourtLevelChips({
+  courtLevel,
+  domain,
+}: {
+  courtLevel: string;
+  domain: string;
+}) {
+  return (
+    <ul className="flex flex-wrap items-center gap-1.5">
+      {COURT_LEVEL_FILTERS.map((option) => {
+        const isActive = option.value === courtLevel;
+        return (
+          <li key={option.value || "all"}>
             <Link
-              href={hrefWithFilters(BASE_PATH, { court_level, q })}
-              aria-label={`إزالة فلتر المجال ${domain}`}
-              className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-pill"
+              href={hrefWithFilters(BASE_PATH, {
+                court_level: option.value,
+                domain,
+              })}
+              aria-current={isActive ? "true" : undefined}
+              className={cn(
+                "inline-flex h-8 items-center rounded-full border px-3 text-[13px] font-medium transition-colors",
+                isActive
+                  ? "border-primary bg-primary text-primary-foreground shadow-xs"
+                  : "border-border bg-card text-text-secondary hover:border-primary/40 hover:text-primary",
+              )}
             >
-              {domain}
-              <X aria-hidden="true" className="h-3 w-3 shrink-0" />
+              {option.label}
             </Link>
-          )}
-          {q && (
-            <Link
-              href={hrefWithFilters(BASE_PATH, { court_level, domain })}
-              aria-label={`إزالة البحث عن ${q}`}
-              className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-pill"
-            >
-              «{q}»
-              <X aria-hidden="true" className="h-3 w-3 shrink-0" />
-            </Link>
-          )}
-          <Link
-            href={BASE_PATH}
-            className="underline-offset-2 transition-colors hover:text-foreground hover:underline"
-          >
-            مسح الكل
-          </Link>
-        </div>
-      )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** The dismiss row — `domain` only; see the component note above. */
+function ActiveFilters({
+  courtLevel,
+  domain,
+}: {
+  courtLevel: string;
+  domain: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>الفلاتر النشطة:</span>
+      <Link
+        href={hrefWithFilters(BASE_PATH, { court_level: courtLevel })}
+        aria-label={`إزالة فلتر المجال ${domain}`}
+        className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-pill"
+      >
+        {domain}
+        <X aria-hidden="true" className="h-3 w-3 shrink-0" />
+      </Link>
+      <Link
+        href={BASE_PATH}
+        className="underline-offset-2 transition-colors hover:text-foreground hover:underline"
+      >
+        مسح الكل
+      </Link>
     </div>
   );
 }

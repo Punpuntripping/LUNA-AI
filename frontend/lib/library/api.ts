@@ -10,11 +10,22 @@
 //
 // Shapes mirror the live backend payloads verified against prod data 2026-07-22.
 
+// `cache()` is React's per-request memo. It is imported here rather than in a
+// `server-only` module because the SECTOR helpers below are read by server
+// components AND their shapes are shared with the cards — and unlike
+// `next/headers` or `node:crypto`, `cache` is exported from the main `react`
+// package in BOTH builds (the browser implementation falls through to calling
+// the function directly when there is no request dispatcher). So it is safe in
+// the client graph this file unavoidably joins — see the `EDGE_SECRET` note.
+import { cache } from "react";
+
 import type {
   DocStatus,
   JudgmentDoc,
+  JudgmentHubItem,
   JudgmentHubResponse,
 } from "@/types/library";
+import type { LibraryType } from "@/lib/library/sectors";
 
 /**
  * Backend origin for SERVER→SERVER calls. Precedence:
@@ -260,6 +271,14 @@ export interface RegulationsFilters {
   entity?: string;
   doc_type?: string;
   sector?: string;
+  /**
+   * Latin sector slug (`labor-employment`). The BACKEND resolves it to the
+   * Arabic `topics.name_ar` and filters `sectors[]` with it — the frontend
+   * never carries an Arabic-name lookup, which is what keeps the 38 names a
+   * single server-side vocabulary (library_sectors.md §6). Distinct from the
+   * legacy `sector` param, which takes the Arabic name directly.
+   */
+  sector_slug?: string;
   q?: string;
 }
 
@@ -275,6 +294,16 @@ export interface RegulationVisibleSection {
   text: string;
   is_truncated: boolean;
   hidden_placeholder_lines: number;
+  /**
+   * Extra section ids this ONE section stands in for. Non-empty only on an open
+   * نظام whose fallback chunk spans a run of مواد («المادة (1) – المادة (4): …»):
+   * the run renders once instead of repeating the same paragraphs per مادة, and
+   * these are the مواد it swallowed. The page emits an empty anchor per id so
+   * every TOC row still scrolls somewhere.
+   *
+   * Optional on the wire — an older ISR/fetch-cache entry predates the field.
+   */
+  also_ids?: string[];
 }
 
 export interface RegulationOfficialSource {
@@ -383,6 +412,8 @@ export interface ComplianceHubItem {
 export interface ComplianceFilters {
   provider?: string;
   sector?: string;
+  /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
+  sector_slug?: string;
   q?: string;
 }
 
@@ -397,7 +428,6 @@ export interface ComplianceDoc {
   steps: string[];
   youtube_url: string | null;
   official_url: string | null;
-  pdf_link: string | null;
   sectors: string[];
 }
 
@@ -413,11 +443,20 @@ export interface CircularHubItem {
   source_label: string | null;
   body_snippet: string;
   body_length: number;
+  /**
+   * القطاعات this تعميم belongs to. OPTIONAL on the wire: `circulars.sectors[]`
+   * is 100% populated in the corpus but the hub payload did not carry it before
+   * the sector wing, so an ISR entry baked by an older backend simply has no
+   * field. Absent ⇒ no pills, never a crash.
+   */
+  sectors?: string[];
 }
 
 export interface CircularsFilters {
   /** Issuing-authority name (ilike) or entity UUID. */
   entity?: string;
+  /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
+  sector_slug?: string;
   q?: string;
 }
 
@@ -459,6 +498,13 @@ export interface JudgmentsFilters {
   court_level?: string;
   /** One value out of an item's `domains[]`. */
   domain?: string;
+  /**
+   * Latin sector slug — see `RegulationsFilters.sector_slug`. The judgments
+   * corpus stores its sector under `cases.legal_domains[]`, so the backend
+   * resolves the slug against THAT column; the wire name stays `sector_slug`
+   * for all four wings so one caller shape covers the lot.
+   */
+  sector_slug?: string;
   q?: string;
 }
 
@@ -742,4 +788,184 @@ export function getFormDetail(slug: string): Promise<FormDetail | null> {
     `${SERVER_API_BASE}/api/v1/public/library/forms/${encodeSlug(slug)}`,
     DOC_REVALIDATE,
   );
+}
+
+// ------------------------------------------------------------------
+// Sectors (القطاعات) — the /library unified hub + the sector wing
+// ------------------------------------------------------------------
+//
+// The 38 sectors are a CLOSED, server-owned vocabulary. Everything below reads
+// them from the API; nothing here (and nothing anywhere else in the frontend)
+// hardcodes a second copy of the list, the Arabic names, or the counts.
+
+/** Per-corpus item counts, keyed by the four public wing names. */
+export type SectorCounts = Record<LibraryType, number>;
+
+/** Sector counts plus their sum — what the sector endpoints return. */
+export type SectorCountsWithTotal = SectorCounts & { total: number };
+
+/** `GET /api/v1/public/library` — the four unfiltered tab counts. */
+export interface LibraryCountsResponse {
+  counts: SectorCounts;
+}
+
+/** One row of `GET /api/v1/public/library/sectors`. */
+export interface SectorSummary {
+  slug: string;
+  name_ar: string;
+  counts: SectorCountsWithTotal;
+}
+
+/**
+ * `GET /api/v1/public/library/sectors`.
+ *
+ * ⚠ ALREADY ORDERED BY VOLUME — that IS the browse order (§3). Never re-sort
+ * client-side: alphabetical would bury المعاملات التجارية (20k items) under
+ * الأمن الغذائي, and the server owns the ordering so it can change without a
+ * frontend deploy.
+ */
+export interface SectorsResponse {
+  sectors: SectorSummary[];
+}
+
+/**
+ * The first slice of each of the four types for one sector — the strips on
+ * `/library/{sector}`. Items are the SAME shapes the wing hub endpoints return,
+ * so they render through the existing wing cards verbatim.
+ */
+export interface SectorPreview {
+  regulations: RegulationHubItem[];
+  judgments: JudgmentHubItem[];
+  compliance: ComplianceHubItem[];
+  circulars: CircularHubItem[];
+}
+
+/** `GET /api/v1/public/library/sectors/{slug}` — 404 on an unknown slug. */
+export interface SectorDetail {
+  slug: string;
+  name_ar: string;
+  counts: SectorCountsWithTotal;
+  preview: SectorPreview;
+}
+
+/** Any of the four hub item shapes a sector×type list can carry. */
+export type SectorHubItem =
+  | RegulationHubItem
+  | JudgmentHubItem
+  | ComplianceHubItem
+  | CircularHubItem;
+
+/**
+ * The common envelope across the four wings. `cap_reached` / `max_page` /
+ * `max_anon_page` are optional because the judgments contract omits them (see
+ * `JudgmentHubResponse`) — `?? false` there simply means "no cap".
+ */
+export interface SectorHubEnvelope {
+  items: SectorHubItem[];
+  page: number;
+  total_pages: number;
+  cap_reached?: boolean;
+  max_page?: number;
+  max_anon_page?: number;
+}
+
+/** The four unfiltered tab counts for `/library`. */
+export function getLibraryCounts(): Promise<LibraryCountsResponse | null> {
+  return fetchJson<LibraryCountsResponse>(
+    `${SERVER_API_BASE}/api/v1/public/library`,
+    HUB_REVALIDATE,
+  );
+}
+
+/**
+ * The 38 sectors, in the server's browse order.
+ *
+ * ⚠ SOFT-FAILS WHERE ITS SIBLINGS THROW, and that is deliberate. Every other
+ * fetcher lets a transient failure propagate so a document route renders the
+ * error boundary instead of caching a 404 (see `fetchJson`). This one is
+ * different because of WHERE it is called: `generateStaticParams` (a throw
+ * there fails the whole build) and the sector-pill slug map on every wing hub
+ * card (a throw there would take down `/regulations` over a decoration). An
+ * empty list degrades to "no browse grid, plain-text pills" — visible, and
+ * never a broken page.
+ *
+ * `cache()` makes it one request per render pass no matter how many cards ask.
+ */
+export const getSectors = cache(async (): Promise<SectorSummary[]> => {
+  try {
+    const data = await fetchJson<SectorsResponse>(
+      `${SERVER_API_BASE}/api/v1/public/library/sectors`,
+      HUB_REVALIDATE,
+    );
+    return data?.sectors ?? [];
+  } catch {
+    return [];
+  }
+});
+
+/**
+ * `name_ar → slug`, for turning the Arabic sector names that ride on every hub
+ * item into links (D11).
+ *
+ * A name with NO entry resolves to `undefined` and the pill renders as plain
+ * text — never a guessed or broken href. That is the whole reason the map comes
+ * from the API rather than a transliteration rule: the five slugs still awaiting
+ * sign-off (§3) can change with a one-row `topics` update and nothing here
+ * needs to know.
+ */
+export const getSectorSlugMap = cache(
+  async (): Promise<Record<string, string>> => {
+    const sectors = await getSectors();
+    const map: Record<string, string> = {};
+    for (const sector of sectors) {
+      map[sector.name_ar] = sector.slug;
+    }
+    return map;
+  },
+);
+
+/**
+ * One sector: Arabic name, per-type counts, and a ≤3-item preview of each type.
+ * `null` ⇒ unknown slug (or a reserved segment) ⇒ the route calls `notFound()`.
+ *
+ * The slug is Latin by design (D4/D5), so `encodeURIComponent` is enough —
+ * `encodeSlug`'s decode-first normalisation exists for Arabic document slugs.
+ */
+export const getSectorDetail = cache(
+  (slug: string): Promise<SectorDetail | null> =>
+    fetchJson<SectorDetail>(
+      `${SERVER_API_BASE}/api/v1/public/library/sectors/${encodeURIComponent(slug)}`,
+      HUB_REVALIDATE,
+    ),
+);
+
+/**
+ * One page of a sector×type list.
+ *
+ * NO NEW LIST ENDPOINT (§7.2): this reuses each wing's EXISTING hub endpoint
+ * with `sector_slug`, so `resolve_gate` / `truncate_for_gate` / the depth cap /
+ * `library_budget` metering are all inherited unchanged. One gating path, not
+ * two.
+ *
+ * `getJudgmentsHub` takes no `ServerFetchOptions` on purpose — the whole
+ * /judgments wing is `noindex, nofollow` behind the PDPL gate, so it has no
+ * crawler to exempt. Restore the argument in the same commit that lifts the
+ * gate.
+ */
+export function getSectorTypeHub(
+  type: LibraryType,
+  sectorSlug: string,
+  page: number,
+  opts?: ServerFetchOptions,
+): Promise<SectorHubEnvelope | null> {
+  switch (type) {
+    case "regulations":
+      return getRegulationsHub(page, { sector_slug: sectorSlug }, opts);
+    case "judgments":
+      return getJudgmentsHub(page, { sector_slug: sectorSlug });
+    case "compliance":
+      return getComplianceHub(page, { sector_slug: sectorSlug }, opts);
+    case "circulars":
+      return getCircularsHub(page, { sector_slug: sectorSlug }, opts);
+  }
 }

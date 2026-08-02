@@ -58,12 +58,14 @@ def _clear_module_caches():
     ls._gate_defaults_cache["expires_at"] = 0.0
     ls._published_ids_cache.clear()
     pl._total_pages_memo.clear()
+    pl._reset_sector_memos()
     library_rate_limit._fallback.reset()
     yield
     ls._gate_defaults_cache["value"] = None
     ls._gate_defaults_cache["expires_at"] = 0.0
     ls._published_ids_cache.clear()
     pl._total_pages_memo.clear()
+    pl._reset_sector_memos()
     library_rate_limit._fallback.reset()
 
 
@@ -146,6 +148,21 @@ COMPLIANCE_HUB = HUBS[1][0]
 # The true corpus size every stubbed counter reports. Anon must never see it.
 TRUE_TOTAL_PAGES = 40
 
+# ⚠ ``q`` IS NO LONGER AN ANON FILTER (bm25_navigation_search.md D9). Search is
+# registered-only, and an anonymous ``?q=`` is DROPPED rather than refused — a
+# shared search link must degrade to "here is the wing", not to an Arabic error
+# page for a query the recipient never typed. So every test below that needs "an
+# anonymous caller with A FILTER applied" uses a filter anon can still send; the
+# ``q`` rules moved to the authed cases. One filter per hub, all validated
+# against their real vocabularies:
+ANON_FILTER = {
+    HUBS[0][0]: {"doc_type": "law_statute"},   # regulations — closed vocab
+    HUBS[1][0]: {"provider": "وزارة"},          # compliance  — free text, still 400s short
+    HUBS[2][0]: {"entity": ENTITY_UUID},        # circulars   — authority id
+    HUBS[3][0]: {"court_level": "appeal"},      # judgments   — closed vocab
+    HUBS[4][0]: {"category": ls.FORM_CATEGORIES[0]},  # forms — closed vocab
+}
+
 
 def _stub_item(page: int) -> dict[str, Any]:
     """One card, valid for EVERY hub model (each response model only reads the
@@ -211,11 +228,15 @@ def _is_arabic_refusal(res, status: int = 400) -> None:
 
 @pytest.mark.parametrize("path", HUB_PATHS)
 @pytest.mark.parametrize("term", ["ن", "نظ", " نظ ", "ab"])
-def test_a_short_q_is_refused_on_every_hub(stub_hubs, path, term) -> None:
+def test_a_short_q_is_refused_for_a_signed_in_caller(stub_hubs, path, term) -> None:
     """THE HOLE. A two-character ``q`` partitions an Arabic corpus efficiently:
     ~125 of them yield the whole regulations wing, 9 items at a time, from page 1
-    only — which is exactly the page the depth cap allows."""
-    res = _client().get(path, params={"q": term})
+    only — which is exactly the page the depth cap allows.
+
+    The floor is now enforced for the callers whose ``q`` actually DOES anything,
+    i.e. authenticated ones (D9). The contract itself is unchanged: >= 3, else a
+    400 in Arabic."""
+    res = _client(_hub_fake(), _User()).get(path, params={"q": term})
     _is_arabic_refusal(res)
 
 
@@ -223,9 +244,81 @@ def test_a_short_q_is_refused_on_every_hub(stub_hubs, path, term) -> None:
 def test_three_characters_is_enough(stub_hubs, path) -> None:
     """>= 3 is the threshold, so exactly 3 must pass — an off-by-one here would
     break every real search box in the wing."""
-    res = _client().get(path, params={"q": "نظا"})
+    res = _client(_hub_fake(), _User()).get(path, params={"q": "نظا"})
     assert res.status_code == 200, res.text
     assert res.json()["items"]
+
+
+# ===========================================================================
+# 1b. D9 — search is registered-only, and anon's ``q`` is DROPPED not refused
+# (.claude/plans/bm25_navigation_search.md D9)
+# ===========================================================================
+
+
+@pytest.mark.parametrize("path", HUB_PATHS)
+@pytest.mark.parametrize("term", ["ن", "نظام العمل", "'; drop table--"])
+def test_an_anonymous_q_is_ignored_never_refused(stub_hubs, path, term) -> None:
+    """A registered user WILL share a ``?q=`` URL. The anonymous recipient must
+    land on the wing, not on an error page for a query they never typed — so the
+    param is silently dropped and page 1 is served. Length does not matter:
+    nothing is measured because nothing is used."""
+    res = _client().get(path, params={"q": term})
+    assert res.status_code == 200, res.text
+    assert res.json()["items"]
+
+
+@pytest.mark.parametrize("path,lister", [(h[0], h[1]) for h in HUBS])
+def test_an_anonymous_q_never_reaches_the_lister(
+    stub_hubs, monkeypatch, path, lister
+) -> None:
+    """Enforcement is SERVER-SIDE (the UI's CTA modal is decoration). The wing's
+    lister must be called with no search at all, or an anon caller would still be
+    filtering — just without an error message."""
+    seen: list[Any] = []
+    inner = getattr(ls, lister)
+
+    def _spy(_supabase: Any, **kw: Any):
+        seen.append(kw.get("q"))
+        return inner(_supabase, **kw)
+
+    monkeypatch.setattr(ls, lister, _spy)
+
+    _client().get(path, params={"q": "نظام العمل"})
+    assert seen == [None], seen
+
+
+@pytest.mark.parametrize("path,lister", [(h[0], h[1]) for h in HUBS])
+def test_a_signed_in_q_DOES_reach_the_lister(
+    stub_hubs, monkeypatch, path, lister
+) -> None:
+    """The other half of the same contract: an account is what makes the box
+    work, so a signed-in caller's term must arrive intact (trimmed only)."""
+    seen: list[Any] = []
+    inner = getattr(ls, lister)
+
+    def _spy(_supabase: Any, **kw: Any):
+        seen.append(kw.get("q"))
+        return inner(_supabase, **kw)
+
+    monkeypatch.setattr(ls, lister, _spy)
+
+    _client(_hub_fake(), _User()).get(path, params={"q": " نظام العمل "})
+    assert seen == ["نظام العمل"], seen
+
+
+def test_an_anonymous_dropped_q_is_never_shared_cached(stub_hubs) -> None:
+    """The body is the ordinary unfiltered page, but the URL space is
+    attacker-chosen and unbounded — shared-caching it mints one edge entry per
+    query string, all holding the same page."""
+    res = _client().get(REG_HUB, params={"q": "نظام العمل"})
+    assert res.headers["cache-control"] == "private, no-store"
+
+
+def test_an_unfiltered_anon_hub_is_still_shared_cached(stub_hubs) -> None:
+    """The rule above must not have swallowed the normal anon path — the ISR
+    bake depends on it."""
+    res = _client().get(REG_HUB)
+    assert res.headers["cache-control"] == "public, max-age=3600"
 
 
 @pytest.mark.parametrize("path", HUB_PATHS)
@@ -248,20 +341,24 @@ def test_provider_is_free_text_and_takes_the_same_rule(stub_hubs) -> None:
 
 def test_a_rejected_filter_never_reaches_the_database(stub_hubs) -> None:
     """Validation runs BEFORE tier resolution and before any query — a refusal
-    must cost nothing, or the 400 becomes its own cheap load generator."""
+    must cost nothing, or the 400 becomes its own cheap load generator.
+
+    Authed, because D9 means only an authed ``q`` is validated at all; the
+    ORDERING property under test (validate, then resolve the tier, then query) is
+    what keeps that true."""
 
     class _Exploding:
         def table(self, *_a: Any, **_k: Any):
             raise AssertionError("the database was touched for a rejected filter")
 
-    res = _client(_Exploding()).get(REG_HUB, params={"q": "نظ"})
+    res = _client(_Exploding(), _User()).get(REG_HUB, params={"q": "نظ"})
     assert res.status_code == 400
 
 
 def test_a_rejection_is_never_shared_cached(stub_hubs) -> None:
     """A rejection is a property of the REQUEST. One parked in the edge cache
     under a hub URL would be replayed to everyone asking for that filter."""
-    res = _client().get(REG_HUB, params={"q": "نظ"})
+    res = _client(_hub_fake(), _User()).get(REG_HUB, params={"q": "نظ"})
     assert res.headers["cache-control"] == "private, no-store"
 
 
@@ -355,13 +452,30 @@ def test_the_anon_wall_does_not_report_a_FILTERED_corpus_size(stub_hubs, path) -
     ⚠ SCOPED to filtered requests 2026-07-30. The oracle is a count that MOVES
     with the probe; a single fixed number for the whole section is not one, and
     withholding it left the paginator dead-ending at page 2 on a 30,000-row
-    corpus. Unfiltered now reports the truth — asserted directly below."""
-    body = _body(_client().get(path, params={"page": 2, "q": "نظام"}))
+    corpus. Unfiltered now reports the truth — asserted directly below.
+
+    ⚠ The probe is no longer ``q`` (D9 drops it for anon, which closes this hole
+    for that param outright); it is whichever filter the wing still lets an
+    anonymous caller send — see ``ANON_FILTER``."""
+    params = {"page": 2, **ANON_FILTER[path]}
+    body = _body(_client().get(path, params=params))
 
     assert body["cap_reached"] is True
     assert body["items"] == []
     assert body["total_pages"] == pl._ANON_WALL_TOTAL_PAGES
     assert body["total_pages"] < TRUE_TOTAL_PAGES
+
+
+@pytest.mark.parametrize("path", HUB_PATHS)
+def test_an_anon_q_wall_reports_the_UNFILTERED_size(stub_hubs, path) -> None:
+    """The D9 corollary. A dropped ``q`` leaves an UNFILTERED request, so the
+    wall answers with the section total like any other unfiltered one — the same
+    number for every query string, which is what makes ``q`` useless as a probe
+    rather than merely capped."""
+    body = _body(_client().get(path, params={"page": 2, "q": "نظام"}))
+
+    assert body["cap_reached"] is True
+    assert body["total_pages"] == TRUE_TOTAL_PAGES
 
 
 @pytest.mark.parametrize("path", HUB_PATHS)
@@ -380,7 +494,7 @@ def test_the_anon_wall_reports_the_real_size_when_UNFILTERED(stub_hubs, path) ->
 def test_a_FILTERED_anon_wall_does_not_even_run_the_count(stub_hubs, path) -> None:
     """Not computed, not returned: the filtered count query IS the oracle, so the
     fix is to skip it — which also keeps a DB round-trip off the filtered path."""
-    _client().get(path, params={"page": 2, "q": "نظام"})
+    _client().get(path, params={"page": 2, **ANON_FILTER[path]})
     assert stub_hubs == {}
 
 
@@ -396,15 +510,32 @@ def test_the_unfiltered_count_is_memoised_per_section(stub_hubs) -> None:
 
 
 def test_the_count_oracle_is_gone_across_filters(stub_hubs) -> None:
-    """The attack this closes: walk ``q`` values, read ``total_pages`` off the
-    wall, and map the corpus without ever being handed an item. Every filter now
-    answers with the same flat number."""
+    """The attack this closes: walk filter values, read ``total_pages`` off the
+    wall, and map the corpus without ever being handed an item. Every filter
+    answers with the same flat number.
+
+    Walked over ``doc_type`` rather than ``q``, because ``q`` is no longer a
+    filter for this caller at all (D9) — and a closed vocabulary is the stronger
+    test anyway: it is the axis anon CAN still probe."""
+    client = _client()
+    answers = {
+        client.get(REG_HUB, params={"page": 2, "doc_type": bucket}).json()["total_pages"]
+        for bucket in ("law_statute", "regulation_generic", "decision", "circular")
+        if bucket in pl._DOC_TYPE_VOCAB
+    }
+    assert answers == {pl._ANON_WALL_TOTAL_PAGES}
+
+
+def test_walking_q_values_as_anon_reads_one_fixed_number(stub_hubs) -> None:
+    """And the ``q`` axis specifically: since the param is dropped, every term
+    returns the SAME unfiltered total. Not "capped to a flat ceiling" — actually
+    unmoving, because the input is not used."""
     client = _client()
     answers = {
         client.get(REG_HUB, params={"page": 2, "q": term}).json()["total_pages"]
         for term in ("نظام", "لائحة", "تنظيم", "قرار")
     }
-    assert answers == {pl._ANON_WALL_TOTAL_PAGES}
+    assert answers == {TRUE_TOTAL_PAGES}
 
 
 def test_an_authed_wall_keeps_the_real_count(stub_hubs) -> None:

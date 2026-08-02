@@ -227,6 +227,12 @@ export default async function RegulationArticlePage({ params }: PageProps) {
             doc.is_truncated ||
             Boolean(doc.sharh?.has_sharh)
           }
+          // On a مادة of an OPEN نظام the نص is already whole above; the only
+          // gated region left is the شرح, so the CTA must say «الشرح», not
+          // «النص» — otherwise it offers the reader what they are already reading.
+          revealTarget={
+            doc.gate !== "gated" && !doc.is_truncated ? "sharh" : "content"
+          }
         >
           <div className="space-y-6">
             <section id="article-body" className="scroll-mt-24">

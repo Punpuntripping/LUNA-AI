@@ -3,7 +3,8 @@ import { TopicBreadcrumbs } from "@/components/library/blocks/TopicBreadcrumbs";
 import { RegulationCard } from "@/components/library/hub/RegulationCard";
 import { HubPagination } from "@/components/library/hub/HubPagination";
 import { HubCtaWall } from "@/components/library/hub/HubCtaWall";
-import { getRegulationsHub } from "@/lib/library/api";
+import { HubSearchPanel } from "@/components/library/hub/HubSearchPanel";
+import { getRegulationsHub, getSectorSlugMap } from "@/lib/library/api";
 import type { BreadcrumbItem } from "@/types/library";
 
 /**
@@ -26,7 +27,12 @@ export async function RegulationsHubView({
   page: number;
   verifiedBot?: boolean;
 }) {
-  const data = await getRegulationsHub(page, undefined, { verifiedBot });
+  // `getSectorSlugMap` soft-fails to `{}` (see its note) — a missing map costs
+  // the sector pills their links, never the hub its render.
+  const [data, sectorSlugs] = await Promise.all([
+    getRegulationsHub(page, undefined, { verifiedBot }),
+    getSectorSlugMap(),
+  ]);
   const items = data?.items ?? [];
   const isCap = data?.cap_reached ?? false;
   // This fetch is UNAUTHENTICATED and ISR-cached (PART 9 trap 2), so the cap it
@@ -57,34 +63,46 @@ export async function RegulationsHubView({
           </p>
         </header>
 
-        {isCap ? (
-          <HubCtaWall
-            section="regulations"
-            basePath="/regulations"
-            page={page}
-            totalPages={data?.total_pages ?? 0}
-            anonMaxPage={anonMaxPage}
-          />
-        ) : items.length === 0 ? (
-          <p className="py-16 text-center text-sm text-muted-foreground">
-            لا توجد أنظمة لعرضها حالياً.
-          </p>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {items.map((item) => (
-                <RegulationCard key={item.slug} item={item} />
-              ))}
+        {/* The wing's first search box (bm25_navigation_search.md §6.2). The
+            panel owns the query and swaps its own results in for the body
+            below while a search is live; this view stays a pure server
+            component and its fetch above never sees `q` — see the panel's
+            header for why a hub search cannot run server-side. */}
+        <HubSearchPanel section="regulations" sectorSlugs={sectorSlugs}>
+          {isCap ? (
+            <HubCtaWall
+              section="regulations"
+              basePath="/regulations"
+              page={page}
+              totalPages={data?.total_pages ?? 0}
+              anonMaxPage={anonMaxPage}
+              sectorSlugs={sectorSlugs}
+            />
+          ) : items.length === 0 ? (
+            <p className="py-16 text-center text-sm text-muted-foreground">
+              لا توجد أنظمة لعرضها حالياً.
+            </p>
+          ) : (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {items.map((item) => (
+                  <RegulationCard
+                    key={item.slug}
+                    item={item}
+                    sectorSlugs={sectorSlugs}
+                  />
+                ))}
+              </div>
+              {data && (
+                <HubPagination
+                  basePath="/regulations"
+                  currentPage={data.page}
+                  totalPages={data.total_pages}
+                />
+              )}
             </div>
-            {data && (
-              <HubPagination
-                basePath="/regulations"
-                currentPage={data.page}
-                totalPages={data.total_pages}
-              />
-            )}
-          </>
-        )}
+          )}
+        </HubSearchPanel>
       </div>
     </LibraryPageShell>
   );

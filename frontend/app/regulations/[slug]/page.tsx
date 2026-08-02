@@ -264,6 +264,19 @@ export default async function RegulationDocPage({ params }: PageProps) {
                         className="scroll-mt-24 space-y-3.5"
                       >
                         <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
+                          {/* A merged fallback run covers several مواد but renders
+                              once. Their TOC rows still target `#sec-art-{n}`, so
+                              each swallowed مادة gets an empty inline anchor —
+                              nested INSIDE the heading so it takes no space and
+                              never trips the parent's `space-y` rhythm. */}
+                          {section.also_ids?.map((id) => (
+                            <span
+                              key={id}
+                              id={`sec-${id}`}
+                              aria-hidden="true"
+                              className="scroll-mt-24"
+                            />
+                          ))}
                           {section.title}
                         </h2>
                         <ArticleBody

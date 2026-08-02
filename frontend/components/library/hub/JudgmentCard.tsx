@@ -1,25 +1,39 @@
 import { CardShell } from "@/components/library/hub/CardShell";
 import { Gavel, MapPin, CalendarDays } from "lucide-react";
 import { CourtLevelBadge } from "@/components/library/blocks/CourtLevelBadge";
+import { SectorPills } from "@/components/library/hub/SectorPills";
 import type { JudgmentHubItem } from "@/types/library";
 
 /**
  * One card in the /judgments 3×3 hub grid: court + درجة التقاضي badge, title,
- * city + Hijri date, a snippet, and the judgment's domain chips. Server
- * component — links to the judgment document page (Arabic slug interpolated
- * raw; the browser encodes on navigation, same as every sibling card).
+ * city + Hijri date, a snippet, and the judgment's `legal_domains[]` — which
+ * ARE the sector vocabulary, so they render through the shared `SectorPills`
+ * and link to `/library/{slug}` (D11).
  *
- * The domain chips are deliberately plain `<span>`s, NOT filter links: the whole
- * card is already one `<Link>` and nesting anchors is invalid HTML. Domain
- * filtering is reached from the doc page's breadcrumb chips and the hub's own
- * active-filter row instead.
+ * They used to be plain `<span>`s because the whole card was one `<Link>` and
+ * nesting anchors is invalid HTML. `CardShell`'s `footer` slot lifted that
+ * constraint — the pills are now siblings of the anchor, not children of it.
+ *
+ * Server component — links to the judgment document page (Arabic slug
+ * interpolated raw; the browser encodes on navigation, same as every sibling).
  */
-export function JudgmentCard({ item, href }: { item: JudgmentHubItem; href?: string | null }) {
+export function JudgmentCard({
+  item,
+  href,
+  sectorSlugs,
+}: {
+  item: JudgmentHubItem;
+  href?: string | null;
+  sectorSlugs?: Record<string, string>;
+}) {
   // `href === undefined` keeps the hub's own link; `null` renders unlinked.
   const target =
     href === undefined ? `/judgments/${item.slug}` : href;
   return (
-    <CardShell href={target}>
+    <CardShell
+      href={target}
+      footer={<SectorPills names={item.domains} slugs={sectorSlugs} />}
+    >
       <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
         {item.court && (
           <span className="inline-flex items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
@@ -59,18 +73,6 @@ export function JudgmentCard({ item, href }: { item: JudgmentHubItem; href?: str
         <p className="mt-2.5 line-clamp-3 text-sm leading-relaxed text-text-secondary">
           {item.snippet}
         </p>
-      )}
-
-      {item.domains.length > 0 && (
-        <ul className="mt-auto flex flex-wrap gap-1.5 pt-3">
-          {item.domains.slice(0, 3).map((domain) => (
-            <li key={domain}>
-              <span className="inline-flex items-center rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-text-muted">
-                {domain}
-              </span>
-            </li>
-          ))}
-        </ul>
       )}
     </CardShell>
   );

@@ -2,6 +2,7 @@ import {
   fetchBlogUrls,
   fetchSectionUrls,
   getCalculatorUrls,
+  getSectorUrls,
   getStaticUrls,
   renderUrlset,
   type SitemapUrl,
@@ -12,6 +13,7 @@ import {
 //
 //   static                   → hardcoded marketing + legal pages (no backend).
 //   calculators              → local code registry (no backend).
+//   sectors                  → built from the `/sectors` counts endpoint.
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
 //   regulations / compliance → backend feed `.../sitemap/{section}?page=N`.
 //   other                    → 404.
@@ -47,6 +49,12 @@ export async function GET(
     case "calculators":
       // Local registry — no backend, never throws.
       urls = getCalculatorUrls();
+      break;
+    case "sectors":
+      // `/library/{sector}` + every INDEXABLE `/library/{sector}/{type}`, built
+      // from the `/sectors` counts endpoint and filtered through the SAME
+      // `sectorTypeRobots()` the pages use. Soft-fails to [] like the feeds.
+      urls = await getSectorUrls();
       break;
     case "blog":
       // fetchBlogUrls never throws — returns [] on backend failure.

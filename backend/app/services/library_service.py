@@ -50,6 +50,8 @@ from typing import Any, Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
+from backend.app.services import search_service
+from shared.library.sectors import SECTOR_SLUGS, slug_for_sector
 from shared.seo.judgment_naming import (
     court_level_label,
     hijri_year,
@@ -195,6 +197,10 @@ __all__ = [
     "get_form_detail",
     "open_form_in_writer",
     "sitemap_forms_urls",
+    # library_sectors.md Phase 1 — the sector axis (§5 · §7.2 · §7.3)
+    "SECTOR_COUNT_SECTIONS",
+    "library_corpus_counts",
+    "sector_counts",
 ]
 
 
@@ -1350,20 +1356,328 @@ def _fetch_corpus_by_ids(
     return out
 
 
+# ============================================
+# HUB SEARCH — BM25 behind the existing ``q`` param
+# (.claude/plans/bm25_navigation_search.md D8 · §5.2)
+#
+# ``q`` used to be a single-column ``ilike '%…%'`` per wing: no IDF, no Arabic
+# normalization (a reader typing «الايجار» never matched «الإيجار»), no ranking,
+# and one arbitrary column per wing — ``clean_title`` for أنظمة, ``short_summary``
+# for أحكام. It is now ``bm25_search()`` (migration 111) and NOTHING ELSE about
+# the hub changed: same param, same 3-char floor, same 9-item pages, same
+# response shape, same URLs.
+#
+# THE SHAPE OF THE SWAP, and why it is not "just call the RPC":
+#
+#   * BM25 supplies an ORDERED CANDIDATE ID SET; the wing's OWN filter builder
+#     still runs on the corpus rows. The hub filters are not all representable in
+#     ``search_index.facets`` — ``entity`` matches ``entity_id`` OR ``entity_ref``,
+#     a circular's ``entity`` resolves through an ``entities`` name lookup — so
+#     pushing them into the RPC would quietly change what they mean. This way
+#     filter semantics are byte-identical to today's and only the ORDER and the
+#     MATCHING RULE change.
+#   * The id set is capped (``HUB_SEARCH_LIMIT``). That is both a latency bound
+#     and the enumeration bound §5.4 asks for: search is a filter dimension
+#     stacked on top of the page-depth cap, so a query can walk at most the top
+#     200 of a wing.
+#   * Ordering by score REPLACES the wing's ordering contract (in-force-first,
+#     newest-first, …) for that request only. A search result list ordered by
+#     anything but relevance is not a search result list.
+#
+# ⚠ THE ``q``-ABSENT PATHS ARE UNTOUCHED. Sample mode, the two-partition
+# regulations paginator, the sector memos: all of it still runs exactly as
+# before when no ``q`` is present, which is the overwhelming majority of hub
+# traffic (every ISR bake). Do not "unify" the two — the browse ordering
+# contracts are load-bearing and none of them is expressible as a score.
+#
+# ⚠ ANON NEVER GETS HERE. D9 makes search registered-only, and the ROUTE drops
+# ``q`` for an anonymous caller before calling any of these functions
+# (``public_library._search_query``). So a non-None ``q`` in this module means
+# "an authenticated caller asked", and that is the only place that invariant is
+# enforced — do not add a second, drifting check here.
+# ============================================
+
+
+def _bm25_hub_rows(
+    supabase: SupabaseClient,
+    *,
+    corpus: str,
+    table: str,
+    select_cols: str,
+    q: str,
+    apply_filters,
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` for ``q``, ordered by BM25 score (best first). SYNC.
+
+    ``apply_filters`` is the wing's existing ``qb -> qb`` builder with ``q``
+    already removed (the RPC owns the text match now; leaving the ``ilike`` on
+    would AND a substring test onto a stemmed, normalized match and throw away
+    most of what BM25 just bought).
+
+    ``truncated`` is True when the ranked id set came back AT the cap, i.e. there
+    were probably more matches than were ranked. It is the honesty flag behind
+    the hub envelope's ``total_count_is_exact``: ``len(rows)`` is then a FLOOR,
+    not a total, and a UI printing it as «٢٠٠ نتيجة» would be inventing a number.
+
+    Only slugged rows are in the index, so the result is already the published
+    set — which is why this path needs no ``_published_ids`` intersection in
+    sample mode.
+    """
+    ids = search_service.corpus_search_ids(supabase, corpus, q)
+    truncated = len(ids) >= search_service.HUB_SEARCH_LIMIT
+    if not ids:
+        return [], False
+    rows = _fetch_corpus_by_ids(supabase, table, select_cols, ids, apply_filters)
+    rank = search_service.rank_map(ids)
+    # Rows come back in PostgREST's order, in up to two chunks — the ranking has
+    # to be re-imposed here or it is simply lost. Unranked rows (impossible today,
+    # since every id came FROM the ranking) sort last rather than first.
+    rows.sort(key=lambda r: rank.get(str(r.get("id")), len(ids)))
+    return rows, truncated
+
+
+def _hub_result(
+    items: list[dict[str, Any]],
+    page: int,
+    total_pages: int,
+    *,
+    q: Optional[str] = None,
+    total: int = 0,
+    truncated: bool = False,
+) -> dict[str, Any]:
+    """The hub envelope every lister returns.
+
+    ⚠ THE ENVELOPE DOES NOT CHANGE SHAPE FOR A SEARCH (D8 / plan §5.2). ``items``
+    are the SAME cards browse returns, snippet included — §5.3 requires a result
+    card to render the static free excerpt it already renders, and it can only do
+    that if the search response still carries it. There is no separate hit shape
+    on this endpoint; ``SearchHit`` belongs to ``/api/v1/search``, which is a
+    different (cross-wing) surface.
+
+    ``total_count`` is ADDITIVE and populated ONLY for a search — a browse
+    listing has ``total_pages`` and needs nothing else, whereas a result list
+    wants to say how many. It is NOT necessarily exact: the ranked id set is cut
+    at ``HUB_SEARCH_LIMIT``, and ``bm25_search`` itself cuts at ``p_candidates``
+    before scoring. ``total_count_is_exact`` reports which of the two you have,
+    so a UI can print «١٧ نتيجة» when it is true and «أفضل ٢٠٠ نتيجة» when it is
+    not, instead of asserting a number the backend does not actually know.
+    """
+    return {
+        "items": items,
+        "page": page,
+        "total_pages": total_pages,
+        "total_count": total if q else None,
+        "total_count_is_exact": (not truncated) if q else True,
+    }
+
+
+# ============================================
+# CROSS-WING COUNTS — the sector grid + the unified hub tabs
+# (library_sectors.md §5 · §7.2 · §7.3)
+#
+# ⚠ THESE COUNT WHAT IS *SERVABLE*, NOT WHAT IS IN THE CORPUS. Read this before
+# "fixing" a number that looks too small.
+#
+# The hub listers already paginate the PUBLISHED set while a wing is in sample
+# mode (``_published_ids`` → a list of <= 300 slugged ids): today /regulations
+# serves 100 items over ~12 pages, not 3,373 over 375. These two functions follow
+# the same rule per wing, independently, because the alternative is worse than a
+# cosmetic mismatch — measured on live data 2026-08-01:
+#
+#     sector (أنظمة)          corpus   servable   a corpus-based paginator says
+#     المواصفات والمقاييس        695          0   78 pages, every one EMPTY
+#     الأمن الغذائي              406          0   46 pages, every one EMPTY
+#     المعاملات التجارية         693         24   77 pages, 3 of them real
+#
+# The frontend derives BOTH its D9 thin-page ``noindex`` decision and its
+# ``generateStaticParams`` filter from these counts, so a corpus-based 695/0
+# sector passes the "fat enough to index" test and gets prerendered as a static,
+# indexable, EMPTY page — soft-404s at scale, which is the exact failure D9
+# exists to prevent. Servable counts fix indexability, prerendering and display
+# at once, with no frontend change.
+#
+# SELF-HEALING, and that is the whole point of the shape: nothing here is a
+# rollout hack to unwind later. Each wing asks ``_published_ids`` on every memo
+# refresh, so the moment ``build_seo_slugs --apply`` pushes a wing past
+# ``SAMPLE_MODE_MAX_IDS`` that wing silently returns to corpus counts — via the
+# ``library_sector_counts()`` RPC (migration 109), which is the steady-state path
+# and is what the RPC is for. Mixed states are normal and correct: one wing may
+# be sampled while another is complete.
+#
+# Two functions, because the second NEVER sums to the first and a caller that
+# derives one from the other is wrong twice over (both measured live):
+#
+#   * ``library_corpus_counts`` — one servable total per wing. Sizes the unified
+#     hub's four tab chips, whose paginators walk exactly that set.
+#   * ``sector_counts``         — 38 × 4 per-sector counts. A row carries
+#     MULTIPLE sectors, so the columns OVER-count (over the full corpus the
+#     regulations column sums to 8,971 against 3,373 rows, judgments to 31,924);
+#     and ``cases.legal_domains`` is only 67.7% populated (20,671 of 30,531 —
+#     plan D10), so the judgment columns simultaneously MISS 9,860 judgments that
+#     stay reachable only through the unfiltered /judgments hub.
+#
+# No arithmetic between them, in either direction.
+# ============================================
+
+# section name → (corpus table, sidecar content_type, sector array column).
+# Section names match the wing vocabulary used everywhere else in this file
+# (``_total_pages_memo`` keys, item-budget sections, the sitemap map); the
+# content_type is the sidecar's own singular spelling.
+_SECTION_SOURCES: dict[str, tuple[str, str, str]] = {
+    "regulations": ("regulations_v2", "regulation", "sectors"),
+    "judgments": ("cases", "judgment", "legal_domains"),
+    "compliance": ("services", "service", "sectors"),
+    "circulars": ("circulars", "circular", "sectors"),
+}
+
+SECTOR_COUNT_SECTIONS: tuple[str, ...] = tuple(_SECTION_SOURCES)
+"""The four wings a sector page has tabs for, in tab order (plan D3)."""
+
+
+def _published_sample_counts(
+    supabase: SupabaseClient, section: str
+) -> Optional[tuple[int, dict[str, int]]]:
+    """``(servable rows, {slug: rows})`` for one wing's PUBLISHED sample.
+
+    Returns ``None`` when the wing is in full-corpus steady state
+    (``_published_ids`` → ``None``), which is the caller's signal to use the
+    corpus path instead.
+
+    The set counted here is EXACTLY the set the wing's sample-mode lister
+    paginates — same ids, same ``_fetch_corpus_by_ids`` reader — so a sector
+    page's ``total_pages`` and the page it actually serves cannot disagree. That
+    equality is the point; §12.2 failed before it because page 1 reported the
+    lister's sample total while page 2 reported the corpus total.
+
+    A row is counted once per sector it carries (matching what the sector filter
+    would return for each of them) and sector values outside the 38 are dropped:
+    they have no slug, therefore no public page.
+    """
+    table, content_type, column = _SECTION_SOURCES[section]
+    pub_ids = _published_ids(supabase, content_type)
+    if pub_ids is None:
+        return None
+    if not pub_ids:
+        return 0, {}
+
+    rows = _fetch_corpus_by_ids(
+        supabase, table, f"id, {column}", pub_ids, lambda qb: qb
+    )
+    tally: dict[str, int] = {}
+    for row in rows:
+        for name in row.get(column) or []:
+            slug = slug_for_sector(name)
+            if slug:
+                tally[slug] = tally.get(slug, 0) + 1
+    return len(rows), tally
+
+
+def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """Servable row count per wing — the unified hub's four tab chips (§7.3).
+
+    Per wing: the published sample's size while the wing is sampled, else one
+    ``count='exact'`` head query over the corpus (cheap, index-only). The route
+    memoises the result for 5 minutes (§5).
+
+    ⚠ ``judgments`` is this wing's own total and is NOT derivable from
+    ``sector_counts`` — see the block comment above. Count the wing; do not do
+    arithmetic on sectors.
+    """
+    out: dict[str, int] = {}
+    try:
+        for section, (table, _content_type, _column) in _SECTION_SOURCES.items():
+            sample = _published_sample_counts(supabase, section)
+            if sample is not None:
+                out[section] = sample[0]
+                continue
+            res = supabase.table(table).select("id", count="exact").limit(1).execute()
+            out[section] = int(res.count or 0)
+    except LunaHTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error counting the library corpora: %s", e)
+        raise _hub_error()
+    return out
+
+
+def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
+    """All 152 sector×wing counts — ``{slug: {regulations, …, total}}``.
+
+    §5 makes a sector a SECTION rather than a filter, which means real counts on
+    38 pages × 4 tabs, and is equally explicit that they must not cost 152 count
+    queries. Per wing:
+
+      * SAMPLED  → one ``id IN (...)`` read of the ~100 published rows, tallied
+        in Python. One query for that wing's whole 38-sector column.
+      * STEADY   → the ``library_sector_counts()`` RPC (migration 109), which
+        does all 38 in one grouped ``unnest`` — PostgREST cannot express that,
+        which is why the RPC exists. The RPC is issued ONCE, and only if at least
+        one wing is in steady state.
+
+    So the worst case is four small reads plus one RPC per 5-minute memo refresh,
+    and the steady-state case is a single RPC. Wings flip between the two paths
+    on their own as ``build_seo_slugs`` publishes them; a mixed state is normal.
+
+    Every one of the 38 slugs is present in the result, seeded to zero, so a
+    sector that holds nothing servable still returns a row (the frontend needs
+    the zero — it is what makes D9 drop the tab and skip prerendering) instead of
+    vanishing from the grid. ``total`` is the sum of the four wings.
+    """
+    per_section: dict[str, dict[str, int]] = {}
+    steady: list[str] = []
+    for section in SECTOR_COUNT_SECTIONS:
+        sample = _published_sample_counts(supabase, section)
+        if sample is None:
+            steady.append(section)
+        else:
+            per_section[section] = sample[1]
+
+    if steady:
+        try:
+            res = supabase.rpc("library_sector_counts", {}).execute()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Error reading library_sector_counts(): %s", e)
+            raise _hub_error()
+        for row in res.data or []:
+            # The VOCABULARY is shared/library/sectors.py, not the corpus: a
+            # sector value the pipeline invents has no slug, therefore no page.
+            slug = slug_for_sector(row.get("sector"))
+            if not slug:
+                continue
+            for section in steady:
+                per_section.setdefault(section, {})[slug] = int(row.get(section) or 0)
+
+    counts: dict[str, dict[str, int]] = {}
+    for slug in SECTOR_SLUGS.values():
+        per_wing = {
+            section: int(per_section.get(section, {}).get(slug, 0))
+            for section in SECTOR_COUNT_SECTIONS
+        }
+        per_wing["total"] = sum(per_wing.values())
+        counts[slug] = per_wing
+    return counts
+
+
 # --- /regulations hub -----------------------------------------------------
 
 
-def _apply_reg_filters(qb, entity, doc_type, sector, q):
-    """Apply the regulations hub filters to a query builder (chainable).
+def _apply_reg_filters(qb, entity, doc_type, sector, q=None):
+    """Apply the regulations hub FACET filters to a query builder (chainable).
 
     ``entity`` matches ``entity_id`` when it is a UUID, else ``entity_ref``;
     ``doc_type`` = ``doc_type_bucket``; ``sector`` = array-contains on
-    ``sectors``; ``q`` = ilike on ``clean_title``. Empty/blank filters are no-ops.
+    ``sectors``. Empty/blank filters are no-ops.
+
+    ⚠ ``q`` IS ACCEPTED AND IGNORED. It was an ``ilike`` on ``clean_title`` until
+    Wave B moved the text match to ``bm25_search()`` (see ``_bm25_hub_rows``); the
+    parameter survives only so the wing's callers can keep passing their filter
+    tuple around positionally without every call site having to change. Passing a
+    ``q`` here is not an error and does nothing — the text match happens BEFORE
+    this builder runs, by selecting which ids are fetched at all.
     """
     entity = (entity or "").strip()
     doc_type = (doc_type or "").strip()
     sector = (sector or "").strip()
-    q = (q or "").strip()
     if entity:
         if _is_uuid(entity):
             qb = qb.eq("entity_id", entity)
@@ -1373,14 +1687,29 @@ def _apply_reg_filters(qb, entity, doc_type, sector, q):
         qb = qb.eq("doc_type_bucket", doc_type)
     if sector:
         qb = qb.contains("sectors", [sector])
-    if q:
-        qb = qb.ilike("clean_title", f"%{q}%")
     return qb
 
 
 def _reg_count(supabase, entity, doc_type, sector, q, *, in_force_only=False) -> int:
+    """Filtered regulation count. With ``q`` present this counts the BM25 match
+    set (capped at ``HUB_SEARCH_LIMIT``) so the number agrees with what the
+    lister will actually page through — a wall reporting one total while the
+    paginator walks another is the exact contradiction §12.2 failed on."""
+    if q:
+        rows, _truncated = _bm25_hub_rows(
+            supabase,
+            corpus="regulation",
+            table="regulations_v2",
+            select_cols="id, status_class",
+            q=q,
+            apply_filters=lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
+        )
+        if in_force_only:
+            rows = [r for r in rows if r.get("status_class") == "in_force"]
+        return len(rows)
+
     qb = supabase.table("regulations_v2").select("id", count="exact")
-    qb = _apply_reg_filters(qb, entity, doc_type, sector, q)
+    qb = _apply_reg_filters(qb, entity, doc_type, sector)
     if in_force_only:
         qb = qb.eq("status_class", "in_force")
     return int((qb.limit(1).execute().count) or 0)
@@ -1418,17 +1747,18 @@ def regulations_hub_total_pages(
     identical.
     """
     try:
-        pub_ids = _published_ids(supabase, "regulation")
+        pub_ids = None if q else _published_ids(supabase, "regulation")
         if pub_ids is not None:
             rows = _fetch_corpus_by_ids(
                 supabase,
                 "regulations_v2",
                 "id",
                 pub_ids,
-                lambda qb: _apply_reg_filters(qb, entity, doc_type, sector, q),
+                lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
             )
             total = len(rows)
         else:
+            # With ``q`` this counts the BM25 match set; without it, the corpus.
             total = _reg_count(supabase, entity, doc_type, sector, q)
     except LunaHTTPException:
         raise
@@ -1467,37 +1797,60 @@ def list_regulations_hub(
     because the corpus's first pages hold no published rows. In full-corpus steady
     state (``_published_ids`` → None) the legacy two-partition path below runs
     unchanged.
+
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): neither
+    of the above runs. Ids come from ``bm25_search()`` in score order, the wing's
+    facet filters are applied to those rows, and the window is sliced by RANK.
+    The in-force-first contract does not apply to a search result list.
     """
     page = max(1, int(page or 1))
     ps = HUB_PAGE_SIZE
     offset = (page - 1) * ps
 
-    pub_ids = _published_ids(supabase, "regulation")
-    if pub_ids is not None:
+    raw_rows: list[dict[str, Any]]
+    truncated = False
+    pub_ids = None if q else _published_ids(supabase, "regulation")
+
+    if q:
+        # SEARCH MODE — relevance order, no partition contract (see the block
+        # comment at ``_bm25_hub_rows``).
+        all_rows, truncated = _bm25_hub_rows(
+            supabase,
+            corpus="regulation",
+            table="regulations_v2",
+            select_cols=_REG_HUB_SELECT,
+            q=q,
+            apply_filters=lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
+        )
+        total = len(all_rows)
+        raw_rows = all_rows[offset : offset + ps]
+    elif pub_ids is not None:
         # SAMPLE MODE — paginate the published set in Python (set is <= 300).
         all_rows = _fetch_corpus_by_ids(
             supabase,
             "regulations_v2",
             _REG_HUB_SELECT,
             pub_ids,
-            lambda qb: _apply_reg_filters(qb, entity, doc_type, sector, q),
+            lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
         )
         all_rows.sort(key=_reg_hub_sort_key)
         total = len(all_rows)
-        raw_rows: list[dict[str, Any]] = all_rows[offset : offset + ps]
+        raw_rows = all_rows[offset : offset + ps]
     else:
         # LEGACY (full-corpus steady state) — unchanged two-partition pagination.
         select_cols = _REG_HUB_SELECT
         try:
-            total = _reg_count(supabase, entity, doc_type, sector, q)
-            count_a = _reg_count(supabase, entity, doc_type, sector, q, in_force_only=True)
+            total = _reg_count(supabase, entity, doc_type, sector, None)
+            count_a = _reg_count(
+                supabase, entity, doc_type, sector, None, in_force_only=True
+            )
 
             raw_rows = []
             if offset < count_a:
                 # Window starts inside the in-force partition.
                 take_a = min(ps, count_a - offset)
                 qa = supabase.table("regulations_v2").select(select_cols)
-                qa = _apply_reg_filters(qa, entity, doc_type, sector, q).eq(
+                qa = _apply_reg_filters(qa, entity, doc_type, sector).eq(
                     "status_class", "in_force"
                 )
                 qa = qa.order("clean_title").order("id").range(offset, offset + take_a - 1)
@@ -1506,7 +1859,7 @@ def list_regulations_hub(
                 if remaining > 0:
                     # Straddle: continue into the "rest" partition from its head.
                     qb = supabase.table("regulations_v2").select(select_cols)
-                    qb = _apply_reg_filters(qb, entity, doc_type, sector, q).neq(
+                    qb = _apply_reg_filters(qb, entity, doc_type, sector).neq(
                         "status_class", "in_force"
                     )
                     qb = qb.order("clean_title").order("id").range(0, remaining - 1)
@@ -1515,7 +1868,7 @@ def list_regulations_hub(
                 # Window is entirely inside the "rest" partition.
                 b_offset = offset - count_a
                 qb = supabase.table("regulations_v2").select(select_cols)
-                qb = _apply_reg_filters(qb, entity, doc_type, sector, q).neq(
+                qb = _apply_reg_filters(qb, entity, doc_type, sector).neq(
                     "status_class", "in_force"
                 )
                 qb = qb.order("clean_title").order("id").range(b_offset, b_offset + ps - 1)
@@ -1544,7 +1897,9 @@ def list_regulations_hub(
             }
         )
 
-    return {"items": items, "page": page, "total_pages": total_pages}
+    return _hub_result(
+        items, page, total_pages, q=q, total=total, truncated=truncated
+    )
 
 
 # --- /regulations/{slug} doc page -----------------------------------------
@@ -1571,22 +1926,6 @@ def _legal_authority_basis(value: Any) -> Optional[str]:
     if isinstance(basis, str) and basis.strip():
         return basis.strip()
     return None
-
-
-def _unwrap_pdf_url(value: Any) -> Optional[str]:
-    """Normalize ``pdf_url`` — 946 corpus rows store it as a JSON-encoded array
-    (e.g. ``["https://….pdf"]``); return the first URL, or the plain string."""
-    if not value or not isinstance(value, str):
-        return None
-    s = value.strip()
-    if s.startswith("["):
-        try:
-            arr = json.loads(s)
-        except ValueError:
-            return None
-        first = next((x for x in arr if isinstance(x, str) and x.strip()), None)
-        return first.strip() if first else None
-    return s
 
 
 def _reg_metadata(reg: dict[str, Any]) -> list[dict[str, str]]:
@@ -1710,37 +2049,115 @@ def _seo_articles_for_regulation(
     return rows
 
 
-def _chunk_content_map(
+def _chunk_row_map(
     supabase: SupabaseClient, chunk_ids: list[Any]
-) -> dict[str, str]:
-    """Batch-resolve ``{chunk_id: content}`` from ``chunks_v2`` for fallback bodies.
+) -> dict[str, dict[str, str]]:
+    """Batch-resolve ``{chunk_id: {"title", "content"}}`` from ``chunks_v2``.
 
     An article whose ``extraction_status != 'extracted'`` renders its owning chunk
-    as the body — this fetches those chunk bodies in one (chunked) ``IN`` lookup.
+    as the body — this fetches those chunk rows in one (chunked) ``IN`` lookup.
     Dedupes ids and chunks the ``in.(...)`` at 150 (PostgREST URL-length trap).
     Fail-soft: a blip yields ``{}`` (those sections render empty rather than 500).
+
+    ``title`` is carried alongside ``content`` because a fallback chunk usually
+    spans a RUN of مواد and titles itself accordingly («المادة (1) – المادة (4):
+    التعاريف …») — ``_merge_article_sections`` uses it as the heading when it
+    collapses such a run into one section.
     """
     ids = list(dict.fromkeys(str(c) for c in chunk_ids if c))
     if not ids:
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, str]] = {}
     for i in range(0, len(ids), 150):
         chunk = ids[i : i + 150]
         try:
             res = (
                 supabase.table("chunks_v2")
-                .select("id, content")
+                .select("id, title, content")
                 .in_("id", chunk)
                 .execute()
             )
         except Exception as e:  # noqa: BLE001
-            logger.warning("chunk content map lookup failed: %s", e)
+            logger.warning("chunk row map lookup failed: %s", e)
             continue
         for r in res.data or []:
             cid = r.get("id")
             if cid is not None:
-                out[str(cid)] = r.get("content") or ""
+                out[str(cid)] = {
+                    "title": r.get("title") or "",
+                    "content": r.get("content") or "",
+                }
     return out
+
+
+def _article_sections(
+    articles: list[dict[str, Any]],
+    chunk_rows: dict[str, dict[str, str]],
+    *,
+    gate: str,
+    free_chars: int,
+    merge_chunk_runs: bool,
+) -> list[dict[str, Any]]:
+    """Turn ``seo_articles`` rows into rendered sections. Pure (no DB).
+
+    One section per مادة — ``{id: 'art-{no}', title, text, is_truncated,
+    hidden_placeholder_lines, also_ids}`` — with the body taken from the extracted
+    ``article_text`` when there is one, and from the owning chunk otherwise.
+
+    ``merge_chunk_runs`` collapses a CHUNK-FALLBACK run. A fallback chunk is
+    multi-مادة by nature (it titles itself «المادة (1) – المادة (4): …»), so
+    emitting it once per مادة repeats the same paragraphs 4–5×. Bounded to a
+    3-مادة preview that was invisible; across a whole open نظام it is ~94k chars of
+    duplicate text on one page. Merged, the run becomes ONE section headed by the
+    chunk's own مادة-range title, and the مواد it swallowed ride along in
+    ``also_ids`` so the page can still emit an anchor for every TOC row.
+
+    ``gate``/``free_chars`` are handed to ``truncate_for_gate``, so an ``'open'``
+    gate returns every section whole and the hidden bytes of a gated one are
+    dropped here, server-side, exactly as before.
+    """
+    sections: list[dict[str, Any]] = []
+    # chunk_id → index in `sections` of the section already carrying that body.
+    run_index: dict[str, int] = {}
+
+    for a in articles:
+        no = int(a.get("article_no") or 0)
+        extracted = a.get("extraction_status") == "extracted" and a.get("article_text")
+
+        if extracted:
+            # Extracted single-مادة text → strip its duplicate heading + footnote
+            # noise for DISPLAY, and never merge (it belongs to this مادة alone).
+            body = _clean_article_display_text(a.get("article_text") or "")
+            title = a.get("article_label")
+        else:
+            chunk_id = str(a.get("chunk_id") or "")
+            if merge_chunk_runs and chunk_id and chunk_id in run_index:
+                sections[run_index[chunk_id]]["also_ids"].append(f"art-{no}")
+                continue
+            row = chunk_rows.get(chunk_id) or {}
+            body = row.get("content") or ""
+            title = a.get("article_label")
+            if merge_chunk_runs and chunk_id:
+                # The chunk's own title names the مادة RANGE the merged section
+                # actually contains; the single مادة label would under-describe
+                # it. Only in the merged path — an unmerged section still stands
+                # for one مادة and keeps its own label.
+                title = (row.get("title") or "").strip() or title
+                run_index[chunk_id] = len(sections)
+
+        cut = truncate_for_gate(body, gate, free_chars=free_chars)
+        sections.append(
+            {
+                "id": f"art-{no}",
+                "title": title,
+                "text": cut["visible_text"],
+                "is_truncated": cut["is_truncated"],
+                "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                "also_ids": [],
+            }
+        )
+
+    return sections
 
 
 def get_regulation_doc(
@@ -1756,15 +2173,21 @@ def get_regulation_doc(
       ``articles_v2``):
         - ``toc``: EVERY مادة — ``{id: slug, title: article_label,
           position: article_no}`` — always free.
-        - ``visible_sections``: the first 3 مواد (by article_no), each body run
-          through ``truncate_for_gate(text, gate, free_chars=600)`` — text = the
-          مادة's ``article_text`` (fallback: its owning chunk's content). id =
+        - ``visible_sections``: EVERY مادة when the gate is ``'open'``, the first 3
+          (by article_no) when it is ``'gated'``; each body run through
+          ``truncate_for_gate(text, gate, free_chars=600)`` — text = the مادة's
+          ``article_text`` (fallback: its owning chunk's content). id =
           ``'art-{no}'``. Gated bytes never leave the server.
-        - ``hidden_section_count`` = total مواد − 3.
+        - ``hidden_section_count`` = 0 when open, else total مواد − 3.
 
       CHUNK FALLBACK (a regulation with NO ``seo_articles`` rows — article-less /
-      chunk-only): the original chunk-based ``toc`` (id=chunk id) + first-3-chunk
-      ``visible_sections`` — untouched.
+      chunk-only): the original chunk-based ``toc`` (id=chunk id) + every chunk
+      (open) / the first 3 (gated) as ``visible_sections``.
+
+    ⚠ OPEN MEANS OPEN. An ``'open'`` نظام ships whole here — full text and
+    ``official_sources`` — to anonymous readers and crawlers alike, with
+    ``hidden_section_count = 0`` and no truncation, which is what switches every
+    downstream gate affordance off. Only a ``'gated'`` نظام gets the preview.
 
     ``article_index`` lists ONLY the PUBLISHED مواد (opt-in; empty by default) and
     is additive to either path.
@@ -1818,8 +2241,20 @@ def get_regulation_doc(
 
     articles = _seo_articles_for_regulation(supabase, str(content_id))
 
+    # An OPEN نظام is open END TO END — the whole statute ships in this anon/ISR
+    # payload, so a crawler and a signed-out reader get every مادة and NOTHING on
+    # the page offers a reveal. The 3-مادة preview below is the GATED reading
+    # surface and only that; applying it to an open-tier نظام too was the bug that
+    # put «سجّل مجانًا لعرض النظام كاملًا» on نظام العمل — a document nothing gates
+    # — and kept 229 of its 232 مواد out of the crawlable HTML.
+    #
+    # `hidden_section_count = 0` + `is_truncated = False` everywhere is what turns
+    # the CTA off downstream: the page derives `gated` from those, so there is no
+    # separate "hide the button" flag to keep in sync.
+    is_open = gate == "open"
+
     if articles:
-        # ARTICLES-FIRST — toc + first-3 preview built from the مواد index.
+        # ARTICLES-FIRST — toc + (open: every مادة | gated: first-3) preview.
         toc = [
             {
                 "id": str(a.get("slug") or ""),
@@ -1828,35 +2263,25 @@ def get_regulation_doc(
             }
             for a in articles
         ]
-        first3 = articles[:3]
+        rendered = articles if is_open else articles[:3]
         # Only fallback (non-'extracted') مواد need their owning chunk body.
         fallback_ids = [
             a.get("chunk_id")
-            for a in first3
+            for a in rendered
             if a.get("extraction_status") != "extracted" or not a.get("article_text")
         ]
-        chunk_body = _chunk_content_map(supabase, fallback_ids)
+        chunk_rows = _chunk_row_map(supabase, fallback_ids)
 
-        visible_sections: list[dict[str, Any]] = []
-        for a in first3:
-            no = int(a.get("article_no") or 0)
-            if a.get("extraction_status") == "extracted" and a.get("article_text"):
-                # Extracted single-مادة text → strip its duplicate heading + footnote
-                # noise for DISPLAY (chunk fallback below is multi-article — kept).
-                body = _clean_article_display_text(a.get("article_text") or "")
-            else:
-                body = chunk_body.get(str(a.get("chunk_id")), "")
-            cut = truncate_for_gate(body, gate, free_chars=600)
-            visible_sections.append(
-                {
-                    "id": f"art-{no}",
-                    "title": a.get("article_label"),
-                    "text": cut["visible_text"],
-                    "is_truncated": cut["is_truncated"],
-                    "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
-                }
-            )
-        hidden_section_count = max(0, len(articles) - 3)
+        visible_sections = _article_sections(
+            rendered,
+            chunk_rows,
+            gate=gate,
+            free_chars=600,
+            # Merge only on the open full render (see `_article_sections`): the
+            # gated 3-مادة preview stays byte-identical to what it shipped before.
+            merge_chunk_runs=is_open,
+        )
+        hidden_section_count = 0 if is_open else max(0, len(articles) - 3)
     else:
         # CHUNK FALLBACK — the legacy chunk-based toc + first-3-chunk preview.
         try:
@@ -1869,15 +2294,16 @@ def get_regulation_doc(
             )
             toc_rows = toc_res.data or []
 
-            vis_res = (
+            # Open → every chunk (the whole نظام); gated → the 3-chunk preview.
+            vis_qb = (
                 supabase.table("chunks_v2")
                 .select("id, title, position, content")
                 .eq("regulation_id", content_id)
                 .order("position")
-                .limit(3)
-                .execute()
             )
-            vis_rows = vis_res.data or []
+            if not is_open:
+                vis_qb = vis_qb.limit(3)
+            vis_rows = vis_qb.execute().data or []
         except Exception as e:  # noqa: BLE001
             logger.exception("Error loading regulation doc chunks (%s): %s", slug, e)
             raise LunaHTTPException(
@@ -1905,34 +2331,30 @@ def get_regulation_doc(
                     "text": cut["visible_text"],
                     "is_truncated": cut["is_truncated"],
                     "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                    "also_ids": [],
                 }
             )
-        hidden_section_count = max(0, len(toc_rows) - 3)
+        hidden_section_count = 0 if is_open else max(0, len(toc_rows) - 3)
 
-    official_sources: list[dict[str, str]] = []
-    if reg.get("landing_url"):
-        official_sources.append({"title": "الموقع الرسمي", "href": reg["landing_url"]})
-    pdf_href = _unwrap_pdf_url(reg.get("pdf_url"))
-    if pdf_href:
-        official_sources.append({"title": "PDF الرسمي", "href": pdf_href})
-    # ⚠ ALWAYS WITHHELD — open-tier included (user decision 2026-07-28, reversing
-    # the plan's §1.2 "always shown").
+    # WITHHELD FOR GATED ITEMS ONLY (user decision 2026-07-28, reversing the plan's
+    # §1.2 "always shown"; narrowed to gated-only on 2026-08-01).
     #
     # The block is a per-item deep link carrying the source system's own id (the
-    # BOE law UUID; an opaque encrypted NCAR document id), so across the corpus it
-    # is a slug → official-ID crosswalk. That is just as true of an OPEN-TIER
-    # نظام — more so, since those are the flagship indexed pages — so the tier
-    # does NOT earn an exemption. An earlier pass withheld only when
-    # ``gate == "gated"``, which left the 54 open-tier أنظمة publishing their
-    # crosswalk to anonymous crawlers.
+    # BOE law UUID; an opaque encrypted NCAR document id), so across the GATED
+    # corpus it is a slug → official-ID crosswalk, and it is served instead by
+    # ``official_sources_for_item`` through the authed reveal.
     #
-    # Served instead by ``official_sources_for_item`` through the authed reveal,
-    # which is therefore the ONLY renderer — so «المصادر الرسمية» can never appear
-    # twice on one page.
+    # An OPEN نظام has no crosswalk to protect: this payload already carries its
+    # entire text to anonymous crawlers, and a document that is open end-to-end
+    # cannot credibly hide the link to its own official source. Open items never
+    # reveal (nothing is gated on them), so exactly one renderer still fires per
+    # page — here for open, the reveal for gated.
     #
-    # Not viewer-dependent: this is Layer A (a property of the wing, not the
-    # caller), so the ISR payload stays cacheable.
-    official_sources = []
+    # Not viewer-dependent either way: this is Layer A (a property of the item,
+    # not the caller), so the ISR payload stays cacheable.
+    official_sources: list[dict[str, str]] = []
+    if is_open and reg.get("landing_url"):
+        official_sources.append({"title": "الموقع الرسمي", "href": reg["landing_url"]})
 
     return {
         "slug": slug,
@@ -1960,20 +2382,36 @@ def get_regulation_doc(
 # --- /compliance hub ------------------------------------------------------
 
 
-def _apply_service_filters(qb, provider, sector, q):
-    """Apply the compliance hub filters (chainable). ``provider`` = ilike on
-    ``provider_name``; ``sector`` = array-contains; ``q`` = ilike on
-    ``service_name_ar``. Blank filters are no-ops."""
+def _apply_service_filters(qb, provider, sector, q=None):
+    """Apply the compliance hub FACET filters (chainable). ``provider`` = ilike on
+    ``provider_name``; ``sector`` = array-contains. Blank filters are no-ops.
+
+    ⚠ ``q`` is accepted and IGNORED — the text match moved to ``bm25_search()``
+    in Wave B (see ``_apply_reg_filters`` for the full note). ``provider`` stays
+    an ``ilike``: it is a facet the caller types, not the search box, and it
+    keeps its own >= 3-char floor at the route.
+    """
     provider = (provider or "").strip()
     sector = (sector or "").strip()
-    q = (q or "").strip()
     if provider:
         qb = qb.ilike("provider_name", f"%{provider}%")
     if sector:
         qb = qb.contains("sectors", [sector])
-    if q:
-        qb = qb.ilike("service_name_ar", f"%{q}%")
     return qb
+
+
+def _service_search_rows(
+    supabase, provider, sector, q, select_cols: str
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter)."""
+    return _bm25_hub_rows(
+        supabase,
+        corpus="service",
+        table="services",
+        select_cols=select_cols,
+        q=q,
+        apply_filters=lambda qb: _apply_service_filters(qb, provider, sector),
+    )
 
 
 # Column set the /compliance hub reads (shared by the legacy + sample paths).
@@ -2004,19 +2442,23 @@ def compliance_hub_total_pages(
     (``_published_ids`` → None) it counts filtered CORPUS rows (9/page); every
     service is slugged then, so counting all vs. slugged rows is identical."""
     try:
-        pub_ids = _published_ids(supabase, "service")
-        if pub_ids is not None:
+        pub_ids = None if q else _published_ids(supabase, "service")
+        if q:
+            # SEARCH MODE — count the BM25 match set, so the wall's number and the
+            # lister's paginator describe the same set.
+            total = len(_service_search_rows(supabase, provider, sector, q, "id")[0])
+        elif pub_ids is not None:
             rows = _fetch_corpus_by_ids(
                 supabase,
                 "services",
                 "id",
                 pub_ids,
-                lambda qb: _apply_service_filters(qb, provider, sector, q),
+                lambda qb: _apply_service_filters(qb, provider, sector),
             )
             total = len(rows)
         else:
             qb = supabase.table("services").select("id", count="exact")
-            qb = _apply_service_filters(qb, provider, sector, q)
+            qb = _apply_service_filters(qb, provider, sector)
             total = int((qb.limit(1).execute().count) or 0)
     except LunaHTTPException:
         raise
@@ -2045,20 +2487,34 @@ def list_compliance_hub(
     by id, sorted in Python by the SAME contract, and the 9-item window is sliced
     — so a page never comes back empty. In steady state (``_published_ids`` →
     None) the legacy single-``range`` DB query below runs unchanged.
+
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
+    from ``bm25_search()`` in score order and the most-used-first contract does
+    not apply — a search result list is ordered by relevance.
     """
     page = max(1, int(page or 1))
     ps = HUB_PAGE_SIZE
     offset = (page - 1) * ps
 
-    pub_ids = _published_ids(supabase, "service")
-    if pub_ids is not None:
+    rows: list[dict[str, Any]]
+    truncated = False
+    pub_ids = None if q else _published_ids(supabase, "service")
+
+    if q:
+        # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block comment).
+        all_rows, truncated = _service_search_rows(
+            supabase, provider, sector, q, _SERVICE_HUB_SELECT
+        )
+        total = len(all_rows)
+        rows = all_rows[offset : offset + ps]
+    elif pub_ids is not None:
         # SAMPLE MODE — paginate the published set in Python (set is <= 300).
         all_rows = _fetch_corpus_by_ids(
             supabase,
             "services",
             _SERVICE_HUB_SELECT,
             pub_ids,
-            lambda qb: _apply_service_filters(qb, provider, sector, q),
+            lambda qb: _apply_service_filters(qb, provider, sector),
         )
         all_rows.sort(key=_service_hub_sort_key)
         total = len(all_rows)
@@ -2070,7 +2526,7 @@ def list_compliance_hub(
                 _SERVICE_HUB_SELECT,
                 count="exact",
             )
-            qb = _apply_service_filters(qb, provider, sector, q)
+            qb = _apply_service_filters(qb, provider, sector)
             res = (
                 qb.order("is_most_used", desc=True)
                 .order("service_name_ar")
@@ -2103,7 +2559,9 @@ def list_compliance_hub(
             }
         )
 
-    return {"items": items, "page": page, "total_pages": total_pages}
+    return _hub_result(
+        items, page, total_pages, q=q, total=total, truncated=truncated
+    )
 
 
 # --- /compliance/{slug} service page --------------------------------------
@@ -2144,7 +2602,7 @@ def get_compliance_service(
             .select(
                 "id, service_name_ar, provider_name, intro_title, "
                 "intro_description, requirements, required_documents, steps, "
-                "youtube_url, service_url, url, pdf_link, sectors"
+                "youtube_url, service_url, url, sectors"
             )
             .eq("id", content_id)
             .limit(1)
@@ -2175,8 +2633,10 @@ def get_compliance_service(
         "required_documents": sv.get("required_documents") or [],
         "steps": sv.get("steps") or [],
         "youtube_url": sv.get("youtube_url"),
+        # ``services.pdf_link`` is deliberately NOT projected: «دليل PDF» was a
+        # raw-file exit out of the product, and every wing now sends the reader
+        # to the official landing page or to our own page for the item.
         "official_url": sv.get("service_url") or sv.get("url"),
-        "pdf_link": sv.get("pdf_link"),
         "sectors": sv.get("sectors") or [],
     }
 
@@ -2614,26 +3074,65 @@ def _entity_name_map(
     return out
 
 
-def _apply_circular_filters(qb, entity_ids: Optional[list[str]], q: Optional[str]):
+def _apply_circular_filters(
+    qb,
+    entity_ids: Optional[list[str]],
+    q: Optional[str],
+    sector: Optional[str] = None,
+):
     """Apply the circulars hub filters to a query builder (chainable).
 
     ``entity_ids`` (already resolved by ``_resolve_entity_ids``): ``None`` = no
     entity filter; a list = ``entity_id IN (...)`` — an EMPTY list means the name
     filter matched nothing, so a non-matching sentinel UUID is used to force zero
-    rows on the typed ``entity_id`` column. ``q`` = ``ilike`` on ``title``. Blank
-    ``q`` is a no-op.
+    rows on the typed ``entity_id`` column. ``sector`` = array-contains on
+    ``sectors`` (GIN-indexed; 100% populated — 1,843 of 1,843 rows, verified
+    2026-08-01). Blank filters are no-ops.
+
+    ⚠ ``q`` is accepted and IGNORED — it was an ``ilike`` on ``title`` until
+    Wave B moved the text match to ``bm25_search()`` (see ``_apply_reg_filters``).
+
+    ``sector`` is the LAST of the four wings to get this filter
+    (``library_sectors.md`` §7.1): without it the التعاميم tab on a sector page
+    cannot scope, despite the column being fully populated.
     """
-    q = (q or "").strip()
+    sector = (sector or "").strip()
     if entity_ids is not None:
         qb = qb.in_("entity_id", entity_ids if entity_ids else [_NO_MATCH_UUID])
-    if q:
-        qb = qb.ilike("title", f"%{q}%")
+    if sector:
+        qb = qb.contains("sectors", [sector])
     return qb
 
 
-def _circular_count(supabase, entity_ids: Optional[list[str]], q: Optional[str]) -> int:
+def _circular_search_rows(
+    supabase,
+    entity_ids: Optional[list[str]],
+    q: str,
+    sector: Optional[str],
+    select_cols: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter)."""
+    return _bm25_hub_rows(
+        supabase,
+        corpus="circular",
+        table="circulars",
+        select_cols=select_cols,
+        q=q,
+        apply_filters=lambda qb: _apply_circular_filters(qb, entity_ids, None, sector),
+    )
+
+
+def _circular_count(
+    supabase,
+    entity_ids: Optional[list[str]],
+    q: Optional[str],
+    sector: Optional[str] = None,
+) -> int:
+    if q:
+        # SEARCH MODE — count the BM25 match set, not the corpus.
+        return len(_circular_search_rows(supabase, entity_ids, q, sector, "id")[0])
     qb = supabase.table("circulars").select("id", count="exact")
-    qb = _apply_circular_filters(qb, entity_ids, q)
+    qb = _apply_circular_filters(qb, entity_ids, None, sector)
     return int((qb.limit(1).execute().count) or 0)
 
 
@@ -2651,6 +3150,7 @@ def circulars_hub_total_pages(
     supabase: SupabaseClient,
     entity: Optional[str] = None,
     q: Optional[str] = None,
+    sector: Optional[str] = None,
 ) -> int:
     """Total hub pages for the filtered circulars set (for the anon-cap body).
 
@@ -2659,21 +3159,26 @@ def circulars_hub_total_pages(
     (``_published_ids`` → None) it counts filtered CORPUS rows (9/page); every
     circular is slugged then (``build_seo_slugs``), so counting all vs. slugged
     rows is identical.
+
+    ``sector`` is appended LAST in the signature on purpose: the route passes the
+    hub filters positionally into ``_wall_total_pages`` and an insertion in the
+    middle would silently re-bind ``q``.
     """
     try:
         entity_ids = _resolve_entity_ids(supabase, entity)
-        pub_ids = _published_ids(supabase, "circular")
+        pub_ids = None if q else _published_ids(supabase, "circular")
         if pub_ids is not None:
             rows = _fetch_corpus_by_ids(
                 supabase,
                 "circulars",
                 "id",
                 pub_ids,
-                lambda qb: _apply_circular_filters(qb, entity_ids, q),
+                lambda qb: _apply_circular_filters(qb, entity_ids, None, sector),
             )
             total = len(rows)
         else:
-            total = _circular_count(supabase, entity_ids, q)
+            # With ``q`` this counts the BM25 match set; without it, the corpus.
+            total = _circular_count(supabase, entity_ids, q, sector)
     except LunaHTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -2688,13 +3193,15 @@ def list_circulars_hub(
     page: int = 1,
     entity: Optional[str] = None,
     q: Optional[str] = None,
+    sector: Optional[str] = None,
 ) -> dict[str, Any]:
     """One page (9 items) of the /circulars hub.
 
     Ordering = ``title`` (ascending), a single partition (no in-force split like
     regs) → one DB ``range`` query + one batched sidecar slug lookup + one batched
     ``entities`` name lookup. Filters: ``entity`` (issuing-authority name, ilike
-    via ``entities`` → ``entity_id IN``, or a bare UUID direct) and ``q`` (title
+    via ``entities`` → ``entity_id IN``, or a bare UUID direct), ``sector``
+    (array-contains on ``sectors`` — §7.1) and ``q`` (title
     ilike). Only slugged (published) rows are returned. Card item shape =
     ``{slug, title, entity_name, source_label, body_snippet, body_length}`` where
     ``body_snippet`` is the first ~160 chars of ``content`` (always-free summary,
@@ -2706,21 +3213,35 @@ def list_circulars_hub(
     by id, sorted in Python by ``title`` (then id), and the 9-item window is
     sliced — so a page never comes back empty. In steady state (``_published_ids``
     → None) the legacy single-``range`` DB query below runs unchanged.
+
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
+    from ``bm25_search()`` in score order; title ordering does not apply to a
+    search result list.
     """
     page = max(1, int(page or 1))
     ps = HUB_PAGE_SIZE
     offset = (page - 1) * ps
 
+    rows: list[dict[str, Any]]
+    truncated = False
     entity_ids = _resolve_entity_ids(supabase, entity)
-    pub_ids = _published_ids(supabase, "circular")
-    if pub_ids is not None:
+    pub_ids = None if q else _published_ids(supabase, "circular")
+
+    if q:
+        # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block comment).
+        all_rows, truncated = _circular_search_rows(
+            supabase, entity_ids, q, sector, _CIRCULAR_HUB_SELECT
+        )
+        total = len(all_rows)
+        rows = all_rows[offset : offset + ps]
+    elif pub_ids is not None:
         # SAMPLE MODE — paginate the published set in Python (set is <= 300).
         all_rows = _fetch_corpus_by_ids(
             supabase,
             "circulars",
             _CIRCULAR_HUB_SELECT,
             pub_ids,
-            lambda qb: _apply_circular_filters(qb, entity_ids, q),
+            lambda qb: _apply_circular_filters(qb, entity_ids, None, sector),
         )
         all_rows.sort(key=_circular_hub_sort_key)
         total = len(all_rows)
@@ -2728,9 +3249,9 @@ def list_circulars_hub(
     else:
         # LEGACY (full-corpus steady state) — unchanged single-range query.
         try:
-            total = _circular_count(supabase, entity_ids, q)
+            total = _circular_count(supabase, entity_ids, None, sector)
             qb = supabase.table("circulars").select(_CIRCULAR_HUB_SELECT)
-            qb = _apply_circular_filters(qb, entity_ids, q)
+            qb = _apply_circular_filters(qb, entity_ids, None, sector)
             res = qb.order("title").order("id").range(offset, offset + ps - 1).execute()
             rows = res.data or []
         except Exception as e:  # noqa: BLE001
@@ -2760,7 +3281,9 @@ def list_circulars_hub(
             }
         )
 
-    return {"items": items, "page": page, "total_pages": total_pages}
+    return _hub_result(
+        items, page, total_pages, q=q, total=total, truncated=truncated
+    )
 
 
 def get_circular_doc(
@@ -2841,10 +3364,12 @@ def get_circular_doc(
     cut = truncate_for_gate(content, gate_effective, free_chars=GATE_FREE_CHARS_DEFAULT)
 
     source_label, official_sources = _normalize_circular_source(circ.get("source"))
-    # ALWAYS WITHHELD, short/open تعاميم included — see get_regulation_doc.
-    # A no-op in the current corpus (``circulars.source`` is a provenance label,
-    # never a URL) but wired so the rule holds if that ever changes.
-    official_sources = []
+    # Withheld for GATED تعاميم only — see get_regulation_doc. A short تعميم whose
+    # effective gate is 'open' renders whole here, so it keeps its source link and
+    # never reveals. A no-op in the current corpus (``circulars.source`` is a
+    # provenance label, never a URL) but wired so the rule holds if that changes.
+    if gate_effective != "open":
+        official_sources = []
 
     metadata: list[dict[str, str]] = []
     if entity_name:
@@ -3500,33 +4025,54 @@ def _judgment_hub_sort_key(r: dict[str, Any]) -> tuple[int, int, str]:
 
 
 def _apply_judgment_filters(
-    qb, court_level: Optional[str], domain: Optional[str], q: Optional[str]
+    qb, court_level: Optional[str], domain: Optional[str], q: Optional[str] = None
 ):
-    """Apply the judgments hub filters to a query builder (chainable).
+    """Apply the judgments hub FACET filters to a query builder (chainable).
 
     ``court_level`` = exact match ('first_instance' | 'appeal' | 'supreme');
-    ``domain`` = array-contains on ``legal_domains``; ``q`` = ilike on
-    ``short_summary`` (the free lead — never on a gated section column, so the
-    filter can never be used as an oracle for gated text). Blank filters are
-    no-ops.
+    ``domain`` = array-contains on ``legal_domains``. Blank filters are no-ops.
+
+    ⚠ ``q`` is accepted and IGNORED — it was an ``ilike`` on ``short_summary``
+    until Wave B moved the text match to ``bm25_search()``. The property that
+    made the old filter safe is preserved and strengthened: ``search_index``
+    holds the SAME always-free lead (``short_summary``) and nothing else, so a
+    query can still never be used as an oracle for a gated section.
     """
     court_level = (court_level or "").strip()
     domain = (domain or "").strip()
-    q = (q or "").strip()
     if court_level:
         qb = qb.eq("court_level", court_level)
     if domain:
         qb = qb.contains("legal_domains", [domain])
-    if q:
-        qb = qb.ilike("short_summary", f"%{q}%")
     return qb
+
+
+def _judgment_search_rows(
+    supabase,
+    court_level: Optional[str],
+    domain: Optional[str],
+    q: str,
+    select_cols: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter)."""
+    return _bm25_hub_rows(
+        supabase,
+        corpus="judgment",
+        table="cases",
+        select_cols=select_cols,
+        q=q,
+        apply_filters=lambda qb: _apply_judgment_filters(qb, court_level, domain),
+    )
 
 
 def _judgment_count(
     supabase, court_level: Optional[str], domain: Optional[str], q: Optional[str]
 ) -> int:
+    if q:
+        # SEARCH MODE — count the BM25 match set, not the corpus.
+        return len(_judgment_search_rows(supabase, court_level, domain, q, "id")[0])
     qb = supabase.table("cases").select("id", count="exact")
-    qb = _apply_judgment_filters(qb, court_level, domain, q)
+    qb = _apply_judgment_filters(qb, court_level, domain)
     return int((qb.limit(1).execute().count) or 0)
 
 
@@ -3546,17 +4092,18 @@ def judgments_hub_total_pages(
     slugged rows is identical.
     """
     try:
-        pub_ids = _published_ids(supabase, "judgment")
+        pub_ids = None if q else _published_ids(supabase, "judgment")
         if pub_ids is not None:
             rows = _fetch_corpus_by_ids(
                 supabase,
                 "cases",
                 "id",
                 pub_ids,
-                lambda qb: _apply_judgment_filters(qb, court_level, domain, q),
+                lambda qb: _apply_judgment_filters(qb, court_level, domain),
             )
             total = len(rows)
         else:
+            # With ``q`` this counts the BM25 match set; without it, the corpus.
             total = _judgment_count(supabase, court_level, domain, q)
     except LunaHTTPException:
         raise
@@ -3595,20 +4142,34 @@ def list_judgments_hub(
     by id, sorted in Python by ``_judgment_hub_sort_key`` (which reproduces the DB
     ordering, NULL handling included), and the 9-item window is sliced — so a page
     never comes back empty. In steady state the legacy ``range`` query runs.
+
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
+    from ``bm25_search()`` in score order. Recency does not order a search result
+    list — the reader asked for a subject, not for "what happened last".
     """
     page = max(1, int(page or 1))
     ps = HUB_PAGE_SIZE
     offset = (page - 1) * ps
 
-    pub_ids = _published_ids(supabase, "judgment")
-    if pub_ids is not None:
+    rows: list[dict[str, Any]]
+    truncated = False
+    pub_ids = None if q else _published_ids(supabase, "judgment")
+
+    if q:
+        # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block comment).
+        all_rows, truncated = _judgment_search_rows(
+            supabase, court_level, domain, q, _JUDGMENT_HUB_SELECT
+        )
+        total = len(all_rows)
+        rows = all_rows[offset : offset + ps]
+    elif pub_ids is not None:
         # SAMPLE MODE — paginate the published set in Python (set is <= 300).
         all_rows = _fetch_corpus_by_ids(
             supabase,
             "cases",
             _JUDGMENT_HUB_SELECT,
             pub_ids,
-            lambda qb: _apply_judgment_filters(qb, court_level, domain, q),
+            lambda qb: _apply_judgment_filters(qb, court_level, domain),
         )
         all_rows.sort(key=_judgment_hub_sort_key)
         total = len(all_rows)
@@ -3616,9 +4177,9 @@ def list_judgments_hub(
     else:
         # LEGACY (full-corpus steady state) — single-range query.
         try:
-            total = _judgment_count(supabase, court_level, domain, q)
+            total = _judgment_count(supabase, court_level, domain, None)
             qb = supabase.table("cases").select(_JUDGMENT_HUB_SELECT)
-            qb = _apply_judgment_filters(qb, court_level, domain, q)
+            qb = _apply_judgment_filters(qb, court_level, domain)
             res = (
                 qb.order("date_gregorian", desc=True, nullsfirst=False)
                 .order("id")
@@ -3654,7 +4215,9 @@ def list_judgments_hub(
             }
         )
 
-    return {"items": items, "page": page, "total_pages": total_pages}
+    return _hub_result(
+        items, page, total_pages, q=q, total=total, truncated=truncated
+    )
 
 
 def _judgment_article_int(article_no: str) -> Optional[int]:
@@ -3947,14 +4510,17 @@ def get_judgment_doc(
 
     cited, cited_total = _judgment_cited_regulations(supabase, row)
 
+    # Withheld for GATED أحكام only — see the note in get_regulation_doc. Every
+    # judgment is gated today (``seo_gate_defaults``), so this is currently the
+    # withholding branch in practice.
     official_sources: list[dict[str, str]] = []
     details_url = (row.get("details_url") or "").strip()
-    if details_url.startswith("http://") or details_url.startswith("https://"):
+    if gate == "open" and (
+        details_url.startswith("http://") or details_url.startswith("https://")
+    ):
         official_sources.append(
             {"title": "مصدر الحكم — وزارة العدل", "href": details_url}
         )
-    # ALWAYS WITHHELD, open-tier included — see the note in get_regulation_doc.
-    official_sources = []
 
     return {
         "slug": slug,
@@ -4043,6 +4609,11 @@ def official_sources_for_item(
     ``get_circular_doc``), and the real block is served ONLY from the metered
     reveal, alongside the content the unlock paid for.
 
+    An OPEN item is the other half of that rule (2026-08-01): it publishes its
+    whole body AND its official sources in the anon payload, and — having nothing
+    gated — never reaches a reveal. So the two renderers still cover DISJOINT
+    sets and «المصادر الرسمية» cannot appear twice on one page.
+
     Returns ``[]`` for anything with no official source of its own:
       * ``article`` — a مادة page has never shown one; its parent نظام carries it.
       * ``form``    — ``FormDetail`` has no ``official_sources``.
@@ -4062,7 +4633,7 @@ def official_sources_for_item(
         if ct == "regulation":
             res = (
                 supabase.table("regulations_v2")
-                .select("landing_url, pdf_url")
+                .select("landing_url")
                 .eq("id", cid)
                 .limit(1)
                 .execute()
@@ -4070,9 +4641,6 @@ def official_sources_for_item(
             row = (res.data or [{}])[0]
             if row.get("landing_url"):
                 out.append({"title": "الموقع الرسمي", "href": row["landing_url"]})
-            pdf_href = _unwrap_pdf_url(row.get("pdf_url"))
-            if pdf_href:
-                out.append({"title": "PDF الرسمي", "href": pdf_href})
 
         elif ct == "judgment":
             res = (
@@ -4136,7 +4704,10 @@ def get_full_regulation(
     ARTICLES-FIRST: when the regulation has ``seo_articles`` rows (now sourced from
     ``articles_v2``) it returns EVERY مادة in article-number order, untruncated —
     ``{"sections": [{"id": 'art-{no}', "title": article_label, "text":
-    article_text | owning-chunk content}, ...]}``. A regulation with NO
+    article_text | owning-chunk content}, ...]}`` — except that a run of مواد
+    sharing one multi-مادة fallback chunk collapses into a single section (see
+    ``_article_sections``) instead of repeating that chunk once per مادة. A
+    regulation with NO
     ``seo_articles`` rows (article-less / chunk-only) falls back to EVERY chunk in
     reading order (the legacy shape). No gating, no resolve_gate — the whole
     document (the account-only continuous-reading feature). ``None`` when the slug
@@ -4154,19 +4725,18 @@ def get_full_regulation(
                 for a in articles
                 if a.get("extraction_status") != "extracted" or not a.get("article_text")
             ]
-            chunk_body = _chunk_content_map(supabase, fallback_ids)
-            sections = []
-            for a in articles:
-                no = int(a.get("article_no") or 0)
-                if a.get("extraction_status") == "extracted" and a.get("article_text"):
-                    # Extracted single-مادة text → strip duplicate heading + footnote
-                    # noise for DISPLAY (chunk fallback below is multi-article — kept).
-                    text = _clean_article_display_text(a.get("article_text") or "")
-                else:
-                    text = chunk_body.get(str(a.get("chunk_id")), "")
-                sections.append(
-                    {"id": f"art-{no}", "title": a.get("article_label"), "text": text}
-                )
+            chunk_rows = _chunk_row_map(supabase, fallback_ids)
+            # Same builder as the open anon render, so the reveal a reader paid for
+            # and the public page agree section-for-section — including the merge
+            # that stops a multi-مادة fallback chunk from repeating itself once per
+            # مادة it covers. gate='open' → nothing is truncated here.
+            sections = _article_sections(
+                articles,
+                chunk_rows,
+                gate="open",
+                free_chars=600,
+                merge_chunk_runs=True,
+            )
             return {"sections": sections}
 
         # CHUNK FALLBACK — every chunk in reading order (legacy continuous doc).

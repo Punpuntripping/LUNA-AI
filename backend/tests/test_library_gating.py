@@ -79,6 +79,13 @@ class _Chain:
         self._filters.append(("ilike", col, pattern))
         return self
 
+    def contains(self, col: str, vals: list[Any]) -> "_Chain":
+        """PostgREST ``cs.`` — the array-CONTAINS operator behind every sector
+        filter (``regulations_v2.sectors``, ``cases.legal_domains``, …). Postgres
+        semantics: the row's array must contain ALL of ``vals``."""
+        self._filters.append(("contains", col, list(vals)))
+        return self
+
     @property
     def not_(self) -> "_Chain":
         self._negate = True
@@ -131,6 +138,10 @@ class _Chain:
             elif op == "ilike":
                 needle = str(val).strip("%").lower()
                 if needle and needle not in str(cell or "").lower():
+                    return False
+            elif op == "contains":
+                have = {str(v) for v in (cell or [])}
+                if not {str(v) for v in val}.issubset(have):
                     return False
             elif op == "is":
                 if val == "null" and cell is not None:

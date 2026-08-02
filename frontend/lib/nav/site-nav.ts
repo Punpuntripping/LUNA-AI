@@ -20,7 +20,8 @@
 //                            made it visibly vanish once the auth probe resolved.
 //   • اكتشف ريحان         — how-to / guides. Hub at /learn. Children Phase C, so
 //                            it resolves to a flat link until two of them land.
-//   • المكتبة القانونية   — the SEO corpus dropdown + المدونة. No hub row.
+//   • المكتبة القانونية   — the SEO corpus dropdown + المدونة, headed by the
+//                            /library hub row (restored — library_sectors D12).
 //                            Corpus children ship disabled; seo_public_library
 //                            flips them phase by phase.
 //   • السياسات            — the legal documents. More policies land here later.
@@ -133,11 +134,16 @@ export const SITE_NAV: NavGroup[] = [
     ],
   },
   {
-    // No `href` on purpose — the panel lists the wings directly and the «كل
-    // المكتبة القانونية» hub row is gone. /library is still a route (and still
-    // linked from the footer); it is simply not worth a slot in a menu whose
-    // every other row goes somewhere more specific.
+    // The hub row is BACK (library_sectors.md D12, reversing the 2026-07-23
+    // removal). It was dropped when /library was a `ComingSoonHub` placeholder
+    // — a menu row that went somewhere less specific than every row under it.
+    // /library now carries what no single wing can: the 38-sector browse grid,
+    // which is the only cross-corpus axis and the only crawlable path into
+    // `/library/{sector}`. That is more specific than the wings, not less.
     label: "المكتبة القانونية",
+    href: "/library",
+    hubLabel: "كل المكتبة القانونية",
+    hubDescription: "تصفّح المكتبة كاملة، أو حسب القطاع",
     children: [
       {
         label: "المدونة",
