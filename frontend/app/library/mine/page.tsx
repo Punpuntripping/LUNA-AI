@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { SitePageShell } from "@/components/site/SitePageShell";
 import { MyLibraryPage } from "@/components/library/mine/MyLibraryPage";
 
 export const metadata: Metadata = {
@@ -24,9 +23,5 @@ export const revalidate = 0;
 // Next.js App Router requires a default export for page files.
 // eslint-disable-next-line import/no-default-export
 export default function Page() {
-  return (
-    <SitePageShell>
-      <MyLibraryPage />
-    </SitePageShell>
-  );
+  return <MyLibraryPage />;
 }

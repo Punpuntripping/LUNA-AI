@@ -1,12 +1,14 @@
 "use client";
 
-import { FileText, Plus } from "lucide-react";
+import { FileText, LayoutTemplate, Plus } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useSidebarStore } from "@/stores/sidebar-store";
 
 // Next.js App Router requires default export for page files
 // eslint-disable-next-line import/no-default-export
 export default function TemplatesEmptyPage() {
+  const router = useRouter();
   const setCreateTemplateDialogOpen = useSidebarStore(
     (s) => s.setCreateTemplateDialogOpen,
   );
@@ -19,16 +21,22 @@ export default function TemplatesEmptyPage() {
         <FileText className="h-7 w-7" />
       </div>
 
-      <h1 className="text-xl font-bold text-foreground mb-2">اختر قالبًا</h1>
+      <h1 className="text-xl font-bold text-foreground mb-2">قوالبي</h1>
       <p className="text-muted-foreground text-sm mb-8 max-w-md">
-        اختر قالبًا من القائمة لتحريره، أو أنشئ قالبًا جديدًا لإعادة استخدامه في
-        عملك القانوني.
+        أنشئ قالبًا جديدًا لإعادة استخدامه في عملك القانوني، أو تصفح قوالبك
+        المحفوظة.
       </p>
 
-      <Button onClick={handleCreate}>
-        <Plus className="h-4 w-4 me-1.5" />
-        قالب جديد
-      </Button>
+      <div className="flex items-center gap-3">
+        <Button onClick={handleCreate}>
+          <Plus className="h-4 w-4 me-1.5" />
+          قالب جديد
+        </Button>
+        <Button variant="outline" onClick={() => router.push("/templates/mine")}>
+          <LayoutTemplate className="h-4 w-4 me-1.5" />
+          تصفح قوالبي
+        </Button>
+      </div>
     </div>
   );
 }

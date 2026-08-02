@@ -11,7 +11,7 @@ import { MyBlogsGrid } from "@/components/blogs/MyBlogsGrid";
  * App Router, and share tokens are random slugs — no post can shadow it.
  *
  * The route sits under `app/blogs/layout.tsx`, so the sidebar shell comes for
- * free; the shell already forces the sidebar onto the "blogs" tab on mount.
+ * free.
  */
 
 // Next.js App Router requires a default export for page files.

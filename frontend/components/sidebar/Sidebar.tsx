@@ -1,66 +1,59 @@
 "use client";
 
 import { useEffect } from "react";
-import { Menu, Plus } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  BookMarked,
+  LayoutTemplate,
+  Menu,
+  Newspaper,
+  Scale,
+  SquarePen,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { useConversations } from "@/hooks/use-conversations";
-import { useCases } from "@/hooks/use-cases";
-import { useTemplates } from "@/hooks/use-templates";
-import { useMyBlogs } from "@/hooks/use-my-blogs";
-import { useMyLibrary } from "@/hooks/use-my-library";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
 import { ConversationList } from "@/components/sidebar/ConversationList";
 import { CaseList } from "@/components/sidebar/CaseList";
-import { TemplateList } from "@/components/sidebar/TemplateList";
-import { BlogList } from "@/components/sidebar/BlogList";
-import { LibraryShelfList } from "@/components/sidebar/LibraryShelfList";
 import { Button } from "@/components/ui/button";
-import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { CASES_ENABLED } from "@/lib/features";
 
-interface NavPillProps {
+interface NavItemProps {
+  icon: LucideIcon;
   label: string;
-  count: number | undefined;
-  active: boolean;
-  onSelect: () => void;
-  onCreate?: () => void;
-  createTooltip?: string;
-  isCreating?: boolean;
+  active?: boolean;
+  onClick?: () => void;
+  testId?: string;
   /**
-   * Render the pill as non-interactive with a "قيد التطوير" badge. Used to keep
+   * Render the row as non-interactive with a "قيد التطوير" badge. Used to keep
    * a feature visible in the nav while it is gated off (see lib/features.ts).
-   * Suppresses the count, the create button, and all click/key handlers.
    */
   disabled?: boolean;
   disabledBadge?: string;
 }
 
-function NavPill({
+function NavItem({
+  icon: Icon,
   label,
-  count,
   active,
-  onSelect,
-  onCreate,
-  createTooltip,
-  isCreating,
+  onClick,
+  testId,
   disabled,
   disabledBadge,
-}: NavPillProps) {
+}: NavItemProps) {
   if (disabled) {
     return (
       <div
         aria-disabled
-        className={cn(
-          "relative flex items-center justify-between gap-2 rounded-full px-3.5 py-2",
-          "border border-transparent text-muted-foreground/60 cursor-not-allowed select-none"
-        )}
+        className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-muted-foreground/50 cursor-not-allowed select-none"
       >
-        <span className="text-sm font-medium truncate">{label}</span>
+        <Icon className="h-4 w-4 shrink-0" />
+        <span className="flex-1 truncate text-sm">{label}</span>
         {disabledBadge && (
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
             {disabledBadge}
           </span>
         )}
@@ -69,109 +62,35 @@ function NavPill({
   }
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid={testId}
+      aria-current={active ? "page" : undefined}
       className={cn(
-        "group relative flex items-center justify-between gap-2 rounded-full px-3.5 py-2 cursor-pointer transition-colors",
-        "border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
-          ? "border-primary/60 bg-primary/5 text-foreground"
-          : "border-transparent text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+          ? "bg-accent font-medium text-foreground"
+          : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
       )}
-      aria-pressed={active}
     >
-      <span className="text-sm font-medium truncate">{label}</span>
-
-      <div className="flex items-center gap-1.5 shrink-0">
-        {typeof count === "number" && (
-          <span
-            className={cn(
-              "text-[11px] tabular-nums font-medium tracking-tight",
-              active ? "text-primary" : "text-muted-foreground/80"
-            )}
-          >
-            {count}
-          </span>
+      <Icon
+        className={cn(
+          "h-4 w-4 shrink-0",
+          active ? "text-primary" : "text-muted-foreground/70"
         )}
-
-        {onCreate && createTooltip ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onCreate();
-                }}
-                disabled={isCreating}
-                aria-label={createTooltip}
-                className={cn(
-                  "flex h-5 w-5 items-center justify-center rounded-full transition-all",
-                  "text-muted-foreground hover:bg-primary hover:text-primary-foreground",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  "disabled:opacity-50 disabled:cursor-not-allowed",
-                  // Hidden by default; appear on pill hover/focus or when active
-                  active
-                    ? "opacity-100"
-                    : "opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                )}
-              >
-                <Plus className="h-3 w-3" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              <p>{createTooltip}</p>
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          // No create action: reserve the same slot the "+" button would
-          // occupy so the count stays aligned with the other pills' counts.
-          <span className="h-5 w-5 shrink-0" aria-hidden />
-        )}
-      </div>
-    </div>
+      />
+      <span className="truncate">{label}</span>
+    </button>
   );
 }
 
 export function Sidebar() {
   const router = useRouter();
-  const {
-    isOpen,
-    activeTab,
-    setActiveTab,
-    setOpen,
-    setSelectedConversation,
-    setCreateCaseDialogOpen,
-    setCreateTemplateDialogOpen,
-    setImportBlogDialogOpen,
-  } = useSidebarStore();
-
-  const { data: convData } = useConversations(null);
-  const { data: caseData } = useCases("active");
-  const { data: templateData } = useTemplates();
-  const { data: myBlogsData } = useMyBlogs();
-  const { data: shelfData } = useMyLibrary({
-    contentType: null,
-    sort: "recent",
-    page: 1,
-    pageSize: 1,
-  });
-
-  const conversationCount = convData?.conversations?.length;
-  const caseCount = caseData?.cases?.length;
-  const templateCount = templateData?.templates?.length;
-  const myBlogsCount = myBlogsData?.posts?.length;
-  // Shelf size for the pill badge. `total` is the WHOLE shelf, not the page,
-  // so the badge does not lie when the peek list is capped at 8.
-  const shelfCount = shelfData?.total;
+  const pathname = usePathname();
+  const { isOpen, activeTab, setActiveTab, setOpen, setSelectedConversation } =
+    useSidebarStore();
 
   useEffect(() => {
     const handleResize = () => {
@@ -184,6 +103,13 @@ export function Sidebar() {
     return () => window.removeEventListener("resize", handleResize);
   }, [setOpen]);
 
+  // On mobile the sidebar is an overlay — close it when a row navigates away,
+  // otherwise the drawer keeps covering the destination page.
+  const navigate = (href: string) => {
+    if (window.innerWidth < 768) setOpen(false);
+    router.push(href);
+  };
+
   const handleNewConversation = () => {
     if (activeTab !== "conversations") setActiveTab("conversations");
     // Lazy creation: do NOT persist a conversation here. Just route to the
@@ -191,22 +117,7 @@ export function Sidebar() {
     // user actually sends the first message (see app/chat/page.tsx). This stops
     // empty "محادثة جديدة" rows from piling up every time "+" is clicked.
     setSelectedConversation(null);
-    router.push("/chat");
-  };
-
-  const handleNewCase = () => {
-    if (activeTab !== "cases") setActiveTab("cases");
-    setCreateCaseDialogOpen(true);
-  };
-
-  const handleNewTemplate = () => {
-    if (activeTab !== "templates") setActiveTab("templates");
-    setCreateTemplateDialogOpen(true);
-  };
-
-  const handleImportBlog = () => {
-    if (activeTab !== "blogs") setActiveTab("blogs");
-    setImportBlogDialogOpen(true);
+    navigate("/chat");
   };
 
   return (
@@ -230,79 +141,79 @@ export function Sidebar() {
         className={cn(
           "flex flex-col bg-sidebar border-e border-sidebar-border transition-all duration-200 ease-in-out z-50",
           "relative",
-          isOpen ? "w-72" : "w-0 overflow-hidden",
+          isOpen ? "w-64" : "w-0 overflow-hidden",
           "max-md:fixed max-md:inset-y-0 max-md:start-0",
           isOpen ? "max-md:w-72" : "max-md:w-0"
         )}
       >
         <SidebarHeader />
 
-        {/* Pill nav */}
-        <div className="flex flex-col gap-1.5 px-3 pt-3 pb-2 shrink-0">
-          <NavPill
-            label="المحادثات"
-            count={conversationCount}
-            active={activeTab === "conversations"}
-            onSelect={() => setActiveTab("conversations")}
-            onCreate={handleNewConversation}
-            createTooltip="محادثة جديدة"
-          />
+        {/* Primary action — compose a new conversation */}
+        <div className="px-3 pt-3 shrink-0">
+          <button
+            type="button"
+            onClick={handleNewConversation}
+            data-testid="sidebar-new-chat"
+            className={cn(
+              "flex w-full items-center gap-2.5 rounded-lg border border-primary/25 px-2.5 py-2 text-sm font-medium text-primary transition-colors",
+              "hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            )}
+          >
+            <SquarePen className="h-4 w-4 shrink-0" />
+            محادثة جديدة
+          </button>
+        </div>
+
+        {/* Compact nav — each row opens its full page directly. The old
+            in-sidebar peek lists (قوالبي/مدوناتي/مكتبتي) are gone: the /mine
+            pages are the single browsing surface for each collection. */}
+        <nav className="flex flex-col gap-0.5 px-3 pt-3 pb-1 shrink-0">
           {CASES_ENABLED ? (
-            <NavPill
+            <NavItem
+              icon={Scale}
               label="القضايا"
-              count={caseCount}
               active={activeTab === "cases"}
-              onSelect={() => setActiveTab("cases")}
-              onCreate={handleNewCase}
-              createTooltip="قضية جديدة"
+              onClick={() =>
+                setActiveTab(activeTab === "cases" ? "conversations" : "cases")
+              }
+              testId="sidebar-nav-cases"
             />
           ) : (
-            <NavPill
+            <NavItem
+              icon={Scale}
               label="القضايا"
-              count={undefined}
-              active={false}
-              onSelect={() => {}}
               disabled
               disabledBadge="قيد التطوير"
             />
           )}
-          <NavPill
+          <NavItem
+            icon={LayoutTemplate}
             label="قوالبي"
-            count={templateCount}
-            active={activeTab === "templates"}
-            onSelect={() => setActiveTab("templates")}
-            onCreate={handleNewTemplate}
-            createTooltip="قالب جديد"
+            active={pathname?.startsWith("/templates")}
+            onClick={() => navigate("/templates/mine")}
+            testId="sidebar-nav-templates"
           />
-          <NavPill
+          <NavItem
+            icon={Newspaper}
             label="مدوناتي"
-            count={myBlogsCount}
-            active={activeTab === "blogs"}
-            onSelect={() => setActiveTab("blogs")}
-            onCreate={handleImportBlog}
-            createTooltip="إضافة مدونة برابط"
+            active={pathname?.startsWith("/blogs")}
+            onClick={() => navigate("/blogs/mine")}
+            testId="sidebar-nav-blogs"
           />
-          {/* «مكتبتي» sits directly under «مدوناتي» — both are "things I've
-              collected", as opposed to the work surfaces above them. No create
-              action: the shelf fills itself from what you open. */}
-          <NavPill
+          <NavItem
+            icon={BookMarked}
             label="مكتبتي"
-            count={shelfCount}
-            active={activeTab === "library"}
-            onSelect={() => setActiveTab("library")}
+            active={pathname?.startsWith("/library/mine")}
+            onClick={() => navigate("/library/mine")}
+            testId="sidebar-nav-library"
           />
-        </div>
+        </nav>
 
-        {/* Single panel — swaps content based on active tab */}
+        {/* Chats — always appended below the nav (cases list swaps in only
+            when the gated القضايا feature is re-enabled). */}
         <div className="flex-1 flex flex-col min-h-0">
-          {activeTab === "cases" && CASES_ENABLED ? (
+          {CASES_ENABLED && activeTab === "cases" ? (
             <CaseList />
-          ) : activeTab === "templates" ? (
-            <TemplateList />
-          ) : activeTab === "blogs" ? (
-            <BlogList />
-          ) : activeTab === "library" ? (
-            <LibraryShelfList />
           ) : (
             <ConversationList />
           )}

@@ -4,7 +4,6 @@ import { MessageSquareOff, ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useConversations } from "@/hooks/use-conversations";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
-import { ScrollArea } from "@/components/ui/scroll-area";
 
 /** Cap the sidebar at the top recent conversations (starred float in first). */
 const SIDEBAR_LIMIT = 15;
@@ -69,7 +68,10 @@ export function ConversationList() {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <SectionHeader>المحادثات الأخيرة</SectionHeader>
-      <ScrollArea className="flex-1 min-h-0">
+      {/* Native scroll, NOT Radix ScrollArea: its viewport wraps content in a
+          `display:table; min-width:100%` div, so nowrap titles expand it past
+          the sidebar and clip instead of truncating with an ellipsis. */}
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin">
         <div className="px-2 pb-2 space-y-0.5">
           {conversations.map((conv) => (
             <ConversationItem key={conv.conversation_id} conversation={conv} />
@@ -79,13 +81,13 @@ export function ConversationList() {
           <button
             type="button"
             onClick={() => router.push("/chats")}
-            className="group flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+            className="group flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <span>عرض جميع المحادثات</span>
             <ChevronLeft className="h-3.5 w-3.5 shrink-0 transition-transform group-hover:-translate-x-0.5" />
           </button>
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }

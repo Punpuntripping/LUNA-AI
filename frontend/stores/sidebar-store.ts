@@ -1,11 +1,8 @@
 import { create } from "zustand";
 
-export type SidebarTab =
-  | "conversations"
-  | "cases"
-  | "templates"
-  | "blogs"
-  | "library";
+// قوالبي/مدوناتي/مكتبتي are no longer sidebar tabs — their rows navigate
+// straight to the /mine full pages. Only the chats/cases panel swap remains.
+export type SidebarTab = "conversations" | "cases";
 
 interface SidebarState {
   isOpen: boolean;

@@ -136,13 +136,15 @@ export function ConversationItem({
     <>
       <div
         className={cn(
-          "group flex items-center gap-2 rounded-md px-3 py-2 transition-colors",
+          // Match the sidebar NavItem rows exactly — same radius, padding and
+          // color scheme, so nav and chats read as one list.
+          "group flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition-colors",
           isPendingCreate
             ? "cursor-wait opacity-60"
             : "cursor-pointer",
           isActive
-            ? "bg-accent text-accent-foreground"
-            : "text-sidebar-foreground/85 hover:bg-accent/40 hover:text-foreground"
+            ? "bg-accent font-medium text-foreground"
+            : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
         )}
         title={isPendingCreate ? "جارٍ إنشاء المحادثة…" : undefined}
         onClick={handleClick}
@@ -179,7 +181,7 @@ export function ConversationItem({
                   <Star className="h-3 w-3 shrink-0 fill-accent-brand text-accent-brand" />
                 )}
                 <p
-                  className="min-w-0 flex-1 truncate text-sm max-w-[15rem]"
+                  className="min-w-0 flex-1 truncate text-sm"
                   title={title}
                 >
                   {searchQuery ? (
