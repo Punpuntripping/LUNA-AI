@@ -80,6 +80,10 @@ interface AuthState {
     full_name_ar: string,
     terms_version: string,
     marketing_opt_in: boolean,
+    /** Site-relative path to return to after the email link is clicked.
+     *  Already validated by the caller; re-validated when read back in
+     *  app/auth/callback/route.ts. Omit for the plain /chat landing. */
+    returnTo?: string,
   ) => Promise<{ needsVerification: boolean }>;
   logout: () => Promise<void>;
   /** Revoke every refresh token (this device included) → local teardown. */
@@ -124,7 +128,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: response.user, isAuthenticated: true });
   },
 
-  register: async (email, password, full_name_ar, terms_version, marketing_opt_in) => {
+  register: async (
+    email,
+    password,
+    full_name_ar,
+    terms_version,
+    marketing_opt_in,
+    returnTo,
+  ) => {
     set({ error: null });
     // Signup runs in the browser so the PKCE code_verifier cookie lives in
     // the same browser that will click the email-confirmation link. The
@@ -136,12 +147,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // marketing opt-in are carried in options.data, which Supabase stores on
     // the user's raw_user_meta_data. The handle_new_user() DB trigger
     // (migration 094) stamps both onto the users row at creation.
+    //
+    // `returnTo` rides along as `?next=` so the confirmation link lands the
+    // reader back on the page they were reading instead of /chat
+    // (anon_conversion_popup.md §7.2 path C). GoTrue preserves the query it is
+    // given on redirect_to and appends its own `code`.
+    //
+    // ⚠ Supabase's Redirect URLs allowlist matches the FULL url, query string
+    // included. The rayhanai.com apex entry is a wildcard so production is
+    // fine, but `http://localhost:3000/auth/callback` is an exact entry — with
+    // `?next=` appended it is rejected and GoTrue falls back to the Site URL,
+    // throwing a local developer into production with no error anywhere. Add
+    // `http://localhost:3000/auth/callback*` to the allowlist before testing
+    // signup locally (§7.5 / trap T1).
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         data: { full_name_ar, terms_version, marketing_opt_in },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback${
+          returnTo ? `?next=${encodeURIComponent(returnTo)}` : ""
+        }`,
       },
     });
 

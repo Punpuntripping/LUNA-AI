@@ -9,6 +9,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { ApiClientError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { LEGAL_VERSION, LEGAL_ROUTES } from "@/lib/legal";
+import { DEFAULT_NEXT, safeNext } from "@/lib/safe-next";
 
 // Google "G" mark — multicolor official logo
 function GoogleIcon() {
@@ -69,17 +70,58 @@ export function LoginForm() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  // Neutral, non-destructive message (e.g. an email link that could not be
+  // exchanged here). Deliberately separate from serverError — it is not a
+  // failure the visitor caused and must not render in the red box.
+  const [notice, setNotice] = useState<string | null>(null);
+  // Raw `?next=` as it arrived; validated on every read via safeNext().
+  const [nextParam, setNextParam] = useState<string | null>(null);
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
   // Option B consent: registration is blocked until this is checked.
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   // Marketing consent: optional, default ON — never blocks registration.
   const [marketingOptIn, setMarketingOptIn] = useState(true);
 
-  // Surface OAuth failures redirected back from /auth/callback?error=oauth.
+  // Read every query parameter this form understands, once, on mount.
+  //
+  // NOT useSearchParams(): app/login/page.tsx is a server component, and the
+  // hook would force the route into client rendering and fail `next build`
+  // with "useSearchParams() should be wrapped in a suspense boundary"
+  // (anon_conversion_popup.md §7.6 / trap T2). window.location.search inside
+  // an effect is the file's existing idiom and needs no Suspense boundary.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("error") === "oauth") {
+    const params = new URLSearchParams(window.location.search);
+
+    // Return-to-page target (§7.2).
+    const rawNext = params.get("next");
+    if (rawNext) setNextParam(rawNext);
+
+    // «ابدأ الآن» promises signup, so open the form already on signup (§7.7).
+    if (params.get("mode") === "register") setMode("register");
+
+    // The email-confirmation link could not be exchanged: expired, already
+    // used, or opened in a different browser than the one that signed up (PKCE
+    // code_verifier is per-browser). /auth/callback cannot tell which — the
+    // reason arrives in the URL fragment, which never reaches a route handler
+    // (§7.4 / T1b) — so the copy names no cause. Not an error, not the Google
+    // message.
+    if (params.get("notice") === "verify_elsewhere") {
+      setNotice("تم تأكيد بريدك. سجّل الدخول للمتابعة.");
+    }
+
+    // Surface OAuth failures redirected back from /auth/callback?error=oauth.
+    if (params.get("error") === "oauth") {
       setServerError("تعذّر تسجيل الدخول عبر Google. حاول مرة أخرى.");
-      window.history.replaceState(null, "", window.location.pathname);
+      // Drop the error from the address bar but keep `next`, so a reload still
+      // returns the visitor to the page they came from.
+      const keep = safeNext(rawNext);
+      window.history.replaceState(
+        null,
+        "",
+        keep === DEFAULT_NEXT
+          ? window.location.pathname
+          : `${window.location.pathname}?next=${encodeURIComponent(keep)}`,
+      );
     }
   }, []);
 
@@ -91,10 +133,18 @@ export function LoginForm() {
   // Field errors
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // Where a successful sign-in lands. Allowlisted on every read (trap T3), so
+  // a hostile or stale `next` silently degrades to today's /chat.
+  const nextTarget = safeNext(nextParam);
+  /** The same value, but undefined when it is just the default — keeps a dead
+   *  `?next=/chat` off the OAuth and confirmation-email URLs. */
+  const returnTo = nextTarget === DEFAULT_NEXT ? undefined : nextTarget;
+
   const toggleMode = () => {
     setMode((prev) => (prev === "login" ? "register" : "login"));
     setErrors({});
     setServerError(null);
+    setNotice(null);
     setRegistrationSuccess(false);
     setAgreedToTerms(false);
     setMarketingOptIn(true);
@@ -146,7 +196,7 @@ export function LoginForm() {
     try {
       if (mode === "login") {
         await login(email, password);
-        router.push("/chat");
+        router.push(nextTarget);
       } else {
         const { needsVerification } = await register(
           email,
@@ -154,11 +204,12 @@ export function LoginForm() {
           fullNameAr,
           LEGAL_VERSION,
           marketingOptIn,
+          returnTo,
         );
         if (needsVerification) {
           setRegistrationSuccess(true);
         } else {
-          router.push("/chat");
+          router.push(nextTarget);
         }
       }
     } catch (err) {
@@ -188,7 +239,11 @@ export function LoginForm() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        // `next` rides through Google and back into /auth/callback, which
+        // re-validates it before redirecting (§7.2 path B).
+        redirectTo: `${window.location.origin}/auth/callback${
+          returnTo ? `?next=${encodeURIComponent(returnTo)}` : ""
+        }`,
       },
     });
 
@@ -242,6 +297,14 @@ export function LoginForm() {
   return (
     <form onSubmit={handleSubmit} className="space-y-6" noValidate>
       <div className="rounded-lg border border-border bg-card p-6 space-y-4">
+        {/* Informational notice (e.g. «تم تأكيد بريدك») — neutral styling on
+            purpose: nothing went wrong for the visitor here. */}
+        {notice && (
+          <div className="rounded-md bg-primary/5 border border-primary/20 p-3 text-sm text-foreground">
+            {notice}
+          </div>
+        )}
+
         {/* Server error */}
         {serverError && (
           <div className="rounded-md bg-destructive/10 border border-destructive/20 p-3 text-sm text-destructive">

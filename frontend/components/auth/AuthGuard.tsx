@@ -34,15 +34,23 @@ interface Props {
 // /calculators is the public calculators wing (Phase 3) — free, never gated.
 // /circulars is the public التعاميم wing and /forms the public نماذج wing (Phase
 // 5 / Phase 3) — anon-viewable SEO surfaces like the others. /vs-chatgpt is the
-// «ريحان مقابل ChatGPT» comparison page (inside the عن ريحان menu); /library and
-// /learn are the المكتبة القانونية and اكتشف hub endpoints (placeholder today,
-// filled by later phases) — all three are public marketing surfaces the global
-// header links to and must render for anon visitors.
+// «ريحان مقابل ChatGPT» comparison page (inside the عن ريحان menu); /learn is the
+// اكتشف hub endpoint (placeholder today, filled by a later phase); /library is
+// the المكتبة القانونية hub and now a real public SEO surface — the 38-sector
+// browse grid plus /library/{sector} and /library/{sector}/{type} beneath it
+// (library_sectors.md). All are public and must render for anon visitors.
 // Routes that sit UNDER a public prefix but are private. Checked before the
 // prefix list, because the prefix test is a `startsWith` and would otherwise
-// swallow them: /library is a public marketing hub, but /library/mine is the
-// authed «مكتبتي» shelf — a per-user reading history. Left public it renders for
+// swallow them: /library is a public hub, but /library/mine is the authed
+// «مكتبتي» shelf — a per-user reading history. Left public it renders for
 // anonymous visitors who then watch every shelf call 401.
+//
+// ⚠ RE-VERIFY THIS PAIR WHENEVER /library GAINS A ROUTE (library_sectors trap
+// T2). /library/mine now sits alongside a DYNAMIC `[sector]` sibling. It still
+// wins on both axes: Next resolves the static `app/library/mine` segment before
+// `app/library/[sector]`, and the exception list below is tested BEFORE the
+// public-prefix list, so the shelf keeps its auth gate. A regression on either
+// axis renders a per-user shelf to anonymous visitors.
 const PRIVATE_EXCEPTIONS = ["/library/mine"] as const;
 
 const PUBLIC_PREFIXES = [

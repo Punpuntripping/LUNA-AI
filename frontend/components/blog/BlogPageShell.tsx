@@ -1,4 +1,5 @@
 import { BlogConversionCta } from "@/components/blog/BlogConversionCta";
+import { AnonCtaPopup } from "@/components/marketing/AnonCtaPopup";
 import { SitePageShell } from "@/components/site/SitePageShell";
 
 interface BlogPageShellProps {
@@ -28,6 +29,9 @@ export function BlogPageShell({ children, showCta = true }: BlogPageShellProps) 
     <SitePageShell>
       {children}
       {showCta && <BlogConversionCta />}
+      {/* Same pitch, active form — fires on reading depth inside /blog/{token}
+          and stays silent on the /blog directory (it filters itself). */}
+      <AnonCtaPopup />
     </SitePageShell>
   );
 }

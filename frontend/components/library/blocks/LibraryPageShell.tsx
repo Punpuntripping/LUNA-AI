@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { HeaderAuthActions } from "@/components/site/HeaderAuthActions";
 import { BlogConversionCta } from "@/components/blog/BlogConversionCta";
+import { AnonCtaPopup } from "@/components/marketing/AnonCtaPopup";
 import { SiteFooter } from "@/components/site/SiteFooter";
 import { cn } from "@/lib/utils";
 import type { LibraryPageShellProps } from "@/types/library";
@@ -56,6 +57,13 @@ export function LibraryPageShell({
 
       {/* Conversion CTA — anonymous readers only */}
       {showCta && <BlogConversionCta />}
+
+      {/* The ACTIVE half of the same pitch: a popup earned by reading depth.
+          Mounted unconditionally — it decides its own eligibility from the
+          pathname (documents under the five wings only), so /forms,
+          /calculators and every hub cost nothing but a no-op render. Pure
+          client, zero server data: it must never vary the shared ISR cache. */}
+      <AnonCtaPopup />
 
       <SiteFooter />
     </div>
