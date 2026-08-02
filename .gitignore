@@ -39,6 +39,15 @@ backend/tests/*
 # enumeration fix incl. the total_pages oracle.
 !backend/tests/test_library_item_budget.py
 !backend/tests/test_library_filter_hardening.py
+# sector-wing suites are durable for the same reason — they pin the §5 amendment
+# to that enumeration fix (library_sectors.md D8): a VALIDATED sector is a
+# SECTION, so it gets real counts, while a sector PLUS a free-text filter is
+# filtered again and keeps the flat ceiling. Both spellings (Latin sector_slug /
+# raw Arabic sector|domain) must behave identically or a caller just switches
+# spelling. test_library_sectors.py is the drift guard the slug map's own
+# docstring delegates to ("CI catches it") — which only holds if it is committed.
+!backend/tests/test_library_sectors.py
+!backend/tests/test_library_sector_wing.py
 # account-settings suite is durable — it pins that /logout revokes via the
 # SERVICE-ROLE admin API. Depending on the shared anon client there lets one
 # user's logout globally revoke a DIFFERENT user's sessions, silently.
@@ -76,6 +85,16 @@ upload_smoke_*.png
 *_dev.log
 # Deploy-checker verification screenshots — throwaway artifacts
 .claude/deploy-*.png
+# Ad-hoc capture artifacts that land at the REPO ROOT (and one level into
+# agents/) whenever a Playwright/verification pass runs without an -o path:
+# feature screenshots, scraped-response dumps, console-error transcripts.
+# Root-anchored on purpose — real project images live under frontend/public,
+# frontend/app and marketing/, and a blanket `*.png` would swallow all of them.
+/*.png
+/*.txt
+agents/*.png
+# Next dev-server stdout capture (the `*_dev.log` rule above misses this name)
+frontend/dev.log
 
 # graphify knowledge graph output
 graphify-out/
