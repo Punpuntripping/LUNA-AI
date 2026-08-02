@@ -2,16 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Loader2, MessageSquareOff, Plus, SearchX } from "lucide-react";
+import { ChevronDown, Loader2, MessageSquareOff, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { useDebounce } from "@/hooks/use-debounce";
+import { useSearchQuery } from "@/hooks/use-search";
 import {
   useConversationsIndex,
   useSearchConversations,
 } from "@/hooks/use-conversations";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
 import { ConversationSearch } from "@/components/sidebar/ConversationSearch";
+import { SearchEmptyState } from "@/components/search/SearchEmptyState";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -42,12 +43,18 @@ export function ChatsPage() {
   const router = useRouter();
   const { setActiveTab, setSelectedConversation } = useSidebarStore();
 
-  const [rawQuery, setRawQuery] = useState("");
   const [filter, setFilter] = useState<ChatsFilter>("all");
 
-  // Debounce the search input so we don't fire a query on every keystroke.
-  const query = useDebounce(rawQuery, 250).trim();
-  const isSearching = query.length > 0;
+  // Raw value + 250 ms debounce, from the ONE hook every live search box in the
+  // app now shares (bm25 plan §9). The debounce is the same 250 ms this page
+  // shipped with — `SEARCH_DEBOUNCE_MS` was lifted FROM here.
+  //
+  // `minLength: 1` keeps this page's ORIGINAL floor. The hook defaults to 3 for
+  // the BM25 library surfaces, where `search_service.normalize_query` 400s below
+  // it — but `/chats` is not one: it hits `GET /api/v1/conversations?q=`
+  // (trigram over titles + message content), which has no minimum. Taking the
+  // default here would have deleted 1–2 character search from a shipped feature.
+  const { value, setValue, query, isSearching } = useSearchQuery({ minLength: 1 });
   const starred = filter === "starred";
 
   // When a query is present → search (titles + message content). Otherwise the
@@ -60,6 +67,7 @@ export function ChatsPage() {
     data,
     isLoading,
     isError,
+    isFetching,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
@@ -138,7 +146,15 @@ export function ChatsPage() {
 
         {/* Search box */}
         <div className="mb-4 shrink-0">
-          <ConversationSearch value={rawQuery} onChange={setRawQuery} />
+          <ConversationSearch
+            value={value}
+            onChange={setValue}
+            // An infinite-scroll page fetch is not "the search is working" —
+            // it has its own spinner at the sentinel, and turning the magnifier
+            // into a spinner for it would be a second answer to a question
+            // nobody asked.
+            isPending={isSearching && isFetching && !isFetchingNextPage}
+          />
         </div>
 
         {/* Results */}
@@ -151,31 +167,22 @@ export function ChatsPage() {
                 حدث خطأ في تحميل المحادثات
               </p>
             </div>
+          ) : conversations.length === 0 && isSearching ? (
+            // The zero-result copy this page shipped with was, word for word,
+            // what `SearchEmptyState` renders — so it delegates rather than
+            // keeping a second copy that could drift.
+            <SearchEmptyState />
           ) : conversations.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-              {isSearching ? (
-                <>
-                  <SearchX className="h-10 w-10 text-muted-foreground/40" />
-                  <p className="text-sm font-medium text-muted-foreground">
-                    لا توجد نتائج
-                  </p>
-                  <p className="text-xs text-muted-foreground/70">
-                    جرّب كلمات بحث أخرى
-                  </p>
-                </>
-              ) : (
-                <>
-                  <MessageSquareOff className="h-10 w-10 text-muted-foreground/40" />
-                  <p className="text-sm font-medium text-muted-foreground">
-                    {starred ? "لا توجد محادثات مميّزة" : "لا توجد محادثات بعد"}
-                  </p>
-                  <p className="text-xs text-muted-foreground/70">
-                    {starred
-                      ? "ميّز محادثة بنجمة لتظهر هنا"
-                      : "ابدأ محادثة جديدة للتحدث مع ريحان"}
-                  </p>
-                </>
-              )}
+              <MessageSquareOff className="h-10 w-10 text-muted-foreground/40" />
+              <p className="text-sm font-medium text-muted-foreground">
+                {starred ? "لا توجد محادثات مميّزة" : "لا توجد محادثات بعد"}
+              </p>
+              <p className="text-xs text-muted-foreground/70">
+                {starred
+                  ? "ميّز محادثة بنجمة لتظهر هنا"
+                  : "ابدأ محادثة جديدة للتحدث مع ريحان"}
+              </p>
             </div>
           ) : (
             <div className="space-y-0.5">

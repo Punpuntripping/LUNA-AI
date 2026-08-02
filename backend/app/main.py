@@ -586,6 +586,19 @@ def create_app() -> FastAPI:
         tags=["library-mine"],
     )
 
+    # Shared BM25 navigation search (bm25_navigation_search.md Wave B). BOTH
+    # endpoints are AUTHED — search is registered-only (D9) — and both are
+    # `private, no-store`. The router declares prefix="/api/v1" itself, so it is
+    # mounted WITHOUT an extra prefix (same as public_library above).
+    # ⚠ Requires migration 111 to be applied: the routes call the bm25_search()
+    # RPC, and a backend deployed ahead of the migration 500s on every search.
+    from backend.app.api.search import router as search_router
+
+    application.include_router(
+        search_router,
+        tags=["search"],
+    )
+
     # اسأل ريحان — anonymous ask popup + post-signup claim (SEO Library Phase 4).
     # POST /public/ask + GET /public/ask/{id} are anon (no auth dep by design);
     # POST /ask/claim is authed. The router declares prefix="/api/v1" itself, so
