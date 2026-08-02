@@ -35,6 +35,10 @@ export const myLibraryKeys = {
       ...myLibraryKeys.lists(),
       params.content_type ?? null,
       params.sort ?? "recent",
+      // `""` for "no search" keeps every pre-search cache entry addressable by
+      // the same shape, so the optimistic حفظ/إزالة patches below — which walk
+      // EVERY cached page under `lists()` — reach search pages too.
+      params.q ?? "",
       params.page ?? 1,
       params.page_size ?? MY_LIBRARY_PAGE_SIZE,
     ] as const,
@@ -51,6 +55,17 @@ export function useMyLibrary(params: {
   page: number;
   enabled?: boolean;
   /**
+   * BM25 over the shelf (bm25_navigation_search.md Wave D). Already debounced,
+   * trimmed and past the 3-character floor — `useSearchQuery` owns all three,
+   * and a shorter term is a 400 in Arabic rather than a narrower list.
+   *
+   * ⚠ It REPLACES `sort` server-side. The two are not composable: a shelf
+   * ordered by "recently used" is not a result list, so the backend drops the
+   * sort key for the duration and `MyLibraryPage` hides the «الترتيب» menu to
+   * match. `counts` stay whole-shelf, so the tabs do not empty out mid-search.
+   */
+  q?: string;
+  /**
    * Rows per page. Defaults to the full-page size; the sidebar shelf passes a
    * small cap because a lawyer's shelf grows without bound and a peek panel
    * that fetches 12 rows to show 8 is wasted payload.
@@ -60,6 +75,7 @@ export function useMyLibrary(params: {
   const query: MyLibraryListParams = {
     content_type: params.contentType,
     sort: params.sort,
+    q: (params.q ?? "").trim() || null,
     page: params.page,
     page_size: params.pageSize ?? MY_LIBRARY_PAGE_SIZE,
   };

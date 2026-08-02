@@ -56,6 +56,7 @@ from backend.app.services import (
     case_service,
     library_items_service,
     library_service,
+    search_service,
 )
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
@@ -236,6 +237,9 @@ class MyLibraryResponse(BaseModel):
     total_pages: int
     content_type: Optional[str] = None
     sort: str = "recent"
+    # The search term the server actually applied (``None`` when unfiltered), so
+    # an empty page can be rendered as «لا نتائج للبحث» rather than «مكتبتك فارغة».
+    q: Optional[str] = None
     counts: dict[str, int] = Field(default_factory=dict)
     stored_library_count: int = 0
     frozen_count: int = 0
@@ -340,6 +344,9 @@ async def list_my_library(
         ),
     ),
     sort: str = Query("recent", description="recent | most_used | saved"),
+    q: Optional[str] = Query(
+        None, description="BM25 search over the shelf (>= 3 chars)"
+    ),
     page: int = Query(1, description="1-based page index."),
     page_size: int = Query(
         library_items_service.DEFAULT_PAGE_SIZE,
@@ -356,13 +363,22 @@ async def list_my_library(
     library rendered as an empty page is a worse product AND a worse conversion
     surface"). Everything returned is never-gated metadata (§1.3).
 
+    ``q`` searches the shelf through the SAME ``bm25_search()`` every other
+    surface uses (bm25 plan §5.2) and, when present, REPLACES ``sort`` — a result
+    list is ordered by relevance. Same >= 3-char floor as the hubs, same Arabic
+    message; no D9 anon question arises here because this route is authed
+    outright. مواد match through their parent نظام, and نماذج/الحاسبات are not
+    indexed so they never match (D6/D7 — documented in
+    ``library_items_service.shelf_rank``).
+
     Read-only: listing the shelf never bumps ``use_count`` and never touches
-    ``library_unlocks``.
+    ``library_unlocks`` — searching it is a read like any other.
     """
     response.headers["Cache-Control"] = _PRIVATE_CACHE_CONTROL
 
     ct = library_items_service.normalize_content_type(content_type)
     sort_key = library_items_service.normalize_sort(sort)
+    query = search_service.normalize_query(q)
 
     user_id = await _user_id(supabase, current_user)
     data = await library_items_service.list_items(
@@ -372,6 +388,7 @@ async def list_my_library(
         sort=sort_key,
         page=page,
         page_size=page_size,
+        q=query,
     )
     return MyLibraryResponse(**data)
 

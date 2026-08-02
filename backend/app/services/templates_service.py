@@ -117,19 +117,37 @@ async def _release_ingest_slot(redis, user_id: str, mode: str) -> None:
 def list_templates(
     supabase: SupabaseClient,
     auth_id: str,
+    template_ids: Optional[list[str]] = None,
 ) -> list[dict]:
-    """List the user's templates (newest-updated first). Excludes soft-deleted."""
+    """List the user's templates (newest-updated first). Excludes soft-deleted.
+
+    ``template_ids`` is the BM25 search path (bm25 plan §5.2): an ORDERED id list
+    from ``search_service.corpus_search_ids``. When present, only those templates
+    are returned and their RANK ORDER is preserved — dropping back to
+    ``updated_at`` would throw the ranking away. ``None`` = no search; an EMPTY
+    list = nothing matched, and must return nothing rather than everything.
+
+    The ``user_id`` scope below still applies in the search path. That is not
+    redundant with the RPC's owner scope — it is the guarantee that a bug in the
+    index (a row written with the wrong owner) cannot leak another user's
+    template through this endpoint.
+    """
     user_id = get_user_id(supabase, auth_id)
 
+    if template_ids is not None and not template_ids:
+        return []
+
     try:
-        result = (
+        qb = (
             supabase.table("user_templates")
             .select("*")
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
-            .order("updated_at", desc=True)
-            .execute()
         )
+        if template_ids is not None:
+            result = qb.in_("template_id", template_ids).execute()
+        else:
+            result = qb.order("updated_at", desc=True).execute()
     except Exception as e:
         logger.exception("Error listing user_templates: %s", e)
         raise LunaHTTPException(
@@ -138,7 +156,11 @@ def list_templates(
             detail="حدث خطأ أثناء جلب القوالب",
         )
 
-    return result.data or []
+    rows = result.data or []
+    if template_ids is not None:
+        rank = {str(tid): i for i, tid in enumerate(template_ids)}
+        rows.sort(key=lambda r: rank.get(str(r.get("template_id")), len(template_ids)))
+    return rows
 
 
 def get_template(

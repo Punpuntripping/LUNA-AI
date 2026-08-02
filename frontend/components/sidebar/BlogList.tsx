@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { useMyBlogs } from "@/hooks/use-my-blogs";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
 import { ImportBlogDialog } from "@/components/blogs/ImportBlogDialog";
 import type { MyBlogItem } from "@/types";
 
@@ -99,6 +100,7 @@ function BlogItem({ blog }: { blog: MyBlogItem }) {
 }
 
 export function BlogList() {
+  const router = useRouter();
   const { data, isLoading, isError } = useMyBlogs();
   const isImportOpen = useSidebarStore((s) => s.isImportBlogDialogOpen);
   const setImportOpen = useSidebarStore((s) => s.setImportBlogDialogOpen);
@@ -143,6 +145,19 @@ export function BlogList() {
     <div className="flex flex-col flex-1 min-h-0">
       <SectionHeader>مدوناتي</SectionHeader>
       {body}
+      {/* Way into the full grid at /blogs/mine — same footer affordance
+          LibraryShelfList gives «مكتبتي», so all three collection tabs open
+          their `/mine` page the same way. */}
+      <div className="px-2 pb-2 pt-1 shrink-0">
+        <Button
+          variant="ghost"
+          className="w-full justify-center text-xs font-medium text-muted-foreground hover:text-foreground"
+          onClick={() => router.push("/blogs/mine")}
+          data-testid="sidebar-open-my-blogs"
+        >
+          عرض كل المدونات
+        </Button>
+      </div>
       <ImportBlogDialog open={isImportOpen} onOpenChange={setImportOpen} />
     </div>
   );

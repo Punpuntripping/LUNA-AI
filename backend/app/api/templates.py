@@ -5,7 +5,7 @@ DISTINCT from the global ``system_templates`` feature. Every row is scoped to
 the authenticated user via the internal ``user_id`` resolved from ``auth_id``.
 
 Endpoints:
-    GET    /templates                → list (newest-updated first)
+    GET    /templates                → list (newest-updated first, or ?q= ranked)
     POST   /templates                → 201 create
     GET    /templates/{template_id}  → get one
     PATCH  /templates/{template_id}  → update title/content
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
@@ -31,7 +31,8 @@ from backend.app.models.responses import (
     TemplateListResponse,
     TemplateResponse,
 )
-from backend.app.services import templates_service
+from backend.app.services import search_service, templates_service
+from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
 
@@ -66,11 +67,45 @@ def _to_response(data: dict) -> TemplateResponse:
 
 @router.get("/templates", response_model=TemplateListResponse)
 async def list_templates(
+    q: Optional[str] = Query(
+        None, description="BM25 search over the caller's own templates (>= 3 chars)"
+    ),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """List the current user's markdown templates."""
-    rows = await run_db(templates_service.list_templates, supabase, current_user.auth_id)
+    """List the current user's markdown templates.
+
+    ``q`` ranks through the shared ``bm25_search()`` (bm25 plan §5.2). Scoping is
+    belt-and-braces: the RPC's ``p_owner`` restricts the index to this user's
+    rows, and ``list_templates`` re-scopes by ``user_id`` on the table — one
+    search path, two independent owner checks. Templates index title +
+    ``content_md`` in full (the caller's own text, nothing gated), so a search
+    finds a clause the reader remembers writing, not just the title they gave it.
+
+    ONE endpoint serves both ``/templates`` and ``/templates/mine`` in the
+    frontend, so wiring the box in either place lights up both.
+    """
+    query = search_service.normalize_query(q)
+
+    template_ids: Optional[list[str]] = None
+    if query:
+        user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+        template_ids = await run_db(
+            search_service.corpus_search_ids,
+            supabase,
+            "template",
+            query,
+            owner_user_id=user_id,
+        )
+        if not template_ids:
+            return TemplateListResponse(templates=[])
+
+    rows = await run_db(
+        templates_service.list_templates,
+        supabase,
+        current_user.auth_id,
+        template_ids=template_ids,
+    )
     return TemplateListResponse(templates=[_to_response(r) for r in rows])
 
 

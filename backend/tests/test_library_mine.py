@@ -274,7 +274,52 @@ class _RpcChain:
         if self._name == "record_library_item_use":
             return _Result([self._record_library_item_use()])
 
+        if self._name == "bm25_search":
+            return _Result(self._bm25_search())
+
         raise AssertionError(f"unexpected RPC {self._name}")
+
+    def _bm25_search(self) -> list[dict[str, Any]]:
+        """Stand-in for migration 111's ranking function.
+
+        ⚠ SUBSTRING MATCH, NOT BM25 — see the same note in
+        ``test_library_judgments.py``. Shelf search is an INTERSECTION (rank the
+        public corpora, keep what is on this shelf), and the intersection is what
+        these tests own; ranking quality is a SQL property.
+
+        Matches against the seeded corpus rows' titles, which is the only text
+        this fake's tables carry — and the only text the real index would hold
+        for them beyond the always-free lead.
+        """
+        needle = (self._params.get("p_query") or "").strip()
+        wanted = set(self._params.get("p_corpora") or [])
+        table_for = {
+            "regulation": ("regulations_v2", "clean_title"),
+            "judgment": ("cases", "short_summary"),
+            "circular": ("circulars", "title"),
+            "service": ("services", "service_name_ar"),
+        }
+        rows: list[dict[str, Any]] = []
+        for corpus in wanted:
+            table, col = table_for.get(corpus, (None, None))
+            if not table:
+                continue
+            for r in self._fake.tables.get(table, []):
+                if needle and needle in str(r.get(col) or ""):
+                    rows.append(
+                        {
+                            "corpus": corpus,
+                            "content_id": str(r.get("id")),
+                            "slug": None,
+                            "title": str(r.get(col) or ""),
+                            "facets": {},
+                            "score": 1.0,
+                            "total_count": 0,
+                        }
+                    )
+        for r in rows:
+            r["total_count"] = len(rows)
+        return rows
 
     def _record_library_item_use(self) -> int:
         """Mirror migration 107's INSERT … ON CONFLICT DO UPDATE.
@@ -1268,3 +1313,98 @@ def test_saving_a_never_gated_service_is_free(monkeypatch) -> None:
     assert res.status_code == 204
     assert fake.tables["library_unlocks"] == []
     assert fake.item("service", SVC_ID) is not None
+
+
+# ===========================================================================
+# 8. Shelf search (bm25_navigation_search.md §5.2 · §6.2)
+#
+# مكتبتي is a JOIN, not a corpus: the rows are public documents this user
+# happened to open or pin, so searching it means "rank the public index, keep
+# what is on this shelf". The intersection is the part that has to be right —
+# ranking quality is a SQL property (Wave F), and the fake above is explicit
+# about standing in for it rather than reproducing it.
+# ===========================================================================
+
+
+def test_a_shelf_search_narrows_to_matching_rows() -> None:
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "regulation", REG_ID))      # نظام العمل
+    run(lis.record_use(fake, USER, "regulation", REG_ID_2))    # نظام الشركات
+
+    data = run(lis.list_items(fake, USER, q="نظام الشركات"))
+
+    assert [i["content_id"] for i in data["items"]] == [REG_ID_2]
+    assert data["total"] == 1
+    assert data["q"] == "نظام الشركات"
+
+
+def test_a_shelf_search_that_matches_nothing_is_an_empty_page() -> None:
+    """Not "fall back to the whole shelf". An empty result is an ANSWER, and the
+    ``q`` echo is what lets the UI say «لا نتائج» instead of «مكتبتك فارغة»."""
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "regulation", REG_ID))
+
+    data = run(lis.list_items(fake, USER, q="لا-يوجد-شيء-كهذا"))
+
+    assert data["items"] == []
+    assert data["total"] == 0
+    assert data["total_pages"] == 1
+    assert data["q"] == "لا-يوجد-شيء-كهذا"
+
+
+def test_counts_stay_WHOLE_shelf_during_a_search() -> None:
+    """``counts`` drives TAB VISIBILITY (§5B.1). Narrowing it with the search
+    would make tabs disappear as the user types, i.e. the shelf would look like
+    it was being emptied by the act of searching it."""
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "regulation", REG_ID))
+    run(lis.record_use(fake, USER, "service", SVC_ID))
+
+    data = run(lis.list_items(fake, USER, q="نظام العمل"))
+
+    assert [i["content_id"] for i in data["items"]] == [REG_ID]
+    assert data["counts"]["regulation"] == 1
+    assert data["counts"]["service"] == 1, "tab counts must not follow the filter"
+
+
+def test_a_shelf_search_matches_a_مادة_through_its_parent() -> None:
+    """مواد are NOT indexed (D6), and they are not displayed on their own either
+    (§5B.1 nests them under their statute) — so a مادة matches when its نظام
+    matches. The display rule and the search rule agree, which is the point."""
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "article", f"{REG_ID}#74"))
+
+    data = run(lis.list_items(fake, USER, q="نظام العمل"))
+
+    assert len(data["items"]) == 1
+    parent = data["items"][0]
+    assert parent["content_id"] == REG_ID
+    assert [c["content_id"] for c in parent["child_articles"]] == [f"{REG_ID}#74"]
+
+
+def test_search_shelf_returns_hit_shaped_rows() -> None:
+    """The ``/search/mine`` projection. Same intersection, different envelope —
+    one ranking path feeding two surfaces."""
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "regulation", REG_ID))
+
+    hits, exact = lis.search_shelf(fake, USER, "نظام العمل")
+
+    assert [h["corpus"] for h in hits] == ["regulation"]
+    assert hits[0]["content_id"] == REG_ID
+    assert exact is True
+    # D3: an address, never an excerpt.
+    assert "snippet" not in hits[0]
+
+
+def test_an_unsearched_shelf_listing_is_byte_identical_to_before() -> None:
+    """The ``q``-absent path must be untouched: ``sort`` still decides, and the
+    two search fields are inert."""
+    fake = corpus_fake()
+    run(lis.record_use(fake, USER, "regulation", REG_ID))
+    run(lis.record_use(fake, USER, "service", SVC_ID))
+
+    data = run(lis.list_items(fake, USER, sort="recent"))
+
+    assert len(data["items"]) == 2
+    assert data["q"] is None

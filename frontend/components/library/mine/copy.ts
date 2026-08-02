@@ -17,6 +17,13 @@ export const MY_LIBRARY_COPY = {
   pageSubtitle: "كل مصدر تفتحه أو تحفظه يظهر هنا، مرتّباً حسب استخدامك له.",
   /** Sidebar shelf → the full surface. */
   openFullShelf: "عرض المكتبة كاملة",
+  /**
+   * مكتبتي → the PUBLIC library. The shelf only ever contains what this user has
+   * already touched, so an empty or thin shelf has no way forward from inside
+   * itself; this is that way out. Deliberately says «العامة» — the two surfaces
+   * share the word «مكتبة» and the reader needs to know which one they land on.
+   */
+  browsePublicLibrary: "تصفّح المكتبة العامة",
 
   sortLabel: "الترتيب",
   sorts: {

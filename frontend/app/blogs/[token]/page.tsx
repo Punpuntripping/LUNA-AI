@@ -88,6 +88,11 @@ export default function MyBlogPostPage() {
   }
 
   // Optimistically flip is_public in the مدوناتي cache, then refetch to confirm.
+  //
+  // The patch targets `list()` — the UNFILTERED cache entry — while every
+  // invalidate below uses `lists()`, the prefix that also covers مدوناتي's live
+  // search caches. Splicing a BM25-ranked page by hand would be guessing at the
+  // server's ordering; refetching it is not.
   function patchMyBlogsPublic(postId: string, isPublic: boolean) {
     queryClient.setQueryData<MyBlogsResponse>(myBlogsKeys.list(), (prev) =>
       prev
@@ -114,7 +119,7 @@ export default function MyBlogPostPage() {
       } else {
         await api.unpublishBlogPublic(item.post_id);
       }
-      void queryClient.invalidateQueries({ queryKey: myBlogsKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: myBlogsKeys.lists() });
     } catch (err) {
       // Roll back the optimistic flip on failure.
       patchMyBlogsPublic(item.post_id, item.is_public);
@@ -142,7 +147,7 @@ export default function MyBlogPostPage() {
             }
           : prev,
       );
-      void queryClient.invalidateQueries({ queryKey: myBlogsKeys.list() });
+      void queryClient.invalidateQueries({ queryKey: myBlogsKeys.lists() });
       router.push("/blogs");
     } catch (err) {
       setActionError(

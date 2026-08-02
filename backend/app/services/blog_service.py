@@ -916,6 +916,7 @@ def list_my_blogs(
     user_id: str,
     limit: int = 100,
     offset: int = 0,
+    post_ids: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """List the caller's own blogs (مدوناتي) — owner-scoped.
 
@@ -923,12 +924,24 @@ def list_my_blogs(
     (post_id, token, title, snippet, subtype, display_mode, is_public,
     created_at) — the management list, so it carries post_id + is_public for
     the per-row publish toggle.
+
+    ``post_ids`` is the BM25 search path (bm25 plan §5.2): an ORDERED id list
+    from ``search_service.corpus_search_ids``, already owner-scoped by the RPC.
+    When present, only those posts are returned and THEIR ORDER IS PRESERVED —
+    the ``created_at`` ordering below would otherwise silently discard the
+    ranking, which is the entire point of having searched. An empty list means
+    "nothing matched"; ``None`` means "no search", and the two must not be
+    conflated (an empty list returning the whole shelf is the classic version of
+    this bug).
     """
     limit = max(1, min(int(limit or 100), 200))
     offset = max(0, int(offset or 0))
 
+    if post_ids is not None and not post_ids:
+        return []
+
     try:
-        result = (
+        qb = (
             supabase.table("blog_posts")
             .select(
                 "post_id, token, title, content_md, subtype, "
@@ -936,10 +949,17 @@ def list_my_blogs(
             )
             .eq("owner_user_id", user_id)
             .is_("deleted_at", "null")
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
         )
+        if post_ids is not None:
+            # Ranked subset: no DB ordering (it is re-imposed below) and no
+            # range — the id list is already bounded by the search limit.
+            result = qb.in_("post_id", post_ids).execute()
+        else:
+            result = (
+                qb.order("created_at", desc=True)
+                .range(offset, offset + limit - 1)
+                .execute()
+            )
     except Exception as e:  # noqa: BLE001
         logger.exception("Error listing my blogs: %s", e)
         raise LunaHTTPException(
@@ -948,8 +968,11 @@ def list_my_blogs(
             detail="حدث خطأ أثناء جلب المدونة",
         )
 
-    rows = result.data or []
-    return [to_my_blog_item(row) for row in rows if row.get("post_id")]
+    rows = [r for r in (result.data or []) if r.get("post_id")]
+    if post_ids is not None:
+        rank = {str(pid): i for i, pid in enumerate(post_ids)}
+        rows.sort(key=lambda r: rank.get(str(r.get("post_id")), len(post_ids)))
+    return [to_my_blog_item(row) for row in rows]
 
 
 def set_post_public(

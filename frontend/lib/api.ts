@@ -308,9 +308,20 @@ export const api = {
    * List مدوناتي — the caller's own blog_posts (both templates, owner-scoped).
    * ``can_publish_public`` mirrors ``users.can_access_blog``: when true the
    * management page exposes the نشر في المدونة العامة toggle.
+   *
+   * ``q`` ranks the SAME response shape through ``bm25_search()``
+   * (bm25_navigation_search.md §5.2) instead of newest-first — the endpoint and
+   * the payload are unchanged, which is the whole point of D8: the grid keeps
+   * rendering the card it already renders. Owner scoping happens twice
+   * server-side (the RPC's ``p_owner`` and the id filter), never here. A term
+   * shorter than 3 characters is a 400 in Arabic, so callers gate on
+   * ``useSearchQuery`` and never send one.
    */
-  listMyBlogs: () =>
-    apiFetch<MyBlogsResponse>(`/blogs/mine`, { method: "GET" }),
+  listMyBlogs: (q?: string) => {
+    const term = (q ?? "").trim();
+    const suffix = term ? `?q=${encodeURIComponent(term)}` : "";
+    return apiFetch<MyBlogsResponse>(`/blogs/mine${suffix}`, { method: "GET" });
+  },
 
   /**
    * Curate a post INTO the public gallery (``is_public = true``). Authed +
@@ -925,7 +936,18 @@ export const plansApi = {
 };
 
 export const templatesApi = {
-  list: () => api.get<TemplateListResponse>("/templates"),
+  /**
+   * قوالبي, newest-updated first — or, with ``q``, the same list ranked by
+   * ``bm25_search()`` (bm25_navigation_search.md §5.2). Templates are indexed
+   * title + ``content_md`` in full (the caller's own text, nothing gated), so a
+   * search reaches a clause the reader remembers writing and not just the title
+   * they gave it. ONE endpoint serves both `/templates` and `/templates/mine`.
+   */
+  list: (q?: string) => {
+    const term = (q ?? "").trim();
+    const suffix = term ? `?q=${encodeURIComponent(term)}` : "";
+    return api.get<TemplateListResponse>(`/templates${suffix}`);
+  },
 
   get: (templateId: string) =>
     api.get<UserTemplate>(`/templates/${templateId}`),
@@ -1074,6 +1096,13 @@ export interface MyLibraryResponse {
   /** Echoes the filter (`article` is normalized to `regulation`). */
   content_type: MyLibraryContentType | null;
   sort: MyLibrarySort;
+  /**
+   * The search term the server actually APPLIED, or `null` when the listing was
+   * unfiltered. Echoed so an empty page can be told apart from an empty shelf
+   * without re-deriving it from local state — and so a response that arrives
+   * after the box was cleared can be recognised as stale.
+   */
+  q?: string | null;
   /** WHOLE-shelf row count per type — drives tab visibility. */
   counts: Partial<Record<MyLibraryContentType, number>>;
   /** `library_unlocks` ROW count (the «لديك {n} مصدراً» inventory). */
@@ -1086,6 +1115,13 @@ export interface MyLibraryResponse {
 export interface MyLibraryListParams {
   content_type?: MyLibraryContentType | null;
   sort?: MyLibrarySort;
+  /**
+   * BM25 over the shelf (bm25_navigation_search.md §5.2). When present it
+   * REPLACES `sort` server-side — a result list is ordered by relevance — so
+   * the UI hides «الترتيب» for the duration rather than showing a control the
+   * server is ignoring. Same 3-character floor as everywhere else.
+   */
+  q?: string | null;
   page?: number;
   page_size?: number;
 }
@@ -1095,6 +1131,7 @@ export const myLibraryApi = {
     const qs = new URLSearchParams();
     if (params.content_type) qs.set("content_type", params.content_type);
     if (params.sort) qs.set("sort", params.sort);
+    if (params.q) qs.set("q", params.q);
     if (params.page) qs.set("page", String(params.page));
     if (params.page_size) qs.set("page_size", String(params.page_size));
     const suffix = qs.toString() ? `?${qs.toString()}` : "";

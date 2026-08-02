@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Path, Response
+from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, Field
 from supabase import Client as SupabaseClient
 
@@ -69,6 +69,7 @@ from backend.app.services import (
     blog_service,
     library_items_service,
     library_service,
+    search_service,
     workspace_service,
 )
 from backend.app.services.case_service import get_user_id
@@ -287,12 +288,27 @@ async def get_blog_reference_source(
         except Exception as e:  # noqa: BLE001
             logger.warning("blog reference record_use failed: %s", e)
 
+    library_url: Optional[str] = None
+    try:
+        library_url = await library_items_service.public_page_url(
+            supabase,
+            resolved.content_type,
+            resolved.content_id,
+            resolved.parent_regulation_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        # Never cost a reader the source they just unlocked over a missing link.
+        logger.warning("blog reference library url failed: %s", e)
+
     response.headers["Cache-Control"] = _SOURCE_CACHE_CONTROL
     return {
         "n": int(n),
         "ref_id": row["ref_id"],
         "domain": row["domain"],
         "source_view": view.model_dump(mode="json"),
+        # Same in-app link the chat panel gets — a blog reader who unlocked a
+        # source can open it in our library too. ``None`` ⇒ no published page.
+        "library_url": library_url,
         "unlocked": {
             "content_type": resolved.content_type,
             "content_id": resolved.content_id,
@@ -511,6 +527,9 @@ async def list_public_blogs(
     response_model=MyBlogsResponse,
 )
 async def list_my_blogs(
+    q: Optional[str] = Query(
+        None, description="BM25 search over the caller's own posts (>= 3 chars)"
+    ),
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
@@ -518,12 +537,37 @@ async def list_my_blogs(
 
     ``can_publish_public`` mirrors ``users.can_access_blog`` so the UI can show
     the «نشر في المدونة العامة» toggle only to curators.
+
+    ``q`` ranks through the shared ``bm25_search()`` (bm25 plan §5.2), scoped to
+    ``owner_user_id`` INSIDE the RPC — ``blog_posts`` is an owner-only corpus in
+    the index, and the RPC's ``p_owner`` branch matches that owner's rows and no
+    others, so another user's post cannot appear here even if it outranks
+    everything. The id filter below is the second scope, not the first.
+    ``content_md`` is indexed in full for blogs (they are the caller's own text,
+    with no gate to respect), so a search reaches the body, not just the title.
+    Ordered by relevance when searching, newest-first otherwise.
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     can_pub = await run_db(
         blog_service.user_can_access_blog, supabase, current_user.auth_id
     )
-    rows = await run_db(blog_service.list_my_blogs, supabase, user_id)
+
+    query = search_service.normalize_query(q)
+    post_ids: Optional[list[str]] = None
+    if query:
+        post_ids = await run_db(
+            search_service.corpus_search_ids,
+            supabase,
+            "blog",
+            query,
+            owner_user_id=user_id,
+        )
+        if not post_ids:
+            return MyBlogsResponse(can_publish_public=can_pub, posts=[])
+
+    rows = await run_db(
+        blog_service.list_my_blogs, supabase, user_id, post_ids=post_ids
+    )
     return MyBlogsResponse(
         can_publish_public=can_pub,
         posts=[MyBlogItem(**r) for r in rows],

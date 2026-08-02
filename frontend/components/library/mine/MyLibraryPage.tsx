@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import { LibraryBig } from "lucide-react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Compass, LibraryBig } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { useMyLibrary } from "@/hooks/use-my-library";
+import { useSearchQuery } from "@/hooks/use-search";
 import type { MyLibraryContentType, MyLibrarySort } from "@/lib/api";
 import { MyLibraryAuthGate } from "@/components/library/mine/MyLibraryAuthGate";
 import { MyLibraryTabs } from "@/components/library/mine/MyLibraryTabs";
@@ -13,6 +15,12 @@ import { FrozenUpgradeCta } from "@/components/library/mine/FrozenUpgradeCta";
 import { ShelfEntry } from "@/components/library/mine/ShelfEntry";
 import { ShelfPagination } from "@/components/library/mine/ShelfPagination";
 import { MY_LIBRARY_COPY } from "@/components/library/mine/copy";
+import { SearchBar } from "@/components/search/SearchBar";
+import { SearchEmptyState } from "@/components/search/SearchEmptyState";
+import {
+  SEARCH_PRIVATE_COPY,
+  SEARCH_RELEVANCE_NOTE,
+} from "@/lib/search/copy";
 
 /**
  * «مكتبتي» — the user's library shelf (access_tiers_gating.md PART 5B).
@@ -23,6 +31,19 @@ import { MY_LIBRARY_COPY } from "@/components/library/mine/copy";
  *
  * Client-rendered by construction: the endpoint is authed and `no-store`, and
  * nothing on this page may be produced by a cached server render (§5B.3).
+ *
+ * ── SEARCH (bm25_navigation_search.md Wave D) ───────────────────────────────
+ * The box sits in the filter row beside the existing tabs and sort menu, and it
+ * searches the SHELF — «رتّب لي ما فتحته», not the whole library. Server-side
+ * that is "rank the public corpora, keep what is on this shelf", which is why a
+ * shelf مادة matches through its parent نظام (the same way the shelf displays
+ * it) and why نماذج/الحاسبات never match at all (D6/D7 — not indexed).
+ *
+ * `SearchBar` takes NO `gate`: that prop is D9's anonymous conversion modal and
+ * this page is behind `MyLibraryAuthGate` before it ever renders. And no
+ * highlighting anywhere (D3) — every row still renders through `ShelfEntry`,
+ * i.e. the public hub card for its wing, with the static free snippet it
+ * already carried.
  */
 export function MyLibraryPage() {
   return (
@@ -46,10 +67,21 @@ function MyLibraryShelf() {
   const [tab, setTab] = useState<MyLibraryContentType>("regulation");
   const [sort, setSort] = useState<MyLibrarySort>("recent");
   const [page, setPage] = useState(1);
+  const { value, setValue, query, isSearching } = useSearchQuery();
+
+  // A new query re-ranks the whole shelf, so page 4 of the previous list is
+  // meaningless against it — and worse, it is usually past the end, which shows
+  // an empty grid and reads as "no matches". Same reset the tab and sort
+  // handlers already do, but driven by an effect because the query changes on a
+  // debounce timer rather than on a click.
+  useEffect(() => {
+    setPage(1);
+  }, [query]);
 
   const { data, isLoading, isError, isFetching, refetch } = useMyLibrary({
     contentType: tab,
     sort,
+    q: query,
     page,
   });
 
@@ -79,10 +111,27 @@ function MyLibraryShelf() {
       className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10"
     >
       <header className="space-y-2">
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-          <LibraryBig aria-hidden="true" className="h-6 w-6 text-primary" />
-          {MY_LIBRARY_COPY.pageTitle}
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+            <LibraryBig aria-hidden="true" className="h-6 w-6 text-primary" />
+            {MY_LIBRARY_COPY.pageTitle}
+          </h1>
+
+          {/* مكتبتي ⇄ /library. The shelf is closed by construction — it holds
+              only what this user already used — so without this the only way
+              back to the corpus is the nav dropdown. Its twin lives on the
+              public hub (`ShelfLink`). */}
+          <Link
+            href="/library"
+            className={cn(
+              buttonVariants({ variant: "outline", size: "sm" }),
+              "gap-1.5",
+            )}
+          >
+            <Compass aria-hidden="true" className="h-4 w-4 shrink-0" />
+            {MY_LIBRARY_COPY.browsePublicLibrary}
+          </Link>
+        </div>
         <p className="text-sm leading-relaxed text-muted-foreground">
           {MY_LIBRARY_COPY.pageSubtitle}
         </p>
@@ -94,7 +143,44 @@ function MyLibraryShelf() {
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <MyLibraryTabs counts={counts} active={tab} onSelect={handleTab} />
-          <MyLibrarySortMenu value={sort} onChange={handleSort} />
+
+          {/* `w-full sm:w-auto` is load-bearing: `SearchBar`'s wrapper is
+              `w-full` on mobile, and a percentage width inside a shrink-to-fit
+              flex item resolves against a container that is itself sized by its
+              content. Pinning the row to the full width on mobile makes the
+              result deterministic — box on one line, «الترتيب» wrapped under
+              it — instead of browser-dependent. */}
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            {/* The box renders whenever the shelf holds anything at all.
+                `shelfSize` is derived from `counts`, which the backend keeps
+                WHOLE-SHELF during a search precisely so the chrome does not
+                empty out with the results — `items.length` is the filtered
+                count and would make the one control that undoes a zero-result
+                search vanish along with the results it produced. */}
+            {(shelfSize > 0 || isSearching) && (
+              <SearchBar
+                value={value}
+                onChange={setValue}
+                placeholder={SEARCH_PRIVATE_COPY.myLibrary.placeholder}
+                ariaLabel={SEARCH_PRIVATE_COPY.myLibrary.ariaLabel}
+                isPending={isSearching && isFetching}
+                className="sm:w-56"
+              />
+            )}
+
+            {/* «الترتيب» is hidden, not disabled, while a search is live: the
+                backend REPLACES `sort` with the BM25 ranking, so a menu still
+                reading «الأحدث» would be describing an order that is not in
+                effect. The note takes its place so the control does not simply
+                vanish unexplained. */}
+            {isSearching ? (
+              <span className="text-xs text-text-muted">
+                {SEARCH_RELEVANCE_NOTE}
+              </span>
+            ) : (
+              <MyLibrarySortMenu value={sort} onChange={handleSort} />
+            )}
+          </div>
         </div>
       </div>
 
@@ -110,6 +196,12 @@ function MyLibraryShelf() {
               {MY_LIBRARY_COPY.retry}
             </Button>
           </div>
+        ) : items.length === 0 && isSearching ? (
+          // A search that matched nothing is «جرّب كلمات بحث أخرى» — NEVER
+          // «لم تفتح أي مصدر بعد», which would tell someone with a full shelf
+          // that they have none, nor «لا توجد أنظمة في مكتبتك بعد», which would
+          // be a claim about the tab rather than about the query.
+          <SearchEmptyState />
         ) : items.length === 0 ? (
           <div className="space-y-1 py-16 text-center">
             <p className="text-sm text-muted-foreground">
