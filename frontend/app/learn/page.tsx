@@ -7,10 +7,10 @@ import { SITE_NAV } from "@/lib/nav/site-nav";
 export const metadata: Metadata = {
   title: "اكتشف ريحان",
   description:
-    "أدلة ريحان: كيف يعمل ريحان، دليل الاستخدام، أفضل الممارسات لصياغة أسئلتك القانونية، وأمثلة أسئلة حقيقية.",
-  // Still noindex: one live lesson is thin for a hub. Lift this (and add /learn
-  // to the sitemap static section) once a second lesson lands.
-  robots: { index: false, follow: true },
+    "أدلة ريحان: كيف يعمل ريحان، مساحة العمل، حماية البيانات، دليل الاستخدام، أفضل الممارسات لصياغة أسئلتك القانونية، وأمثلة أسئلة حقيقية.",
+  // Indexable since the second lesson (/learn/workspace) landed — the hub now
+  // lists two full lessons and sits in the sitemap static section.
+  alternates: { canonical: "/learn" },
 };
 
 // اكتشف ريحان hub — lists the lessons straight from the nav SSoT: an enabled

@@ -128,6 +128,15 @@ onboarding popup — same numbers, one source of truth.)*
 
 ## Build notes
 
+- **Illustrations (added 2026-08-02, after ship):** the about_us mock report
+  card was extracted into `components/landing/ShowcaseReportCard.tsx` (window
+  chrome → question → answer with inline [n] → live «المراجع» panel with a
+  working «عرض المصدر» dialog; data stays in `landing/content.ts`).
+  `SearchShowcase` (about_us) now renders it, and BOTH lessons embed it at
+  their references moment: how-it-works after the search steps, workspace in
+  «المرجع قبل الإجابة». One showcase, no forks — edit `content.ts` to change
+  all three surfaces.
+
 - Surface: `/learn/how-it-works` (currently `ComingSoonHub` placeholder at
   `frontend/app/learn/page.tsx`; the child route doesn't exist yet). Public,
   `SitePageShell`, noindex until the hub has ≥2 lessons (site-nav comment).

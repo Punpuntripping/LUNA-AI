@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { AgentsDiagram } from "@/components/onboarding/AgentsDiagram";
 import { CORPUS_STATS } from "@/components/onboarding/onboarding-content";
+import { ShowcaseReportCard } from "@/components/landing/ShowcaseReportCard";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -257,6 +258,16 @@ export function HowItWorksView() {
             <p className="mt-8 rounded-xl border border-primary/20 bg-primary/5 p-4 text-center text-sm leading-relaxed text-foreground">
               وأثناء البحث ترى تقدّمه أمامك خطوة بخطوة — تعرف ماذا يبحث ولماذا.
             </p>
+          </div>
+
+          {/* The outcome, shown not told — the same live showcase about_us
+              renders (shared ShowcaseReportCard, «عرض المصدر» works). */}
+          <div className="mx-auto mt-12 max-w-3xl">
+            <p className="mb-4 text-center text-sm text-muted-foreground">
+              وهذا ما يصلك في النهاية — مثال من تقرير حقيقي، جرّب «عرض
+              المصدر» بنفسك:
+            </p>
+            <ShowcaseReportCard />
           </div>
         </div>
       </section>

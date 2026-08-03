@@ -14,18 +14,25 @@
 // nearest the brand) — see `SiteNav`. The mobile drawer and the footer use this
 // order as written, top-to-bottom.
 //
-//   • عن ريحان            — hub at /about_us AND a dropdown over the pitch pages.
-//                            Kept for signed-in visitors too: the pitch pages stay
-//                            useful after signup, and dropping the slot mid-session
-//                            made it visibly vanish once the auth probe resolved.
+//   • عن ريحان            — hub at /about_us AND a dropdown over the pitch pages,
+//                            with الوثائق النظامية (الخصوصية · الشروط) folded in
+//                            as a second section. Kept for signed-in visitors too:
+//                            the pitch pages stay useful after signup, and dropping
+//                            the slot mid-session made it visibly vanish once the
+//                            auth probe resolved.
 //   • اكتشف ريحان         — how-to / guides. Hub at /learn. Children Phase C, so
 //                            it resolves to a flat link until two of them land.
 //   • المكتبة القانونية   — the SEO corpus dropdown + المدونة, headed by the
 //                            /library hub row (restored — library_sectors D12).
 //                            Corpus children ship disabled; seo_public_library
 //                            flips them phase by phase.
-//   • السياسات            — the legal documents. More policies land here later.
 //   • الباقات والأسعار    — flat link, always visible (upgrade path when authed).
+//
+// The standalone «السياسات» slot was REMOVED 2026-08-02. Two legal rows did not
+// earn a top-level slot next to four content slots, and the settings popover had
+// already folded them under عن ريحان in the 5→3 pass — the header was the only
+// surface still splitting them out. `/terms` and `/privacy` are unchanged; only
+// the nav path to them moved.
 
 import { LEGAL_ROUTES } from "@/lib/legal";
 
@@ -101,17 +108,59 @@ export const SITE_NAV: NavGroup[] = [
         section: "تعرّف على ريحان",
         enabled: true,
       },
+      // Folded in from the deleted «السياسات» slot. `groupChildrenBySection`
+      // buckets by CONTIGUOUS runs, so these two must stay last and adjacent or
+      // the الوثائق النظامية heading splits into two headings.
+      {
+        label: "الخصوصية والسياسة العامة",
+        href: LEGAL_ROUTES.privacy,
+        description: "كيف نجمع بياناتك ونحميها",
+        section: "الوثائق النظامية",
+        enabled: true,
+      },
+      {
+        label: "الشروط والأحكام",
+        href: LEGAL_ROUTES.terms,
+        description: "شروط استخدام ريحان",
+        section: "الوثائق النظامية",
+        enabled: true,
+      },
     ],
   },
   {
     label: "اكتشف ريحان",
     href: "/learn",
+    hubLabel: "اكتشف ريحان",
+    hubDescription: "كل الأدلة في مكان واحد",
     children: [
       {
         label: "كيف يعمل ريحان",
         href: "/learn/how-it-works",
         description: "من السؤال إلى التقرير الموثّق",
         enabled: true,
+      },
+      {
+        label: "مساحة العمل",
+        href: "/learn/workspace",
+        description: "ذاكرة موثّقة لمخرجات محادثتك",
+        enabled: true,
+      },
+      {
+        label: "حماية البيانات",
+        href: "/learn/data-protection",
+        description: "خوادمنا، شركاؤنا، وتقنيع المعرّفات",
+        enabled: true,
+      },
+      // A lesson, not a legal document — it explains what a نقطة buys and why the
+      // caps sit where they do, so it belongs beside «كيف يعمل ريحان», not under
+      // الوثائق النظامية. /pricing states the allowances; this page explains them.
+      // DISABLED until app/learn/usage-limits/page.tsx actually exists — an
+      // enabled child with no route puts a 404 link in the header on every page.
+      {
+        label: "سياسة حد الاستخدام",
+        href: "/learn/usage-limits",
+        description: "ما الذي تستهلكه كل عملية، ولماذا الحدود عادلة",
+        enabled: false,
       },
       {
         label: "دليل الاستخدام",
@@ -195,28 +244,6 @@ export const SITE_NAV: NavGroup[] = [
         description: "حاسبات مكافأة نهاية الخدمة والمواعيد وغيرها",
         section: "المصادر الرسمية",
         enabled: false,
-      },
-    ],
-  },
-  {
-    // Two children by design: the auto-promote rule needs 2+ to render a
-    // dropdown, and a lone child would collapse this to a flat link to /privacy
-    // labelled «سياسات ريحان» — a label that then lies about where it goes.
-    label: "السياسات",
-    children: [
-      {
-        label: "الخصوصية والسياسة العامة",
-        href: LEGAL_ROUTES.privacy,
-        description: "كيف نجمع بياناتك ونحميها",
-        section: "الوثائق النظامية",
-        enabled: true,
-      },
-      {
-        label: "الشروط والأحكام",
-        href: LEGAL_ROUTES.terms,
-        description: "شروط استخدام ريحان",
-        section: "الوثائق النظامية",
-        enabled: true,
       },
     ],
   },

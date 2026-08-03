@@ -86,10 +86,10 @@ ${entries}
 }
 
 /** Hardcoded marketing + legal pages — the `static` section. The `/learn` HUB
- *  is intentionally EXCLUDED while it has a single lesson (it carries
- *  `robots: noindex` until a second one lands), but its live lesson pages are
- *  full content and listed here; `/vs-chatgpt` ships with full content, so it
- *  is indexable and listed here.
+ *  joined once its second lesson (/learn/workspace) landed — it previously
+ *  carried `robots: noindex` while a single lesson made it thin; its live
+ *  lesson pages are full content and listed here; `/vs-chatgpt` ships with
+ *  full content, so it is indexable and listed here.
  *
  *  `/library` WAS excluded for the same placeholder reason and is now listed:
  *  `library_sectors.md` D1 replaced the `ComingSoonHub` with the real unified
@@ -104,7 +104,10 @@ export function getStaticUrls(): SitemapUrl[] {
     "/audiences",
     "/about_us",
     "/vs-chatgpt",
+    "/learn",
     "/learn/how-it-works",
+    "/learn/workspace",
+    "/learn/data-protection",
     "/blog",
     "/library",
   ];
