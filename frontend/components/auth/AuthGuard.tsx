@@ -23,8 +23,9 @@ interface Props {
 // the وضع السرية settings dialog — all reachable before signing up. /about_us
 // is the marketing-landing content at an address that does NOT bounce
 // authenticated users (the bare "/" does) — their way back to the front door.
-// /regulations + /compliance are the public SEO library surfaces (Phase 2) —
-// anon searchers land on them from Google, signed-in users may browse freely.
+// /regulations is the public SEO library surface (Phase 2) — anon searchers
+// land on it from Google, signed-in users may browse freely. (/compliance was
+// the second such surface; the wing was retired 2026-08-03.)
 // /judgments is the الأحكام القضائية wing — public and anon-viewable like the
 // other library surfaces, but currently `noindex` pending the PDPL
 // anonymization audit (a crawler gate, NOT an auth gate — it must still render
@@ -65,7 +66,6 @@ const PUBLIC_PREFIXES = [
   "/library",
   "/learn",
   "/regulations",
-  "/compliance",
   "/calculators",
   "/circulars",
   "/forms",

@@ -27,15 +27,14 @@ export interface MetadataItem {
  */
 export type DocStatus = "active" | "amended" | "repealed";
 
-/** One entry in a table-of-contents / «محتويات النظام» (or numbered steps). */
+/** One entry in a table-of-contents / «محتويات النظام». */
 export interface TocEntry {
   id: string;
   label: string;
   /**
    * Anchor/link target. OPTIONAL (added Phase 2, backward-compatible): a locked
-   * TOC row or a plain-text compliance step omits it and renders as
-   * non-interactive text instead of a `<Link>`. Existing callers that always
-   * pass `href` are unaffected.
+   * TOC row omits it and renders as non-interactive text instead of a `<Link>`.
+   * Existing callers that always pass `href` are unaffected.
    */
   href?: string;
   /** Nesting depth (1 = top). Drives indentation. Default 1. */
@@ -244,7 +243,6 @@ export type LibraryPageType =
   | "article"
   | "judgment"
   | "circular"
-  | "compliance"
   | "form"
   | "blog"
   | "calculator"
@@ -317,11 +315,6 @@ export interface TocListProps {
   entries: TocEntry[];
   /** Heading. Default «محتويات النظام». */
   title?: string;
-  /**
-   * `anchors` (default) → bulleted anchor list.
-   * `steps` → numbered ordered list (compliance «الخطوات»).
-   */
-  variant?: "anchors" | "steps";
   /** Collapse behind a `<summary>` on mobile. Default true. */
   collapsible?: boolean;
   /** Optional count pill in the header, e.g. «391 مادة». */

@@ -8,7 +8,6 @@ import { SectorPreviewStrip } from "@/components/library/sectors/SectorPreviewSt
 import { LibrarySearchPanel } from "@/components/library/search/LibrarySearchPanel";
 import {
   getCircularsHub,
-  getComplianceHub,
   getJudgmentsHub,
   getLibraryCounts,
   getRegulationsHub,
@@ -53,14 +52,13 @@ export async function LibraryHubView() {
   // One await for the lot: the hub-page-1 fetches share their Data Cache
   // entries with the wing hubs themselves (same URL, same init), so this costs
   // the backend nothing the library was not already paying.
-  const [countsPayload, sectors, sectorSlugs, regulations, judgments, compliance, circulars] =
+  const [countsPayload, sectors, sectorSlugs, regulations, judgments, circulars] =
     await Promise.all([
       getLibraryCounts(),
       getSectors(),
       getSectorSlugMap(),
       getRegulationsHub(1),
       getJudgmentsHub(1),
-      getComplianceHub(1),
       getCircularsHub(1),
     ]);
 
@@ -101,9 +99,8 @@ export async function LibraryHubView() {
                 <ShelfLink />
               </div>
               <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
-                الأنظمة واللوائح، والأحكام القضائية، والخدمات والإجراءات
-                الحكومية، والتعاميم التنظيمية — مصدر رسمي واحد لكل وثيقة، مرتّبة
-                حسب القطاع.
+                الأنظمة واللوائح، والأحكام القضائية، والتعاميم التنظيمية — مصدر
+                رسمي واحد لكل وثيقة، مرتّبة حسب القطاع.
               </p>
             </header>
           </div>
@@ -111,9 +108,9 @@ export async function LibraryHubView() {
           {/* Search first, browse underneath — and the browsable hub is passed
               IN as children so this stays a server component. `LibraryTypeChips`
               moved inside it deliberately: while a cross-wing search is live the
-              panel shows its own أنظمة/أحكام/تعاميم/خدمات scope chips, and two
-              chip rows naming the same four wings — one navigating, one
-              filtering — is a UI that has to be read twice to be understood. */}
+              panel shows its own أنظمة/أحكام/تعاميم scope chips, and two chip
+              rows naming the same three wings — one navigating, one filtering —
+              is a UI that has to be read twice to be understood. */}
           <LibrarySearchPanel sectorSlugs={sectorSlugs}>
             <div className="space-y-8">
               <LibraryTypeChips counts={counts ?? {}} />
@@ -128,8 +125,8 @@ export async function LibraryHubView() {
                       تصفّح حسب القطاع
                     </h2>
                     <p className="text-xs leading-relaxed text-muted-foreground">
-                      اختر القطاع الذي يعنيك لترى أنظمته وأحكامه وخدماته
-                      وتعاميمه في مكان واحد.
+                      اختر القطاع الذي يعنيك لترى أنظمته وأحكامه وتعاميمه في
+                      مكان واحد.
                     </p>
                   </div>
                   <SectorBrowseGrid sectors={sectors} />
@@ -148,13 +145,6 @@ export async function LibraryHubView() {
                 items={judgments?.items ?? []}
                 count={counts?.judgments ?? 0}
                 href={LIBRARY_TYPE_META.judgments.wingPath}
-                sectorSlugs={sectorSlugs}
-              />
-              <SectorPreviewStrip
-                type="compliance"
-                items={compliance?.items ?? []}
-                count={counts?.compliance ?? 0}
-                href={LIBRARY_TYPE_META.compliance.wingPath}
                 sectorSlugs={sectorSlugs}
               />
               <SectorPreviewStrip

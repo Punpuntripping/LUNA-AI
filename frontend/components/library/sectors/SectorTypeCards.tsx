@@ -1,10 +1,8 @@
 import { RegulationCard } from "@/components/library/hub/RegulationCard";
 import { JudgmentCard } from "@/components/library/hub/JudgmentCard";
-import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
 import { CircularCard } from "@/components/library/hub/CircularCard";
 import type {
   CircularHubItem,
-  ComplianceHubItem,
   RegulationHubItem,
   SectorHubItem,
 } from "@/lib/library/api";
@@ -50,18 +48,6 @@ export function SectorTypeCards({
         <>
           {(items as JudgmentHubItem[]).map((item) => (
             <JudgmentCard
-              key={item.slug}
-              item={item}
-              sectorSlugs={sectorSlugs}
-            />
-          ))}
-        </>
-      );
-    case "compliance":
-      return (
-        <>
-          {(items as ComplianceHubItem[]).map((item) => (
-            <ComplianceCard
               key={item.slug}
               item={item}
               sectorSlugs={sectorSlugs}

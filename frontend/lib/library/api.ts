@@ -397,41 +397,6 @@ export interface RegulationArticle {
 }
 
 // ------------------------------------------------------------------
-// Compliance
-// ------------------------------------------------------------------
-
-export interface ComplianceHubItem {
-  slug: string;
-  title: string;
-  provider_name: string;
-  is_most_used: boolean;
-  sectors: string[];
-  intro_snippet: string;
-}
-
-export interface ComplianceFilters {
-  provider?: string;
-  sector?: string;
-  /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
-  sector_slug?: string;
-  q?: string;
-}
-
-export interface ComplianceDoc {
-  slug: string;
-  title: string;
-  provider_name: string;
-  intro_title: string;
-  intro_description: string;
-  requirements: string[];
-  required_documents: string[];
-  steps: string[];
-  youtube_url: string | null;
-  official_url: string | null;
-  sectors: string[];
-}
-
-// ------------------------------------------------------------------
 // Circulars (التعاميم — Phase 5)
 // ------------------------------------------------------------------
 
@@ -502,7 +467,7 @@ export interface JudgmentsFilters {
    * Latin sector slug — see `RegulationsFilters.sector_slug`. The judgments
    * corpus stores its sector under `cases.legal_domains[]`, so the backend
    * resolves the slug against THAT column; the wire name stays `sector_slug`
-   * for all four wings so one caller shape covers the lot.
+   * for all three wings so one caller shape covers the lot.
    */
   sector_slug?: string;
   q?: string;
@@ -565,7 +530,6 @@ function buildQuery(
   page: number,
   filters?:
     | RegulationsFilters
-    | ComplianceFilters
     | CircularsFilters
     | JudgmentsFilters
     | FormsFilters,
@@ -702,26 +666,6 @@ export function getRegulationArticle(
   );
 }
 
-export function getComplianceHub(
-  page: number,
-  filters?: ComplianceFilters,
-  opts?: ServerFetchOptions,
-): Promise<LibraryHubResponse<ComplianceHubItem> | null> {
-  const qs = buildQuery(page, filters);
-  return fetchJson<LibraryHubResponse<ComplianceHubItem>>(
-    `${SERVER_API_BASE}/api/v1/public/library/compliance?${qs}`,
-    HUB_REVALIDATE,
-    opts,
-  );
-}
-
-export function getComplianceDoc(slug: string): Promise<ComplianceDoc | null> {
-  return fetchJson<ComplianceDoc>(
-    `${SERVER_API_BASE}/api/v1/public/library/compliance/${encodeSlug(slug)}`,
-    DOC_REVALIDATE,
-  );
-}
-
 export function getCircularsHub(
   page: number,
   filters?: CircularsFilters,
@@ -798,13 +742,13 @@ export function getFormDetail(slug: string): Promise<FormDetail | null> {
 // them from the API; nothing here (and nothing anywhere else in the frontend)
 // hardcodes a second copy of the list, the Arabic names, or the counts.
 
-/** Per-corpus item counts, keyed by the four public wing names. */
+/** Per-corpus item counts, keyed by the three public wing names. */
 export type SectorCounts = Record<LibraryType, number>;
 
 /** Sector counts plus their sum — what the sector endpoints return. */
 export type SectorCountsWithTotal = SectorCounts & { total: number };
 
-/** `GET /api/v1/public/library` — the four unfiltered tab counts. */
+/** `GET /api/v1/public/library` — the three unfiltered tab counts. */
 export interface LibraryCountsResponse {
   counts: SectorCounts;
 }
@@ -829,14 +773,13 @@ export interface SectorsResponse {
 }
 
 /**
- * The first slice of each of the four types for one sector — the strips on
+ * The first slice of each of the three types for one sector — the strips on
  * `/library/{sector}`. Items are the SAME shapes the wing hub endpoints return,
  * so they render through the existing wing cards verbatim.
  */
 export interface SectorPreview {
   regulations: RegulationHubItem[];
   judgments: JudgmentHubItem[];
-  compliance: ComplianceHubItem[];
   circulars: CircularHubItem[];
 }
 
@@ -848,15 +791,14 @@ export interface SectorDetail {
   preview: SectorPreview;
 }
 
-/** Any of the four hub item shapes a sector×type list can carry. */
+/** Any of the three hub item shapes a sector×type list can carry. */
 export type SectorHubItem =
   | RegulationHubItem
   | JudgmentHubItem
-  | ComplianceHubItem
   | CircularHubItem;
 
 /**
- * The common envelope across the four wings. `cap_reached` / `max_page` /
+ * The common envelope across the three wings. `cap_reached` / `max_page` /
  * `max_anon_page` are optional because the judgments contract omits them (see
  * `JudgmentHubResponse`) — `?? false` there simply means "no cap".
  */
@@ -869,7 +811,7 @@ export interface SectorHubEnvelope {
   max_anon_page?: number;
 }
 
-/** The four unfiltered tab counts for `/library`. */
+/** The three unfiltered tab counts for `/library`. */
 export function getLibraryCounts(): Promise<LibraryCountsResponse | null> {
   return fetchJson<LibraryCountsResponse>(
     `${SERVER_API_BASE}/api/v1/public/library`,
@@ -963,8 +905,6 @@ export function getSectorTypeHub(
       return getRegulationsHub(page, { sector_slug: sectorSlug }, opts);
     case "judgments":
       return getJudgmentsHub(page, { sector_slug: sectorSlug });
-    case "compliance":
-      return getComplianceHub(page, { sector_slug: sectorSlug }, opts);
     case "circulars":
       return getCircularsHub(page, { sector_slug: sectorSlug }, opts);
   }

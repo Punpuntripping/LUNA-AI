@@ -116,11 +116,16 @@ _ITEM_COLS = (
 
 # Public page path per content_type. مادة is nested under its نظام
 # ('/regulations/{reg}/{article}') and so is built separately.
+#
+# ⚠ ``service`` HAS NO ENTRY, deliberately (2026-08-03). The compliance wing was
+# retired, so a shelved government service has no page in our library: it keeps
+# its title on the shelf and renders unlinked (`ShelfCard`'s plain fallback), and
+# the chat panel drops its «فتح الخدمة في ريحان» button because `_url_for`
+# returns None. Re-adding the key without rebuilding the pages ships 404s.
 _URL_PREFIX = {
     "regulation": "/regulations",
     "judgment": "/judgments",
     "circular": "/circulars",
-    "service": "/compliance",
     "form": "/forms",
 }
 
@@ -752,9 +757,8 @@ _JUDGMENT_SELECT = (
     "facts, ruling"
 )
 _CIRCULAR_SELECT = "id, circ_ref, title, content, source, entity_id"
-_SERVICE_SELECT = (
-    "id, service_name_ar, provider_name, is_most_used, sectors, intro_description"
-)
+# Title only — the shelf has nothing else to render for a service (see `_hydrate`).
+_SERVICE_SELECT = "id, service_name_ar"
 _FORM_SELECT = "id, slug, title_ar, category, use_case_md"
 
 
@@ -873,8 +877,8 @@ def _hydrate(
     One batched corpus fetch + one batched sidecar slug lookup per content_type
     present on the page. The per-type card shapes mirror the public hub item
     models 1:1 (``RegHubItem``, ``JudgmentHubItem``, ``CircularHubItem``,
-    ``ComplianceHubItem``, ``FormHubItem``) so the existing card components drop
-    straight in (§5B.5).
+    ``FormHubItem``) so the existing card components drop straight in (§5B.5).
+    ``service`` is the exception and carries a title alone — its wing is gone.
     """
     cards: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -975,22 +979,26 @@ def _hydrate(
                 "body_length": len(content),
             }
 
-    # --- compliance services (never gated — the الخدمات tab) --------------
+    # --- government services -----------------------------------------------
+    # TITLE ONLY, since the compliance wing was retired (2026-08-03). No slug (no
+    # page to address), no url (`ShelfCard` renders it unlinked), and none of the
+    # card metadata the الخدمات hub card used to draw — provider, sectors and the
+    # intro snippet all went with it. The row still LISTS: the reader unlocked
+    # this service in a chat and it is theirs, so §5B.4's never-filter-a-row rule
+    # holds; it simply has nothing to show but its name.
     svc_ids = by_type.get("service") or []
     if svc_ids:
         rows = _rows_by_ids(supabase, "services", _SERVICE_SELECT, svc_ids)
-        slugs = ls._slug_map(supabase, "service", svc_ids)
         for cid in svc_ids:
             r = rows.get(str(cid)) or {}
-            slug = slugs.get(str(cid))
             cards[("service", str(cid))] = {
-                "slug": slug,
-                "url": _url_for("service", slug),
+                # `slug`/`url` are stated as None rather than omitted: every other
+                # content_type sets them, and a row that simply LACKS the keys
+                # reads as "not hydrated" to anything doing a membership test.
+                # This one hydrated fine — it just has nowhere to go.
+                "slug": None,
+                "url": None,
                 "title": r.get("service_name_ar") or "",
-                "provider_name": r.get("provider_name"),
-                "is_most_used": bool(r.get("is_most_used")),
-                "sectors": r.get("sectors") or [],
-                "intro_snippet": ls._text_snippet(r.get("intro_description"), 160),
             }
 
     # --- forms -----------------------------------------------------------

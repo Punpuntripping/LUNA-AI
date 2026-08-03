@@ -29,7 +29,7 @@ export function buildOrganization(): JsonLdObject {
       url: LOGO_URL,
     },
     description:
-      "المساعد القانوني الذكي للأنظمة السعودية — بحث موثّق في الأنظمة والأحكام والخدمات الحكومية.",
+      "المساعد القانوني الذكي للأنظمة السعودية — بحث موثّق في الأنظمة والأحكام القضائية والتعاميم التنظيمية.",
   };
 }
 
@@ -103,7 +103,7 @@ export interface FaqQa {
   answer: string;
 }
 
-/** FAQPage node — reg/مادة/compliance/form pages carry 4–6 Q&As. */
+/** FAQPage node — reg/مادة/form pages carry 4–6 Q&As. */
 export function buildFaqPage(qas: FaqQa[]): JsonLdObject {
   return {
     "@context": "https://schema.org",
@@ -118,68 +118,6 @@ export function buildFaqPage(qas: FaqQa[]): JsonLdObject {
       },
     })),
   };
-}
-
-export interface HowToStepInput {
-  name: string;
-  text?: string;
-  url?: string;
-}
-
-export interface HowToInput {
-  name: string;
-  description?: string;
-  steps: HowToStepInput[];
-}
-
-/** HowTo node — the /compliance (services) pages: المتطلبات → الخطوات. */
-export function buildHowTo(input: HowToInput): JsonLdObject {
-  const howTo: JsonLdObject = {
-    "@context": "https://schema.org",
-    "@type": "HowTo",
-    inLanguage: "ar",
-    name: input.name,
-    step: input.steps.map((step, index) => {
-      const node: JsonLdObject = {
-        "@type": "HowToStep",
-        position: index + 1,
-        name: step.name,
-      };
-      if (step.text) node.text = step.text;
-      if (step.url) node.url = step.url;
-      return node;
-    }),
-  };
-  if (input.description) howTo.description = input.description;
-  return howTo;
-}
-
-export interface VideoObjectInput {
-  name: string;
-  description: string;
-  thumbnailUrl: string;
-  /** ISO-8601 upload date. */
-  uploadDate: string;
-  /** Canonical watch URL (e.g. the YouTube link). */
-  contentUrl?: string;
-  /** Player embed URL. */
-  embedUrl?: string;
-}
-
-/** VideoObject node — compliance/blog pages with an explainer video. */
-export function buildVideoObject(input: VideoObjectInput): JsonLdObject {
-  const video: JsonLdObject = {
-    "@context": "https://schema.org",
-    "@type": "VideoObject",
-    inLanguage: "ar",
-    name: input.name,
-    description: input.description,
-    thumbnailUrl: input.thumbnailUrl,
-    uploadDate: input.uploadDate,
-  };
-  if (input.contentUrl) video.contentUrl = input.contentUrl;
-  if (input.embedUrl) video.embedUrl = input.embedUrl;
-  return video;
 }
 
 export interface LegislationInput {

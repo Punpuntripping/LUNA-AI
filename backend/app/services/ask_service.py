@@ -387,45 +387,6 @@ def _ground_article(supabase: SupabaseClient, page_id: str) -> str:
         return ""
 
 
-def _ground_service(supabase: SupabaseClient, page_id: str) -> str:
-    content_id = _resolve_content_id(supabase, "service", page_id)
-    if not content_id:
-        return ""
-    try:
-        res = (
-            supabase.table("services")
-            .select(
-                "service_name_ar, intro_title, intro_description, "
-                "requirements, required_documents, steps"
-            )
-            .eq("id", content_id)
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-    except Exception as e:  # noqa: BLE001
-        logger.warning("anon_ask: service grounding failed (%s): %s", page_id, e)
-        return ""
-    if not rows:
-        return ""
-    sv = rows[0]
-    parts: list[str] = []
-    for key in ("service_name_ar", "intro_title", "intro_description"):
-        val = (sv.get(key) or "").strip() if isinstance(sv.get(key), str) else ""
-        if val:
-            parts.append(val)
-    reqs = [str(x).strip() for x in (sv.get("requirements") or []) if str(x).strip()]
-    if reqs:
-        parts.append("المتطلبات:\n" + "\n".join(f"- {x}" for x in reqs))
-    docs = [str(x).strip() for x in (sv.get("required_documents") or []) if str(x).strip()]
-    if docs:
-        parts.append("المستندات المطلوبة:\n" + "\n".join(f"- {x}" for x in docs))
-    steps = [str(x).strip() for x in (sv.get("steps") or []) if str(x).strip()]
-    if steps:
-        parts.append("الخطوات:\n" + "\n".join(f"{i}. {x}" for i, x in enumerate(steps, 1)))
-    return "\n\n".join(parts)
-
-
 def _ground_judgment(supabase: SupabaseClient, page_id: str) -> str:
     """Grounding context for a /judgments/{slug} page — the ruling's own text.
 
@@ -530,8 +491,6 @@ def fetch_grounding(
         text = _ground_regulation(supabase, page_id)
     elif page_type == "article":
         text = _ground_article(supabase, page_id)
-    elif page_type == "service":
-        text = _ground_service(supabase, page_id)
     elif page_type == "judgment":
         text = _ground_judgment(supabase, page_id)
     elif page_type == "blog":

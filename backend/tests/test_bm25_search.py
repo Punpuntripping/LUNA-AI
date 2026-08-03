@@ -327,9 +327,8 @@ def test_page_size_is_clamped_not_refused() -> None:
 
 
 def test_search_charges_the_same_keys_as_browsing(monkeypatch) -> None:
-    """ONE item budget across browse and search. The keys are ``section:slug``,
-    and ``service`` must map to ``compliance`` (D4) or the same document would be
-    charged twice under two names."""
+    """ONE item budget across browse and search. The keys are ``section:slug``, so
+    the same document reached two ways is charged once, under one name."""
     charged: list[list[str]] = []
 
     async def _spy(_request, _user_id, members, **_kw):
@@ -338,12 +337,12 @@ def test_search_charges_the_same_keys_as_browsing(monkeypatch) -> None:
 
     monkeypatch.setattr(search_api.library_budget, "charge_items", _spy)
 
-    fake = FakeSupabase([_hit("service", 1), _hit("regulation", 2)])
+    fake = FakeSupabase([_hit("circular", 1), _hit("regulation", 2)])
     res = _client(fake, _User()).get("/api/v1/search", params={"q": "رخصة تجارية"})
     assert res.status_code == 200, res.text
 
     flat = [key for batch in charged for key in batch]
-    assert "compliance:service-slug-1" in flat
+    assert "circulars:circular-slug-1" in flat
     assert "regulations:regulation-slug-2" in flat
 
 
@@ -376,10 +375,17 @@ def test_search_responses_are_never_shared_cached() -> None:
 # ===========================================================================
 
 
-def test_corpus_section_maps_service_to_compliance() -> None:
-    """D4 — «/services» IS «/compliance». There is no /services route, and a
-    wrong entry here silently forks the item budget."""
-    assert ss.CORPUS_SECTION["service"] == "compliance"
+def test_every_public_corpus_has_a_section_and_a_url() -> None:
+    """A corpus that ranks must be chargeable and linkable. A missing section
+    entry silently forks the item budget; a missing URL prefix renders a hit that
+    cannot be opened.
+
+    ⚠ ``service`` IS NOT A PUBLIC CORPUS ANY MORE (2026-08-03) — the /compliance
+    wing it linked into was retired, so every service hit would have been a 404.
+    It is pinned out of all three tables below, together."""
+    assert "service" not in ss.PUBLIC_CORPORA
+    assert "service" not in ss.CORPUS_SECTION
+    assert ss.public_url("service", "x") is None
     assert set(ss.CORPUS_SECTION) == set(ss.PUBLIC_CORPORA)
 
 
@@ -389,7 +395,7 @@ def test_corpus_section_maps_service_to_compliance() -> None:
         ("regulation", "x", "/regulations/x"),
         ("judgment", "x", "/judgments/x"),
         ("circular", "x", "/circulars/x"),
-        ("service", "x", "/compliance/x"),
+        ("service", "x", None),
         ("blog", "tok", "/blog/tok"),
         ("regulation", None, None),
         ("nonsense", "x", None),

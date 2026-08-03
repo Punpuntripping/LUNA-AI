@@ -634,7 +634,11 @@ function RevealedSource({
         className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground"
         dir="rtl"
       >
-        <SourceViewContent view={view} sourceContent={sourceContent} />
+        <SourceViewContent
+          view={view}
+          sourceContent={sourceContent}
+          hasFullTextExit={!!(libraryUrl || externalUrl)}
+        />
       </div>
 
       {notice && (
@@ -831,6 +835,9 @@ function SourceCopyButton({ content }: { content: string }) {
 }
 
 function extractSourceContent(view: SourceView): string {
+  // A ruling's rendered body is its ملخص — `content` is only ever populated for
+  // the few rulings that have no summary at all. Copy what is on screen.
+  if (view.source_type === "case") return view.summary || view.content || "";
   if ("content" in view && typeof view.content === "string") return view.content;
   return "";
 }
@@ -838,14 +845,40 @@ function extractSourceContent(view: SourceView): string {
 function SourceViewContent({
   view,
   sourceContent,
+  hasFullTextExit = false,
 }: {
   view: SourceView;
   sourceContent: string;
+  /** Does the dialog's action bar actually offer a way to the full document? */
+  hasFullTextExit?: boolean;
 }) {
   // NOTE (2026-08-01): no per-domain link lists in here any more. Every exit
   // lives in the dialog's single action bar — «فتح المصدر الرسمي» + «فتح ال… في ريحان»
   // — so this function renders CONTENT only.
-  if (view.source_type === "chunk" || view.source_type === "case") {
+  if (view.source_type === "case") {
+    // A ruling reads as its ملخص here, never as raw judgment text (2026-08-03):
+    // 8.5k chars of «الوقائع/الأسباب/المنطوق» is a worse answer to "is this the
+    // ruling I need?" than the structured digest is. Labelled, so nobody mistakes
+    // the digest for the ruling.
+    //
+    // The label points at the full text ONLY when this dialog actually offers a
+    // way to it. Most rulings have no library page yet (100 of 30.5k carry an
+    // seo_item_meta slug) and a third carry no details_url either, so an
+    // unconditional «النص الكامل في…» would promise an exit that isn't on screen.
+    // `view.summary` empty ⇒ `sourceContent` IS the raw ruling (the no-summary
+    // fallback), so the label is dropped rather than mislabelling it.
+    return (
+      <div className="space-y-3">
+        {view.summary && (
+          <p className="text-[11px] font-medium text-muted-foreground">
+            {hasFullTextExit ? "ملخص الحكم — النص الكامل بالأسفل" : "ملخص الحكم"}
+          </p>
+        )}
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
+      </div>
+    );
+  }
+  if (view.source_type === "chunk") {
     return (
       <div className="space-y-3">
         {sourceContent && <MarkdownRenderer content={sourceContent} />}
@@ -853,34 +886,21 @@ function SourceViewContent({
     );
   }
   if (view.source_type === "gov_service") {
-    // Hide intro_title when it duplicates the dialog title (services.service_name_ar
-    // and services.intro_title are often the same string). Trim before compare.
-    const introTitle = view.intro_title?.trim() ?? "";
-    const dialogTitle = view.title?.trim() ?? "";
-    const showIntroTitle = introTitle && introTitle !== dialogTitle;
-    const intro = view.intro_description?.trim() ?? "";
-    return (
-      <div className="space-y-4">
-        {(showIntroTitle || intro) && (
-          <div className="space-y-1.5">
-            {showIntroTitle && (
-              <h4 className="text-sm font-semibold text-foreground">
-                {introTitle}
-              </h4>
-            )}
-            {intro && (
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                {intro}
-              </p>
-            )}
-          </div>
-        )}
-
-        <ServiceSection title="الخطوات" items={view.steps} ordered />
-        <ServiceSection title="المتطلبات" items={view.requirements} />
-        <ServiceSection title="المستندات المطلوبة" items={view.required_documents} />
-      </div>
-    );
+    // A service is a TITLE AND A LINK here (2026-08-03). The four blocks that
+    // used to fill this body — intro, الخطوات, المتطلبات, المستندات المطلوبة —
+    // are gone for the same reason `/compliance` was retired: those are the
+    // issuing entity's to state, they go stale the moment it edits them, and
+    // restating them under our chrome made ريحان read as the authority on a
+    // process it does not own.
+    //
+    // The dialog is not left blank: the title is in the header and one muted
+    // line points at the action bar. Dropped when there IS no exit, so the line
+    // never promises a link that isn't on screen.
+    return hasFullTextExit ? (
+      <p className="text-sm leading-relaxed text-muted-foreground">
+        شروط هذه الخدمة ومستنداتها وخطواتها منشورة على موقع الجهة الرسمي.
+      </p>
+    ) : null;
   }
   if (view.source_type === "circular") {
     // Full circular body, uncapped — the parent dialog wraps this in a
@@ -907,43 +927,6 @@ function SourceViewContent({
   );
 }
 
-/**
- * One labelled section in the gov_service source-view (steps / requirements
- * / required_documents). Skipped entirely when the items array is empty so
- * the popup body stays compact for sparsely-populated services. Each item is
- * rendered through ``MarkdownRenderer`` because the corpus stores
- * markdown-flavoured strings (e.g. ``"[فيديو توضيحي](https://...)"``).
- */
-function ServiceSection({
-  title,
-  items,
-  ordered = false,
-}: {
-  title: string;
-  items: string[];
-  ordered?: boolean;
-}) {
-  if (!items || items.length === 0) return null;
-  const ListTag = ordered ? "ol" : "ul";
-  return (
-    <div className="space-y-1.5">
-      <h4 className="text-sm font-semibold text-foreground">{title}</h4>
-      <ListTag
-        className={cn(
-          "space-y-1 pe-0 ps-0 me-5 ms-0",
-          ordered ? "list-decimal" : "list-disc",
-        )}
-      >
-        {items.map((item, i) => (
-          <li key={i} className="text-sm leading-relaxed">
-            <MarkdownRenderer content={item} />
-          </li>
-        ))}
-      </ListTag>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -962,9 +945,6 @@ export function referenceLabel(ref: Reference): string {
  *
  * Only consulted when the reference row itself carries no URL — the row is the
  * authority, so the card and the dialog can never point at different places.
- * The gov_service view holds two candidates; the service's own page wins for the
- * same reason the card prefers it (the national platform is a portal, not the
- * document).
  */
 function sourceViewExternalUrl(view: SourceView): string {
   switch (view.source_type) {
@@ -973,7 +953,9 @@ function sourceViewExternalUrl(view: SourceView): string {
     case "case":
       return view.details_url || "";
     case "gov_service":
-      return view.service_url || view.national_platform_url || "";
+      // `service_url` only. The المنصة الوطنية portal link is no longer on the
+      // view, and was never the cited document — see the SourceView type.
+      return view.service_url || "";
     case "circular":
       return view.url || "";
     default:
@@ -1039,7 +1021,10 @@ function referencePrimaryUrl(ref: Reference): string {
     case "regulations":
       return ref.landing_url || "";
     case "compliance":
-      return ref.service_url || ref.url || "";
+      // `ref.url` (the المنصة الوطنية portal) is deliberately NOT a fallback:
+      // it is a directory, not the service, and a card that offers it is
+      // promising a source it does not deliver. No service_url ⇒ no exit.
+      return ref.service_url || "";
     case "circulars":
       return ref.url || "";
     case "cases":

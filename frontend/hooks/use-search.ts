@@ -252,9 +252,9 @@ export const LIBRARY_SEARCH_PAGE_SIZE = 20;
  * someone has re-opened the leak surface the design closed.
  *
  * `url` is assembled SERVER-SIDE (`search_service.public_url`) so no caller
- * re-derives the corpus→route map and gets `service` → `/compliance` wrong. It
- * is nullable because an item whose slug the sidecar has not minted is
- * unlinkable — render no link rather than a guessed one.
+ * re-derives the corpus→route map. It is nullable because an item whose slug the
+ * sidecar has not minted is unlinkable — render no link rather than a guessed
+ * one.
  *
  * `score` is meaningful for ORDERING and nothing else: unnormalised, and two
  * corpora carry different IDF tables. Do not render it, do not threshold on it.

@@ -606,11 +606,11 @@ def test_hub_page_allowed_treats_an_unknown_tier_as_anon() -> None:
 # 6. THE CACHE TRAP — D11 / PART 9 trap 2
 # ===========================================================================
 
+# ``/compliance`` was the second entry until 2026-08-03 — the wing was retired,
+# endpoint and all, so there is nothing left here to exercise.
 HUBS = [
     ("/api/v1/public/library/regulations", "list_regulations_hub",
      "regulations_hub_total_pages"),
-    ("/api/v1/public/library/compliance", "list_compliance_hub",
-     "compliance_hub_total_pages"),
     ("/api/v1/public/library/circulars", "list_circulars_hub",
      "circulars_hub_total_pages"),
     ("/api/v1/public/library/judgments", "list_judgments_hub",
@@ -723,10 +723,9 @@ def test_anon_hub_caps_at_page_one(stub_hubs, path) -> None:
     # the ceiling behaviour itself is unchanged.
     anon_filter = {
         HUBS[0][0]: {"doc_type": "law_statute"},
-        HUBS[1][0]: {"provider": "وزارة"},
-        HUBS[2][0]: {"entity": "3f8c1d2e-0000-4000-8000-000000000001"},
-        HUBS[3][0]: {"court_level": "appeal"},
-        HUBS[4][0]: {"category": ls.FORM_CATEGORIES[0]},
+        HUBS[1][0]: {"entity": "3f8c1d2e-0000-4000-8000-000000000001"},
+        HUBS[2][0]: {"court_level": "appeal"},
+        HUBS[3][0]: {"category": ls.FORM_CATEGORIES[0]},
     }[path]
     filtered = client.get(path, params={"page": 2, **anon_filter})
     assert filtered.json()["cap_reached"] is True

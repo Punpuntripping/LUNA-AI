@@ -320,7 +320,12 @@ async def _run_writer(
                     ],
                     citations_used=[],
                     confidence="low",
-                    notes_ar=[f"model_failure: {exc2.__class__.__name__}"],
+                    # User-facing: notes_ar lands in the workspace item's
+                    # `notes` (publisher.py) and is read by the lawyer. Keep it
+                    # Arabic and free of internal identifiers — the exception
+                    # class is already captured in telemetry above via
+                    # `_t.set(error=...)`.
+                    notes_ar=["تعذّر توليد المستند تقنياً — يرجى إعادة المحاولة"],
                 )
                 return placeholder, fallback_model
 

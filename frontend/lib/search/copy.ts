@@ -27,11 +27,7 @@ import { formatCount } from "@/lib/library/sectors";
  * from `SEARCH_LIBRARY_COPY` below. Same reasoning that keeps
  * `PrivateSearchSurface` separate.
  */
-export type SearchSurface =
-  | "regulations"
-  | "judgments"
-  | "circulars"
-  | "compliance";
+export type SearchSurface = "regulations" | "judgments" | "circulars";
 
 // ------------------------------------------------------------------
 // The 3-character floor
@@ -121,18 +117,17 @@ export function searchResultsHeading(query: string): string {
  */
 export const SEARCH_LIBRARY_COPY = {
   placeholder: "ابحث في المكتبة القانونية كاملة…",
-  ariaLabel:
-    "ابحث في الأنظمة والأحكام والتعاميم والخدمات الحكومية في وقت واحد",
+  ariaLabel: "ابحث في الأنظمة والأحكام والتعاميم في وقت واحد",
   /**
    * One line under the box. It describes what the BOX does, not what the
    * library contains — the H1's own paragraph directly above already lists the
-   * four corpora, and repeating them here would be the same sentence twice on
+   * three corpora, and repeating them here would be the same sentence twice on
    * one screen.
    */
-  lead: "اكتب اسم النظام أو موضوع المسألة — يبحث ريحان في الأقسام الأربعة دفعةً واحدة ويرتّب النتائج حسب المطابقة.",
+  lead: "اكتب اسم النظام أو موضوع المسألة — يبحث ريحان في الأقسام الثلاثة دفعةً واحدة ويرتّب النتائج حسب المطابقة.",
   /** The `<fieldset>`-style accessible name for the wing chip row. */
   scopeLabel: "نطاق البحث",
-  /** The «no wing filter» chip — the state that searches all four. */
+  /** The «no wing filter» chip — the state that searches all three. */
   scopeAll: "الكل",
 } as const;
 
@@ -191,10 +186,6 @@ export const SEARCH_SURFACE_COPY = {
   circulars: {
     placeholder: "ابحث في التعاميم…",
     ariaLabel: "ابحث في التعاميم التنظيمية",
-  },
-  compliance: {
-    placeholder: "ابحث في الخدمات…",
-    ariaLabel: "ابحث في خدمات الامتثال الحكومية",
   },
 } satisfies Record<SearchSurface, SurfaceCopy>;
 

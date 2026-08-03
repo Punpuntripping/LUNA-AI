@@ -10,7 +10,7 @@ export function StatsBand() {
       <div className="mx-auto max-w-5xl px-4 py-14 sm:py-16">
         <div className="mx-auto max-w-2xl text-center">
           <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            قاعدة بياناتنا تغطّي أكثر من 95٪ من بيانات الامتثال السعودي
+            قاعدة بياناتنا مبنية على المصادر الرسمية السعودية
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-primary-foreground/80">
             مصادر رسمية مجمّعة من أكثر من 200 كيان حكومي — لهذا لا يختلق ريحان
@@ -18,7 +18,7 @@ export function StatsBand() {
           </p>
         </div>
 
-        <dl className="mx-auto mt-10 grid max-w-3xl grid-cols-2 gap-x-6 gap-y-9 sm:grid-cols-3">
+        <dl className="mx-auto mt-10 grid max-w-2xl grid-cols-2 gap-x-6 gap-y-9">
           {STATS.map((s) => (
             <div key={s.label} className="text-center">
               <dt className="text-3xl font-bold tabular-nums sm:text-4xl">

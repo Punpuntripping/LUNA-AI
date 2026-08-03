@@ -51,7 +51,7 @@ export async function generateMetadata({
   // appears as text.
   const heading = sectorHeading(detail.name_ar);
   const title = `${heading} — المكتبة القانونية | ريحان`;
-  const description = `كل ما يخص قطاع ${detail.name_ar} في مكتبة ريحان القانونية: الأنظمة واللوائح، والأحكام القضائية، والخدمات الحكومية، والتعاميم التنظيمية.`;
+  const description = `كل ما يخص قطاع ${detail.name_ar} في مكتبة ريحان القانونية: الأنظمة واللوائح، والأحكام القضائية، والتعاميم التنظيمية.`;
   const ogImage = `/og?title=${encodeURIComponent(heading)}`;
 
   return {

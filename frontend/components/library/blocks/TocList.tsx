@@ -5,46 +5,24 @@ import { parseTocLabel } from "@/lib/library/toc";
 import type { TocListProps } from "@/types/library";
 
 /**
- * «محتويات النظام» — an anchor/href list of a document's فصول/مواد, or a
- * numbered steps list (`variant="steps"`, for compliance «الخطوات»). Server
+ * «محتويات النظام» — an anchor/href list of a document's فصول/مواد. Server
  * component: uses a native `<details open>` so it's collapsible on mobile with
  * zero client JS (defaults open on every viewport). `level` indents nested
  * entries via `ps-` (RTL start padding). The desktop reading rail uses the
- * richer, scroll-spied `TocRail`; this stays the mobile-inline + steps surface.
+ * richer, scroll-spied `TocRail`; this stays the mobile-inline surface.
+ *
+ * The `steps` variant (a numbered ordered list, for the compliance «الخطوات»
+ * block) went with the compliance wing on 2026-08-03 — it had exactly one
+ * caller, `/compliance/{slug}`.
  */
 export function TocList({
   entries,
   title = "محتويات النظام",
-  variant = "anchors",
   collapsible = true,
   badge,
   className,
 }: TocListProps) {
-  const isSteps = variant === "steps";
-
-  const list = isSteps ? (
-    <ol className="space-y-2.5">
-      {entries.map((entry, index) => (
-        <li key={entry.id} className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold tabular-nums text-primary">
-            {index + 1}
-          </span>
-          {entry.href && !entry.locked ? (
-            <Link
-              href={entry.href}
-              className="pt-0.5 text-sm leading-relaxed text-foreground underline-offset-2 transition-colors hover:text-primary hover:underline"
-            >
-              {entry.label}
-            </Link>
-          ) : (
-            <span className="pt-0.5 text-sm leading-relaxed text-text-secondary">
-              {entry.label}
-            </span>
-          )}
-        </li>
-      ))}
-    </ol>
-  ) : (
+  const list = (
     <ul className="space-y-0.5">
       {entries.map((entry) => {
         const locked = entry.locked || !entry.href;

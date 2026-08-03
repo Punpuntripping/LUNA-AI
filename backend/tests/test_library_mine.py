@@ -765,9 +765,14 @@ def test_listing_hydrates_hub_card_fields() -> None:
     svc = find(data["items"], "service", SVC_ID)
     jud = find(data["items"], "judgment", JUD_ID)
 
+    # A service is TITLE ONLY since the compliance wing was retired (2026-08-03):
+    # no page to link to, and none of the الخدمات card metadata that page fed.
+    # It still LISTS — the reader unlocked it and it is theirs (§5B.4).
     assert svc["title"] == "إصدار رخصة"
-    assert svc["provider_name"] == "وزارة التجارة"
-    assert svc["url"] == "/compliance/إصدار-رخصة"
+    assert svc["url"] is None
+    assert svc["slug"] is None
+    assert "provider_name" not in svc
+    assert "intro_snippet" not in svc
     assert svc["is_available"] is True
 
     assert jud["court"] == "المحكمة التجارية"

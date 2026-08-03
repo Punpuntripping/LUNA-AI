@@ -190,10 +190,9 @@ class MyLibraryItem(BaseModel):
     source_label: Optional[str] = None
     body_snippet: Optional[str] = None
     body_length: Optional[int] = None
-    # service (compliance)
-    provider_name: Optional[str] = None
-    is_most_used: Optional[bool] = None
-    intro_snippet: Optional[str] = None
+    # service — TITLE ONLY. The compliance wing was retired (2026-08-03), so a
+    # shelved service has no page, no url and none of the card metadata the
+    # الخدمات hub card drew (provider_name / is_most_used / intro_snippet).
     # form
     category: Optional[str] = None
     use_case_snippet: Optional[str] = None

@@ -6,7 +6,6 @@ import { cn } from "@/lib/utils";
 import { RegulationCard } from "@/components/library/hub/RegulationCard";
 import { JudgmentCard } from "@/components/library/hub/JudgmentCard";
 import { CircularCard } from "@/components/library/hub/CircularCard";
-import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
 import { FormCard } from "@/components/library/hub/FormCard";
 import type { ApiDocStatus } from "@/lib/library/api";
 import type { MyLibraryRow } from "@/lib/api";
@@ -32,8 +31,11 @@ import { MY_LIBRARY_COPY } from "@/components/library/mine/copy";
  * Only two cases still fall through to the plain card:
  *   * `is_available === false` — nothing hydrated at all (the corpus row is
  *     gone). There is genuinely nothing to show but a title.
- *   * wings with no hub card — `calculator`, and a مادة that could not be
- *     nested under its نظام.
+ *   * wings with no hub card — `calculator`, a مادة that could not be nested
+ *     under its نظام, and since 2026-08-03 `service`: the compliance wing was
+ *     retired, so a shelved government service has no page to link to and no
+ *     card of its own. It keeps its title (the backend sends no `url`, so it
+ *     renders unlinked) and nothing else.
  */
 export function ShelfCard({ row }: { row: MyLibraryRow }) {
   const title = row.title?.trim() || fallbackTitle(row);
@@ -93,20 +95,6 @@ export function ShelfCard({ row }: { row: MyLibraryRow }) {
           }}
         />
       );
-    case "service":
-      return (
-        <ComplianceCard
-          href={href}
-          item={{
-            slug: row.slug ?? "",
-            title,
-            provider_name: row.provider_name ?? "",
-            is_most_used: row.is_most_used ?? false,
-            sectors: row.sectors ?? [],
-            intro_snippet: row.intro_snippet ?? "",
-          }}
-        />
-      );
     case "form":
       return (
         <FormCard
@@ -120,7 +108,7 @@ export function ShelfCard({ row }: { row: MyLibraryRow }) {
         />
       );
     default:
-      // calculator · a top-level (un-nestable) مادة — no hub card exists.
+      // service · calculator · a top-level (un-nestable) مادة — no hub card.
       return <PlainShelfCard title={title} href={row.url} />;
   }
 }

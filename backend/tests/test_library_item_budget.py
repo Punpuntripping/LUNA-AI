@@ -65,8 +65,6 @@ OTHER_USER = "bbbbbbbb-0000-0000-0000-000000000002"
 HUBS = {
     "regulations": ("/api/v1/public/library/regulations", "list_regulations_hub",
                     "regulations_hub_total_pages"),
-    "compliance": ("/api/v1/public/library/compliance", "list_compliance_hub",
-                   "compliance_hub_total_pages"),
     "circulars": ("/api/v1/public/library/circulars", "list_circulars_hub",
                   "circulars_hub_total_pages"),
     "judgments": ("/api/v1/public/library/judgments", "list_judgments_hub",
@@ -667,7 +665,7 @@ def test_an_ordinary_session_never_trips_the_budget(stub_hubs) -> None:
     client = _client(user=_User(), redis=redis)
     codes = set()
 
-    for section in ("regulations", "compliance", "judgments"):
+    for section in ("regulations", "circulars", "judgments"):
         path = HUBS[section][0]
         for page in (1, 2, 3):
             codes.add(client.get(path, params={"page": page}).status_code)

@@ -7,7 +7,6 @@ import {
   PenLine,
   Scale,
   Search,
-  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -63,10 +62,6 @@ export function AgentsDiagram() {
               <div className="flex items-center gap-2 text-xs font-semibold">
                 <BookOpenText className="h-3.5 w-3.5 shrink-0 text-primary" />
                 بحث الأنظمة واللوائح
-              </div>
-              <div className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-                <ShieldCheck className="h-3 w-3 shrink-0" />
-                يشمل فحص الالتزام
               </div>
             </div>
             <div className="rounded-lg border border-border bg-background p-2.5">

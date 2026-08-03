@@ -129,7 +129,7 @@ LIBRARY_FULL_PREFIX = "/api/v1/library/full/"
 # per-slug budget. The flat `/public/library/sectors` list has no tail and keeps
 # its own key, like every other hub list path.
 PUBLIC_LIBRARY_SECTIONS = frozenset(
-    {"regulations", "compliance", "circulars", "judgments", "forms", "sectors"}
+    {"regulations", "circulars", "judgments", "forms", "sectors"}
 )
 
 ITEM_PLACEHOLDER = ":item"

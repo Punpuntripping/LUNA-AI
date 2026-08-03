@@ -15,7 +15,7 @@ export function ProblemSection() {
         </p>
       </div>
 
-      <div className="mt-10 grid gap-4 sm:grid-cols-3">
+      <div className="mt-10 grid gap-4 sm:grid-cols-2">
         {PROBLEMS.map((p) => {
           const Icon = p.icon;
           return (

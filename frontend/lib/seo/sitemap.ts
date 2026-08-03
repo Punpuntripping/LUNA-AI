@@ -25,7 +25,7 @@ export const SITE_URL = "https://rayhanai.com";
 /**
  * Sections listed in the sitemap index, each served at `/sitemaps/{section}`.
  * Phase 0 shipped `static` (hardcoded marketing/legal pages) and `blog`; Phase 2
- * adds `regulations` + `compliance`. Phase 3 adds `calculators`, which is served
+ * adds `regulations`. Phase 3 adds `calculators`, which is served
  * LOCALLY from the code registry (no backend feed). Every backend-fed section
  * uses the same `{ urls, page, total_pages }` feed contract. Later phases append
  * `judgments`, `circulars`, `articles`, …
@@ -42,7 +42,6 @@ export const SITEMAP_SECTIONS = [
   "static",
   "blog",
   "regulations",
-  "compliance",
   "articles",
   "circulars",
   "forms",
@@ -189,7 +188,7 @@ interface SectionSitemapPage {
  *                "lastmod": "2026-07-01T00:00:00Z" }],
  *     "page": 1, "total_pages": 1 }
  *
- * Every fed section (`blog`, `regulations`, `compliance`, …) shares this shape.
+ * Every fed section (`blog`, `regulations`, `articles`, …) shares this shape.
  * Fail-safe: any network / parse error returns whatever was gathered so far
  * (empty on the first page). Google must NEVER see a 5xx from a sitemap, so the
  * caller renders a valid (possibly empty) <urlset> regardless.

@@ -9,12 +9,11 @@ export function CapabilitiesSection() {
           ماذا يفعل ريحان؟
         </h2>
         <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-          أداة واحدة تغطّي رحلة العمل القانوني — من البحث إلى الصياغة إلى
-          الإجراء الحكومي.
+          أداة واحدة تغطّي رحلة العمل القانوني — من البحث الموثّق إلى الصياغة.
         </p>
       </div>
 
-      <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-10 grid gap-4 sm:grid-cols-2">
         {CAPABILITIES.map((c) => {
           const Icon = c.icon;
           return (

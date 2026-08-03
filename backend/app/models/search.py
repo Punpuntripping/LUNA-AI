@@ -32,7 +32,7 @@ class SearchHit(BaseModel):
     segment for the four public corpora, the blog share ``token`` for a blog and
     the ``template_id`` for a template. ``url`` is the in-app path already
     assembled server-side so no caller has to re-derive the corpus→route map (and
-    get ``service`` → ``/compliance`` wrong).
+    gets the corpus → route map wrong).
 
     ``score`` is the raw BM25 sum plus the exact-title bonus. It is meaningful for
     ORDERING and for nothing else: it is unnormalised, and two corpora carry

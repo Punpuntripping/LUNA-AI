@@ -19,10 +19,11 @@ the article/section split is gone):
 
 - ``ChunkSourceView``      -- a regulation chunk, full ``chunk_content`` +
   ``chunk_context`` + parent regulation landing/PDF link.
-- ``CaseSourceView``       -- a court ruling; one ``details_url`` plus a
-  human-readable composite title.
-- ``ServiceSourceView``    -- a government service; both the national-platform
-  URL (``services.url``) and the service URL (``services.service_url``).
+- ``CaseSourceView``       -- a court ruling; the ``summary`` digest (NOT the
+  raw ruling text -- that lives on ``/judgments/{slug}``), one ``details_url``
+  and a human-readable composite title.
+- ``ServiceSourceView``    -- a government service; the name and ONE exit
+  (``services.service_url``). No body: the popup is a link, not a guide.
 - ``CircularSourceView``   -- a ministerial circular (تعميم); the FULL uncapped
   ``circulars.content`` body + issuing entity name + ``circulars.source`` link.
 
@@ -152,50 +153,57 @@ class RegulationSourceView(BaseModel):
 
 
 class CaseSourceView(BaseModel):
-    """Click-ready payload for a **court case**."""
+    """Click-ready payload for a **court case**.
+
+    THE POPUP SHOWS THE ملخص, NOT THE RULING (2026-08-03). A citation preview is
+    a "is this the ruling I need?" surface, and 8.5k chars of raw judgment text
+    answers that worse than the structured digest does. The full text has its own
+    home — the «فتح الحكم في ريحان» exit lands on ``/judgments/{slug}``, and the
+    reveal already spent the unlock for that same ``judgment`` content_id, so the
+    reader pays nothing extra to go read it there.
+    """
 
     source_type: Literal["case"] = "case"
     title: str
     """Composite label: ``court | case_number | date_hijri`` (parts dropped if
     empty / pipe-separated)."""
+    summary: str = ""
+    """Structured digest (``cases.summary`` — ## الملخص / الوقائع / المطالبات /
+    …) — what the popup renders. Falls back to ``cases.short_summary`` (the same
+    ## الملخص section alone, which is also the /judgments lead) when the long
+    digest is missing. Markdown."""
     content: str = ""
-    """Case body (``cases.content``) — full ruling text. Rendered as markdown
-    in the source-view popup."""
+    """Raw ruling text (``cases.content``) — the LAST-RESORT body, populated
+    ONLY when the ruling has no summary at all (18 rows of 30.5k). Never sent
+    alongside ``summary``: it would be several KB the popup does not render."""
     details_url: str = ""
 
 
 class ServiceSourceView(BaseModel):
-    """Click-ready payload for a **government service**.
+    """Click-ready payload for a **government service** — title and link, nothing else.
 
-    Structured for the redesigned popup: four sections (intro, steps,
-    requirements, required documents) rendered as Arabic-labelled blocks
-    above the URL links. Each list element is a markdown-flavoured string
-    (e.g. ``"[فيديو توضيحي](https://...)"``) — the frontend renders them
-    through ``MarkdownRenderer``.
+    BODYLESS SINCE 2026-08-03. The popup used to render four Arabic-labelled
+    blocks (intro, الخطوات, المتطلبات, المستندات المطلوبة) mirroring the retired
+    ``/compliance/{slug}`` page. Both are gone: a procedure's steps and documents
+    go stale the moment the issuing entity edits them, and restating them under
+    ريحان's own chrome makes us the apparent authority on a process we do not own.
+    The service's own page is the authority, so the citation now does one thing —
+    name the service and open it.
+
+    The extra fields are NOT kept for back-compat. ``source_view`` payloads
+    persisted before this change validate fine (unknown keys are ignored, and
+    every removed field was optional), and any that still carry the old body just
+    stop rendering it.
     """
 
     source_type: Literal["gov_service"] = "gov_service"
     title: str
     """Service name in Arabic (``services.service_name_ar``)."""
-    intro_title: str = ""
-    """``services.intro_title`` — official long-form title shown as a heading
-    inside the popup body. Often redundant with ``title`` (the short
-    service_name); the renderer hides it when identical."""
-    intro_description: str = ""
-    """``services.intro_description`` — one-sentence description of what the
-    service does."""
-    steps: list[str] = []
-    """``services.steps`` — ordered list of procedural steps. Each entry may
-    contain inline markdown (links, emphasis)."""
-    requirements: list[str] = []
-    """``services.requirements`` — list of eligibility / pre-conditions."""
-    required_documents: list[str] = []
-    """``services.required_documents`` — list of documents the user must
-    submit."""
-    national_platform_url: str = ""
-    """``services.url`` -- shown as "المنصة الوطنية" in the UI."""
     service_url: str = ""
-    """``services.service_url`` -- shown as "رابط الخدمة" in the UI."""
+    """``services.service_url`` — THE exit, and the only one. ``services.url``
+    (the المنصة الوطنية portal link) was dropped with the body: a portal home page
+    is not the cited source, and offering two exits made the reader choose between
+    a document and a directory."""
 
 
 class CircularSourceView(BaseModel):
@@ -290,10 +298,11 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
     is set to ``full_row['case_ref']``). Filtering ``cases.id`` (uuid) with a
     ``case_ref`` value returns PostgREST 400. Always filter by ``case_ref``.
 
-    Selects ``content`` so the source-view popup can render the case body —
-    the URA result may or may not carry it (it does when produced by the
-    case_search adapter; it doesn't when ``references_service`` rebuilds the
-    shell from the relational refs table).
+    Selects ``summary`` / ``short_summary`` — what the popup actually renders —
+    plus ``content`` as the last-resort body for the ~18 rulings that carry
+    neither summary. The URA result may or may not carry a body of its own (it
+    does when produced by the case_search adapter; it doesn't when
+    ``references_service`` rebuilds the shell from the relational refs table).
     """
     def _call() -> dict | None:
         try:
@@ -301,7 +310,8 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
                 supabase.table("cases")
                 .select(
                     "id, court, court_level, city, case_number, "
-                    "judgment_number, date_hijri, details_url, content"
+                    "judgment_number, date_hijri, details_url, "
+                    "summary, short_summary, content"
                 )
                 .eq("case_ref", case_ref)
                 .maybe_single()
@@ -320,20 +330,17 @@ async def _fetch_service_by_ref(
 ) -> dict | None:
     """Fetch a service row by ``service_ref``.
 
-    Pulls the columns the source-view popup renders: the URL pair plus the
-    four structured sections (intro, steps, requirements, required_documents)
-    introduced in the redesigned popup. ARRAY columns come back as Python
-    lists.
+    Two columns, because the popup renders two things. The body columns
+    (``intro_*``, ``steps``, ``requirements``, ``required_documents``) and the
+    ``url`` portal link are deliberately NOT projected — see ServiceSourceView
+    for why they left the payload. They are several KB per reveal that nothing
+    on screen would draw.
     """
     def _call() -> dict | None:
         try:
             resp = (
                 supabase.table("services")
-                .select(
-                    "service_ref, service_name_ar, url, service_url, "
-                    "intro_title, intro_description, steps, requirements, "
-                    "required_documents"
-                )
+                .select("service_ref, service_name_ar, service_url")
                 .eq("service_ref", service_ref)
                 .maybe_single()
                 .execute()
@@ -451,39 +458,24 @@ async def _build_case_view(
     composite = " | ".join(p for p in (s.strip() for s in title_parts) if p)
     title = composite or ura.title or "قضية"
 
-    # Case body: prefer the just-fetched row, fall back to whatever the URA
-    # result already carries (set by the case_search adapter at retrieval
-    # time when this view is built from a live URA, not from references
-    # reconstruction).
-    case_body = (row.get("content") or ura.case_content or "").strip()
+    # What the reader gets: the ملخص. ``ura.case_content`` is itself
+    # ``cases.summary`` clipped to 6k by the case_search adapter (see
+    # CaseURAResult), so it belongs in this chain, not in the raw-body one — it
+    # covers the case where the row fetch missed on a live URA.
+    summary = (
+        row.get("summary") or row.get("short_summary") or ura.case_content or ""
+    ).strip()
+    # The raw ruling rides along ONLY when there is no summary to show. Shipping
+    # both would send several unrendered KB per reveal, and the ruling text is
+    # exactly the PDPL-sensitive payload the /judgments wing is noindexed over.
+    case_body = "" if summary else (row.get("content") or "").strip()
 
     return CaseSourceView(
         title=title,
+        summary=summary,
         content=case_body,
         details_url=row.get("details_url", "") or "",
     )
-
-
-def _coerce_str_list(value: Any) -> list[str]:
-    """Coerce a ``services.*`` ARRAY column into a clean ``list[str]``.
-
-    Postgres ARRAYs come through PostgREST as Python lists, but rows may
-    return ``None`` for unpopulated columns, and individual entries can be
-    ``None``/empty after upstream ingestion. Strip and drop blanks so the
-    frontend never has to render a stray empty bullet.
-    """
-    if not value:
-        return []
-    if not isinstance(value, (list, tuple)):
-        return []
-    out: list[str] = []
-    for entry in value:
-        if entry is None:
-            continue
-        s = str(entry).strip()
-        if s:
-            out.append(s)
-    return out
 
 
 async def _build_service_view(
@@ -491,10 +483,14 @@ async def _build_service_view(
 ) -> ServiceSourceView:
     """Resolve a ``ComplianceURAResult`` -> ``ServiceSourceView``.
 
-    Always fetches ``services`` by ``service_ref`` to pull the structured
-    intro / steps / requirements / required_documents columns the URA result
-    doesn't carry. Falls back to whatever the URA does have for the URL
-    fields when the lookup misses.
+    Still fetches ``services`` by ``service_ref``: the row is the authority on
+    the canonical name and link, and the URA result carries them only when it
+    came straight from the compliance adapter (``references_service`` rebuilds
+    a shell without them). Falls back to the URA on a lookup miss.
+
+    ``ura.url`` — the المنصة الوطنية portal link — is no longer a fallback for
+    ``service_url``. A service with no ``service_url`` now renders exit-less
+    rather than sending the reader to a portal home page that never mentions it.
     """
     row: dict = {}
     if ura.service_ref:
@@ -502,13 +498,7 @@ async def _build_service_view(
 
     return ServiceSourceView(
         title=row.get("service_name_ar") or ura.service_name or "",
-        intro_title=(row.get("intro_title") or "").strip(),
-        intro_description=(row.get("intro_description") or "").strip(),
-        steps=_coerce_str_list(row.get("steps")),
-        requirements=_coerce_str_list(row.get("requirements")),
-        required_documents=_coerce_str_list(row.get("required_documents")),
-        national_platform_url=(row.get("url") or "").strip(),
-        service_url=(row.get("service_url") or ura.service_url or ura.url or "").strip(),
+        service_url=(row.get("service_url") or ura.service_url or "").strip(),
     )
 
 
@@ -649,6 +639,9 @@ def _self_test() -> None:
             "case_number": "1234",
             "date_hijri": "1445/06/01",
             "details_url": "https://sjp.gov.sa/case/1",
+            "summary": "## الملخص\nنزاع تجاري حول رسوم الخدمة.",
+            "short_summary": "نزاع تجاري حول رسوم الخدمة.",
+            "content": "النص الكامل للحكم.",
         },
         "services": {
             "service_ref": "svc-abc",
@@ -698,6 +691,9 @@ def _self_test() -> None:
         assert isinstance(v, CaseSourceView), v
         assert "محكمة الاستئناف" in v.title
         assert v.details_url.endswith("/1")
+        # The popup gets the ملخص; the raw ruling stays behind /judgments.
+        assert v.summary.startswith("## الملخص")
+        assert v.content == "", v.content
 
         # 3) gov_service
         svc = ComplianceURAResult(
@@ -710,8 +706,11 @@ def _self_test() -> None:
         )
         v = await build_source_view(stub, svc)
         assert isinstance(v, ServiceSourceView), v
-        assert v.national_platform_url == "https://my.gov.sa/national"
+        assert v.title == "خدمة كذا"
         assert v.service_url == "https://entity.gov.sa/svc"
+        # Title + link and nothing else: no body, and no portal fallback exit.
+        assert not hasattr(v, "steps")
+        assert not hasattr(v, "national_platform_url")
 
         # 4) circular — FULL uncapped content + entity + source link
         circ = CircularURAResult(

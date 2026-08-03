@@ -207,13 +207,6 @@ export const SITE_NAV: NavGroup[] = [
         enabled: true,
       },
       {
-        label: "الإجراءات الحكومية",
-        href: "/compliance",
-        description: "خطوات ومتطلبات أكثر من 4,500 خدمة حكومية",
-        section: "المصادر الرسمية",
-        enabled: true,
-      },
-      {
         label: "الأحكام القضائية",
         href: "/judgments",
         description: "أكثر من 20,000 حكم قضائي",

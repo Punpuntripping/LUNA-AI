@@ -51,8 +51,8 @@ export function SiteFooter() {
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">
             المساعد القانوني الذكي في الأنظمة السعودية — بحث موثّق في الأنظمة
-            والأحكام القضائية والخدمات الحكومية، وصياغة قانونية كل استشهاد فيها
-            مربوط بمصدره الرسمي.
+            والأحكام القضائية، وصياغة قانونية كل استشهاد فيها مربوط بمصدره
+            الرسمي.
           </p>
           <p className="text-xs text-muted-foreground">منصة سعودية</p>
         </div>

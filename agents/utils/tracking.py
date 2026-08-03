@@ -461,6 +461,7 @@ class AgentSpan:
         *,
         agent_family: str | None = None,
         subtype: str | None = None,
+        t0: float | None = None,
     ) -> None:
         self._span = span
         self.stage = stage
@@ -468,6 +469,10 @@ class AgentSpan:
         self._subtype = subtype
         self._outcome: str | None = None
         self._finalized = False
+        # Stage-start clock, so ``record_run`` can stamp duration_ms onto the
+        # ledger row. ``_finalize`` still takes t0 as a parameter (its callers
+        # already hold it); this is the copy the mid-stage ledger write needs.
+        self._t0 = t0
 
     def set(self, **attrs: Any) -> None:
         clean = {k: _attr_value(v) for k, v in attrs.items() if v is not None}
@@ -495,11 +500,21 @@ class AgentSpan:
             self._span.set_attributes(usage)
         except Exception:
             pass
+        # duration_ms is the ONLY per-call latency signal that survives outside
+        # Logfire. Without it the ledger cannot answer "how long does this slot
+        # normally take?", which is the number any per-call timeout has to be
+        # derived from. Measured from stage start (not from agent.run entry) —
+        # same convention as run_tracked below, so the two paths are comparable.
         _feed_sink(
             self.stage,
             usage,
             agent_family=self._agent_family,
             subtype=self._subtype,
+            duration_ms=(
+                int((time.perf_counter() - self._t0) * 1000)
+                if self._t0 is not None
+                else None
+            ),
         )
         self.record_output(getattr(result, "output", None))
 
@@ -563,7 +578,7 @@ async def run_tracked(
     identity = _identity_from_deps(deps, stage=stage, agent_family=agent_family, subtype=subtype)
     t0 = time.perf_counter()
     with _logfire.span(stage, **identity) as span:
-        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype)
+        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype, t0=t0)
         try:
             span.set_attributes(_bounded_snapshot(deps))
         except Exception:
@@ -626,7 +641,7 @@ def track_stage(
     )
     t0 = time.perf_counter()
     with _logfire.span(stage, **identity) as span:
-        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype)
+        handle = AgentSpan(span, stage, agent_family=agent_family, subtype=subtype, t0=t0)
         if extra:
             handle.set(**extra)
         if input_obj is not None:

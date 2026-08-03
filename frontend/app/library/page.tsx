@@ -14,7 +14,7 @@ import { LibraryHubView } from "@/components/library/sectors/LibraryHubView";
 
 const HUB_TITLE = "المكتبة القانونية السعودية";
 const HUB_DESCRIPTION =
-  "مكتبة ريحان القانونية: الأنظمة واللوائح، والأحكام القضائية، والخدمات والإجراءات الحكومية، والتعاميم التنظيمية — مرتّبة حسب القطاع ومربوطة بمصادرها الرسمية.";
+  "مكتبة ريحان القانونية: الأنظمة واللوائح، والأحكام القضائية، والتعاميم التنظيمية — مرتّبة حسب القطاع ومربوطة بمصادرها الرسمية.";
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;

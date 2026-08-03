@@ -19,6 +19,12 @@ fails, ships primary with ``validation.passed=False`` for observability.
 For prompt_3 (Draft-Critique-Rewrite), the primary path runs three LLM calls
 sequentially on the primary model. Self-correction is SKIPPED for DCR (the
 DCR chain has its own exception fallback at ``_run_primary_path``).
+
+Exception fallback (2026-08) — when the single-shot LLM call *raises* (as
+opposed to producing output that fails a gate), the runner takes one bounded
+retry on ``prompt_1`` before degrading to the placeholder. Without it a single
+``UnexpectedModelBehavior`` threw away a fully-paid-for retrieval and shipped
+the user an apology. See ``_run_single_shot``.
 """
 from __future__ import annotations
 
@@ -50,6 +56,15 @@ from .preprocessor import (
 from .prompts import build_aggregator_user_message, get_aggregator_prompt
 
 logger = logging.getLogger(__name__)
+
+# User-facing gap text for a hard aggregator failure. MUST stay Arabic and free
+# of internal identifiers: ``gaps`` is injected verbatim into the
+# planner-responder prompt (planner/prompts.py — "### Reported gaps"), which is
+# instructed to state gaps explicitly, so anything placed here can be read out
+# to the user. Putting ``exc.__class__.__name__`` here once produced an answer
+# telling a lawyer the search hit «خللاً فنياً (UnexpectedModelBehavior)». The
+# exception detail belongs in ``raw_logs``, which no prompt ever sees.
+_MODEL_FAILURE_GAP_AR = "تعذّر تجميع نتائج البحث تقنياً — لم تكتمل الإجابة"
 
 
 def _accrue_agg_usage(deps: Any, result: Any) -> None:
@@ -340,8 +355,10 @@ async def _run_primary_path(
     ``primary_result`` is the Pydantic AI ``AgentRunResult`` from the
     single-shot run when self-correction is allowed; ``None`` for DCR paths
     (DCR has its own internal exception fallback and self-correction is
-    skipped for it), for DCR's exception-fallback path (same reason), and
-    on LLM exceptions in the single-shot path (no usable history to thread).
+    skipped for it), for DCR's exception-fallback path (same reason), and on
+    LLM exceptions in the single-shot path — where the bounded prompt_1 retry
+    (``allow_fallback``) either recovers with history that no longer matches
+    the planner's mode, or every attempt raised and there is no history at all.
     """
     use_dcr = (
         agg_input.enable_dcr
@@ -375,7 +392,26 @@ async def _run_primary_path(
         stage_key="single",
         model_name=deps.primary_model,
         prompt_key=agg_input.prompt_key,
+        allow_fallback=True,
     )
+
+
+async def _attempt_single_shot(
+    deps: AggregatorDeps,
+    user_message: str,
+    stage_key: str,
+    model_name: str,
+    prompt_key: str,
+) -> tuple[AggregatorLLMOutput, str, str, Any]:
+    """One LLM attempt. Raises on failure — the caller decides how to degrade.
+
+    Returns ``(llm_output, model_name, raw_text, agent_run_result)``.
+    """
+    agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
+    _log_prompt(deps, prompt_key, user_message, stage_key)
+    result = await agent.run(user_message)
+    _accrue_agg_usage(deps, result)
+    return result.output, model_name, _stringify_result(result), result
 
 
 async def _run_single_shot(
@@ -385,33 +421,74 @@ async def _run_single_shot(
     stage_key: str,
     model_name: str,
     prompt_key: str,
+    allow_fallback: bool = False,
 ) -> tuple[AggregatorLLMOutput, str, dict[str, str], Any]:
     """Run one LLM call with the given model + prompt.
 
     Returns ``(llm_output, model_name, raw_logs, agent_run_result)``.
 
-    On hard failure (LLM call raises) returns a degraded placeholder and
+    ``allow_fallback`` grants ONE extra attempt when the first raises,
+    re-running on ``prompt_key="prompt_1"`` (the most constrained mode) under
+    the ``deps.fallback_model`` provenance label. Note this re-rolls the PROMPT,
+    not the model: ``create_aggregator_agent`` resolves the model from the
+    ``aggregator`` tier slot and ignores ``model_name`` (see agent.py). What the
+    retry buys is a simpler schema-shaped prompt and a fresh sample — which is
+    what recovers an ``UnexpectedModelBehavior`` (structured-output retries and
+    the JSON salvager both exhausted), the failure this guards. Retrieval has
+    already been paid for by this point, so one more synthesis attempt beats
+    shipping an apology on a turn whose search actually succeeded.
+
+    The retry returns ``agent_run_result=None`` so self-correction is skipped:
+    the correction turn recreates the agent on ``agg_input.prompt_key``, which
+    the fallback's ``prompt_1`` message history no longer matches. Same
+    reasoning as the DCR exception-fallback path.
+
+    On hard failure (every attempt raised) returns a degraded placeholder and
     ``agent_run_result=None`` — there's no usable message history to thread
     into a correction turn.
     """
-    agent = create_aggregator_agent(prompt_key=prompt_key, model_name=model_name)
-    _log_prompt(deps, prompt_key, user_message, stage_key)
     try:
-        result = await agent.run(user_message)
-        _accrue_agg_usage(deps, result)
-        raw = _stringify_result(result)
-        return result.output, model_name, {stage_key: raw}, result
+        output, model, raw, result = await _attempt_single_shot(
+            deps, user_message, stage_key, model_name, prompt_key,
+        )
+        return output, model, {stage_key: raw}, result
     except Exception as exc:  # noqa: BLE001
         logger.error("aggregator: %s LLM call failed: %s", stage_key, exc)
+        raw_logs = {stage_key: f"ERROR: {exc!r}"}
+
+        if allow_fallback:
+            fb_stage = f"{stage_key}_fallback"
+            logger.warning(
+                "aggregator: retrying %s on prompt_1 / %s after %s",
+                stage_key, deps.fallback_model, exc.__class__.__name__,
+            )
+            _emit(deps, {
+                "event": "single_shot_fallback",
+                "stage": stage_key,
+                "error_type": exc.__class__.__name__,
+            })
+            try:
+                output, model, raw, _ = await _attempt_single_shot(
+                    deps, user_message, fb_stage,
+                    deps.fallback_model, "prompt_1",
+                )
+                raw_logs[fb_stage] = raw
+                return output, model, raw_logs, None
+            except Exception as exc2:  # noqa: BLE001
+                logger.error(
+                    "aggregator: %s fallback also failed: %s", stage_key, exc2,
+                )
+                raw_logs[fb_stage] = f"ERROR: {exc2!r}"
+
         placeholder = AggregatorLLMOutput(
             synthesis_md=(
                 "## الخلاصة\n\nتعذّر توليد إجابة — يرجى إعادة المحاولة لاحقاً."
             ),
             used_refs=[],
-            gaps=[f"model_failure: {exc.__class__.__name__}"],
+            gaps=[_MODEL_FAILURE_GAP_AR],
             confidence="low",
         )
-        return placeholder, model_name, {stage_key: f"ERROR: {exc!r}"}, None
+        return placeholder, model_name, raw_logs, None
 
 
 async def _run_correction(

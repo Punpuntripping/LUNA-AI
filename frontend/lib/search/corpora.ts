@@ -16,7 +16,7 @@ import {
 import { courtLevelLabel } from "@/lib/library/court-levels";
 
 // ------------------------------------------------------------------
-// The four public corpora
+// The three public corpora
 // ------------------------------------------------------------------
 
 /**
@@ -35,7 +35,6 @@ export const SEARCH_CORPORA = [
   "regulation",
   "judgment",
   "circular",
-  "service",
 ] as const;
 
 export type SearchCorpus = (typeof SEARCH_CORPORA)[number];
@@ -43,25 +42,24 @@ export type SearchCorpus = (typeof SEARCH_CORPORA)[number];
 /**
  * corpus (the storage token) → library type (the URL/label token).
  *
- * ⚠ `service` → `compliance`. D4: «/services» IS «/compliance», there is no
- * separate route. The backend keeps the same map under the name
- * `search_service.CORPUS_SECTION`, and getting it wrong there forks the item
- * budget; getting it wrong here mislabels a chip and links a reader to a 404.
- * Two layers, one mapping, both written down.
+ * ⚠ `service` (الخدمات الحكومية) IS GONE, 2026-08-03 — the compliance wing was
+ * retired, so there is no `/compliance/{slug}` for a service hit to link to and
+ * a `service` chip would offer a filter whose every result 404s. The backend
+ * dropped it from `search_service.PUBLIC_CORPORA` in the same change; if it ever
+ * comes back, both layers move together.
  */
 export const CORPUS_LIBRARY_TYPE: Record<SearchCorpus, LibraryType> = {
   regulation: "regulations",
   judgment: "judgments",
   circular: "circulars",
-  service: "compliance",
 };
 
 /**
  * The chip label for a corpus.
  *
  * Taken from `LIBRARY_TYPE_META` rather than spelled out again, because the
- * SAME page renders `LibraryTypeChips` (الأنظمة · الأحكام · الخدمات · التعاميم)
- * a few pixels away. Two chip rows on one page naming the same four things
+ * SAME page renders `LibraryTypeChips` (الأنظمة · الأحكام · التعاميم) a few
+ * pixels away. Two chip rows on one page naming the same three things
  * differently is a bug, not a style choice — and the label set already has an
  * owner.
  */
@@ -69,7 +67,7 @@ export function corpusLabel(corpus: SearchCorpus): string {
   return LIBRARY_TYPE_META[CORPUS_LIBRARY_TYPE[corpus]].label;
 }
 
-/** Narrow a raw wire/URL value onto the closed four-value vocabulary. */
+/** Narrow a raw wire/URL value onto the closed three-value vocabulary. */
 export function isSearchCorpus(value: string): value is SearchCorpus {
   return (SEARCH_CORPORA as readonly string[]).includes(value);
 }
@@ -210,8 +208,6 @@ export function hitMeta(corpus: SearchCorpus, facets: FacetBag): string[] {
         courtLevelLabel(facetText(facets, "court_level")),
         facetText(facets, "city"),
       ].filter(Boolean);
-    case "service":
-      return [facetText(facets, "provider_name")].filter(Boolean);
     case "circular":
       // Migration 112 added `entity_name`, resolved through `entities` from
       // `circulars.entity_id` («هيئة التأمين», «الهيئة العامة للغذاء والدواء»).

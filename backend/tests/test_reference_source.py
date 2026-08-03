@@ -950,11 +950,11 @@ def test_each_wing_maps_to_its_public_page() -> None:
     assert run(lis.public_page_url(supabase, "circular", CIRC_ID)) == (
         "/circulars/taamim-muhim"
     )
-    # Services are never gated (§1.3) but they DO have a page — «فتح الخدمة في
-    # ريحان» must work on a free reveal exactly as it does on a charged one.
-    assert run(lis.public_page_url(supabase, "service", SVC_ID)) == (
-        "/compliance/istikhraj-sak"
-    )
+    # ⚠ A SERVICE HAS NO PAGE, even with a sidecar slug (2026-08-03). The
+    # compliance wing was retired, so «فتح الخدمة في ريحان» must NOT appear — the
+    # dialog drops that button on a `None`, which is the whole point of returning
+    # one here rather than a path that 404s.
+    assert run(lis.public_page_url(supabase, "service", SVC_ID)) is None
 
 
 def test_madda_citation_links_to_its_nizam_page() -> None:

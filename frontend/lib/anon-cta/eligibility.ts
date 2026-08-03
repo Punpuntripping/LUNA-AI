@@ -2,7 +2,7 @@
  * Where the anon conversion popup is allowed to fire
  * (`.claude/plans/anon_conversion_popup.md` §2).
  *
- * DOCUMENTS ONLY, under the five public content wings. A hub is a directory
+ * DOCUMENTS ONLY, under the four public content wings. A hub is a directory
  * grid: it has no reading depth, so a scroll trigger there measures nothing but
  * a flick — and hubs already carry `HubCtaWall`, a full-page conversion surface
  * of their own for anyone who tries to reach page 2.
@@ -12,10 +12,9 @@
  * serve, and everything outside this list is filtered out here.
  */
 
-/** The five wings, named exactly as their first path segment. */
+/** The four wings, named exactly as their first path segment. */
 const WINGS = [
   "regulations",
-  "compliance",
   "circulars",
   "judgments",
   "blog",
@@ -24,7 +23,7 @@ const WINGS = [
 type Wing = (typeof WINGS)[number];
 
 /**
- * A DOCUMENT under one of the five wings — not the hub, not a paginated hub.
+ * A DOCUMENT under one of the four wings — not the hub, not a paginated hub.
  *
  *   /regulations                → false  (the bare hub)
  *   /regulations/page/2         → false  (a hub page)

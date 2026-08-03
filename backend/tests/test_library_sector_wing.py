@@ -55,17 +55,16 @@ AUTH_ID = "auth-0000-1111"
 
 HUB = "/api/v1/public/library"
 REG_HUB = f"{HUB}/regulations"
-COMPLIANCE_HUB = f"{HUB}/compliance"
 CIRC_HUB = f"{HUB}/circulars"
 JUD_HUB = f"{HUB}/judgments"
 SECTORS = f"{HUB}/sectors"
 
-# The four wings, with the query param each one spells the sector axis with. The
+# The three wings, with the query param each one spells the sector axis with. The
 # judgments wing filters ``cases.legal_domains`` and calls it ``domain``; it is
 # the SAME 38-value vocabulary, which is exactly why it takes the same rule.
+# ``/compliance`` was a fourth until 2026-08-03 — the wing was retired entirely.
 WINGS = [
     (REG_HUB, "regulations", "sector", "regulations_hub_total_pages"),
-    (COMPLIANCE_HUB, "compliance", "sector", "compliance_hub_total_pages"),
     (CIRC_HUB, "circulars", "sector", "circulars_hub_total_pages"),
     (JUD_HUB, "judgments", "domain", "judgments_hub_total_pages"),
 ]
@@ -80,7 +79,6 @@ COMMERCE_AR = "المعاملات التجارية"
 COMMERCE_COUNTS = {
     "regulations": 693,
     "judgments": 18879,
-    "compliance": 448,
     "circulars": 162,
 }
 COMMERCE_PAGES = {k: math.ceil(v / 9) for k, v in COMMERCE_COUNTS.items()}
@@ -90,7 +88,6 @@ COMMERCE_PAGES = {k: math.ceil(v / 9) for k, v in COMMERCE_COUNTS.items()}
 CORPUS_COUNTS = {
     "regulations": 3373,
     "judgments": 30531,
-    "compliance": 4717,
     "circulars": 1843,
 }
 
@@ -104,7 +101,6 @@ TRUE_TOTAL_PAGES = 40
 # its real vocabulary.
 ANON_FILTER = {
     REG_HUB: {"doc_type": "law_statute"},
-    COMPLIANCE_HUB: {"provider": "وزارة"},
     CIRC_HUB: {"entity": "3f8c1d2e-0000-4000-8000-000000000001"},
     JUD_HUB: {"court_level": "appeal"},
 }
@@ -215,7 +211,6 @@ def stubs(monkeypatch):
 
     for lister in (
         "list_regulations_hub",
-        "list_compliance_hub",
         "list_circulars_hub",
         "list_judgments_hub",
     ):
@@ -601,7 +596,6 @@ def test_the_circulars_sector_filter_reaches_the_service(stubs) -> None:
     "path,lister,key",
     [
         (REG_HUB, "list_regulations_hub", "sector"),
-        (COMPLIANCE_HUB, "list_compliance_hub", "sector"),
         (CIRC_HUB, "list_circulars_hub", "sector"),
         (JUD_HUB, "list_judgments_hub", "domain"),
     ],
@@ -709,7 +703,6 @@ def test_the_sector_overview_returns_counts_plus_a_preview_of_each_wing(stubs) -
     assert set(body["preview"]) == {
         "regulations",
         "judgments",
-        "compliance",
         "circulars",
     }
     for items in body["preview"].values():
@@ -726,7 +719,6 @@ def test_the_overview_scopes_every_wing_to_the_sector(stubs) -> None:
     assert scoped == {
         "list_regulations_hub": COMMERCE_AR,
         "list_judgments_hub": COMMERCE_AR,
-        "list_compliance_hub": COMMERCE_AR,
         "list_circulars_hub": COMMERCE_AR,
     }
 
@@ -789,7 +781,6 @@ def test_the_overview_charges_the_items_it_yields(stubs, monkeypatch) -> None:
     assert dict(charged) == {
         "regulations": pl._SECTOR_PREVIEW_ITEMS,
         "judgments": pl._SECTOR_PREVIEW_ITEMS,
-        "compliance": pl._SECTOR_PREVIEW_ITEMS,
         "circulars": pl._SECTOR_PREVIEW_ITEMS,
     }
 
@@ -809,7 +800,7 @@ def test_the_overview_enforces_the_budget_before_it_queries(stubs, monkeypatch) 
     )
 
     assert order == ["enforce"]
-    assert len(stubs["listers"]) == before + 4
+    assert len(stubs["listers"]) == before + 3
 
 
 # ===========================================================================
@@ -855,7 +846,7 @@ def test_sector_counts_seeds_every_slug_and_drops_unknown_sector_values(
         [
             {"sector": COMMERCE_AR, **COMMERCE_COUNTS},
             {"sector": "قطاع مخترع", "regulations": 5, "judgments": 5,
-             "compliance": 5, "circulars": 5},
+             "circulars": 5},
         ]
     )
     counts = ls.sector_counts(fake)
@@ -866,7 +857,7 @@ def test_sector_counts_seeds_every_slug_and_drops_unknown_sector_values(
         "total": sum(COMMERCE_COUNTS.values())
     }
     assert counts["human-rights"] == {
-        "regulations": 0, "judgments": 0, "compliance": 0, "circulars": 0, "total": 0,
+        "regulations": 0, "judgments": 0, "circulars": 0, "total": 0,
     }
 
 

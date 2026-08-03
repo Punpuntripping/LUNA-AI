@@ -103,9 +103,11 @@ _SITEMAP_CACHE_CONTROL = "public, max-age=3600"
 # only ever lists slugs its wing can actually serve.
 _LIBRARY_SITEMAP_SECTIONS = {
     "regulations": ("regulation", "regulations"),
-    "compliance": ("service", "compliance"),
     "circulars": ("circular", "circulars"),
 }
+# ``compliance`` was a third entry until 2026-08-03. The whole wing was retired —
+# there are no /compliance/{slug} pages left to list, so feeding a crawler that
+# section would hand it several thousand 404s.
 # ``forms`` and ``articles`` are NOT in the sidecar-driven map above: form slugs
 # live on the forms table (approved+published only) and مادة URLs are a nested
 # reg-slug/article-slug path — both handled by their own service functions in the
@@ -474,8 +476,8 @@ _total_pages_memo: dict[str, tuple[float, int]] = {}
 # entries would be 152 queries in the first five minutes after a deploy, on the
 # anon path, which is exactly the round-trip §2.1 removed.
 #
-#   _sector_counts_memo      slug -> {regulations, judgments, compliance,
-#                                     circulars, total}   (ITEM counts, /sectors)
+#   _sector_counts_memo      slug -> {regulations, judgments, circulars,
+#                                     total}   (ITEM counts, /sectors)
 #   _sector_total_pages_memo "{section}:{slug}" -> page count  (the CTA wall)
 #
 # The page-count dict is keyed per section×sector exactly as §5 specifies, and is
@@ -804,9 +806,11 @@ def _clean(value: Optional[str]) -> Optional[str]:
 def _search_text(value: Optional[str]) -> Optional[str]:
     """Validate a free-text filter: absent, or >= 3 characters.
 
-    Still used directly by the NON-search free-text filters — ``provider`` on
-    /compliance and ``entity`` on /circulars. Those are facet lookups the caller
-    types, not the search box, so D9 does not touch them and they keep the 400.
+    ⚠ ``_search_query`` IS NOW ITS ONLY CALLER. It used to be reached directly by
+    the non-search free-text facets too — ``provider`` on /compliance was the
+    last of those, and it went with the wing (2026-08-03). Kept separate from
+    ``_search_query`` because the two answer different questions: this one is the
+    3-char floor, that one is the D9 anon rule.
     """
     value = _clean(value)
     if value is not None and len(value) < _MIN_SEARCH_CHARS:
@@ -1176,46 +1180,6 @@ class RegulationArticleResponse(BaseModel):
     next: Optional[ArticleNavEntry] = None
 
 
-# --- Compliance hub + service page ----------------------------------------
-
-
-class ComplianceHubItem(BaseModel):
-    slug: str
-    title: str
-    provider_name: Optional[str] = None
-    is_most_used: bool = False
-    sectors: list[str] = Field(default_factory=list)
-    intro_snippet: str = ""
-
-
-class ComplianceHubResponse(HubSearchTotals):
-    """Same envelope as ``RegHubResponse`` — see it for ``max_page`` /
-    ``max_anon_page`` (the deprecated alias)."""
-
-    items: list[ComplianceHubItem] = Field(default_factory=list)
-    page: int
-    total_pages: int
-    cap_reached: bool = False
-    max_page: int = library_service.ANON_HUB_MAX_PAGE
-    max_anon_page: int = library_service.ANON_HUB_MAX_PAGE
-
-
-class ComplianceServiceResponse(BaseModel):
-    """Full /compliance/{slug} payload — all free (services are never gated)."""
-
-    slug: str
-    title: str
-    provider_name: Optional[str] = None
-    intro_title: Optional[str] = None
-    intro_description: Optional[str] = None
-    requirements: list[str] = Field(default_factory=list)
-    required_documents: list[str] = Field(default_factory=list)
-    steps: list[str] = Field(default_factory=list)
-    youtube_url: Optional[str] = None
-    official_url: Optional[str] = None
-    sectors: list[str] = Field(default_factory=list)
-
-
 # --- Circulars hub + document page ----------------------------------------
 
 
@@ -1460,7 +1424,7 @@ class FormDetailResponse(BaseModel):
 
 
 class LibraryCounts(BaseModel):
-    """The four tab counts of the unified «المكتبة القانونية» hub.
+    """The three tab counts of the unified «المكتبة القانونية» hub.
 
     ⚠ ``judgments`` is the TRUE UNFILTERED corpus total (30,531) and is NOT
     derivable from ``SectorSummary.counts`` — in either direction, both verified
@@ -1473,7 +1437,6 @@ class LibraryCounts(BaseModel):
 
     regulations: int = 0
     judgments: int = 0
-    compliance: int = 0
     circulars: int = 0
 
 
@@ -1512,7 +1475,7 @@ class SectorListResponse(BaseModel):
 
 
 class SectorPreview(BaseModel):
-    """A first slice (<= 3) of each of the four wings, scoped to one sector.
+    """A first slice (<= 3) of each of the three wings, scoped to one sector.
 
     The items are the EXISTING hub item models — byte-identical shapes to what
     ``/public/library/{wing}`` already returns — so the frontend reuses its
@@ -1521,7 +1484,6 @@ class SectorPreview(BaseModel):
 
     regulations: list[RegHubItem] = Field(default_factory=list)
     judgments: list[JudgmentHubItem] = Field(default_factory=list)
-    compliance: list[ComplianceHubItem] = Field(default_factory=list)
     circulars: list[CircularHubItem] = Field(default_factory=list)
 
 
@@ -1769,7 +1731,7 @@ async def get_library_sitemap(
 
 
 # ============================================
-# CONTENT ENDPOINTS — /regulations + /compliance (Phase 2)
+# CONTENT ENDPOINTS — /regulations (Phase 2)
 #
 # Optional-auth (``get_current_user_optional`` — a public page must never get a
 # 401), read-only (no counters). The browse-depth cap is enforced here via
@@ -1894,7 +1856,7 @@ async def get_library_sector(
 
     # Page 1 of each wing, scoped to this sector. Sequential rather than gathered
     # on purpose: this page is ISR-baked hourly, so latency is not the constraint,
-    # and four concurrent hub listers would quadruple the burst on PostgREST for
+    # and three concurrent hub listers would triple the burst on PostgREST for
     # every cold sector at once.
     regs = await run_db(
         library_service.list_regulations_hub, supabase, page=1, sector=name_ar
@@ -1902,16 +1864,12 @@ async def get_library_sector(
     juds = await run_db(
         library_service.list_judgments_hub, supabase, page=1, domain=name_ar
     )
-    svcs = await run_db(
-        library_service.list_compliance_hub, supabase, page=1, sector=name_ar
-    )
     circs = await run_db(
         library_service.list_circulars_hub, supabase, page=1, sector=name_ar
     )
 
     reg_items = regs["items"][:_SECTOR_PREVIEW_ITEMS]
     jud_items = juds["items"][:_SECTOR_PREVIEW_ITEMS]
-    svc_items = svcs["items"][:_SECTOR_PREVIEW_ITEMS]
     circ_items = circs["items"][:_SECTOR_PREVIEW_ITEMS]
 
     # Charge only what is actually SERVED — the slice, never the whole page the
@@ -1919,7 +1877,6 @@ async def get_library_sector(
     for section, items in (
         ("regulations", reg_items),
         ("judgments", jud_items),
-        ("compliance", svc_items),
         ("circulars", circ_items),
     ):
         await _charge_hub_yield(request, supabase, user_id, section, items, tier)
@@ -1931,7 +1888,6 @@ async def get_library_sector(
         preview=SectorPreview(
             regulations=[RegHubItem(**it) for it in reg_items],
             judgments=[JudgmentHubItem(**it) for it in jud_items],
-            compliance=[ComplianceHubItem(**it) for it in svc_items],
             circulars=[CircularHubItem(**it) for it in circ_items],
         ),
     )
@@ -2080,106 +2036,6 @@ async def get_regulation_article(
         )
     response.headers["Cache-Control"] = _LIBRARY_CACHE_CONTROL
     return RegulationArticleResponse(**art)
-
-
-@router.get("/public/library/compliance", response_model=ComplianceHubResponse)
-async def list_compliance(
-    request: Request,
-    response: Response,
-    page: int = Query(1, description="1-based page index; 9 items per page."),
-    provider: Optional[str] = Query(
-        None, description="ilike on provider_name (>= 3 chars)"
-    ),
-    sector: Optional[str] = Query(
-        None, description="raw Arabic sector name; matches sectors[] (contains)"
-    ),
-    sector_slug: Optional[str] = Query(
-        None, description="Latin sector slug — the SECTION axis (§5)"
-    ),
-    q: Optional[str] = Query(
-        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
-    ),
-    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
-    supabase: SupabaseClient = Depends(get_supabase),
-):
-    """/compliance hub list (9 cards/page). Anon-cacheable, authed no-store.
-
-    ``provider`` is an ``ilike`` on ``provider_name`` — a FACET the caller types,
-    not the search box — so it keeps the >= 3-char rule and the 400 for everyone
-    (§2.1). ``q`` is the search box: BM25, registered-only, dropped for anon (D9).
-    ``sector_slug`` is the SECTION axis (§5) — not a filter for cap purposes. A
-    signed-in caller's yielded items are metered (§2.2)."""
-    provider = _search_text(provider)
-    sector, sector_key = _sector_section(sector_slug, sector)
-    search_dropped = _search_was_dropped(q, current_user)
-    q = _search_query(q, current_user)
-    # ``sector`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
-    filtered = bool(provider or q) or _sector_is_unslugged(sector, sector_key)
-
-    tier, user_id = await _hub_caller(supabase, current_user)
-    page = max(1, int(page or 1))
-
-    if not _hub_page_visible(
-        request, response, page=page, tier=tier, current_user=current_user,
-        search_dropped=search_dropped,
-    ):
-        total_pages = await _wall_total_pages(
-            tier,
-            library_service.compliance_hub_total_pages,
-            supabase,
-            provider,
-            sector,
-            q,
-            section="compliance",
-            filtered=filtered,
-            sector_slug=sector_key,
-        )
-        return ComplianceHubResponse(
-            items=[], page=page, total_pages=total_pages, cap_reached=True,
-            **_hub_caps(tier),
-        )
-
-    await library_budget.enforce_item_budget(request, user_id, tier)
-
-    data = await run_db(
-        library_service.list_compliance_hub,
-        supabase,
-        page=page,
-        provider=provider,
-        sector=sector,
-        q=q,
-    )
-    await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
-    return ComplianceHubResponse(
-        items=[ComplianceHubItem(**it) for it in data["items"]],
-        page=data["page"],
-        total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
-        cap_reached=False,
-        # Search totals only — null on a browse listing (see HubSearchTotals).
-        total_count=data.get("total_count"),
-        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
-        **_hub_caps(tier),
-    )
-
-
-@router.get(
-    "/public/library/compliance/{slug}", response_model=ComplianceServiceResponse
-)
-async def get_compliance(
-    slug: str,
-    response: Response,
-    supabase: SupabaseClient = Depends(get_supabase),
-):
-    """Anonymous, cacheable /compliance/{slug} service payload (all free)."""
-    svc = await run_db(library_service.get_compliance_service, supabase, slug)
-    if svc is None:
-        raise LunaHTTPException(
-            status_code=404,
-            code=ErrorCode.VALIDATION_ERROR,
-            detail="الخدمة غير موجودة",
-        )
-    response.headers["Cache-Control"] = _LIBRARY_CACHE_CONTROL
-    return ComplianceServiceResponse(**svc)
 
 
 # --- /circulars (Phase 5) -------------------------------------------------
@@ -2611,9 +2467,10 @@ async def open_form_in_writer(
 # alike (never shared/ISR-cached).
 # ============================================
 
-# content_type ∈ regulation|article|judgment|circular|form. 'service'
-# (compliance) is excluded — it is policy-never-gated, so its anon payload is
-# already complete (nothing to unlock); an unknown/excluded type is a 404.
+# content_type ∈ regulation|article|judgment|circular|form. 'service' is
+# excluded: it was policy-never-gated (nothing to unlock), and since the
+# compliance wing was retired (2026-08-03) it has no public payload at all — a
+# service is a chat citation now. An unknown/excluded type is a 404.
 _FULL_CONTENT_TYPES = ("regulation", "article", "judgment", "circular", "form")
 
 _FULL_CACHE_CONTROL = "private, no-store"

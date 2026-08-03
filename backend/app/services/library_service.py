@@ -155,7 +155,7 @@ __all__ = [
     "truncate_for_gate",
     "effective_circular_gate",
     "hub_page_allowed",
-    # Phase 2 — content endpoints (/regulations + /compliance)
+    # Phase 2 — content endpoints (/regulations)
     "HUB_PAGE_SIZE",
     "REG_STATUS_MAP",
     "map_reg_status",
@@ -164,9 +164,6 @@ __all__ = [
     "list_regulations_hub",
     "regulations_hub_total_pages",
     "get_regulation_doc",
-    "list_compliance_hub",
-    "compliance_hub_total_pages",
-    "get_compliance_service",
     # Phase 3 — مادة (article) pages
     "ARTICLE_FREE_CHARS",
     "SHARH_TEASER_CHARS",
@@ -441,8 +438,10 @@ def resolve_gate(
       (c) for ``content_type='regulation'``: its own ``seo_tier`` if set;
       (d) ``seo_gate_defaults[content_type]`` (the section policy);
       (e) ultimate fallback ``'gated'`` (fail-closed) — EXCEPT
-          ``content_type='service'`` which fails OPEN (compliance pages are
-          policy-never-gated).
+          ``content_type='service'`` which fails OPEN. Services are
+          policy-never-gated; the /compliance pages are gone (2026-08-03) but a
+          service citation is still revealed free in chat, and that reveal calls
+          through here.
 
     ``parent_regulation_id`` is the ``content_id`` of the article's parent
     regulation in ``seo_item_meta`` (content_type ``'regulation'``); when it is
@@ -474,7 +473,7 @@ def resolve_gate(
     if default_gate in ("open", "gated"):
         return default_gate
 
-    # (e) ultimate fallback: fail-closed, except compliance which fails open.
+    # (e) ultimate fallback: fail-closed, except a service which fails open.
     return "open" if content_type == "service" else "gated"
 
 
@@ -615,7 +614,9 @@ ARTICLES_PER_UNLOCK = 25          # regulation with seo_articles rows
 CHARS_PER_UNLOCK = 25_000         # chunk-only regulation fallback
 
 # Content types that are never gated and therefore never charged (§1.3): a
-# compliance service page is policy-open, so it produces no ledger row at all.
+# government service is policy-open, so it produces no ledger row at all. Still
+# live after the compliance wing was retired — a service citation is revealed
+# free in chat, and that reveal is what this now guards.
 NEVER_CHARGED_TYPES = ("service",)
 
 # The one column set Layer B reads off the ledger.
@@ -1013,7 +1014,7 @@ async def resolve_access(
 
 
 # ==========================================================================
-# PHASE 2 — CONTENT ENDPOINTS (/regulations docs + /compliance)
+# PHASE 2 — CONTENT ENDPOINTS (/regulations docs)
 #
 # Hub lists + document payloads for the first content launch. Every function
 # here is READ-ONLY: the corpus surfaces (``regulations_v2``, ``chunks_v2``,
@@ -1508,8 +1509,8 @@ def _hub_result(
 # derives one from the other is wrong twice over (both measured live):
 #
 #   * ``library_corpus_counts`` — one servable total per wing. Sizes the unified
-#     hub's four tab chips, whose paginators walk exactly that set.
-#   * ``sector_counts``         — 38 × 4 per-sector counts. A row carries
+#     hub's three tab chips, whose paginators walk exactly that set.
+#   * ``sector_counts``         — 38 × 3 per-sector counts. A row carries
 #     MULTIPLE sectors, so the columns OVER-count (over the full corpus the
 #     regulations column sums to 8,971 against 3,373 rows, judgments to 31,924);
 #     and ``cases.legal_domains`` is only 67.7% populated (20,671 of 30,531 —
@@ -1523,15 +1524,19 @@ def _hub_result(
 # Section names match the wing vocabulary used everywhere else in this file
 # (``_total_pages_memo`` keys, item-budget sections, the sitemap map); the
 # content_type is the sidecar's own singular spelling.
+# ⚠ ``compliance`` LEFT THIS MAP ON 2026-08-03 with the rest of the wing. The
+# ``library_sector_counts()`` RPC still RETURNS a ``compliance`` column — it reads
+# the corpus, which is untouched — and that column is simply not read any more.
+# Do not "fix" the RPC to match; the corpus is still there and the agent pipeline
+# still searches it.
 _SECTION_SOURCES: dict[str, tuple[str, str, str]] = {
     "regulations": ("regulations_v2", "regulation", "sectors"),
     "judgments": ("cases", "judgment", "legal_domains"),
-    "compliance": ("services", "service", "sectors"),
     "circulars": ("circulars", "circular", "sectors"),
 }
 
 SECTOR_COUNT_SECTIONS: tuple[str, ...] = tuple(_SECTION_SOURCES)
-"""The four wings a sector page has tabs for, in tab order (plan D3)."""
+"""The three wings a sector page has tabs for, in tab order (plan D3)."""
 
 
 def _published_sample_counts(
@@ -1573,7 +1578,7 @@ def _published_sample_counts(
 
 
 def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
-    """Servable row count per wing — the unified hub's four tab chips (§7.3).
+    """Servable row count per wing — the unified hub's three tab chips (§7.3).
 
     Per wing: the published sample's size while the wing is sampled, else one
     ``count='exact'`` head query over the corpus (cheap, index-only). The route
@@ -1601,11 +1606,11 @@ def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
 
 
 def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
-    """All 152 sector×wing counts — ``{slug: {regulations, …, total}}``.
+    """All 114 sector×wing counts — ``{slug: {regulations, …, total}}``.
 
     §5 makes a sector a SECTION rather than a filter, which means real counts on
-    38 pages × 4 tabs, and is equally explicit that they must not cost 152 count
-    queries. Per wing:
+    38 pages × 3 tabs, and is equally explicit that they must not cost a count
+    query apiece. Per wing:
 
       * SAMPLED  → one ``id IN (...)`` read of the ~100 published rows, tallied
         in Python. One query for that wing's whole 38-sector column.
@@ -1614,14 +1619,14 @@ def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
         which is why the RPC exists. The RPC is issued ONCE, and only if at least
         one wing is in steady state.
 
-    So the worst case is four small reads plus one RPC per 5-minute memo refresh,
+    So the worst case is three small reads plus one RPC per 5-minute memo refresh,
     and the steady-state case is a single RPC. Wings flip between the two paths
     on their own as ``build_seo_slugs`` publishes them; a mixed state is normal.
 
     Every one of the 38 slugs is present in the result, seeded to zero, so a
     sector that holds nothing servable still returns a row (the frontend needs
     the zero — it is what makes D9 drop the tab and skip prerendering) instead of
-    vanishing from the grid. ``total`` is the sum of the four wings.
+    vanishing from the grid. ``total`` is the sum of the three wings.
     """
     per_section: dict[str, dict[str, int]] = {}
     steady: list[str] = []
@@ -2376,268 +2381,6 @@ def get_regulation_doc(
         "hidden_section_count": hidden_section_count,
         "official_sources": official_sources,
         "draft_notice": status == "draft",
-    }
-
-
-# --- /compliance hub ------------------------------------------------------
-
-
-def _apply_service_filters(qb, provider, sector, q=None):
-    """Apply the compliance hub FACET filters (chainable). ``provider`` = ilike on
-    ``provider_name``; ``sector`` = array-contains. Blank filters are no-ops.
-
-    ⚠ ``q`` is accepted and IGNORED — the text match moved to ``bm25_search()``
-    in Wave B (see ``_apply_reg_filters`` for the full note). ``provider`` stays
-    an ``ilike``: it is a facet the caller types, not the search box, and it
-    keeps its own >= 3-char floor at the route.
-    """
-    provider = (provider or "").strip()
-    sector = (sector or "").strip()
-    if provider:
-        qb = qb.ilike("provider_name", f"%{provider}%")
-    if sector:
-        qb = qb.contains("sectors", [sector])
-    return qb
-
-
-def _service_search_rows(
-    supabase, provider, sector, q, select_cols: str
-) -> tuple[list[dict[str, Any]], bool]:
-    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter)."""
-    return _bm25_hub_rows(
-        supabase,
-        corpus="service",
-        table="services",
-        select_cols=select_cols,
-        q=q,
-        apply_filters=lambda qb: _apply_service_filters(qb, provider, sector),
-    )
-
-
-# Column set the /compliance hub reads (shared by the legacy + sample paths).
-_SERVICE_HUB_SELECT = (
-    "id, service_name_ar, provider_name, is_most_used, sectors, "
-    "intro_description"
-)
-
-
-def _service_hub_sort_key(r: dict[str, Any]) -> tuple[int, str]:
-    """Python ordering for a sample-mode /compliance page: ``is_most_used`` desc
-    (most-used first), then ``service_name_ar`` — the same contract the legacy DB
-    ``.order(is_most_used desc).order(service_name_ar)`` expresses."""
-    most_used = 0 if r.get("is_most_used") else 1
-    return (most_used, r.get("service_name_ar") or "")
-
-
-def compliance_hub_total_pages(
-    supabase: SupabaseClient,
-    provider: Optional[str] = None,
-    sector: Optional[str] = None,
-    q: Optional[str] = None,
-) -> int:
-    """Total hub pages for the filtered services set (for the anon-cap body).
-
-    In SAMPLE MODE (``_published_ids`` → list) this counts only the filtered
-    PUBLISHED services — an EXACT page count. In full-corpus steady state
-    (``_published_ids`` → None) it counts filtered CORPUS rows (9/page); every
-    service is slugged then, so counting all vs. slugged rows is identical."""
-    try:
-        pub_ids = None if q else _published_ids(supabase, "service")
-        if q:
-            # SEARCH MODE — count the BM25 match set, so the wall's number and the
-            # lister's paginator describe the same set.
-            total = len(_service_search_rows(supabase, provider, sector, q, "id")[0])
-        elif pub_ids is not None:
-            rows = _fetch_corpus_by_ids(
-                supabase,
-                "services",
-                "id",
-                pub_ids,
-                lambda qb: _apply_service_filters(qb, provider, sector),
-            )
-            total = len(rows)
-        else:
-            qb = supabase.table("services").select("id", count="exact")
-            qb = _apply_service_filters(qb, provider, sector)
-            total = int((qb.limit(1).execute().count) or 0)
-    except LunaHTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Error counting compliance hub: %s", e)
-        raise _hub_error()
-    return max(1, math.ceil(total / HUB_PAGE_SIZE)) if total else 1
-
-
-def list_compliance_hub(
-    supabase: SupabaseClient,
-    *,
-    page: int = 1,
-    provider: Optional[str] = None,
-    sector: Optional[str] = None,
-    q: Optional[str] = None,
-) -> dict[str, Any]:
-    """One page (9 items) of the /compliance hub.
-
-    Ordering = ``is_most_used`` desc, then ``service_name_ar``. Only slugged
-    (published) services are returned. Returns ``{"items": [...], "page": page,
-    "total_pages": N}``.
-
-    SAMPLE MODE (stage-1 rollout): when ``_published_ids`` returns a list, the
-    page is cut from the PUBLISHED set — all matching published rows are fetched
-    by id, sorted in Python by the SAME contract, and the 9-item window is sliced
-    — so a page never comes back empty. In steady state (``_published_ids`` →
-    None) the legacy single-``range`` DB query below runs unchanged.
-
-    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
-    from ``bm25_search()`` in score order and the most-used-first contract does
-    not apply — a search result list is ordered by relevance.
-    """
-    page = max(1, int(page or 1))
-    ps = HUB_PAGE_SIZE
-    offset = (page - 1) * ps
-
-    rows: list[dict[str, Any]]
-    truncated = False
-    pub_ids = None if q else _published_ids(supabase, "service")
-
-    if q:
-        # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block comment).
-        all_rows, truncated = _service_search_rows(
-            supabase, provider, sector, q, _SERVICE_HUB_SELECT
-        )
-        total = len(all_rows)
-        rows = all_rows[offset : offset + ps]
-    elif pub_ids is not None:
-        # SAMPLE MODE — paginate the published set in Python (set is <= 300).
-        all_rows = _fetch_corpus_by_ids(
-            supabase,
-            "services",
-            _SERVICE_HUB_SELECT,
-            pub_ids,
-            lambda qb: _apply_service_filters(qb, provider, sector),
-        )
-        all_rows.sort(key=_service_hub_sort_key)
-        total = len(all_rows)
-        rows = all_rows[offset : offset + ps]
-    else:
-        # LEGACY (full-corpus steady state) — unchanged single-range query.
-        try:
-            qb = supabase.table("services").select(
-                _SERVICE_HUB_SELECT,
-                count="exact",
-            )
-            qb = _apply_service_filters(qb, provider, sector)
-            res = (
-                qb.order("is_most_used", desc=True)
-                .order("service_name_ar")
-                .range(offset, offset + ps - 1)
-                .execute()
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Error listing compliance hub: %s", e)
-            raise _hub_error()
-
-        total = int(res.count or 0)
-        rows = res.data or []
-
-    total_pages = max(1, math.ceil(total / ps)) if total else 1
-
-    slugs = _slug_map(supabase, "service", [r.get("id") for r in rows])
-    items: list[dict[str, Any]] = []
-    for r in rows:
-        slug = slugs.get(str(r.get("id")))
-        if not slug:
-            continue
-        items.append(
-            {
-                "slug": slug,
-                "title": r.get("service_name_ar") or "",
-                "provider_name": r.get("provider_name"),
-                "is_most_used": bool(r.get("is_most_used")),
-                "sectors": r.get("sectors") or [],
-                "intro_snippet": _text_snippet(r.get("intro_description"), 160),
-            }
-        )
-
-    return _hub_result(
-        items, page, total_pages, q=q, total=total, truncated=truncated
-    )
-
-
-# --- /compliance/{slug} service page --------------------------------------
-
-
-def get_compliance_service(
-    supabase: SupabaseClient, slug: str
-) -> Optional[dict[str, Any]]:
-    """Full /compliance/{slug} payload, or ``None`` when the slug is unknown
-    (route → 404 «الخدمة غير موجودة»).
-
-    Compliance pages are policy-never-gated: everything ships free.
-    ``resolve_gate`` is still called (it returns 'open' for services) so the ONE
-    gate decision point is exercised consistently across every content type.
-    """
-    slug = (slug or "").strip()
-    if not slug:
-        return None
-
-    try:
-        meta = (
-            supabase.table("seo_item_meta")
-            .select("content_id")
-            .eq("content_type", "service")
-            .eq("slug", slug)
-            .limit(1)
-            .execute()
-        )
-        meta_rows = meta.data or []
-        if not meta_rows:
-            return None
-        content_id = meta_rows[0].get("content_id")
-        if not content_id:
-            return None
-
-        sv_res = (
-            supabase.table("services")
-            .select(
-                "id, service_name_ar, provider_name, intro_title, "
-                "intro_description, requirements, required_documents, steps, "
-                "youtube_url, service_url, url, sectors"
-            )
-            .eq("id", content_id)
-            .limit(1)
-            .execute()
-        )
-        sv_rows = sv_res.data or []
-        if not sv_rows:
-            return None
-        sv = sv_rows[0]
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Error loading compliance service (%s): %s", slug, e)
-        raise LunaHTTPException(
-            status_code=500,
-            code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء جلب الخدمة",
-        )
-
-    # Exercised for consistency; services always resolve to 'open'.
-    resolve_gate(supabase, "service", str(content_id))
-
-    return {
-        "slug": slug,
-        "title": sv.get("service_name_ar") or "",
-        "provider_name": sv.get("provider_name"),
-        "intro_title": sv.get("intro_title"),
-        "intro_description": sv.get("intro_description"),
-        "requirements": sv.get("requirements") or [],
-        "required_documents": sv.get("required_documents") or [],
-        "steps": sv.get("steps") or [],
-        "youtube_url": sv.get("youtube_url"),
-        # ``services.pdf_link`` is deliberately NOT projected: «دليل PDF» was a
-        # raw-file exit out of the product, and every wing now sends the reader
-        # to the official landing page or to our own page for the item.
-        "official_url": sv.get("service_url") or sv.get("url"),
-        "sectors": sv.get("sectors") or [],
     }
 
 
@@ -4576,9 +4319,10 @@ def get_judgment_doc(
 # charged once per user per item against a per-period allowance; the ledger is
 # ``library_unlocks``. The older note here claiming library reads are an unmetered
 # free-account carrot was deleted — it is now the opposite of the policy.
-# 'service' (compliance) has no full-content function: it is policy-never-gated,
-# so its anon payload is already complete — there is nothing to "unlock", and it
-# is never charged.
+# 'service' has no full-content function: it is policy-never-gated, so there was
+# never anything to "unlock" and it is never charged. Since the compliance wing
+# was retired (2026-08-03) it has no public payload at all — a service is a
+# citation title plus the issuing entity's link.
 #
 # ⚠ get_full_regulation returns {id, title, text} sections and NO ``sharh_md`` —
 # شرح is reachable only one-مادة-at-a-time via get_full_article. This is a moat

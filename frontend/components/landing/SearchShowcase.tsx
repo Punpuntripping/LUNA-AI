@@ -33,10 +33,12 @@ export function SearchShowcase() {
           <ShowcaseReportCard />
         </div>
 
-        {/* Three source types every report can cite */}
+        {/* The source types every report can cite. The sentence must not name a
+            COUNT: `SOURCE_TYPES` owns how many cards render, and a hardcoded
+            «ثلاثة» silently went stale the moment خدمة حكومية was removed. */}
         <div className="mx-auto mt-8 max-w-3xl">
           <p className="mb-3 text-center text-sm text-muted-foreground">
-            كل استشهاد مربوط بمصدره الرسمي — عبر ثلاثة مصادر معتمدة:
+            كل استشهاد مربوط بمصدره الرسمي — عبر مصادر معتمدة:
           </p>
           <div className="grid gap-3 sm:grid-cols-3">
             {SOURCE_TYPES.map((s) => (

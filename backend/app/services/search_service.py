@@ -64,21 +64,24 @@ logger = logging.getLogger(__name__)
 # non-null ``p_owner`` matches THAT owner's rows only. The RPC cannot return both
 # in one call — by design, so a private row can never fall out of a public
 # search — which is why a mixed request is two calls, merged here.
-PUBLIC_CORPORA: tuple[str, ...] = ("regulation", "judgment", "circular", "service")
+# ⚠ ``service`` LEFT PUBLIC_CORPORA ON 2026-08-03. The rows are still in
+# ``search_index`` (``refresh_search_index()`` still writes them, and the agent
+# pipeline still searches the services corpus through its own adapters) — they
+# are simply not RANKED for navigation search any more, because the /compliance
+# wing they linked into was retired and every hit would have resolved to a 404.
+# ``public_url`` has no prefix for it either; the two must move together.
+PUBLIC_CORPORA: tuple[str, ...] = ("regulation", "judgment", "circular")
 PRIVATE_CORPORA: tuple[str, ...] = ("blog", "template")
 ALL_CORPORA: tuple[str, ...] = PUBLIC_CORPORA + PRIVATE_CORPORA
 
 # corpus → the hub SECTION name used everywhere else in the backend (the item
-# budget's key prefix, the sitemap map, the CTA-wall memo). ⚠ ``service`` maps to
-# ``compliance``: D4 — «/services» IS «/compliance», there is no separate route.
-# Getting this wrong silently forks the item budget so a search hit and a browse
-# hit on the SAME document count as two distinct items (§5.4 says they must be
-# one).
+# budget's key prefix, the sitemap map, the CTA-wall memo). Getting this wrong
+# silently forks the item budget so a search hit and a browse hit on the SAME
+# document count as two distinct items (§5.4 says they must be one).
 CORPUS_SECTION: dict[str, str] = {
     "regulation": "regulations",
     "judgment": "judgments",
     "circular": "circulars",
-    "service": "compliance",
 }
 
 # corpus → public URL prefix. Same table as ``library_items_service._URL_PREFIX``
@@ -88,7 +91,6 @@ _URL_PREFIX: dict[str, str] = {
     "regulation": "/regulations",
     "judgment": "/judgments",
     "circular": "/circulars",
-    "service": "/compliance",
     "blog": "/blog",
     "template": "/templates",
 }
@@ -107,7 +109,6 @@ FACET_KEYS: dict[str, frozenset[str]] = {
         {"court", "court_level", "city", "case_number", "legal_domains"}
     ),
     "circular": frozenset({"entity_ref", "doc_type", "circ_ref", "sectors"}),
-    "service": frozenset({"provider_name", "sectors"}),
     "blog": frozenset({"subtype", "display_mode", "is_public", "is_published"}),
     "template": frozenset({"created_by"}),
 }

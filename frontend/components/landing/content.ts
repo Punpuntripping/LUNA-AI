@@ -3,7 +3,7 @@
  *
  * Keep every marketing claim and headline string here so the page stays easy
  * to tweak in one place. The corpus counts below are the live database floors
- * (regulations_v2 / cases / services) as of 2026-06-29 — phrased as "أكثر من"
+ * (regulations_v2 / cases / circulars) as of 2026-06-29 — phrased as "أكثر من"
  * so they stay honest as the corpus grows. Round them up here if you ever
  * want bolder numbers; nothing downstream hard-codes them.
  */
@@ -15,7 +15,6 @@ import {
   ShieldCheck,
   Clock,
   Sparkles,
-  Landmark,
   Library,
   ScanText,
   type LucideIcon,
@@ -37,7 +36,7 @@ export const HERO = {
   titleLead: "من سؤالك إلى تقرير قانوني كامل،",
   titleEmphasis: "موثّق بمصادره الرسمية",
   subtitle:
-    "ريحان يبحث في الأنظمة السعودية والأحكام القضائية والخدمات الحكومية، ويعطيك إجابة مكتملة — كل معلومة فيها مربوطة بمصدرها الرسمي ورابطه المباشر.",
+    "ريحان يبحث في الأنظمة السعودية والأحكام القضائية، ويعطيك إجابة مكتملة — كل معلومة فيها مربوطة بمصدرها الرسمي ورابطه المباشر.",
   primaryCta: "ابدأ الآن",
   secondaryCta: "شاهد كيف يعمل",
 } as const;
@@ -47,7 +46,7 @@ export const HERO = {
 export const HERO_TRUST: { value: string; label: string }[] = [
   { value: "+3,000", label: "نظام ولائحة ودليل" },
   { value: "+20,000", label: "حكم قضائي" },
-  { value: "+4,500", label: "خدمة حكومية" },
+  { value: "+1,000", label: "تعميم رسمي" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -71,11 +70,6 @@ export const PROBLEMS: ProblemCard[] = [
     title: "الأدوات العامة لا تكفي",
     body: "لا توفّر أدوات الذكاء الاصطناعي العامة الدقة التي يتطلّبها العمل القانوني، وقد تستند إلى مصادر وأنظمة غير صحيحة.",
   },
-  {
-    icon: Landmark,
-    title: "الإجراءات الحكومية مُعقّدة",
-    body: "تحديد الإجراء الحكومي الصحيح بخطواته ومتطلّباته ومصادره الرسمية يستغرق وقتاً ثميناً من المحامي.",
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -98,16 +92,6 @@ export const CAPABILITIES: Capability[] = [
     icon: PenLine,
     title: "صياغة المستندات",
     body: "صياغة الدعاوى والمذكرات والعقود بلغة قانونية دقيقة، مبنية على ما يخص قضيتك.",
-  },
-  {
-    icon: Building2,
-    title: "الإجراءات الحكومية",
-    body: "خطوات الخدمة الحكومية ومتطلباتها ومستنداتها وروابطها على المنصة الوطنية، جاهزة أمامك.",
-  },
-  {
-    icon: ShieldCheck,
-    title: "الامتثال للنظام",
-    body: "تغطية واسعة لبيانات الامتثال للأنظمة السعودية تساعدك على الالتزام بثقة.",
   },
 ];
 
@@ -150,7 +134,7 @@ export const COMPARISON: ComparisonRow[] = [
     icon: Library,
     dimension: "تغطية الأنظمة السعودية",
     rayhan:
-      "أكثر من 3,000 نظام ولائحة، و20,000 حكم قضائي، و4,500 خدمة حكومية.",
+      "أكثر من 3,000 نظام ولائحة، و20,000 حكم قضائي، و1,000 تعميم رسمي.",
     others: "يُلمّ بالأنظمة الشهيرة فقط كنظام العمل، وتغيب عنه بقية المصادر.",
   },
   {
@@ -188,9 +172,7 @@ export const STATS: Stat[] = [
     hint: "وزارة العدل · هيئة الغذاء والدواء · البنك المركزي",
   },
   { value: "+20,000", label: "قضية وحكم قضائي" },
-  { value: "+4,500", label: "خدمة حكومية" },
   { value: "+200", label: "كيان حكومي", hint: "مصادر مجمّعة" },
-  { value: "+95٪", label: "تغطية بيانات الامتثال" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -198,6 +180,14 @@ export const STATS: Stat[] = [
 // The conclusion excerpt + citations are taken verbatim from a real answer so
 // the showcase reflects the actual product, not a mock. This example cites 16
 // sources across regulations AND government services.
+//
+// ⚠ THE خدمة حكومية CARDS BELONG HERE, AND THEY SURVIVED THE 2026-08-03 RETIREMENT
+// OF THE COMPLIANCE WING. They were briefly removed with it and put back the same
+// day, on purpose: a citation card is a NAME, A PROVIDER, ONE LINE AND THE
+// ENTITY'S OWN LINK — it never restates الشروط / المستندات / الخطوات, which is the
+// only thing the retirement was about. That makes this block the honest picture of
+// what ريحان still does with a service: cite it and hand you its official page.
+// Do not "tidy" them away again, and do not let a card here grow a body.
 // ---------------------------------------------------------------------------
 
 export const SHOWCASE = {
@@ -215,8 +205,8 @@ export const SHOWCASE = {
   citationN: 1,
 } as const;
 
-/** The three source types every search report can cite, each with the kind of
- *  official link its card carries. Mirrors ReferencePanel's DOMAIN_META. */
+/** The source types every search report can cite, each with the kind of official
+ *  link its card carries. Mirrors ReferencePanel's DOMAIN_META. */
 export interface SourceType {
   icon: LucideIcon;
   label: string;
@@ -240,7 +230,10 @@ export const SOURCE_TYPES: SourceType[] = [
   {
     icon: Building2,
     label: "خدمة حكومية",
-    linkLabel: "رابط المنصة الوطنية",
+    // ⚠ NOT «رابط المنصة الوطنية». The portal link was removed from the product
+    // on 2026-08-03 — `service_url`, the entity's own page, is the only exit a
+    // service citation offers now, so this label names that and nothing else.
+    linkLabel: "رابط الخدمة الرسمي",
     tint: "text-emerald-600 dark:text-emerald-400",
   },
 ];
@@ -307,6 +300,9 @@ export const SHOWCASE_CITATIONS: ShowcaseCitation[] = [
     url: "https://laws.boe.gov.sa/boelaws/laws/lawdetails/08381293-6388-48e2-8ad2-a9a700f2aa94/1",
     sourceMd: SOURCE_LABOR_LAW_EOS,
   },
+  // No `sourceMd` on either service card, and that is the point: «عرض المصدر»
+  // renders only when one is present, so a service card offers exactly one
+  // action — «فتح المصدر الرسمي», out to the issuing entity.
   {
     n: 16,
     label: "خدمة حكومية",

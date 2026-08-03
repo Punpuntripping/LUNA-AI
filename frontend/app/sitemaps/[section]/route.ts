@@ -15,7 +15,7 @@ import {
 //   calculators              → local code registry (no backend).
 //   sectors                  → built from the `/sectors` counts endpoint.
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
-//   regulations / compliance → backend feed `.../sitemap/{section}?page=N`.
+//   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
 //   other                    → 404.
 //
 // Fail-safe rule: if the backend is unreachable we return an EMPTY but VALID
@@ -61,7 +61,6 @@ export async function GET(
       urls = await fetchBlogUrls();
       break;
     case "regulations":
-    case "compliance":
     case "articles":
     case "circulars":
     case "forms":
