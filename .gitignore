@@ -39,6 +39,11 @@ backend/tests/*
 # enumeration fix incl. the total_pages oracle.
 !backend/tests/test_library_item_budget.py
 !backend/tests/test_library_filter_hardening.py
+# /search charges the SAME item budget as a hub page, on the same section:slug
+# keys — that is what stops search being a way to buy extra corpus reach. It also
+# carries the only coverage of the search half of the free/paid ladder. It was
+# authored and then silently dropped by this very ignore rule; re-included.
+!backend/tests/test_bm25_search.py
 # sector-wing suites are durable for the same reason — they pin the §5 amendment
 # to that enumeration fix (library_sectors.md D8): a VALIDATED sector is a
 # SECTION, so it gets real counts, while a sector PLUS a free-text filter is

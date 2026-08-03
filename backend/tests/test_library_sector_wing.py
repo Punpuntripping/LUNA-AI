@@ -798,7 +798,7 @@ def test_the_overview_enforces_the_budget_before_it_queries(stubs, monkeypatch) 
     """A refusal must not cost a DB round-trip (§2.2 ordering rule 4)."""
     order: list[str] = []
 
-    async def _enforce(_request, _user_id):
+    async def _enforce(_request, _user_id, _tier=None):
         order.append("enforce")
 
     monkeypatch.setattr(pl.library_budget, "enforce_item_budget", _enforce)

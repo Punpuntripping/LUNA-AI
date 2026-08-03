@@ -6,8 +6,12 @@ Plan: ``.claude/plans/cloudflare_navigation_hardening.md`` §2.2 · §2.3
 fresh page 1" hole and the depth cap bounds anon/free. Neither bounds a PAID
 caller: their depth is unbounded by design, which makes them the last tier that
 can still traverse the corpus — and the only tier with an identity to charge. So
-the hubs now meter the DISTINCT content ids they have yielded per user (500/hour
-by default, rolling) and refuse past it with the project's EXISTING 429.
+the hubs now meter the DISTINCT content ids they have yielded per user (rolling
+hour) and refuse past it with the project's EXISTING 429.
+
+THE LADDER (owner, 2026-08-02): free 36 · paid 96 · anon never metered. Anon is
+bounded by DEPTH instead (``ANON_HUB_MAX_PAGE = 1``), which is why metering it
+here is unnecessary as well as unsafe.
 
 The invariants worth naming, because breaking any of them is a production
 incident rather than a failing test:
@@ -19,8 +23,9 @@ incident rather than a failing test:
   * ``test_the_429_is_the_projects_existing_envelope`` — one 429 contract across
     the middleware, ``route_limits`` and this budget; a third shape would break
     every client branch that already handles the other two.
-  * ``test_a_realistic_heavy_session_never_trips_the_budget`` — the PART 4
-    acceptance criterion (30-minute lawyer session, filters, ~20 documents).
+  * ``test_an_ordinary_session_never_trips_the_budget`` — what 96 buys a paying
+    reader. Its sibling ``test_the_part_4_heavy_session_now_trips_at_96`` records
+    that the original PART 4 criterion is deliberately no longer met.
   * ``test_repeating_a_page_costs_nothing`` — DISTINCT ids, not requests. A
     request counter punishes an ordinary reader and is beaten by pagination.
 
@@ -210,6 +215,8 @@ def _clean_state(monkeypatch):
     library_rate_limit._fallback.reset()
     lb.reset_process_state()
     monkeypatch.delenv(lb.ITEM_BUDGET_ENV, raising=False)
+    monkeypatch.delenv(lb.FREE_ITEM_BUDGET_ENV, raising=False)
+    monkeypatch.delenv(lb.PAID_ITEM_BUDGET_ENV, raising=False)
     monkeypatch.delenv(lb.ITEM_BUDGET_WINDOW_ENV, raising=False)
     monkeypatch.delenv(lb.YIELD_ALERT_THRESHOLD_ENV, raising=False)
     yield
@@ -572,7 +579,7 @@ def test_the_budget_can_be_disabled_entirely(stub_hubs, monkeypatch) -> None:
 
 
 def test_the_limit_and_window_are_env_configurable(monkeypatch) -> None:
-    assert lb.item_budget_limit() == 500
+    assert lb.item_budget_limit() == 96
     assert lb.item_budget_window_seconds() == 3600
     monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "120")
     monkeypatch.setenv(lb.ITEM_BUDGET_WINDOW_ENV, "900")
@@ -581,8 +588,66 @@ def test_the_limit_and_window_are_env_configurable(monkeypatch) -> None:
     # Junk must never disable the control by accident.
     monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "لا")
     monkeypatch.setenv(lb.ITEM_BUDGET_WINDOW_ENV, "-5")
-    assert lb.item_budget_limit() == 500
+    assert lb.item_budget_limit() == 96
     assert lb.item_budget_window_seconds() == 3600
+
+
+# ===========================================================================
+# 5b. THE LADDER — free 36 / paid 96 (owner, 2026-08-02)
+# ===========================================================================
+
+
+def test_the_ladder_is_free_36_paid_96() -> None:
+    """The shipped rows. ``navigation_enumeration_defence.md`` §3 said 300/500
+    and ``cloudflare_navigation_hardening.md`` §2.2 said a flat 500; neither is
+    what runs. These two numbers are, and they are the owner's."""
+    assert lb.item_budget_limit("free") == 36
+    assert lb.item_budget_limit("paid") == 96
+    assert (lb.DEFAULT_FREE_ITEM_BUDGET, lb.DEFAULT_PAID_ITEM_BUDGET) == (36, 96)
+
+
+def test_an_unknown_tier_resolves_to_the_paid_row() -> None:
+    """Forgiving in the same direction as the rest of the meter: a tier lookup
+    that hiccups must not manufacture a 429 for a legitimate reader. Safe because
+    the same failure hands the caller the FREE depth cap (3 pages = 27 ids), so
+    they cannot walk far enough to exploit the wider budget."""
+    assert lb.item_budget_limit(None) == 96
+    assert lb.item_budget_limit("") == 96
+    assert lb.item_budget_limit("anon") == 96  # never reached: anon has no user_id
+
+
+def test_each_row_is_independently_tunable(monkeypatch) -> None:
+    monkeypatch.setenv(lb.FREE_ITEM_BUDGET_ENV, "12")
+    monkeypatch.setenv(lb.PAID_ITEM_BUDGET_ENV, "240")
+    assert lb.item_budget_limit("free") == 12
+    assert lb.item_budget_limit("paid") == 240
+
+
+def test_the_single_knob_overrides_every_row(monkeypatch) -> None:
+    """``LIBRARY_USER_ITEM_BUDGET`` stays the one-flip override AND kill switch,
+    so an incident does not need two env vars set in the right order."""
+    monkeypatch.setenv(lb.FREE_ITEM_BUDGET_ENV, "12")
+    monkeypatch.setenv(lb.PAID_ITEM_BUDGET_ENV, "240")
+    monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "50")
+    assert lb.item_budget_limit("free") == lb.item_budget_limit("paid") == 50
+    monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "0")
+    assert lb.item_budget_limit("free") == lb.item_budget_limit("paid") == 0
+
+
+def test_a_free_caller_is_metered_on_the_free_row(stub_hubs) -> None:
+    """End-to-end: the tier the hub resolved for the DEPTH cap is the tier the
+    budget charges against. A free account exhausts at 36, not 96."""
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis, plan="free")
+
+    # Free depth caps at page 3, so breadth is the only way to spend: distinct
+    # filter slices, each a fresh page 1 of 9.
+    codes = [
+        client.get(REG_HUB, params={"q": term}).status_code
+        for term in ("عمل", "تجارة", "شركات", "ضريبة", "تأمين", "عقار")
+    ]
+    assert 429 in codes, codes
+    assert len(_bucket(redis)) <= lb.DEFAULT_FREE_ITEM_BUDGET + PAGE_SIZE
 
 
 # ===========================================================================
@@ -590,15 +655,43 @@ def test_the_limit_and_window_are_env_configurable(monkeypatch) -> None:
 # ===========================================================================
 
 
-def test_a_realistic_heavy_session_never_trips_the_budget(stub_hubs) -> None:
-    """PART 4: "Normal lawyer session (30 min, filters + 20 documents) → never
-    challenged, never 429."
+def test_an_ordinary_session_never_trips_the_budget(stub_hubs) -> None:
+    """What 96 actually buys a paying reader: three wings browsed to their third
+    page, a filtered slice, and every page re-visited once (browser back).
 
-    Modelled deliberately HEAVY: three wings browsed to their third page, four
-    distinct searches, two filtered slices, and every page re-visited once
-    (browser back). Documents are opened via the doc routes, which are unmetered.
-    That is 21 distinct hub pages ≈ 189 ids against 500 — roughly a 2.6× margin
-    on a session already busier than the criterion."""
+    Re-visits are the point — they are free by construction, so an ordinary
+    reader who backtracks pays nothing for it. That is 10 distinct hub pages = 90
+    ids against 96. Documents are opened via the doc routes, which are unmetered,
+    so the ~20 documents in the PART 4 criterion cost this session nothing."""
+    redis = FakeRedis()
+    client = _client(user=_User(), redis=redis)
+    codes = set()
+
+    for section in ("regulations", "compliance", "judgments"):
+        path = HUBS[section][0]
+        for page in (1, 2, 3):
+            codes.add(client.get(path, params={"page": page}).status_code)
+            codes.add(client.get(path, params={"page": page}).status_code)  # back
+    codes.add(client.get(REG_HUB, params={"doc_type": "law_statute"}).status_code)
+
+    assert codes == {200}
+    assert len(_bucket(redis)) <= lb.DEFAULT_PAID_ITEM_BUDGET
+
+
+def test_the_part_4_heavy_session_now_trips_at_96(stub_hubs) -> None:
+    """⚠ THE COST OF THE 2026-08-02 TIGHTENING — recorded, not hidden.
+
+    PART 4's acceptance criterion was "normal lawyer session (30 min, filters +
+    20 documents) → never challenged, never 429", and the session below is how
+    this suite modelled it at 500: five wings to page 3, four searches, two
+    filtered slices ≈ 189 ids. At the owner's 96 that criterion is NO LONGER MET
+    — this session 429s roughly halfway through.
+
+    That is a deliberate trade (96 was confirmed as intent, knowing it refuses a
+    12-page walk), so this test pins the consequence rather than asserting the
+    old promise. If the ceiling is ever raised, expect this test to fail: it is
+    the tripwire that says the trade was reconsidered, and the sibling above is
+    the one that says an ordinary session still fits."""
     redis = FakeRedis()
     client = _client(user=_User(), redis=redis)
     codes = set()
@@ -612,11 +705,10 @@ def test_a_realistic_heavy_session_never_trips_the_budget(stub_hubs) -> None:
     codes.add(client.get(REG_HUB, params={"doc_type": "law_statute"}).status_code)
     codes.add(client.get(JUD_HUB, params={"court_level": "appeal"}).status_code)
 
-    assert codes == {200}
-    used = len(_bucket(redis))
-    assert used < lb.DEFAULT_ITEM_BUDGET, used
-    # Not merely "under": comfortably under, or the threshold is mis-set.
-    assert used < lb.DEFAULT_ITEM_BUDGET // 2, used
+    assert 429 in codes, codes
+    # The overshoot is bounded at one page: the gate refuses BEFORE the query, so
+    # nothing past limit + one page's worth is ever charged.
+    assert len(_bucket(redis)) <= lb.DEFAULT_PAID_ITEM_BUDGET + PAGE_SIZE
 
 
 # ===========================================================================

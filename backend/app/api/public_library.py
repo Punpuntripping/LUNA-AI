@@ -668,13 +668,19 @@ async def _charge_hub_yield(
     user_id: Optional[str],
     section: str,
     items: list[dict],
+    tier: Optional[str] = None,
 ) -> None:
     """Record the ids this hub response yielded (§2.2). Never raises, never
-    changes the body — ``charge_items`` swallows its own failures."""
+    changes the body — ``charge_items`` swallows its own failures.
+
+    ``tier`` must be the SAME value the matching ``enforce_item_budget`` used, or
+    the process-local fallback would bound the window at a different size than
+    the gate refuses on."""
     await library_budget.charge_items(
         request,
         user_id,
         library_budget.item_keys(section, items),
+        tier=tier,
         supabase=supabase,
     )
 
@@ -1879,10 +1885,10 @@ async def get_library_sector(
     # correct failure for a broken invariant; a laundered path segment is not.
     canonical = SECTOR_SLUGS[name_ar]
 
-    _tier, user_id = await _hub_caller(supabase, current_user)
+    tier, user_id = await _hub_caller(supabase, current_user)
     _apply_hub_cache_headers(response, current_user)
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     counts = await _sector_counts(supabase)
 
@@ -1916,7 +1922,7 @@ async def get_library_sector(
         ("compliance", svc_items),
         ("circulars", circ_items),
     ):
-        await _charge_hub_yield(request, supabase, user_id, section, items)
+        await _charge_hub_yield(request, supabase, user_id, section, items, tier)
 
     return SectorDetailResponse(
         slug=canonical,
@@ -2004,7 +2010,7 @@ async def list_regulations(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_regulations_hub,
@@ -2015,7 +2021,7 @@ async def list_regulations(
         sector=sector,
         q=q,
     )
-    await _charge_hub_yield(request, supabase, user_id, "regulations", data["items"])
+    await _charge_hub_yield(request, supabase, user_id, "regulations", data["items"], tier)
     return RegHubResponse(
         items=[RegHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -2133,7 +2139,7 @@ async def list_compliance(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_compliance_hub,
@@ -2143,7 +2149,7 @@ async def list_compliance(
         sector=sector,
         q=q,
     )
-    await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"])
+    await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
     return ComplianceHubResponse(
         items=[ComplianceHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -2244,7 +2250,7 @@ async def list_circulars(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_circulars_hub,
@@ -2254,7 +2260,7 @@ async def list_circulars(
         q=q,
         sector=sector,
     )
-    await _charge_hub_yield(request, supabase, user_id, "circulars", data["items"])
+    await _charge_hub_yield(request, supabase, user_id, "circulars", data["items"], tier)
     return CircularHubResponse(
         items=[CircularHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -2362,7 +2368,7 @@ async def list_judgments(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_judgments_hub,
@@ -2372,7 +2378,7 @@ async def list_judgments(
         domain=domain,
         q=q,
     )
-    await _charge_hub_yield(request, supabase, user_id, "judgments", data["items"])
+    await _charge_hub_yield(request, supabase, user_id, "judgments", data["items"], tier)
     return JudgmentHubResponse(
         items=[JudgmentHubItem(**it) for it in data["items"]],
         page=data["page"],
@@ -2467,7 +2473,7 @@ async def list_forms(
             **_hub_caps(tier),
         )
 
-    await library_budget.enforce_item_budget(request, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     data = await run_db(
         library_service.list_forms_hub,
@@ -2476,7 +2482,7 @@ async def list_forms(
         category=category,
         q=q,
     )
-    await _charge_hub_yield(request, supabase, user_id, "forms", data["items"])
+    await _charge_hub_yield(request, supabase, user_id, "forms", data["items"], tier)
     return FormHubResponse(
         items=[FormHubItem(**it) for it in data["items"]],
         page=data["page"],

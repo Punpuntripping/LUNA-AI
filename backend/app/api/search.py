@@ -50,6 +50,7 @@ from backend.app.services import (
 )
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
+from shared.quota import library_state
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,29 @@ _PRIVATE_CACHE_CONTROL = "private, no-store"
 # caller's مكتبتي rows, which live in the PUBLIC corpora but are scoped to what
 # they already opened or pinned (see ``library_items_service.search_shelf``).
 _MINE_SCOPES = ("blog", "template", "shelf")
+
+
+async def _budget_tier(supabase: SupabaseClient, user_id: Optional[str]) -> Optional[str]:
+    """The caller's item-budget row: ``"free"`` | ``"paid"`` (``None`` = unknown).
+
+    Mirrors ``public_library._hub_caller``'s tier half — locked accounts browse as
+    free, everything else is paid — so a document reached by searching is metered
+    on the same ladder row as the same document reached by browsing. Search is
+    auth-only, so ``"anon"`` is not reachable here.
+
+    One extra quota-RPC read per search, which the hubs already pay for their
+    depth cap. Failure returns ``None`` rather than guessing: ``item_budget_limit``
+    treats an unknown tier as paid, and refusing a search because a quota read
+    hiccuped is the worse failure of the two.
+    """
+    if not user_id:
+        return None
+    try:
+        state = await library_state(supabase, user_id)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Search: tier unresolved (%s) — budget falls back to paid", e)
+        return None
+    return "free" if state.locked or (state.effective_plan_id or "free") == "free" else "paid"
 
 
 def _paging(page: int, page_size: int) -> tuple[int, int, int]:
@@ -147,7 +171,8 @@ async def search_library(
     except Exception as e:  # noqa: BLE001
         logger.debug("Search: could not resolve user_id (%s) — unmetered", e)
 
-    await library_budget.enforce_item_budget(request, user_id)
+    tier = await _budget_tier(supabase, user_id)
+    await library_budget.enforce_item_budget(request, user_id, tier)
 
     if not corpora or offset >= search_service.MAX_RESULTS:
         # Past the result ceiling there is nothing to serve and nothing to
@@ -179,7 +204,7 @@ async def search_library(
         if rows:
             await library_budget.charge_items(
                 request, user_id, library_budget.item_keys(section, rows),
-                supabase=supabase,
+                tier=tier, supabase=supabase,
             )
 
     return SearchResponse(

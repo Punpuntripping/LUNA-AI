@@ -77,22 +77,48 @@ working untouched. The one addition is ``Cache-Control: private, no-store``: thi
 and one of them parked in the edge cache would serve one user's exhausted budget
 to every visitor asking for that page.
 
+THE LADDER — free 36 / paid 96, per hour (owner, 2026-08-02)
+------------------------------------------------------------
+``navigation_enumeration_defence.md`` §3 specified a four-row ladder (anon 60 /
+free 300 / paid 500); ``cloudflare_navigation_hardening.md`` §2.2 collapsed it to
+one flat 500. Neither shipped as written — this module now carries the owner's
+tightened ladder, keyed on ``_hub_caller``'s browse tier:
+
+    tier    ids/hour   ≈ hub pages (9 cards)   on breach
+    ------  ---------  ----------------------  ---------
+    anon    —          (never metered)         —
+    free    36         4                       429
+    paid    96         ~10.7                   429
+
+**Anon is deliberately absent, not forgotten.** It is bounded by depth instead:
+``ANON_HUB_MAX_PAGE = 1`` caps every navigation endpoint at page 1, so an
+anonymous caller's reach per filter signature is one page. Metering it here is
+not merely unnecessary, it is unsafe — see the PER-USER ONLY note above.
+
+⚠ The paid row is BELOW a straight 12-page walk (108 ids) — that is the point,
+and it was confirmed as intent. Re-visiting pages already seen stays free, so
+this bites on new reach only.
+
 TUNING
 ------
-Ship loose, observe, then tighten (the plan's contract for every threshold).
 Env-configurable, read FRESH on every call so a change is an env flip rather than
 a restart, and so tests can ``monkeypatch.setenv``:
 
-    LIBRARY_USER_ITEM_BUDGET                 default 500   (<= 0 disables)
+    LIBRARY_USER_ITEM_BUDGET_FREE            default 36
+    LIBRARY_USER_ITEM_BUDGET_PAID            default 96
+    LIBRARY_USER_ITEM_BUDGET                 ALL-TIER override (<= 0 disables)
     LIBRARY_USER_ITEM_BUDGET_WINDOW_SECONDS  default 3600
     LIBRARY_YIELD_ALERT_THRESHOLD            default 200   (<= 0 disables §2.3)
 
-Headroom against real use: a hub page is 9 cards, so 500 ids is ~55 fully
-non-overlapping hub pages an hour. A heavy 30-minute session — three wings,
-several filters, a few searches, ~15 distinct hub pages — spends ~135, and the
-~20 document pages a lawyer actually opens cost NOTHING (document endpoints are
-anonymous and unmetered; only hub/list yields count). Re-visiting a page is free
-by construction. That is ~3.7× headroom on the acceptance criterion in PART 4.
+``LIBRARY_USER_ITEM_BUDGET`` is kept as the single-knob override and kill switch:
+when it is SET it wins for every tier (so ``=0`` still turns the whole meter off
+in one flip); when it is UNSET the per-tier knobs above apply.
+
+What this costs a real reader: the ~20 document pages a lawyer actually opens
+cost NOTHING (document endpoints are anonymous and unmetered; only hub/list
+yields count), and re-visiting a page is free by construction. A free account is
+capped at hub page 3, i.e. 27 ids per filter signature, so 36 buys page 1–3 plus
+one more filter — deliberately tight, and the tightest row in the ladder.
 """
 from __future__ import annotations
 
@@ -118,8 +144,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ITEM_BUDGET_ENV",
+    "FREE_ITEM_BUDGET_ENV",
+    "PAID_ITEM_BUDGET_ENV",
     "ITEM_BUDGET_WINDOW_ENV",
     "YIELD_ALERT_THRESHOLD_ENV",
+    "DEFAULT_FREE_ITEM_BUDGET",
+    "DEFAULT_PAID_ITEM_BUDGET",
     "DEFAULT_ITEM_BUDGET",
     "DEFAULT_WINDOW_SECONDS",
     "DEFAULT_YIELD_ALERT_THRESHOLD",
@@ -138,13 +168,26 @@ __all__ = [
 
 # --- knobs -----------------------------------------------------------------
 
-ITEM_BUDGET_ENV = "LIBRARY_USER_ITEM_BUDGET"
+ITEM_BUDGET_ENV = "LIBRARY_USER_ITEM_BUDGET"  # all-tier override + kill switch
+FREE_ITEM_BUDGET_ENV = "LIBRARY_USER_ITEM_BUDGET_FREE"
+PAID_ITEM_BUDGET_ENV = "LIBRARY_USER_ITEM_BUDGET_PAID"
 ITEM_BUDGET_WINDOW_ENV = "LIBRARY_USER_ITEM_BUDGET_WINDOW_SECONDS"
 YIELD_ALERT_THRESHOLD_ENV = "LIBRARY_YIELD_ALERT_THRESHOLD"
 
-DEFAULT_ITEM_BUDGET = 500
+DEFAULT_FREE_ITEM_BUDGET = 36
+DEFAULT_PAID_ITEM_BUDGET = 96
+# Back-compat alias: the flat default before the ladder landed. It is the PAID
+# row because that is the limit an unknown tier resolves to (see
+# ``item_budget_limit``), so importers reading "the default" still read the
+# number this module will actually apply when nobody says otherwise.
+DEFAULT_ITEM_BUDGET = DEFAULT_PAID_ITEM_BUDGET
 DEFAULT_WINDOW_SECONDS = 3600
 DEFAULT_YIELD_ALERT_THRESHOLD = 200
+
+# ``_hub_caller``'s tier string for a signed-in account on the free plan (or a
+# locked one, which browses like free). Anything else that reaches this module
+# with a user_id is a paying tier.
+FREE_TIER = "free"
 
 # Defensive ceiling on how many ids ONE response may charge. A hub page is 9;
 # this only exists so a future endpoint that returns hundreds of rows cannot
@@ -169,9 +212,28 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def item_budget_limit() -> int:
-    """Distinct ids one user may be yielded per window. ``<= 0`` disables."""
-    return _env_int(ITEM_BUDGET_ENV, DEFAULT_ITEM_BUDGET)
+def item_budget_limit(tier: Optional[str] = None) -> int:
+    """Distinct ids one user may be yielded per window, by browse tier.
+
+    ``tier`` is ``_hub_caller``'s class — ``"free"`` or ``"paid"``. ``"anon"``
+    never arrives here (an anonymous caller has no ``user_id``, and both entry
+    points no-op on that before asking for a limit).
+
+    An UNKNOWN or missing tier resolves to the PAID row, deliberately. This is
+    the same forgiving-on-failure stance the rest of the meter takes: a tier
+    lookup that hiccups must not manufacture a 429 for a legitimate reader. The
+    hole it opens is small and self-closing — a caller whose tier cannot be
+    resolved is a caller whose *depth* cap already fell back to free (3 hub
+    pages = 27 ids), so they cannot reach even the free row by walking.
+
+    ``LIBRARY_USER_ITEM_BUDGET``, when set, overrides every tier — including
+    ``<= 0``, which is the kill switch for the whole meter.
+    """
+    if os.environ.get(ITEM_BUDGET_ENV) is not None:
+        return _env_int(ITEM_BUDGET_ENV, DEFAULT_PAID_ITEM_BUDGET)
+    if (tier or "").strip().lower() == FREE_TIER:
+        return _env_int(FREE_ITEM_BUDGET_ENV, DEFAULT_FREE_ITEM_BUDGET)
+    return _env_int(PAID_ITEM_BUDGET_ENV, DEFAULT_PAID_ITEM_BUDGET)
 
 
 def item_budget_window_seconds() -> int:
@@ -407,18 +469,22 @@ def _budget_exceeded(state: ItemBudgetState) -> LunaHTTPException:
 
 
 async def enforce_item_budget(
-    request: Optional[Request], user_id: Optional[str]
+    request: Optional[Request],
+    user_id: Optional[str],
+    tier: Optional[str] = None,
 ) -> Optional[ItemBudgetState]:
     """Refuse (429) when this user's window is already full. Call BEFORE the query.
 
     ``user_id`` ``None`` (anonymous) is a NO-OP and always will be — see the
-    module header. Returns the state on the allowed path, ``None`` when the meter
-    does not apply (anonymous, or disabled by env).
+    module header. ``tier`` is ``_hub_caller``'s browse class and selects the row
+    of the ladder; omitting it resolves to the paid row (``item_budget_limit``).
+    Returns the state on the allowed path, ``None`` when the meter does not apply
+    (anonymous, or disabled by env).
     """
     if not user_id:
         return None
 
-    limit = item_budget_limit()
+    limit = item_budget_limit(tier)
     if limit <= 0:
         return None
 
@@ -472,6 +538,7 @@ async def charge_items(
     user_id: Optional[str],
     members: Sequence[str],
     *,
+    tier: Optional[str] = None,
     supabase: Any = None,
 ) -> Optional[int]:
     """Record the ids a response actually yielded. Call AFTER the query.
@@ -486,7 +553,9 @@ async def charge_items(
     try:
         if not user_id or not members:
             return None
-        limit = item_budget_limit()
+        # Same row the gate used, so the process-local fallback's per-user cap
+        # (``limit + 1``) matches what ``enforce_item_budget`` will refuse on.
+        limit = item_budget_limit(tier)
         if limit <= 0:
             return None
 
