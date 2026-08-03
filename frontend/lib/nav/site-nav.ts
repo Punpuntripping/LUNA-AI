@@ -154,13 +154,11 @@ export const SITE_NAV: NavGroup[] = [
       // A lesson, not a legal document — it explains what a نقطة buys and why the
       // caps sit where they do, so it belongs beside «كيف يعمل ريحان», not under
       // الوثائق النظامية. /pricing states the allowances; this page explains them.
-      // DISABLED until app/learn/usage-limits/page.tsx actually exists — an
-      // enabled child with no route puts a 404 link in the header on every page.
       {
         label: "سياسة حد الاستخدام",
         href: "/learn/usage-limits",
         description: "ما الذي تستهلكه كل عملية، ولماذا الحدود عادلة",
-        enabled: false,
+        enabled: true,
       },
       {
         label: "دليل الاستخدام",

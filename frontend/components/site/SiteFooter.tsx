@@ -25,9 +25,14 @@ const LIBRARY_LINKS = [
   { href: "/blog", label: "المدونة" },
 ] as const;
 
+// «سياسة حد الاستخدام» sits under اكتشف ريحان in the header (it is a lesson, not
+// a legal document) but is listed here too: it is named a سياسة, so this column
+// is where a reader hunting for it will look, and it is the page the pricing
+// argument leans on — two clicks deep in a dropdown is too far to hide it.
 const LEGAL_LINKS = [
   { href: LEGAL_ROUTES.terms, label: "الشروط والأحكام" },
   { href: LEGAL_ROUTES.privacy, label: "سياسة الخصوصية" },
+  { href: "/learn/usage-limits", label: "سياسة حد الاستخدام" },
 ] as const;
 
 export function SiteFooter() {

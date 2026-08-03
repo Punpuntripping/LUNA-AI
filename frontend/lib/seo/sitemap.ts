@@ -108,6 +108,7 @@ export function getStaticUrls(): SitemapUrl[] {
     "/learn/how-it-works",
     "/learn/workspace",
     "/learn/data-protection",
+    "/learn/usage-limits",
     "/blog",
     "/library",
   ];
