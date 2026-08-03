@@ -1,0 +1,1416 @@
+"""Moyasar payments — checkout, verify, webhook, refund, history.
+
+Implements `.claude/plans/moyasar_payments.md` Phase C. Wave 1 is **one-time
+purchases**: the browser's `moyasar.js` form creates the payment, we only ever
+price it, verify it, and grant the plan.
+
+Three rules this module exists to enforce:
+
+1. **The server owns the amount.** The client sends a `plan_id` and nothing
+   else. Price comes from ``plans.price_sar``, the upgrade credit is computed
+   here, and the VAT split is stamped once at initiation (never recomputed at
+   display time — a future rate change must not rewrite history).
+2. **Only a re-fetch is evidence.** Both confirmation paths (the browser's
+   `/verify` after the redirect, and Moyasar's webhook) re-fetch
+   ``GET /v1/payments/{id}`` with our secret key and trust ONLY that object.
+   The webhook body carries a shared ``secret_token`` rather than an HMAC over
+   the payload, so a forged body must buy nothing.
+3. **Both paths are idempotent and either one alone suffices.** The redirect can
+   be lost (closed tab) and the webhook is dropped after 5 failed retries.
+   Whichever arrives first grants; the second no-ops on
+   ``payment_transactions.fulfilled_at`` inside ``grant_plan``.
+
+Mode safety: there is no separate sandbox host — ``sk_test_``/``sk_live_``
+decides whether real cards are charged. ``verify_moyasar_config`` is called at
+boot from ``backend.app.main.create_app`` and refuses to start on a key-mode
+mismatch or a live key outside production.
+
+DB dependency: migration ``113_payment_refund_revoke.sql`` (APPLIED) adds
+``vat_amount_sar``, ``net_amount_sar``, ``upgrade_credit_sar``,
+``refund_fee_sar``, ``refunded_amount_sar``, ``revoked_at``, ``prior_plan_id``,
+``prior_expires_at`` plus two service-role RPCs:
+
+* ``stamp_payment_prior_snapshot(payment_id)`` — 113 deliberately did NOT touch
+  ``grant_plan`` (live money path), so the upgrade snapshot is a separate call.
+  Every paid path runs **mark paid → stamp_payment_prior_snapshot → grant_plan**,
+  in that order, unconditionally; the RPC self-guards.
+* ``revoke_plan_grant(payment_id)`` — the refund mirror. Requires the row to
+  already be ``status='refunded'`` and reports what it did via its ``action``
+  column (see ``REVOKE_ACTIONS_OK``).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid as uuid_module
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Any, Optional
+from urllib.parse import quote, urlparse
+
+import httpx
+from supabase import Client as SupabaseClient
+
+from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
+from backend.app.services.audit_service import write_audit_log
+from shared.config import get_settings
+from shared.db.run import run_db
+
+logger = logging.getLogger(__name__)
+
+# ── provider constants ───────────────────────────────────────────────────────
+
+PROVIDER = "moyasar"
+MOYASAR_API_BASE = "https://api.moyasar.com/v1"
+
+# One tight timeout for every provider call. Moyasar is on the critical path of
+# a user staring at a spinner; 15s is generous for their API and short enough
+# that a hung socket cannot pin a worker thread.
+HTTP_TIMEOUT_S = 15.0
+
+# Retries are for IDEMPOTENT calls only (GET /payments/{id}). A refund POST is
+# never retried automatically — a double refund is worse than a failed one.
+GET_RETRIES = 2
+
+CURRENCY = "SAR"
+VAT_RATE = Decimal("0.15")          # inclusive — net = charge / 1.15
+REFUND_FEE_SAR = Decimal("2.00")    # SERVER-side constant, never a client input
+REFUND_FEE_HALALAS = 200
+REFUND_WINDOW = timedelta(hours=24)
+MIN_HALALAS = 100                   # Moyasar's minimum chargeable amount
+MIN_CHARGE_SAR = Decimal("1.00")
+HISTORY_LIMIT = 50
+
+# Purchasable-plan ordering. Only these three participate in the downgrade
+# guard and in proration; free / marketing_* / dev are rank-less, so a user on a
+# promo or dev plan can buy anything (and earns no credit — see create_checkout).
+PLAN_RANK: dict[str, int] = {"basic": 1, "pro": 2, "max": 3}
+
+# Webhook events we act on. Everything else (payment_authorized,
+# payment_captured, payment_voided, payment_verified) is answered 200 + logged:
+# we do not use manual capture, and an unhandled event must never burn a retry.
+EVENT_PAID = "payment_paid"
+EVENT_FAILED = "payment_failed"
+EVENT_ABANDONED = "payment_abandoned"
+EVENT_REFUNDED = "payment_refunded"
+HANDLED_EVENTS = frozenset({EVENT_PAID, EVENT_FAILED, EVENT_ABANDONED, EVENT_REFUNDED})
+
+# ── Arabic messages (rule 5 — every user-facing string) ──────────────────────
+
+PAYMENTS_UNAVAILABLE_AR = "خدمة الدفع غير متاحة حالياً، حاول لاحقاً"
+PLAN_NOT_PURCHASABLE_AR = "هذه الباقة غير متاحة للشراء"
+DOWNGRADE_BLOCKED_AR = "لديك باقة أعلى فعّالة حالياً. يمكنك شراء باقة أقل بعد انتهاء باقتك الحالية."
+PAYMENT_NOT_FOUND_AR = "لم يتم العثور على عملية الدفع"
+PAYMENT_MISMATCH_AR = "بيانات عملية الدفع غير مطابقة"
+PROVIDER_ERROR_AR = "تعذّر إتمام العملية مع مزوّد الدفع، حاول مجدداً"
+REFUND_WINDOW_CLOSED_AR = "انتهت مهلة الاسترداد (٢٤ ساعة). للمساعدة تواصل معنا على support@rayhanai.com"
+REFUND_NOT_PAID_AR = "لا يمكن استرداد عملية غير مكتملة"
+REFUND_ALREADY_AR = "تم استرداد هذه العملية من قبل"
+REFUND_FAILED_AR = "تعذّر تنفيذ الاسترداد، تواصل معنا على support@rayhanai.com"
+APPLEPAY_URL_INVALID_AR = "رابط التحقق غير صالح"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. Configuration + the boot-time mode guard
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class MoyasarError(Exception):
+    """Any failure talking to Moyasar. ``status``/``payload`` carry their reply."""
+
+    def __init__(self, message: str, *, status: Optional[int] = None, payload: Any = None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload
+
+
+class MoyasarNotFound(MoyasarError):
+    """404 from Moyasar — the id does not exist **for our key**.
+
+    This is what enforces test/live isolation: a sandbox payment id is simply
+    not fetchable with a live key, and vice-versa, so it can never grant.
+    """
+
+
+class MoyasarUnavailable(MoyasarError):
+    """Transport failure / 5xx — retryable, not the caller's fault."""
+
+
+class MoyasarUnconfigured(MoyasarError):
+    """MOYASAR_SECRET_KEY (or the publishable key) is unset — fail closed."""
+
+
+class WebhookRetryable(Exception):
+    """Transient failure while processing an AUTHENTICATED webhook.
+
+    The route answers 503 so Moyasar retries. This is the ONE case where
+    spending one of the 5 retries buys a real second chance (provider
+    unreachable, DB write failed — money is in, the grant is not). Content
+    problems — unknown payment, unhandled event, mode mismatch, amount
+    disagreement — never raise this: they answer 200 and are logged.
+    """
+
+
+def _key_mode(raw: Optional[str], expected_prefix: str, field: str) -> Optional[str]:
+    """``'test'`` / ``'live'`` for a Moyasar key; ``None`` when unset.
+
+    A non-empty value that matches no known prefix raises: that is a typo or a
+    pasted-wrong secret, and guessing its mode is exactly the accident this
+    guard exists to prevent.
+    """
+    key = (raw or "").strip()
+    if not key:
+        return None
+    for mode in ("test", "live"):
+        if key.startswith(f"{expected_prefix}{mode}_"):
+            return mode
+    raise RuntimeError(
+        f"{field} has an unrecognized prefix — expected "
+        f"{expected_prefix}test_… or {expected_prefix}live_…"
+    )
+
+
+def moyasar_mode(settings=None) -> Optional[str]:
+    """The configured mode (``'test'``/``'live'``), or ``None`` when no key is set.
+
+    Never raises — the boot guard already rejected junk keys, and a webhook must
+    not 500 because of config.
+    """
+    settings = settings or get_settings()
+    try:
+        return _key_mode((settings.MOYASAR_SECRET_KEY or ""), "sk_", "MOYASAR_SECRET_KEY")
+    except RuntimeError:
+        return None
+
+
+def verify_moyasar_config(settings=None) -> None:
+    """Boot guard — called from ``create_app``. Raises to refuse the boot.
+
+    Two accidents made impossible:
+      (a) **mixed modes** — a live secret key with a test publishable key (or
+          vice-versa) means the browser creates a payment we can never fetch;
+      (b) **a live key outside production** — ``https://api.moyasar.com/v1``
+          serves both modes, so a stray ``sk_live_`` in a dev ``.env`` charges
+          real cards. ``is_production`` (APP_ENV *or* ENVIRONMENT == production)
+          is the gate, so neither variable alone can be forgotten into an
+          accidental live run.
+
+    No key set at all is perfectly fine — payments are simply closed (checkout
+    503s, the webhook 401s) and the rest of the app boots normally.
+    """
+    settings = settings or get_settings()
+    sk_mode = _key_mode(settings.MOYASAR_SECRET_KEY, "sk_", "MOYASAR_SECRET_KEY")
+    pk_mode = _key_mode(settings.MOYASAR_PUBLISHABLE_KEY, "pk_", "MOYASAR_PUBLISHABLE_KEY")
+
+    if sk_mode and pk_mode and sk_mode != pk_mode:
+        raise RuntimeError(
+            f"Moyasar key mode mismatch: MOYASAR_SECRET_KEY is '{sk_mode}' but "
+            f"MOYASAR_PUBLISHABLE_KEY is '{pk_mode}'. Both keys must come from "
+            "the same dashboard mode."
+        )
+
+    if "live" in (sk_mode, pk_mode) and not settings.is_production:
+        raise RuntimeError(
+            "Refusing to boot: a Moyasar _live_ key is configured while "
+            f"ENVIRONMENT='{settings.ENVIRONMENT}' / APP_ENV='{settings.APP_ENV}'. "
+            "Live keys charge real cards — use sk_test_/pk_test_ outside production."
+        )
+
+    if sk_mode:
+        logger.info("Moyasar payments enabled (mode=%s)", sk_mode)
+
+
+def _require_keys() -> tuple[str, str]:
+    """Secret + publishable key, or a 503. Fail-closed per Phase A.
+
+    The publishable key is required too: without it the browser cannot mount the
+    form, so returning a checkout row the user can never pay would just leave
+    orphan ``initiated`` rows behind.
+    """
+    settings = get_settings()
+    secret = (settings.MOYASAR_SECRET_KEY or "").strip()
+    publishable = (settings.MOYASAR_PUBLISHABLE_KEY or "").strip()
+    if not secret or not publishable:
+        logger.error(
+            "Checkout attempted with Moyasar unconfigured (secret=%s publishable=%s)",
+            bool(secret), bool(publishable),
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=PAYMENTS_UNAVAILABLE_AR,
+            headers={"Retry-After": "60"},
+        )
+    return secret, publishable
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. Money arithmetic — Decimal only, never float
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _dec(value: Any, default: str = "0") -> Decimal:
+    """Parse a DB numeric / JSON number into Decimal. PostgREST may hand back
+    either ``49.90`` or ``"49.90"`` depending on the column type, so everything
+    goes through ``str()`` first — ``Decimal(float)`` would inherit binary
+    rounding error on the money path."""
+    if value is None:
+        return Decimal(default)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return Decimal(default)
+
+
+def q2(value: Any) -> Decimal:
+    """Quantize to 2 dp (the ``numeric(10,2)`` shape of every money column)."""
+    return _dec(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def to_halalas(amount_sar: Any) -> int:
+    """SAR → halalas (the unit Moyasar charges in). Trap 2 in the plan: a missed
+    ×100 charges 0.49 SAR instead of 49.00."""
+    return int((q2(amount_sar) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def vat_split(charge_sar: Decimal) -> tuple[Decimal, Decimal]:
+    """VAT-INCLUSIVE 15% split of the **charged** amount → ``(net, vat)``.
+
+    Stamped once at initiation and stored (plan trap 8): displays read the
+    stored numbers forever, so a future rate change cannot rewrite old rows.
+    49.90 → (43.39, 6.51) · 89.90 → (78.17, 11.73) · 189.90 → (165.13, 24.77).
+    """
+    charge = q2(charge_sar)
+    net = q2(charge / (Decimal("1") + VAT_RATE))
+    return net, q2(charge - net)
+
+
+def _money(value: Any) -> Optional[str]:
+    """Money for the wire: a fixed 2-dp STRING (``"49.90"``), or None.
+
+    Strings, not floats, so the frontend never renders 49.900000000000006 and so
+    the value round-trips into ``numeric(10,2)`` unchanged.
+    """
+    if value is None:
+        return None
+    return f"{q2(value):.2f}"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _now_iso() -> str:
+    return _now().isoformat()
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    """Parse a PostgREST timestamptz into an aware datetime (UTC-assumed)."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _is_uuid(value: Any) -> bool:
+    try:
+        uuid_module.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. Moyasar HTTP client
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _moyasar_request(
+    method: str,
+    path: str,
+    *,
+    params: Optional[dict] = None,
+    json_body: Optional[dict] = None,
+    authed: bool = True,
+    retries: int = 0,
+) -> dict:
+    """One call to ``https://api.moyasar.com/v1``.
+
+    HTTP Basic with the secret key as the username and a BLANK password (their
+    scheme). ``retries`` is only ever non-zero for GETs.
+    """
+    settings = get_settings()
+    secret = (settings.MOYASAR_SECRET_KEY or "").strip()
+    if authed and not secret:
+        raise MoyasarUnconfigured("MOYASAR_SECRET_KEY is not set")
+
+    url = f"{MOYASAR_API_BASE}{path}"
+    auth = (secret, "") if authed else None
+
+    for attempt in range(retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
+                response = await client.request(
+                    method, url, params=params, json=json_body, auth=auth
+                )
+        except httpx.HTTPError as exc:
+            if attempt < retries:
+                await asyncio.sleep(0.4 * (attempt + 1))
+                continue
+            raise MoyasarUnavailable(f"{method} {path} transport error: {exc}") from exc
+
+        if response.status_code >= 500:
+            if attempt < retries:
+                await asyncio.sleep(0.4 * (attempt + 1))
+                continue
+            raise MoyasarUnavailable(
+                f"{method} {path} -> {response.status_code}",
+                status=response.status_code,
+                payload=response.text[:500],
+            )
+
+        if response.status_code == 404:
+            raise MoyasarNotFound(f"{method} {path} -> 404", status=404)
+
+        if response.status_code >= 400:
+            # 401 here means OUR key is wrong — log it as a config problem, not
+            # as the user's.
+            if response.status_code in (401, 403):
+                logger.error("Moyasar rejected our credentials on %s %s", method, path)
+            raise MoyasarError(
+                f"{method} {path} -> {response.status_code}",
+                status=response.status_code,
+                payload=response.text[:500],
+            )
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise MoyasarError(f"{method} {path} returned non-JSON") from exc
+        return body if isinstance(body, dict) else {"data": body}
+
+    raise MoyasarUnavailable(f"{method} {path} exhausted retries")  # pragma: no cover
+
+
+async def fetch_payment(moyasar_id: str) -> dict:
+    """``GET /v1/payments/{id}`` — the ONLY evidence either path trusts.
+
+    The id is validated as a UUID first: it arrives from a query string
+    (``/pay/callback?id=…``) and from a webhook body, and neither may be
+    concatenated into a URL path unchecked.
+    """
+    if not _is_uuid(moyasar_id):
+        raise MoyasarNotFound("malformed moyasar id")
+    return await _moyasar_request(
+        "GET", f"/payments/{quote(str(moyasar_id), safe='')}", retries=GET_RETRIES
+    )
+
+
+async def refund_at_provider(provider_ref: str, amount_halalas: int) -> dict:
+    """``POST /v1/payments/{id}/refund`` with an explicit PARTIAL amount.
+
+    Plan trap 11: calling this without ``amount`` refunds in full and silently
+    gives away the 2 SAR processing fee. Never retried — a duplicated refund
+    POST is worse than a failed one.
+    """
+    if not _is_uuid(provider_ref):
+        raise MoyasarNotFound("malformed provider_ref")
+    return await _moyasar_request(
+        "POST",
+        f"/payments/{quote(str(provider_ref), safe='')}/refund",
+        json_body={"amount": int(amount_halalas)},
+        retries=0,
+    )
+
+
+def event_mode_matches(live_flag: Any) -> bool:
+    """Does an event's ``live`` flag agree with our configured key mode?
+
+    The plan's ⚠ trap: if one endpoint URL is registered for both dashboard
+    modes, a SANDBOX payment could grant a real subscription. Unknown/absent
+    flag → ``True`` (nothing to disagree with; the re-fetch is still the real
+    isolation, since a test id 404s on a live key).
+    """
+    if not isinstance(live_flag, bool):
+        return True
+    mode = moyasar_mode()
+    if mode is None:
+        return True
+    return (mode == "live") == live_flag
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. DB access — sync helpers, always run through run_db()
+#
+# Every write goes through the SERVICE-ROLE client (RLS allows the user only a
+# self SELECT) with an explicit user_id filter in the query, exactly like every
+# other route in this backend. The filter is the authorization, not RLS.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TXN_COLUMNS = (
+    "payment_id, user_id, plan_id, amount_sar, currency, status, provider, "
+    "provider_ref, paid_at, fulfilled_at, created_at, updated_at, "
+    "vat_amount_sar, net_amount_sar, upgrade_credit_sar, refund_fee_sar, "
+    "refunded_amount_sar"
+)
+
+
+def _fetch_plans(supabase: SupabaseClient, plan_ids: list[str]) -> dict[str, dict]:
+    ids = [p for p in plan_ids if p]
+    if not ids:
+        return {}
+    res = (
+        supabase.table("plans")
+        .select("plan_id, name_ar, price_sar, duration_days, billing_cycle")
+        .in_("plan_id", ids)
+        .execute()
+    )
+    return {row["plan_id"]: row for row in (res.data or [])}
+
+
+def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
+    # limit(1) rather than maybe_single(): PostgREST answers 406 for a
+    # single-object request that matches no row, and postgrest-py surfaces that
+    # as an exception in some versions. A user with no subscription row must
+    # read as "no plan", not as a 500 on the checkout page.
+    res = (
+        supabase.table("user_subscriptions")
+        .select("plan_id, source, started_at, expires_at, status")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _insert_transaction(supabase: SupabaseClient, payload: dict) -> dict:
+    res = supabase.table("payment_transactions").insert(payload).execute()
+    rows = getattr(res, "data", None) or []
+    if not rows:
+        raise RuntimeError("payment_transactions insert returned no row")
+    return rows[0]
+
+
+def _get_transaction(supabase: SupabaseClient, payment_id: str) -> Optional[dict]:
+    res = (
+        supabase.table("payment_transactions")
+        .select(_TXN_COLUMNS)
+        .eq("payment_id", payment_id)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _get_transaction_by_ref(supabase: SupabaseClient, provider_ref: str) -> Optional[dict]:
+    res = (
+        supabase.table("payment_transactions")
+        .select(_TXN_COLUMNS)
+        .eq("provider", PROVIDER)
+        .eq("provider_ref", provider_ref)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _locate_transaction(supabase: SupabaseClient, fetched: dict) -> Optional[dict]:
+    """Our row for a fetched Moyasar payment.
+
+    ``metadata.payment_id`` first (what the form was told to carry), falling
+    back to ``UNIQUE(provider, provider_ref)`` for a payment we already stamped.
+    Both are our own identifiers — the caller-supplied ``?id=`` never selects a
+    row on its own.
+    """
+    metadata = fetched.get("metadata")
+    if isinstance(metadata, dict):
+        candidate = metadata.get("payment_id")
+        if candidate and _is_uuid(candidate):
+            row = _get_transaction(supabase, str(candidate))
+            if row:
+                return row
+    ref = fetched.get("id")
+    if ref and _is_uuid(ref):
+        return _get_transaction_by_ref(supabase, str(ref))
+    return None
+
+
+def _update_transaction(supabase: SupabaseClient, payment_id: str, patch: dict) -> Optional[dict]:
+    patch = {**patch, "updated_at": _now_iso()}
+    res = (
+        supabase.table("payment_transactions")
+        .update(patch)
+        .eq("payment_id", payment_id)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _grant_plan(supabase: SupabaseClient, user_id: str, plan_id: str, payment_id: str) -> Optional[dict]:
+    """``grant_plan(user, plan, 'payment', payment_id)`` — the ONE grant path.
+
+    Idempotent by construction: the RPC returns early when ``fulfilled_at`` is
+    already stamped, so the second confirmation path is a no-op.
+    """
+    res = supabase.rpc(
+        "grant_plan",
+        {
+            "p_user_id": user_id,
+            "p_plan_id": plan_id,
+            "p_source": "payment",
+            "p_payment_id": payment_id,
+        },
+    ).execute()
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _stamp_prior_snapshot(supabase: SupabaseClient, payment_id: str) -> Optional[str]:
+    """``stamp_payment_prior_snapshot(payment_id)`` (migration 113).
+
+    Records the subscription this payment is about to replace
+    (``prior_plan_id`` / ``prior_expires_at``) so an upgrade refund can RESTORE
+    the old plan instead of leaving the user with nothing. **Must run before
+    ``grant_plan``** — grant_plan overwrites the very row being snapshotted.
+
+    Called unconditionally on every paid path: the RPC self-guards (no-op once
+    ``fulfilled_at`` is set or the snapshot already exists, NULL prior for
+    same-plan / locked / no-subscription cases), so there is no condition for
+    this module to get wrong.
+
+    Never raises into the caller. A failed snapshot costs the ability to restore
+    on refund; failing the GRANT over it would cost the user the plan they just
+    paid for. Logged at ERROR so it is visible.
+    """
+    try:
+        res = supabase.rpc(
+            "stamp_payment_prior_snapshot", {"p_payment_id": payment_id}
+        ).execute()
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if isinstance(data, dict):
+            return str(data.get("prior_plan_id") or "") or None
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "stamp_payment_prior_snapshot failed for payment=%s (grant proceeds; "
+            "an upgrade refund will revoke instead of restore): %s",
+            payment_id, exc,
+        )
+        return None
+
+
+# Every `action` revoke_plan_grant can return on a SUCCESSFUL call. Anything
+# else (payment_not_found, or an exception) means the term was not dealt with.
+REVOKE_ACTIONS_OK = frozenset(
+    {
+        "already_revoked",   # webhook retry after the self-serve refund
+        "not_fulfilled",     # paid but never granted — nothing to take back
+        "no_subscription",
+        "plan_switched",     # user moved on; subtracting would eat the NEW plan's days
+        "restored",          # prorated upgrade rolled back to the prior plan
+        "subtracted",
+        "no_expiry",
+    }
+)
+
+
+def _revoke_plan_grant(supabase: SupabaseClient, payment_id: str) -> str:
+    """``revoke_plan_grant(payment_id)`` (migration 113) — the mirror of grant_plan.
+
+    Returns the RPC's ``action`` (see ``REVOKE_ACTIONS_OK``), or ``'error'``.
+    The row MUST already be ``status='refunded'`` — the RPC raises
+    ``payment_not_refunded`` otherwise — so every caller stamps the status
+    first. Best-effort: the money is already back with the customer, so a
+    failure here is an ops incident to log loudly, not a reason to fail the
+    user's request.
+    """
+    try:
+        res = supabase.rpc("revoke_plan_grant", {"p_payment_id": payment_id}).execute()
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        action = str((data or {}).get("action") or "unknown") if isinstance(data, dict) else "unknown"
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "revoke_plan_grant failed for payment=%s (refund stands, plan NOT "
+            "revoked — manual fix required): %s",
+            payment_id, exc,
+        )
+        return "error"
+
+    if action not in REVOKE_ACTIONS_OK:
+        logger.error(
+            "revoke_plan_grant returned action=%s for payment=%s — term not revoked",
+            action, payment_id,
+        )
+    else:
+        logger.info("revoke_plan_grant: payment=%s action=%s", payment_id, action)
+    return action
+
+
+def _list_transactions(supabase: SupabaseClient, user_id: str) -> list[dict]:
+    res = (
+        supabase.table("payment_transactions")
+        .select(_TXN_COLUMNS)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(HISTORY_LIMIT)
+        .execute()
+    )
+    return getattr(res, "data", None) or []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. Serialization
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def transaction_summary(row: dict, plan_name_ar: Optional[str] = None) -> dict:
+    """The receipt shape returned by /history and /{id}/refund.
+
+    ``refundable`` is computed here so the Settings receipts list has one
+    boolean to render a button from, instead of re-deriving the 24h rule in the
+    browser (where the clock is the user's).
+    """
+    paid_at = _parse_ts(row.get("paid_at"))
+    deadline = paid_at + REFUND_WINDOW if paid_at else None
+    refundable = bool(
+        row.get("status") == "paid" and deadline and _now() <= deadline and row.get("provider_ref")
+    )
+    return {
+        "payment_id": row.get("payment_id"),
+        "plan_id": row.get("plan_id"),
+        "plan_name_ar": plan_name_ar,
+        "status": row.get("status"),
+        "currency": row.get("currency") or CURRENCY,
+        "amount_sar": _money(row.get("amount_sar")),
+        "amount_halalas": to_halalas(row.get("amount_sar")),
+        "vat_amount_sar": _money(row.get("vat_amount_sar")),
+        "net_amount_sar": _money(row.get("net_amount_sar")),
+        "upgrade_credit_sar": _money(row.get("upgrade_credit_sar") or 0),
+        "refund_fee_sar": _money(row.get("refund_fee_sar")),
+        "refunded_amount_sar": _money(row.get("refunded_amount_sar")),
+        "provider": row.get("provider"),
+        "created_at": row.get("created_at"),
+        "paid_at": row.get("paid_at"),
+        "fulfilled_at": row.get("fulfilled_at"),
+        "updated_at": row.get("updated_at"),
+        "refundable": refundable,
+        "refund_deadline": deadline.isoformat() if deadline else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. Checkout
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _plan_rank(plan_id: Optional[str]) -> Optional[int]:
+    return PLAN_RANK.get(plan_id or "")
+
+
+async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) -> dict:
+    """Price a purchase and open an ``initiated`` ledger row.
+
+    No Moyasar call happens here — the browser's form creates the payment. What
+    this returns is exactly what the form needs, plus the credit line the page
+    shows the user.
+    """
+    _secret, publishable = _require_keys()
+    settings = get_settings()
+
+    subscription = await run_db(_fetch_subscription, supabase, user_id)
+    current_plan_id = (subscription or {}).get("plan_id")
+    plans = await run_db(_fetch_plans, supabase, [plan_id, current_plan_id])
+
+    plan = plans.get(plan_id)
+    if plan is None or plan.get("price_sar") is None:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.PAYMENT_PLAN_NOT_PURCHASABLE,
+            detail=PLAN_NOT_PURCHASABLE_AR,
+        )
+
+    price = q2(plan["price_sar"])
+    expires_at = _parse_ts((subscription or {}).get("expires_at"))
+    # NULL expires_at = non-expiring grant (dev/manual) — active, not expired.
+    active = bool(subscription and current_plan_id and (expires_at is None or expires_at > _now()))
+
+    # ── downgrade guard (mirrors redeem_plan_code's "plan already active") ──
+    new_rank, current_rank = _plan_rank(plan_id), _plan_rank(current_plan_id)
+    if active and new_rank is not None and current_rank is not None and new_rank < current_rank:
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_DOWNGRADE_BLOCKED,
+            detail=DOWNGRADE_BLOCKED_AR,
+        )
+
+    # ── upgrade proration ──────────────────────────────────────────────────
+    # Credit ONLY for a still-running plan the user actually PAID for. A
+    # code/marketing/manual grant earns nothing — otherwise a promo code becomes
+    # a cash discount. Same-plan re-purchase earns nothing either: grant_plan
+    # stacks the days, so the user keeps the value rather than being refunded it.
+    credit = Decimal("0.00")
+    if (
+        active
+        and (subscription or {}).get("source") == "payment"
+        and current_plan_id
+        and current_plan_id != plan_id
+        and expires_at is not None
+    ):
+        old_plan = plans.get(current_plan_id) or {}
+        duration_days = old_plan.get("duration_days")
+        old_price = old_plan.get("price_sar")
+        if duration_days and old_price is not None:
+            remaining_days = Decimal(str((expires_at - _now()).total_seconds())) / Decimal(86400)
+            credit = q2(remaining_days / Decimal(str(duration_days)) * _dec(old_price))
+            # Clamp: never negative, and never so large that the charge falls
+            # under Moyasar's 1.00 SAR minimum. With downgrades blocked the
+            # ceiling can't bind today (max credit 89.90 < 189.90), but a future
+            # price change must not be able to mint a 0 SAR checkout.
+            ceiling = price - MIN_CHARGE_SAR
+            credit = max(Decimal("0.00"), min(credit, ceiling if ceiling > 0 else Decimal("0.00")))
+
+    charge = q2(price - credit)
+    net, vat = vat_split(charge)
+    amount_halalas = to_halalas(charge)
+
+    plan_name = plan.get("name_ar") or plan_id
+    description = f"ريحان — {plan_name}" + (" (ترقية)" if credit > 0 else "")
+
+    # vat/net/upgrade_credit are stamped HERE, once (migration 113 columns).
+    # prior_plan_id / prior_expires_at are NOT: the stamp_payment_prior_snapshot
+    # RPC writes them at fulfilment, because the snapshot must reflect the
+    # subscription at the moment the grant replaces it — which can be many
+    # minutes after checkout, or never (abandoned payment).
+    try:
+        row = await run_db(
+            _insert_transaction,
+            supabase,
+            {
+                "user_id": user_id,
+                "plan_id": plan_id,
+                "amount_sar": _money(charge),
+                "currency": CURRENCY,
+                "status": "initiated",
+                "provider": PROVIDER,
+                "vat_amount_sar": _money(vat),
+                "net_amount_sar": _money(net),
+                "upgrade_credit_sar": _money(credit),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Includes "column does not exist" if this backend is ever deployed
+        # ahead of migration 113. A dependency failure is a 503, not a user
+        # error — and the page must not mount a form for a row that isn't there.
+        logger.exception("checkout insert failed for user=%s plan=%s: %s", user_id, plan_id, exc)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "5"},
+        )
+    payment_id = row["payment_id"]
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=user_id,
+        action="create",
+        resource_type="payment_transaction",
+        resource_id=payment_id,
+        metadata={
+            "event": "checkout_initiated",
+            "plan_id": plan_id,
+            "amount_sar": _money(charge),
+            "upgrade_credit_sar": _money(credit),
+            "from_plan_id": current_plan_id,
+            "provider": PROVIDER,
+        },
+    )
+
+    logger.info(
+        "checkout initiated: user=%s plan=%s charge=%s credit=%s payment=%s",
+        user_id, plan_id, charge, credit, payment_id,
+    )
+
+    return {
+        "payment_id": payment_id,
+        "plan_id": plan_id,
+        "plan_name_ar": plan_name,
+        "amount_halalas": amount_halalas,
+        "amount_sar": _money(charge),
+        "credit_sar": _money(credit),
+        "vat_amount_sar": _money(vat),
+        "currency": CURRENCY,
+        "description": description,
+        "publishable_key": publishable,
+        "callback_url": f"{settings.PUBLIC_WEB_URL}/pay/callback",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. The shared confirmation core (used by BOTH /verify and the webhook)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _assert_matches(row: dict, fetched: dict) -> None:
+    """The payment Moyasar reports must be the one we priced.
+
+    Amount + currency are checked against OUR row, so a client that tampered
+    with the form's amount (or a forged webhook naming a real payment) grants
+    nothing. Raises ``MoyasarError`` — callers map it per-path.
+    """
+    expected_halalas = to_halalas(row.get("amount_sar"))
+    actual_halalas = fetched.get("amount")
+    actual_currency = (fetched.get("currency") or "").upper()
+
+    if not isinstance(actual_halalas, int) or actual_halalas != expected_halalas:
+        raise MoyasarError(
+            f"amount mismatch: provider={actual_halalas} expected={expected_halalas}"
+        )
+    if actual_currency != CURRENCY:
+        raise MoyasarError(f"currency mismatch: provider={actual_currency!r}")
+
+
+async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dict) -> dict:
+    """Mark the row paid, then grant the plan. The one path both callers share.
+
+    Idempotent end to end: re-running on an already-fulfilled row leaves
+    ``paid_at`` alone and ``grant_plan`` returns the current state untouched.
+    A row already ``refunded`` is NEVER flipped back to paid — a late
+    ``payment_paid`` retry arriving after a refund must not resurrect the grant.
+    """
+    payment_id = row["payment_id"]
+
+    if row.get("status") == "refunded":
+        logger.warning("paid event for an already-refunded payment=%s — ignored", payment_id)
+        return {
+            "status": "refunded",
+            "payment_id": payment_id,
+            "granted": False,
+            "plan_id": row.get("plan_id"),
+            "expires_at": None,
+        }
+
+    patch: dict[str, Any] = {
+        "status": "paid",
+        "provider_ref": fetched.get("id"),
+        "raw_payload": fetched,
+    }
+    if not row.get("paid_at"):
+        patch["paid_at"] = _now_iso()
+
+    updated = await run_db(_update_transaction, supabase, payment_id, patch) or {**row, **patch}
+
+    # ORDER IS LOAD-BEARING: paid → snapshot → grant. grant_plan overwrites the
+    # subscription row, so the "what were they on before" snapshot has to be
+    # taken while it still exists (migration 113 owns that write; we never set
+    # prior_plan_id/prior_expires_at from Python).
+    prior_plan_id = await run_db(_stamp_prior_snapshot, supabase, payment_id)
+
+    granted = await run_db(
+        _grant_plan, supabase, row["user_id"], row["plan_id"], payment_id
+    )
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=row["user_id"],
+        action="update",
+        resource_type="payment_transaction",
+        resource_id=payment_id,
+        metadata={
+            "event": "payment_paid",
+            "plan_id": row.get("plan_id"),
+            "amount_sar": _money(row.get("amount_sar")),
+            "provider_ref": fetched.get("id"),
+            "prior_plan_id": prior_plan_id,
+        },
+    )
+
+    logger.info(
+        "payment paid + granted: payment=%s user=%s plan=%s prior=%s expires=%s",
+        payment_id, row["user_id"], row.get("plan_id"), prior_plan_id,
+        (granted or {}).get("expires_at"),
+    )
+
+    return {
+        "status": "paid",
+        "payment_id": payment_id,
+        "granted": True,
+        "plan_id": (granted or {}).get("plan_id") or row.get("plan_id"),
+        "plan_name_ar": (granted or {}).get("name_ar"),
+        "expires_at": (granted or {}).get("expires_at"),
+        "amount_sar": _money(updated.get("amount_sar") if updated else row.get("amount_sar")),
+    }
+
+
+async def _mark_failed(supabase: SupabaseClient, row: dict, fetched: dict) -> dict:
+    """Terminal failure. Never touches a paid/refunded row — a stale
+    ``payment_failed`` retry must not erase a successful payment."""
+    payment_id = row["payment_id"]
+    if row.get("status") in ("paid", "refunded"):
+        logger.warning(
+            "failed event for a %s payment=%s — ignored", row.get("status"), payment_id
+        )
+        return {"status": row.get("status"), "payment_id": payment_id, "granted": False}
+
+    await run_db(
+        _update_transaction,
+        supabase,
+        payment_id,
+        {"status": "failed", "provider_ref": fetched.get("id"), "raw_payload": fetched},
+    )
+    source = fetched.get("source") or {}
+    logger.info(
+        "payment failed: payment=%s message=%s",
+        payment_id, (source.get("message") if isinstance(source, dict) else None),
+    )
+    return {
+        "status": "failed",
+        "payment_id": payment_id,
+        "granted": False,
+        "provider_message": (source.get("message") if isinstance(source, dict) else None),
+    }
+
+
+async def _mark_refunded(supabase: SupabaseClient, row: dict, fetched: dict) -> dict:
+    """Provider-side refund (webhook path — the self-serve route stamps its own
+    fee columns first, so this then finds the row already refunded)."""
+    payment_id = row["payment_id"]
+    # status='refunded' MUST be stamped before the RPC — revoke_plan_grant
+    # raises 'payment_not_refunded' on a row that still says paid.
+    if row.get("status") != "refunded":
+        await run_db(
+            _update_transaction,
+            supabase,
+            payment_id,
+            {"status": "refunded", "raw_payload": fetched},
+        )
+    action = await run_db(_revoke_plan_grant, supabase, payment_id)
+    logger.info("payment refunded: payment=%s revoke_action=%s", payment_id, action)
+    return {
+        "status": "refunded",
+        "payment_id": payment_id,
+        "revoked": action in REVOKE_ACTIONS_OK,
+        "revoke_action": action,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 8. /verify — the browser-side sync (called twice per purchase)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def verify_payment(supabase: SupabaseClient, user_id: str, moyasar_id: str) -> dict:
+    """Sync our row with Moyasar's truth for ``moyasar_id``.
+
+    Called from two moments, so it is a SYNC, not a paid-assert:
+      * ``on_completed``, before the 3DS redirect — status ``initiated``: we
+        store the provider id so an abandoned redirect is still recoverable;
+      * the callback page — status ``paid`` (grant) or ``failed`` (offer retry).
+
+    Binding: ``metadata.payment_id`` → our row → ``row.user_id == caller``. The
+    ``?id=`` in the URL is attacker-controllable and never selects a row alone
+    (plan trap 6). Everything unresolvable answers 404 PAYMENT_NOT_FOUND —
+    including another user's payment, so this cannot be used as an oracle.
+    """
+    try:
+        fetched = await fetch_payment(moyasar_id)
+    except MoyasarUnconfigured:
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=PAYMENTS_UNAVAILABLE_AR,
+            headers={"Retry-After": "60"},
+        )
+    except MoyasarNotFound:
+        # Also the test↔live isolation: an id from the other mode is not
+        # fetchable with our key, so it can never grant.
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.PAYMENT_NOT_FOUND, detail=PAYMENT_NOT_FOUND_AR
+        )
+    except MoyasarUnavailable as exc:
+        logger.warning("Moyasar unreachable during verify: %s", exc)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "5"},
+        )
+    except MoyasarError as exc:
+        logger.warning("Moyasar error during verify: %s", exc)
+        raise LunaHTTPException(
+            status_code=502, code=ErrorCode.PAYMENT_PROVIDER_ERROR, detail=PROVIDER_ERROR_AR
+        )
+
+    if not event_mode_matches(fetched.get("live")):
+        logger.error("verify: payment %s mode disagrees with our key — refused", moyasar_id)
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.PAYMENT_NOT_FOUND, detail=PAYMENT_NOT_FOUND_AR
+        )
+
+    row = await run_db(_locate_transaction, supabase, fetched)
+    if row is None or row.get("user_id") != user_id:
+        if row is not None:
+            logger.warning(
+                "verify: user=%s tried to verify payment=%s owned by %s",
+                user_id, row.get("payment_id"), row.get("user_id"),
+            )
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.PAYMENT_NOT_FOUND, detail=PAYMENT_NOT_FOUND_AR
+        )
+
+    try:
+        _assert_matches(row, fetched)
+    except MoyasarError as exc:
+        logger.error("verify: %s for payment=%s — no grant", exc, row.get("payment_id"))
+        raise LunaHTTPException(
+            status_code=400, code=ErrorCode.PAYMENT_PROVIDER_ERROR, detail=PAYMENT_MISMATCH_AR
+        )
+
+    provider_status = str(fetched.get("status") or "").lower()
+
+    if provider_status == "paid":
+        try:
+            return await _mark_paid_and_grant(supabase, row, fetched)
+        except Exception as exc:  # noqa: BLE001
+            # Money is in and the row says paid; only the grant failed. Do NOT
+            # 500 the callback page — report paid+ungranted and let the webhook
+            # (or a later /verify) finish the job.
+            logger.exception(
+                "verify: grant failed after payment=%s was marked paid: %s",
+                row.get("payment_id"), exc,
+            )
+            return {
+                "status": "paid",
+                "payment_id": row["payment_id"],
+                "granted": False,
+                "plan_id": row.get("plan_id"),
+                "expires_at": None,
+            }
+
+    if provider_status == "failed":
+        return await _mark_failed(supabase, row, fetched)
+
+    if provider_status == "refunded":
+        return await _mark_refunded(supabase, row, fetched)
+
+    # 'initiated' (the pre-3DS on_completed call) and anything else we don't
+    # act on: persist the provider id so the payment stays recoverable, grant
+    # nothing.
+    await run_db(
+        _update_transaction,
+        supabase,
+        row["payment_id"],
+        {"provider_ref": fetched.get("id"), "raw_payload": fetched},
+    )
+    return {
+        "status": "pending",
+        "payment_id": row["payment_id"],
+        "granted": False,
+        "provider_status": provider_status or None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 9. Webhook
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def handle_webhook_event(supabase: SupabaseClient, body: dict) -> dict:
+    """Process an ALREADY-AUTHENTICATED Moyasar webhook body.
+
+    The body is a trigger, not evidence: the only fields read from it are the
+    event ``type``, the ``live`` flag, and the payment ``id``. Everything else
+    comes from a fresh ``GET /v1/payments/{id}``.
+
+    Returns a small dict; the route answers 200 for every one of them. The only
+    escape hatch is ``WebhookRetryable`` (→ 503) for a transient provider/DB
+    failure, where another attempt genuinely helps.
+    """
+    event = str(body.get("type") or "").strip()
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    moyasar_id = data.get("id") or body.get("id")
+
+    if not event_mode_matches(body.get("live")):
+        logger.error(
+            "webhook %s ignored: live=%r disagrees with key mode=%r",
+            event, body.get("live"), moyasar_mode(),
+        )
+        return {"status": "ignored", "reason": "mode_mismatch"}
+
+    if event not in HANDLED_EVENTS:
+        logger.info("webhook %s ignored (not a handled event)", event or "<none>")
+        return {"status": "ignored", "reason": "unhandled_event", "event": event}
+
+    if not moyasar_id or not _is_uuid(moyasar_id):
+        logger.warning("webhook %s ignored: no usable payment id", event)
+        return {"status": "ignored", "reason": "no_payment_id"}
+
+    try:
+        fetched = await fetch_payment(str(moyasar_id))
+    except MoyasarNotFound:
+        # Unknown to our key (other mode / forged id) — 200 + log, never 5xx.
+        logger.warning("webhook %s: payment %s not found for our key", event, moyasar_id)
+        return {"status": "ignored", "reason": "provider_not_found"}
+    except (MoyasarUnavailable, MoyasarUnconfigured) as exc:
+        logger.error("webhook %s: re-fetch failed (%s) — asking for a retry", event, exc)
+        raise WebhookRetryable(str(exc))
+    except MoyasarError as exc:
+        logger.error("webhook %s: re-fetch rejected (%s)", event, exc)
+        return {"status": "ignored", "reason": "provider_error"}
+
+    if not event_mode_matches(fetched.get("live")):
+        logger.error("webhook %s: fetched payment mode disagrees with our key", event)
+        return {"status": "ignored", "reason": "mode_mismatch"}
+
+    try:
+        row = await run_db(_locate_transaction, supabase, fetched)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("webhook %s: row lookup failed: %s", event, exc)
+        raise WebhookRetryable(str(exc))
+
+    if row is None:
+        # A replay for a payment we never created (or one already purged).
+        logger.warning("webhook %s: no matching payment_transactions row for %s", event, moyasar_id)
+        return {"status": "ignored", "reason": "unknown_payment"}
+
+    try:
+        _assert_matches(row, fetched)
+    except MoyasarError as exc:
+        logger.error(
+            "webhook %s: %s for payment=%s — no DB write", event, exc, row.get("payment_id")
+        )
+        return {"status": "ignored", "reason": "amount_mismatch"}
+
+    try:
+        if event == EVENT_PAID:
+            # Trust the FETCHED status, not the event name.
+            if str(fetched.get("status") or "").lower() != "paid":
+                logger.warning(
+                    "webhook payment_paid but provider status=%r for payment=%s",
+                    fetched.get("status"), row.get("payment_id"),
+                )
+                return {"status": "ignored", "reason": "status_disagrees"}
+            result = await _mark_paid_and_grant(supabase, row, fetched)
+        elif event in (EVENT_FAILED, EVENT_ABANDONED):
+            result = await _mark_failed(supabase, row, fetched)
+        elif event == EVENT_REFUNDED:
+            result = await _mark_refunded(supabase, row, fetched)
+        else:  # pragma: no cover — HANDLED_EVENTS is checked above
+            return {"status": "ignored", "reason": "unhandled_event"}
+    except Exception as exc:  # noqa: BLE001
+        # DB/RPC failure on a verified event: money moved, our books didn't.
+        # Ask for a retry rather than silently dropping it.
+        logger.exception("webhook %s: processing failed for %s: %s", event, moyasar_id, exc)
+        raise WebhookRetryable(str(exc))
+
+    return {"status": "ok", "event": event, **result}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 10. Refund (self-serve, inside 24h)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str) -> dict:
+    """Refund ``payment_id`` minus the 2 SAR processing fee, then revoke the term.
+
+    Every guard is server-side: ownership, ``status='paid'``, and the 24h window
+    measured from ``paid_at`` (the same clock the copy promises). The fee is a
+    module constant — it never arrives from the client — and both the fee and
+    the net refunded amount are STAMPED on the row, so a later fee change cannot
+    rewrite this refund's history.
+    """
+    row = await run_db(_get_transaction, supabase, payment_id)
+    if row is None or row.get("user_id") != user_id:
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.PAYMENT_NOT_FOUND, detail=PAYMENT_NOT_FOUND_AR
+        )
+
+    status = row.get("status")
+    if status == "refunded":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
+            detail=REFUND_ALREADY_AR,
+        )
+    if status != "paid":
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
+            detail=REFUND_NOT_PAID_AR,
+        )
+
+    paid_at = _parse_ts(row.get("paid_at"))
+    if paid_at is None or _now() - paid_at > REFUND_WINDOW:
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
+            detail=REFUND_WINDOW_CLOSED_AR,
+        )
+
+    provider_ref = row.get("provider_ref")
+    if not provider_ref:
+        logger.error("refund: payment=%s is paid but has no provider_ref", payment_id)
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
+            detail=REFUND_NOT_PAID_AR,
+        )
+
+    charged_halalas = to_halalas(row.get("amount_sar"))
+    refund_halalas = charged_halalas - REFUND_FEE_HALALAS
+    if refund_halalas < MIN_HALALAS:
+        # Impossible with today's catalog (min charge 49.90); a future cheap
+        # plan must not be able to produce a zero/negative refund.
+        logger.error(
+            "refund: computed %d halalas for payment=%s — below Moyasar's minimum",
+            refund_halalas, payment_id,
+        )
+        raise LunaHTTPException(
+            status_code=400, code=ErrorCode.PAYMENT_PROVIDER_ERROR, detail=REFUND_FAILED_AR
+        )
+
+    try:
+        provider_response = await refund_at_provider(str(provider_ref), refund_halalas)
+    except MoyasarUnconfigured:
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=PAYMENTS_UNAVAILABLE_AR,
+            headers={"Retry-After": "60"},
+        )
+    except MoyasarError as exc:
+        logger.error("refund: Moyasar refused payment=%s: %s", payment_id, exc)
+        raise LunaHTTPException(
+            status_code=502, code=ErrorCode.PAYMENT_PROVIDER_ERROR, detail=PROVIDER_ERROR_AR
+        )
+
+    refunded_sar = q2(Decimal(refund_halalas) / Decimal(100))
+
+    # Provider-side refund SUCCEEDED past this point. Any failure below leaves
+    # money returned with our row still 'paid' — recoverable, because the
+    # payment_refunded webhook lands next and runs _mark_refunded.
+    updated = await run_db(
+        _update_transaction,
+        supabase,
+        payment_id,
+        {
+            "status": "refunded",
+            "refund_fee_sar": _money(REFUND_FEE_SAR),
+            "refunded_amount_sar": _money(refunded_sar),
+            "raw_payload": provider_response,
+        },
+    ) or {**row, "status": "refunded"}
+
+    # Only now — the RPC refuses a row that is not yet 'refunded'.
+    revoke_action = await run_db(_revoke_plan_grant, supabase, payment_id)
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=user_id,
+        action="update",
+        resource_type="payment_transaction",
+        resource_id=payment_id,
+        metadata={
+            "event": "refunded",
+            "plan_id": row.get("plan_id"),
+            "refunded_amount_sar": _money(refunded_sar),
+            "refund_fee_sar": _money(REFUND_FEE_SAR),
+            "revoke_action": revoke_action,
+        },
+    )
+
+    logger.info(
+        "refund complete: payment=%s user=%s refunded=%s fee=%s revoke_action=%s",
+        payment_id, user_id, refunded_sar, REFUND_FEE_SAR, revoke_action,
+    )
+
+    summary = transaction_summary(updated)
+    summary["revoked"] = revoke_action in REVOKE_ACTIONS_OK
+    summary["revoke_action"] = revoke_action
+    return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 11. History
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def list_history(supabase: SupabaseClient, user_id: str) -> list[dict]:
+    """The caller's own receipts, newest first, capped at 50."""
+    rows = await run_db(_list_transactions, supabase, user_id)
+    plan_ids = sorted({r.get("plan_id") for r in rows if r.get("plan_id")})
+    plans = await run_db(_fetch_plans, supabase, list(plan_ids)) if plan_ids else {}
+    return [
+        transaction_summary(row, (plans.get(row.get("plan_id")) or {}).get("name_ar"))
+        for row in rows
+    ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. Apple Pay merchant validation
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _validate_apple_validation_url(validation_url: str) -> str:
+    """Apple's session URL, sanity-checked before we hand it to Moyasar.
+
+    The value comes from the browser's ``onvalidatemerchant`` event, so it is
+    client-controlled. Restricting it to ``https://*.apple.com`` keeps this
+    endpoint from being turned into a request-forwarder aimed at arbitrary hosts.
+    """
+    url = (validation_url or "").strip()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (host == "apple.com" or host.endswith(".apple.com")):
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.PAYMENT_PROVIDER_ERROR,
+            detail=APPLEPAY_URL_INVALID_AR,
+        )
+    return url
+
+
+async def applepay_session(validation_url: str) -> dict:
+    """Proxy ``GET /v1/applepay/initiate`` and return Moyasar's JSON as-is.
+
+    Best-effort by design: the frontend falls back to cards-only when this
+    fails, so every failure surfaces as PAYMENT_PROVIDER_ERROR rather than
+    taking the checkout page down.
+    """
+    _secret, publishable = _require_keys()
+    settings = get_settings()
+    url = _validate_apple_validation_url(validation_url)
+
+    try:
+        return await _moyasar_request(
+            "GET",
+            "/applepay/initiate",
+            params={
+                "validation_url": url,
+                "display_name": "ريحان",
+                "domain_name": settings.MOYASAR_APPLEPAY_DOMAIN,
+                "publishable_api_key": publishable,
+            },
+            authed=False,          # this endpoint authenticates by publishable key
+            retries=1,             # idempotent GET
+        )
+    except MoyasarError as exc:
+        logger.warning("Apple Pay merchant validation failed: %s", exc)
+        raise LunaHTTPException(
+            status_code=502, code=ErrorCode.PAYMENT_PROVIDER_ERROR, detail=PROVIDER_ERROR_AR
+        )

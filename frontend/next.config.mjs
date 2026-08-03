@@ -30,9 +30,18 @@ const nextConfig = {
     // miss either and the widget silently produces no token, which 403s every
     // anon ask once TURNSTILE_SECRET_KEY is set on the backend.
     const turnstile = "https://challenges.cloudflare.com";
+    // Moyasar embedded payment form (`.claude/plans/moyasar_payments.md` Phase D).
+    // The form is a CDN script + stylesheet, and the card fields post straight
+    // to api.moyasar.com — so it needs script-src AND style-src for the bundle,
+    // plus connect-src for the API. A missing host here is a SILENTLY BLANK
+    // form (trap 7), and the CSP is baked at build time, so this must ship
+    // before or with /pay. `frame-src` needs nothing: 3DS is a full-page
+    // redirect, not an embedded challenge.
+    const moyasarCdn = "https://cdn.moyasar.com";
+    const moyasarApi = "https://api.moyasar.com";
     const scriptSrc = isDev
-      ? `'self' 'unsafe-inline' 'unsafe-eval' ${cdnCgi} ${turnstile}`
-      : `'self' 'unsafe-inline' ${cdnCgi} ${turnstile}`;
+      ? `'self' 'unsafe-inline' 'unsafe-eval' ${cdnCgi} ${turnstile} ${moyasarCdn}`
+      : `'self' 'unsafe-inline' ${cdnCgi} ${turnstile} ${moyasarCdn}`;
     const frameSrc = `https://www.youtube-nocookie.com ${turnstile}`;
 
     return [
@@ -41,7 +50,7 @@ const nextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.supabase.co https://img.youtube.com data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://api.rayhanai.com https://*.supabase.co https://*.railway.app wss://*.supabase.co; font-src 'self' https://fonts.gstatic.com; frame-src ${frameSrc}`,
+            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' ${moyasarCdn}; img-src 'self' https://*.supabase.co https://img.youtube.com data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://api.rayhanai.com https://*.supabase.co https://*.railway.app wss://*.supabase.co ${moyasarApi}; font-src 'self' https://fonts.gstatic.com; frame-src ${frameSrc}`,
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },

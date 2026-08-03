@@ -27,6 +27,12 @@ backend/tests/*
 !backend/tests/test_rate_limit_library.py
 !backend/tests/test_reference_source.py
 !backend/tests/test_blog_snapshot_gating.py
+# payments is real money — the suite pins the arithmetic (halalas ×100, the
+# inclusive VAT split, the prorated upgrade credit, the 2 SAR refund fee), the
+# paid-path ORDER (snapshot before grant, refunded before revoke), the
+# never-5xx webhook contract, and the boot guard that stops a live key charging
+# real cards from a dev box.
+!backend/tests/test_payments.py
 # edge-hardening suites are durable — they pin the deploy gate (origin lock must
 # never 403 /api/v1/health, or every Railway deploy fails), the CORS-ordering
 # invariant that once took production logins down, and the rate-limit bucket

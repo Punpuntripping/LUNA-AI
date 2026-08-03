@@ -45,7 +45,6 @@ export const DEFAULT_NEXT = "/chat";
  */
 const ALLOWED_PREFIXES = [
   "/regulations",
-  "/compliance",
   "/circulars",
   "/judgments",
   "/blog",
@@ -53,6 +52,14 @@ const ALLOWED_PREFIXES = [
   "/calculators",
   "/library",
   "/chat",
+  // Checkout. An anonymous visitor clicking a /pricing CTA goes to
+  // `/login?next=/pay/pro&mode=register` and must land ON the checkout after
+  // signing up — dropping `next` here would deposit them on /chat with no idea
+  // the purchase they started still needs finishing, which is the single
+  // highest-intent moment the funnel has. `/pay` is an authed app route (it is
+  // NOT in AuthGuard's PUBLIC_PREFIXES), so this is a navigation decision and
+  // not a privilege one, exactly like `/chat` above.
+  "/pay",
 ] as const;
 
 /**

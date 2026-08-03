@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
-import { Check } from "lucide-react";
-import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
+import { Check, ShieldCheck } from "lucide-react";
 import { SitePageShell } from "@/components/site/SitePageShell";
-import { PRICING_PLANS } from "@/lib/pricing";
+import { PlanPrice } from "@/components/pricing/PlanPrice";
+import { PlanCheckoutCta } from "@/components/pricing/PlanCheckoutCta";
+import {
+  PAYMENT_TRUST_NOTE,
+  PRICING_PLANS,
+  REFUND_POLICY_NOTE,
+} from "@/lib/pricing";
 
 export const metadata: Metadata = {
   title: "الباقات والأسعار — ريحان",
@@ -28,24 +33,6 @@ export default function PricingPage() {
           </p>
         </header>
 
-        {/* Activation notice — paid plans not live yet; access is via code. */}
-        <div className="mx-auto mb-10 max-w-2xl rounded-2xl border border-primary/30 bg-primary/5 p-5 text-center">
-          <p className="text-sm font-semibold leading-relaxed text-foreground">
-            الاشتراك غير مُفعّل بعد
-          </p>
-          <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            لم يتم تفعيل الدفع والاشتراك حتى الآن. لاستخدام التطبيق، يُرجى
-            التواصل معنا للحصول على رمز تفعيل عبر البريد:{" "}
-            <a
-              href="mailto:support@rayhanai.com"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-              dir="ltr"
-            >
-              support@rayhanai.com
-            </a>
-          </p>
-        </div>
-
         {/* Plan cards */}
         <div className="grid gap-6 md:grid-cols-3">
           {PRICING_PLANS.map((plan) => (
@@ -70,15 +57,11 @@ export default function PricingPage() {
                 {plan.tagline}
               </p>
 
-              <div className="mt-5 flex items-end gap-1.5">
-                <span className="text-5xl font-bold leading-none tabular-nums text-foreground">
-                  {plan.price}
-                </span>
-                <RiyalSymbol className="mb-1 h-7 w-auto text-foreground" />
-                <span className="mb-1 text-sm text-muted-foreground">
-                  {plan.period}
-                </span>
-              </div>
+              <PlanPrice
+                price={plan.price}
+                period={plan.period}
+                className="mt-5"
+              />
               <p className="mt-2 text-xs text-muted-foreground">
                 {plan.billingNote}
               </p>
@@ -95,22 +78,30 @@ export default function PricingPage() {
                 ))}
               </ul>
 
-              {/* Subscription not live yet — CTA disabled; access via activation code. */}
               <div className="mt-auto pt-7">
-                <button
-                  type="button"
-                  disabled
-                  aria-disabled="true"
-                  className="w-full cursor-not-allowed rounded-lg border border-border bg-muted px-4 py-2.5 text-sm font-semibold text-muted-foreground opacity-60"
-                >
-                  غير متاح حالياً
-                </button>
+                <PlanCheckoutCta
+                  planId={plan.id}
+                  highlighted={plan.highlighted}
+                />
               </div>
             </div>
           ))}
         </div>
 
-        <p className="mt-8 text-center text-xs leading-relaxed text-muted-foreground">
+        {/* Phase E — the two clauses that must be visible BEFORE purchase.
+            The processing fee in particular: disclosing a deduction only at
+            refund time is a bigger exposure than the fee itself. */}
+        <div className="mx-auto mt-8 flex max-w-2xl flex-col items-center gap-2 text-center">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {REFUND_POLICY_NOTE}
+          </p>
+          <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
+            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+            <span>{PAYMENT_TRUST_NOTE}</span>
+          </p>
+        </div>
+
+        <p className="mt-6 text-center text-xs leading-relaxed text-muted-foreground">
           تُستهلك النقاط مع كل بحث أو صياغة بحسب حجمها. جميع الأسعار بالريال
           السعودي.
         </p>

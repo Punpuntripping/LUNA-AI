@@ -234,6 +234,44 @@ class RedeemCodeRequest(BaseModel):
         return _reject_null_bytes(v) if isinstance(v, str) else v
 
 
+# ── Payments (Moyasar) ─────────────────────────────────
+
+class CheckoutRequest(BaseModel):
+    """POST /api/v1/payments/checkout
+
+    ``plan_id`` and NOTHING else. The amount, the upgrade credit, the VAT split
+    and the currency are all computed server-side from ``plans.price_sar`` — a
+    client-supplied amount is the one thing a payment API must never accept.
+    """
+    plan_id: str = Field(..., min_length=1, max_length=64)
+
+    @field_validator("plan_id", mode="before")
+    @classmethod
+    def check_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
+
+
+class VerifyPaymentRequest(BaseModel):
+    """POST /api/v1/payments/verify
+
+    ``moyasar_id`` is the provider's payment UUID, read from the callback URL
+    (``/pay/callback?id=…``) or handed over by the form's ``on_completed`` before
+    the 3DS redirect. It is attacker-controllable: the server binds it to a row
+    via ``metadata.payment_id`` + the caller's ``user_id``, never by trusting it.
+    """
+    moyasar_id: str = Field(..., min_length=1, max_length=64)
+
+
+class ApplePaySessionRequest(BaseModel):
+    """POST /api/v1/payments/applepay/session
+
+    ``validation_url`` comes from Safari's ``onvalidatemerchant`` event. The
+    server checks it is an ``https://*.apple.com`` URL before proxying it to
+    Moyasar's merchant-validation endpoint.
+    """
+    validation_url: str = Field(..., min_length=1, max_length=2048)
+
+
 # ── Resumable uploads (TUS) ─────────────────────────────
 
 class UploadInitRequest(BaseModel):

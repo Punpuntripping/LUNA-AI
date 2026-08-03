@@ -45,6 +45,10 @@ import type {
   BlogPostPublic,
   ReferenceSourceResponse,
   ReferenceSourceError,
+  PaymentCheckoutResponse,
+  PaymentVerifyResponse,
+  PaymentHistoryResponse,
+  PaymentRefundResponse,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 // Access-tiers Phase C: the metered reference reveal answers with the SAME D14
@@ -933,6 +937,53 @@ export const usageApi = {
 export const plansApi = {
   redeem: (code: string) =>
     api.post<RedeemCodeResponse>("/plans/redeem", { code }),
+};
+
+// -----------------------------------------------
+// Payments API — Moyasar one-time checkout (Wave 1)
+// (.claude/plans/moyasar_payments.md Phases C + D)
+// -----------------------------------------------
+
+export const paymentsApi = {
+  /**
+   * Open a checkout. The body is `{plan_id}` and NOTHING ELSE — the amount, the
+   * VAT split and any prorated upgrade credit are all computed server-side from
+   * `plans.price_sar`. Never add an amount parameter here.
+   *
+   * Errors arrive as `ApiClientError` with the backend's Arabic message:
+   * `PAYMENT_PLAN_NOT_PURCHASABLE` (downgrade blocked / plan has no price),
+   * `PAYMENT_PROVIDER_ERROR`, or a 503 when `MOYASAR_SECRET_KEY` is unset
+   * (fail-closed posture).
+   */
+  checkout: (planId: string) =>
+    api.post<PaymentCheckoutResponse>("/payments/checkout", { plan_id: planId }),
+
+  /**
+   * Sync our row against `GET /v1/payments/{id}` at Moyasar. Called from two
+   * moments — the form's pre-3DS `on_completed`, and the callback page — so a
+   * `pending` answer is normal, not a failure.
+   *
+   * `moyasar_id` is attacker-controllable (it arrives on the redirect query
+   * string), which is exactly why the server binds it back to our row via
+   * `metadata.payment_id` AND the caller's `user_id` before trusting it
+   * (plan trap 6). Nothing here may assume otherwise.
+   */
+  verify: (moyasarId: string) =>
+    api.post<PaymentVerifyResponse>("/payments/verify", {
+      moyasar_id: moyasarId,
+    }),
+
+  /** The caller's own receipts (سجل المدفوعات). RLS scopes it server-side. */
+  history: () => api.get<PaymentHistoryResponse>("/payments/history"),
+
+  /**
+   * Self-serve refund inside the 24-hour window. The processing fee is applied
+   * server-side and is deliberately NOT a parameter — a client-supplied fee is
+   * a client-supplied price (plan trap 12). A request outside the window comes
+   * back as `PAYMENT_REFUND_WINDOW_CLOSED` with an Arabic message.
+   */
+  refund: (paymentId: string) =>
+    api.post<PaymentRefundResponse>(`/payments/${paymentId}/refund`),
 };
 
 export const templatesApi = {

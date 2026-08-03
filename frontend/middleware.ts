@@ -46,6 +46,22 @@ export function middleware(request: NextRequest) {
   return response;
 }
 
+/**
+ * `.well-known` is excluded deliberately, not incidentally. Moyasar's Apple Pay
+ * Web Merchant Registration validates
+ * `/.well-known/apple-developer-merchantid-domain-association` — an
+ * EXTENSIONLESS static file served from `public/` — by fetching it from Apple's
+ * infrastructure, which follows no redirects and tolerates no interception. The
+ * matcher above would otherwise run middleware on it, and every future addition
+ * here (a redirect, an auth probe, a rewrite) would silently break Apple Pay on
+ * the next domain re-validation, with the failure surfacing as «the Apple Pay
+ * button stopped rendering» weeks later. Excluding the whole prefix keeps the
+ * path a pure static read. (`.claude/plans/moyasar_payments.md` Phase D.)
+ *
+ * The association file itself is NOT in the repo — it is downloaded from the
+ * Moyasar dashboard during domain registration and dropped into
+ * `frontend/public/.well-known/`.
+ */
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|\\.well-known).*)"],
 };

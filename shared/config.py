@@ -149,10 +149,32 @@ class Settings(BaseSettings):
 
     # Overall pipeline timeout (seconds) for a single message turn. Bounds the
     # whole handle_message run inside pipeline_producer — even when the client
-    # disconnects and the pipeline is detached to the background. 7 min = ~1.75×
-    # the ~4-min worst-case legitimate path (OCR + memory + router + deep_search
-    # + aggregator + publish). Env-overridable for tests.
-    LUNA_PIPELINE_TIMEOUT_S: float = 420.0
+    # disconnects and the pipeline is detached to the background.
+    #
+    # This is a BACKSTOP against a hung pipeline, NOT a latency budget. It must
+    # sit well above the slowest legitimate turn, because when it fires the turn
+    # is DEAD — the user gets an Arabic apology and every LLM call already made
+    # is billed with nothing to show for it. There is no recovery path.
+    #
+    # Raised 420 → 900 on 2026-08-03. The original 420 assumed a ~4-min worst
+    # case; measured reality on 2026-08-03 was a SUCCESSFUL deep_search turn at
+    # 351s — 84% of the old budget — and two turns killed at exactly 420s
+    # (convo 29a8ac77 mid-deep_search, convo c6e4a5fe with writer.execute still
+    # outstanding). The budget, not the pipeline, was the binding constraint.
+    #
+    # Protecting against ONE slow call is not this setting's job — it cannot
+    # distinguish "one provider stalled" from "the turn is legitimately long".
+    # That belongs in a per-request timeout on the provider HTTP clients
+    # (agents/model_registry.py:create_model), which would raise ModelAPIError
+    # and let FallbackModel advance to the next cell instead of killing the
+    # turn. That is NOT built yet — it needs measured per-slot p99 latency, and
+    # llm_calls.duration_ms only started being populated on 2026-08-03
+    # (agents/utils/tracking.py, AgentSpan.record_run). Revisit BOTH numbers
+    # once a few days of duration_ms data exist.
+    #
+    # Env-overridable (env var name == field name, no validation_alias): an
+    # explicit LUNA_PIPELINE_TIMEOUT_S in Railway overrides this default.
+    LUNA_PIPELINE_TIMEOUT_S: float = 900.0
 
     # ========================================
     # RATE LIMITING
@@ -187,6 +209,28 @@ class Settings(BaseSettings):
     EDITORIAL_MAX_CONCURRENT_JOBS: int = 2        # in-flight generation cap (protects the single-worker backend)
     EDITORIAL_RATE_LIMIT_PER_HOUR: int = 100      # blog-post submissions per rolling hour
     EDITORIAL_RATE_LIMIT_PER_DAY: int = 300       # blog-post submissions per rolling day
+
+    # ========================================
+    # PAYMENTS — MOYASAR (one-time checkout, Wave 1)
+    # ========================================
+    # HTTP Basic against https://api.moyasar.com/v1 (secret key = username,
+    # blank password). THERE IS NO SEPARATE SANDBOX HOST — the key PREFIX is the
+    # mode switch: sk_test_/pk_test_ is the sandbox, sk_live_/pk_live_ charges
+    # real cards on the same URL. That makes a stray live key in a dev env a
+    # money-losing accident, so backend.app.main asserts at boot (via
+    # backend.app.services.payment_service.verify_moyasar_config) that both keys
+    # share a mode and that no _live_ key boots outside production.
+    #
+    # Fail-closed when unset: POST /api/v1/payments/checkout returns 503 and
+    # POST /api/v1/payments/webhook/moyasar returns 401 — same posture as
+    # INTERNAL_WEBHOOK_SECRET above. Nothing else in the app degrades.
+    MOYASAR_SECRET_KEY: Optional[str] = None       # sk_test_… / sk_live_… — backend only, never leaves the server
+    MOYASAR_PUBLISHABLE_KEY: Optional[str] = None  # pk_test_… / pk_live_… — served to the browser BY /payments/checkout (not NEXT_PUBLIC_*, so test↔live needs no frontend rebuild)
+    MOYASAR_WEBHOOK_SECRET: Optional[str] = None   # the dashboard webhook's secret_token — arrives in the JSON BODY (Moyasar sends no HMAC header)
+    # Domain registered under Moyasar → Settings → Apple Pay Domains. Sent as
+    # `domain_name` to GET /v1/applepay/initiate; Apple rejects a session whose
+    # domain isn't the registered one, so this must match the production host.
+    MOYASAR_APPLEPAY_DOMAIN: str = "rayhanai.com"
 
     # ========================================
     # ENVIRONMENT

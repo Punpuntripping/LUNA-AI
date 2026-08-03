@@ -581,24 +581,38 @@ export type SourceView =
   | {
       source_type: 'case';
       title: string;
-      /** Case body (markdown) — rendered above the details_url link. */
+      /**
+       * The ruling's structured ملخص (`cases.summary`, falling back to
+       * `short_summary`) — markdown, and what the popup RENDERS. The raw
+       * judgment text is deliberately not here: «فتح الحكم في ريحان» opens
+       * `/judgments/{slug}`, and the reveal already paid the unlock for that
+       * same document, so the full text costs nothing extra to reach.
+       */
+      summary: string;
+      /**
+       * Raw ruling text (markdown) — a LAST-RESORT body, non-empty only for the
+       * handful of rulings that carry no summary. Never both this and `summary`.
+       */
       content: string;
       details_url: string;
     }
   | {
+      /**
+       * A government service — title and link, no body (2026-08-03). The popup
+       * used to restate the service's intro, الخطوات, المتطلبات and المستندات
+       * المطلوبة; that content and the `/compliance` pages that mirrored it are
+       * both gone. A procedure goes stale when its issuing entity edits it, and
+       * repeating it under our chrome makes us look like the authority on a
+       * process we don't own. The service's own page is the authority.
+       */
       source_type: 'gov_service';
       title: string;
-      /** Long-form service title (``services.intro_title``). Often redundant with ``title``. */
-      intro_title: string;
-      /** One-sentence description (``services.intro_description``). */
-      intro_description: string;
-      /** Procedural steps; each entry may contain inline markdown (links, emphasis). */
-      steps: string[];
-      /** Eligibility / pre-conditions. */
-      requirements: string[];
-      /** Documents the user must submit. */
-      required_documents: string[];
-      national_platform_url: string;
+      /**
+       * `services.service_url` — THE exit, and the only one. The المنصة الوطنية
+       * portal link (`national_platform_url`) went with the body: a portal home
+       * page is not the cited source. May be "" when the corpus has no link, in
+       * which case the popup shows the title alone.
+       */
       service_url: string;
     }
   | {
@@ -1254,3 +1268,134 @@ export type ReferenceSourceError =
   | 'network'
   /** 5xx or any other unexpected status. */
   | 'server';
+
+// -----------------------------------------------
+// Payments — Moyasar one-time checkout (Wave 1)
+// (.claude/plans/moyasar_payments.md Phases C + D)
+// -----------------------------------------------
+//
+// ⚠ NO AMOUNT EVER TRAVELS UP FROM THE CLIENT. The browser sends a `plan_id` and
+// receives an amount the server computed from `plans.price_sar` minus a
+// server-computed upgrade credit. Nothing in these shapes is a price input, and
+// nothing here should ever grow one.
+
+/**
+ * `payment_transactions.status`. `initiated` is the row before the browser form
+ * has created anything at Moyasar; `pending` is what `/verify` answers when the
+ * fetched payment is not yet terminal (the pre-3DS `on_completed` call).
+ */
+export type PaymentStatus =
+  | 'initiated'
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'refunded';
+
+/**
+ * `POST /payments/checkout` → everything the embedded form needs.
+ *
+ * The publishable key is served HERE rather than as a `NEXT_PUBLIC_*` build
+ * arg: it sidesteps the Docker build-arg trap (`project_domain_rayhanai`) and
+ * lets test↔live switch with an env change and no frontend rebuild.
+ */
+export interface PaymentCheckoutResponse {
+  /** Our `payment_transactions.payment_id` — travels as `metadata.payment_id`. */
+  payment_id: string;
+  /** ⚠ HALALAS. Hand to the form verbatim; divide by 100 only for display. */
+  amount_halalas: number;
+  /**
+   * Prorated credit for the remaining value of an active PAID plan being
+   * upgraded away from, already subtracted from `amount_halalas`. `"0.00"` for
+   * a fresh purchase, a same-plan stack, or a code/marketing-sourced
+   * subscription (promo grants must never convert into cash discounts).
+   *
+   * ⚠ SAR amounts arrive as 2-dp STRINGS ("77.91") — JSON numbers drop
+   * trailing zeros and floats are the wrong shape for money. `formatSar`
+   * accepts them directly; convert with `Number()` before any arithmetic.
+   */
+  credit_sar: string;
+  /** Arabic description shown inside the form and on the Moyasar receipt. */
+  description: string;
+  /** `pk_test_…` / `pk_live_…`. */
+  publishable_key: string;
+  /** Absolute URL Moyasar redirects the browser back to (`?id=<uuid>`). */
+  callback_url: string;
+}
+
+/**
+ * `POST /payments/verify` → the SYNC result, not a paid-assert.
+ *
+ * Called twice per purchase from two different moments (pre-3DS `on_completed`,
+ * then the callback page), so `pending` is an ordinary answer and not an error:
+ * it means "the id is now recorded, nothing granted yet".
+ *
+ * Only `status` is guaranteed. The rest is present when the server has it —
+ * typed optional on purpose so a backend that grows fields later cannot break
+ * this client, and so the callback page degrades to a generic success message
+ * rather than rendering «undefined».
+ */
+export interface PaymentVerifyResponse {
+  status: PaymentStatus;
+  /**
+   * Whether the term was actually applied. `status:"paid"` with
+   * `granted:false` = money in, grant pending — render «جارٍ التفعيل» and keep
+   * polling, NEVER a success screen (the webhook completes the grant).
+   */
+  granted?: boolean;
+  payment_id?: string | null;
+  /** Which plan was (or would be) granted — drives the retry CTA on failure. */
+  plan_id?: string | null;
+  plan_name_ar?: string | null;
+  /** ISO timestamp the granted term ends. */
+  expires_at?: string | null;
+  /** Arabic failure reason from the provider, when the status is `failed`. */
+  message?: string | null;
+}
+
+/** One row of `GET /payments/history` — the سجل المدفوعات receipts list. */
+export interface PaymentHistoryItem {
+  payment_id: string;
+  plan_id: string;
+  plan_name_ar?: string | null;
+  /** What was actually CHARGED (catalog price minus any upgrade credit).
+   *  2-dp string — see the note on `PaymentCheckoutResponse.credit_sar`. */
+  amount_sar: string;
+  /** VAT stamped at purchase — stored, never recomputed at display time. */
+  vat_amount_sar?: string | null;
+  /** Prorated upgrade credit deducted at checkout; `"0.00"`/null on a plain buy. */
+  upgrade_credit_sar?: string | null;
+  status: PaymentStatus;
+  created_at: string;
+  paid_at?: string | null;
+  refunded_at?: string | null;
+  /** What was returned after the processing fee — stamped on refund. */
+  refunded_amount_sar?: string | null;
+  /** The fee actually retained, as charged at the time (a later fee change
+   *  must not rewrite this row). */
+  refund_fee_sar?: string | null;
+  /**
+   * Server's own verdict on the 24-hour window. When present it WINS over the
+   * client's `paid_at` arithmetic — clocks disagree, and the server is the one
+   * that will enforce it. When absent the UI falls back to computing it.
+   */
+  refundable?: boolean;
+  /** ISO timestamp the refund window closes (server-computed, informational). */
+  refund_deadline?: string | null;
+}
+
+export interface PaymentHistoryResponse {
+  payments: PaymentHistoryItem[];
+}
+
+/** `POST /payments/{id}/refund` → the executed partial refund. */
+export interface PaymentRefundResponse {
+  payment_id: string;
+  status: PaymentStatus;
+  /** Amount actually returned to the card (charge − processing fee). 2-dp string. */
+  refunded_amount_sar: string;
+  refund_fee_sar: string;
+  /** Whether the granted term was undone alongside the money. */
+  revoked?: boolean;
+  /** Which `revoke_plan_grant` branch ran (`restored`, `subtracted`, …) — logged, not shown. */
+  revoke_action?: string | null;
+}

@@ -76,6 +76,13 @@ class ErrorCode(str, Enum):
     PLAN_ALREADY_ACTIVE = "PLAN_ALREADY_ACTIVE"  # active paid plan can't be overwritten
     REDEEM_LOCKED = "REDEEM_LOCKED"              # too many failed attempts (24h wall)
 
+    # Payments (Moyasar one-time checkout — moyasar_payments.md Phase C)
+    PAYMENT_PLAN_NOT_PURCHASABLE = "PAYMENT_PLAN_NOT_PURCHASABLE"  # 400 — unknown plan / plans.price_sar IS NULL
+    PAYMENT_DOWNGRADE_BLOCKED = "PAYMENT_DOWNGRADE_BLOCKED"        # 409 — a higher-ranked plan is still active
+    PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND"                        # 404 — no such payment for THIS caller (also: id unfetchable with our key)
+    PAYMENT_REFUND_WINDOW_CLOSED = "PAYMENT_REFUND_WINDOW_CLOSED"  # 409 — past the 24h window, or the row is not in a refundable state
+    PAYMENT_PROVIDER_ERROR = "PAYMENT_PROVIDER_ERROR"              # 400/502 — Moyasar refused / is unreachable / the payment disagrees with our row
+
     # Library entitlement (access tiers — Layer B refusals, all HTTP 402)
     LIBRARY_QUOTA_EXCEEDED = "LIBRARY_QUOTA_EXCEEDED"  # period allowance spent
     LIBRARY_FROZEN = "LIBRARY_FROZEN"                  # paid-era unlock, now on free

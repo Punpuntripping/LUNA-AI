@@ -8,6 +8,7 @@ import {
   Info,
   KeyRound,
   LogOut,
+  Receipt,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -36,6 +37,7 @@ import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 import { ConversationSettingsDialog } from "@/components/Settings/ConversationSettingsDialog";
 import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
+import { PaymentHistoryDialog } from "@/components/Settings/PaymentHistoryDialog";
 
 /**
  * عن ريحان expandable — a mirror of the public header's «عن ريحان» dropdown
@@ -69,6 +71,7 @@ export function SidebarFooter() {
   const [redeemOpen, setRedeemOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
 
   const handleLogout = async () => {
@@ -184,6 +187,22 @@ export function SidebarFooter() {
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
+                {/* سجل المدفوعات sits directly under ترقية باقتك — buy and
+                    receipts are the same errand, and the 24h refund button
+                    lives inside this dialog, so it must be findable without
+                    an email to support. */}
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => setReceiptsOpen(true)}
+                  data-testid="sidebar-settings-receipts-trigger"
+                >
+                  <span className="flex items-center gap-2">
+                    <Receipt className="h-4 w-4" />
+                    سجل المدفوعات
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
                 {/* «المكتبة القانونية» and «مكتبتي» deliberately do NOT live
                     here. Settings is for account-level actions; both are
                     content surfaces, so they belong in the nav — مكتبتي is a
@@ -262,6 +281,10 @@ export function SidebarFooter() {
           <AccountSettingsDialog
             open={accountOpen}
             onOpenChange={setAccountOpen}
+          />
+          <PaymentHistoryDialog
+            open={receiptsOpen}
+            onOpenChange={setReceiptsOpen}
           />
           <ThemeToggle />
           <Tooltip>

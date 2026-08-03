@@ -1,16 +1,25 @@
 import Link from "next/link";
 import { Check } from "lucide-react";
-import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { PRICING_PLANS } from "@/lib/pricing";
-import { PRIMARY_CTA_HREF, SUPPORT_EMAIL } from "./content";
+import { PlanPrice } from "@/components/pricing/PlanPrice";
+import { PlanCheckoutCta } from "@/components/pricing/PlanCheckoutCta";
+import {
+  PAYMENT_TRUST_NOTE,
+  PRICING_PLANS,
+  REFUND_POLICY_NOTE,
+} from "@/lib/pricing";
 
 /**
- * Pricing teaser on the landing page. Reuses ``PRICING_PLANS`` — the same source
- * of truth the full /pricing page renders — so the two never drift. Payment
- * isn't wired yet (access is activation-code based), so the cards lead to
- * signup and the footnote points at support + the full pricing page.
+ * Pricing teaser on the landing page. Reuses ``PRICING_PLANS`` and the shared
+ * ``PlanPrice`` / ``PlanCheckoutCta`` — the same pieces the full /pricing page
+ * renders — so the two surfaces cannot drift on a price, a term, or where the
+ * CTA leads.
+ *
+ * The «الدفع غير مُفعّل بعد · الوصول عبر رمز تفعيل» footnote that used to close
+ * this section is gone: self-serve checkout went live with the Moyasar Wave 1
+ * build, and a landing page that tells a visitor they cannot buy is worse than
+ * no footnote at all. Activation codes still work — they are just no longer the
+ * only door.
  */
 export function PricingSection() {
   return (
@@ -48,15 +57,11 @@ export function PricingSection() {
               <h3 className="text-lg font-bold text-foreground">{plan.nameAr}</h3>
               <p className="mt-1 text-sm text-muted-foreground">{plan.tagline}</p>
 
-              <div className="mt-5 flex items-end gap-1.5">
-                <span className="text-5xl font-bold leading-none tabular-nums text-foreground">
-                  {plan.price}
-                </span>
-                <RiyalSymbol className="mb-1 h-7 w-auto text-foreground" />
-                <span className="mb-1 text-sm text-muted-foreground">
-                  {plan.period}
-                </span>
-              </div>
+              <PlanPrice
+                price={plan.price}
+                period={plan.period}
+                className="mt-5"
+              />
               <p className="mt-2 text-xs text-muted-foreground">
                 {plan.billingNote}
               </p>
@@ -74,32 +79,20 @@ export function PricingSection() {
               </ul>
 
               <div className="mt-auto pt-7">
-                <Link
-                  href={PRIMARY_CTA_HREF}
-                  className={cn(
-                    buttonVariants({
-                      variant: plan.highlighted ? "default" : "outline",
-                    }),
-                    "w-full font-semibold",
-                  )}
-                >
-                  ابدأ الآن
-                </Link>
+                <PlanCheckoutCta
+                  planId={plan.id}
+                  highlighted={plan.highlighted}
+                />
               </div>
             </div>
           ))}
         </div>
 
-        {/* Activation-code notice + full-pricing link */}
+        {/* Pre-purchase disclosure + full-pricing link. Same two constants the
+            /pricing page and the refund dialog render — the fee is stated once
+            and shown everywhere. */}
         <p className="mt-8 text-center text-sm leading-relaxed text-muted-foreground">
-          الدفع والاشتراك غير مُفعّل بعد؛ الوصول حالياً عبر رمز تفعيل —{" "}
-          <a
-            href={`mailto:${SUPPORT_EMAIL}`}
-            dir="ltr"
-            className="font-medium text-primary underline-offset-4 hover:underline"
-          >
-            {SUPPORT_EMAIL}
-          </a>
+          {REFUND_POLICY_NOTE}
           {" · "}
           <Link
             href="/pricing"
@@ -107,6 +100,9 @@ export function PricingSection() {
           >
             تفاصيل الباقات الكاملة
           </Link>
+        </p>
+        <p className="mt-2 text-center text-xs leading-relaxed text-muted-foreground">
+          {PAYMENT_TRUST_NOTE}
         </p>
       </div>
     </section>

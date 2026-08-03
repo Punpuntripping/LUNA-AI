@@ -339,6 +339,16 @@ def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     settings = get_settings()
 
+    # Payment-provider mode guard — BEFORE anything else is built, because the
+    # failure mode it prevents is "charged real cards from a dev box".
+    # api.moyasar.com serves test and live from the SAME host; only the key
+    # prefix decides. This refuses to boot on (a) a secret/publishable key pair
+    # from different modes, or (b) any _live_ key outside production. With no
+    # Moyasar keys set it is a silent no-op and payments are simply closed.
+    from backend.app.services.payment_service import verify_moyasar_config
+
+    verify_moyasar_config(settings)
+
     application = FastAPI(
         title="Luna Legal AI — Backend",
         description="FastAPI backend for Luna Legal AI RAG application",
@@ -635,6 +645,20 @@ def create_app() -> FastAPI:
         plans_router,
         prefix="/api/v1",
         tags=["plans"],
+    )
+
+    # Payments — Moyasar one-time checkout (moyasar_payments.md Phase C).
+    # Mounted right after plans: they are two doors into the same
+    # user_subscriptions row (a code redemption and a purchase both end in
+    # grant_plan). POST /webhook/moyasar carries NO JWT dependency by design —
+    # it authenticates on a shared secret inside the body — so it must stay
+    # carved out of any edge challenge rule, like /internal/*.
+    from backend.app.api.payments import router as payments_router
+
+    application.include_router(
+        payments_router,
+        prefix="/api/v1/payments",
+        tags=["payments"],
     )
 
     # Templates router (قوالبي — per-user markdown templates)

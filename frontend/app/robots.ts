@@ -28,7 +28,18 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/chat", "/chats", "/cases", "/templates", "/login", "/auth"],
+        // `/pay` is the checkout flow: authed, zero SEO value, and its callback
+        // route carries a payment id on the query string — a URL that must
+        // never end up in an index or a crawler's URL inventory.
+        disallow: [
+          "/chat",
+          "/chats",
+          "/cases",
+          "/templates",
+          "/login",
+          "/auth",
+          "/pay",
+        ],
       },
       // One group per agent rather than a single multi-User-Agent block, so a
       // crawler with a sloppy parser cannot miss its own directive.
