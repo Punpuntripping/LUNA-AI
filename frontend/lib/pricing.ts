@@ -107,13 +107,13 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
 export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
 
 /**
- * ⚠ THE PROCESSING FEE MUST BE DISCLOSED BEFORE PURCHASE, NOT AT REFUND TIME.
- * An undisclosed deduction is a larger exposure than the fee itself, so this
- * clause belongs in three places and is rendered from this one constant in all
- * of them: /pricing near the CTA, the /pay checkout page, and the refund
- * confirmation dialog. /terms carries the long-form version.
+ * Shown ONLY at the refund action (PaymentHistoryDialog — owner decision
+ * 2026-08-04): out of context it reads as an anytime-refund promise.
+ * «أول ٢٤ ساعة من الاشتراك» anchors the window to the purchase, matching the
+ * server's paid_at arithmetic. /terms carries the long-form version.
  */
-export const REFUND_POLICY_NOTE = "استرداد خلال ٢٤ ساعة · رسوم معالجة ٢ ريال";
+export const REFUND_POLICY_NOTE =
+  "استرداد خلال أول ٢٤ ساعة من الاشتراك · رسوم معالجة ٢ ريال";
 
 /**
  * The trust claim, chosen over «لا نحفظ بطاقتك» — see the Phase E table in the
