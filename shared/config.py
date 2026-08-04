@@ -232,13 +232,20 @@ class Settings(BaseSettings):
     # domain isn't the registered one, so this must match the production host.
     MOYASAR_APPLEPAY_DOMAIN: str = "rayhanai.com"
 
-    # ── Receipt emails (Resend) ─────────────────────────────────────────────
-    # Plain «إيصال دفع» emails on paid/refunded transitions — NO tax language
-    # anywhere (the business holds no VAT registration; decision 2026-08-04).
+    # ── Receipt emails (Gmail SMTP — Google Workspace) ──────────────────────
+    # Plain «إيصال دفع» emails on paid/refunded transitions. Transport is the
+    # EXISTING Google Workspace for rayhanai.com (MX smtp.google.com, Google
+    # DKIM/SPF already in DNS — verified 2026-08-04), sending AS
+    # support@rayhanai.com so customer replies land in a real monitored inbox.
+    # RECEIPTS_SMTP_PASSWORD is a Google App Password (needs 2FA on the
+    # Workspace account), NOT the account password.
     # Fail-open-silently when unset: payments proceed, no email goes out, one
     # warning is logged. An email failure must never fail a payment.
-    RESEND_API_KEY: Optional[str] = None
-    RECEIPTS_FROM_EMAIL: str = "receipts@rayhanai.com"  # needs the domain verified in Resend (DKIM/SPF DNS)
+    RECEIPTS_SMTP_HOST: str = "smtp.gmail.com"
+    RECEIPTS_SMTP_PORT: int = 587
+    RECEIPTS_SMTP_USER: str = "support@rayhanai.com"   # the Workspace mailbox we authenticate as
+    RECEIPTS_SMTP_PASSWORD: Optional[str] = None        # Google App Password — the on/off switch
+    RECEIPTS_FROM_EMAIL: str = "support@rayhanai.com"   # From: header (must be the user or a Workspace alias)
 
     # ========================================
     # ENVIRONMENT

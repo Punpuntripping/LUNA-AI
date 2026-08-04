@@ -1,4 +1,9 @@
-"""Receipt emails — plain «إيصال دفع», sent via Resend on paid/refund.
+"""Receipt emails — plain «إيصال دفع», sent via Gmail SMTP on paid/refund.
+
+Transport is the existing Google Workspace for rayhanai.com (MX
+smtp.google.com; Google DKIM/SPF already in the zone — verified 2026-08-04).
+No third-party email API: sending AS support@rayhanai.com rides the domain's
+established reputation, and a customer's reply lands in a real inbox.
 
 NOT a tax invoice, deliberately (decision 2026-08-04): the business holds no
 VAT registration, so the receipt carries NO tax language — no فاتورة ضريبية,
@@ -20,16 +25,18 @@ Delivery rules:
   stamp (``receipt_sent_at`` / ``refund_receipt_sent_at``) is written with a
   conditional UPDATE first; only the caller that wins the claim sends. The
   verify path and the webhook path can race freely.
-* **Fail-open when unconfigured:** RESEND_API_KEY unset → log a warning and
-  return. Payments must not depend on the email vendor.
+* **Fail-open when unconfigured:** RECEIPTS_SMTP_PASSWORD unset → log a
+  warning and return. Payments must not depend on the email transport.
 """
 from __future__ import annotations
 
 import logging
+import smtplib
 from datetime import datetime, timezone
+from email.headerregistry import Address
+from email.message import EmailMessage
 from typing import Any, Optional
 
-import httpx
 from supabase import Client as SupabaseClient
 
 from shared.config import get_settings
@@ -37,8 +44,7 @@ from shared.db.run import run_db
 
 logger = logging.getLogger(__name__)
 
-_RESEND_URL = "https://api.resend.com/emails"
-_SEND_TIMEOUT_S = 8.0
+_SEND_TIMEOUT_S = 15.0
 
 # Display name on the From header. The address itself comes from settings.
 _FROM_DISPLAY = "ريحان"
@@ -203,20 +209,29 @@ def _fetch_receipt_no(supabase: SupabaseClient, payment_id: str) -> Optional[int
 # ───────────────────────────── sending ───────────────────────────────────
 
 
-async def _post_resend(to: str, subject: str, html: str) -> None:
+def _smtp_send_sync(to: str, subject: str, html: str) -> None:
+    """Blocking SMTP send — always called through ``run_db`` (thread offload).
+
+    STARTTLS on 587 against Google Workspace, authenticated with an App
+    Password. The message is multipart-ish minimal: HTML body with a plain
+    UTF-8 fallback line (some clients preview the text part).
+    """
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=_SEND_TIMEOUT_S) as client:
-        resp = await client.post(
-            _RESEND_URL,
-            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-            json={
-                "from": f"{_FROM_DISPLAY} <{settings.RECEIPTS_FROM_EMAIL}>",
-                "to": [to],
-                "subject": subject,
-                "html": html,
-            },
-        )
-        resp.raise_for_status()
+    local, _, domain = settings.RECEIPTS_FROM_EMAIL.partition("@")
+
+    msg = EmailMessage()
+    msg["From"] = Address(display_name=_FROM_DISPLAY, username=local, domain=domain)
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content("إيصال من ريحان — افتح الرسالة بعارض HTML.")
+    msg.add_alternative(html, subtype="html")
+
+    with smtplib.SMTP(
+        settings.RECEIPTS_SMTP_HOST, settings.RECEIPTS_SMTP_PORT, timeout=_SEND_TIMEOUT_S
+    ) as smtp:
+        smtp.starttls()
+        smtp.login(settings.RECEIPTS_SMTP_USER, settings.RECEIPTS_SMTP_PASSWORD or "")
+        smtp.send_message(msg)
 
 
 async def _send(
@@ -229,9 +244,9 @@ async def _send(
     """Shared claim → render → send skeleton. Swallows everything."""
     payment_id = payment_row.get("payment_id")
     try:
-        if not (get_settings().RESEND_API_KEY or "").strip():
+        if not (get_settings().RECEIPTS_SMTP_PASSWORD or "").strip():
             logger.warning(
-                "receipt email skipped (%s, payment=%s): RESEND_API_KEY unset",
+                "receipt email skipped (%s, payment=%s): RECEIPTS_SMTP_PASSWORD unset",
                 kind, payment_id,
             )
             return
@@ -269,7 +284,7 @@ async def _send(
                 paid_at=now,
             )
 
-        await _post_resend(recipient["email"], subject, html)
+        await run_db(_smtp_send_sync, recipient["email"], subject, html)
         logger.info("receipt email sent (%s): payment=%s no=%s", kind, payment_id, receipt_no)
     except Exception:
         # By design: a receipt failure must never surface into a payment path.
