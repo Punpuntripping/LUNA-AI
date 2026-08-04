@@ -783,16 +783,16 @@ def provider_refunds(monkeypatch):
     return calls
 
 
-def test_refund_deducts_the_two_riyal_fee(keys, provider_refunds):
+def test_refund_deducts_the_processing_fee(keys, provider_refunds):
     """Trap 11: a refund without an explicit amount refunds in full and gives
     the processing fee away."""
     db = FakeSupabase(sub("pro", source="payment", days_left=29))
     row = paid_row(db)
 
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
-    assert provider_refunds == [(MOYASAR_ID, 8790)]        # 8990 − 200
-    assert result["refunded_amount_sar"] == "87.90"
-    assert result["refund_fee_sar"] == "2.00"
+    assert provider_refunds == [(MOYASAR_ID, 8690)]        # 8990 − 300
+    assert result["refunded_amount_sar"] == "86.90"
+    assert result["refund_fee_sar"] == "3.00"
     assert result["status"] == "refunded"
 
 
@@ -813,7 +813,7 @@ def test_refund_of_an_upgrade_restores_the_prior_plan(keys, provider_refunds):
                    prior_expires_at=_iso(_now() + timedelta(days=26)))
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
     assert result["revoke_action"] == "restored"
-    assert result["refunded_amount_sar"] == "109.99"       # 111.99 − 2.00
+    assert result["refunded_amount_sar"] == "108.99"       # 111.99 − 3.00
 
 
 def test_refund_after_24h_is_refused(keys, provider_refunds):

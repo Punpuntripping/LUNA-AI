@@ -79,8 +79,8 @@ GET_RETRIES = 2
 
 CURRENCY = "SAR"
 VAT_RATE = Decimal("0.15")          # inclusive — net = charge / 1.15
-REFUND_FEE_SAR = Decimal("2.00")    # SERVER-side constant, never a client input
-REFUND_FEE_HALALAS = 200
+REFUND_FEE_SAR = Decimal("3.00")    # SERVER-side constant, never a client input (2→3, owner 2026-08-04 — covers Moyasar's ~1.73+1 SAR non-returned txn fee)
+REFUND_FEE_HALALAS = 300
 REFUND_WINDOW = timedelta(hours=24)
 MIN_HALALAS = 100                   # Moyasar's minimum chargeable amount
 MIN_CHARGE_SAR = Decimal("1.00")
