@@ -243,9 +243,9 @@ class Settings(BaseSettings):
     # warning is logged. An email failure must never fail a payment.
     RECEIPTS_SMTP_HOST: str = "smtp.gmail.com"
     RECEIPTS_SMTP_PORT: int = 587
-    RECEIPTS_SMTP_USER: str = "support@rayhanai.com"   # the Workspace mailbox we authenticate as
+    RECEIPTS_SMTP_USER: str = "noreply@rayhanai.com"   # the Workspace mailbox the app password belongs to (owner, 2026-08-04)
     RECEIPTS_SMTP_PASSWORD: Optional[str] = None        # Google App Password — the on/off switch
-    RECEIPTS_FROM_EMAIL: str = "support@rayhanai.com"   # From: header (must be the user or a Workspace alias)
+    RECEIPTS_FROM_EMAIL: str = "noreply@rayhanai.com"   # From: header — must be the authenticated user or its Send-as alias
 
     # ========================================
     # ENVIRONMENT
