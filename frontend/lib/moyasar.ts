@@ -62,8 +62,19 @@ export interface MoyasarApplePayConfig {
 }
 
 export interface MoyasarInitOptions {
-  /** CSS selector of the mount point (the form replaces its contents). */
-  element: string;
+  /**
+   * Mount point — pass the **DOM node**, not an id selector.
+   *
+   * ⚠ Verified on prod 2026-08-04: moyasar.js 1.19.0 OVERWRITES the
+   * container's `id` with its own (`mysr-form-form-el`) during mount, and its
+   * config object re-runs `querySelector` on the stored selector string on
+   * every internal access (e.g. RTL detection inside the amount label's
+   * render). An id selector therefore stops matching mid-mount and the form
+   * kills itself with "Element: null is not a valid element". Their docs'
+   * `.mysr-form` class selector survives the rewrite — but the node reference
+   * is immune by construction, so that is what we pass.
+   */
+  element: string | HTMLElement;
   /** ⚠ HALALAS, not SAR — a missed ×100 charges 0.49 SAR (plan trap 2). */
   amount: number;
   currency: string;

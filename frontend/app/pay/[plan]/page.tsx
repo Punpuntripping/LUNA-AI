@@ -91,8 +91,18 @@ export default function PayPlanPage() {
           typeof window.ApplePaySession !== "undefined" &&
           window.ApplePaySession.canMakePayments();
 
+        // ⚠ The NODE, never an id selector: moyasar.js clobbers the
+        // container's id during mount and lazily re-resolves the selector —
+        // an id string self-destructs mid-render (see MoyasarInitOptions).
+        const mountNode = document.getElementById(MOYASAR_FORM_ELEMENT_ID);
+        if (!mountNode) {
+          // The session just rendered the div in this same commit; missing it
+          // means the tree unmounted mid-flight. Treat as load failure.
+          throw new Error("moyasar mount node missing");
+        }
+
         moyasar.init({
-          element: `#${MOYASAR_FORM_ELEMENT_ID}`,
+          element: mountNode,
           // ⚠ HALALAS, straight from the server. Never `price * 100` here.
           amount: session.amount_halalas,
           currency: "SAR",
