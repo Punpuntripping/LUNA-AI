@@ -97,11 +97,14 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
 // Phase E — the copy that must appear before purchase
 // -----------------------------------------------
 
-// «شامل الضريبة» was DELETED (2026-08-04): the business holds no VAT
-// registration, so NO tax language may appear anywhere user-facing — pricing
-// cards, checkout, or receipts. Receipts are plain «إيصال دفع» (see
-// backend/app/services/receipt_service.py). Do not reintroduce a tax note
-// without a VAT registration number in hand.
+/**
+ * «شامل الضريبة» — kept per the owner (2026-08-04): prices are stated
+ * tax-inclusive on the UI. Deliberate asymmetry: the RECEIPT email still
+ * carries NO tax breakdown (plain إيصال دفع — no VAT registration to invoice
+ * under; backend/tests/test_receipts.py enforces that side). Don't "align"
+ * the two directions without the owner.
+ */
+export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
 
 /**
  * ⚠ THE PROCESSING FEE MUST BE DISCLOSED BEFORE PURCHASE, NOT AT REFUND TIME.

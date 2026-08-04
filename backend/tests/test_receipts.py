@@ -53,7 +53,10 @@ def test_payment_receipt_contents():
     assert "٤٩٫٩٠" in html                   # amount, Arabic-Indic, 2dp
     assert "٤ أغسطس ٢٠٢٦" in html            # receipt date
     assert STATEMENT_AR in html              # the بيان line
-    assert "رسوم معالجة ٢ ريال" in html      # refund clause in the footer
+    # Owner (2026-08-04): NO refund/fee copy in the purchase receipt — the
+    # policy surfaces only at the refund action inside the app.
+    assert "استرداد" not in html
+    assert "رسوم" not in html
 
 
 def test_refund_receipt_contents():

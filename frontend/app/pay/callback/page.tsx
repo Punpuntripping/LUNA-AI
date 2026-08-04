@@ -6,7 +6,6 @@ import { AlertTriangle, CheckCircle2, Clock, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useVerifyPayment } from "@/hooks/use-payments";
 import { useAuthStore } from "@/stores/auth-store";
-import { REFUND_POLICY_NOTE } from "@/lib/pricing";
 import type { PaymentVerifyResponse } from "@/types";
 
 /**
@@ -206,7 +205,8 @@ export default function PayCallbackPage() {
           <Link href="/chat">
             <Button data-testid="pay-success-cta">ابدأ الاستخدام</Button>
           </Link>
-          <p className="text-xs text-muted-foreground">{REFUND_POLICY_NOTE}</p>
+          {/* No refund copy on the success screen (owner, 2026-08-04) — it
+              reads as an invitation. It lives at the refund action only. */}
         </>
       )}
 

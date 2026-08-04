@@ -95,7 +95,8 @@ def _shell(title: str, inner: str) -> str:
       {inner}
     </div>
     <div style="text-align:center;font-size:12px;color:#8A8378;padding-top:20px;line-height:1.9;">
-      يمكنك طلب استرداد المبلغ خلال ٢٤ ساعة من الشراء · رسوم معالجة ٢ ريال<br/>
+      <!-- NO refund/fee copy here (owner, 2026-08-04): refund terms appear
+           only at the refund action itself, inside the app. -->
       <a href="https://rayhanai.com" style="color:#3D5A4D;text-decoration:none;">rayhanai.com</a>
       &nbsp;·&nbsp;
       <a href="mailto:support@rayhanai.com" style="color:#3D5A4D;text-decoration:none;" dir="ltr">support@rayhanai.com</a>

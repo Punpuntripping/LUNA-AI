@@ -6,7 +6,6 @@ import { PlanCheckoutCta } from "@/components/pricing/PlanCheckoutCta";
 import {
   PAYMENT_TRUST_NOTE,
   PRICING_PLANS,
-  REFUND_POLICY_NOTE,
 } from "@/lib/pricing";
 
 export const metadata: Metadata = {
@@ -88,13 +87,10 @@ export default function PricingPage() {
           ))}
         </div>
 
-        {/* Phase E — the two clauses that must be visible BEFORE purchase.
-            The processing fee in particular: disclosing a deduction only at
-            refund time is a bigger exposure than the fee itself. */}
+        {/* Refund terms deliberately absent here (owner, 2026-08-04) — they
+            surface only at the refund action itself, in the receipts dialog,
+            where they can't be misread as an anytime-refund promise. */}
         <div className="mx-auto mt-8 flex max-w-2xl flex-col items-center gap-2 text-center">
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {REFUND_POLICY_NOTE}
-          </p>
           <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
             <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
             <span>{PAYMENT_TRUST_NOTE}</span>

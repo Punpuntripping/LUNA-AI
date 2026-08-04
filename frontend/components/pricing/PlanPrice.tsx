@@ -1,5 +1,5 @@
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { splitPrice } from "@/lib/pricing";
+import { VAT_INCLUSIVE_NOTE } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 interface PlanPriceProps {
@@ -14,30 +14,27 @@ interface PlanPriceProps {
  * The price block shared by /pricing and the landing teaser — one component so
  * the two surfaces cannot disagree about what a plan costs.
  *
- * The fractional part renders at `text-2xl` against the integer's `text-5xl`.
- * That is not decoration: «١٨٩٫٩٠» at a uniform `text-5xl` is wide enough to
- * reflow the three-card grid at the md breakpoint, which is what made the
- * repricing from «١٨٩» a layout change and not just a copy change.
+ * The price renders as ONE piece at a uniform size (owner, 2026-08-04): the
+ * earlier big-integer/small-fraction split read as «٩٠٫» colliding with the
+ * riyal symbol in RTL — ugly and ambiguous on a payment surface. `text-4xl`
+ * (not 5xl) keeps «١٨٩٫٩٠» from reflowing the three-card grid at md.
  *
- * NO tax language here (decision 2026-08-04): the business holds no VAT
- * registration, so «شامل الضريبة» must not appear anywhere — the price is
- * simply the price. Receipts are plain «إيصال دفع» for the same reason.
+ * «شامل الضريبة» is kept (owner, 2026-08-04 — prices are stated
+ * tax-inclusive). Note the asymmetry and don't "fix" it: the RECEIPT email
+ * still carries no tax breakdown (backend/tests/test_receipts.py enforces
+ * that side).
  */
 export function PlanPrice({ price, period, className }: PlanPriceProps) {
-  const { whole, fraction } = splitPrice(price);
-
   return (
     <div className={cn("flex flex-col gap-1", className)}>
       <div className="flex items-end gap-1.5">
-        <span className="flex items-baseline font-bold leading-none tabular-nums text-foreground">
-          <span className="text-5xl leading-none">{whole}</span>
-          {fraction && (
-            <span className="text-2xl leading-none">{fraction}</span>
-          )}
+        <span className="text-4xl font-bold leading-none tabular-nums text-foreground">
+          {price}
         </span>
-        <RiyalSymbol className="mb-1 h-7 w-auto text-foreground" />
-        <span className="mb-1 text-sm text-muted-foreground">{period}</span>
+        <RiyalSymbol className="mb-0.5 h-6 w-auto text-foreground" />
+        <span className="mb-0.5 text-sm text-muted-foreground">{period}</span>
       </div>
+      <p className="text-xs text-muted-foreground">{VAT_INCLUSIVE_NOTE}</p>
     </div>
   );
 }

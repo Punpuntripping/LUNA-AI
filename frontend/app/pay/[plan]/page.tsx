@@ -12,7 +12,7 @@ import {
 } from "@/lib/moyasar";
 import {
   PAYMENT_TRUST_NOTE,
-  REFUND_POLICY_NOTE,
+  VAT_INCLUSIVE_NOTE,
   findPricingPlan,
   formatHalalas,
   formatSar,
@@ -221,11 +221,14 @@ export default function PayPlanPage() {
         )}
 
         <div className="mt-1 flex items-end justify-between gap-3 border-t border-border pt-3">
-          {/* No tax note (2026-08-04): no VAT registration → no tax language
-              anywhere. The amount is simply the amount. */}
-          <span className="text-sm font-semibold text-foreground">
-            المبلغ المستحق
-          </span>
+          <div className="flex flex-col">
+            <span className="text-sm font-semibold text-foreground">
+              المبلغ المستحق
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {VAT_INCLUSIVE_NOTE}
+            </span>
+          </div>
           <span
             className="flex items-center gap-1.5 text-3xl font-bold leading-none tabular-nums text-foreground"
             data-testid="pay-amount-due"
@@ -312,11 +315,10 @@ export default function PayPlanPage() {
         </section>
       )}
 
-      {/* Phase E — both clauses, on the screen where the money moves. */}
+      {/* Refund terms are deliberately NOT here (owner, 2026-08-04): shown
+          only at the refund action itself (PaymentHistoryDialog), where they
+          can't be misread as a general anytime-refund promise. */}
       <footer className="flex flex-col gap-2 border-t border-border pt-5">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {REFUND_POLICY_NOTE}
-        </p>
         <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
           <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
           <span>{PAYMENT_TRUST_NOTE}</span>

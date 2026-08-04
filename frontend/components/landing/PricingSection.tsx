@@ -6,7 +6,6 @@ import { PlanCheckoutCta } from "@/components/pricing/PlanCheckoutCta";
 import {
   PAYMENT_TRUST_NOTE,
   PRICING_PLANS,
-  REFUND_POLICY_NOTE,
 } from "@/lib/pricing";
 
 /**
@@ -88,12 +87,9 @@ export function PricingSection() {
           ))}
         </div>
 
-        {/* Pre-purchase disclosure + full-pricing link. Same two constants the
-            /pricing page and the refund dialog render — the fee is stated once
-            and shown everywhere. */}
+        {/* Refund terms deliberately absent (owner, 2026-08-04) — they appear
+            only at the refund action in the receipts dialog. */}
         <p className="mt-8 text-center text-sm leading-relaxed text-muted-foreground">
-          {REFUND_POLICY_NOTE}
-          {" · "}
           <Link
             href="/pricing"
             className="font-medium text-primary underline-offset-4 hover:underline"
