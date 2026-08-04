@@ -80,6 +80,17 @@ export default function PayPlanPage() {
         const moyasar = await loadMoyasarForm();
         if (cancelled) return;
 
+        // ⚠ Apple Pay must be CAPABILITY-GATED, not merely configured. Verified
+        // on prod 2026-08-04: with `methods: [...,'applepay']` in a browser
+        // without `ApplePaySession`, moyasar.js 1.19.0 does not skip the method
+        // — it dies mid-render ("Element: null is not a valid element") and the
+        // ENTIRE form, card fields included, never appears. Same init without
+        // 'applepay' renders fine. So the method is included only where Apple
+        // hardware can actually use it (Safari exposes ApplePaySession).
+        const canApplePay =
+          typeof window.ApplePaySession !== "undefined" &&
+          window.ApplePaySession.canMakePayments();
+
         moyasar.init({
           element: `#${MOYASAR_FORM_ELEMENT_ID}`,
           // ⚠ HALALAS, straight from the server. Never `price * 100` here.
@@ -91,18 +102,21 @@ export default function PayPlanPage() {
           metadata: { payment_id: session.payment_id },
           // STC Pay is excluded by omission (decision 2026-08-03) — `methods`
           // is an allowlist, so re-adding it later is one array entry.
-          methods: ["creditcard", "applepay"],
+          methods: canApplePay ? ["creditcard", "applepay"] : ["creditcard"],
           supported_networks: ["mada", "visa", "mastercard"],
           language: "ar",
-          apple_pay: {
-            country: "SA",
-            label: "ريحان",
-            // Apple requires merchant validation to originate from a server, so
-            // this points at our backend, which proxies Moyasar's
-            // `GET /v1/applepay/initiate`. The button only renders in Safari on
-            // Apple hardware — its absence elsewhere is correct, not a bug.
-            validate_merchant_url: `${getApiBase()}/api/v1/payments/applepay/session`,
-          },
+          ...(canApplePay
+            ? {
+                apple_pay: {
+                  country: "SA",
+                  label: "ريحان",
+                  // Apple requires merchant validation to originate from a
+                  // server, so this points at our backend, which proxies
+                  // Moyasar's `GET /v1/applepay/initiate`.
+                  validate_merchant_url: `${getApiBase()}/api/v1/payments/applepay/session`,
+                },
+              }
+            : {}),
           on_completed: async (payment: MoyasarPayment) => {
             // Fire-and-forget by design. A failure here must NOT abort the
             // payment: the form treats a rejected `on_completed` as a failed

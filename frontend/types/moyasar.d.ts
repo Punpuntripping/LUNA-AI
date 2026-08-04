@@ -14,6 +14,15 @@ import type { MoyasarGlobal } from "@/lib/moyasar";
 declare global {
   interface Window {
     Moyasar?: MoyasarGlobal;
+    /**
+     * Safari-only Apple global. Its PRESENCE is the capability gate for
+     * offering Apple Pay — moyasar.js 1.19.0 kills the whole form (verified
+     * 2026-08-04) if 'applepay' is in `methods` on a browser without it.
+     * Minimal surface: only what the gate calls.
+     */
+    ApplePaySession?: {
+      canMakePayments(): boolean;
+    };
   }
 }
 
