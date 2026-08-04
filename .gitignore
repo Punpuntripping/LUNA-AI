@@ -33,6 +33,8 @@ backend/tests/*
 # never-5xx webhook contract, and the boot guard that stops a live key charging
 # real cards from a dev box.
 !backend/tests/test_payments.py
+# receipts guard the NO-TAX-LANGUAGE rule (no VAT registration) — durable.
+!backend/tests/test_receipts.py
 # edge-hardening suites are durable — they pin the deploy gate (origin lock must
 # never 403 /api/v1/health, or every Railway deploy fails), the CORS-ordering
 # invariant that once took production logins down, and the rate-limit bucket

@@ -97,8 +97,11 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
 // Phase E — the copy that must appear before purchase
 // -----------------------------------------------
 
-/** Prices are VAT-inclusive (15%). Shown on the card, next to the amount. */
-export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
+// «شامل الضريبة» was DELETED (2026-08-04): the business holds no VAT
+// registration, so NO tax language may appear anywhere user-facing — pricing
+// cards, checkout, or receipts. Receipts are plain «إيصال دفع» (see
+// backend/app/services/receipt_service.py). Do not reintroduce a tax note
+// without a VAT registration number in hand.
 
 /**
  * ⚠ THE PROCESSING FEE MUST BE DISCLOSED BEFORE PURCHASE, NOT AT REFUND TIME.

@@ -56,6 +56,11 @@ from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
 
+from backend.app.services.receipt_service import (
+    send_payment_receipt,
+    send_refund_receipt,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── provider constants ───────────────────────────────────────────────────────
@@ -948,6 +953,11 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         (granted or {}).get("expires_at"),
     )
 
+    # إيصال دفع — plain receipt email, NO tax language (receipt_service owns
+    # the rules). Self-claiming (at-most-once across verify/webhook races) and
+    # never raises — a lost email must not fail a payment.
+    await send_payment_receipt(supabase, updated)
+
     return {
         "status": "paid",
         "payment_id": payment_id,
@@ -1003,6 +1013,11 @@ async def _mark_refunded(supabase: SupabaseClient, row: dict, fetched: dict) -> 
         )
     action = await run_db(_revoke_plan_grant, supabase, payment_id)
     logger.info("payment refunded: payment=%s revoke_action=%s", payment_id, action)
+
+    # إيصال استرداد — self-claiming, so if the self-serve route already sent
+    # it this is a no-op. Never raises.
+    await send_refund_receipt(supabase, {**row, "status": "refunded"})
+
     return {
         "status": "refunded",
         "payment_id": payment_id,
@@ -1342,6 +1357,9 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
         "refund complete: payment=%s user=%s refunded=%s fee=%s revoke_action=%s",
         payment_id, user_id, refunded_sar, REFUND_FEE_SAR, revoke_action,
     )
+
+    # إيصال استرداد — self-claiming + never raises (see receipt_service).
+    await send_refund_receipt(supabase, updated)
 
     summary = transaction_summary(updated)
     summary["revoked"] = revoke_action in REVOKE_ACTIONS_OK

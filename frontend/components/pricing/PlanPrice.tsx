@@ -1,5 +1,5 @@
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { splitPrice, VAT_INCLUSIVE_NOTE } from "@/lib/pricing";
+import { splitPrice } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 interface PlanPriceProps {
@@ -19,8 +19,9 @@ interface PlanPriceProps {
  * reflow the three-card grid at the md breakpoint, which is what made the
  * repricing from «١٨٩» a layout change and not just a copy change.
  *
- * «شامل الضريبة» sits here rather than in `billingNote` because it qualifies the
- * NUMBER, not the billing model, and it must appear wherever a price does.
+ * NO tax language here (decision 2026-08-04): the business holds no VAT
+ * registration, so «شامل الضريبة» must not appear anywhere — the price is
+ * simply the price. Receipts are plain «إيصال دفع» for the same reason.
  */
 export function PlanPrice({ price, period, className }: PlanPriceProps) {
   const { whole, fraction } = splitPrice(price);
@@ -37,7 +38,6 @@ export function PlanPrice({ price, period, className }: PlanPriceProps) {
         <RiyalSymbol className="mb-1 h-7 w-auto text-foreground" />
         <span className="mb-1 text-sm text-muted-foreground">{period}</span>
       </div>
-      <p className="text-xs text-muted-foreground">{VAT_INCLUSIVE_NOTE}</p>
     </div>
   );
 }

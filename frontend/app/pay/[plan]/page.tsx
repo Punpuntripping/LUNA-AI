@@ -13,7 +13,6 @@ import {
 import {
   PAYMENT_TRUST_NOTE,
   REFUND_POLICY_NOTE,
-  VAT_INCLUSIVE_NOTE,
   findPricingPlan,
   formatHalalas,
   formatSar,
@@ -222,14 +221,11 @@ export default function PayPlanPage() {
         )}
 
         <div className="mt-1 flex items-end justify-between gap-3 border-t border-border pt-3">
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold text-foreground">
-              المبلغ المستحق
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {VAT_INCLUSIVE_NOTE}
-            </span>
-          </div>
+          {/* No tax note (2026-08-04): no VAT registration → no tax language
+              anywhere. The amount is simply the amount. */}
+          <span className="text-sm font-semibold text-foreground">
+            المبلغ المستحق
+          </span>
           <span
             className="flex items-center gap-1.5 text-3xl font-bold leading-none tabular-nums text-foreground"
             data-testid="pay-amount-due"

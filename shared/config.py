@@ -232,6 +232,14 @@ class Settings(BaseSettings):
     # domain isn't the registered one, so this must match the production host.
     MOYASAR_APPLEPAY_DOMAIN: str = "rayhanai.com"
 
+    # ── Receipt emails (Resend) ─────────────────────────────────────────────
+    # Plain «إيصال دفع» emails on paid/refunded transitions — NO tax language
+    # anywhere (the business holds no VAT registration; decision 2026-08-04).
+    # Fail-open-silently when unset: payments proceed, no email goes out, one
+    # warning is logged. An email failure must never fail a payment.
+    RESEND_API_KEY: Optional[str] = None
+    RECEIPTS_FROM_EMAIL: str = "receipts@rayhanai.com"  # needs the domain verified in Resend (DKIM/SPF DNS)
+
     # ========================================
     # ENVIRONMENT
     # ========================================
