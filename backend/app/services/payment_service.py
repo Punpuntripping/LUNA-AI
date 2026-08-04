@@ -478,7 +478,11 @@ def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict
     # read as "no plan", not as a 500 on the checkout page.
     res = (
         supabase.table("user_subscriptions")
-        .select("plan_id, source, started_at, expires_at, status")
+        # NO `status` here: migration 091 DROPPED user_subscriptions.status —
+        # it exists only on the user_subscriptions_live VIEW, derived at read
+        # time. This code derives `active` from expires_at itself (below) and
+        # never needed it; selecting it 42703s the whole checkout.
+        .select("plan_id, source, started_at, expires_at")
         .eq("user_id", user_id)
         .limit(1)
         .execute()

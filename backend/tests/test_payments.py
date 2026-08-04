@@ -458,9 +458,15 @@ def test_unpurchasable_plans_rejected(keys, plan_id):
 
 
 def test_checkout_503s_when_unconfigured(monkeypatch):
+    # delenv alone is not enough: pydantic-settings ALSO reads the repo .env
+    # file, which carries real test keys on dev machines. Null the attributes
+    # on the cached instance so the test is hermetic regardless of .env.
     monkeypatch.delenv("MOYASAR_SECRET_KEY", raising=False)
     monkeypatch.delenv("MOYASAR_PUBLISHABLE_KEY", raising=False)
     get_settings.cache_clear()
+    _s = get_settings()
+    monkeypatch.setattr(_s, "MOYASAR_SECRET_KEY", None)
+    monkeypatch.setattr(_s, "MOYASAR_PUBLISHABLE_KEY", None)
     try:
         with pytest.raises(LunaHTTPException) as exc:
             checkout(FakeSupabase(sub("free")), "pro")
