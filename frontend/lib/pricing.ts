@@ -113,7 +113,7 @@ export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
  * server's paid_at arithmetic. /terms carries the long-form version.
  */
 export const REFUND_POLICY_NOTE =
-  "استرداد خلال أول ٢٤ ساعة من الاشتراك · رسوم معالجة ٣ ريال";
+  "استرداد خلال أول ٢٤ ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + ٢ ريال";
 
 /**
  * The trust claim, chosen over «لا نحفظ بطاقتك» — see the Phase E table in the
@@ -136,7 +136,7 @@ export const PAYMENT_TRUST_NOTE =
  * show the arithmetic *before* the user commits: someone who expects 49.90 back
  * and receives 47.90 files a complaint; someone who agreed to 47.90 does not.
  */
-export const REFUND_FEE_SAR = 3; // 2→3 (owner 2026-08-04) — MUST match backend payment_service.REFUND_FEE_SAR
+export const REFUND_FEE_SAR = 2; // FALLBACK ONLY — the real deduction is quoted per-payment by the server (refund_quote_fee_sar): provider fee + Moyasar refund fee + this 2 SAR margin
 
 /** How long after `paid_at` a self-serve refund stays available. */
 export const REFUND_WINDOW_HOURS = 24;
@@ -174,7 +174,7 @@ export function formatHalalas(halalas: number): string {
  * Same digits, but without forced decimals — «٢», not «٢٫٠٠».
  *
  * Used ONLY for the processing fee, so that the refund confirmation dialog
- * reads «رسوم معالجة ٣ ريال», character-for-character identical to the
+ * reads the same fee wording, character-for-character identical to the
  * `REFUND_POLICY_NOTE` the user was shown before they bought. A fee that was
  * disclosed as «٢» and confirmed as «٢٫٠٠» is the same number and a worse
  * disclosure — the reader has to stop and check that it is the same number,

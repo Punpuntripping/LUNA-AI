@@ -79,8 +79,51 @@ GET_RETRIES = 2
 
 CURRENCY = "SAR"
 VAT_RATE = Decimal("0.15")          # inclusive — net = charge / 1.15
-REFUND_FEE_SAR = Decimal("3.00")    # SERVER-side constant, never a client input (2→3, owner 2026-08-04 — covers Moyasar's ~1.73+1 SAR non-returned txn fee)
-REFUND_FEE_HALALAS = 300
+# ── Refund fee: FULL COST RECOVERY + a flat 2 SAR margin (owner 2026-08-04) ──
+#
+# Moyasar support confirmed in writing (2026-08-05) that a refund costs the
+# merchant TWICE, and neither cost is recoverable:
+#   1. the ORIGINAL transaction fee is never returned (card schemes already
+#      did the work) — e.g. 1.73 SAR on a 49.90 mada charge; and
+#   2. a FLAT refund-execution fee of 1.00 + 15% VAT = 1.15 SAR, charged the
+#      same for full or partial refunds, on every card network.
+# Their worked example: 49.90 in → 48.17 credited; refund 46.90 → 48.17 −
+# 46.90 − 1.15 = 0.12 SAR left. A flat 3 SAR fee was therefore break-even by
+# accident, not by design.
+#
+# So the deduction is computed PER PAYMENT from the provider's own reported
+# fee (``raw_payload.fee``, halalas — the authoritative number for THAT card
+# network and plan price), never from a rate we assume:
+#
+#     refund_fee = original_provider_fee + REFUND_EXECUTION_FEE + MARGIN
+#
+# If ``fee`` is missing from the stored payload (older rows, provider change),
+# fall back to a conservative flat figure rather than silently under-charging.
+REFUND_EXECUTION_FEE_HALALAS = 115   # Moyasar's flat refund fee, VAT included
+REFUND_MARGIN_HALALAS = 200          # our 2 SAR, the only part that is margin
+REFUND_FEE_FALLBACK_HALALAS = 490    # used only when raw_payload.fee is absent
+
+
+def _refund_fee_halalas(row: dict) -> int:
+    """Total deduction for THIS payment: provider costs + our 2 SAR margin.
+
+    The provider fee is read from the stored ``raw_payload`` — the value
+    Moyasar itself reported for the original charge — so mada vs Visa and
+    49.90 vs 189.90 are each recovered exactly, with no rate table to drift.
+    """
+    payload = row.get("raw_payload") or {}
+    provider_fee = payload.get("fee") if isinstance(payload, dict) else None
+    try:
+        provider_fee_halalas = int(provider_fee)
+    except (TypeError, ValueError):
+        logger.warning(
+            "refund fee: payment=%s has no usable raw_payload.fee — using fallback",
+            row.get("payment_id"),
+        )
+        return REFUND_FEE_FALLBACK_HALALAS
+    if provider_fee_halalas < 0:
+        return REFUND_FEE_FALLBACK_HALALAS
+    return provider_fee_halalas + REFUND_EXECUTION_FEE_HALALAS + REFUND_MARGIN_HALALAS
 REFUND_WINDOW = timedelta(hours=24)
 MIN_HALALAS = 100                   # Moyasar's minimum chargeable amount
 MIN_CHARGE_SAR = Decimal("1.00")
@@ -715,6 +758,22 @@ def transaction_summary(row: dict, plan_name_ar: Optional[str] = None) -> dict:
         "updated_at": row.get("updated_at"),
         "refundable": refundable,
         "refund_deadline": deadline.isoformat() if deadline else None,
+        # What a refund WOULD cost and return, quoted per-payment so the
+        # confirm dialog shows the true numbers instead of a guessed flat fee
+        # (the deduction is provider-fee-dependent — see _refund_fee_halalas).
+        # Only meaningful while `refundable`; null afterwards so the UI cannot
+        # display a stale quote next to an already-refunded row.
+        "refund_quote_fee_sar": (
+            _money(Decimal(_refund_fee_halalas(row)) / Decimal(100)) if refundable else None
+        ),
+        "refund_quote_amount_sar": (
+            _money(
+                (Decimal(to_halalas(row.get("amount_sar")) - _refund_fee_halalas(row)))
+                / Decimal(100)
+            )
+            if refundable
+            else None
+        ),
     }
 
 
@@ -1290,7 +1349,8 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
         )
 
     charged_halalas = to_halalas(row.get("amount_sar"))
-    refund_halalas = charged_halalas - REFUND_FEE_HALALAS
+    fee_halalas = _refund_fee_halalas(row)
+    refund_halalas = charged_halalas - fee_halalas
     if refund_halalas < MIN_HALALAS:
         # Impossible with today's catalog (min charge 49.90); a future cheap
         # plan must not be able to produce a zero/negative refund.
@@ -1318,6 +1378,7 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
         )
 
     refunded_sar = q2(Decimal(refund_halalas) / Decimal(100))
+    fee_sar = q2(Decimal(fee_halalas) / Decimal(100))
 
     # Provider-side refund SUCCEEDED past this point. Any failure below leaves
     # money returned with our row still 'paid' — recoverable, because the
@@ -1328,7 +1389,7 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
         payment_id,
         {
             "status": "refunded",
-            "refund_fee_sar": _money(REFUND_FEE_SAR),
+            "refund_fee_sar": _money(fee_sar),
             "refunded_amount_sar": _money(refunded_sar),
             "raw_payload": provider_response,
         },
@@ -1348,14 +1409,14 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
             "event": "refunded",
             "plan_id": row.get("plan_id"),
             "refunded_amount_sar": _money(refunded_sar),
-            "refund_fee_sar": _money(REFUND_FEE_SAR),
+            "refund_fee_sar": _money(fee_sar),
             "revoke_action": revoke_action,
         },
     )
 
     logger.info(
         "refund complete: payment=%s user=%s refunded=%s fee=%s revoke_action=%s",
-        payment_id, user_id, refunded_sar, REFUND_FEE_SAR, revoke_action,
+        payment_id, user_id, refunded_sar, fee_sar, revoke_action,
     )
 
     # إيصال استرداد — self-claiming + never raises (see receipt_service).

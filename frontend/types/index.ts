@@ -1381,6 +1381,14 @@ export interface PaymentHistoryItem {
   refundable?: boolean;
   /** ISO timestamp the refund window closes (server-computed, informational). */
   refund_deadline?: string | null;
+  /**
+   * Server-quoted refund arithmetic, present only while `refundable`.
+   * The deduction is NOT a flat constant — it recovers the provider fee
+   * Moyasar charged for this specific payment plus their flat refund-execution
+   * fee plus our margin, so only the server can compute it. 2-dp strings.
+   */
+  refund_quote_fee_sar?: string | null;
+  refund_quote_amount_sar?: string | null;
 }
 
 export interface PaymentHistoryResponse {

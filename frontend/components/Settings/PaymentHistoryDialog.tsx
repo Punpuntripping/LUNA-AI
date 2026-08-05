@@ -189,12 +189,27 @@ export function PaymentHistoryDialog({
     }
   };
 
-  // The exact arithmetic, computed for the row being confirmed. Shown BEFORE
-  // the user commits: someone who expects 49.90 back and receives 47.90 files a
-  // complaint; someone who agreed to 47.90 does not.
+  // The exact arithmetic for the row being confirmed, shown BEFORE the user
+  // commits: someone who expects 49.90 back and receives 45.02 files a
+  // complaint; someone who agreed to 45.02 does not.
+  //
+  // ⚠ The numbers come from the SERVER (`refund_quote_*`). The deduction is
+  // not a flat constant — it recovers the provider fee Moyasar actually
+  // charged for THAT payment (mada vs Visa, 49.90 vs 189.90) plus their flat
+  // refund-execution fee, plus our margin. The client cannot compute it, and
+  // guessing would put a wrong number in front of a user about to lose money.
   const refundMath = useMemo(() => {
     if (!confirming) return null;
     const gross = Number(confirming.amount_sar);
+    if (confirming.refund_quote_amount_sar != null) {
+      return {
+        gross,
+        net: Number(confirming.refund_quote_amount_sar),
+        fee: Number(confirming.refund_quote_fee_sar ?? 0),
+      };
+    }
+    // No quote (older row / server without the field): fall back to the
+    // margin-only figure rather than blocking the refund outright.
     const net = Math.max(0, gross - REFUND_FEE_SAR);
     return { gross, net, fee: REFUND_FEE_SAR };
   }, [confirming]);
