@@ -113,7 +113,7 @@ export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
  * server's paid_at arithmetic. /terms carries the long-form version.
  */
 export const REFUND_POLICY_NOTE =
-  "استرداد خلال أول ٢٤ ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + ٢ ريال";
+  "استرداد خلال أول ٢٤ ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + ٠٫٥٠ ريال";
 
 /**
  * The trust claim, chosen over «لا نحفظ بطاقتك» — see the Phase E table in the
@@ -136,7 +136,7 @@ export const PAYMENT_TRUST_NOTE =
  * show the arithmetic *before* the user commits: someone who expects 49.90 back
  * and receives 47.90 files a complaint; someone who agreed to 47.90 does not.
  */
-export const REFUND_FEE_SAR = 2; // FALLBACK ONLY — the real deduction is quoted per-payment by the server (refund_quote_fee_sar): provider fee + Moyasar refund fee + this 2 SAR margin
+export const REFUND_FEE_SAR = 3.4; // FALLBACK ONLY (matches the server's REFUND_FEE_FALLBACK_HALALAS) — the real deduction is quoted per payment via refund_quote_fee_sar: provider fee + Moyasar's 1.15 refund fee + a 0.50 margin
 
 /** How long after `paid_at` a self-serve refund stays available. */
 export const REFUND_WINDOW_HOURS = 24;

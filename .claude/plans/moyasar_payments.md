@@ -30,7 +30,7 @@ accurate except §3, see below) and `.claude/plans/subscription_system_state.md`
 | Card storage | **Tokenization approved** (2026-08-03) — cards stored **at Moyasar**, never at Rayhan | Wave 2 confirmed; needs consent copy, cancel-renewal flow, and processor disclosure |
 | Trust claim | «جميع العمليات المالية تتم عبر مُيسّر» — **not** «لا نحفظ بطاقتك» | See Phase E for the exact defensible wording and what it may not say |
 | Prices | **49.90 / 89.90 / 189.90**, VAT-inclusive (15%) | Repriced 2026-08-03 (x.00 → x.99 → **x.90** final). Charge amount == `plans.price_sar`; both the DB and `lib/pricing.ts` change together |
-| Refunds | **Refundable within 24 hours of purchase**, minus a **3 SAR processing fee** (2→3, owner 2026-08-04 — covers Moyasar's non-returned ~1.73+1 SAR txn fee) | A refund must **revoke the granted term** — this settles the open question in `financial_integration.md` §4. The fee makes every refund a **partial** refund → credit-note VAT, see Phase B |
+| Refunds | **Refundable within 24 hours of purchase**, minus a **per-payment fee = provider fee + 1.15 + 0.50** (owner 2026-08-05; Moyasar confirmed the original txn fee is never returned AND a flat 1.15 refund-execution fee applies) | A refund must **revoke the granted term** — this settles the open question in `financial_integration.md` §4. The fee makes every refund a **partial** refund → credit-note VAT, see Phase B |
 | Payment methods | **Cards (mada/Visa/MC) + Apple Pay. No STC Pay** | Decision 2026-08-03; `methods: ['creditcard','applepay']` — re-adding STC Pay later is one line |
 | Upgrades | **Prorated charge** — `charge = new_price − (remaining_days/duration × old_price)` | Decision 2026-08-03 (settles §8.B.6). Credit only when `source='payment'`; refunding an upgrade restores the prior plan. Same-plan re-purchase stacks; downgrades blocked |
 
@@ -273,16 +273,18 @@ VAT split at 15%, inclusive:
 | pro | 89.90 | 8990 | 78.17 | 11.73 |
 | max | 189.90 | 18990 | 165.13 | 24.77 |
 
-**Refund amounts after the 3 SAR fee** (2→3, 2026-08-04) — every refund is a
-*partial* refund, so each needs its own VAT split for the credit note:
+**Refund deduction is PER PAYMENT** (owner 2026-08-05) — `provider fee +
+1.15 + 0.50`, read from `raw_payload.fee`, so it recovers exactly what Moyasar
+kept for that card network and price. Illustrative (mada rates):
 
-| Plan | Refunded (SAR) | Halalas | Net | VAT |
-|---|---|---|---|---|
-| basic | 46.90 | 4690 | 40.78 | 6.12 |
-| pro | 86.90 | 8690 | 75.57 | 11.33 |
-| max | 186.90 | 18690 | 162.52 | 24.38 |
+| Plan | Provider fee | Deduction | Refunded |
+|---|---|---|---|
+| basic 49.90 | 1.73 | 3.38 | 46.52 |
+| pro 89.90 | ~2.35 | ~4.00 | ~85.90 |
+| max 189.90 (Visa) | ~5.75 | ~7.40 | ~182.50 |
 
-The retained 3.00 SAR, if treated as a VATable service fee, is 2.61 net + 0.39 VAT.
+Every refund is still *partial*, so each needs its own VAT split for the credit
+note — computed from the actual refunded amount at the time.
 ⚠️ **Whether it is a VATable fee or a non-refunded portion of the original supply
 is an accountant's call, not ours** — it changes what the credit note says. Ask
 before the first live refund, not after.
@@ -350,7 +352,7 @@ branch on the **fetched** status:
 24-hour promise real):
 1. Guard `now() - paid_at <= 24h` **server-side**. Outside the window →
    `PAYMENT_REFUND_WINDOW_CLOSED` with the support email.
-2. `refund_halalas = amount_halalas - 300` (the 3 SAR fee; 2→3 owner 2026-08-04). Guard
+2. `refund_halalas = amount_halalas - _refund_fee_halalas(row)` (per-payment cost recovery + 0.50). Guard
    `refund_halalas >= 100` — Moyasar's minimum — so a hypothetical cheap plan can
    never produce a zero or negative refund.
 3. `POST /v1/payments/:id/refund` with that **partial** `amount`.
@@ -358,7 +360,7 @@ branch on the **fetched** status:
    `revoke_plan_grant`. The webhook arrives after and no-ops.
 
 **The confirmation dialog must show the arithmetic before the user commits** —
-«سيُعاد إليك ٤٦٫٩٠ من أصل ٤٩٫٩٠ · رسوم معالجة ٣ ريال». Terse, but the numbers
+«سيُعاد إليك ٤٦٫٥٢ من أصل ٤٩٫٩٠ · رسوم معالجة ٣٫٣٨ ريال» — the numbers come from the server quote (`refund_quote_*`), never a client guess. Terse, but the numbers
 stay: a user who expects 49.90 and receives 46.90 files a complaint; one who
 agreed to 46.90 does not. This is a confirmation, not marketing copy.
 
@@ -490,7 +492,7 @@ Pages to touch:
 - **`/pricing`** — VAT-inclusive note, the 24h refund line, and the payment claim
   above near the CTA.
 - **`/terms`** (`frontend/app/terms/page.tsx`) — a real refund clause: the window,
-  **the 3 SAR processing fee**, that the subscription is revoked, and how to
+  **the processing fee (gateway fee + 0.50)**, that the subscription is revoked, and how to
   request it. Plus the auto-renewal terms when Wave 2 lands.
 - **`/privacy`** (`frontend/app/privacy/page.tsx`) — ⚠️ **PDPL requires disclosing
   processors.** Moyasar becomes a named sub-processor receiving payment data. This
@@ -505,7 +507,7 @@ undisclosed deduction is a bigger exposure than the fee itself. It belongs in
 three places: `/pricing` near the CTA, `/terms`, and the refund confirmation
 dialog. Keep it to one clause:
 
-> استرداد خلال أول ٢٤ ساعة من الاشتراك · رسوم معالجة ٣ ريال
+> استرداد خلال أول ٢٤ ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + ٠٫٥٠ ريال
 
 The 24h refund window is stated relative to **purchase time**, and the server
 measures it from `paid_at` — same clock, no ambiguity.
@@ -604,7 +606,7 @@ lead time, not a code task, so raise it while Wave 1 is being built.
 10. **The form version is pinned in the CDN path**, with no `latest` alias. It will
     silently rot; a stale version is the likely cause of a future "payment method
     stopped appearing" report.
-11. **The 3 SAR fee makes every refund partial** — never call the refund endpoint
+11. **The processing fee makes every refund partial** — never call the refund endpoint
     without an explicit `amount`, or it refunds in full and silently gives the fee
     away.
 12. **The fee is server-side.** It must never arrive from the client, and the
@@ -684,9 +686,9 @@ land — they only block end-to-end runs.
 | 9 | **Open a tokenization enablement ticket** with Moyasar support | Wave 2 prerequisite, has lead time — raise it during Wave 1 |
 | 10 | VAT registration number + **ZATCA e-invoicing** decision | VAT-inclusive pricing means a compliant tax invoice per purchase |
 | 11 | Is Moyasar **SAMA-licensed**? Confirm from the agreement | Only if the copy will say so — it's a claim about a third party on a page lawyers read |
-| 11b | ~~Does Moyasar return its processing fee on a refund?~~ | PARTIALLY ANSWERED: sandbox showed their txn fee = 1.73 SAR on 49.90. Fee raised 2→3 SAR (2026-08-04) to cover it with margin either way |
+| 11b | ~~Does Moyasar return its processing fee on a refund?~~ | **ANSWERED 2026-08-05 (Moyasar support, in writing):** NO — the original txn fee is never returned, AND a flat 1.00+VAT=1.15 SAR refund-execution fee applies (full or partial, every network). Their example: 49.90 in → 48.17 credited; refund 46.90 → 0.12 left. Drove the per-payment fee design |
 | 11c | **Legal read on charging a refund fee** | Your own call — you have the expertise. The question: is your 24h refund a *voluntary* policy (fee is yours to set) or does it overlap a statutory right under نظام التجارة الإلكترونية (deductions may not be permitted)? |
-| 11d | **Accountant: is the retained 3 SAR a VATable service fee** or a non-refunded part of the original supply? | Changes what the credit note says |
+| 11d | **Accountant: is the retained processing fee a VATable service fee** or a non-refunded part of the original supply? | Changes what the credit note says |
 | 12 | **Retention vs deletion** decision | `payment_transactions.user_id` cascades (090 flow) vs ~6-year financial record retention |
 | 13 | `railway login` — the CLI token is expired | Needed for deploys and for me to inspect environments |
 | 14 | **Apple Pay domain registration** (Wave 1, ~10 min of dashboard work) | **No Apple Developer account needed for web** — Moyasar's Web Merchant Registration handles Apple. Dashboard → Settings → Apple Pay Domains → add `rayhanai.com`, send me the association file to host at `/.well-known/`, then Validate + Register. (An Apple Developer account becomes relevant only if we ever ship Apple Pay in a native mobile app) |

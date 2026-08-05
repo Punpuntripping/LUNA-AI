@@ -79,7 +79,7 @@ GET_RETRIES = 2
 
 CURRENCY = "SAR"
 VAT_RATE = Decimal("0.15")          # inclusive — net = charge / 1.15
-# ── Refund fee: FULL COST RECOVERY + a flat 2 SAR margin (owner 2026-08-04) ──
+# ── Refund fee: FULL COST RECOVERY + 0.50 SAR (owner 2026-08-05) ────────────
 #
 # Moyasar support confirmed in writing (2026-08-05) that a refund costs the
 # merchant TWICE, and neither cost is recoverable:
@@ -97,15 +97,21 @@ VAT_RATE = Decimal("0.15")          # inclusive — net = charge / 1.15
 #
 #     refund_fee = original_provider_fee + REFUND_EXECUTION_FEE + MARGIN
 #
+# Margin is deliberately small (0.50 SAR): the fee exists to make the business
+# whole on a refund, not to profit from one.
+#
 # If ``fee`` is missing from the stored payload (older rows, provider change),
 # fall back to a conservative flat figure rather than silently under-charging.
 REFUND_EXECUTION_FEE_HALALAS = 115   # Moyasar's flat refund fee, VAT included
-REFUND_MARGIN_HALALAS = 200          # our 2 SAR, the only part that is margin
-REFUND_FEE_FALLBACK_HALALAS = 490    # used only when raw_payload.fee is absent
+REFUND_MARGIN_HALALAS = 50           # our 0.50 SAR — break-even + a token margin
+                                     # (owner 2026-08-05: refunds should cost the
+                                     # business nothing, not earn it anything)
+REFUND_FEE_FALLBACK_HALALAS = 340    # ≈ a mada basic refund; used ONLY when
+                                     # raw_payload.fee is absent (legacy rows)
 
 
 def _refund_fee_halalas(row: dict) -> int:
-    """Total deduction for THIS payment: provider costs + our 2 SAR margin.
+    """Total deduction for THIS payment: provider costs + our 0.50 margin.
 
     The provider fee is read from the stored ``raw_payload`` — the value
     Moyasar itself reported for the original charge — so mada vs Visa and
@@ -124,6 +130,8 @@ def _refund_fee_halalas(row: dict) -> int:
     if provider_fee_halalas < 0:
         return REFUND_FEE_FALLBACK_HALALAS
     return provider_fee_halalas + REFUND_EXECUTION_FEE_HALALAS + REFUND_MARGIN_HALALAS
+
+
 REFUND_WINDOW = timedelta(hours=24)
 MIN_HALALAS = 100                   # Moyasar's minimum chargeable amount
 MIN_CHARGE_SAR = Decimal("1.00")

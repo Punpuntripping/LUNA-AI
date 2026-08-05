@@ -794,9 +794,9 @@ def test_refund_deducts_the_processing_fee(keys, provider_refunds):
     row = paid_row(db)
 
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
-    assert provider_refunds == [(MOYASAR_ID, 8502)]        # 8990 − 488
-    assert result["refunded_amount_sar"] == "85.02"   # 89.90 − 4.88
-    assert result["refund_fee_sar"] == "4.88"   # provider 1.73 + Moyasar refund fee 1.15 + margin 2.00
+    assert provider_refunds == [(MOYASAR_ID, 8652)]        # 8990 − 338
+    assert result["refunded_amount_sar"] == "86.52"   # 89.90 − 3.38
+    assert result["refund_fee_sar"] == "3.38"   # provider 1.73 + Moyasar refund fee 1.15 + margin 0.50
     assert result["status"] == "refunded"
 
 
@@ -817,7 +817,7 @@ def test_refund_of_an_upgrade_restores_the_prior_plan(keys, provider_refunds):
                    prior_expires_at=_iso(_now() + timedelta(days=26)))
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
     assert result["revoke_action"] == "restored"
-    assert result["refunded_amount_sar"] == "107.11"       # 111.99 − 4.88
+    assert result["refunded_amount_sar"] == "108.61"       # 111.99 − 3.38
 
 
 def test_refund_after_24h_is_refused(keys, provider_refunds):
@@ -908,11 +908,11 @@ def test_applepay_accepts_apple_urls(keys, url):
 
 
 def test_refund_fee_recovers_provider_fee_plus_margin():
-    """basic on mada: provider 1.73 + refund 1.15 + margin 2.00 = 4.88."""
+    """basic on mada: provider 1.73 + refund 1.15 + margin 0.50 = 3.38."""
     db = FakeSupabase(sub("basic", source="payment"))
     row = paid_row(db, plan_id="basic", amount="49.90",
                    raw_payload={"id": MOYASAR_ID, "fee": 173})
-    assert ps._refund_fee_halalas(row) == 488
+    assert ps._refund_fee_halalas(row) == 338
 
 
 def test_refund_fee_scales_with_a_pricier_card_network():
@@ -920,7 +920,7 @@ def test_refund_fee_scales_with_a_pricier_card_network():
     db = FakeSupabase(sub("max", source="payment"))
     row = paid_row(db, plan_id="max", amount="189.90",
                    raw_payload={"id": MOYASAR_ID, "fee": 575})
-    assert ps._refund_fee_halalas(row) == 890   # 5.75 + 1.15 + 2.00
+    assert ps._refund_fee_halalas(row) == 740   # 5.75 + 1.15 + 0.50
 
 
 def test_refund_fee_falls_back_when_provider_fee_missing():
@@ -936,8 +936,8 @@ def test_refund_quote_matches_what_refund_actually_deducts(keys, provider_refund
     db = FakeSupabase(sub("pro", source="payment"))
     row = paid_row(db, raw_payload={"id": MOYASAR_ID, "fee": 173})
     quote = ps.transaction_summary(row)
-    assert quote["refund_quote_fee_sar"] == "4.88"
-    assert quote["refund_quote_amount_sar"] == "85.02"
+    assert quote["refund_quote_fee_sar"] == "3.38"
+    assert quote["refund_quote_amount_sar"] == "86.52"
 
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
     assert result["refund_fee_sar"] == quote["refund_quote_fee_sar"]
