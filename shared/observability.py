@@ -98,6 +98,62 @@ def _is_production_env(env_label: str) -> bool:
     return env_label.lower() in {"production", "prod"}
 
 
+def _key_mode(value: str | None, prefix: str) -> str | None:
+    """``sk_test_…`` → ``'test'``, ``sk_live_…`` → ``'live'``. Never the value."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    for mode in ("test", "live"):
+        if v.startswith(f"{prefix}{mode}_"):
+            return mode
+    return "unrecognized"
+
+
+def integrations_status() -> dict[str, Any]:
+    """Which optional integrations this PROCESS can actually see.
+
+    Presence booleans and key MODES only — never a secret, never a fragment of
+    one. Lengths are included because the failure we keep hitting is a value
+    that is present but truncated or space-padded, which a bare boolean cannot
+    distinguish.
+
+    This exists because config problems are otherwise invisible: an unset
+    webhook secret and a wrong one both return 401, an unset SMTP password
+    just logs a warning, and a Railway variable saved-but-not-applied looks
+    identical to one that was never added. Pair it with ``railway_git_sha``
+    below to answer "is the variable live?" and "on which build?" in one curl.
+    """
+    # Read through Settings, not os.getenv: pydantic-settings also loads the
+    # repo .env, so os.getenv would report "missing" locally for values the
+    # app can actually see. Imported lazily — shared.config imports this module.
+    try:
+        from shared.config import get_settings
+
+        s = get_settings()
+        sk = s.MOYASAR_SECRET_KEY
+        pk = s.MOYASAR_PUBLISHABLE_KEY
+        wh = (s.MOYASAR_WEBHOOK_SECRET or "").strip()
+        smtp_pw = (s.RECEIPTS_SMTP_PASSWORD or "").strip()
+        smtp_user, smtp_from = s.RECEIPTS_SMTP_USER, s.RECEIPTS_FROM_EMAIL
+    except Exception:  # config unavailable — report unknown rather than crash
+        return {"error": "settings_unavailable"}
+
+    return {
+        "moyasar": {
+            "secret_key_mode": _key_mode(sk, "sk_"),
+            "publishable_key_mode": _key_mode(pk, "pk_"),
+            "webhook_secret_present": bool(wh),
+            "webhook_secret_length": len(wh),
+        },
+        "receipts_smtp": {
+            "password_present": bool(smtp_pw),
+            "password_length": len(smtp_pw),
+            "user": smtp_user,
+            "from": smtp_from,
+        },
+    }
+
+
 def observability_status() -> dict[str, Any]:
     """Public snapshot of the current Logfire wiring.
 
@@ -119,6 +175,9 @@ def observability_status() -> dict[str, Any]:
         "railway_service": os.getenv("RAILWAY_SERVICE_NAME"),
         "railway_deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID"),
         "railway_git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA"),
+        # Presence/mode of the payment + receipt integrations, so a missing or
+        # unapplied Railway variable is visible without reading container logs.
+        "integrations": integrations_status(),
     }
 
 
