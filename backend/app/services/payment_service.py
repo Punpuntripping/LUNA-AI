@@ -510,6 +510,12 @@ _TXN_COLUMNS = (
     "payment_id, user_id, plan_id, amount_sar, currency, status, provider, "
     "provider_ref, paid_at, fulfilled_at, created_at, updated_at, "
     "vat_amount_sar, net_amount_sar, upgrade_credit_sar, refund_fee_sar, "
+    # raw_payload is REQUIRED, not optional: _refund_fee_halalas reads the
+    # provider's own `fee` out of it. Omitting it silently made every refund
+    # fall back to the flat figure (caught on prod 2026-08-05 — a refund
+    # charged 3.40 where the payload said 3.38). It never reaches the client:
+    # transaction_summary whitelists its output fields.
+    "raw_payload, "
     "refunded_amount_sar"
 )
 

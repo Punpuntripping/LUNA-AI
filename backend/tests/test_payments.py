@@ -951,3 +951,23 @@ def test_refund_quote_absent_once_not_refundable():
     summary = ps.transaction_summary(row)
     assert summary["refund_quote_fee_sar"] is None
     assert summary["refund_quote_amount_sar"] is None
+
+
+def test_txn_columns_include_raw_payload():
+    """REGRESSION (prod, 2026-08-05): the per-payment refund fee is read from
+    ``raw_payload.fee``. It was absent from the select list, so every refund
+    silently used the flat fallback instead — the dynamic mechanism existed
+    but never once ran. Cheap guard, because the symptom is a 2-halala
+    discrepancy nobody would notice."""
+    assert "raw_payload" in ps._TXN_COLUMNS
+
+
+def test_refund_uses_provider_fee_end_to_end(keys, provider_refunds):
+    """The fee actually charged comes from the payload, not the fallback."""
+    db = FakeSupabase(sub("basic", source="payment"))
+    row = paid_row(db, plan_id="basic", amount="49.90",
+                   raw_payload={"id": MOYASAR_ID, "fee": 173})
+    result = run(ps.refund_payment(db, USER, row["payment_id"]))
+    assert result["refund_fee_sar"] == "3.38"          # 1.73 + 1.15 + 0.50
+    assert result["refund_fee_sar"] != "3.40"          # NOT the fallback
+    assert provider_refunds == [(MOYASAR_ID, 4652)]    # 4990 − 338
