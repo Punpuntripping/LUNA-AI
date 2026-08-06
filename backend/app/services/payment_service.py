@@ -37,6 +37,12 @@ DB dependency: migration ``113_payment_refund_revoke.sql`` (APPLIED) adds
 * ``revoke_plan_grant(payment_id)`` — the refund mirror. Requires the row to
   already be ``status='refunded'`` and reports what it did via its ``action``
   column (see ``REVOKE_ACTIONS_OK``).
+
+Migration ``117_payment_retention.sql`` (APPLIED) then makes the row outlive its
+buyer: ``user_id`` is nullable with ON DELETE SET NULL, and
+``customer_name_snapshot`` / ``customer_email_snapshot`` carry the identity so a
+payment survives account deletion as a retained financial record rather than
+being cascaded away — a sequential ``receipt_no`` (114) may not have holes in it.
 """
 from __future__ import annotations
 
@@ -553,6 +559,31 @@ def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict
     return rows[0] if rows else None
 
 
+def _fetch_customer_identity(supabase: SupabaseClient, user_id: str) -> dict:
+    """Name + email to stamp onto the payment row at initiation (migration 117).
+
+    Read here rather than resolved at display time because the snapshot must be
+    what was true when the money moved: `payment_transactions.user_id` is ON
+    DELETE SET NULL, so once a deleted account is purged this row is the only
+    thing left that can say whose payment it was. Same stamp-once discipline as
+    the VAT split — a later profile edit must not rewrite a settled record.
+
+    limit(1) rather than maybe_single(), for the reason spelled out in
+    _fetch_subscription. Returns {} when the row is somehow missing: an
+    unidentified receipt is bad, a checkout that 500s on a caller who is already
+    authenticated is worse.
+    """
+    res = (
+        supabase.table("users")
+        .select("full_name_ar, email")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else {}
+
+
 def _insert_transaction(supabase: SupabaseClient, payload: dict) -> dict:
     res = supabase.table("payment_transactions").insert(payload).execute()
     rows = getattr(res, "data", None) or []
@@ -813,6 +844,7 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     subscription = await run_db(_fetch_subscription, supabase, user_id)
     current_plan_id = (subscription or {}).get("plan_id")
     plans = await run_db(_fetch_plans, supabase, [plan_id, current_plan_id])
+    customer = await run_db(_fetch_customer_identity, supabase, user_id)
 
     plan = plans.get(plan_id)
     if plan is None or plan.get("price_sar") is None:
@@ -874,6 +906,12 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     # RPC writes them at fulfilment, because the snapshot must reflect the
     # subscription at the moment the grant replaces it — which can be many
     # minutes after checkout, or never (abandoned payment).
+    #
+    # customer_name/email_snapshot are stamped here too (migration 117), and for
+    # the opposite reason to the prior-plan snapshot: they must be captured at
+    # the START because the users row they come from can legitimately disappear.
+    # user_id is ON DELETE SET NULL, so a purged account leaves this row standing
+    # with its money intact — these two columns are then all that identifies it.
     try:
         row = await run_db(
             _insert_transaction,
@@ -888,11 +926,13 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
                 "vat_amount_sar": _money(vat),
                 "net_amount_sar": _money(net),
                 "upgrade_credit_sar": _money(credit),
+                "customer_name_snapshot": customer.get("full_name_ar"),
+                "customer_email_snapshot": customer.get("email"),
             },
         )
     except Exception as exc:  # noqa: BLE001
         # Includes "column does not exist" if this backend is ever deployed
-        # ahead of migration 113. A dependency failure is a 503, not a user
+        # ahead of migration 113 or 117. A dependency failure is a 503, not a user
         # error — and the page must not mount a form for a row that isn't there.
         logger.exception("checkout insert failed for user=%s plan=%s: %s", user_id, plan_id, exc)
         raise LunaHTTPException(

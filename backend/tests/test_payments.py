@@ -38,6 +38,8 @@ USER = "11111111-1111-1111-1111-111111111111"
 OTHER_USER = "99999999-9999-9999-9999-999999999999"
 MOYASAR_ID = "33333333-3333-3333-3333-333333333333"
 WEBHOOK_SECRET = "whsec_test_value"
+CUSTOMER_NAME = "محمد الفلاتة"
+CUSTOMER_EMAIL = "buyer@example.com"
 
 
 def run(coro):
@@ -164,6 +166,10 @@ class FakeSupabase:
             "user_subscriptions": [dict(subscription)] if subscription else [],
             "payment_transactions": [],
             "audit_logs": [],
+            # The buyer's identity row — read at checkout and snapshotted onto
+            # the payment (117), so the record survives the account.
+            "users": [{"user_id": USER, "full_name_ar": CUSTOMER_NAME,
+                       "email": CUSTOMER_EMAIL}],
         }
         self.calls: list[str] = []      # rpc + write sequence, in order
         self.writes: list[tuple] = []
@@ -478,6 +484,33 @@ def test_checkout_503s_when_unconfigured(monkeypatch):
         assert exc.value.code is ErrorCode.SERVICE_UNAVAILABLE
     finally:
         get_settings.cache_clear()
+
+
+def test_checkout_snapshots_the_customer_identity(keys):
+    """117: `user_id` is ON DELETE SET NULL, so a purged account leaves this row
+    standing with its money and its sequential receipt_no intact. These two
+    columns are then the ONLY thing that can say whose payment it was, which is
+    why they are stamped at initiation rather than resolved from users later."""
+    db = FakeSupabase(sub("free"))
+    checkout(db, "pro")
+
+    row = db.tables["payment_transactions"][0]
+    assert row["customer_name_snapshot"] == CUSTOMER_NAME
+    assert row["customer_email_snapshot"] == CUSTOMER_EMAIL
+
+
+def test_checkout_survives_a_missing_identity_row(keys):
+    """An unidentified receipt is bad; a checkout that 500s on a caller who is
+    already authenticated is worse. No users row → NULL snapshots, sale opens."""
+    db = FakeSupabase(sub("free"))
+    db.tables["users"] = []
+
+    result = checkout(db, "pro")
+
+    row = db.tables["payment_transactions"][0]
+    assert result["payment_id"] == row["payment_id"]
+    assert row["customer_name_snapshot"] is None
+    assert row["customer_email_snapshot"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

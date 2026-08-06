@@ -30,8 +30,10 @@ Delivery rules:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import smtplib
+from base64 import b64encode
 from datetime import datetime, timezone
 from email.headerregistry import Address
 from email.message import EmailMessage
@@ -41,6 +43,7 @@ from supabase import Client as SupabaseClient
 
 from shared.config import get_settings
 from shared.db.run import run_db
+from shared.observability import record_smtp_probe, smtp_probe_result
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +209,34 @@ def _fetch_receipt_no(supabase: SupabaseClient, payment_id: str) -> Optional[int
     return rows[0].get("receipt_no") if rows else None
 
 
+# ───────────────────────────── smtp transport (single source) ────────────
+#
+# One connection recipe, split into stage-sized helpers. The real sender and
+# the boot probe further down BOTH go through these, so they cannot drift
+# apart on host / port / user / password / TLS. The split into three calls
+# (rather than one `connect_and_login()`) is what lets the probe name WHICH
+# stage failed — and that name is the entire diagnostic.
+
+
+def _smtp_open(timeout: float = _SEND_TIMEOUT_S) -> smtplib.SMTP:
+    """Stage ``connect`` — TCP + SMTP greeting. No TLS and no credentials yet."""
+    settings = get_settings()
+    return smtplib.SMTP(
+        settings.RECEIPTS_SMTP_HOST, settings.RECEIPTS_SMTP_PORT, timeout=timeout
+    )
+
+
+def _smtp_starttls(smtp: smtplib.SMTP) -> None:
+    """Stage ``starttls`` — upgrade the plaintext session to TLS."""
+    smtp.starttls()
+
+
+def _smtp_login(smtp: smtplib.SMTP) -> None:
+    """Stage ``login`` — authenticate with the Google App Password."""
+    settings = get_settings()
+    smtp.login(settings.RECEIPTS_SMTP_USER, settings.RECEIPTS_SMTP_PASSWORD or "")
+
+
 # ───────────────────────────── sending ───────────────────────────────────
 
 
@@ -226,11 +257,9 @@ def _smtp_send_sync(to: str, subject: str, html: str) -> None:
     msg.set_content("إيصال من ريحان — افتح الرسالة بعارض HTML.")
     msg.add_alternative(html, subtype="html")
 
-    with smtplib.SMTP(
-        settings.RECEIPTS_SMTP_HOST, settings.RECEIPTS_SMTP_PORT, timeout=_SEND_TIMEOUT_S
-    ) as smtp:
-        smtp.starttls()
-        smtp.login(settings.RECEIPTS_SMTP_USER, settings.RECEIPTS_SMTP_PASSWORD or "")
+    with _smtp_open() as smtp:
+        _smtp_starttls(smtp)
+        _smtp_login(smtp)
         smtp.send_message(msg)
 
 
@@ -299,3 +328,166 @@ async def send_payment_receipt(supabase: SupabaseClient, payment_row: dict) -> N
 async def send_refund_receipt(supabase: SupabaseClient, payment_row: dict) -> None:
     """Refund receipt — call after the refund is applied. Never raises."""
     await _send(supabase, payment_row, stamp_column="refund_receipt_sent_at", kind="refund")
+
+
+# ═════════════════════════ boot-time transport probe ═════════════════════
+#
+# WHY THIS EXISTS. Every send above swallows its exception by design, so a
+# transport that never delivers is indistinguishable from one that works: the
+# DB stamps `receipt_sent_at`, the inbox stays empty, nothing says why. This
+# probe is the missing signal. It authenticates and hangs up — it SENDS NO MAIL.
+#
+# HOW TO READ IT. The `stage` field is the whole diagnostic:
+#   stage == "connect"  → the TCP connect never completed. Outbound 587 is
+#                         blocked by the host; the fix is port 465 + implicit
+#                         SSL. (No credential conclusion can be drawn — we
+#                         never got far enough to present one.)
+#   stage == "login"    → we reached Gmail and it refused the credentials
+#                         (typically 535 5.7.8). The App Password belongs to a
+#                         different Google account than RECEIPTS_SMTP_USER.
+#   stage == "done"     → transport is fine; look downstream instead.
+#
+# RUNS ONCE PER PROCESS, from the lifespan startup task in backend/app/main.py.
+# It must NEVER be driven per-request: /api/v1/_meta/observability is public and
+# unauthenticated, so a probe on that path would let anonymous callers pump
+# repeated failed auth attempts at our Google account (lockout risk + outbound
+# amplification). The endpoint only ever READS the cached result.
+
+_PROBE_TIMEOUT_S = 10.0          # hard wall-clock ceiling on the whole probe
+_PROBE_SOCKET_TIMEOUT_S = 9.0    # per-socket; fires first so the stage is named
+_PROBE_DETAIL_MAX = 200          # server text is truncated to this many chars
+
+# Once-per-process guard. Flipped synchronously at the top of
+# run_smtp_probe_once(), BEFORE its first await — on a single-threaded event
+# loop that makes it impossible for a second caller to slip past it.
+_probe_started = False
+
+
+def _safe_detail(text: Any) -> str:
+    """Server text → ≤200 chars with any credential echo scrubbed.
+
+    Gmail's rejections do not echo credentials back, but this string is the one
+    probe value that leaves the process — so it is scrubbed unconditionally
+    rather than on trust, and truncated whether or not it looks long.
+    """
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    out = str(text)
+    try:
+        pw = (get_settings().RECEIPTS_SMTP_PASSWORD or "").strip()
+    except Exception:  # noqa: BLE001 — never let scrubbing raise
+        pw = ""
+    if pw:
+        # Plain, de-spaced (Google shows app passwords in 4-char groups), and
+        # the base64 form SMTP AUTH would put on the wire.
+        for form in (pw, pw.replace(" ", ""), b64encode(pw.encode()).decode()):
+            if form:
+                out = out.replace(form, "[redacted]")
+    return out[:_PROBE_DETAIL_MAX]
+
+
+def _probe_smtp_sync(progress: dict) -> dict:
+    """Connect → STARTTLS → LOGIN → QUIT. Sends no mail. Never raises.
+
+    Blocking (smtplib) — always called through ``run_db`` so the event loop
+    keeps serving the healthcheck while this runs.
+
+    ``progress['stage']`` is advanced as it goes so the async caller can still
+    name the stage when the outer timeout fires while this thread is stuck (a
+    thread cannot be killed). One key, one writer, one reader — dict item
+    assignment is atomic under the GIL.
+    """
+    smtp = None
+    try:
+        progress["stage"] = "connect"
+        smtp = _smtp_open(timeout=_PROBE_SOCKET_TIMEOUT_S)
+        progress["stage"] = "starttls"
+        _smtp_starttls(smtp)
+        progress["stage"] = "login"
+        _smtp_login(smtp)
+        progress["stage"] = "done"
+        return {
+            "attempted": True, "ok": True, "stage": "done",
+            "error_class": None, "smtp_code": None, "detail": None,
+        }
+    except Exception as exc:  # noqa: BLE001 — the outcome IS the return value
+        code = getattr(exc, "smtp_code", None)          # SMTPResponseException
+        raw = getattr(exc, "smtp_error", None)          # server's own bytes
+        return {
+            "attempted": True,
+            "ok": False,
+            "stage": progress.get("stage", "connect"),
+            "error_class": type(exc).__name__,
+            "smtp_code": code if isinstance(code, int) else None,
+            "detail": _safe_detail(raw if raw else exc),
+        }
+    finally:
+        # Hang up politely. On a half-open or already-dead socket quit() itself
+        # raises, which must not overwrite the outcome we just built.
+        if smtp is not None:
+            try:
+                smtp.quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def run_smtp_probe_once() -> dict:
+    """One-shot receipt-transport diagnostic. Never raises, never blocks boot.
+
+    Fire-and-forget from the lifespan in ``backend/app/main.py``. The result is
+    published to ``shared.observability`` and surfaces at
+    ``/api/v1/_meta/observability`` under ``integrations.receipts_smtp.probe``.
+
+    Second and later calls are no-ops that return the cached result — see
+    ``_probe_started`` and the amplification note above.
+    """
+    global _probe_started
+    if _probe_started:
+        return smtp_probe_result()
+    _probe_started = True  # BEFORE the first await — see the note above
+
+    try:
+        # Unset password ⇒ do not attempt anything. An anonymous LOGIN would be
+        # a pointless failed auth against the Google account.
+        if not (get_settings().RECEIPTS_SMTP_PASSWORD or "").strip():
+            result = {"attempted": False, "reason": "password_unset"}
+            record_smtp_probe(result)
+            logger.info("SMTP probe skipped: RECEIPTS_SMTP_PASSWORD unset")
+            return result
+
+        progress: dict[str, Any] = {"stage": "connect"}
+        try:
+            result = await asyncio.wait_for(
+                run_db(_probe_smtp_sync, progress), _PROBE_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            # wait_for cannot kill the worker thread; the socket timeout below
+            # it retires that thread shortly after. What matters is that the
+            # probe RESOLVES here, carrying the stage the thread got stuck on —
+            # a hang at "connect" is the port-blocked signature.
+            result = {
+                "attempted": True, "ok": False,
+                "stage": progress.get("stage", "connect"),
+                "error_class": "TimeoutError", "smtp_code": None,
+                "detail": f"probe exceeded {_PROBE_TIMEOUT_S:g}s wall clock",
+            }
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must not crash boot
+        # Reaching here means the probe broke BEFORE any socket work (settings
+        # failed to load, the thread offload could not be scheduled). Reporting
+        # it as attempted/stage=connect would forge the port-blocked signature
+        # and send the reader after the wrong suspect, so it gets its own shape.
+        result = {
+            "attempted": False, "reason": "probe_error",
+            "error_class": type(exc).__name__, "detail": _safe_detail(exc),
+        }
+
+    record_smtp_probe(result)
+    if result.get("ok"):
+        logger.info("SMTP probe OK — receipt transport connected and authenticated")
+    else:
+        logger.warning(
+            "SMTP probe FAILED at stage=%s (%s, code=%s): %s",
+            result.get("stage"), result.get("error_class"),
+            result.get("smtp_code"), result.get("detail"),
+        )
+    return result

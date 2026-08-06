@@ -98,6 +98,28 @@ def _is_production_env(env_label: str) -> bool:
     return env_label.lower() in {"production", "prod"}
 
 
+# ── Receipt-transport (SMTP) boot probe ───────────────────────────────────
+# Written ONCE per process by backend.app.services.receipt_service
+# .run_smtp_probe_once(), which the lifespan kicks off as a background task.
+# Held here rather than in the service so integrations_status() stays a pure
+# read and shared/ never has to import backend/.
+#
+# ``not_run`` is the honest answer for a curl that lands before the boot task
+# finished — deliberately NOT the same value as "skipped because unconfigured".
+_SMTP_PROBE: dict[str, Any] = {"attempted": False, "reason": "not_run"}
+
+
+def record_smtp_probe(result: dict[str, Any]) -> None:
+    """Publish the one-shot SMTP probe outcome. Copies — caller keeps its dict."""
+    global _SMTP_PROBE
+    _SMTP_PROBE = dict(result)
+
+
+def smtp_probe_result() -> dict[str, Any]:
+    """Current probe outcome. A copy, so callers cannot mutate module state."""
+    return dict(_SMTP_PROBE)
+
+
 def _key_mode(value: str | None, prefix: str) -> str | None:
     """``sk_test_…`` → ``'test'``, ``sk_live_…`` → ``'live'``. Never the value."""
     v = (value or "").strip()
@@ -150,6 +172,10 @@ def integrations_status() -> dict[str, Any]:
             "password_length": len(smtp_pw),
             "user": smtp_user,
             "from": smtp_from,
+            # Config presence above says the password EXISTS; the probe says
+            # whether Gmail accepts it — and, when it doesn't, at which stage.
+            # Read once per boot, never per request. See receipt_service.
+            "probe": smtp_probe_result(),
         },
     }
 
@@ -353,6 +379,8 @@ __all__ = [
     "instrument_fastapi_app",
     "get_logfire",
     "observability_status",
+    "record_smtp_probe",
+    "smtp_probe_result",
 ]
 
 

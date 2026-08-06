@@ -44,6 +44,7 @@ from shared.observability import (
 )
 from backend.app.services.account_purge_service import purge_expired_accounts
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
+from backend.app.services.receipt_service import run_smtp_probe_once
 from backend.app.services.summary_sweeper import sweep_missing_summaries
 from backend.app.services.upload_reconciler import reconcile_stuck_uploads
 
@@ -112,6 +113,17 @@ async def lifespan(app: FastAPI):
     #     must add zero cold-start latency, so fire-and-forget in a thread. Keep
     #     the task reference to prevent GC; it self-completes in ≤5s.
     app.state.jwks_prewarm_task = asyncio.create_task(asyncio.to_thread(prewarm_jwks))
+
+    # 1d. Receipt SMTP transport probe — one-shot, fire-and-forget, ≤10s, and
+    #     it sends no mail. Receipt sends swallow every exception by design, so
+    #     a dead transport is otherwise invisible; this authenticates once per
+    #     boot and caches WHICH stage failed (connect = port blocked, login =
+    #     wrong credentials) for /api/v1/_meta/observability. Same fire-and-
+    #     forget shape as the JWKS pre-warm above: Railway's healthcheck hits
+    #     /api/v1/health, so nothing here may delay readiness. The coroutine
+    #     swallows everything internally and no-ops when unconfigured; the task
+    #     reference is kept only to prevent GC.
+    app.state.smtp_probe_task = asyncio.create_task(run_smtp_probe_once())
 
     # 2. Redis — supervised. app.state.redis is the singleton client when
     #    healthy, None when down. A background task owns the transitions, so
