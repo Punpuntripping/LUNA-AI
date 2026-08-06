@@ -1,7 +1,7 @@
 """
 Auth API routes — /api/v1/auth/
-8 endpoints: login, refresh, logout, me, delete-account, restore-account,
-change-password, logout-all
+9 endpoints: login, refresh, logout, me, profession, delete-account,
+restore-account, change-password, logout-all
 
 (Signup runs client-side via supabase.auth.signUp() — see the note above /refresh.)
 """
@@ -32,9 +32,11 @@ from backend.app.models.requests import (
     DeleteAccountRequest,
     LoginRequest,
     RefreshRequest,
+    UpdateProfessionRequest,
 )
 from backend.app.models.responses import (
     LoginResponse,
+    ProfessionResponse,
     TokenResponse,
     UserProfile,
     UserProfileResponse,
@@ -275,10 +277,10 @@ async def login(
 
     user_metadata = user.user_metadata or {}
 
-    def _fetch_deletion_state():
+    def _fetch_users_row_state():
         return (
             supabase.table("users")
-            .select("deletion_requested_at")
+            .select("deletion_requested_at, profession_group, profession_label")
             .eq("auth_id", user.id)
             .maybe_single()
             .execute()
@@ -286,13 +288,19 @@ async def login(
 
     # A failure here must never break login — degrade to "not pending"; the
     # get_user_id gate still blocks every data route server-side either way.
+    # Profession degrades to the "unknown" sentinel (fail-closed: only an
+    # explicit NULL read from the DB may trigger the onboarding prompt).
     deletion_requested_at = None
+    profession_group = "unknown"
+    profession_label = None
     try:
-        result = await run_db(_fetch_deletion_state)
+        result = await run_db(_fetch_users_row_state)
         if result is not None and result.data is not None:
             deletion_requested_at = result.data.get("deletion_requested_at")
+            profession_group = result.data.get("profession_group")
+            profession_label = result.data.get("profession_label")
     except Exception as e:
-        logger.warning("Could not read deletion state during login: %s", e)
+        logger.warning("Could not read users-row state during login: %s", e)
 
     return LoginResponse(
         access_token=session.access_token,
@@ -306,6 +314,8 @@ async def login(
             deletion_pending=bool(deletion_requested_at),
             deletion_requested_at=deletion_requested_at,
             purge_at=compute_purge_at(deletion_requested_at),
+            profession_group=profession_group,
+            profession_label=profession_label,
         ),
     )
 
@@ -470,7 +480,8 @@ async def me(
         return (
             supabase.table("users")
             .select("user_id, auth_id, email, full_name_ar, created_at, "
-                    "deletion_requested_at, user_subscriptions(plan_id)")
+                    "deletion_requested_at, profession_group, profession_label, "
+                    "user_subscriptions(plan_id)")
             .eq("auth_id", current_user.auth_id)
             .maybe_single()
             .execute()
@@ -503,6 +514,62 @@ async def me(
         deletion_pending=bool(deletion_requested_at),
         deletion_requested_at=deletion_requested_at,
         purge_at=compute_purge_at(deletion_requested_at),
+        # NULL from the DB (never asked) passes through as JSON null — that is
+        # the frontend's signal to show the onboarding profession prompt.
+        profession_group=profile.get("profession_group"),
+        profession_label=profile.get("profession_label"),
+    )
+
+
+# ============================================
+# PATCH /profession
+# ============================================
+
+@router.patch("/profession", response_model=ProfessionResponse)
+async def update_profession(
+    body: UpdateProfessionRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """
+    Store the onboarding profession answer (migration 115).
+
+    The label only exists for the specialist/individual groups — the other
+    groups are single-tap answers, so any label sent with them is dropped.
+    """
+    label = (
+        body.profession_label
+        if body.profession_group in ("specialist", "individual")
+        else None
+    )
+
+    def _update_profession():
+        return (
+            supabase.table("users")
+            .update(
+                {"profession_group": body.profession_group, "profession_label": label}
+            )
+            .eq("auth_id", current_user.auth_id)
+            .execute()
+        )
+
+    try:
+        result = await run_db(_update_profession)
+    except Exception as e:
+        logger.exception("Error updating profession: %s", e)
+        raise LunaHTTPException(
+            status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي"
+        )
+
+    if not result.data:
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود"
+        )
+
+    row = result.data[0]
+    return ProfessionResponse(
+        profession_group=row["profession_group"],
+        profession_label=row.get("profession_label"),
     )
 
 

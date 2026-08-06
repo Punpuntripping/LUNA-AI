@@ -93,6 +93,10 @@ interface AuthState {
   deleteAccount: (password?: string) => Promise<void>;
   /** Cancel a pending deletion and refresh the user from /auth/me. */
   restoreAccount: () => Promise<void>;
+  /** Persist the onboarding profession answer (users.profession_*). Optimistic:
+   *  the local user updates first so the prompt never re-opens this session;
+   *  a failed PATCH is swallowed (worst case: asked once more next login). */
+  saveProfession: (group: string, label: string | null) => Promise<void>;
   loadUser: () => Promise<void>;
   revalidateSession: () => Promise<void>;
   clearError: () => void;
@@ -241,6 +245,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await authApi.restoreAccount();
     const user = await authApi.me();
     set({ user, isAuthenticated: true });
+  },
+
+  saveProfession: async (group, label) => {
+    const current = get().user;
+    if (!current) return;
+    set({
+      user: { ...current, profession_group: group, profession_label: label },
+    });
+    try {
+      await authApi.updateProfession(group, label);
+    } catch {
+      // Swallow — the optimistic user object keeps the prompt closed for this
+      // session; the DB stays NULL so the user is simply asked again later.
+    }
   },
 
   loadUser: async () => {

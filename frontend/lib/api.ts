@@ -445,6 +445,14 @@ export const authApi = {
 
   me: () => api.get<User>("/auth/me"),
 
+  /** Store the onboarding profession answer (users.profession_* — migration
+   *  115). The label is only kept server-side for specialist/individual. */
+  updateProfession: (profession_group: string, profession_label: string | null) =>
+    api.patch<{ profession_group: string; profession_label: string | null }>(
+      "/auth/profession",
+      { profession_group, profession_label },
+    ),
+
   // -----------------------------------------------
   // Account settings (إعدادات الحساب)
   // -----------------------------------------------

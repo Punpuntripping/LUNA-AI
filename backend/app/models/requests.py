@@ -44,6 +44,34 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)  # mirrors the signup rule (LoginForm.tsx)
 
 
+class UpdateProfessionRequest(BaseModel):
+    """PATCH /api/v1/auth/profession — onboarding profession answer.
+
+    ``profession_label`` (the finer segment — chip pick or free-typed «أخرى»
+    text) is only meaningful for the specialist/individual groups; the route
+    forces it to None for the others, mirroring the DB comment on
+    users.profession_label (migration 115).
+    """
+    profession_group: str = Field(..., min_length=1)
+    profession_label: Optional[str] = Field(None, max_length=120)
+
+    @field_validator("profession_group")
+    @classmethod
+    def check_profession_group(cls, v: str) -> str:
+        allowed = {"legal", "entrepreneur", "specialist", "individual", "declined"}
+        if v not in allowed:
+            raise ValueError("قيمة المهنة غير صحيحة")
+        return v
+
+    @field_validator("profession_label", mode="before")
+    @classmethod
+    def clean_profession_label(cls, v):
+        if not isinstance(v, str):
+            return v
+        v = _reject_null_bytes(v).strip()
+        return v or None
+
+
 # ── Cases ──────────────────────────────────────────────
 
 class CreateCaseRequest(BaseModel):
