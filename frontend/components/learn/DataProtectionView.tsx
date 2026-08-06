@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   Cpu,
+  CreditCard,
   Database,
   EyeOff,
   Lock,
@@ -18,8 +19,10 @@ import { cn } from "@/lib/utils";
  * no-selling / no-training, RLS isolation) or /masking (the تقنيع المعرّفات
  * mechanics) — if a claim changes, those pages change FIRST and this lesson
  * follows (see .claude/plans/discover_rayhan_data_protection.md). Alibaba
- * Cloud is the one named processing partner (owner decision 2026-08-02);
- * models stay open-source and unnamed as in the sibling lessons.
+ * Cloud (compute) and Moyasar (payments) are the named processing partners
+ * — Moyasar because /privacy §4 names it as a sub-processor, which PDPL
+ * requires once payments went live; models stay open-source and unnamed as
+ * in the sibling lessons.
  */
 
 const STAY_CARDS = [
@@ -55,6 +58,11 @@ const PROCESSOR_CARDS = [
     icon: Server,
     title: "الاستضافة والمراقبة",
     body: "البنية السحابية وقواعد البيانات وأدوات المراقبة الفنية التي تُبقي الخدمة آمنة ومستقرة على مدار الساعة.",
+  },
+  {
+    icon: CreditCard,
+    title: "معالجة المدفوعات",
+    body: "الاشتراكات تتم عبر بوابة الدفع مُيسّر (Moyasar)، فتصلها بيانات بطاقتك مباشرة من نموذج الدفع دون أن تمرّ عبر خوادمنا، ولا نحفظ منها شيئًا.",
   },
 ] as const;
 
@@ -159,7 +167,9 @@ export function DataProtectionView() {
               بشركاء معالجة عالميين، بالقدر اللازم لخدمتك فقط:
             </p>
           </div>
-          <div className="mt-10 grid gap-5 sm:grid-cols-3">
+          {/* Four cards: 2×2 from sm, one row at lg — a bare sm:grid-cols-3
+              would strand the fourth card alone on a second row. */}
+          <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {PROCESSOR_CARDS.map((card) => {
               const Icon = card.icon;
               return (
