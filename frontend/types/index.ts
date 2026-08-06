@@ -17,6 +17,13 @@ export interface User {
   deletion_requested_at?: string | null;
   /** Server-computed purge date (requested + 30 days) — never derived client-side. */
   purge_at?: string | null;
+  /** Onboarding profession segment (users.profession_group, migration 115).
+   *  EXACTLY null = never asked → the profession prompt opens. "unknown" is
+   *  the server's fail-closed sentinel for degraded reads; "declined" = chose
+   *  not to answer; else legal | entrepreneur | specialist | individual. */
+  profession_group?: string | null;
+  /** Finer segment (chip pick or free-typed «أخرى») — specialist/individual only. */
+  profession_label?: string | null;
 }
 
 export interface AuthTokens {

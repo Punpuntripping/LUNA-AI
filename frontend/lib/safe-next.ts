@@ -45,6 +45,7 @@ export const DEFAULT_NEXT = "/chat";
  */
 const ALLOWED_PREFIXES = [
   "/regulations",
+  "/compliance",
   "/circulars",
   "/judgments",
   "/blog",

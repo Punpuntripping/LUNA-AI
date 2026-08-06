@@ -1,17 +1,20 @@
 import { RegulationCard } from "@/components/library/hub/RegulationCard";
+import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
 import { CircularCard } from "@/components/library/hub/CircularCard";
 import { JudgmentCard } from "@/components/library/hub/JudgmentCard";
 import { FormCard } from "@/components/library/hub/FormCard";
 import type {
   RegulationHubItem,
+  ComplianceHubItem,
   CircularHubItem,
   FormHubItem,
 } from "@/lib/library/api";
 import type { JudgmentHubItem } from "@/types/library";
 
-/** The four public wings, named exactly as their backend path segment. */
+/** The five public wings, named exactly as their backend path segment. */
 export type HubSection =
   | "regulations"
+  | "compliance"
   | "circulars"
   | "judgments"
   | "forms";
@@ -19,6 +22,7 @@ export type HubSection =
 /** One card's worth of data, whichever wing it came from. */
 export type HubItem =
   | RegulationHubItem
+  | ComplianceHubItem
   | CircularHubItem
   | JudgmentHubItem
   | FormHubItem;
@@ -64,6 +68,14 @@ export function HubCards({
               item={item}
               sectorSlugs={sectorSlugs}
             />
+          ))}
+        </>
+      );
+    case "compliance":
+      return (
+        <>
+          {(items as ComplianceHubItem[]).map((item) => (
+            <ComplianceCard key={item.slug} item={item} />
           ))}
         </>
       );

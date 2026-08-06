@@ -397,6 +397,35 @@ export interface RegulationArticle {
 }
 
 // ------------------------------------------------------------------
+// Compliance (`compliance_table` — «دليل مبسط لأكثر الخدمات استخداماً»)
+// ------------------------------------------------------------------
+
+/**
+ * ⚠ PROVISIONAL, and EMPTY in production today. `compliance_table` does not
+ * exist yet, so `getComplianceHub` always resolves to a zero-item page.
+ *
+ * Mirrors `public_library.ComplianceHubItem`. The absent fields are the design:
+ * no `requirements`, no `required_documents`, no `steps`, no `intro_*`. The wing
+ * retired on 2026-08-03 had all of those, copied out of the `services` corpus,
+ * and that is what it was retired for. `summary` is one line of our own
+ * orientation text — never a restatement of the procedure.
+ */
+export interface ComplianceHubItem {
+  slug: string;
+  title: string;
+  provider_name: string | null;
+  summary: string;
+}
+
+export interface ComplianceFilters {
+  provider?: string;
+  sector?: string;
+  /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
+  sector_slug?: string;
+  q?: string;
+}
+
+// ------------------------------------------------------------------
 // Circulars (التعاميم — Phase 5)
 // ------------------------------------------------------------------
 
@@ -530,6 +559,7 @@ function buildQuery(
   page: number,
   filters?:
     | RegulationsFilters
+    | ComplianceFilters
     | CircularsFilters
     | JudgmentsFilters
     | FormsFilters,
@@ -666,6 +696,19 @@ export function getRegulationArticle(
   );
 }
 
+export function getComplianceHub(
+  page: number,
+  filters?: ComplianceFilters,
+  opts?: ServerFetchOptions,
+): Promise<LibraryHubResponse<ComplianceHubItem> | null> {
+  const qs = buildQuery(page, filters);
+  return fetchJson<LibraryHubResponse<ComplianceHubItem>>(
+    `${SERVER_API_BASE}/api/v1/public/library/compliance?${qs}`,
+    HUB_REVALIDATE,
+    opts,
+  );
+}
+
 export function getCircularsHub(
   page: number,
   filters?: CircularsFilters,
@@ -780,6 +823,8 @@ export interface SectorsResponse {
 export interface SectorPreview {
   regulations: RegulationHubItem[];
   judgments: JudgmentHubItem[];
+  /** Always `[]` until `compliance_table` ships — the strip self-hides. */
+  compliance: ComplianceHubItem[];
   circulars: CircularHubItem[];
 }
 
@@ -791,10 +836,11 @@ export interface SectorDetail {
   preview: SectorPreview;
 }
 
-/** Any of the three hub item shapes a sector×type list can carry. */
+/** Any of the four hub item shapes a sector×type list can carry. */
 export type SectorHubItem =
   | RegulationHubItem
   | JudgmentHubItem
+  | ComplianceHubItem
   | CircularHubItem;
 
 /**
@@ -905,6 +951,8 @@ export function getSectorTypeHub(
       return getRegulationsHub(page, { sector_slug: sectorSlug }, opts);
     case "judgments":
       return getJudgmentsHub(page, { sector_slug: sectorSlug });
+    case "compliance":
+      return getComplianceHub(page, { sector_slug: sectorSlug }, opts);
     case "circulars":
       return getCircularsHub(page, { sector_slug: sectorSlug }, opts);
   }

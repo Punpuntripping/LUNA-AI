@@ -182,7 +182,7 @@ def test_env_override_parsing_is_defensive(monkeypatch) -> None:
 
 
 def test_normalize_collapses_every_section_item_path() -> None:
-    for section in ("regulations", "circulars", "judgments", "forms"):
+    for section in ("regulations", "compliance", "circulars", "judgments", "forms"):
         assert (
             normalize_rate_limit_path(f"/api/v1/public/library/{section}/some-slug")
             == f"/api/v1/public/library/{section}/:item"

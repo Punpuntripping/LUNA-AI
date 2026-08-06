@@ -2,30 +2,32 @@
 // vocabulary (library_sectors.md §4).
 //
 // `{type}` uses the EXISTING PUBLIC WING NAMES (`regulations` / `judgments` /
-// `circulars`), NOT the مكتبتي content-type tokens (`regulation` / `judgment` /
-// `circular`). A reader arriving from /regulations must recognise the segment;
-// the shelf's tokens are an internal storage vocabulary and never appear in a
-// URL. If a second copy of this table ever appears, the two WILL drift — every
-// consumer imports from here.
+// `compliance` / `circulars`), NOT the مكتبتي content-type tokens (`regulation` /
+// `judgment` / `service` / `circular`). A reader arriving from /regulations must
+// recognise the segment; the shelf's tokens are an internal storage vocabulary
+// and never appear in a URL. If a second copy of this table ever appears, the two
+// WILL drift — every consumer imports from here.
 //
-// ⚠ `compliance` (الخدمات الحكومية) WAS the third tab and is gone (2026-08-03).
-// The whole wing was retired — hub, service pages, sitemap feed, nav entry — so
-// there is no `/compliance` route left for a tab to point at. Services survive
-// ONLY as a chat citation: a title and the issuing entity's own link. Do not
-// re-add the token here without rebuilding the pages it implies.
+// ⚠ `compliance` IS WIRED AND EMPTY, and it is NOT the wing that was retired on
+// 2026-08-03. That one republished the `services` corpus — الشروط / المستندات /
+// الخطوات restated under our chrome — and was deleted for it. This one is backed
+// by `compliance_table`: «دليل مبسط لأكثر الخدمات استخداماً», our own short guide
+// plus a link out, and it stays empty until that table exists. The tab renders
+// today (a 0-count chip is hidden only on a SECTOR page) so the wing is reachable
+// and its plumbing is exercised; nothing about it may grow a service's procedure.
 //
 // Pure data + pure string helpers. No fetching, no client state, no React —
 // safe in both the server and the browser graph.
 
 /**
- * The three tabs, in the D3 order: الأنظمة (absorbs nested مواد) · الأحكام ·
- * التعاميم. الخدمات left with the compliance wing (see the header note).
- * النماذج + الحاسبات stay parked — `forms` has no sector column and calculators
- * have no table at all.
+ * The four tabs, in the D3 order: الأنظمة (absorbs nested مواد) · الأحكام ·
+ * الخدمات · التعاميم. النماذج + الحاسبات stay parked — `forms` has no sector
+ * column and calculators have no table at all.
  */
 export const LIBRARY_TYPES = [
   "regulations",
   "judgments",
+  "compliance",
   "circulars",
 ] as const;
 
@@ -58,6 +60,16 @@ export const LIBRARY_TYPE_META: Record<LibraryType, LibraryTypeMeta> = {
     wingPath: "/judgments",
     description: "أحكام المحاكم السعودية — وقائعها وأسبابها ومنطوقها.",
     empty: "لا توجد أحكام لعرضها حالياً.",
+  },
+  compliance: {
+    label: "الخدمات",
+    longLabel: "دليل الخدمات الحكومية",
+    wingPath: "/compliance",
+    // Describes the GUIDE, not the services corpus. «الشروط والمستندات وخطوات
+    // التنفيذ» was the retired wing's line and must not come back — this wing
+    // orients a reader and sends them to the issuing entity.
+    description: "دليل مبسط لأكثر الخدمات الحكومية استخداماً، وأين تُنجز كل خدمة.",
+    empty: "لا توجد خدمات لعرضها حالياً.",
   },
   circulars: {
     label: "التعاميم",

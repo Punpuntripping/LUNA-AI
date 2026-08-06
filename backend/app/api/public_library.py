@@ -1180,6 +1180,42 @@ class RegulationArticleResponse(BaseModel):
     next: Optional[ArticleNavEntry] = None
 
 
+# --- Compliance hub (`compliance_table`) ----------------------------------
+
+
+class ComplianceHubItem(BaseModel):
+    """One card on the /compliance guide grid.
+
+    ⚠ PROVISIONAL — `compliance_table` is not designed yet, and no route can
+    return one of these until it is (``library_service.COMPLIANCE_TABLE_READY``).
+    The shape is deliberately the SMALLEST thing a card can render: who issues
+    the service, what it is called, and one line of OUR OWN orientation text.
+
+    THE FIELDS THAT ARE MISSING ARE THE POINT. There is no ``requirements``, no
+    ``required_documents``, no ``steps`` — the retired wing had all three, copied
+    out of the `services` corpus, and that is exactly what it was retired for.
+    ``summary`` is a guide sentence, never a restatement of the procedure; the
+    procedure lives on the issuing entity's page and is reached by leaving.
+    """
+
+    slug: str
+    title: str
+    provider_name: Optional[str] = None
+    summary: str = ""
+
+
+class ComplianceHubResponse(HubSearchTotals):
+    """Same envelope as ``RegHubResponse`` — see it for ``max_page`` /
+    ``max_anon_page`` (the deprecated alias)."""
+
+    items: list[ComplianceHubItem] = Field(default_factory=list)
+    page: int
+    total_pages: int
+    cap_reached: bool = False
+    max_page: int = library_service.ANON_HUB_MAX_PAGE
+    max_anon_page: int = library_service.ANON_HUB_MAX_PAGE
+
+
 # --- Circulars hub + document page ----------------------------------------
 
 
@@ -1424,7 +1460,13 @@ class FormDetailResponse(BaseModel):
 
 
 class LibraryCounts(BaseModel):
-    """The three tab counts of the unified «المكتبة القانونية» hub.
+    """The tab counts of the unified «المكتبة القانونية» hub.
+
+    ``compliance`` is ALWAYS 0 today and that is not a bug: the wing exists and is
+    empty until ``compliance_table`` ships, and it is deliberately absent from
+    ``library_service._SECTION_SOURCES`` so a guaranteed-zero count costs no query.
+    The chip still renders (``LibraryTypeChips`` hides a zero only on a SECTOR
+    page), which is what makes the empty wing reachable.
 
     ⚠ ``judgments`` is the TRUE UNFILTERED corpus total (30,531) and is NOT
     derivable from ``SectorSummary.counts`` — in either direction, both verified
@@ -1437,6 +1479,7 @@ class LibraryCounts(BaseModel):
 
     regulations: int = 0
     judgments: int = 0
+    compliance: int = 0
     circulars: int = 0
 
 
@@ -1475,7 +1518,7 @@ class SectorListResponse(BaseModel):
 
 
 class SectorPreview(BaseModel):
-    """A first slice (<= 3) of each of the three wings, scoped to one sector.
+    """A first slice (<= 3) of each wing, scoped to one sector.
 
     The items are the EXISTING hub item models — byte-identical shapes to what
     ``/public/library/{wing}`` already returns — so the frontend reuses its
@@ -1484,6 +1527,10 @@ class SectorPreview(BaseModel):
 
     regulations: list[RegHubItem] = Field(default_factory=list)
     judgments: list[JudgmentHubItem] = Field(default_factory=list)
+    # Always empty until `compliance_table` ships — the overview does not call the
+    # compliance lister at all, so the wing costs the sector page nothing. The
+    # frontend strip renders nothing for an empty slice (SectorPreviewStrip).
+    compliance: list[ComplianceHubItem] = Field(default_factory=list)
     circulars: list[CircularHubItem] = Field(default_factory=list)
 
 
@@ -2036,6 +2083,90 @@ async def get_regulation_article(
         )
     response.headers["Cache-Control"] = _LIBRARY_CACHE_CONTROL
     return RegulationArticleResponse(**art)
+
+
+@router.get("/public/library/compliance", response_model=ComplianceHubResponse)
+async def list_compliance(
+    request: Request,
+    response: Response,
+    page: int = Query(1, description="1-based page index; 9 items per page."),
+    provider: Optional[str] = Query(
+        None, description="ilike on provider_name (>= 3 chars)"
+    ),
+    sector: Optional[str] = Query(
+        None, description="raw Arabic sector name; matches sectors[] (contains)"
+    ),
+    sector_slug: Optional[str] = Query(
+        None, description="Latin sector slug — the SECTION axis (§5)"
+    ),
+    q: Optional[str] = Query(
+        None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
+    ),
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """/compliance hub list (9 cards/page) — «دليل مبسط لأكثر الخدمات استخداماً».
+
+    ANSWERS AN EMPTY PAGE TODAY, ON PURPOSE. `compliance_table` does not exist
+    yet (``library_service.COMPLIANCE_TABLE_READY``), so the lister short-circuits
+    without a query. The route is wired now rather than later so the wing, its
+    cache headers, its metering and its cap behaviour are all in place — the day
+    the table lands, only the lister changes.
+
+    Every guard the other hubs run stays live so none of them can be forgotten
+    later: the filters are validated, the anon depth cap applies, and yielded
+    items are metered (§2.2 — currently a no-op over an empty list)."""
+    provider = _search_text(provider)
+    sector, sector_key = _sector_section(sector_slug, sector)
+    search_dropped = _search_was_dropped(q, current_user)
+    q = _search_query(q, current_user)
+    # ``sector`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
+    filtered = bool(provider or q) or _sector_is_unslugged(sector, sector_key)
+
+    tier, user_id = await _hub_caller(supabase, current_user)
+    page = max(1, int(page or 1))
+
+    if not _hub_page_visible(
+        request, response, page=page, tier=tier, current_user=current_user,
+        search_dropped=search_dropped,
+    ):
+        total_pages = await _wall_total_pages(
+            tier,
+            library_service.compliance_hub_total_pages,
+            supabase,
+            provider,
+            sector,
+            q,
+            section="compliance",
+            filtered=filtered,
+            sector_slug=sector_key,
+        )
+        return ComplianceHubResponse(
+            items=[], page=page, total_pages=total_pages, cap_reached=True,
+            **_hub_caps(tier),
+        )
+
+    await library_budget.enforce_item_budget(request, user_id, tier)
+
+    data = await run_db(
+        library_service.list_compliance_hub,
+        supabase,
+        page=page,
+        provider=provider,
+        sector=sector,
+        q=q,
+    )
+    await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
+    return ComplianceHubResponse(
+        items=[ComplianceHubItem(**it) for it in data["items"]],
+        page=data["page"],
+        total_pages=_visible_total_pages(tier, data["total_pages"], filtered=filtered),
+        cap_reached=False,
+        # Search totals only — null on a browse listing (see HubSearchTotals).
+        total_count=data.get("total_count"),
+        total_count_is_exact=bool(data.get("total_count_is_exact", True)),
+        **_hub_caps(tier),
+    )
 
 
 # --- /circulars (Phase 5) -------------------------------------------------

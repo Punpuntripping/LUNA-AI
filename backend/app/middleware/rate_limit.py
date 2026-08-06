@@ -128,8 +128,12 @@ LIBRARY_FULL_PREFIX = "/api/v1/library/full/"
 # expensive per-call surface in the wing and the least suitable one to hand a
 # per-slug budget. The flat `/public/library/sectors` list has no tail and keeps
 # its own key, like every other hub list path.
+# `compliance` is listed AHEAD of its item route. The wing serves only a hub
+# today, but the day `compliance_table` brings a `/compliance/{slug}` guide
+# page, an unlisted section is one handing out a fresh DEFAULT_RATE_LIMIT per
+# slug — a gap that opens silently and is invisible until someone walks it.
 PUBLIC_LIBRARY_SECTIONS = frozenset(
-    {"regulations", "circulars", "judgments", "forms", "sectors"}
+    {"regulations", "compliance", "circulars", "judgments", "forms", "sectors"}
 )
 
 ITEM_PLACEHOLDER = ":item"

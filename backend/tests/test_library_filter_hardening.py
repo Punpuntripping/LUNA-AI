@@ -125,11 +125,11 @@ def _hub_fake(**qrow: Any) -> FakeSupabase:
 # Hub stubs — the wiring is under test here, not the queries.
 # ---------------------------------------------------------------------------
 
-# ``/compliance`` was the second entry until 2026-08-03 — the wing was retired,
-# endpoint and all, so there is nothing left here to exercise.
 HUBS = [
     ("/api/v1/public/library/regulations", "list_regulations_hub",
      "regulations_hub_total_pages"),
+    ("/api/v1/public/library/compliance", "list_compliance_hub",
+     "compliance_hub_total_pages"),
     ("/api/v1/public/library/circulars", "list_circulars_hub",
      "circulars_hub_total_pages"),
     ("/api/v1/public/library/judgments", "list_judgments_hub",
@@ -140,9 +140,10 @@ HUBS = [
 HUB_PATHS = [h[0] for h in HUBS]
 
 REG_HUB = HUBS[0][0]
-CIRC_HUB = HUBS[1][0]
-JUD_HUB = HUBS[2][0]
-FORMS_HUB = HUBS[3][0]
+CIRC_HUB = HUBS[2][0]
+JUD_HUB = HUBS[3][0]
+FORMS_HUB = HUBS[4][0]
+COMPLIANCE_HUB = HUBS[1][0]
 
 # The true corpus size every stubbed counter reports. Anon must never see it.
 TRUE_TOTAL_PAGES = 40
@@ -156,9 +157,10 @@ TRUE_TOTAL_PAGES = 40
 # against their real vocabularies:
 ANON_FILTER = {
     HUBS[0][0]: {"doc_type": "law_statute"},   # regulations — closed vocab
-    HUBS[1][0]: {"entity": ENTITY_UUID},        # circulars   — authority id
-    HUBS[2][0]: {"court_level": "appeal"},      # judgments   — closed vocab
-    HUBS[3][0]: {"category": ls.FORM_CATEGORIES[0]},  # forms — closed vocab
+    HUBS[1][0]: {"provider": "وزارة"},          # compliance  — free text, still 400s short
+    HUBS[2][0]: {"entity": ENTITY_UUID},        # circulars   — authority id
+    HUBS[3][0]: {"court_level": "appeal"},      # judgments   — closed vocab
+    HUBS[4][0]: {"category": ls.FORM_CATEGORIES[0]},  # forms — closed vocab
 }
 
 
@@ -326,6 +328,19 @@ def test_a_blank_q_is_not_a_filter_and_not_an_error(stub_hubs, path, term) -> No
     for). Blank must stay a no-op, never a 400."""
     res = _client().get(path, params={"q": term})
     assert res.status_code == 200, res.text
+
+
+def test_provider_is_free_text_and_takes_the_same_rule(stub_hubs) -> None:
+    """``provider`` is an ``ilike`` on ``provider_name`` — a second search box on
+    the compliance hub, and just as good a partitioning key as ``q``.
+
+    Still enforced while the wing is EMPTY: validation runs at the route, before
+    the lister is ever reached, so a wing with no rows must still refuse a
+    2-character probe rather than let it through as a distinct request shape."""
+    assert _client().get(COMPLIANCE_HUB, params={"provider": "ال"}).status_code == 400
+    assert _client().get(
+        COMPLIANCE_HUB, params={"provider": "وزارة"}
+    ).status_code == 200
 
 
 def test_a_rejected_filter_never_reaches_the_database(stub_hubs) -> None:

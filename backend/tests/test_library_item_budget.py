@@ -65,6 +65,8 @@ OTHER_USER = "bbbbbbbb-0000-0000-0000-000000000002"
 HUBS = {
     "regulations": ("/api/v1/public/library/regulations", "list_regulations_hub",
                     "regulations_hub_total_pages"),
+    "compliance": ("/api/v1/public/library/compliance", "list_compliance_hub",
+                   "compliance_hub_total_pages"),
     "circulars": ("/api/v1/public/library/circulars", "list_circulars_hub",
                   "circulars_hub_total_pages"),
     "judgments": ("/api/v1/public/library/judgments", "list_judgments_hub",

@@ -76,18 +76,30 @@ COMMERCE_SLUG = "commercial-transactions"
 COMMERCE_AR = "المعاملات التجارية"
 
 # The §3 numbers for that sector, and the page counts they imply at 9/page.
+# ``compliance`` is 0 and STAYS 0 until `compliance_table` ships. It is absent
+# from ``ls.SECTOR_COUNT_SECTIONS`` (no table to count), so the zero here comes
+# from the response MODEL's default — which is exactly the contract under test:
+# the wing is present on the wire and empty.
 COMMERCE_COUNTS = {
     "regulations": 693,
     "judgments": 18879,
+    "compliance": 0,
     "circulars": 162,
 }
-COMMERCE_PAGES = {k: math.ceil(v / 9) for k, v in COMMERCE_COUNTS.items()}
+# What ``ls.sector_counts()`` itself returns: the COUNTED wings only. The
+# `compliance: 0` above is added a layer up by ``SectorCounts``'s model default,
+# because the wing has no table to count yet.
+COUNTED_COMMERCE = {
+    k: v for k, v in COMMERCE_COUNTS.items() if k in ls.SECTOR_COUNT_SECTIONS
+}
+COMMERCE_PAGES = {k: math.ceil(v / 9) for k, v in COUNTED_COMMERCE.items()}
 
 # The unfiltered corpus totals (§7.3). ⚠ judgments is 30,531 — the TRUE corpus
 # total, NOT the 20,671 the per-sector judgment column sums to (D10).
 CORPUS_COUNTS = {
     "regulations": 3373,
     "judgments": 30531,
+    "compliance": 0,
     "circulars": 1843,
 }
 
@@ -187,7 +199,12 @@ def _sector_counts_table() -> dict[str, dict[str, int]]:
         slug: {s: 0 for s in ls.SECTOR_COUNT_SECTIONS} | {"total": 0}
         for slug in SECTOR_SLUGS.values()
     }
-    table[COMMERCE_SLUG] = dict(COMMERCE_COUNTS) | {"total": sum(COMMERCE_COUNTS.values())}
+    # COUNTED_COMMERCE, not COMMERCE_COUNTS: this stubs ``ls.sector_counts()``,
+    # which only ever knows the wings that have a table. Seeding a `compliance`
+    # key here would fake a count the real function cannot produce.
+    table[COMMERCE_SLUG] = dict(COUNTED_COMMERCE) | {
+        "total": sum(COUNTED_COMMERCE.values())
+    }
     return table
 
 
@@ -700,12 +717,18 @@ def test_the_sector_overview_returns_counts_plus_a_preview_of_each_wing(stubs) -
     assert body["slug"] == COMMERCE_SLUG
     assert body["name_ar"] == COMMERCE_AR
     assert body["counts"]["total"] == sum(COMMERCE_COUNTS.values())
+    # ``compliance`` is present and EMPTY — the overview never calls its lister,
+    # so the wing costs a sector page nothing while it has no table.
     assert set(body["preview"]) == {
         "regulations",
         "judgments",
+        "compliance",
         "circulars",
     }
-    for items in body["preview"].values():
+    assert body["preview"]["compliance"] == []
+    for key, items in body["preview"].items():
+        if key == "compliance":
+            continue
         assert len(items) == pl._SECTOR_PREVIEW_ITEMS
         assert items[0]["slug"] and items[0]["title"]
 
@@ -853,8 +876,8 @@ def test_sector_counts_seeds_every_slug_and_drops_unknown_sector_values(
 
     assert fake.calls == ["library_sector_counts"]
     assert set(counts) == set(SECTOR_SLUGS.values())
-    assert counts[COMMERCE_SLUG] == dict(COMMERCE_COUNTS) | {
-        "total": sum(COMMERCE_COUNTS.values())
+    assert counts[COMMERCE_SLUG] == dict(COUNTED_COMMERCE) | {
+        "total": sum(COUNTED_COMMERCE.values())
     }
     assert counts["human-rights"] == {
         "regulations": 0, "judgments": 0, "circulars": 0, "total": 0,

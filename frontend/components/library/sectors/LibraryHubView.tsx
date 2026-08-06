@@ -7,6 +7,7 @@ import { SectorBrowseGrid } from "@/components/library/sectors/SectorBrowseGrid"
 import { SectorPreviewStrip } from "@/components/library/sectors/SectorPreviewStrip";
 import { LibrarySearchPanel } from "@/components/library/search/LibrarySearchPanel";
 import {
+  getComplianceHub,
   getCircularsHub,
   getJudgmentsHub,
   getLibraryCounts,
@@ -52,15 +53,26 @@ export async function LibraryHubView() {
   // One await for the lot: the hub-page-1 fetches share their Data Cache
   // entries with the wing hubs themselves (same URL, same init), so this costs
   // the backend nothing the library was not already paying.
-  const [countsPayload, sectors, sectorSlugs, regulations, judgments, circulars] =
-    await Promise.all([
-      getLibraryCounts(),
-      getSectors(),
-      getSectorSlugMap(),
-      getRegulationsHub(1),
-      getJudgmentsHub(1),
-      getCircularsHub(1),
-    ]);
+  const [
+    countsPayload,
+    sectors,
+    sectorSlugs,
+    regulations,
+    judgments,
+    compliance,
+    circulars,
+  ] = await Promise.all([
+    getLibraryCounts(),
+    getSectors(),
+    getSectorSlugMap(),
+    getRegulationsHub(1),
+    getJudgmentsHub(1),
+    // Resolves to an empty page until `compliance_table` ships; the strip below
+    // renders nothing for an empty slice, so this costs the hub one cached
+    // no-op fetch and keeps the wiring exercised.
+    getComplianceHub(1),
+    getCircularsHub(1),
+  ]);
 
   // Null counts = the backend has not shipped `/public/library` yet (or is
   // down). Chips still render, just without their numbers — never a 5xx and
@@ -145,6 +157,13 @@ export async function LibraryHubView() {
                 items={judgments?.items ?? []}
                 count={counts?.judgments ?? 0}
                 href={LIBRARY_TYPE_META.judgments.wingPath}
+                sectorSlugs={sectorSlugs}
+              />
+              <SectorPreviewStrip
+                type="compliance"
+                items={compliance?.items ?? []}
+                count={counts?.compliance ?? 0}
+                href={LIBRARY_TYPE_META.compliance.wingPath}
                 sectorSlugs={sectorSlugs}
               />
               <SectorPreviewStrip

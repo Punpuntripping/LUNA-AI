@@ -31,6 +31,11 @@ class UserProfile(BaseModel):
     deletion_pending: bool = False
     deletion_requested_at: Optional[datetime] = None
     purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
+    # Onboarding profession segment (migration 115). None (JSON null) means
+    # "never asked" and PROMPTS the frontend — degraded paths that could not
+    # read the users row must send the "unknown" sentinel instead (fail-closed).
+    profession_group: Optional[str] = "unknown"
+    profession_label: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -58,6 +63,17 @@ class UserProfileResponse(BaseModel):
     deletion_pending: bool = False
     deletion_requested_at: Optional[datetime] = None
     purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
+    # Onboarding profession segment (migration 115). None (JSON null) = never
+    # asked → the frontend shows the profession prompt. "unknown" = fail-closed
+    # sentinel for degraded reads — never prompts, never written to the DB.
+    profession_group: Optional[str] = "unknown"
+    profession_label: Optional[str] = None
+
+
+class ProfessionResponse(BaseModel):
+    """PATCH /api/v1/auth/profession — echo of the stored answer."""
+    profession_group: str
+    profession_label: Optional[str] = None
 
 
 # ── Conversations ──────────────────────────────────────
