@@ -188,8 +188,18 @@ def _load_corpus(client, table: str, cols: tuple[str, ...]) -> list[dict]:
     return rows
 
 
-def process_type(client, content_type: str, apply: bool) -> dict:
+def process_type(
+    client, content_type: str, apply: bool, only_ids: set[str] | None = None
+) -> dict:
     """Compute (and, when ``apply``, write) slugs for one content_type.
+
+    ``only_ids`` restricts the run to those corpus ids — publishing a CHOSEN set
+    rather than the whole corpus. Slugging is what publishes an item, so without
+    it the only options are "100 hand-picked rows" and "all 3,952", and the
+    second one puts the corpus's untitled scans and standards dumps on public,
+    indexable URLs. The selection itself is not this script's business: it reads
+    a list of ids and slugs exactly those. `build_usage_rank.py --emit-used-ids`
+    writes the list of regulations the pipeline has actually cited.
 
     Returns a stats dict and prints a per-type summary with sample slugs.
     """
@@ -213,8 +223,10 @@ def process_type(client, content_type: str, apply: bool) -> dict:
     }
 
     for row in corpus:
-        stats["total"] += 1
         cid = str(row.get("id"))
+        if only_ids is not None and cid not in only_ids:
+            continue
+        stats["total"] += 1
 
         # Never rewrite an existing slug — URLs are permanent.
         if existing.get(cid):
@@ -302,19 +314,38 @@ def main() -> None:
         action="store_true",
         help="actually write (DEFAULT is a dry-run that writes nothing)",
     )
+    ap.add_argument(
+        "--ids-file",
+        metavar="PATH",
+        help="publish ONLY these corpus ids (one per line; blank lines and "
+        "'#' comments ignored). Requires an explicit --type.",
+    )
     args = ap.parse_args()
+
+    only_ids: set[str] | None = None
+    if args.ids_file:
+        if args.type == "all":
+            ap.error("--ids-file needs an explicit --type (ids are per corpus)")
+        raw = Path(args.ids_file).read_text(encoding="utf-8").splitlines()
+        only_ids = {
+            ln.strip() for ln in raw if ln.strip() and not ln.lstrip().startswith("#")
+        }
+        if not only_ids:
+            ap.error(f"--ids-file {args.ids_file} contained no ids")
 
     types = (
         ("regulation", "service", "circular") if args.type == "all" else (args.type,)
     )
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"build_seo_slugs — mode={mode}, types={', '.join(types)}")
+    if only_ids is not None:
+        print(f"  restricted to {len(only_ids)} ids from {args.ids_file}")
 
     client = get_supabase_client()
 
     grand = {"total": 0, "already": 0, "new": 0, "collision": 0, "fallback": 0}
     for ct in types:
-        stats = process_type(client, ct, args.apply)
+        stats = process_type(client, ct, args.apply, only_ids)
         for k in grand:
             grand[k] += stats[k]
 

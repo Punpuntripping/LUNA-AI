@@ -129,7 +129,18 @@ _gate_defaults_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
 # (fetched from the sidecar) instead of the corpus, so every page is full and
 # ``total_pages`` is EXACT. Above the ceiling the wing is in full-corpus steady
 # state and the listers keep their legacy corpus-pagination path untouched.
-SAMPLE_MODE_MAX_IDS = 300
+#
+# ⚠ RAISED 300 → 1000 WHEN /regulations WENT TO 462 PUBLISHED ROWS (migration
+# 116). The regulations LISTER no longer consults this at all — it paginates
+# `library_regulations_ranked`, which is the published set by construction — but
+# `_published_sample_counts` still does, and it is what feeds the SECTOR COUNTS.
+# Crossing the ceiling would have flipped those counts onto the corpus path,
+# where a sector reporting 695 rows of which 0 are servable gets prerendered as
+# a static, indexable, EMPTY page — the soft-404-at-scale failure documented at
+# CROSS-WING COUNTS below. Raising the ceiling keeps the counts measuring what
+# is actually servable. Past ~1000 published rows the counts need their own RPC
+# over the ranked view; the id-list scan is not meant to grow indefinitely.
+SAMPLE_MODE_MAX_IDS = 1000
 
 # In-process TTL cache for the per-content_type published-id list — one entry per
 # content_type, each ``{"value": list|None, "expires_at": float}`` (same shape as
@@ -164,6 +175,10 @@ __all__ = [
     "list_regulations_hub",
     "regulations_hub_total_pages",
     "get_regulation_doc",
+    # /compliance — wired, empty until `compliance_table` exists
+    "COMPLIANCE_TABLE_READY",
+    "list_compliance_hub",
+    "compliance_hub_total_pages",
     # Phase 3 — مادة (article) pages
     "ARTICLE_FREE_CHARS",
     "SHARH_TEASER_CHARS",
@@ -1704,7 +1719,7 @@ def _reg_count(supabase, entity, doc_type, sector, q, *, in_force_only=False) ->
         rows, _truncated = _bm25_hub_rows(
             supabase,
             corpus="regulation",
-            table="regulations_v2",
+            table=_REG_HUB_TABLE,
             select_cols="id, status_class",
             q=q,
             apply_filters=lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
@@ -1713,27 +1728,34 @@ def _reg_count(supabase, entity, doc_type, sector, q, *, in_force_only=False) ->
             rows = [r for r in rows if r.get("status_class") == "in_force"]
         return len(rows)
 
-    qb = supabase.table("regulations_v2").select("id", count="exact")
+    qb = supabase.table(_REG_HUB_TABLE).select("id", count="exact")
     qb = _apply_reg_filters(qb, entity, doc_type, sector)
     if in_force_only:
         qb = qb.eq("status_class", "in_force")
     return int((qb.limit(1).execute().count) or 0)
 
 
-# Column set the /regulations hub reads (shared by the legacy + sample paths).
+# ⚠ THE /regulations WING READS THE RANKED VIEW, NOT THE CORPUS (migration 116).
+# `library_regulations_ranked` is `regulations_v2` INNER JOIN the `seo_item_meta`
+# sidecar on `slug IS NOT NULL`, carrying `slug` + `rank`. Three things follow,
+# and all three are load-bearing:
+#
+#   * It IS the published set. No `_published_ids` intersection, no sample-mode
+#     branch, no `_slug_map` round-trip — an unpublished row cannot appear
+#     because the join drops it.
+#   * `rank` makes the ordering contract a single sortable column, so one
+#     `.order("rank").order("id").range(...)` replaces the two-partition
+#     in-force/rest straddle the wing used to need.
+#   * Counts over it are counts of what is SERVABLE, which is what every page
+#     number on this wing has to mean.
+_REG_HUB_TABLE = "library_regulations_ranked"
+
+# Column set the /regulations hub reads. `slug` rides along from the view, which
+# is why this path issues no sidecar lookup.
 _REG_HUB_SELECT = (
     "id, reg_ref, clean_title, title, entity_name, status_class, "
-    "doc_type_bucket, summary, sectors"
+    "doc_type_bucket, summary, sectors, slug"
 )
-
-
-def _reg_hub_sort_key(r: dict[str, Any]) -> tuple[int, str, str]:
-    """Python ordering for a sample-mode /regulations page: in-force partition
-    first, then ``COALESCE(clean_title, title)``, then ``id`` — the same contract
-    the legacy two-partition DB pagination expresses."""
-    in_force = 0 if r.get("status_class") == "in_force" else 1
-    title = (r.get("clean_title") or r.get("title") or "")
-    return (in_force, title, str(r.get("id") or ""))
 
 
 def regulations_hub_total_pages(
@@ -1745,26 +1767,16 @@ def regulations_hub_total_pages(
 ) -> int:
     """Total hub pages for the filtered regulations set (for the anon-cap body).
 
-    In SAMPLE MODE (``_published_ids`` returns a list) this counts only the
-    filtered PUBLISHED rows — an EXACT page count. In full-corpus steady state
-    (``_published_ids`` → None) it counts the filtered CORPUS rows (9/page): every
-    reg is slugged then (``build_seo_slugs``), so counting all vs. slugged rows is
-    identical.
+    Counts the PUBLISHED rows — ``_reg_count`` reads the same ranked view the
+    lister paginates, so the page count and the pages actually served cannot
+    disagree at any corpus size. (That equality used to need a sample-mode
+    branch here, because counting the corpus while the lister paginated the
+    published sample is precisely how §12.2 shipped page 1 reporting one total
+    and page 2 reporting another.) With ``q`` present it counts the BM25 match
+    set instead, for the same reason.
     """
     try:
-        pub_ids = None if q else _published_ids(supabase, "regulation")
-        if pub_ids is not None:
-            rows = _fetch_corpus_by_ids(
-                supabase,
-                "regulations_v2",
-                "id",
-                pub_ids,
-                lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
-            )
-            total = len(rows)
-        else:
-            # With ``q`` this counts the BM25 match set; without it, the corpus.
-            total = _reg_count(supabase, entity, doc_type, sector, q)
+        total = _reg_count(supabase, entity, doc_type, sector, q)
     except LunaHTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -1784,29 +1796,36 @@ def list_regulations_hub(
 ) -> dict[str, Any]:
     """One page (9 items) of the /regulations hub.
 
-    Ordering contract = **in-force first, then title**. There is no DB column
-    that expresses that priority, so pagination is done over two partitions —
-    ``status_class = 'in_force'`` (title-ordered) followed by everything else
-    (title-ordered) — and the requested window is sliced across the boundary
-    with DB ``range`` queries (never fetching more than 9 detail rows). Slugs are
-    resolved with ONE batched sidecar lookup; only rows that HAVE a slug are
-    returned (a hub lists only published items).
+    Ordering contract = ``seo_item_meta.rank`` ascending, then ``id``. Rank is
+    written by ``scripts/build_usage_rank.py`` from how often the deep-search
+    pipeline actually cited each regulation (plan: ranking_criteria.md), so page
+    1 is the corpus's most-used codes rather than an alphabetical accident.
+
+    ⚠ THIS USED TO BE THREE CODE PATHS AND IS NOW ONE. The old contract was
+    "in-force first, then ``clean_title``" — which no single column expresses, so
+    browse needed a two-partition straddle (in-force title-ordered, then the
+    rest), sample mode needed a parallel Python sort of the published ids, and
+    the two did not actually agree: the DB path ordered on ``clean_title`` alone
+    while the Python path coalesced to ``title``, and ``clean_title`` is NULL on
+    43% of the corpus. It also put one titleless row and eight «النظام الأساس
+    لشركة … للتأمين التعاوني» charters on page 1, because Arabic titles begin with
+    their document type, so alphabetical sorts by type-word. One indexed integer
+    on the published-only view replaces all of it.
+
+    ⚠ NULL ``rank`` SORTS LAST, NOT FIRST. PostgREST's default for ``.order()``
+    ascending is NULLS LAST, which is what a freshly published, not-yet-ranked
+    row should do: appear at the end of the list rather than ahead of نظام
+    المعاملات المدنية. Publish then rank; between the two the new rows queue at
+    the back instead of taking the front page.
 
     Returns ``{"items": [...], "page": page, "total_pages": N}``. The anon
     depth-cap is enforced by the route (this function always returns real data).
 
-    SAMPLE MODE (stage-1 rollout): when ``_published_ids`` returns a list, the
-    page is cut from the PUBLISHED set — all matching published rows are fetched
-    by id, sorted in Python by the SAME contract (in-force first, then title, then
-    id), and the 9-item window is sliced — so a page never comes back empty just
-    because the corpus's first pages hold no published rows. In full-corpus steady
-    state (``_published_ids`` → None) the legacy two-partition path below runs
-    unchanged.
-
-    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): neither
-    of the above runs. Ids come from ``bm25_search()`` in score order, the wing's
-    facet filters are applied to those rows, and the window is sliced by RANK.
-    The in-force-first contract does not apply to a search result list.
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
+    from ``bm25_search()`` in score order, the wing's facet filters are applied to
+    those rows, and the window is sliced by RANK. The rank contract does not
+    apply to a search result list — a result list ordered by anything other than
+    relevance is not a result list.
     """
     page = max(1, int(page or 1))
     ps = HUB_PAGE_SIZE
@@ -1814,80 +1833,40 @@ def list_regulations_hub(
 
     raw_rows: list[dict[str, Any]]
     truncated = False
-    pub_ids = None if q else _published_ids(supabase, "regulation")
 
     if q:
-        # SEARCH MODE — relevance order, no partition contract (see the block
-        # comment at ``_bm25_hub_rows``).
+        # SEARCH MODE — relevance order, no rank contract (see the block comment
+        # at ``_bm25_hub_rows``).
         all_rows, truncated = _bm25_hub_rows(
             supabase,
             corpus="regulation",
-            table="regulations_v2",
+            table=_REG_HUB_TABLE,
             select_cols=_REG_HUB_SELECT,
             q=q,
             apply_filters=lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
         )
         total = len(all_rows)
         raw_rows = all_rows[offset : offset + ps]
-    elif pub_ids is not None:
-        # SAMPLE MODE — paginate the published set in Python (set is <= 300).
-        all_rows = _fetch_corpus_by_ids(
-            supabase,
-            "regulations_v2",
-            _REG_HUB_SELECT,
-            pub_ids,
-            lambda qb: _apply_reg_filters(qb, entity, doc_type, sector),
-        )
-        all_rows.sort(key=_reg_hub_sort_key)
-        total = len(all_rows)
-        raw_rows = all_rows[offset : offset + ps]
     else:
-        # LEGACY (full-corpus steady state) — unchanged two-partition pagination.
-        select_cols = _REG_HUB_SELECT
+        # BROWSE — one query over the published-only ranked view. Never fetches
+        # more than the 9 rows the page shows.
         try:
             total = _reg_count(supabase, entity, doc_type, sector, None)
-            count_a = _reg_count(
-                supabase, entity, doc_type, sector, None, in_force_only=True
-            )
-
-            raw_rows = []
-            if offset < count_a:
-                # Window starts inside the in-force partition.
-                take_a = min(ps, count_a - offset)
-                qa = supabase.table("regulations_v2").select(select_cols)
-                qa = _apply_reg_filters(qa, entity, doc_type, sector).eq(
-                    "status_class", "in_force"
-                )
-                qa = qa.order("clean_title").order("id").range(offset, offset + take_a - 1)
-                raw_rows.extend(qa.execute().data or [])
-                remaining = ps - take_a
-                if remaining > 0:
-                    # Straddle: continue into the "rest" partition from its head.
-                    qb = supabase.table("regulations_v2").select(select_cols)
-                    qb = _apply_reg_filters(qb, entity, doc_type, sector).neq(
-                        "status_class", "in_force"
-                    )
-                    qb = qb.order("clean_title").order("id").range(0, remaining - 1)
-                    raw_rows.extend(qb.execute().data or [])
-            else:
-                # Window is entirely inside the "rest" partition.
-                b_offset = offset - count_a
-                qb = supabase.table("regulations_v2").select(select_cols)
-                qb = _apply_reg_filters(qb, entity, doc_type, sector).neq(
-                    "status_class", "in_force"
-                )
-                qb = qb.order("clean_title").order("id").range(b_offset, b_offset + ps - 1)
-                raw_rows.extend(qb.execute().data or [])
+            qb = supabase.table(_REG_HUB_TABLE).select(_REG_HUB_SELECT)
+            qb = _apply_reg_filters(qb, entity, doc_type, sector)
+            qb = qb.order("rank").order("id").range(offset, offset + ps - 1)
+            raw_rows = qb.execute().data or []
         except Exception as e:  # noqa: BLE001
             logger.exception("Error listing regulations hub: %s", e)
             raise _hub_error()
 
     total_pages = max(1, math.ceil(total / ps)) if total else 1
 
-    slugs = _slug_map(supabase, "regulation", [r.get("id") for r in raw_rows])
     items: list[dict[str, Any]] = []
     for r in raw_rows:
-        slug = slugs.get(str(r.get("id")))
+        # The view is an INNER JOIN on a non-null slug, so this cannot be empty;
+        # the guard stays as a cheap invariant check rather than a filter.
+        slug = r.get("slug")
         if not slug:
             continue
         items.append(
@@ -2382,6 +2361,77 @@ def get_regulation_doc(
         "official_sources": official_sources,
         "draft_notice": status == "draft",
     }
+
+
+# --- /compliance hub (`compliance_table`) ---------------------------------
+#
+# «دليل مبسط لأكثر الخدمات استخداماً» — a short, hand-written guide to the most-used
+# government services. THE WING IS WIRED AND DELIBERATELY EMPTY until that table
+# exists.
+#
+# ⚠ THIS IS NOT THE OLD /compliance. That wing republished the `services` corpus
+# — الشروط / المستندات المطلوبة / الخطوات, restated under ريحان's chrome — and was
+# retired for it: a procedure goes stale the moment the issuing entity edits it,
+# and mirroring it made us the apparent authority on a process we do not own.
+# `compliance_table` is the opposite shape: OUR OWN short orientation text plus a
+# link out. It must never grow a copy of a service's procedure. The `services`
+# table stays where it belongs — behind the agent's retrieval, cited in chat as a
+# title and the entity's own link.
+COMPLIANCE_TABLE_READY = False
+"""Flip to True in the SAME change that creates ``compliance_table``.
+
+While False the two listers below return an empty page WITHOUT touching the
+database — the table does not exist yet, and querying a missing relation is a
+PostgREST error, i.e. a 500 on a public page. An empty hub renders the wing's
+own «لا توجد خدمات لعرضها حالياً» state, which is the truth.
+
+When the table lands: add the real query here, add ``"compliance": ("compliance_table",
+"service", "sectors")`` to ``_SECTION_SOURCES`` so the sector counts pick it up,
+and re-add the section to ``_LIBRARY_SITEMAP_SECTIONS`` (public_library.py) plus
+``SITEMAP_SECTIONS`` (frontend ``lib/seo/sitemap.ts``) so it starts being crawled.
+Until then those three are OFF ON PURPOSE — an empty wing must not be advertised
+to Google, and a zero-row sector count must not be paid for with a query.
+"""
+
+
+def compliance_hub_total_pages(
+    supabase: SupabaseClient,
+    provider: Optional[str] = None,
+    sector: Optional[str] = None,
+    q: Optional[str] = None,
+) -> int:
+    """Total hub pages for the filtered guide set (for the anon-cap body).
+
+    ``1`` while the wing is empty, never ``0``: the paginator and the CTA wall
+    both read this as "how many pages exist", and zero pages renders as a broken
+    paginator rather than as one empty page.
+    """
+    if not COMPLIANCE_TABLE_READY:
+        return 1
+    raise NotImplementedError(
+        "compliance_table shipped without a counter — see COMPLIANCE_TABLE_READY"
+    )
+
+
+def list_compliance_hub(
+    supabase: SupabaseClient,
+    *,
+    page: int = 1,
+    provider: Optional[str] = None,
+    sector: Optional[str] = None,
+    q: Optional[str] = None,
+) -> dict[str, Any]:
+    """One page (9 items) of the /compliance hub — empty until the table exists.
+
+    Signature mirrors the other wing listers (``provider`` / ``sector`` / ``q``)
+    so the route, the CTA wall and ``getSectorTypeHub`` need no special case when
+    the data arrives. Every argument is accepted and ignored while empty.
+    """
+    if not COMPLIANCE_TABLE_READY:
+        return _hub_result([], max(1, int(page or 1)), 1, q=q, total=0)
+    raise NotImplementedError(
+        "compliance_table shipped without a lister — see COMPLIANCE_TABLE_READY"
+    )
 
 
 # ==========================================================================
