@@ -33,6 +33,7 @@ on ``TRUST_CF_HEADERS_ENV`` below.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import time
@@ -107,6 +108,61 @@ LIBRARY_ITEM_WINDOW_SECONDS = 60
 
 # Paths that are exempt from rate limiting
 EXEMPT_PATHS = {"/api/v1/health", "/docs", "/redoc", "/openapi.json"}
+
+# ---------------------------------------------------------------------------
+# ISR bake bypass (2026-08-07)
+# ---------------------------------------------------------------------------
+# `next build` prerenders every hub + sector×type page by fetching this API,
+# and all of those fetches leave one build machine and land in ONE normalized
+# bucket (all 38 `?sector_slug=` variants share `/public/library/regulations`
+# — the query string is not in the key, by design). The 2026-08-06 publish
+# grew the servable set from 166 to 502 regulations, the bake's request count
+# crossed DEFAULT_RATE_LIMIT, and the build 429'd itself to death on
+# `/library/commercial-transactions/regulations`. The renderer being rate-
+# limited by its own backend is not an abuse signal — it is the one caller
+# whose traffic is provably ours.
+#
+# So: a request may bypass THIS limiter iff ALL of
+#   * `ISR_BAKE_SECRET` is set in the backend env (unset ⇒ dead code, exactly
+#     like the origin lock's EDGE_SECRET), and
+#   * the request is a GET under the public-library prefix — the only surface
+#     the bake reads. The bypass hands out nothing on auth, chat, redeem, or
+#     the paid `/library/full/*` family (route_limits is fail-CLOSED and is
+#     NOT consulted here — this constant-time check exempts only the damper).
+#   * the `X-ISR-Bake-Secret` header matches (compare_digest).
+#
+# The frontend attaches the header in `lib/library/api.ts serverFetchInit()`
+# when ITS `ISR_BAKE_SECRET` env is set — server-side only, no NEXT_PUBLIC
+# prefix, so it cannot leak into the browser bundle. Browser traffic never
+# carries it and keeps today's limits byte-identical.
+#
+# ⚠ This is NOT the Cloudflare origin-lock secret. EDGE_SECRET stays unset
+# until the zone is orange-clouded (cloudflare_navigation_hardening.md step
+# 3.5) and proves "came through our edge"; ISR_BAKE_SECRET proves "is our own
+# renderer". Do not merge them: arming the origin lock must not silently hand
+# every edge-transited request a rate-limit bypass.
+ISR_BAKE_SECRET_ENV = "ISR_BAKE_SECRET"
+ISR_BAKE_HEADER = "x-isr-bake-secret"
+
+
+def is_isr_bake_request(request: Request) -> bool:
+    """True iff this request proves it is our own renderer's library read.
+
+    Env read per-request (not import time) so a Railway var flip needs no
+    restart-ordering dance and tests can monkeypatch the environment.
+    """
+    if request.method != "GET":
+        return False
+    path = request.url.path
+    if path != "/api/v1/public/library" and not path.startswith(
+        PUBLIC_LIBRARY_PREFIX
+    ):
+        return False
+    secret = os.environ.get(ISR_BAKE_SECRET_ENV, "").strip()
+    if not secret:
+        return False
+    supplied = request.headers.get(ISR_BAKE_HEADER) or ""
+    return hmac.compare_digest(supplied, secret)
 
 # Arabic 429 message — the ONE string both limiters use (Rule #5).
 RATE_LIMIT_MESSAGE = "تم تجاوز الحد المسموح من الطلبات"
@@ -337,6 +393,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # want bursts up to the hourly cap. Prefix match (not exact) so the
         # /{job_id} poll sub-path is covered too; EXEMPT_PATHS is exact-match.
         if request.url.path.startswith("/internal/blog-post-jobs"):
+            return await call_next(request)
+
+        # Our own renderer's ISR bake — see the ISR_BAKE_SECRET block comment.
+        if is_isr_bake_request(request):
             return await call_next(request)
 
         # Get Redis from app state

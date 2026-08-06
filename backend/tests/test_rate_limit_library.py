@@ -659,3 +659,86 @@ def test_guarded_route_accepts_a_request_with_no_query_params():
     res = TestClient(app).get("/api/v1/library/full/regulation/some-slug")
     assert res.status_code != 422, res.text
     assert res.status_code == 200, res.text
+
+
+# ---------------------------------------------------------------------------
+# ISR bake bypass (X-ISR-Bake-Secret) — rate_limit.is_isr_bake_request
+# ---------------------------------------------------------------------------
+# The renderer's `next build` fires hundreds of library GETs from one IP in
+# one burst; with the right secret those must never 429, and NOTHING else may
+# ride along: wrong secret, unset env, non-GET, and non-library paths all keep
+# today's limits exactly.
+
+_BAKE_SECRET = "test-bake-secret-value"
+
+
+def test_bake_secret_bypasses_hub_list_limit(monkeypatch) -> None:
+    monkeypatch.setenv(rl.ISR_BAKE_SECRET_ENV, _BAKE_SECRET)
+    redis = FakeRedis()
+    client = TestClient(_middleware_app(redis))
+    headers = {rl.ISR_BAKE_HEADER: _BAKE_SECRET}
+
+    # Far past DEFAULT_RATE_LIMIT on ONE normalized hub bucket — the exact
+    # shape of the 2026-08-06 build failure (38 sector_slug variants, one key).
+    for i in range(rl.DEFAULT_RATE_LIMIT * 2):
+        r = client.get(
+            f"/api/v1/public/library/regulations?page=1&sector_slug=s-{i % 38}",
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+
+    # Bypassed requests must not even touch Redis — no key, no count.
+    assert not {k for k in redis.keys_seen if "public/library" in k}
+
+    # The bare unified-hub path (no trailing segment) is part of the bake too.
+    assert client.get("/api/v1/public/library", headers=headers).status_code == 200
+
+
+def test_bake_secret_wrong_or_absent_keeps_the_limit(monkeypatch) -> None:
+    monkeypatch.setenv(rl.ISR_BAKE_SECRET_ENV, _BAKE_SECRET)
+    redis = FakeRedis()
+    client = TestClient(_middleware_app(redis))
+
+    for _ in range(rl.DEFAULT_RATE_LIMIT):
+        r = client.get(
+            "/api/v1/public/library/regulations",
+            headers={rl.ISR_BAKE_HEADER: "forged"},
+        )
+        assert r.status_code == 200, r.text
+    blocked = client.get("/api/v1/public/library/regulations")
+    assert blocked.status_code == 429
+
+
+def test_bake_secret_env_unset_is_dead_code(monkeypatch) -> None:
+    monkeypatch.delenv(rl.ISR_BAKE_SECRET_ENV, raising=False)
+    redis = FakeRedis()
+    client = TestClient(_middleware_app(redis))
+
+    for _ in range(rl.DEFAULT_RATE_LIMIT):
+        client.get(
+            "/api/v1/public/library/regulations",
+            headers={rl.ISR_BAKE_HEADER: ""},
+        )
+    blocked = client.get(
+        "/api/v1/public/library/regulations",
+        headers={rl.ISR_BAKE_HEADER: ""},
+    )
+    assert blocked.status_code == 429
+
+
+def test_bake_secret_scope_excludes_non_library_and_non_get(monkeypatch) -> None:
+    """The bypass hands out nothing beyond public-library GETs: auth keeps its
+    10/min, and a POST under the library prefix still counts."""
+    monkeypatch.setenv(rl.ISR_BAKE_SECRET_ENV, _BAKE_SECRET)
+    redis = FakeRedis()
+    client = TestClient(_middleware_app(redis))
+    headers = {rl.ISR_BAKE_HEADER: _BAKE_SECRET}
+
+    for _ in range(rl.AUTH_RATE_LIMIT):
+        assert client.get("/api/v1/auth/me", headers=headers).status_code == 200
+    assert client.get("/api/v1/auth/me", headers=headers).status_code == 429
+
+    assert rl.is_isr_bake_request is not None  # symbol exported
+    library_post_keys_before = set(redis.keys_seen)
+    client.post("/api/v1/public/library/regulations", headers=headers)
+    assert set(redis.keys_seen) != library_post_keys_before

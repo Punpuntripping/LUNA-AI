@@ -105,6 +105,24 @@ export const SERVER_API_BASE =
 const EDGE_SECRET = process.env.EDGE_SECRET;
 
 /**
+ * Proof that a library fetch comes from OUR renderer (the ISR bake / runtime
+ * revalidation), honored by the backend's global rate limiter
+ * (`rate_limit.is_isr_bake_request`) as a bypass on public-library GETs only.
+ *
+ * Exists because the 2026-08-06 publish (166 → 502 regulations) pushed the
+ * bake's request count over the per-IP hub bucket and `next build` 429'd
+ * itself. Same leak-safety story as `EDGE_SECRET` above: no `NEXT_PUBLIC_`
+ * prefix, so the browser bundle sees `undefined` and attaches nothing.
+ *
+ * ⚠ Constant per deployment, so it adds ONE Data-Cache key variant (the key
+ * hashes `init.headers` — see `serverFetchInit`), not one per request. And it
+ * is NOT `EDGE_SECRET`: that one proves edge transit and stays unset until the
+ * Cloudflare cutover; this one proves renderer identity. Keep them separate.
+ */
+const ISR_BAKE_SECRET = process.env.ISR_BAKE_SECRET;
+const ISR_BAKE_HEADER = "X-ISR-Bake-Secret";
+
+/**
  * Header carrying the §3.7 verified-crawler signal to the backend
  * (`public_library.VERIFIED_BOT_HEADER`). Same name Cloudflare's Transform Rule
  * sets at the edge — this renderer is just re-emitting a signal the
@@ -164,6 +182,9 @@ export function serverFetchInit(
   const headers: Record<string, string> = {};
   if (EDGE_SECRET) {
     headers["X-Edge-Secret"] = EDGE_SECRET;
+  }
+  if (ISR_BAKE_SECRET) {
+    headers[ISR_BAKE_HEADER] = ISR_BAKE_SECRET;
   }
   if (opts?.verifiedBot) {
     // Canonical `"1"`, never the incoming value verbatim: one extra cache-key
