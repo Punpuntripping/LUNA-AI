@@ -625,8 +625,27 @@ from shared.db.run import run_db                   # noqa: E402
 # common case is unchanged.
 UNLOCK_COST_MIN = 1
 UNLOCK_COST_MAX = 8
-ARTICLES_PER_UNLOCK = 25          # regulation with seo_articles rows
-CHARS_PER_UNLOCK = 25_000         # chunk-only regulation fallback
+ARTICLES_PER_UNLOCK = 25          # regulation with a TRUSTED seo_articles index
+# Everything else (chunk-only, or an index rejected by `article_coverage_is_
+# trustworthy`) is weighted by CHUNK COUNT at 1 chunk ≈ 3 مواد. This replaced a
+# character-length weighting on 2026-08-07: that one had to page every chunk
+# BODY through the wire just to sum lengths, where this is one count().
+# ⚠ The cap binds far sooner here — article weighting reaches UNLOCK_COST_MAX at
+# 176+ مواد, this reaches it at 59 chunks. Accepted 2026-08-06 (4 of 187
+# chunk-priced regulations sit at the cap, the same 4 as before). If it starts
+# binding on documents it shouldn't, THIS rate is the lever — not UNLOCK_COST_MAX
+# and not the coverage threshold below.
+ARTICLES_PER_CHUNK = 3
+CHUNKS_PER_UNLOCK = ARTICLES_PER_UNLOCK / ARTICLES_PER_CHUNK   # 25/3 ≈ 8.33
+
+# Article-coverage fallback (2026-08-07). `seo_articles` rows are keyed by
+# `article_no`, so a document whose highest article_no far exceeds its row count
+# has HOLES — مواد that exist in the نظام and have no row. Rendering that index
+# drops them SILENTLY: اللائحة التنفيذية لنظام العمل ج2 shipped «68 مادة» for a
+# 232-مادة لائحة and said nothing about the other 164. Past these thresholds the
+# chunks are the more honest surface even though they are coarser.
+ARTICLE_GAP_MIN_MISSING = 3       # absolute floor — ignore small documents
+ARTICLE_GAP_MAX_RATIO = 0.10      # >10% of the document missing → distrust it
 
 # Content types that are never gated and therefore never charged (§1.3): a
 # government service is policy-open, so it produces no ledger row at all. Still
@@ -642,7 +661,11 @@ __all__ += [
     "UNLOCK_COST_MIN",
     "UNLOCK_COST_MAX",
     "ARTICLES_PER_UNLOCK",
-    "CHARS_PER_UNLOCK",
+    "ARTICLES_PER_CHUNK",
+    "CHUNKS_PER_UNLOCK",
+    "ARTICLE_GAP_MIN_MISSING",
+    "ARTICLE_GAP_MAX_RATIO",
+    "article_coverage_is_trustworthy",
     "NEVER_CHARGED_TYPES",
     "AccessDecision",
     "unlock_cost",
@@ -654,6 +677,102 @@ __all__ += [
 
 def _clamp_cost(value: float) -> int:
     return max(UNLOCK_COST_MIN, min(UNLOCK_COST_MAX, int(value)))
+
+
+def article_coverage_is_trustworthy(articles: list[dict[str, Any]]) -> bool:
+    """Does this ``seo_articles`` index actually cover its document? PURE.
+
+    Rows are keyed by ``article_no``, so the document's apparent length is
+    ``max(article_no)`` and anything beyond the row count is a HOLE — a مادة that
+    exists in the نظام and has no row. False past both thresholds
+    (``ARTICLE_GAP_MIN_MISSING`` **and** ``ARTICLE_GAP_MAX_RATIO``): the caller
+    must render from chunks instead.
+
+    ⚠ Gaps are counted from the NUMBERING, never from ``extraction_status`` or
+    ``article_text``. On the document this rule was written for
+    (``17900_reg_128_p2`` — اللائحة التنفيذية لنظام العمل ج2) EVERY present row is
+    healthy: 0 rows are non-``extracted``, 0 have NULL text. The damage is 164
+    مواد that are simply absent, so a text-based test scores that page a perfect
+    100 and leaves it broken. Do not "improve" this into a content check.
+
+    An empty list returns False, but every caller branches on falsiness first, so
+    it never reaches here.
+    """
+    if not articles:
+        return False
+    numbers = [int(a.get("article_no") or 0) for a in articles]
+    numbers = [n for n in numbers if n > 0]
+    if not numbers:
+        return False
+    apparent_length = max(numbers)
+    missing = apparent_length - len(numbers)
+    if missing <= ARTICLE_GAP_MIN_MISSING:
+        return True
+    return (missing / apparent_length) <= ARTICLE_GAP_MAX_RATIO
+
+
+def _regulation_chunk_count(supabase: SupabaseClient, regulation_id: str) -> int:
+    """How many ``chunks_v2`` rows a regulation has. SYNC, read-only.
+
+    A count(), NOT a body scan: the caller only needs the number, and the old
+    character-weighting path used to page every chunk's ``content`` through the
+    wire to sum lengths. Fail-soft → 0, which callers read as "no chunk surface
+    available" and therefore KEEP the article surface (see ``use_article_surface``).
+    """
+    try:
+        res = (
+            supabase.table("chunks_v2")
+            .select("id", count="exact")
+            .eq("regulation_id", str(regulation_id))
+            .limit(1)
+            .execute()
+        )
+        return int(getattr(res, "count", None) or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("chunk count failed (%s): %s", regulation_id, e)
+        return 0
+
+
+def use_article_surface(
+    supabase: SupabaseClient, regulation_id: str, articles: list[dict[str, Any]]
+) -> bool:
+    """Should this regulation render (and price) as مواد rather than chunks? SYNC.
+
+    THE single decision point — ``get_regulation_doc`` (anon/ISR page),
+    ``get_full_regulation`` (the authed reveal) and ``unlock_cost`` must all call
+    this and never re-implement it. If the public page flips to chunks and the
+    paid reveal does not, a reader who spent an unlock gets a structurally
+    different document than the crawler saw.
+
+    False → the caller takes its chunk path. A regulation with NO chunks keeps the
+    article surface however holed it is: a partial document beats a blank one.
+    """
+    if not articles:
+        return False
+    if article_coverage_is_trustworthy(articles):
+        return True
+    if _regulation_chunk_count(supabase, regulation_id) == 0:
+        logger.info(
+            "article coverage rejected but no chunks exist: reg=%s rows=%d "
+            "→ keeping article surface",
+            regulation_id,
+            len(articles),
+        )
+        return True
+
+    numbers = [int(a.get("article_no") or 0) for a in articles if a.get("article_no")]
+    apparent_length = max(numbers) if numbers else 0
+    missing = apparent_length - len(numbers)
+    logger.info(
+        "article coverage rejected: reg=%s rows=%d max_no=%d missing=%d (%.1f%%) "
+        "→ rendering chunks",
+        regulation_id,
+        len(articles),
+        apparent_length,
+        missing,
+        (missing / apparent_length * 100) if apparent_length else 0.0,
+    )
+    return False
 
 
 def parent_regulation_of_article(
@@ -683,15 +802,29 @@ def unlock_cost(
     """The weighted charge for unlocking one item (§1.2.1 / D4). SYNC.
 
     ``article | judgment | circular | form`` → **1**.
-    ``regulation`` → ``clamp(ceil(n_articles / 25), 1, 8)`` where ``n_articles``
-    is the number of ``seo_articles`` rows for the regulation. A chunk-only
-    regulation (no ``seo_articles`` rows) is weighted by body length instead:
-    ``clamp(ceil(total_chars / 25000), 1, 8)``.
+    ``regulation`` → priced off whichever surface it will actually RENDER, which
+    is ``use_article_surface``'s call and never re-decided here:
+
+      * TRUSTED ``seo_articles`` index →
+        ``clamp(ceil(n_articles / ARTICLES_PER_UNLOCK), 1, 8)``.
+      * everything else — a chunk-only regulation AND one whose index the
+        coverage check rejected — ``clamp(ceil(n_chunks / CHUNKS_PER_UNLOCK),
+        1, 8)``, i.e. the 1-chunk-≈-3-مواد rate.
+      * neither مواد nor chunks → the minimum.
 
     Why a regulation is weighted at all: ``/library/full/regulation/{slug}``
     returns EVERY مادة untruncated for one unlock, so a flat cost would let a
     rational extractor charge only at the regulation level and take the whole
     statutory corpus 25× cheaper than the per-مادة price.
+
+    ⚠ The price MUST follow the render decision. A regulation that falls back to
+    chunks is a chunk document to the reader, so charging it as a 68-مادة
+    document when it ships 60 chunk sections prices a surface it does not serve.
+
+    Only ``article_no`` is read — never ``article_text``. This is a price, not a
+    render; paging article BODIES across the wire to arrive at an integer is the
+    exact waste the character-scan loop used to commit (it summed ``len()`` over
+    every chunk body of the regulation) and it is gone.
 
     Fail-safe direction is UP, not down: any lookup failure falls back to the
     minimum (1) rather than blocking the user — the real extraction bounds are
@@ -701,45 +834,54 @@ def unlock_cost(
     if ct != "regulation":
         return UNLOCK_COST_MIN
 
-    n_articles = 0
-    try:
-        res = (
-            supabase.table("seo_articles")
-            .select("article_no", count="exact")
-            .eq("regulation_id", str(content_id))
-            .limit(1)
-            .execute()
-        )
-        n_articles = int(getattr(res, "count", None) or 0)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("unlock_cost: seo_articles count failed (%s): %s", content_id, e)
-
-    if n_articles > 0:
-        return _clamp_cost(math.ceil(n_articles / ARTICLES_PER_UNLOCK))
-
-    # Chunk-only regulation → weight by total body length.
-    total_chars = 0
+    # article_no ONLY — the coverage test is arithmetic on the numbering.
+    articles: list[dict[str, Any]] = []
     try:
         offset, page = 0, 1000
         while True:
             res = (
-                supabase.table("chunks_v2")
-                .select("content")
+                supabase.table("seo_articles")
+                .select("article_no")
                 .eq("regulation_id", str(content_id))
+                .order("article_no")
                 .range(offset, offset + page - 1)
                 .execute()
             )
             batch = res.data or []
-            total_chars += sum(len(r.get("content") or "") for r in batch)
+            articles.extend({"article_no": r.get("article_no")} for r in batch)
             if len(batch) < page:
                 break
             offset += page
     except Exception as e:  # noqa: BLE001
-        logger.warning("unlock_cost: chunk length scan failed (%s): %s", content_id, e)
+        logger.warning("unlock_cost: seo_articles scan failed (%s): %s", content_id, e)
+        articles = []
 
-    if total_chars <= 0:
+    if use_article_surface(supabase, str(content_id), articles):
+        return _clamp_cost(math.ceil(len(articles) / ARTICLES_PER_UNLOCK))
+
+    # Chunk-priced: the legacy chunk-only regulations AND every index the
+    # coverage check just rejected, at one rate.
+    #
+    # Yes, a rejected index counts chunks twice — once inside
+    # `use_article_surface` to confirm there is something to fall back to, once
+    # here to price it. Accepted: agreeing with the render decision beats saving
+    # a round trip on a rare, uncached money path, and threading the count out of
+    # the helper would give `unlock_cost` a private door into a decision that
+    # exists precisely so all three call sites go through one.
+    n_chunks = _regulation_chunk_count(supabase, str(content_id))
+    if n_chunks <= 0:
         return UNLOCK_COST_MIN
-    return _clamp_cost(math.ceil(total_chars / CHARS_PER_UNLOCK))
+    # Integer ceiling division, NOT `ceil(n / CHUNKS_PER_UNLOCK)`. The float form
+    # is correct today — `25/3` rounds UP to 8.333333333333334, so `n / that`
+    # lands just BELOW the integer at n = 25, 50, 75 and ceils the right way
+    # (verified over 1..5000, zero divergence from the spec's `ceil(n*3/25)`).
+    # But "correct because the rounding error happens to point the safe way" is
+    # not a property to leave sitting on the money path for the next person to
+    # re-derive. This form has no rounding to reason about.
+    # `CHUNKS_PER_UNLOCK` stays as the documented human-readable rate.
+    return _clamp_cost(
+        -(-n_chunks * ARTICLES_PER_CHUNK // ARTICLES_PER_UNLOCK)
+    )
 
 
 @dataclass
@@ -2153,8 +2295,8 @@ def get_regulation_doc(
     Resolves ``slug → content_id`` via the sidecar, loads the reg row, resolves the
     gate ONCE, and builds the reading surface from the BEST source:
 
-      ARTICLES-FIRST (the regulation has ``seo_articles`` rows — now sourced from
-      ``articles_v2``):
+      ARTICLES-FIRST (the regulation has ``seo_articles`` rows AND that index
+      passes ``use_article_surface`` — mere existence is NOT enough):
         - ``toc``: EVERY مادة — ``{id: slug, title: article_label,
           position: article_no}`` — always free.
         - ``visible_sections``: EVERY مادة when the gate is ``'open'``, the first 3
@@ -2164,9 +2306,17 @@ def get_regulation_doc(
           ``'art-{no}'``. Gated bytes never leave the server.
         - ``hidden_section_count`` = 0 when open, else total مواد − 3.
 
-      CHUNK FALLBACK (a regulation with NO ``seo_articles`` rows — article-less /
-      chunk-only): the original chunk-based ``toc`` (id=chunk id) + every chunk
-      (open) / the first 3 (gated) as ``visible_sections``.
+      CHUNK FALLBACK — a regulation with NO ``seo_articles`` rows (article-less /
+      chunk-only) **or** one whose index has too many holes to be trusted: the
+      original chunk-based ``toc`` (id=chunk id) + every chunk (open) / the first
+      3 (gated) as ``visible_sections``. The second case is what
+      ``17900_reg_128_p2`` (اللائحة التنفيذية لنظام العمل ج2) hit — 68 rows for a
+      232-مادة لائحة, so this page advertised «68 مادة» and silently dropped 164.
+
+    ⚠ This branch and ``get_full_regulation``'s MUST agree. They share
+    ``use_article_surface`` on the same inputs for that reason: if the anon page
+    flips to chunks and the paid reveal does not, a reader who spent an unlock
+    gets a structurally different document than the crawler saw.
 
     ⚠ OPEN MEANS OPEN. An ``'open'`` نظام ships whole here — full text and
     ``official_sources`` — to anonymous readers and crawlers alike, with
@@ -2237,7 +2387,9 @@ def get_regulation_doc(
     # separate "hide the button" flag to keep in sync.
     is_open = gate == "open"
 
-    if articles:
+    # Not `if articles:` — an index that exists but is full of holes renders from
+    # chunks instead. Same helper, same args as `get_full_regulation` (see above).
+    if use_article_surface(supabase, str(content_id), articles):
         # ARTICLES-FIRST — toc + (open: every مادة | gated: first-3) preview.
         toc = [
             {
@@ -4496,16 +4648,26 @@ def get_full_regulation(
     """FULL continuous-document payload for /library/full/regulation/{slug} (AUTHED).
 
     ARTICLES-FIRST: when the regulation has ``seo_articles`` rows (now sourced from
-    ``articles_v2``) it returns EVERY مادة in article-number order, untruncated —
-    ``{"sections": [{"id": 'art-{no}', "title": article_label, "text":
-    article_text | owning-chunk content}, ...]}`` — except that a run of مواد
-    sharing one multi-مادة fallback chunk collapses into a single section (see
-    ``_article_sections``) instead of repeating that chunk once per مادة. A
-    regulation with NO
-    ``seo_articles`` rows (article-less / chunk-only) falls back to EVERY chunk in
-    reading order (the legacy shape). No gating, no resolve_gate — the whole
-    document (the account-only continuous-reading feature). ``None`` when the slug
-    is unknown (route → 404 «النظام غير موجود»). Read-only, no counters.
+    ``articles_v2``) AND that index passes ``use_article_surface`` — existence
+    alone is NOT the condition — it returns EVERY مادة in article-number order,
+    untruncated — ``{"sections": [{"id": 'art-{no}', "title": article_label,
+    "text": article_text | owning-chunk content}, ...]}`` — except that a run of
+    مواد sharing one multi-مادة fallback chunk collapses into a single section
+    (see ``_article_sections``) instead of repeating that chunk once per مادة.
+
+    CHUNK FALLBACK — a regulation with NO ``seo_articles`` rows (article-less /
+    chunk-only) **or** one whose index has too many holes to be trusted — returns
+    EVERY chunk in reading order (the legacy shape). The second case is
+    ``17900_reg_128_p2`` (اللائحة التنفيذية لنظام العمل ج2): 68 rows for a
+    232-مادة لائحة, i.e. a reveal that would have omitted 164 مواد in silence.
+
+    ⚠ This decision MUST match ``get_regulation_doc``'s — one helper, both call
+    sites, identical arguments. A reader who spent an unlock and lands on a
+    structurally different document than the crawler saw is a broken purchase.
+
+    No gating, no resolve_gate — the whole document (the account-only
+    continuous-reading feature). ``None`` when the slug is unknown (route → 404
+    «النظام غير موجود»). Read-only, no counters.
     """
     try:
         content_id = _regulation_id_for_slug(supabase, slug)
@@ -4513,7 +4675,9 @@ def get_full_regulation(
             return None
 
         articles = _seo_articles_for_regulation(supabase, str(content_id))
-        if articles:
+        # Not `if articles:` — same helper, same args as `get_regulation_doc`, so
+        # the paid reveal and the public page can never pick different sources.
+        if use_article_surface(supabase, str(content_id), articles):
             fallback_ids = [
                 a.get("chunk_id")
                 for a in articles

@@ -520,16 +520,23 @@ def test_cost_of_leaf_content_types_is_always_one() -> None:
         assert ls.unlock_cost(fake, ct, "x") == 1
 
 
-def test_cost_of_a_chunk_only_regulation_is_weighted_by_length() -> None:
-    """No seo_articles rows → weight by body length: clamp(ceil(chars/25000),1,8)."""
+def test_cost_of_a_chunk_only_regulation_is_weighted_by_chunk_count() -> None:
+    """No seo_articles rows → weight by CHUNK COUNT at 1 chunk ≈ 3 مواد:
+    clamp(ceil(chunks / (25/3)), 1, 8).
+
+    RETARGETED 2026-08-07 (`regulation_article_coverage_fallback.md` §4.4). This
+    used to assert character weighting — `clamp(ceil(chars/25000),1,8)` — which
+    had to page every chunk BODY through the wire just to sum len(). That rule and
+    its `CHARS_PER_UNLOCK` constant are DELETED; the assertion moved with them.
+    """
+    # No `content` on these rows AT ALL: the price no longer depends on body
+    # length, and a fixture that still carried text would hide a regression back
+    # to the character scan.
     fake = FakeSupabase(
         seo_articles=[],
-        chunks_v2=[
-            {"id": f"c{i}", "regulation_id": REG_ID, "content": "ن" * 20_000}
-            for i in range(3)          # 60,000 chars → ceil(60000/25000) = 3
-        ],
+        chunks_v2=[{"id": f"c{i}", "regulation_id": REG_ID} for i in range(20)],
     )
-    assert ls.unlock_cost(fake, "regulation", REG_ID) == 3
+    assert ls.unlock_cost(fake, "regulation", REG_ID) == 3     # ceil(20 / 8.33…)
 
 
 def test_cost_of_an_empty_regulation_falls_back_to_one() -> None:
@@ -1004,3 +1011,288 @@ def test_an_exhausted_account_is_refused_without_costing_a_corpus_scan() -> None
     assert decision.may_unlock is False
     assert decision.reason == "quota_exhausted"
     assert decision.resets_at is not None
+
+
+# ===========================================================================
+# 7. Article-coverage fallback — `regulation_article_coverage_fallback.md` §3/§6
+# ===========================================================================
+#
+# A `seo_articles` index is keyed by `article_no`, so a document whose highest
+# article_no far exceeds its row count has HOLES: مواد that exist in the نظام and
+# have no row. Committing the reading surface to that index on the mere EXISTENCE
+# of one row renders the holes as nothing at all — no gap marker, no count
+# mismatch, no signal of any kind. Past both thresholds the chunks are the more
+# honest surface even though they are coarser.
+#
+# ⚠ EVERY assertion below counts gaps from the NUMBERING. Not `extraction_status`,
+# not `article_text`. On 17900_reg_128_p2 — the document this rule was written for
+# — all 68 present rows are `extracted` with non-null text, so a content-based
+# completeness test scores that page 100/100 and leaves 164 مواد silently dropped.
+# A test written against row CONTENT here would be vacuous.
+
+
+def _article_rows(numbers: list[int]) -> list[dict[str, Any]]:
+    """`seo_articles` rows for the given article numbers (same shape as
+    `_reg_with_articles`, but with the numbering under the caller's control)."""
+    return [
+        {"regulation_id": REG_ID, "article_no": n, "article_label": f"المادة {n}",
+         "slug": f"m-{n}", "chunk_id": None, "article_text": f"نص المادة {n}",
+         "extraction_status": "extracted"}
+        for n in numbers
+    ]
+
+
+def _holed(max_no: int, rows: int) -> list[dict[str, Any]]:
+    """`rows` مادة rows whose highest `article_no` is `max_no`.
+
+    Gap count is `max_no - rows` by construction, which is exactly the quantity
+    the rule measures. Numbering is 1..rows-1 plus `max_no`, so the hole is one
+    contiguous run — the real documents have several, but the rule cannot tell
+    the difference and must not start trying to.
+    """
+    assert 1 <= rows <= max_no
+    return _article_rows(list(range(1, rows)) + [max_no])
+
+
+def _chunks(n: int) -> list[dict[str, Any]]:
+    return [
+        {"id": f"cccccccc-0000-0000-0000-{i:012d}", "regulation_id": REG_ID,
+         "title": f"الفصل {i}", "position": i, "content": f"نص المقطع {i}"}
+        for i in range(1, n + 1)
+    ]
+
+
+class _CountingSupabase(FakeSupabase):
+    """FakeSupabase that also records which tables were READ.
+
+    The base fake logs writes and RPCs but not selects, and "this code path did
+    not need a second round trip" is a claim only a select log can settle.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.tables_queried: list[str] = []
+
+    def table(self, name: str) -> _Chain:
+        self.tables_queried.append(name)
+        return super().table(name)
+
+
+# ---- 7.1 the pure helper --------------------------------------------------
+#
+# No DB — `article_coverage_is_trustworthy` reads `article_no` off the rows it is
+# handed and nothing else.
+
+
+def test_the_labour_regulation_part_2_index_is_distrusted() -> None:
+    """THE trigger case — 17900_reg_128_p2, اللائحة التنفيذية لنظام العمل ج2.
+
+    68 rows for a 232-مادة لائحة: 164 missing (70.7%). The page advertised
+    «68 مادة» and silently omitted the other 164. This is the document the whole
+    rule exists for, and every present row of it is perfectly healthy.
+    """
+    assert ls.article_coverage_is_trustworthy(_holed(232, 68)) is False
+
+
+def test_a_contiguous_index_is_trusted() -> None:
+    """1..100 with no holes — the shape 315 of 330 published regulations have."""
+    assert ls.article_coverage_is_trustworthy(_holed(100, 100)) is True
+
+
+def test_a_small_gap_ratio_is_trusted() -> None:
+    """5 missing out of 100 = 5% — over the absolute floor, under the ratio."""
+    assert ls.article_coverage_is_trustworthy(_holed(100, 95)) is True
+
+
+def test_the_absolute_floor_protects_short_documents() -> None:
+    """20 max / 17 rows: 3 missing is 15% — over the RATIO but not over the
+    floor, and both must hold. Without the floor a 10-مادة قواعد missing 2 would
+    flip on nothing but arithmetic noise."""
+    assert ls.article_coverage_is_trustworthy(_holed(20, 17)) is True
+
+
+def test_a_large_gap_ratio_is_distrusted() -> None:
+    """40 max / 35 rows: 5 missing = 12.5% — both thresholds cleared."""
+    assert ls.article_coverage_is_trustworthy(_holed(40, 35)) is False
+
+
+def test_exactly_ten_percent_missing_is_still_trusted() -> None:
+    """The ratio test is STRICT `>`, so the threshold value itself passes.
+
+    50 max / 45 rows = 5 missing = exactly 10.0%, and 5 > 3 clears the floor —
+    so the ratio is the only thing standing between this document and a flip,
+    and it holds. One row fewer (12%) and it goes.
+    """
+    assert ls.article_coverage_is_trustworthy(_holed(50, 45)) is True
+    assert ls.article_coverage_is_trustworthy(_holed(50, 44)) is False
+
+
+def test_an_empty_index_is_not_trustworthy() -> None:
+    """Vacuously false. Callers branch on falsiness first, so this is a
+    contract-stability assertion, not a live path."""
+    assert ls.article_coverage_is_trustworthy([]) is False
+
+
+def test_rows_without_an_article_no_are_ignored_not_counted_as_zero() -> None:
+    """An unnumbered row is not a مادة — it must not pad the row count.
+
+    Counting it as `article_no = 0` would make junk rows PAPER OVER real holes:
+    the 40/35 document below is distrusted, and 10 unnumbered rows would push its
+    apparent count to 45 (missing = −5) and quietly restore the broken index.
+    """
+    junk = [
+        {"regulation_id": REG_ID, "article_no": None, "article_label": None},
+        {"regulation_id": REG_ID, "article_no": 0, "article_label": ""},
+        {"regulation_id": REG_ID},                       # column absent entirely
+    ] * 4                                                # 12 junk rows
+    assert ls.article_coverage_is_trustworthy(_holed(40, 35) + junk) is False
+    # …and a list of nothing BUT junk is distrusted, not a ZeroDivisionError on
+    # max(numbers) == 0.
+    assert ls.article_coverage_is_trustworthy(junk) is False
+
+
+# ---- 7.2 use_article_surface — the decision point -------------------------
+
+
+def test_a_holed_index_falls_back_to_chunks_when_chunks_exist() -> None:
+    fake = FakeSupabase(chunks_v2=_chunks(60))
+    assert ls.use_article_surface(fake, REG_ID, _holed(232, 68)) is False
+
+
+def test_a_holed_index_is_kept_when_the_regulation_has_no_chunks() -> None:
+    """HARD GUARD: a partial document beats a blank one.
+
+    Falling back to a chunk surface that does not exist would render the نظام as
+    nothing — strictly worse than the 68 مواد it does have. No published
+    regulation hits this today (all 15 flip candidates carry 4–60 chunks); the
+    guard is for the corpus we don't have yet.
+    """
+    fake = FakeSupabase(chunks_v2=[])
+    assert ls.use_article_surface(fake, REG_ID, _holed(232, 68)) is True
+
+
+def test_a_healthy_index_needs_no_chunk_count_query() -> None:
+    """The trusted path is the overwhelmingly common one (315 of 330) and must
+    not pay a round trip to prove it."""
+    fake = _CountingSupabase(chunks_v2=_chunks(10))
+    assert ls.use_article_surface(fake, REG_ID, _holed(100, 100)) is True
+    assert "chunks_v2" not in fake.tables_queried
+
+
+def test_an_empty_index_never_reaches_the_database() -> None:
+    fake = _CountingSupabase(chunks_v2=_chunks(10))
+    assert ls.use_article_surface(fake, REG_ID, []) is False
+    assert fake.tables_queried == []
+
+
+# ---- 7.3 unlock pricing ---------------------------------------------------
+
+
+def test_a_trusted_index_is_priced_by_article_count() -> None:
+    """68 contiguous مواد → ceil(68/25) = 3. Unchanged by this rule."""
+    fake = FakeSupabase(seo_articles=_holed(68, 68), chunks_v2=_chunks(60))
+    assert ls.unlock_cost(fake, "regulation", REG_ID) == 3
+
+
+def test_a_flipped_regulation_is_priced_by_chunk_count() -> None:
+    """اللائحة التنفيذية لنظام العمل ج2 again: the SAME 68 rows, but the index is
+    distrusted, so it prices as the 60-chunk document it now renders as —
+    ceil(60 / (25/3)) = 8 — and lands on `UNLOCK_COST_MAX`.
+
+    3 → 8 is accepted, not an oversight (decision 2026-08-06): 4 of 187
+    chunk-priced regulations sit at the cap either way, the same 4 as before. If
+    the cap starts binding on documents it shouldn't, the lever is
+    `CHUNKS_PER_UNLOCK`, not `UNLOCK_COST_MAX` and not the coverage threshold.
+    """
+    fake = FakeSupabase(seo_articles=_holed(232, 68), chunks_v2=_chunks(60))
+    assert ls.unlock_cost(fake, "regulation", REG_ID) == ls.UNLOCK_COST_MAX == 8
+
+
+def test_the_price_of_a_flipped_regulation_matches_its_rendered_surface() -> None:
+    """The charge and the reading surface must be decided by the SAME predicate.
+
+    Pricing a document as 68 مواد while rendering it as 60 chunks would be a
+    quiet mismatch between what the user pays for and what they get.
+    """
+    articles, chunks = _holed(232, 68), _chunks(60)
+    fake = FakeSupabase(seo_articles=articles, chunks_v2=chunks)
+    assert ls.use_article_surface(fake, REG_ID, articles) is False
+    assert ls.unlock_cost(fake, "regulation", REG_ID) != 3     # not the مواد price
+
+
+def test_a_regulation_with_no_articles_and_no_chunks_costs_the_minimum() -> None:
+    fake = FakeSupabase(seo_articles=[], chunks_v2=[])
+    assert ls.unlock_cost(fake, "regulation", REG_ID) == ls.UNLOCK_COST_MIN
+
+
+def test_a_non_regulation_content_type_costs_the_minimum() -> None:
+    """Leaf types never reach either weighting branch — no article index, no
+    chunk count, no round trip."""
+    fake = _CountingSupabase(seo_articles=_holed(232, 68), chunks_v2=_chunks(60))
+    for ct in ("article", "judgment", "circular", "form", "service"):
+        assert ls.unlock_cost(fake, ct, "x") == ls.UNLOCK_COST_MIN, ct
+    assert fake.tables_queried == []
+
+
+# ---- 7.4 REGRESSION GUARD: the surface the reader actually gets ------------
+
+
+def _reg_doc_fake(articles: list[dict[str, Any]], n_chunks: int) -> FakeSupabase:
+    """A regulation complete enough for `get_regulation_doc` to render it.
+
+    `seo_tier='open'` so the payload carries EVERY section rather than the
+    3-section gated preview — the point of these two tests is which surface the
+    whole document renders from, and a 3-row preview would prove it for 3 rows.
+    """
+    return FakeSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[{"id": REG_ID, "reg_ref": "17900_reg_128_p2",
+                         "clean_title": "اللائحة التنفيذية لنظام العمل وملحقاتها الجزء 2",
+                         "title": None, "entity_name": "وزارة الموارد البشرية",
+                         "doc_type_bucket": "executive_regulation",
+                         "status_class": "in_force", "legal_authority": None,
+                         "start_date": None, "sectors": [], "summary": "ملخص",
+                         "llm_summary": None, "landing_url": None, "pdf_url": None}],
+        seo_articles=articles,
+        chunks_v2=_chunks(n_chunks),
+    )
+
+
+def test_a_healthy_regulation_still_renders_article_sections() -> None:
+    """Regression guard for the 315 regulations this rule must NOT touch.
+
+    `art-*` ids are the article surface's signature — the frontend detects it
+    with exactly that test (`app/regulations/[slug]/page.tsx:123`
+    `s.id.startsWith("art-")`), so an id prefix regression here silently changes
+    how every untouched نظام renders.
+    """
+    # Single-digit numbering on purpose: the service does not sort: it relies on
+    # PostgREST's `.order("article_no")`, and FakeSupabase orders by str(), where
+    # "10" sorts before "2". Keeping every article_no to one digit makes the
+    # fake's ordering faithful instead of asserting around it.
+    doc = ls.get_regulation_doc(_reg_doc_fake(_holed(9, 9), n_chunks=6),
+                                "nizam-test")
+    assert doc is not None
+    ids = [s["id"] for s in doc["visible_sections"]]
+    assert ids == [f"art-{n}" for n in range(1, 10)]
+    assert all(i.startswith("art-") for i in ids), ids
+    # …and the TOC is the مادة slug list, not the chunk list.
+    assert [t["id"] for t in doc["toc"]] == [f"m-{n}" for n in range(1, 10)]
+
+
+def test_a_flipped_regulation_renders_chunk_sections() -> None:
+    """The other half of the guard: the SAME fixture with a holed index renders
+    chunk uuids — never `art-*` — for both the sections and the TOC."""
+    fake = _reg_doc_fake(_holed(232, 68), n_chunks=6)
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+
+    chunk_ids = {c["id"] for c in fake.tables["chunks_v2"]}
+    ids = [s["id"] for s in doc["visible_sections"]]
+    assert set(ids) == chunk_ids
+    assert not any(i.startswith("art-") for i in ids), ids
+    assert {t["id"] for t in doc["toc"]} == chunk_ids
+    # The document is open end-to-end, so nothing is withheld from either surface.
+    assert doc["hidden_section_count"] == 0
