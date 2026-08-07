@@ -61,6 +61,9 @@ FORM_ID = "ffffffff-0000-0000-0000-000000000001"
 FORM_SLUG = "namudhaj-1"
 
 CANARY = "CANARY-FULL-BODY-اسرار"
+# A SEPARATE canary for the شرح: the نص and the شرح have different gates, so a
+# single marker could not tell "the نص leaked" from "the شرح leaked" apart.
+SHARH_CANARY = "CANARY-SHARH-شرح-ريحان"
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +140,15 @@ def _corpus(**overrides: Any) -> FakeSupabase:
     """One gated regulation (18 مواد ⇒ cost 1), reachable by slug, plus a
     circular and an APPROVED+PUBLISHED form. No ``seo_gate_defaults`` rows, so
     ``resolve_gate`` lands on its fail-closed 'gated' default (Phase A convention).
+
+    ⚠ THE ``article`` SIDECAR ROWS ARE LOAD-BEARING, not decoration. Publishing a
+    مادة means setting a slug on ``seo_item_meta('article','{reg_id}#{no}')``
+    (``scripts/publish_articles.py``); ``seo_articles`` is the DERIVED index over
+    the entire corpus and says nothing about whether a page exists. This fixture
+    carried only the regulation + circular rows until 2026-08-07, which meant the
+    whole file's article coverage ran against a state the public page 404s — so
+    it could not have caught H-5's resolver bug. ``_unpublished_article_corpus``
+    below is the deliberate other half.
     """
     tables: dict[str, Any] = {
         "seo_item_meta": [
@@ -144,6 +156,10 @@ def _corpus(**overrides: Any) -> FakeSupabase:
              "seo_tier": None, "gate_override": None},
             {"content_type": "circular", "content_id": CIRC_ID, "slug": CIRC_SLUG,
              "seo_tier": None, "gate_override": None},
+        ] + [
+            {"content_type": "article", "content_id": f"{REG_ID}#{i}",
+             "slug": f"madda-{i}", "seo_tier": None, "gate_override": None}
+            for i in range(1, 19)
         ],
         "seo_articles": [
             {"regulation_id": REG_ID, "article_no": i, "article_label": f"المادة {i}",
@@ -168,11 +184,54 @@ def _corpus(**overrides: Any) -> FakeSupabase:
 
 
 def _open_tier_corpus() -> FakeSupabase:
-    """The same نظام, pinned OPEN by its sidecar ``seo_tier`` (§1.6 open tier)."""
+    """The same نظام, pinned OPEN by its sidecar ``seo_tier`` (§1.6 open tier).
+
+    The مادة sidecars are kept (with no tier of their own) so the مواد stay
+    PUBLISHED and inherit 'open' through ``resolve_gate`` step (b) — which is
+    exactly the live shape H-5 exploited.
+    """
     fake = _corpus()
     fake.tables["seo_item_meta"] = [
         {"content_type": "regulation", "content_id": REG_ID, "slug": REG_SLUG,
          "seo_tier": "open", "gate_override": None},
+    ] + [
+        {"content_type": "article", "content_id": f"{REG_ID}#{i}",
+         "slug": f"madda-{i}", "seo_tier": None, "gate_override": None}
+        for i in range(1, 19)
+    ]
+    return fake
+
+
+def _unpublished_article_corpus() -> FakeSupabase:
+    """The live default: a مادة that EXISTS in ``seo_articles`` and has no public
+    page, because no operator ever published it. Only 5 published article
+    sidecars existed corpus-wide when H-5 was found — against ~50k index rows.
+    """
+    fake = _corpus()
+    fake.tables["seo_item_meta"] = [
+        row for row in fake.tables["seo_item_meta"] if row["content_type"] != "article"
+    ]
+    return fake
+
+
+def _sharh_corpus(*, tier: Optional[str] = "open") -> FakeSupabase:
+    """A published مادة carrying a cached AI شرح, under a نظام at ``tier``.
+
+    ``tier='open'`` is the shape that matters: ALL 229 of 229 مواد with a شرح sit
+    under an open-tier نظام, so this is not an edge case — it is the entire شرح
+    corpus.
+    """
+    fake = _corpus()
+    fake.tables["seo_item_meta"] = [
+        {"content_type": "regulation", "content_id": REG_ID, "slug": REG_SLUG,
+         "seo_tier": tier, "gate_override": None},
+    ] + [
+        {"content_type": "article", "content_id": f"{REG_ID}#{i}",
+         "slug": f"madda-{i}", "seo_tier": None, "gate_override": None}
+        for i in range(1, 19)
+    ]
+    fake.tables["seo_sharh"] = [
+        {"regulation_id": REG_ID, "article_no": 3, "sharh_md": SHARH_CANARY}
     ]
     return fake
 
@@ -244,6 +303,231 @@ def test_open_tier_item_is_free_for_a_signed_in_user() -> None:
     assert res.status_code == 200
     assert _has_content(res.json())
     assert fake.tables["library_unlocks"] == []
+
+
+# ===========================================================================
+# 1b. THE ALWAYS-GATED LAYER — H-5 (security review 2026-08-07)
+# ===========================================================================
+#
+# Two independent bugs each fully broke the module's own stated invariant that
+# the AI شرح "is ALWAYS gated, even on an open-tier مادة whose نص is free":
+#
+#   A. ``_resolve_full_target`` resolved a مادة against the DERIVED
+#      ``seo_articles`` index with no publish check, while the public page
+#      requires a slugged ``seo_item_meta`` article sidecar. All ~50k مواد were
+#      addressable through the reveal; only 5 had a public page.
+#   B. ``resolve_access`` returned free the moment the gate read 'open', BEFORE
+#      the quota was read — and a مادة inherits its parent نظام's tier, under
+#      which all 229 of 229 مواد with a شرح sit.
+#
+# Together: the page 404'd the شرح and the metered endpoint gave 100% of it away
+# at ``charged=false``. Either fix alone leaves the hole open, so both halves are
+# pinned here — A in §1b.1, B in §1b.2.
+#
+# THE PROPERTY THESE MUST NOT REGRESS is one line down in §1b.2: an open-tier
+# مادة with no شرح stays free and uncharged. Free نص on open-tier مواد is
+# intended (§1.2); it is the AI layer on top of it that is bought.
+
+
+# --- 1b.1 — the publish gate (root cause A) --------------------------------
+
+
+def test_an_unpublished_article_is_not_addressable_through_the_reveal() -> None:
+    """A مادة with no public page must not be reachable by the endpoint whose
+    whole job is "show me the rest of what I am looking at". 404, and — because
+    resolution precedes entitlement — not a charge either."""
+    fake = _unpublished_article_corpus()
+    fake.quota_row = quota_row(limit=10, used=0)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/{ART_SLUG}"))
+
+    assert res.status_code == 404, res.text
+    assert not _has_content(res.json())
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_an_unpublished_article_404s_even_for_an_unlimited_plan() -> None:
+    """The publish gate is a PRESENCE check, not a tier one — it survives every
+    plan, exactly like the forms liability gate (PART 9 trap 6)."""
+    fake = _unpublished_article_corpus()
+    fake.quota_row = quota_row(plan="max", limit=None)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/{ART_SLUG}"))
+
+    assert res.status_code == 404
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_sidecar_row_without_a_slug_is_still_unpublished() -> None:
+    """``scripts/publish_articles.py`` UNPUBLISHES by clearing the slug, leaving
+    the row in place. A presence-only check would miss that."""
+    fake = _unpublished_article_corpus()
+    fake.tables["seo_item_meta"].append(
+        {"content_type": "article", "content_id": f"{REG_ID}#3", "slug": None,
+         "seo_tier": None, "gate_override": None}
+    )
+    fake.quota_row = quota_row(limit=10, used=0)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/{ART_SLUG}"))
+
+    assert res.status_code == 404
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_published_article_is_still_reachable() -> None:
+    """The fix is a gate, not a wall — the published مادة still resolves. Without
+    this the four assertions above would pass vacuously."""
+    fake = _corpus()
+    fake.quota_row = quota_row(limit=10, used=0)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/{ART_SLUG}"))
+
+    assert res.status_code == 200, res.text
+    assert _has_content(res.json())
+
+
+# --- 1b.2 — the شرح entitlement (root cause B) -----------------------------
+
+
+def test_an_exhausted_account_gets_no_sharh_from_an_open_tier_article() -> None:
+    """THE H-5 REGRESSION TEST. Free account, quota spent, open-tier نظام, مادة
+    with a cached شرح — the exact live shape. It used to return 200 with the
+    complete شرح and ``charged=false``."""
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=10)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 402, res.text
+    assert res.json()["reason"] == "quota_exhausted"
+    assert SHARH_CANARY not in res.text
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_locked_account_gets_no_sharh_from_an_open_tier_article() -> None:
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(locked=True)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 402
+    assert res.json()["reason"] == "locked"
+    assert SHARH_CANARY not in res.text
+
+
+def test_a_frozen_account_gets_no_sharh_from_an_open_tier_article() -> None:
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=0)
+    fake.tables["library_unlocks"] = [
+        unlock_row(content_type="article", content_id=f"{REG_ID}#3",
+                   period_key=PRO_PERIOD)
+    ]
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 402
+    assert res.json()["reason"] == "frozen_library"
+    assert SHARH_CANARY not in res.text
+
+
+def test_an_entitled_account_DOES_get_the_sharh_and_is_charged_for_it() -> None:
+    """The counterpart: the شرح is a product, not a forbidden zone. One unlock
+    buys it, and the ledger row is written."""
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=0)
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 200, res.text
+    assert res.json()["sharh_md"] == SHARH_CANARY
+    rows = fake.tables["library_unlocks"]
+    assert len(rows) == 1
+    assert rows[0]["content_type"] == "article"
+    assert rows[0]["content_id"] == f"{REG_ID}#3"
+
+
+def test_an_open_tier_article_WITHOUT_a_sharh_stays_free_and_uncharged() -> None:
+    """THE PROPERTY THE FIX MUST NOT REGRESS (§1.2). ``always_gated`` is asked
+    per ITEM, so the ~50k مواد with no شرح keep the free نص they have today — no
+    charge, no ledger row, no 402. Metering an item with nothing scarce in it
+    would be the "trick" feeling §5.1 forbids."""
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=10)   # exhausted, and irrelevant
+
+    # madda-5 has no seo_sharh row; only madda-3 does.
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-5"))
+
+    assert res.status_code == 200, res.text
+    assert _has_content(res.json())
+    assert res.json()["sharh_md"] is None
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_GATED_article_with_a_sharh_charges_exactly_once_for_both() -> None:
+    """The نص and the شرح are one purchase, not two: the ledger keys on the مادة.
+    A gated مادة was always metered, so nothing changes for it."""
+    fake = _sharh_corpus(tier=None)                 # → fail-closed 'gated'
+    fake.quota_row = quota_row(limit=10, used=0)
+    client = _client(fake, _User())
+
+    first = client.get(_full_url("article", f"{REG_SLUG}/madda-3"))
+    assert first.status_code == 200, first.text
+    assert first.json()["sharh_md"] == SHARH_CANARY
+    assert _has_content(first.json())
+
+    second = client.get(_full_url("article", f"{REG_SLUG}/madda-3"))
+    assert second.status_code == 200
+    assert second.json()["sharh_md"] == SHARH_CANARY
+    assert len(fake.tables["library_unlocks"]) == 1
+
+
+def test_an_unlocked_open_tier_regulation_covers_its_articles_sharh() -> None:
+    """D5 over HTTP with a شرح attached: the نظام covers its مواد, so the reveal
+    is free on the second click. always_gated changes who pays, never how often."""
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=1)
+    fake.tables["library_unlocks"] = [unlock_row(period_key=FREE_PERIOD)]  # the نظام
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 200, res.text
+    assert res.json()["sharh_md"] == SHARH_CANARY
+    assert len(fake.tables["library_unlocks"]) == 1     # no new row
+
+
+def test_a_failed_sharh_probe_degrades_to_a_free_NASS_never_a_free_SHARH() -> None:
+    """BELT AND BRACES. ``article_has_sharh`` fails soft to False, which makes the
+    verdict ``'open'`` — and ``get_full_article`` is handed ``is_entitled``, not
+    ``may_unlock``, so the شرح is still withheld. The degraded mode is "the نص is
+    free" (it already was), never "the شرح is free"."""
+    fake = _sharh_corpus()
+    fake.quota_row = quota_row(limit=10, used=0)
+    fake.fail_tables = {"seo_sharh"}        # every شرح read raises
+
+    res = _client(fake, _User()).get(_full_url("article", f"{REG_SLUG}/madda-3"))
+
+    assert res.status_code == 200, res.text
+    assert res.json()["sharh_md"] is None
+    assert SHARH_CANARY not in res.text
+    assert fake.tables["library_unlocks"] == []     # and nobody was charged
+
+
+def test_the_anon_sharh_teaser_survives_the_fix() -> None:
+    """The free surface the fix must leave alone: the anon مادة page still ships
+    the ~170-char teaser (and NEVER more), so signup still has something to
+    promise. Bounded by ``SHARH_TEASER_CHARS``, not by the entitlement layer."""
+    fake = _sharh_corpus()
+    long_sharh = SHARH_CANARY + " " + ("ت" * 4000)
+    fake.tables["seo_sharh"] = [
+        {"regulation_id": REG_ID, "article_no": 3, "sharh_md": long_sharh}
+    ]
+
+    doc = ls.get_regulation_article(fake, REG_SLUG, "madda-3")
+
+    assert doc is not None
+    assert doc["sharh"]["has_sharh"] is True
+    assert 0 < len(doc["sharh"]["teaser"]) <= ls.SHARH_TEASER_CHARS
+    assert long_sharh not in json.dumps(doc, ensure_ascii=False)
 
 
 # ===========================================================================

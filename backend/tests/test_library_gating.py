@@ -940,10 +940,250 @@ def test_full_regulation_never_includes_sharh() -> None:
 def test_full_article_still_carries_the_sharh() -> None:
     """The one-مادة-at-a-time path is where شرح legitimately unlocks — this is the
     counterpart that proves the invariant above is a placement rule, not a
-    deletion."""
-    payload = ls.get_full_article(_regulation_with_sharh(), "nizam-test", "m-2")
+    deletion. ``include_sharh`` is the entitled caller's opt-in."""
+    payload = ls.get_full_article(
+        _regulation_with_sharh(), "nizam-test", "m-2", include_sharh=True
+    )
     assert payload is not None
     assert payload["sharh_md"] == SHARH_TEXT
+
+
+def test_full_article_withholds_the_sharh_by_default() -> None:
+    """``include_sharh`` DEFAULTS TO FALSE — the fail-closed direction (H-5).
+
+    The شرح is §1.3 ALWAYS-GATED, so a caller that has not thought about
+    entitlement must get the نص and nothing more. A default of True would make
+    every future caller a leak by omission, which is how the corpus escaped the
+    first time.
+    """
+    payload = ls.get_full_article(_regulation_with_sharh(), "nizam-test", "m-2")
+    assert payload is not None
+    assert payload["sharh_md"] is None
+    # ...and the نص is still whole: this withholds the شرح, it does not truncate.
+    assert payload["text"] == "نص المادة 2 الكامل"
+
+
+def test_an_unentitled_reader_never_even_queries_the_sharh_table() -> None:
+    """Not merely "not in the payload" — not READ. The gated bytes must not enter
+    the process at all, which is also what makes the withholding un-leakable by a
+    later serialization mistake."""
+    fake = _regulation_with_sharh()
+    fake.fail_tables = {"seo_sharh"}  # any read here blows up
+
+    payload = ls.get_full_article(fake, "nizam-test", "m-2")
+
+    assert payload is not None
+    assert payload["sharh_md"] is None
+
+
+# ---------------------------------------------------------------------------
+# 6b. THE ALWAYS-GATED ENTITLEMENT — H-5 (security review 2026-08-07)
+# ---------------------------------------------------------------------------
+#
+# The شرح is gated BY POLICY (§1.3 "always gated"), independent of the مادة's
+# tier. ``resolve_access`` used to return the moment the Layer-A gate read
+# 'open' — BEFORE the quota was ever read — and step (b) of ``resolve_gate``
+# makes a مادة inherit its parent نظام's tier. Since all 229 of 229 مواد that
+# carry a شرح sit under an OPEN نظام, that early return handed 100% of the شرح
+# corpus to any registered account, free, unmetered, with no ledger row.
+#
+# The unit-level half of the fix is ``always_gated=``; the HTTP-level half (the
+# route asking ``article_has_sharh`` and passing ``is_entitled`` to the reader)
+# is pinned in test_library_enforcement.py §1b.
+
+
+def _open_tier_article_corpus(*, used: int = 0, limit: Optional[int] = 10) -> FakeSupabase:
+    """An OPEN-tier نظام, one published مادة under it, with a cached شرح."""
+    fake = _regulation_with_sharh()
+    fake.tables["seo_item_meta"] = [
+        {"content_type": "regulation", "content_id": REG_ID, "slug": "nizam-test",
+         "seo_tier": "open", "gate_override": None},
+        {"content_type": "article", "content_id": f"{REG_ID}#2", "slug": "m-2",
+         "seo_tier": None, "gate_override": None},
+    ]
+    fake.quota_row = quota_row(limit=limit, used=used)
+    return fake
+
+
+def test_an_open_tier_article_is_still_free_when_it_has_no_sharh() -> None:
+    """The property the fix must NOT regress: an open-tier نص is free, uncharged,
+    and writes no ledger row. ``always_gated`` is per-ITEM, so the ~50k مواد with
+    no شرح keep exactly the access they have today."""
+    fake = _open_tier_article_corpus()
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=False,
+        )
+    )
+    assert decision.may_unlock is True
+    assert decision.charged is False
+    assert decision.reason == "open"
+    assert decision.is_entitled is False, "an 'open' verdict buys nothing"
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_an_open_tier_article_with_a_sharh_is_metered() -> None:
+    """H-5: 'open' must NOT short-circuit the meter when always-gated bytes ride
+    along. The نص is free by tier; the شرح on top of it is bought."""
+    fake = _open_tier_article_corpus()
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.reason == "granted"
+    assert decision.charged is True
+    assert decision.is_entitled is True
+    # The ledger row is the point — it is the sole revenue control.
+    assert len(fake.tables["library_unlocks"]) == 1
+    row = fake.tables["library_unlocks"][0]
+    assert row["content_type"] == "article"
+    assert row["content_id"] == f"{REG_ID}#2"
+
+
+def test_an_exhausted_account_is_refused_the_sharh_of_an_open_article() -> None:
+    """quota_exhausted is one of the three verdicts the 'open' return skipped."""
+    fake = _open_tier_article_corpus(used=10, limit=10)
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.may_unlock is False
+    assert decision.reason == "quota_exhausted"
+    assert decision.is_entitled is False
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_locked_account_is_refused_the_sharh_of_an_open_article() -> None:
+    """...and so is `locked` — a plan-less account reaches nothing gated."""
+    fake = _open_tier_article_corpus()
+    fake.quota_row = quota_row(locked=True)
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.may_unlock is False
+    assert decision.reason == "locked"
+    assert fake.tables["library_unlocks"] == []
+
+
+def test_a_frozen_row_still_freezes_the_sharh_of_an_open_article() -> None:
+    """...and so is `frozen_library`: a paid-era مادة read by a now-free account
+    is frozen even though its نظام is open-tier."""
+    fake = _open_tier_article_corpus()
+    fake.tables["library_unlocks"] = [
+        unlock_row(content_type="article", content_id=f"{REG_ID}#2",
+                   period_key=PRO_PERIOD)
+    ]
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.may_unlock is False
+    assert decision.reason == "frozen_library"
+
+
+def test_an_already_unlocked_open_article_is_not_charged_twice_for_its_sharh() -> None:
+    """always_gated does not re-charge: the ledger row IS the شرح purchase."""
+    fake = _open_tier_article_corpus(used=1)
+    fake.tables["library_unlocks"] = [
+        unlock_row(content_type="article", content_id=f"{REG_ID}#2",
+                   period_key=FREE_PERIOD)
+    ]
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.reason == "already_unlocked"
+    assert decision.charged is False
+    assert decision.is_entitled is True
+    assert len(fake.tables["library_unlocks"]) == 1
+
+
+def test_an_unlocked_open_tier_regulation_still_covers_its_articles_sharh() -> None:
+    """D5 survives always_gated — the نظام covers its مواد. Re-charging for a مادة
+    the user just read in the continuous view is the "trick" feeling §5.1
+    forbids, and that does not stop being true because a شرح is attached."""
+    fake = _open_tier_article_corpus(used=1)
+    fake.tables["library_unlocks"] = [unlock_row(period_key=FREE_PERIOD)]  # the نظام
+    decision = run(
+        ls.resolve_access(
+            fake, USER, "article", f"{REG_ID}#2",
+            parent_regulation_id=REG_ID, always_gated=True,
+        )
+    )
+    assert decision.reason == "already_unlocked"
+    assert decision.charged is False
+    assert decision.is_entitled is True
+
+
+def test_anonymous_is_still_refused_before_the_always_gated_branch() -> None:
+    """Step 2 precedes step 3, so ``always_gated`` cannot change the anon verdict
+    (and must never turn it into a quota read for a user that does not exist)."""
+    fake = _open_tier_article_corpus()
+    decision = run(
+        ls.resolve_access(fake, None, "article", f"{REG_ID}#2", always_gated=True)
+    )
+    assert decision.may_unlock is False
+    assert decision.reason == "anonymous"
+
+
+def test_a_never_charged_type_ignores_always_gated() -> None:
+    """Step 1 precedes step 3 too: a compliance service is policy-open and must
+    stay free even if a caller mistakenly flags it always-gated."""
+    fake = _open_tier_article_corpus()
+    decision = run(ls.resolve_access(fake, USER, "service", "svc-1", always_gated=True))
+    assert decision.may_unlock is True
+    assert decision.charged is False
+    assert decision.reason == "open"
+
+
+# --- article_has_sharh — the per-item probe that keeps the meter honest ----
+
+
+def test_article_has_sharh_detects_a_cached_sharh() -> None:
+    assert ls.article_has_sharh(_regulation_with_sharh(), f"{REG_ID}#2") is True
+
+
+def test_article_has_sharh_is_false_without_a_row() -> None:
+    """~50k of ~50k-odd مواد have no شرح. Flagging them always-gated would charge
+    an unlock for bytes the reader already had in full — §5.1's "trick" feeling.
+    """
+    assert ls.article_has_sharh(_regulation_with_sharh(), f"{REG_ID}#9") is False
+
+
+def test_article_has_sharh_treats_an_empty_body_as_absent() -> None:
+    """Parity with ``_sharh_teaser``: a blank شرح renders no teaser, so it must
+    not trigger a charge either."""
+    fake = _regulation_with_sharh()
+    fake.tables["seo_sharh"] = [
+        {"regulation_id": REG_ID, "article_no": 2, "sharh_md": "   "}
+    ]
+    assert ls.article_has_sharh(fake, f"{REG_ID}#2") is False
+
+
+@pytest.mark.parametrize("key", ["", "not-a-key", f"{REG_ID}#", f"{REG_ID}#abc", "#3"])
+def test_article_has_sharh_rejects_a_malformed_key(key: str) -> None:
+    assert ls.article_has_sharh(_regulation_with_sharh(), key) is False
+
+
+def test_article_has_sharh_fails_soft_to_false() -> None:
+    """A lookup blip must not 500 the reveal. False is safe in both directions
+    ONLY because the sink is independent: the نص stays free (correct) and
+    ``get_full_article`` still withholds the شرح without ``is_entitled``."""
+    fake = _regulation_with_sharh()
+    fake.fail_tables = {"seo_sharh"}
+    assert ls.article_has_sharh(fake, f"{REG_ID}#2") is False
 
 
 # ===========================================================================

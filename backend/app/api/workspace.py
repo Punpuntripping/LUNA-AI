@@ -44,7 +44,7 @@ from backend.app.models.responses import (
     WorkspaceItemResponse,
 )
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
-from backend.app.services import library_service, workspace_service
+from backend.app.services import library_service, message_service, workspace_service
 from backend.app.services.case_service import get_user_id
 from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
 from backend.app.services.references_service import (
@@ -572,6 +572,17 @@ async def create_note(
     """Create a user-authored note inside the conversation workspace."""
     validate_uuid(conversation_id, "معرف المحادثة")
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    # OWNERSHIP — load-bearing. ``conversation_id`` is caller-supplied and the
+    # row is written with the CALLER's user_id, so without this an attacker who
+    # knows a victim's conversation_id plants an item in that conversation: it
+    # gets a valid ``wi_seq`` (migration 052), its title/summary are rendered
+    # into the victim's router instructions, and it burns the victim's 15-item
+    # cap (migration 031 counts per conversation, not per user). Same guard and
+    # same Arabic 404 as every sibling write path (api/messages.py:59,
+    # workspace_service.py:586 / :722).
+    await run_db(
+        message_service.verify_conversation_ownership, supabase, conversation_id, user_id
+    )
     row = await run_db(
         workspace_service.create_workspace_item,
         supabase,
@@ -599,6 +610,10 @@ async def create_reference(
     """Create a placeholder ``references`` workspace item."""
     validate_uuid(conversation_id, "معرف المحادثة")
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    # OWNERSHIP — see ``create_note``. Caller-supplied conversation_id.
+    await run_db(
+        message_service.verify_conversation_ownership, supabase, conversation_id, user_id
+    )
     row = await run_db(
         workspace_service.create_workspace_item,
         supabase,
@@ -691,6 +706,13 @@ async def attach_from_case_document(
     validate_uuid(conversation_id, "معرف المحادثة")
     validate_uuid(body.document_id, "معرف المستند")
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+
+    # OWNERSHIP of the CONVERSATION — see ``create_note``. The document check
+    # below proves the caller owns the file; it says nothing about the
+    # conversation the pin lands in, so both are required.
+    await run_db(
+        message_service.verify_conversation_ownership, supabase, conversation_id, user_id
+    )
 
     # Verify the document is owned by this user (joins back to lawyer_cases).
     def _fetch_doc_row():

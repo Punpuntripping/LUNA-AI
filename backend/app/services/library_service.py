@@ -83,7 +83,18 @@ ARTICLE_FREE_CHARS = 500
 # Free-text budget for the شرح TEASER on a مادة page (gate #3 — the AI شرح is the
 # scarce value-add and is ALWAYS gated, even on an open-tier مادة whose نص is
 # free). Only this many chars of the cached sharh_md ever reach an anon payload;
-# the full شرح is served only to authed callers via /library/full/article.
+# the full شرح is served only to ENTITLED callers via /library/full/article.
+#
+# ⚠ "AUTHED" WAS NEVER ENOUGH, and this comment said "authed" until 2026-08-07.
+# Saying it cost the entire شرح corpus: ``resolve_access`` returned free the
+# moment the gate read ``'open'``, and step (b) of ``resolve_gate`` makes a مادة
+# inherit its parent نظام's tier — under which ALL 229 of 229 مواد that carry a
+# شرح sit. So every registered account read 100% of the شرح free and unmetered
+# (security review 2026-08-07, H-5). The two halves of gate #3 now read:
+#   * anon    → this teaser and nothing else (``_sharh_teaser``).
+#   * authed  → ``get_full_article(include_sharh=...)``, whose flag is
+#               ``AccessDecision.is_entitled`` and NOTHING else. An open-tier نص
+#               stays free; the شرح layered on top of it is bought, always.
 SHARH_TEASER_CHARS = 170
 # A gated circular whose body is <= this many chars renders fully (open): a
 # 4-line تعميم that is 90% placeholder bars looks broken and adds no gate value.
@@ -672,6 +683,7 @@ __all__ += [
     "resolve_access",
     "stored_library_count",
     "parent_regulation_of_article",
+    "article_has_sharh",
 ]
 
 
@@ -796,6 +808,56 @@ def parent_regulation_of_article(
     return head or None
 
 
+def article_has_sharh(supabase: SupabaseClient, content_id: str) -> bool:
+    """Does this مادة carry a cached AI شرح? SYNC (run via ``run_db``).
+
+    ``content_id`` is the sidecar key ``'{regulation_id}#{article_no}'`` — the
+    same string the ledger and ``resolve_access`` key on, so the item asked about
+    here and the item charged there cannot drift.
+
+    This is the ``always_gated`` input to :func:`resolve_access` for a مادة, and
+    it exists so the شرح can be METERED without ever METERING NOTHING. Only ~229
+    of ~50k مواد carry a شرح; a blanket always-gated flag would charge an unlock
+    on an open-tier مادة whose نص the reader already had in full on the public
+    page and hand back nothing new — the "trick" feeling §5.1 forbids. The
+    frontend conditions its «اعرض الشرح كاملاً» CTA on the same fact
+    (``sharh.has_sharh``), so the meter and the button agree on when the reveal
+    is worth anything at all.
+
+    Emptiness is treated as absence, matching :func:`_sharh_teaser`: a row whose
+    ``sharh_md`` is blank renders no teaser, so it must not trigger a charge.
+
+    Fail-soft to ``False``, which is safe in BOTH directions only because the
+    sink is independent: a False leaves the نص free (correct) while
+    ``get_full_article`` still refuses to load the شرح without
+    ``AccessDecision.is_entitled``. A gated مادة is unaffected either way — it
+    goes through the meter regardless.
+    """
+    cid = str(content_id or "")
+    head, sep, tail = cid.rpartition("#")
+    if not sep or not head.strip():
+        return False
+    try:
+        article_no = int(tail)
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        res = (
+            supabase.table("seo_sharh")
+            .select("sharh_md")
+            .eq("regulation_id", head.strip())
+            .eq("article_no", article_no)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("sharh presence lookup failed (%s): %s", cid, e)
+        return False
+    rows = res.data or []
+    return bool(rows and (rows[0].get("sharh_md") or "").strip())
+
+
 def unlock_cost(
     supabase: SupabaseClient, content_type: str, content_id: str
 ) -> int:
@@ -884,14 +946,23 @@ def unlock_cost(
     )
 
 
+# The ``reason`` values that mean a REAL entitlement stands behind the verdict —
+# a ``library_unlocks`` row exists for this (user, item), or would but for a
+# ledger blip. ``'open'`` is deliberately ABSENT: it grants access without buying
+# anything, so §1.3 ALWAYS-GATED bytes must never ride on it. Allowlist, not a
+# ``!= "open"`` test, so a future ``reason`` is unentitled until someone decides
+# otherwise on purpose.
+_ENTITLED_REASONS = frozenset({"granted", "already_unlocked", "ledger_unavailable"})
+
+
 @dataclass
 class AccessDecision:
     """The Layer B verdict for one (user, item) at one instant.
 
     ``reason`` ∈ ``open`` · ``already_unlocked`` · ``granted`` · ``anonymous`` ·
-    ``locked`` · ``quota_exhausted`` · ``frozen_library`` · ``unresolvable``.
-    The refusal reasons map 1:1 onto the D14 402 payload built by
-    ``backend.app.errors.library_refusal_response``.
+    ``locked`` · ``quota_exhausted`` · ``frozen_library`` · ``unresolvable`` ·
+    ``ledger_unavailable``. The refusal reasons map 1:1 onto the D14 402 payload
+    built by ``backend.app.errors.library_refusal_response``.
 
     ``charged`` is True ONLY when this call inserted a ledger row. A re-open, an
     open item and a نظام-covered مادة are all ``charged=False`` — re-charging a
@@ -907,6 +978,21 @@ class AccessDecision:
     limit: Optional[int] = None
     resets_at: Optional[datetime] = None
     stored_count: int = 0
+
+    @property
+    def is_entitled(self) -> bool:
+        """Does a ledger row stand behind this verdict? — the ALWAYS-GATED test.
+
+        ``may_unlock`` answers "may this response carry the item's ORDINARY
+        bytes". This answers the narrower "did the user actually BUY this item".
+        They differ in exactly one place, and it is the expensive one:
+        ``reason='open'`` is ``may_unlock=True, is_entitled=False`` — the نص of
+        an open-tier مادة is free (correct, intended, §1.2), and the AI شرح
+        layered on top of it is not (§1.3 "always gated"). Anything in the
+        ALWAYS-GATED class must branch on THIS, never on ``may_unlock``; reading
+        ``may_unlock`` there is the shape of H-5 (2026-08-07).
+        """
+        return self.reason in _ENTITLED_REASONS
 
 
 def _find_unlock_row(
@@ -1044,6 +1130,7 @@ async def resolve_access(
     *,
     surface: str = "library",
     parent_regulation_id: Optional[str] = None,
+    always_gated: bool = False,
 ) -> AccessDecision:
     """May this user unlock this item right now? — the Layer B entry point.
 
@@ -1055,7 +1142,8 @@ async def resolve_access(
     Decision order (this IS the §1.2 predicate; do not reorder):
       1. ``service`` → open, free, no ledger row (policy-never-gated).
       2. no user     → ``anonymous`` (anon allowance is 0).
-      3. item gate is ``'open'`` → free, no ledger row.
+      3. item gate is ``'open'`` → free, no ledger row — SKIPPED ENTIRELY when
+         ``always_gated``.
       4. existing row → paid OR same period ⇒ ``already_unlocked``; else
          ``frozen_library`` + the shelf count for the upgrade CTA.
       5. مادة whose parent نظام is already unlocked ⇒ ``already_unlocked`` (D5).
@@ -1063,6 +1151,16 @@ async def resolve_access(
       6. locked account → ``locked``.
       7. quota available → INSERT (idempotent) ⇒ ``granted`` / ``charged=True``.
       8. otherwise → ``quota_exhausted`` with used/limit/resets_at.
+
+    ``always_gated`` marks a reveal that carries bytes from the §1.3 ALWAYS-GATED
+    class — today exactly one thing, the AI شرح of a مادة. It skips step 3 only:
+    an item may be Layer-A ``'open'`` and still cost an unlock, because what is
+    bought there is not the public-domain نص but Rayhan's own layer on top of it.
+    Steps 4–8 are untouched, so ``locked`` / ``frozen_library`` /
+    ``quota_exhausted`` all apply and a grant writes its ledger row like any
+    other. Pass it ONLY when those bytes actually exist for this item (see
+    :func:`article_has_sharh`) — charging for a شرح that is not there is the
+    "trick" feeling §5.1 forbids.
 
     NEVER memoize this, and never call it from a cacheable path (D11).
     """
@@ -1078,11 +1176,21 @@ async def resolve_access(
         return AccessDecision(may_unlock=False, charged=False, reason="anonymous")
 
     # 3. Layer A — an OPEN item costs nothing and writes nothing.
-    gate = await run_db(
-        resolve_gate, supabase, ct, cid, parent_regulation_id=parent_regulation_id
-    )
-    if gate == "open":
-        return AccessDecision(may_unlock=True, charged=False, reason="open")
+    #
+    # ⚠ SKIPPED WHOLESALE for an always-gated reveal, and that skip IS the fix for
+    # H-5 (security review 2026-08-07). Returning here is correct for the نص and
+    # catastrophic for the شرح: step (b) of ``resolve_gate`` makes a مادة inherit
+    # its parent نظام's tier, and all 229 of 229 مواد carrying a شرح sit under an
+    # OPEN نظام — so this return short-circuited the meter for 100% of the شرح
+    # corpus. Everything below was skipped with it: no quota read, no ``locked`` /
+    # ``frozen_library`` / ``quota_exhausted``, no ledger row, ``charged=False``.
+    # The open نص is still free; only the always-gated layer is bought.
+    if not always_gated:
+        gate = await run_db(
+            resolve_gate, supabase, ct, cid, parent_regulation_id=parent_regulation_id
+        )
+        if gate == "open":
+            return AccessDecision(may_unlock=True, charged=False, reason="open")
 
     state = await _quota.library_state(supabase, str(user_id))
 
@@ -4532,6 +4640,12 @@ def get_judgment_doc(
 # would collapse the AI layer's unlock count ~15× (plan §1.2). Pinned by
 # test_full_regulation_never_includes_sharh.
 #
+# ⚠ AND get_full_article gates the شرح ON TOP of the route's entitlement check.
+# It is the ONE reader here that is not purely "the route already decided": the
+# نص and the شرح have DIFFERENT gates (§1.3 — the نص may be open-tier and free,
+# the شرح never is), so one ``resolve_access`` verdict cannot answer for both.
+# ``include_sharh`` carries the second answer, and it defaults to False.
+#
 # All functions are READ-ONLY (no counters — usage lives on ``library_items``,
 # never here) and return ``None`` for an unknown key so the route maps it to a
 # 404 with an Arabic message.
@@ -4726,21 +4840,34 @@ def get_full_regulation(
 
 
 def get_full_article(
-    supabase: SupabaseClient, reg_slug: str, article_slug: str
+    supabase: SupabaseClient,
+    reg_slug: str,
+    article_slug: str,
+    *,
+    include_sharh: bool = False,
 ) -> Optional[dict[str, Any]]:
-    """FULL مادة payload for /library/full/article (AUTHED).
+    """FULL مادة payload for /library/full/article (ENTITLED callers).
 
     Resolves ``reg_slug`` → regulation_id, then the ``seo_articles`` row by
     ``(regulation_id, slug=article_slug)``, and returns the COMPLETE, untruncated
-    body plus the FULL cached شرح when present::
+    body plus — only when ``include_sharh`` — the FULL cached شرح::
 
         {"text": <full article/chunk body>, "sharh_md": <full شرح|null>}
 
     Body = the extracted ``article_text`` when ``extraction_status='extracted'``,
-    else the whole owning chunk's ``content`` (extraction fallback). ``sharh_md`` is
-    the full ``seo_sharh.sharh_md`` (the gated value-add now unlocked) or ``None``
-    when no row is cached. No gating/truncation. ``None`` when the regulation slug or
-    the article slug is unknown (route → 404 «المادة غير موجودة»). Read-only.
+    else the whole owning chunk's ``content`` (extraction fallback). No
+    gating/truncation on the نص: reaching this function at all means the route's
+    ``resolve_access`` already said the body may ship. ``None`` when the
+    regulation slug or the article slug is unknown (route → 404
+    «المادة غير موجودة»). Read-only.
+
+    ``include_sharh`` DEFAULTS TO FALSE on purpose. The شرح is §1.3 ALWAYS-GATED,
+    so a caller that has not thought about entitlement must get the نص and
+    nothing more. The one live caller passes ``AccessDecision.is_entitled`` — NOT
+    ``may_unlock``: an ``'open'`` verdict grants the free public-domain نص and
+    buys nothing, and letting the شرح ride on it gave the whole corpus away once
+    already (H-5, 2026-08-07). When False the ``seo_sharh`` row is never even
+    READ, so the gated bytes do not enter the process, let alone the payload.
     """
     reg_slug = (reg_slug or "").strip()
     article_slug = (article_slug or "").strip()
@@ -4785,17 +4912,21 @@ def get_full_article(
             # noise for DISPLAY (chunk fallback above is multi-article — kept).
             body = _clean_article_display_text(body)
 
-        article_no = int(art.get("article_no") or 0)
-        sh_res = (
-            supabase.table("seo_sharh")
-            .select("sharh_md")
-            .eq("regulation_id", str(regulation_id))
-            .eq("article_no", article_no)
-            .limit(1)
-            .execute()
-        )
-        sh_rows = sh_res.data or []
-        sharh_md = (sh_rows[0].get("sharh_md") if sh_rows else None) or None
+        # The شرح is fetched ONLY for an entitled caller — an unentitled one does
+        # not get a truncated شرح, it gets no شرح query at all.
+        sharh_md = None
+        if include_sharh:
+            article_no = int(art.get("article_no") or 0)
+            sh_res = (
+                supabase.table("seo_sharh")
+                .select("sharh_md")
+                .eq("regulation_id", str(regulation_id))
+                .eq("article_no", article_no)
+                .limit(1)
+                .execute()
+            )
+            sh_rows = sh_res.data or []
+            sharh_md = (sh_rows[0].get("sharh_md") if sh_rows else None) or None
     except Exception as e:  # noqa: BLE001
         logger.exception(
             "Error loading full article (%s/%s): %s", reg_slug, article_slug, e

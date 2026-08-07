@@ -1574,7 +1574,13 @@ class LibraryFullResponse(BaseModel):
     the rest stay null); ``content_type`` + ``key`` echo the request so the client
     enhancer can match the response to the DOM node it is upgrading:
       - ``regulation`` → ``sections`` (EVERY chunk, full, in order).
-      - ``article``    → ``text`` (full مادة/chunk body) + ``sharh_md`` (full شرح or null).
+      - ``article``    → ``text`` (full مادة/chunk body) + ``sharh_md`` (full شرح
+        or null). ``sharh_md`` is the ONE field here that does not follow the
+        item's tier: it is §1.3 ALWAYS-GATED, so it is populated only for a
+        caller with a real entitlement (``AccessDecision.is_entitled``) and is
+        null on an ``'open'``-tier مادة whose نص ships free in the same body.
+        Being a declared field, ``response_model`` will NOT strip it — the route
+        is what must not put it there.
       - ``judgment``   → ``sections`` (EVERY non-empty judgment section, full, in
         order — ``id``s match the anon page's sections so the enhancer swaps them
         in place).
@@ -1588,7 +1594,8 @@ class LibraryFullResponse(BaseModel):
     ``library_service.official_sources_for_item`` for why.
 
     No truncation — the complete bytes. Entitlement is the boundary, enforced by
-    the route before any of this is built."""
+    the route before any of this is built (and, for ``sharh_md``, enforced a
+    second time — see above)."""
 
     content_type: str
     key: str
@@ -2581,18 +2588,27 @@ async def open_form_in_writer(
 # ``.claude/plans/access_tiers_gating.md`` §1.2 / §1.2.1 / §4.4 and
 # ``.claude/plans/access_tiers_gating_DECISIONS.md`` D5 / D14 / D16.1 / D16.2.
 #
-# THREE boundaries stack here, in this order, and each is independent:
+# FOUR boundaries stack here, in this order, and each is independent:
 #   1. RESOLUTION  — slug → (content_type, content_id). An unknown key is a 404
 #      BEFORE any entitlement work, so nobody is ever charged for a 404. For
 #      ``form`` the resolver carries the LIABILITY hard gate
-#      (review_status='approved' AND is_published), which survives every tier —
-#      a Max subscriber still cannot see an unapproved form (PART 9 trap 6).
+#      (review_status='approved' AND is_published) and for ``article`` the
+#      PUBLISH gate (a slugged ``seo_item_meta`` sidecar row), both of which
+#      survive every tier — a Max subscriber still cannot see an unapproved form
+#      (PART 9 trap 6) or a مادة that has no public page (H-5).
 #   2. ENTITLEMENT — ``resolve_access`` (Layer B). Refusal ⇒ 402 with the D14
 #      body and NO content bytes. Anonymous is refused HERE with
 #      ``reason='anonymous'``, not by a 401 from the auth dependency: this
 #      endpoint is reached from PUBLIC pages, and a 401 would trip the
 #      frontend's global redirect-to-login and eject a browsing visitor (D14).
-#   3. CONTENT     — the ``get_full_*`` readers, unchanged (no truncation).
+#   3. ALWAYS-GATED — the §1.3 class, which does NOT follow the item's tier and
+#      therefore cannot ride on boundary 2's verdict. Today that is the AI شرح of
+#      a مادة: the نص may be open-tier and free while the شرح on top of it is
+#      always bought. Two independent halves — ``always_gated=`` going IN to
+#      ``resolve_access`` (so the meter runs at all on an open مادة) and
+#      ``include_sharh=`` coming OUT to the reader (so the bytes are not even
+#      fetched without ``is_entitled``). See steps 2a and 3 in the handler.
+#   4. CONTENT     — the ``get_full_*`` readers, unchanged (no truncation).
 #
 # Private content ⇒ Cache-Control: private, no-store, on the 200 and on the 402
 # alike (never shared/ISR-cached).
@@ -2664,11 +2680,17 @@ def _resolve_full_target(
       * ``article``    — ``"{reg_slug}/{article_slug}"`` → ``"{reg_id}#{no}"``,
         and the parent reg id comes back alongside so ``resolve_access`` can
         apply D5 (a unlocked نظام covers its مواد) without re-parsing the key.
+        The مادة must ALSO be PUBLISHED — see the branch's own comment.
       * ``judgment`` / ``circular`` — sidecar slug → corpus id.
       * ``form``      — the forms table itself (forms have NO sidecar rows), and
         the SELECT carries the liability gate. An unapproved form therefore
         resolves to None → 404, indistinguishable from missing, and no unlock is
         ever charged for something the user could not have been shown.
+
+    The rule the ``form`` and ``article`` branches share, and the one to keep:
+    **this resolver must not be reachable for anything the public page 404s.**
+    A reveal is the "show me the rest of what I am looking at" action; an item
+    with no public page is not something anyone was looking at.
     """
     key = (key or "").strip().strip("/")
     if not key:
@@ -2702,7 +2724,26 @@ def _resolve_full_target(
         if not rows:
             return None
         article_no = int(rows[0].get("article_no") or 0)
-        return (f"{rid}#{article_no}", str(rid))
+        article_key = f"{rid}#{article_no}"
+
+        # OPT-IN PUBLISH GATE — the same PRESENCE check the public مادة page runs
+        # (``library_service.get_regulation_article``: no sidecar row, or one
+        # whose slug is NULL, ⇒ the page does not exist ⇒ 404). ``seo_articles``
+        # is the DERIVED index over the whole corpus — ~50k rows — while the
+        # sidecar is the opt-in publish record, and only a handful of مواد are
+        # published. Resolving against the index alone made every مادة in the
+        # corpus addressable through the reveal, including the ~50k with no
+        # public page at all: the gate ran backwards, 404ing the شرح on the page
+        # that is supposed to be its only public surface while the metered
+        # endpoint handed it over (security review 2026-08-07, H-5).
+        #
+        # ``get_item_meta`` swallows a query error to ``None``, so a sidecar blip
+        # degrades to 404 here rather than to a free reveal — fail-closed, and
+        # the same direction the form branch above fails.
+        meta = library_service.get_item_meta(supabase, "article", article_key)
+        if not meta or not meta.get("slug"):
+            return None
+        return (article_key, str(rid))
 
     if content_type in ("judgment", "circular"):
         cid = _sidecar_content_id(supabase, content_type, key)
@@ -2750,6 +2791,12 @@ async def _record_library_use(
     Nothing double-counts, because the beacon and this route cover disjoint sets:
     the beacon fires only for open items, this fires only after a gated item was
     unlocked.
+
+    The one item that looks like it straddles the two sets does not: an OPEN-tier
+    مادة carrying a شرح is metered here (§1.3 always-gated), and the frontend
+    already sends the beacon ``gate="gated"`` for it — it keys on
+    ``sharh.has_sharh`` exactly as ``article_has_sharh`` does server-side. The
+    sets stay disjoint because both sides agree that a شرح IS a gate.
 
     (History, so the next reader does not re-derive it: this briefly did NOT
     record, under an earlier model where the beacon fired for gated and open
@@ -2836,6 +2883,22 @@ async def get_library_full(
             case_service.get_user_id, supabase, current_user.auth_id
         )
 
+    # 2a. Does this reveal carry ALWAYS-GATED bytes? A مادة with a cached AI شرح
+    #     does. That has to be settled BEFORE entitlement, because it changes the
+    #     question being asked: without it, ``resolve_access`` short-circuits on
+    #     the item's Layer-A gate and an open-tier مادة is free — which is right
+    #     for the public-domain نص and wrong for Rayhan's شرح on top of it (§1.3
+    #     "always gated"). It is asked PER ITEM, not per type, so nobody is ever
+    #     metered for a شرح that does not exist: ~229 of ~50k مواد have one, the
+    #     other ~50k stay exactly as free as they are today. The frontend gates
+    #     its «اعرض الشرح كاملاً» CTA on the same fact, so the button and the
+    #     meter agree.
+    always_gated = False
+    if content_type == "article":
+        always_gated = await run_db(
+            library_service.article_has_sharh, supabase, content_id
+        )
+
     decision = await library_service.resolve_access(
         supabase,
         user_id,
@@ -2843,6 +2906,7 @@ async def get_library_full(
         content_id,
         surface="library",
         parent_regulation_id=parent_regulation_id,
+        always_gated=always_gated,
     )
     if not decision.may_unlock:
         # NO content is fetched, let alone returned. The refusal carries its own
@@ -2854,8 +2918,18 @@ async def get_library_full(
         data = await run_db(library_service.get_full_regulation, supabase, key)
     elif content_type == "article":
         reg_slug, article_slug = key.split("/", 1)
+        # ``is_entitled``, NOT ``may_unlock``: the two agree everywhere except on
+        # ``reason='open'``, which grants the free نص and buys nothing. Reading
+        # ``may_unlock`` here is exactly how the whole شرح corpus shipped free.
+        # Belt AND braces with 2a — if the ``article_has_sharh`` probe fails soft
+        # to False, the decision comes back ``'open'`` and this still withholds
+        # the شرح. The failure mode is a free نص (already free), never a free شرح.
         data = await run_db(
-            library_service.get_full_article, supabase, reg_slug, article_slug
+            library_service.get_full_article,
+            supabase,
+            reg_slug,
+            article_slug,
+            include_sharh=decision.is_entitled,
         )
     elif content_type == "judgment":
         data = await run_db(library_service.get_full_judgment, supabase, key)

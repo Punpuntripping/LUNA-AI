@@ -144,19 +144,27 @@ def _load_user_preferences(
 
 
 def _load_workspace_item_summaries(
-    supabase: SupabaseClient, conversation_id: str
+    supabase: SupabaseClient, conversation_id: str, user_id: str
 ) -> tuple[list[dict], str | None]:
     """Return (summaries, compaction_summary_md).
 
     Workspace items are filtered to exclude ``convo_context`` from the
     summaries list — that one's full ``content_md`` is returned separately
     as the compaction summary.
+
+    The ``.eq("user_id", user_id)`` filter is **load-bearing**, exactly as in
+    ``_load_case_block``: this client runs as ``service_role`` and bypasses
+    RLS, so the explicit owner filter is the scope enforcement. Titles and
+    summaries loaded here are rendered verbatim into the router's dynamic
+    instructions, so a row belonging to another user reaching this list is a
+    prompt-injection surface — not merely a data leak.
     """
     try:
         resp = (
             supabase.table("workspace_items")
             .select("item_id, wi_seq, kind, title, summary, content_md, created_at")
             .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=False)
             .execute()
@@ -328,7 +336,7 @@ def load_router_context(
     user_preferences = _load_user_preferences(supabase, user_id)
 
     workspace_item_summaries, compaction_summary_md = _load_workspace_item_summaries(
-        supabase, conversation_id
+        supabase, conversation_id, user_id
     )
 
     msg_rows = _load_filtered_messages(supabase, conversation_id)
