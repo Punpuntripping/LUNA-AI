@@ -215,6 +215,10 @@ class FakeSupabase:
             return _Rpc([{"plan_id": row["plan_id"], "name_ar": "x", "expires_at": expiry}])
 
         if name == "revoke_plan_grant":
+            # Branch order mirrors 113's real body exactly (revoked → fulfilled →
+            # no_subscription → PLAN-MATCH GUARD → restore → subtract). The guard
+            # is what M-1 turns on, so a fake that skipped it would let the
+            # exploit pass its own test.
             if row is None:
                 return _Rpc([{"action": "payment_not_found"}])
             if row.get("status") != "refunded":
@@ -223,7 +227,22 @@ class FakeSupabase:
             if row.get("revoked_at"):
                 return _Rpc([{"action": "already_revoked"}])
             row["revoked_at"] = _iso(_now())
-            action = "restored" if row.get("prior_plan_id") else "subtracted"
+            subs = self.tables["user_subscriptions"]
+            current = subs[0].get("plan_id") if subs else None
+            if not row.get("fulfilled_at"):
+                action = "not_fulfilled"          # money in, plan never applied
+            elif current is None:
+                action = "no_subscription"
+            elif current != row.get("plan_id"):
+                # The user moved on — subtracting would eat the plan they hold.
+                # NOTHING is written to the subscription. This is M-1's branch.
+                action = "plan_switched"
+            elif row.get("prior_plan_id"):
+                subs[0]["plan_id"] = row["prior_plan_id"]
+                subs[0]["expires_at"] = row.get("prior_expires_at")
+                action = "restored"
+            else:
+                action = "subtracted"
             return _Rpc([{"plan_id": row["plan_id"], "name_ar": "x",
                           "expires_at": None, "action": action}])
 
@@ -1004,3 +1023,311 @@ def test_refund_uses_provider_fee_end_to_end(keys, provider_refunds):
     assert result["refund_fee_sar"] == "3.38"          # 1.73 + 1.15 + 0.50
     assert result["refund_fee_sar"] != "3.40"          # NOT the fallback
     assert provider_refunds == [(MOYASAR_ID, 4652)]    # 4990 − 338
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# H-4 — the upgrade credit is CONSUMED, not merely quoted
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Security review 2026-08-07. The credit was priced at checkout from the
+# caller's current subscription and then never looked at again: no lock, no cap
+# on open rows, no TTL, no constraint. Three layers now stand between a quote
+# and a grant, and there is a test here for each — plus the two exploits end to
+# end, because the layers only matter as a chain.
+
+
+def test_credit_ratio_is_clamped_to_one_period(keys):
+    """The amplified exploit. Same-plan purchases STACK (grant_plan adds
+    duration_days onto a live expiry), so remaining_days was unbounded: pro
+    bought 3× left 90 days → 90/30 × 89.90 = 269.70 credit against a 189.90
+    plan → clamped by `price − 1.00` to 188.90 → **a 30-day `max` for 1.00
+    SAR**, below the ~1.73 SAR the card network charges us to collect it."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=90))
+    result = checkout(db, "max")
+    assert result["credit_sar"] == "89.90"       # one period of pro, never three
+    assert result["amount_sar"] == "100.00"
+    assert result["amount_halalas"] == 10000
+
+
+@pytest.mark.parametrize("days_left", [30, 45, 90, 365])
+def test_credit_never_exceeds_one_period_at_any_stack_depth(keys, days_left):
+    db = FakeSupabase(sub("pro", source="payment", days_left=days_left))
+    assert checkout(db, "max")["credit_sar"] == "89.90"
+
+
+def test_new_checkout_supersedes_the_open_one(keys):
+    """Layer 2: one payable quote per user. Two open discounted rows priced
+    against the SAME untouched subscription is the whole stockpile."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    first = checkout(db, "max")["payment_id"]
+    second = checkout(db, "max")["payment_id"]
+
+    rows = {r["payment_id"]: r for r in db.tables["payment_transactions"]}
+    assert rows[first]["status"] == ps.STATUS_EXPIRED
+    assert rows[second]["status"] == "initiated"
+
+
+def test_a_refused_checkout_expires_nothing(keys):
+    """The supersede sits at the insert, not at the top of the function: a
+    downgrade 409 must not kill a quote the user is in the middle of paying."""
+    db = FakeSupabase(sub("max", source="payment", days_left=10))
+    open_id = checkout(db, "max")["payment_id"]          # same-plan re-purchase
+
+    with pytest.raises(LunaHTTPException):
+        checkout(db, "pro")                              # blocked downgrade
+
+    rows = {r["payment_id"]: r for r in db.tables["payment_transactions"]}
+    assert rows[open_id]["status"] == "initiated"
+
+
+def test_stockpiled_credited_checkouts_grant_exactly_once(keys, monkeypatch):
+    """EXPLOIT 1, end to end. Open N checkouts BEFORE paying any — each reads
+    the same untouched `pro` subscription and applies the full credit — then pay
+    them all. 47% off every unit after the first.
+
+    The rows are re-opened by hand after checkout: that is the state prod was
+    already in before 119 (both payers held 7 concurrent open rows), and it is
+    what a racing insert would produce if the unique index were ever dropped.
+    The fulfilment re-derivation has to hold on its own, without the supersede
+    in front of it."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    ids = [checkout(db, "max")["payment_id"] for _ in range(3)]
+    for row in db.tables["payment_transactions"]:
+        row["status"] = "initiated"
+
+    results = []
+    for pid in ids:
+        # A distinct provider id per payment, as Moyasar would issue.
+        patch_fetch(
+            monkeypatch,
+            {**moyasar_payment(pid, amount=11199), "id": str(uuid.uuid4())},
+        )
+        results.append(run(ps.verify_payment(db, USER, MOYASAR_ID)))
+
+    assert [r["granted"] for r in results] == [True, False, False]
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]  # once, total
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "max"
+
+    held = [r for r in db.tables["payment_transactions"] if not r.get("fulfilled_at")]
+    assert len(held) == 2
+    for row in held:
+        # Money IS in and stays recorded — the plan is what is withheld.
+        assert row["status"] == "paid" and row["paid_at"]
+        assert ps.transaction_summary(row)["refundable"] is True
+    assert all(r["review_reason"] == "credit_no_longer_owed" for r in results[1:])
+
+
+def test_credit_revalidation_refuses_when_the_term_is_gone(keys, monkeypatch):
+    """Layer 3 in isolation: the subscription that justified the discount has
+    been refunded away by the time the money lands."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    db.tables["user_subscriptions"] = []
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is False
+    assert result["review_reason"] == "credit_no_longer_owed"
+    assert db.calls == []                       # neither snapshot nor grant ran
+
+    row = db.tables["payment_transactions"][0]
+    assert row["status"] == "paid" and not row.get("fulfilled_at")
+
+
+def test_a_stale_quote_cannot_be_banked(keys, monkeypatch):
+    """Prod held a payable 100.00 SAR `max` quote for three days. Past the TTL
+    the discount is not honoured on its own word."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=25))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is False and result["review_reason"] == "quote_expired"
+    assert db.calls == []
+
+
+def test_an_honest_upgrade_still_grants(keys, monkeypatch):
+    """REGRESSION WALL. On the honest path the only thing that moved between
+    checkout and payment is the clock, and time decay must never read as a
+    state change — the re-derivation is anchored at the quote's own timestamp."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=3))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is True
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]
+
+
+def test_a_credited_upgrade_is_idempotent_across_both_paths(keys, monkeypatch):
+    """The webhook lands after /verify already granted, so the subscription now
+    reads as the plan this very payment bought. Re-deriving there would compare
+    the credit against its own result — `fulfilled_at` is the anchor that stops
+    it, exactly as it stops grant_plan."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+
+    first = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    second = run(ps.handle_webhook_event(db, _event(pid)))
+    assert first["granted"] is True and second["granted"] is True
+    assert db.tables["payment_transactions"][0]["fulfilled_at"]
+
+
+def test_a_price_cut_between_quote_and_payment_still_grants(keys, monkeypatch):
+    """The re-derivation is `paid >= owed`, not `paid == owed`: overpaying is a
+    refund question, never a reason to withhold a plan."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    for plan in db.tables["plans"]:
+        if plan["plan_id"] == "max":
+            plan["price_sar"] = "149.90"
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+
+    assert run(ps.verify_payment(db, USER, MOYASAR_ID))["granted"] is True
+
+
+def test_a_held_payment_stays_refundable_by_the_customer(keys, monkeypatch, provider_refunds):
+    """The reason holding is acceptable at all: the customer is one click from
+    their money back, and revoke_plan_grant answers `not_fulfilled` cleanly on a
+    grant that never ran."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=26))
+    pid = checkout(db, "max")["payment_id"]
+    db.tables["user_subscriptions"] = []
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+
+    result = run(ps.refund_payment(db, USER, pid))
+    assert result["status"] == "refunded"
+    assert result["revoke_action"] == "not_fulfilled"
+    assert result["revoked"] is True
+    assert provider_refunds == [(MOYASAR_ID, 11199 - 340)]   # legacy-fee fallback
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# M-1 — the refund ladder unwinds newest-first
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _ladder(db):
+    """basic → pro → max: 189.90 paid across three rungs, each upgrade priced
+    against the one below it. Audit logs from prod confirm the shape
+    (`checkout_initiated plan=max from_plan=pro credit=89.90 amount=100.00`)."""
+    basic = paid_row(
+        db, plan_id="basic", amount="49.90", upgrade_credit_sar="0.00",
+        created_at=_iso(_now() - timedelta(hours=3)),
+        paid_at=_iso(_now() - timedelta(hours=3)),
+        fulfilled_at=_iso(_now() - timedelta(hours=3)),
+    )
+    pro = paid_row(
+        db, plan_id="pro", amount="40.00", upgrade_credit_sar="49.90",
+        prior_plan_id="basic", prior_expires_at=_iso(_now() + timedelta(days=4)),
+        created_at=_iso(_now() - timedelta(hours=2)),
+        paid_at=_iso(_now() - timedelta(hours=2)),
+        fulfilled_at=_iso(_now() - timedelta(hours=2)),
+    )
+    top = paid_row(
+        db, plan_id="max", amount="100.00", upgrade_credit_sar="89.90",
+        prior_plan_id="pro", prior_expires_at=_iso(_now() + timedelta(days=29)),
+        created_at=_iso(_now() - timedelta(hours=1)),
+        paid_at=_iso(_now() - timedelta(hours=1)),
+        fulfilled_at=_iso(_now() - timedelta(hours=1)),
+    )
+    return basic, pro, top
+
+
+def test_refund_of_a_superseded_payment_is_blocked(keys, provider_refunds):
+    """EXPLOIT 2. Refunding the basic and the pro used to return 85.90 with both
+    hitting `plan_switched` — the subscription untouched, a 189.90 `max` term
+    standing for a net 104.00, full entitlement retained."""
+    db = FakeSupabase(sub("max", source="payment", days_left=30))
+    basic, pro, _top = _ladder(db)
+
+    for rung in (basic, pro):
+        with pytest.raises(LunaHTTPException) as exc:
+            run(ps.refund_payment(db, USER, rung["payment_id"]))
+        assert exc.value.status_code == 409
+        assert exc.value.code is ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED
+        assert exc.value.detail == ps.REFUND_SUPERSEDED_AR
+
+    assert provider_refunds == []               # nothing left the building
+    assert db.calls == []                       # and nothing was revoked
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "max"
+
+
+def test_refund_ladder_unwinds_newest_first(keys, provider_refunds):
+    """Blocking is not a dead end: refunding the top RESTORES the plan beneath
+    it, which un-blocks the next rung down. The whole ladder is still
+    self-serve — just in the only order that stays consistent."""
+    db = FakeSupabase(sub("max", source="payment", days_left=30))
+    basic, pro, top = _ladder(db)
+
+    assert run(ps.refund_payment(db, USER, top["payment_id"]))["revoke_action"] == "restored"
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "pro"
+
+    assert run(ps.refund_payment(db, USER, pro["payment_id"]))["revoke_action"] == "restored"
+    assert db.tables["user_subscriptions"][0]["plan_id"] == "basic"
+
+    assert run(ps.refund_payment(db, USER, basic["payment_id"]))["revoke_action"] == "subtracted"
+    assert len(provider_refunds) == 3
+
+
+def test_history_hides_the_button_it_would_refuse(keys):
+    """/history and /refund must agree — a button that always 409s is worse
+    than no button, and both read the same predicate."""
+    db = FakeSupabase(sub("max", source="payment", days_left=30))
+    basic, pro, top = _ladder(db)
+    by_id = {r["payment_id"]: r for r in run(ps.list_history(db, USER))}
+
+    for rung in (basic, pro):
+        item = by_id[rung["payment_id"]]
+        assert item["superseded"] is True
+        assert item["refundable"] is False
+        assert item["refund_quote_fee_sar"] is None
+
+    assert by_id[top["payment_id"]]["superseded"] is False
+    assert by_id[top["payment_id"]]["refundable"] is True
+
+
+def test_an_ordinary_purchase_is_never_marked_superseded(keys):
+    """A later FULL-PRICE purchase consumed no credit, so it supersedes
+    nothing — refunding the earlier one subtracts its own days, correctly."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=30))
+    first = paid_row(db, created_at=_iso(_now() - timedelta(hours=3)))
+    paid_row(db, created_at=_iso(_now() - timedelta(hours=1)))
+
+    by_id = {r["payment_id"]: r for r in run(ps.list_history(db, USER))}
+    assert by_id[first["payment_id"]]["superseded"] is False
+    assert by_id[first["payment_id"]]["refundable"] is True
+
+
+def test_a_revoked_upgrade_stops_blocking_the_rung_below(keys, provider_refunds):
+    """`revoked_at` is why _TXN_COLUMNS has to carry it: an upgrade whose refund
+    already unwound must not keep blocking the payment underneath it."""
+    db = FakeSupabase(sub("max", source="payment", days_left=30))
+    basic, pro, top = _ladder(db)
+    top["status"], top["revoked_at"] = "refunded", _iso(_now())
+    db.tables["user_subscriptions"][0]["plan_id"] = "pro"
+
+    by_id = {r["payment_id"]: r for r in run(ps.list_history(db, USER))}
+    assert by_id[pro["payment_id"]]["superseded"] is False      # top no longer blocks it
+    assert by_id[basic["payment_id"]]["superseded"] is True     # pro still does
+    assert run(ps.refund_payment(db, USER, pro["payment_id"]))["revoke_action"] == "restored"
+
+
+def test_plan_switched_is_no_longer_a_silent_success(keys, monkeypatch):
+    """It never was a success: the money goes back and the entitlement STANDS.
+    Self-serve refunds can no longer reach it, but a dashboard-side refund can,
+    so it must read as not-revoked and log loudly instead of at INFO."""
+    assert "plan_switched" not in ps.REVOKE_ACTIONS_OK
+    assert "plan_switched" in ps.REVOKE_ACTIONS_ATTENTION
+
+    db = FakeSupabase(sub("max", source="payment", days_left=30))
+    row = paid_row(db, plan_id="pro")          # the user has since moved to max
+    patch_fetch(monkeypatch, moyasar_payment(row["payment_id"], status="refunded"))
+
+    result = run(ps.handle_webhook_event(db, _event(row["payment_id"], event="payment_refunded")))
+    assert result["revoke_action"] == "plan_switched"
+    assert result["revoked"] is False

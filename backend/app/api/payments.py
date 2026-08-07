@@ -70,6 +70,13 @@ async def checkout(
     carries ``metadata: {payment_id}`` so both confirmation paths can find our
     row again.
 
+    **This supersedes the caller's previous open quote** (migration 119): a user
+    may hold at most one payable ``initiated`` row, because two discounted rows
+    priced against the same untouched subscription would each apply the full
+    upgrade credit. The old row moves to ``expired``; if money somehow still
+    lands on it, it is honoured — expiry is bookkeeping about the QUOTE, never
+    about the money.
+
     Returns::
 
         {
@@ -127,6 +134,12 @@ async def verify(
     ``granted: false`` on a ``paid`` response means the money landed but the
     grant did not — the webhook (or another /verify) will finish it; the page
     should say "payment received, activating" rather than showing an error.
+
+    One ``granted: false`` case does NOT self-heal and carries a
+    ``review_reason``: the row's upgrade credit was re-derived from live
+    subscription state at fulfilment and is no longer owed (migration 119). The
+    payment is held for an operator — still ``paid``, still refundable by the
+    customer for 24h — and retrying reaches the same verdict.
 
     Errors: 404 PAYMENT_NOT_FOUND (unknown id, another user's payment, or an id
     from the other key mode), 400 PAYMENT_PROVIDER_ERROR (amount/currency
@@ -227,7 +240,7 @@ async def history(
 
         {
           "payment_id", "plan_id", "plan_name_ar",
-          "status": "initiated"|"paid"|"failed"|"refunded",
+          "status": "initiated"|"expired"|"paid"|"failed"|"refunded",
           "currency": "SAR",
           "amount_sar": "89.90", "amount_halalas": 8990,
           "vat_amount_sar": "11.73", "net_amount_sar": "78.17",
@@ -235,13 +248,17 @@ async def history(
           "refund_fee_sar": null, "refunded_amount_sar": null,
           "provider": "moyasar",
           "created_at", "paid_at", "fulfilled_at", "updated_at",
-          "refundable": true,               # status=paid AND within 24h of paid_at
+          "refundable": true,               # status=paid AND within 24h AND not superseded
+          "superseded": false,              # a later upgrade already spent this one's value
           "refund_deadline": "2026-08-04T…" # paid_at + 24h, null before payment
         }
 
     ``refundable`` is computed server-side on purpose: the 24h promise is
     measured by the server's clock, and the receipts list must not decide it
-    from the browser's.
+    from the browser's. ``superseded`` is the second reason it can be false —
+    refunds unwind newest-first (see ``/{payment_id}/refund``), and this list is
+    the only place that can see all of the caller's payments at once, so it is
+    resolved here rather than per row.
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     payments = await payment_service.list_history(supabase, user_id)
@@ -291,13 +308,26 @@ async def refund(
     via ``revoke_plan_grant`` — a refund is an UNDO, so a refunded upgrade
     restores the prior plan rather than destroying it.
 
+    **Refunds unwind newest-first.** A payment whose value a LATER purchase
+    already spent as an upgrade credit is refused (409): returning it would hand
+    back the money while ``revoke_plan_grant`` — correctly — declines to eat
+    days of the plan the user currently holds. Refunding the newest purchase
+    first RESTORES the plan underneath it and un-blocks the one below
+    automatically, so the whole ladder is still self-serve, just in order.
+
     Returns the updated receipt (same shape as ``/history`` items) plus::
 
         "revoked": true,
-        "revoke_action": "restored"|"subtracted"|"plan_switched"|…
+        "revoke_action": "restored"|"subtracted"|"already_revoked"|…
+
+    ``revoked: false`` with ``revoke_action: "plan_switched"`` means the money
+    went back and the entitlement STANDS — it is logged at ERROR and needs a
+    human. Self-serve refunds cannot produce it any more (the guard above
+    refuses first); a dashboard-side refund still can.
 
     Errors: 404 PAYMENT_NOT_FOUND (not the caller's / unknown),
-    409 PAYMENT_REFUND_WINDOW_CLOSED (past 24h, already refunded, or not paid),
+    409 PAYMENT_REFUND_WINDOW_CLOSED (past 24h, already refunded, not paid, or
+    superseded by a later upgrade),
     502 PAYMENT_PROVIDER_ERROR (Moyasar refused the refund).
     """
     validate_uuid(payment_id, "معرف عملية الدفع")

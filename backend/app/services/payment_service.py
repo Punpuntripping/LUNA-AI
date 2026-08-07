@@ -43,6 +43,21 @@ buyer: ``user_id`` is nullable with ON DELETE SET NULL, and
 ``customer_name_snapshot`` / ``customer_email_snapshot`` carry the identity so a
 payment survives account deletion as a retained financial record rather than
 being cascaded away — a sequential ``receipt_no`` (114) may not have holes in it.
+
+Migration ``119_payment_credit_integrity.sql`` closes the two money holes the
+2026-08-07 security audit found, both of which were the SAME mistake — reading
+live subscription state and never re-reading it:
+
+* **H-4** the upgrade credit was priced once and never consumed, reserved or
+  expired, so N checkouts opened against ONE untouched subscription each applied
+  the full credit. 119 adds the ``expired`` status and a partial unique index on
+  one open credited checkout per user; this module clamps the proration ratio,
+  supersedes the caller's earlier open rows, and RE-DERIVES the charge from live
+  state before granting (``_revalidate_credited_charge``).
+* **M-1** refunding a payment whose value a later upgrade had already spent
+  returned the money and kept the plan (``revoke_plan_grant`` answers
+  ``plan_switched`` and no-ops). Refunds now unwind NEWEST-FIRST
+  (``_is_superseded``), and ``plan_switched`` is no longer a silent success.
 """
 from __future__ import annotations
 
@@ -143,6 +158,36 @@ MIN_HALALAS = 100                   # Moyasar's minimum chargeable amount
 MIN_CHARGE_SAR = Decimal("1.00")
 HISTORY_LIMIT = 50
 
+# ── Upgrade-credit integrity (security review 2026-08-07, H-4) ───────────────
+#
+# The proration credit used to be priced once at checkout and never looked at
+# again: nothing consumed it, reserved it, or expired it. Three layers now sit
+# between a quoted credit and a granted plan, and each closes a different half
+# of the hole:
+#
+#   1. the ratio is CLAMPED to one plan period (``_upgrade_credit``), so a
+#      stacked term can never be worth more credit than one period of it. Buying
+#      pro 3× used to mean 90 remaining days → 269.70 credit → a 1.00 SAR `max`,
+#      which is less than the ~1.73 SAR Moyasar fee on the charge;
+#   2. at most ONE open checkout per user: every new checkout supersedes the
+#      caller's earlier ``initiated`` rows to ``STATUS_EXPIRED``, with 119's
+#      partial unique index as the backstop. Without it a user opens N checkouts
+#      against the SAME untouched subscription, each applying the full credit,
+#      then pays them all;
+#   3. the charge is RE-DERIVED from live state at fulfilment
+#      (``_revalidate_credited_charge``) — a discount is honoured only while the
+#      subscription that justified it is still standing.
+#
+# CREDIT_QUOTE_TTL is deliberately generous: it exists to stop a discounted
+# quote being banked for days (prod held a payable 100.00 SAR `max` quote for
+# three), not to punish a slow 3DS challenge, which completes in minutes.
+# CREDIT_EPSILON_SAR absorbs rounding and clock skew between the two
+# derivations; it can never absorb a real discount, the smallest of which is
+# 1.00 SAR.
+STATUS_EXPIRED = "expired"           # superseded / stale checkout (migration 119)
+CREDIT_QUOTE_TTL = timedelta(hours=24)
+CREDIT_EPSILON_SAR = Decimal("0.02")
+
 # Purchasable-plan ordering. Only these three participate in the downgrade
 # guard and in proration; free / marketing_* / dev are rank-less, so a user on a
 # promo or dev plan can buy anything (and earns no credit — see create_checkout).
@@ -169,6 +214,10 @@ REFUND_WINDOW_CLOSED_AR = "انتهت مهلة الاسترداد (٢٤ ساعة
 REFUND_NOT_PAID_AR = "لا يمكن استرداد عملية غير مكتملة"
 REFUND_ALREADY_AR = "تم استرداد هذه العملية من قبل"
 REFUND_FAILED_AR = "تعذّر تنفيذ الاسترداد، تواصل معنا على support@rayhanai.com"
+REFUND_SUPERSEDED_AR = (
+    "لا يمكن استرداد هذه العملية لأن قيمتها استُخدمت كخصم في ترقية أحدث. "
+    "استرد العملية الأحدث أولاً، أو تواصل معنا على support@rayhanai.com"
+)
 APPLEPAY_URL_INVALID_AR = "رابط التحقق غير صالح"
 
 
@@ -522,6 +571,10 @@ _TXN_COLUMNS = (
     # charged 3.40 where the payload said 3.38). It never reaches the client:
     # transaction_summary whitelists its output fields.
     "raw_payload, "
+    # revoked_at is REQUIRED too: _is_superseded has to tell an upgrade that is
+    # still standing from one whose refund already unwound it, and a row that
+    # reads as standing when it isn't would block a refund the user is owed.
+    "revoked_at, "
     "refunded_amount_sar"
 )
 
@@ -590,6 +643,47 @@ def _insert_transaction(supabase: SupabaseClient, payload: dict) -> dict:
     if not rows:
         raise RuntimeError("payment_transactions insert returned no row")
     return rows[0]
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """Did this write lose a race on 119's one-open-credited-checkout index?
+
+    postgrest-py raises a generic APIError, so the SQLSTATE is only available as
+    text. Matched on both the code and the message because PostgREST's error
+    shape has changed between versions and a missed match would turn a
+    retryable race into a 503 the user cannot get past.
+    """
+    text = str(exc).lower()
+    return "23505" in text or "duplicate key" in text or "already exists" in text
+
+
+def _expire_open_checkouts(supabase: SupabaseClient, user_id: str) -> int:
+    """Supersede every open ``initiated`` row of this user (H-4, layer 2).
+
+    Called immediately before a new checkout inserts. One open quote per user is
+    the whole point: a discounted row that stays payable while a newer one is
+    created is exactly the stockpile primitive — each was priced against the
+    same untouched subscription and each would apply the full credit.
+
+    Superseding is SAFE for a payment already in flight: ``_mark_paid_and_grant``
+    gates only on ``refunded``, so if money does land on an expired row it is
+    still marked paid and still fulfils (subject to the re-derivation below).
+    The status is bookkeeping about the QUOTE, never about the money.
+
+    It also costs no receipt number, which matters: 114's trigger is
+    ``BEFORE UPDATE OF status`` and this writes ``status``. Its body was read
+    live before this was written — it assigns only when ``NEW.status = 'paid'``,
+    so the sequential series 117 must keep hole-free is untouched. Anything that
+    widens that trigger has to revisit this call.
+    """
+    res = (
+        supabase.table("payment_transactions")
+        .update({"status": STATUS_EXPIRED, "updated_at": _now_iso()})
+        .eq("user_id", user_id)
+        .eq("status", "initiated")
+        .execute()
+    )
+    return len(getattr(res, "data", None) or [])
 
 
 def _get_transaction(supabase: SupabaseClient, payment_id: str) -> Optional[dict]:
@@ -705,19 +799,26 @@ def _stamp_prior_snapshot(supabase: SupabaseClient, payment_id: str) -> Optional
         return None
 
 
-# Every `action` revoke_plan_grant can return on a SUCCESSFUL call. Anything
-# else (payment_not_found, or an exception) means the term was not dealt with.
+# Every `action` revoke_plan_grant can return where the term WAS dealt with.
+# Anything else (payment_not_found, or an exception) means it was not.
 REVOKE_ACTIONS_OK = frozenset(
     {
         "already_revoked",   # webhook retry after the self-serve refund
         "not_fulfilled",     # paid but never granted — nothing to take back
         "no_subscription",
-        "plan_switched",     # user moved on; subtracting would eat the NEW plan's days
         "restored",          # prorated upgrade rolled back to the prior plan
         "subtracted",
         "no_expiry",
     }
 )
+
+# `plan_switched` used to sit in the set above and log at INFO. It is not an
+# error — the RPC is right to leave a plan the user still pays for alone — but
+# it is not a success either: money went back and the entitlement STANDS. That
+# silence is half of M-1. Self-serve refunds can no longer reach it (the LIFO
+# guard in refund_payment refuses first), so anything landing here now is a
+# dashboard-side or provider-side refund that needs a human.
+REVOKE_ACTIONS_ATTENTION = frozenset({"plan_switched"})
 
 
 def _revoke_plan_grant(supabase: SupabaseClient, payment_id: str) -> str:
@@ -744,7 +845,16 @@ def _revoke_plan_grant(supabase: SupabaseClient, payment_id: str) -> str:
         )
         return "error"
 
-    if action not in REVOKE_ACTIONS_OK:
+    if action in REVOKE_ACTIONS_ATTENTION:
+        logger.error(
+            "revoke_plan_grant: payment=%s action=%s — MONEY RETURNED AND THE "
+            "ENTITLEMENT STANDS. The refunded payment's plan was superseded by a "
+            "later purchase, so the RPC correctly left the current plan alone; the "
+            "credit that purchase consumed is NOT clawed back automatically. "
+            "Reconcile by hand (M-1).",
+            payment_id, action,
+        )
+    elif action not in REVOKE_ACTIONS_OK:
         logger.error(
             "revoke_plan_grant returned action=%s for payment=%s — term not revoked",
             action, payment_id,
@@ -766,22 +876,97 @@ def _list_transactions(supabase: SupabaseClient, user_id: str) -> list[dict]:
     return getattr(res, "data", None) or []
 
 
+def _is_superseded(row: dict, siblings: list[dict]) -> bool:
+    """Has a LATER purchase already spent this payment's value as a credit? (M-1)
+
+    ``revoke_plan_grant`` deliberately no-ops (``plan_switched``) when the
+    subscription no longer holds the refunded payment's plan — subtracting days
+    there would eat a plan the user still pays for. Correct in isolation, and
+    the whole exploit: buy basic → upgrade pro (credit 49.90) → upgrade max
+    (credit 89.90) = 189.90 paid, then refund the basic and the pro. Both
+    no-op, 85.90 comes back, and a 189.90 `max` term stands for 104.00.
+
+    The credit only ever came from a term an EARLIER payment funded, so the
+    ladder is a stack and it has to unwind from the top. This predicate names
+    the rung that is not on top yet: some later payment of the caller's is
+    still standing (paid, granted, not revoked) and carries a credit.
+
+    Pure and sibling-driven so /history and /refund cannot disagree about which
+    button they show and which one they honour.
+    """
+    anchor = _parse_ts(row.get("created_at"))
+    if anchor is None:
+        return False
+    for other in siblings:
+        if other.get("payment_id") == row.get("payment_id"):
+            continue
+        if other.get("status") != "paid":
+            continue                                   # refunded/failed: spent nothing
+        if _dec(other.get("upgrade_credit_sar")) <= 0:
+            continue                                   # full price — consumed no credit
+        if not other.get("fulfilled_at") or other.get("revoked_at"):
+            continue                                   # never granted, or already unwound
+        created = _parse_ts(other.get("created_at"))
+        if created is not None and created > anchor:
+            return True
+    return False
+
+
+def _find_superseding_payment(
+    supabase: SupabaseClient, user_id: str, row: dict
+) -> Optional[dict]:
+    """The caller's later credited payment that consumed ``row``, if any (M-1).
+
+    Filtered in Python off the same 50-row window /history reads rather than as
+    a PostgREST numeric predicate — one query, one predicate, no chance of the
+    refund guard and the ``refundable`` flag drifting apart.
+    """
+    siblings = _list_transactions(supabase, user_id)
+    if not _is_superseded(row, siblings):
+        return None
+    anchor = _parse_ts(row.get("created_at"))
+    for other in siblings:                             # newest first
+        if other.get("payment_id") == row.get("payment_id"):
+            continue
+        if (
+            other.get("status") == "paid"
+            and _dec(other.get("upgrade_credit_sar")) > 0
+            and other.get("fulfilled_at")
+            and not other.get("revoked_at")
+        ):
+            created = _parse_ts(other.get("created_at"))
+            if anchor is not None and created is not None and created > anchor:
+                return other
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. Serialization
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def transaction_summary(row: dict, plan_name_ar: Optional[str] = None) -> dict:
+def transaction_summary(
+    row: dict, plan_name_ar: Optional[str] = None, *, superseded: bool = False
+) -> dict:
     """The receipt shape returned by /history and /{id}/refund.
 
     ``refundable`` is computed here so the Settings receipts list has one
     boolean to render a button from, instead of re-deriving the 24h rule in the
     browser (where the clock is the user's).
+
+    ``superseded`` (M-1) is passed in rather than derived, because it is the one
+    input this row cannot see: it depends on the caller's OTHER payments. It
+    only ever turns ``refundable`` off — /history and /refund must agree, and a
+    button that always 409s is worse than no button.
     """
     paid_at = _parse_ts(row.get("paid_at"))
     deadline = paid_at + REFUND_WINDOW if paid_at else None
     refundable = bool(
-        row.get("status") == "paid" and deadline and _now() <= deadline and row.get("provider_ref")
+        row.get("status") == "paid"
+        and deadline
+        and _now() <= deadline
+        and row.get("provider_ref")
+        and not superseded
     )
     return {
         "payment_id": row.get("payment_id"),
@@ -802,6 +987,10 @@ def transaction_summary(row: dict, plan_name_ar: Optional[str] = None) -> dict:
         "fulfilled_at": row.get("fulfilled_at"),
         "updated_at": row.get("updated_at"),
         "refundable": refundable,
+        # Why the button is missing on a row that is otherwise inside its
+        # window: a later upgrade already spent this payment's value, so the
+        # stack has to unwind from the top first (M-1).
+        "superseded": superseded,
         "refund_deadline": deadline.isoformat() if deadline else None,
         # What a refund WOULD cost and return, quoted per-payment so the
         # confirm dialog shows the true numbers instead of a guessed flat fee
@@ -829,6 +1018,67 @@ def transaction_summary(row: dict, plan_name_ar: Optional[str] = None) -> dict:
 
 def _plan_rank(plan_id: Optional[str]) -> Optional[int]:
     return PLAN_RANK.get(plan_id or "")
+
+
+def _upgrade_credit(
+    *,
+    new_plan_id: str,
+    new_price: Decimal,
+    subscription: Optional[dict],
+    plans: dict[str, dict],
+    at: datetime,
+) -> Decimal:
+    """Prorated credit owed for replacing ``subscription`` with ``new_plan_id``.
+
+    ONE implementation, deliberately, because it is called TWICE with different
+    clocks: once by ``create_checkout`` to price the row, and once by
+    ``_revalidate_credited_charge`` to re-derive that same price from live state
+    before the plan is granted. Two copies of this arithmetic would drift, and
+    the drift would be a discount.
+
+    Credit is owed ONLY for a still-running plan the user actually PAID for. A
+    code/marketing/manual grant earns nothing — otherwise a promo code becomes a
+    cash discount. A same-plan re-purchase earns nothing either: ``grant_plan``
+    stacks the days, so the user keeps that value rather than being refunded it.
+
+    ``at`` is the moment the credit is measured from. Passing the quote's
+    ``created_at`` at fulfilment is what keeps ordinary time decay between
+    checkout and payment from reading as a state change.
+    """
+    current_plan_id = (subscription or {}).get("plan_id")
+    expires_at = _parse_ts((subscription or {}).get("expires_at"))
+    if not (
+        subscription
+        and current_plan_id
+        and (subscription or {}).get("source") == "payment"
+        and current_plan_id != new_plan_id
+        and expires_at is not None
+        and expires_at > at
+    ):
+        return Decimal("0.00")
+
+    old_plan = plans.get(current_plan_id) or {}
+    duration_days = old_plan.get("duration_days")
+    old_price = old_plan.get("price_sar")
+    if not duration_days or old_price is None:
+        return Decimal("0.00")
+
+    remaining_days = Decimal(str((expires_at - at).total_seconds())) / Decimal(86400)
+    # CLAMP TO ONE PERIOD (H-4). Same-plan purchases STACK — grant_plan adds
+    # duration_days onto a live expiry — so remaining_days is unbounded: pro
+    # bought 3× left 90 days against a 30-day period, a ratio of 3, a credit of
+    # 269.70 for a plan that costs 89.90, and a 1.00 SAR `max`. A term is only
+    # ever worth what one period of it costs.
+    ratio = min(remaining_days / Decimal(str(duration_days)), Decimal("1"))
+    credit = q2(ratio * _dec(old_price))
+
+    # Never negative, and never so large that the charge falls under Moyasar's
+    # 1.00 SAR minimum. With the ratio clamped and downgrades blocked the
+    # ceiling cannot bind on today's catalog (max credit 89.90 < 189.90) — but
+    # it BOUND before the clamp existed (that is the 1.00 SAR `max` above), so
+    # it stays as the second wall rather than as a comment claiming it is idle.
+    ceiling = new_price - MIN_CHARGE_SAR
+    return max(Decimal("0.00"), min(credit, ceiling if ceiling > 0 else Decimal("0.00")))
 
 
 async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) -> dict:
@@ -869,30 +1119,14 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         )
 
     # ── upgrade proration ──────────────────────────────────────────────────
-    # Credit ONLY for a still-running plan the user actually PAID for. A
-    # code/marketing/manual grant earns nothing — otherwise a promo code becomes
-    # a cash discount. Same-plan re-purchase earns nothing either: grant_plan
-    # stacks the days, so the user keeps the value rather than being refunded it.
-    credit = Decimal("0.00")
-    if (
-        active
-        and (subscription or {}).get("source") == "payment"
-        and current_plan_id
-        and current_plan_id != plan_id
-        and expires_at is not None
-    ):
-        old_plan = plans.get(current_plan_id) or {}
-        duration_days = old_plan.get("duration_days")
-        old_price = old_plan.get("price_sar")
-        if duration_days and old_price is not None:
-            remaining_days = Decimal(str((expires_at - _now()).total_seconds())) / Decimal(86400)
-            credit = q2(remaining_days / Decimal(str(duration_days)) * _dec(old_price))
-            # Clamp: never negative, and never so large that the charge falls
-            # under Moyasar's 1.00 SAR minimum. With downgrades blocked the
-            # ceiling can't bind today (max credit 89.90 < 189.90), but a future
-            # price change must not be able to mint a 0 SAR checkout.
-            ceiling = price - MIN_CHARGE_SAR
-            credit = max(Decimal("0.00"), min(credit, ceiling if ceiling > 0 else Decimal("0.00")))
+    # The whole rule lives in _upgrade_credit, because fulfilment re-runs it.
+    credit = _upgrade_credit(
+        new_plan_id=plan_id,
+        new_price=price,
+        subscription=subscription,
+        plans=plans,
+        at=_now(),
+    )
 
     charge = q2(price - credit)
     net, vat = vat_split(charge)
@@ -912,35 +1146,56 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     # the START because the users row they come from can legitimately disappear.
     # user_id is ON DELETE SET NULL, so a purged account leaves this row standing
     # with its money intact — these two columns are then all that identifies it.
-    try:
-        row = await run_db(
-            _insert_transaction,
-            supabase,
-            {
-                "user_id": user_id,
-                "plan_id": plan_id,
-                "amount_sar": _money(charge),
-                "currency": CURRENCY,
-                "status": "initiated",
-                "provider": PROVIDER,
-                "vat_amount_sar": _money(vat),
-                "net_amount_sar": _money(net),
-                "upgrade_credit_sar": _money(credit),
-                "customer_name_snapshot": customer.get("full_name_ar"),
-                "customer_email_snapshot": customer.get("email"),
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Includes "column does not exist" if this backend is ever deployed
-        # ahead of migration 113 or 117. A dependency failure is a 503, not a user
-        # error — and the page must not mount a form for a row that isn't there.
-        logger.exception("checkout insert failed for user=%s plan=%s: %s", user_id, plan_id, exc)
-        raise LunaHTTPException(
-            status_code=503,
-            code=ErrorCode.SERVICE_UNAVAILABLE,
-            detail=MSG_SERVICE_UNAVAILABLE,
-            headers={"Retry-After": "5"},
-        )
+    payload = {
+        "user_id": user_id,
+        "plan_id": plan_id,
+        "amount_sar": _money(charge),
+        "currency": CURRENCY,
+        "status": "initiated",
+        "provider": PROVIDER,
+        "vat_amount_sar": _money(vat),
+        "net_amount_sar": _money(net),
+        "upgrade_credit_sar": _money(credit),
+        "customer_name_snapshot": customer.get("full_name_ar"),
+        "customer_email_snapshot": customer.get("email"),
+    }
+
+    # SUPERSEDE THEN INSERT (H-4, layer 2), and in that order: the caller may
+    # hold only one open quote, so the previous one stops being payable at the
+    # instant a new price is quoted. Everything above this line can still refuse
+    # the checkout (unknown plan, downgrade) and must not expire anything on its
+    # way out — hence this sits here and not at the top of the function.
+    #
+    # The retry is for the concurrent case ONLY: two simultaneous checkouts both
+    # find nothing to supersede, both insert, and 119's partial unique index
+    # rejects the loser. Re-running supersede+insert makes that loser the newest
+    # quote instead of a 503 the user cannot get past. One retry, never a loop.
+    row = None
+    for attempt in (0, 1):
+        await run_db(_expire_open_checkouts, supabase, user_id)
+        try:
+            row = await run_db(_insert_transaction, supabase, payload)
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0 and _is_unique_violation(exc):
+                logger.warning(
+                    "checkout for user=%s plan=%s lost the open-quote race — retrying",
+                    user_id, plan_id,
+                )
+                continue
+            # Includes "column does not exist" if this backend is ever deployed
+            # ahead of migration 113, 117 or 119. A dependency failure is a 503,
+            # not a user error — and the page must not mount a form for a row
+            # that isn't there.
+            logger.exception(
+                "checkout insert failed for user=%s plan=%s: %s", user_id, plan_id, exc
+            )
+            raise LunaHTTPException(
+                status_code=503,
+                code=ErrorCode.SERVICE_UNAVAILABLE,
+                detail=MSG_SERVICE_UNAVAILABLE,
+                headers={"Retry-After": "5"},
+            )
     payment_id = row["payment_id"]
 
     await run_db(
@@ -1004,6 +1259,165 @@ def _assert_matches(row: dict, fetched: dict) -> None:
         raise MoyasarError(f"currency mismatch: provider={actual_currency!r}")
 
 
+def _revalidate_credited_charge(supabase: SupabaseClient, row: dict) -> dict:
+    """Is the discount stamped on this row still owed, RIGHT NOW? (H-4, layer 3)
+
+    ``_assert_matches`` proves the provider charged what OUR ROW says. It cannot
+    prove the row is right: the row was priced minutes — or, before 119, days —
+    ago against a subscription that may since have been replaced, refunded, or
+    already credited once. Re-pricing here is the only thing that makes a credit
+    *consumed* rather than merely *quoted*.
+
+    The test is ONE inequality, deliberately:
+
+        amount actually paid  >=  catalog price NOW − credit owed NOW
+
+    ``>=`` and not ``==`` because overpaying is the customer's problem to be
+    refunded, never a reason to withhold a plan — a catalog price CUT between
+    checkout and payment must not hold up a grant. Only underpaying, which is
+    what every variant of the stockpile produces, fails.
+
+    Runs sync inside one ``run_db`` because it is two reads that belong to the
+    same decision. Returns the numbers as well as the verdict so the audit row
+    an operator reads later says what was expected and what arrived.
+    """
+    credit = _dec(row.get("upgrade_credit_sar"))
+    verdict = {
+        "ok": True,
+        "reason": "no_credit",
+        "paid_sar": _money(row.get("amount_sar")),
+        "expected_sar": None,
+        "credit_owed_sar": None,
+    }
+    if credit <= 0:
+        return verdict                       # full-price purchase: nothing to re-derive
+
+    if row.get("fulfilled_at"):
+        # ALREADY GRANTED — the same anchor grant_plan itself uses. The second
+        # confirmation path (webhook after /verify, or vice versa) arrives to a
+        # subscription this very payment has already rewritten, so re-deriving
+        # would compare the credit against its own result and hold a purchase
+        # that completed correctly minutes ago.
+        return {**verdict, "reason": "already_fulfilled"}
+
+    created_at = _parse_ts(row.get("created_at"))
+    if created_at is None or _now() - created_at > CREDIT_QUOTE_TTL:
+        # The TTL (H-4, layer 2). A quote this old cannot be honoured on its own
+        # word — prod held a payable 100.00 SAR `max` for three days.
+        return {**verdict, "ok": False, "reason": "quote_expired"}
+
+    user_id, plan_id = row.get("user_id"), row.get("plan_id")
+    if not user_id or not plan_id:
+        # A purged buyer (117) cannot have a live subscription to justify a
+        # discount against, so there is nothing to re-derive from.
+        return {**verdict, "ok": False, "reason": "unbound_row"}
+
+    subscription = _fetch_subscription(supabase, str(user_id))
+    current_plan_id = (subscription or {}).get("plan_id")
+    plans = _fetch_plans(supabase, [str(plan_id), current_plan_id])
+    plan = plans.get(str(plan_id)) or {}
+    if plan.get("price_sar") is None:
+        return {**verdict, "ok": False, "reason": "plan_not_purchasable"}
+
+    price = q2(plan["price_sar"])
+    # Anchored at the quote's own timestamp, NOT at now: between checkout and
+    # payment the remaining term shrinks by the minutes the user spent typing a
+    # card number, and that decay is not a state change. Anything that IS a
+    # state change — plan switched, term refunded, source changed, this very
+    # credit already spent by a sibling checkout — still collapses the credit.
+    owed = _upgrade_credit(
+        new_plan_id=str(plan_id),
+        new_price=price,
+        subscription=subscription,
+        plans=plans,
+        at=created_at,
+    )
+    expected = q2(price - owed)
+    paid = q2(row.get("amount_sar"))
+    verdict = {
+        **verdict,
+        "reason": "ok",
+        "expected_sar": _money(expected),
+        "credit_owed_sar": _money(owed),
+    }
+    if paid + CREDIT_EPSILON_SAR < expected:
+        return {**verdict, "ok": False, "reason": "credit_no_longer_owed"}
+    return verdict
+
+
+async def _hold_for_review(supabase: SupabaseClient, row: dict, verdict: dict) -> dict:
+    """Money is in and the discount is not owed: hold the grant for an operator.
+
+    WHY HOLD RATHER THAN GRANT SOMETHING (the decision this function is):
+
+    * Granting the purchased plan anyway is the exploit — that is the branch
+      being closed.
+    * Granting instead "the plan this amount does cover at catalog price" was
+      the tempting alternative and is rejected: it rewrites ``plan_id`` on a
+      settled financial record, sends a receipt for a product the customer did
+      not choose, and makes ``prior_plan_id``/restore semantics on a later
+      refund answer for a purchase that never happened. It also cannot be
+      undone by the customer.
+    * Holding costs the customer nothing they cannot immediately undo. The row
+      stays ``status='paid'`` with ``provider_ref`` and ``paid_at`` set, so it
+      is REFUNDABLE from the receipts list for the next 24 hours by one click,
+      and ``revoke_plan_grant`` answers ``not_fulfilled`` cleanly on it.
+
+    ``paid`` + ``fulfilled_at IS NULL`` is not a new state either — it is the
+    one the schema already models for "money taken, plan never applied", the
+    same state a grant crash leaves behind, and 119 indexes it as the operator
+    alert surface.
+
+    Never raises and never asks for a webhook retry: retrying re-runs the same
+    re-derivation against the same state and reaches the same verdict, so it
+    would only burn Moyasar's 5 attempts.
+    """
+    payment_id = row["payment_id"]
+
+    logger.error(
+        "GRANT HELD — upgrade credit no longer owed: payment=%s user=%s plan=%s "
+        "paid=%s expected_now=%s credit_stamped=%s credit_owed_now=%s reason=%s. "
+        "Money IS in; the row stays paid + unfulfilled for reconciliation and the "
+        "customer can self-serve refund it inside 24h.",
+        payment_id, row.get("user_id"), row.get("plan_id"), verdict.get("paid_sar"),
+        verdict.get("expected_sar"), _money(row.get("upgrade_credit_sar") or 0),
+        verdict.get("credit_owed_sar"), verdict.get("reason"),
+    )
+
+    await run_db(
+        write_audit_log,
+        supabase,
+        user_id=row.get("user_id"),
+        action="update",
+        resource_type="payment_transaction",
+        resource_id=payment_id,
+        metadata={
+            "event": "grant_held_credit_stale",
+            "plan_id": row.get("plan_id"),
+            "amount_sar": _money(row.get("amount_sar")),
+            "expected_sar": verdict.get("expected_sar"),
+            "upgrade_credit_sar": _money(row.get("upgrade_credit_sar") or 0),
+            "credit_owed_sar": verdict.get("credit_owed_sar"),
+            "reason": verdict.get("reason"),
+            "provider_ref": row.get("provider_ref"),
+        },
+    )
+
+    # The receipt still goes out: there is a charge on the customer's card, and
+    # a charge with no receipt is worse than one whose plan is pending. It says
+    # only "we received this amount" — receipt_service claims no entitlement.
+    await send_payment_receipt(supabase, row)
+
+    return {
+        "status": "paid",
+        "payment_id": payment_id,
+        "granted": False,
+        "plan_id": row.get("plan_id"),
+        "expires_at": None,
+        "review_reason": verdict.get("reason"),
+    }
+
+
 async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dict) -> dict:
     """Mark the row paid, then grant the plan. The one path both callers share.
 
@@ -1033,6 +1447,14 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         patch["paid_at"] = _now_iso()
 
     updated = await run_db(_update_transaction, supabase, payment_id, patch) or {**row, **patch}
+    state = {**row, **(updated or {})}
+
+    # The money is recorded BEFORE this check and the check never unrecords it:
+    # a discount that stopped being owed is a fulfilment problem, never a reason
+    # to pretend the charge did not happen.
+    verdict = await run_db(_revalidate_credited_charge, supabase, state)
+    if not verdict["ok"]:
+        return await _hold_for_review(supabase, state, verdict)
 
     # ORDER IS LOAD-BEARING: paid → snapshot → grant. grant_plan overwrites the
     # subscription row, so the "what were they on before" snapshot has to be
@@ -1393,6 +1815,30 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
             detail=REFUND_WINDOW_CLOSED_AR,
         )
 
+    # ── refunds unwind NEWEST-FIRST (M-1) ──────────────────────────────────
+    # Refunding a rung a later upgrade has already stood on returns the money
+    # and keeps the plan: revoke_plan_grant answers `plan_switched` and — quite
+    # rightly — refuses to eat days of a plan the user currently pays for.
+    # Blocking is chosen over clawing the credit back out of the standing term:
+    # that claw-back means converting SAR into days on a plan the customer is
+    # still using, from an estimate, destructively, at refund time, with no
+    # undo. Refusing moves no money, loses no entitlement, and leaves the
+    # customer a working path — refund the newest purchase first, which
+    # RESTORES the plan underneath it and un-blocks this one automatically.
+    superseding = await run_db(_find_superseding_payment, supabase, user_id, row)
+    if superseding is not None:
+        logger.warning(
+            "refund refused: payment=%s (user=%s plan=%s) was superseded by "
+            "payment=%s plan=%s credit=%s — refunds must unwind newest-first",
+            payment_id, user_id, row.get("plan_id"), superseding.get("payment_id"),
+            superseding.get("plan_id"), _money(superseding.get("upgrade_credit_sar")),
+        )
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
+            detail=REFUND_SUPERSEDED_AR,
+        )
+
     provider_ref = row.get("provider_ref")
     if not provider_ref:
         logger.error("refund: payment=%s is paid but has no provider_ref", payment_id)
@@ -1488,12 +1934,22 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
 
 
 async def list_history(supabase: SupabaseClient, user_id: str) -> list[dict]:
-    """The caller's own receipts, newest first, capped at 50."""
+    """The caller's own receipts, newest first, capped at 50.
+
+    Supersession (M-1) is resolved here rather than per-row because this is the
+    only place that holds all of the caller's payments at once — and it must be
+    the same predicate ``refund_payment`` enforces, or the list offers a button
+    the refund route then 409s.
+    """
     rows = await run_db(_list_transactions, supabase, user_id)
     plan_ids = sorted({r.get("plan_id") for r in rows if r.get("plan_id")})
     plans = await run_db(_fetch_plans, supabase, list(plan_ids)) if plan_ids else {}
     return [
-        transaction_summary(row, (plans.get(row.get("plan_id")) or {}).get("name_ar"))
+        transaction_summary(
+            row,
+            (plans.get(row.get("plan_id")) or {}).get("name_ar"),
+            superseded=_is_superseded(row, rows),
+        )
         for row in rows
     ]
 
