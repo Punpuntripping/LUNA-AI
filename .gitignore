@@ -86,6 +86,12 @@ backend/tests/*
 # SERVICE-ROLE admin API. Depending on the shared anon client there lets one
 # user's logout globally revoke a DIFFERENT user's sessions, silently.
 !backend/tests/test_account_settings.py
+# preferred-name suite is durable — the value reaches the ROUTER's system
+# instructions, so it pins the API-boundary cleaning (control chars and
+# newlines stripped, 60-char cap) that keeps a display name from opening a
+# fake instruction block. It also pins the compound-first-name rule: taking
+# token[0] blindly addresses «عبد الله» as «عبد».
+!backend/tests/test_preferred_name.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock

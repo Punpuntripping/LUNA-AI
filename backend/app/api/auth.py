@@ -1,7 +1,7 @@
 """
 Auth API routes — /api/v1/auth/
-9 endpoints: login, refresh, logout, me, profession, delete-account,
-restore-account, change-password, logout-all
+10 endpoints: login, refresh, logout, me, profession, preferred-name,
+delete-account, restore-account, change-password, logout-all
 
 (Signup runs client-side via supabase.auth.signUp() — see the note above /refresh.)
 """
@@ -32,10 +32,12 @@ from backend.app.models.requests import (
     DeleteAccountRequest,
     LoginRequest,
     RefreshRequest,
+    UpdatePreferredNameRequest,
     UpdateProfessionRequest,
 )
 from backend.app.models.responses import (
     LoginResponse,
+    PreferredNameResponse,
     ProfessionResponse,
     TokenResponse,
     UserProfile,
@@ -53,6 +55,7 @@ from backend.app.services.audit_service import write_audit_log
 from shared.auth.jwt import AuthUser
 from shared.db.client import create_isolated_anon_client
 from shared.db.run import run_db
+from shared.identity import resolve_call_name
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +283,10 @@ async def login(
     def _fetch_users_row_state():
         return (
             supabase.table("users")
-            .select("deletion_requested_at, profession_group, profession_label")
+            .select(
+                "deletion_requested_at, profession_group, profession_label, "
+                "full_name_ar, preferred_name"
+            )
             .eq("auth_id", user.id)
             .maybe_single()
             .execute()
@@ -293,12 +299,20 @@ async def login(
     deletion_requested_at = None
     profession_group = "unknown"
     profession_label = None
+    # The users row is the better source for the name than user_metadata: only
+    # our own signup form writes full_name_ar into metadata, so for a Google
+    # sign-in the metadata key is absent while the row (migration 122) holds
+    # the real name. Metadata stays as the fallback for a degraded read.
+    full_name_ar = user_metadata.get("full_name_ar")
+    preferred_name = None
     try:
         result = await run_db(_fetch_users_row_state)
         if result is not None and result.data is not None:
             deletion_requested_at = result.data.get("deletion_requested_at")
             profession_group = result.data.get("profession_group")
             profession_label = result.data.get("profession_label")
+            full_name_ar = result.data.get("full_name_ar") or full_name_ar
+            preferred_name = result.data.get("preferred_name")
     except Exception as e:
         logger.warning("Could not read users-row state during login: %s", e)
 
@@ -308,7 +322,9 @@ async def login(
         user=UserProfile(
             user_id=user.id,
             email=user.email or "",
-            full_name_ar=user_metadata.get("full_name_ar"),
+            full_name_ar=full_name_ar,
+            preferred_name=preferred_name,
+            call_name=resolve_call_name(preferred_name, full_name_ar),
             subscription_tier="free",
             created_at=user.created_at if user.created_at else None,
             deletion_pending=bool(deletion_requested_at),
@@ -479,7 +495,7 @@ async def me(
         # not the legacy users.plan_id mirror. subscription_tier is a dead column.
         return (
             supabase.table("users")
-            .select("user_id, auth_id, email, full_name_ar, created_at, "
+            .select("user_id, auth_id, email, full_name_ar, preferred_name, created_at, "
                     "deletion_requested_at, profession_group, profession_label, "
                     "user_subscriptions(plan_id)")
             .eq("auth_id", current_user.auth_id)
@@ -508,6 +524,10 @@ async def me(
         user_id=profile["user_id"],
         email=profile["email"],
         full_name_ar=profile.get("full_name_ar"),
+        preferred_name=profile.get("preferred_name"),
+        call_name=resolve_call_name(
+            profile.get("preferred_name"), profile.get("full_name_ar")
+        ),
         subscription_tier=None,  # legacy column retired — plan_id is the truth
         plan_id=plan_id,
         created_at=profile.get("created_at"),
@@ -570,6 +590,57 @@ async def update_profession(
     return ProfessionResponse(
         profession_group=row["profession_group"],
         profession_label=row.get("profession_label"),
+    )
+
+
+# ============================================
+# PATCH /preferred-name
+# ============================================
+
+@router.patch("/preferred-name", response_model=PreferredNameResponse)
+async def update_preferred_name(
+    body: UpdatePreferredNameRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """
+    Store «بماذا تحب أن نناديك؟» (users.preferred_name — migration 122).
+
+    Sending null (or an empty string) clears the override, and the response
+    carries the derived default so the settings field refills with it in the
+    same round trip. The name is normalised by the request model, not here —
+    it reaches the router's instructions, so the cap and the control-character
+    strip are part of validation.
+    """
+    preferred_name = body.preferred_name  # already cleaned → str | None
+
+    def _update_preferred_name():
+        return (
+            supabase.table("users")
+            .update({"preferred_name": preferred_name})
+            .eq("auth_id", current_user.auth_id)
+            .execute()
+        )
+
+    try:
+        result = await run_db(_update_preferred_name)
+    except Exception as e:
+        logger.exception("Error updating preferred name: %s", e)
+        raise LunaHTTPException(
+            status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي"
+        )
+
+    if not result.data:
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود"
+        )
+
+    row = result.data[0]
+    return PreferredNameResponse(
+        preferred_name=row.get("preferred_name"),
+        call_name=resolve_call_name(
+            row.get("preferred_name"), row.get("full_name_ar")
+        ),
     )
 
 

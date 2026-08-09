@@ -1,6 +1,10 @@
 """Router context loader — assembles eager input context for ``run_router``.
 
-The router needs four pieces of context every turn:
+The router needs five pieces of context every turn:
+
+0. The user's call name — what to address them by (migration 122), so a
+   direct reply can be personal rather than anonymous.
+
 
 1. Case metadata + case memories (when ``case_id`` is set)
 2. Workspace item summaries — compact ``(item_id, kind, title, summary)``
@@ -26,6 +30,7 @@ from supabase import Client as SupabaseClient
 
 from agents.utils.history import messages_to_history
 from pydantic_ai.messages import ModelMessage
+from shared.identity import resolve_call_name
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,10 @@ class RouterContext:
     case_memory_md: str | None = None
     case_metadata: dict | None = None
     user_preferences: dict | None = None
+    # What to call the user — their «بماذا تحب أن نناديك؟» answer, else a first
+    # name derived from the registration / Google name (migration 122). None
+    # when we have no usable name, in which case the router is told nothing.
+    user_call_name: str | None = None
     workspace_item_summaries: list[dict] = field(default_factory=list)
     compaction_summary_md: str | None = None
     message_history: list[ModelMessage] = field(default_factory=list)
@@ -140,6 +149,32 @@ def _load_user_preferences(
             return prefs_row.data.get("preferences")
     except Exception as e:
         logger.warning("load_router_context: user_preferences load failed: %s", e)
+    return None
+
+
+def _load_user_call_name(
+    supabase: SupabaseClient, user_id: str
+) -> str | None:
+    """Return the name the router should address this user by, or None.
+
+    Resolution lives in :func:`shared.identity.resolve_call_name` so the
+    settings dialog (via ``GET /auth/me``) and the router can never disagree
+    about what the user is called.
+    """
+    try:
+        row = (
+            supabase.table("users")
+            .select("preferred_name, full_name_ar")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if row and getattr(row, "data", None):
+            return resolve_call_name(
+                row.data.get("preferred_name"), row.data.get("full_name_ar")
+            )
+    except Exception as e:
+        logger.warning("load_router_context: user name load failed: %s", e)
     return None
 
 
@@ -334,6 +369,7 @@ def load_router_context(
         case_metadata, case_memory_md = _load_case_block(supabase, case_id, user_id)
 
     user_preferences = _load_user_preferences(supabase, user_id)
+    user_call_name = _load_user_call_name(supabase, user_id)
 
     workspace_item_summaries, compaction_summary_md = _load_workspace_item_summaries(
         supabase, conversation_id, user_id
@@ -384,6 +420,11 @@ def load_router_context(
         case_memory_md=case_memory_md,
         case_metadata=case_metadata,
         user_preferences=user_preferences,
+        # NOT encoded by the masking codec above: وضع السرية masks identifiers
+        # found INSIDE conversation content, and this is the user asking to be
+        # addressed by their own name. Masking it would replace the name with a
+        # fake one and the router would greet the user as somebody else.
+        user_call_name=user_call_name,
         workspace_item_summaries=workspace_item_summaries,
         compaction_summary_md=compaction_summary_md,
         message_history=message_history,

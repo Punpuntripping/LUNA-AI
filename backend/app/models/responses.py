@@ -24,6 +24,13 @@ class UserProfile(BaseModel):
     user_id: str
     email: str
     full_name_ar: Optional[str] = None
+    # «بماذا تحب أن نناديك؟» (migration 122). `preferred_name` is the raw
+    # override (None = never answered → the settings field shows the derived
+    # default); `call_name` is the resolved answer the app actually uses —
+    # override first, else a first name derived from full_name_ar, else None
+    # when we have no name at all. See shared/identity.py.
+    preferred_name: Optional[str] = None
+    call_name: Optional[str] = None
     subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
     plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
@@ -56,6 +63,9 @@ class UserProfileResponse(BaseModel):
     user_id: str
     email: str
     full_name_ar: Optional[str] = None
+    # See UserProfile above — same pair, same meaning (migration 122).
+    preferred_name: Optional[str] = None
+    call_name: Optional[str] = None
     subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
     plan_id: Optional[str] = None            # None = account not activated yet
     created_at: Optional[datetime] = None
@@ -74,6 +84,17 @@ class ProfessionResponse(BaseModel):
     """PATCH /api/v1/auth/profession — echo of the stored answer."""
     profession_group: str
     profession_label: Optional[str] = None
+
+
+class PreferredNameResponse(BaseModel):
+    """PATCH /api/v1/auth/preferred-name — echo of the stored answer.
+
+    ``call_name`` is re-resolved server-side rather than echoed back from the
+    request, so clearing the override returns the derived default in the same
+    round trip (the settings field refills with it).
+    """
+    preferred_name: Optional[str] = None
+    call_name: Optional[str] = None
 
 
 # ── Conversations ──────────────────────────────────────

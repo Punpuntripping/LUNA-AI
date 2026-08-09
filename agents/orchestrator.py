@@ -1549,6 +1549,7 @@ async def _route(
         case_memory_md=ctx.case_memory_md,
         case_metadata=ctx.case_metadata,
         user_preferences=ctx.user_preferences,
+        user_call_name=ctx.user_call_name,
         message_history=ctx.message_history,
         workspace_item_summaries=ctx.workspace_item_summaries,
         compaction_summary_md=ctx.compaction_summary_md,

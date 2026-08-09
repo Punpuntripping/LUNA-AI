@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
+from shared.identity import MAX_CALL_NAME_LEN, clean_name
+
 
 def _reject_null_bytes(v: str) -> str:
     """Reject strings containing null bytes (PostgreSQL incompatible)."""
@@ -70,6 +72,28 @@ class UpdateProfessionRequest(BaseModel):
             return v
         v = _reject_null_bytes(v).strip()
         return v or None
+
+
+class UpdatePreferredNameRequest(BaseModel):
+    """PATCH /api/v1/auth/preferred-name — «بماذا تحب أن نناديك؟» (migration 122).
+
+    ``preferred_name`` is nullable on purpose: sending null (or an empty
+    string, which the validator folds to null) CLEARS the override, and the
+    app goes back to deriving a first name from ``full_name_ar``.
+
+    This value is rendered into the router's instructions, so it is normalised
+    here rather than trusted: ``clean_name`` strips control characters and line
+    breaks (a newline is the cheapest way to fake an instruction block) and
+    caps the length at ``MAX_CALL_NAME_LEN``, which is also the column width.
+    """
+    preferred_name: Optional[str] = Field(None, max_length=MAX_CALL_NAME_LEN)
+
+    @field_validator("preferred_name", mode="before")
+    @classmethod
+    def clean_preferred_name(cls, v):
+        if not isinstance(v, str):
+            return v
+        return clean_name(_reject_null_bytes(v))
 
 
 # ── Cases ──────────────────────────────────────────────
@@ -288,6 +312,29 @@ class VerifyPaymentRequest(BaseModel):
     via ``metadata.payment_id`` + the caller's ``user_id``, never by trusting it.
     """
     moyasar_id: str = Field(..., min_length=1, max_length=64)
+
+
+class CancelSubscriptionRequest(BaseModel):
+    """POST /api/v1/payments/subscription/cancel
+
+    The exit survey: a REQUIRED single-select ``reason`` and an OPTIONAL
+    free-text ``comment``.
+
+    ``reason`` is typed as a plain string here and checked against the four
+    allowed keys in ``subscription_service.CANCEL_REASONS`` (which mirrors the
+    CHECK constraint in migration 120). A ``Literal`` would reject a bad value
+    with FastAPI's default 422 — an ENGLISH envelope — and every user-facing
+    error in this product is Arabic (rule 5). The UI only ever sends the four
+    radio keys, so the refusal is unreachable in practice; it is the shape of it
+    that matters.
+    """
+    reason: str = Field(..., min_length=1, max_length=32)
+    comment: Optional[str] = Field(None, max_length=2000)
+
+    @field_validator("reason", "comment", mode="before")
+    @classmethod
+    def check_null_bytes(cls, v):
+        return _reject_null_bytes(v) if isinstance(v, str) else v
 
 
 class ApplePaySessionRequest(BaseModel):

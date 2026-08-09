@@ -6,6 +6,13 @@ export interface User {
   user_id: string;
   email: string;
   full_name_ar?: string | null;
+  /** «بماذا تحب أن نناديك؟» (users.preferred_name, migration 122). null = never
+   *  answered → إعدادات الحساب prefills with `call_name` instead. */
+  preferred_name?: string | null;
+  /** What the app actually calls the user: preferred_name, else a first name
+   *  derived server-side from full_name_ar, else null when we have no name.
+   *  Resolved in one place (shared/identity.py) — never re-derived here. */
+  call_name?: string | null;
   /** Legacy column — superseded by plan_id. */
   subscription_tier?: string | null;
   /** Subscription plan (plans table). null = account not activated yet. */
@@ -673,6 +680,15 @@ export interface Reference {
    * domain only.
    */
   doc_type?: string;
+  /**
+   * «الإحالات» — the citations this source points at, rendered inside the
+   * source-reveal dialog under the body.
+   *
+   * Populated for BOTH regulations (projected from `cross_references_v2`) and
+   * cases (a ruling's `referenced_regulations`, normalised onto this same shape
+   * by `preprocessor.case_ref_to_cross_ref`) — one shape, one renderer. Empty
+   * for compliance / circulars, which have no citation mesh.
+   */
   cross_refs: CrossRef[];
   /**
    * ACCESS-TIERS PHASE C (§6.2 step 1): **always `null` on the list payload.**
@@ -1327,6 +1343,12 @@ export interface PaymentCheckoutResponse {
   publishable_key: string;
   /** Absolute URL Moyasar redirects the browser back to (`?id=<uuid>`). */
   callback_url: string;
+  /**
+   * Server kill-switch (`MOYASAR_APPLEPAY_ENABLED`) — the form offers Apple
+   * Pay only when this is true AND the browser passes the ApplePaySession
+   * capability gate. Off while the Moyasar domain registration is pending.
+   */
+  applepay_enabled: boolean;
 }
 
 /**
@@ -1413,4 +1435,44 @@ export interface PaymentRefundResponse {
   revoked?: boolean;
   /** Which `revoke_plan_grant` branch ran (`restored`, `subtracted`, …) — logged, not shown. */
   revoke_action?: string | null;
+}
+
+// -----------------------------------------------
+// Subscription cancellation (إلغاء الاشتراك)
+// (.claude/plans/subscription_cancellation.md)
+// -----------------------------------------------
+
+/** The exit-survey answers. Mirrors the CHECK constraint in migration 120. */
+export type CancelSubscriptionReason =
+  | 'expensive'
+  | 'no_longer_needed'
+  | 'something_wrong'
+  | 'other';
+
+/**
+ * `GET /payments/subscription` — and the answer to both cancel and reactivate,
+ * so the settings dialog re-renders straight from the mutation response.
+ *
+ * ⚠ Cancelling stops NO automatic charge: Wave 1 sells one-time purchases and
+ * `/pricing` promises «بدون تجديد تلقائي». It records the intent
+ * (`renewal_cancelled_at`, which the Wave 2 renewal job must honour) and leaves
+ * the current term completely alone. Copy built on this shape must never say
+ * «سيتم إيقاف الدفع التلقائي».
+ */
+export interface SubscriptionState {
+  /** null when the user has no subscription row at all. */
+  plan_id: string | null;
+  plan_name_ar: string | null;
+  /** End of the paid term. null for a non-expiring grant. */
+  expires_at: string | null;
+  /** `payment` | `code` | `manual` | `signup` — only `payment` is cancellable. */
+  source: string | null;
+  /**
+   * A PAID plan whose term is still running. Describes the SUBSCRIPTION, not
+   * the button: it stays `true` while `renewal_cancelled_at` is set, because an
+   * undo makes cancelling legal again. Branch on both.
+   */
+  cancellable: boolean;
+  /** Set = the user has opted out of renewal; null = renewal is on. */
+  renewal_cancelled_at: string | null;
 }
