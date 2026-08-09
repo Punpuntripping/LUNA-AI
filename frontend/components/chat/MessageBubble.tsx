@@ -3,6 +3,7 @@
 import {
   Copy,
   Check,
+  BookOpen,
   BookText,
   FileText,
   FileSearch,
@@ -42,6 +43,17 @@ import type { Attachment, Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
+/** What the chips need to name a workspace_item they link to. */
+export interface ArtifactLookupEntry {
+  kind: WorkspaceItemKind;
+  title: string;
+  /** ``metadata.subtype`` — names the artifact far better than kind does
+   *  («التحليل القانوني» rather than «المسودة»). */
+  subtype?: string | null;
+}
+
+export type ArtifactLookup = Record<string, ArtifactLookupEntry>;
+
 interface MessageBubbleProps {
   message: Message;
   streamingContent?: string;
@@ -59,7 +71,7 @@ interface MessageBubbleProps {
    */
   artifactIds?: string[] | null;
   /** Resolve ``artifactIds[i]`` to its workspace_item kind + title. */
-  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  artifactLookup?: ArtifactLookup;
   /** Open a workspace item in the pane (used by chip click). */
   onOpenArtifact?: (itemId: string) => void;
   /**
@@ -113,9 +125,11 @@ export const MessageBubble = memo(function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
-  // Narrow selector (a string) so settled bubbles never re-render on other
-  // auth-store changes.
-  const userName = useAuthStore((s) => s.user?.full_name_ar) || "أنت";
+  // Narrow selectors (strings) so settled bubbles never re-render on other
+  // auth-store changes. `call_name` wins — see lib/user-name.ts.
+  const callName = useAuthStore((s) => s.user?.call_name);
+  const fullName = useAuthStore((s) => s.user?.full_name_ar);
+  const userName = callName || fullName || "أنت";
 
   const isUser = message.role === "user";
   const isCurrentlyStreaming = message.isStreaming && streamingContent !== undefined;
@@ -673,19 +687,55 @@ export const MessageBubble = memo(function MessageBubble({
 
 interface ArtifactChipProps {
   artifactIds: string[];
-  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  artifactLookup?: ArtifactLookup;
   onOpenArtifact?: (itemId: string) => void;
 }
 
 /**
- * Inline "المصدر" chip rendered in the chips row under assistant messages
- * that produced at least one workspace_item.
+ * Arabic name of the artifact WITH the definite article, for «افتح ال…».
  *
- * - One artifact → a single ghost button. Click opens it in the pane.
- * - Multiple artifacts → a DropdownMenu trigger; clicking a row opens that id.
+ * A lookup, not morphology — same reasoning as ReferencePanel's
+ * DEFINITE_DOC_TYPE: «ملخص المحادثة» and «نتيجة البحث» are already definite by
+ * إضافة and take no «ال» at all, so prefixing programmatically would mangle
+ * them. Subtype wins over kind because it is what the reader recognises: the
+ * card they are about to open says «تحليل قانوني», not «مسودة».
+ */
+const DEFINITE_SUBTYPE: Record<string, string> = {
+  report: "التقرير",
+  contract: "العقد",
+  memo: "المذكرة",
+  summary: "الملخص",
+  memory_file: "الذاكرة",
+  legal_opinion: "الرأي القانوني",
+  legal_synthesis: "التحليل القانوني",
+};
+
+const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {
+  attachment: "المرفق",
+  note: "الملاحظة",
+  agent_search: "نتيجة البحث",
+  agent_writing: "المسودة",
+  convo_context: "ملخص المحادثة",
+  references: "المراجع",
+};
+
+/** «المصدر» is the honest fallback while the workspace list is still loading. */
+function definiteArtifactName(entry: ArtifactLookupEntry | undefined): string {
+  if (!entry) return "المصدر";
+  const bySubtype = entry.subtype ? DEFINITE_SUBTYPE[entry.subtype] : undefined;
+  return bySubtype ?? DEFINITE_KIND[entry.kind] ?? "المصدر";
+}
+
+/**
+ * «افتح التحليل القانوني» — the link to this turn's workspace_item(s),
+ * rendered in the chips row under an assistant message.
  *
- * If ``artifactLookup`` is missing or doesn't yet include an id (race with
- * the workspace list query), the row falls back to a generic "مصدر" label.
+ * - One artifact → a solid primary button naming what it opens. Deliberately
+ *   the loudest thing in the row and styled like the library's «فتح النظام في
+ *   ريحان» CTA: for a legal answer the source IS the answer's backing, and the
+ *   old 10px grey «المصدر» pill read as chrome people scrolled past.
+ * - Multiple artifacts → the same button as a DropdownMenu trigger; clicking a
+ *   row opens that id.
  */
 function ArtifactChip({
   artifactIds,
@@ -694,23 +744,18 @@ function ArtifactChip({
 }: ArtifactChipProps) {
   if (artifactIds.length === 0) return null;
 
-  const baseButtonClass = cn(
-    "h-6 gap-1 px-2 text-[10px] text-muted-foreground hover:text-foreground",
-    "rounded-full bg-muted/40 hover:bg-muted/70 transition-colors",
-  );
+  const baseButtonClass = "h-8 gap-1.5 px-3 text-xs";
 
   if (artifactIds.length === 1) {
     const id = artifactIds[0];
     return (
       <Button
-        variant="ghost"
         size="sm"
         className={baseButtonClass}
         onClick={() => onOpenArtifact?.(id)}
-        aria-label="فتح المصدر"
       >
-        <FileSearch className="h-3 w-3" />
-        المصدر
+        <BookOpen className="h-3.5 w-3.5" />
+        افتح {definiteArtifactName(artifactLookup?.[id])}
       </Button>
     );
   }
@@ -718,20 +763,15 @@ function ArtifactChip({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={baseButtonClass}
-          aria-label="فتح المصادر"
-        >
-          <FileSearch className="h-3 w-3" />
-          المصدر ({artifactIds.length})
+        <Button size="sm" className={baseButtonClass} aria-label="فتح المصادر">
+          <BookOpen className="h-3.5 w-3.5" />
+          افتح المصادر ({artifactIds.length})
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[220px]">
         {artifactIds.map((id) => {
           const entry = artifactLookup?.[id];
-          const label = entry?.title || "مصدر";
+          const label = entry?.title || definiteArtifactName(entry);
           return (
             <DropdownMenuItem
               key={id}
@@ -796,7 +836,7 @@ function ReferencedItemChip({ itemId, label, onJump }: ReferencedItemChipProps) 
 interface AttachmentListProps {
   attachments: Attachment[];
   /** Resolves ``attachment.document_id`` → workspace_item {kind, title}. */
-  artifactLookup?: Record<string, { kind: WorkspaceItemKind; title: string }>;
+  artifactLookup?: ArtifactLookup;
   /** Open the attachment's workspace_item in the pane (chip click). */
   onOpenArtifact?: (itemId: string) => void;
   className?: string;

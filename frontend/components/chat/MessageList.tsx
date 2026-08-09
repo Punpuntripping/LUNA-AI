@@ -14,13 +14,16 @@ import { cn } from "@/lib/utils";
 import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
 import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useChatStore } from "@/stores/chat-store";
-import { MessageBubble } from "@/components/chat/MessageBubble";
+import {
+  MessageBubble,
+  type ArtifactLookup,
+} from "@/components/chat/MessageBubble";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
 import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
 import { DeepSearchSummaryChip } from "@/components/chat/DeepSearchSummaryChip";
 import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
-import type { Message, WorkspaceItemKind } from "@/types";
+import type { Message } from "@/types";
 
 /**
  * Layer 1: an assistant row with no content yet is an in-flight placeholder —
@@ -84,9 +87,15 @@ export function MessageList({
   // is free of additional network cost in steady state.
   const { data: workspaceData } = useConversationWorkspace(conversationId);
   const artifactLookup = useMemo(() => {
-    const out: Record<string, { kind: WorkspaceItemKind; title: string }> = {};
+    const out: ArtifactLookup = {};
     for (const item of workspaceData?.items ?? []) {
-      out[item.item_id] = { kind: item.kind, title: item.title };
+      out[item.item_id] = {
+        kind: item.kind,
+        title: item.title,
+        // Same read as WorkspaceCard's badge, so the «افتح ال…» button names
+        // the card by exactly what the card itself calls itself.
+        subtype: (item.metadata as { subtype?: string } | undefined)?.subtype,
+      };
     }
     return out;
   }, [workspaceData?.items]);
