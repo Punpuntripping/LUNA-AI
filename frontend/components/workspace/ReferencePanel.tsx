@@ -44,6 +44,7 @@ import {
 import type { ReferenceSourceResult } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
+  CrossRef,
   Reference,
   ReferenceDomain,
   ReferenceUnlockInfo,
@@ -333,7 +334,6 @@ function ReferenceCard({
   onAnimationEnd: () => void;
   onViewSource: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const meta = DOMAIN_META[reference.domain] ?? DOMAIN_META.regulations;
   const Icon = meta.icon;
   // Regulations carry their own Arabic document type (regulations_v2.doc_type_raw
@@ -347,7 +347,6 @@ function ReferenceCard({
 
   const primaryUrl = referencePrimaryUrl(reference);
   const label = referenceLabel(reference);
-  const crossRefs = reference.domain === "regulations" ? reference.cross_refs : [];
 
   return (
     <li
@@ -432,41 +431,11 @@ function ReferenceCard({
                 فتح المصدر الرسمي
               </a>
             )}
-            {crossRefs.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 gap-1 px-2 text-[11px]"
-                onClick={() => setExpanded((v) => !v)}
-              >
-                <ChevronDown
-                  className={cn(
-                    "h-3 w-3 transition-transform",
-                    expanded && "rotate-180"
-                  )}
-                />
-                إحالات ({crossRefs.length})
-              </Button>
-            )}
+            {/* NOTE: no «إحالات» toggle here any more. The list moved inside the
+                source-reveal dialog, directly under the body it belongs to — a
+                card is two lines of snippet, and expanding a citation mesh into
+                it pushed every following reference down the panel. */}
           </div>
-
-          {/* Cross-refs */}
-          {expanded && crossRefs.length > 0 && (
-            <ul className="mt-1.5 flex flex-col gap-1 border-t pt-1.5">
-              {crossRefs.map((cr, i) => (
-                <li key={i} className="text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">
-                    {[cr.target_reg_title, crossRefUnit(cr)]
-                      .filter(Boolean)
-                      .join(" — ")}
-                  </span>
-                  {cr.content && (
-                    <span className="block leading-relaxed">{cr.content}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
       </div>
     </li>
@@ -509,6 +478,7 @@ function SourceRevealBody({
     return (
       <RevealRefusal
         result={{ ok: false, kind: "error", error: "not_found", status: null }}
+        reference={reference}
         onRetry={() => {}}
         isRetrying={false}
       />
@@ -537,6 +507,7 @@ function SourceRevealBody({
   return (
     <RevealRefusal
       result={result}
+      reference={reference}
       onRetry={() => {
         void refetch();
       }}
@@ -639,6 +610,7 @@ function RevealedSource({
           sourceContent={sourceContent}
           hasFullTextExit={!!(libraryUrl || externalUrl)}
         />
+        <CrossRefsSection crossRefs={reference.cross_refs ?? []} />
       </div>
 
       {notice && (
@@ -710,6 +682,92 @@ function RevealedSource({
 }
 
 /**
+ * «الإحالات» — the citations the revealed source points at, collapsed by default
+ * at the very bottom of the dialog's scroll container.
+ *
+ * Collapsed is the right default: the reader opened this dialog to read the
+ * source, and a مادة can carry ten إحالات whose bodies dwarf it. Opening scrolls
+ * the header to the top of the SAME scroll container the body lives in, so the
+ * list the click just produced is on screen instead of below the fold —
+ * `scrollIntoView` walks up to the nearest scrollable ancestor, which is that
+ * container, and the dialog is fixed-position so the page behind never moves.
+ *
+ * The rAF is not decoration: the scroll must happen after React has committed
+ * the expanded list, or it targets a zero-height node and lands short.
+ *
+ * Both domains reach here — regulations from `cross_references_v2`, cases from a
+ * ruling's `referenced_regulations` — because the backend normalises them onto
+ * one `CrossRef` shape. Compliance and circulars have no mesh and render nothing.
+ */
+function CrossRefsSection({ crossRefs }: { crossRefs: CrossRef[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+
+  if (crossRefs.length === 0) return null;
+
+  const toggle = () => {
+    setExpanded((wasExpanded) => {
+      if (!wasExpanded) {
+        requestAnimationFrame(() => {
+          sectionRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
+        });
+      }
+      return !wasExpanded;
+    });
+  };
+
+  return (
+    <div ref={sectionRef} className="mt-4 border-t pt-2">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-1.5 rounded-md py-1 text-start text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 transition-transform",
+            expanded && "rotate-180",
+          )}
+        />
+        الإحالات ({crossRefs.length})
+      </button>
+
+      {expanded && (
+        <ul className="mt-1.5 flex flex-col gap-2.5">
+          {crossRefs.map((cr, i) => {
+            const heading = [cr.target_reg_title, crossRefUnit(cr)]
+              .filter(Boolean)
+              .join(" — ");
+            return (
+              <li
+                key={i}
+                className="rounded-lg bg-muted/40 px-2.5 py-2 text-xs leading-relaxed"
+              >
+                {heading && (
+                  <span className="block font-medium text-foreground">
+                    {heading}
+                  </span>
+                )}
+                {cr.content && (
+                  <span className="mt-0.5 block text-muted-foreground">
+                    {cr.content}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * Everything that is not a source: the D14 refusal cards and the transport /
  * session / rate-limit states.
  *
@@ -720,10 +778,12 @@ function RevealedSource({
  */
 function RevealRefusal({
   result,
+  reference,
   onRetry,
   isRetrying,
 }: {
   result: Extract<ReferenceSourceResult, { ok: false }>;
+  reference: Reference;
   onRetry: () => void;
   isRetrying: boolean;
 }) {
@@ -793,6 +853,16 @@ function RevealRefusal({
             {revealCopy.retryCta}
           </Button>
         ) : null}
+      </div>
+
+      {/* الإحالات survive a refusal on purpose. §1.3 puts the citation mesh in
+          the never-gated class — only the source BODY is metered — and this list
+          rides the references payload the panel already holds, so showing it
+          costs neither a request nor an unlock. Withholding it here would gate
+          the mesh by accident, which is exactly what the public blog page's
+          credibility layer depends on NOT happening. */}
+      <div dir="rtl" className="text-sm">
+        <CrossRefsSection crossRefs={reference.cross_refs ?? []} />
       </div>
     </>
   );
@@ -1034,8 +1104,23 @@ function referencePrimaryUrl(ref: Reference): string {
   }
 }
 
-/** Render a cross-ref target unit like "مادة:12" when a number is present. */
+/**
+ * Arabic label for a cross-ref target unit — «المادة 12».
+ *
+ * `target_type` is a corpus token, not display text: every one of the 34,537
+ * `cross_references_v2` rows carries the Latin transliteration `"madda"`, which
+ * the old `${type}:${number}` template printed verbatim into an Arabic RTL
+ * panel. Unknown types fall through to the raw token rather than being dropped —
+ * a new corpus value should read slightly odd, never vanish.
+ */
+const CROSS_REF_UNIT_AR: Record<string, string> = {
+  madda: "المادة",
+  article: "المادة",
+  appendix: "الملحق",
+};
+
 function crossRefUnit(cr: { target_type: string; target_number: number | null }): string {
-  if (cr.target_number == null) return cr.target_type || "";
-  return `${cr.target_type}:${cr.target_number}`;
+  const unit = CROSS_REF_UNIT_AR[cr.target_type] ?? cr.target_type ?? "";
+  if (cr.target_number == null) return unit;
+  return unit ? `${unit} ${cr.target_number}` : String(cr.target_number);
 }
