@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { LEGAL_ROUTES } from "@/lib/legal";
+import { userDisplayName } from "@/lib/user-name";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -89,7 +90,7 @@ export function SidebarFooter() {
           </div>
           <div className="min-w-0">
             <p className="text-xs font-medium text-sidebar-foreground truncate">
-              {user?.full_name_ar || user?.email || "مستخدم"}
+              {userDisplayName(user) || "مستخدم"}
             </p>
           </div>
         </div>

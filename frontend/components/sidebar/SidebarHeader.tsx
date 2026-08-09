@@ -5,26 +5,20 @@ import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { userInitial } from "@/lib/user-name";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-function getInitial(name: string | null | undefined, email: string | null | undefined): string {
-  const source = (name?.trim() || email?.trim() || "").trim();
-  if (!source) return "ر";
-  const first = Array.from(source)[0];
-  return first.toUpperCase();
-}
-
 export function SidebarHeader() {
   const { isOpen, toggle } = useSidebarStore();
   const user = useAuthStore((s) => s.user);
 
   const initial = useMemo(
-    () => getInitial(user?.full_name_ar, user?.email),
-    [user?.full_name_ar, user?.email]
+    () => userInitial(user),
+    [user?.call_name, user?.full_name_ar, user?.email]
   );
 
   return (
