@@ -874,7 +874,7 @@ def test_sector_counts_seeds_every_slug_and_drops_unknown_sector_values(
     )
     counts = ls.sector_counts(fake)
 
-    assert fake.calls == ["library_sector_counts"]
+    assert fake.calls == ["library_sector_counts_published"]
     assert set(counts) == set(SECTOR_SLUGS.values())
     assert counts[COMMERCE_SLUG] == dict(COUNTED_COMMERCE) | {
         "total": sum(COUNTED_COMMERCE.values())
@@ -920,7 +920,13 @@ def test_a_failing_rpc_becomes_the_standard_arabic_hub_error(steady_state) -> No
 
 
 class _SectorFake(FakeSupabase):
-    """``FakeSupabase`` that also answers the ``library_sector_counts`` RPC."""
+    """``FakeSupabase`` that also answers the ``library_sector_counts_published`` RPC.
+
+    ⚠ The RPC name is asserted, not merely recorded. ``library_sector_counts()``
+    (migration 109) is still installed and counts the CORPUS; swapping it back in
+    is a one-word edit that no page would visibly fail on — it would just quietly
+    advertise 3,951 أنظمة and 30,531 حكم again. This assert is the tripwire.
+    """
 
     def __init__(self, *, sector_rows: Optional[list[dict[str, Any]]] = None,
                  **tables: Any) -> None:
@@ -930,7 +936,7 @@ class _SectorFake(FakeSupabase):
 
     def rpc(self, name: str, params: dict) -> Any:
         self.rpc_names.append(name)
-        assert name == "library_sector_counts", name
+        assert name == "library_sector_counts_published", name
         return _RpcOnly(self.sector_rows).rpc(name, params)
 
 
@@ -942,104 +948,138 @@ def _sidecar(content_type: str, ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _sample_fake(**kw: Any) -> _SectorFake:
-    """Three published أنظمة (two commercial, one housing) and nothing else
-    published — 100%-of-nothing for the other three wings."""
+    """Three published تعاميم (two commercial, one housing) and nothing else
+    published — 100%-of-nothing for the other three wings.
+
+    ⚠ THE SAMPLED WING HERE IS ``circulars``, NOT ``regulations``. It used to be
+    regulations, and re-pointing it back would silently stop testing anything:
+    regulations and judgments both moved onto published-only RANKED VIEWS
+    (migrations 116 and 123), so ``_published_sample_counts`` short-circuits them
+    to ``None`` before it touches the sidecar and they have no sample mode left to
+    pin. Circulars and services are the wings ``SAMPLE_MODE_MAX_IDS`` still
+    governs — 100 published each — so circulars is what section 10b can still
+    assert against. The invariant under test is unchanged; only the wing that
+    still exhibits it moved.
+    """
     return _SectorFake(
-        seo_item_meta=_sidecar("regulation", ["r1", "r2", "r3"]),
-        regulations_v2=[
-            {"id": "r1", "sectors": [COMMERCE_AR]},
-            {"id": "r2", "sectors": [COMMERCE_AR, "الإسكان"]},
-            {"id": "r3", "sectors": ["الإسكان"]},
+        seo_item_meta=_sidecar("circular", ["c1", "c2", "c3"]),
+        circulars=[
+            {"id": "c1", "title": "أ", "sectors": [COMMERCE_AR]},
+            {"id": "c2", "title": "ب", "sectors": [COMMERCE_AR, "الإسكان"]},
+            {"id": "c3", "title": "ج", "sectors": ["الإسكان"]},
             # In the corpus, NOT published — must not be counted.
-            {"id": "r9", "sectors": [COMMERCE_AR]},
+            {"id": "c9", "title": "د", "sectors": [COMMERCE_AR]},
         ],
         **kw,
     )
 
 
 def test_a_sampled_wing_counts_only_what_it_can_serve() -> None:
-    """⚠ THE FIX. ``r9`` is in the corpus and has no slug, so no page of any
+    """⚠ THE FIX. ``c9`` is in the corpus and has no slug, so no page of any
     paginator can ever show it. Counting it produced «77 pages» over 3 real
     items."""
     counts = ls.sector_counts(_sample_fake())
 
-    assert counts[COMMERCE_SLUG]["regulations"] == 2
-    assert counts["housing"]["regulations"] == 2
-    assert counts["health"]["regulations"] == 0
+    assert counts[COMMERCE_SLUG]["circulars"] == 2
+    assert counts["housing"]["circulars"] == 2
+    assert counts["health"]["circulars"] == 0
 
 
-def test_a_sampled_wing_never_issues_the_rpc() -> None:
-    """One ``id IN (...)`` read covers that wing's whole 38-sector column, and
-    the RPC's answer for it would be wrong anyway."""
-    fake = _sample_fake()
-    ls.sector_counts(fake)
-    assert fake.rpc_names == []
+def test_a_sampled_wing_never_takes_its_number_from_the_rpc() -> None:
+    """One ``id IN (...)`` read covers that wing's whole 38-sector column, and the
+    RPC's answer for it would be wrong anyway.
+
+    ⚠ This assertion used to be ``fake.rpc_names == []``, which held only while
+    EVERY wing was sampled. Regulations and judgments now ride ranked views and
+    MUST consult the RPC, so a mixed state issues exactly one grouped call. The
+    invariant that survived the change is the one that mattered: the sampled
+    wing's number is computed from its published ids, never read off the RPC row.
+    """
+    fake = _sample_fake(sector_rows=[{"sector": COMMERCE_AR, **COMMERCE_COUNTS}])
+    counts = ls.sector_counts(fake)
+
+    # One grouped call for the ranked wings — never one per wing, never per sector.
+    assert fake.rpc_names == ["library_sector_counts_published"]
+    # …and the RPC's 162 تعميم loses to the 2 this wing can actually serve.
+    assert COMMERCE_COUNTS["circulars"] == 162
+    assert counts[COMMERCE_SLUG]["circulars"] == 2
 
 
 def test_a_row_is_counted_once_per_sector_it_carries() -> None:
-    """``r2`` is both commercial and housing, and the sector filter returns it
+    """``c2`` is both commercial and housing, and the sector filter returns it
     for either — so both columns count it. This is the same over-count the
     grouped ``unnest`` produces, on purpose: it matches what a scoped page
     serves."""
     counts = ls.sector_counts(_sample_fake())
-    assert counts[COMMERCE_SLUG]["regulations"] + counts["housing"]["regulations"] == 4
+    assert counts[COMMERCE_SLUG]["circulars"] + counts["housing"]["circulars"] == 4
 
 
 def test_a_sector_with_nothing_published_reports_zero_not_the_corpus_count() -> None:
     """المواصفات والمقاييس measured 695 in the corpus and 0 servable on
     2026-08-01. 695 made it an indexable static page with no items on it."""
     counts = ls.sector_counts(_sample_fake())
-    assert counts["standards-metrology"]["regulations"] == 0
+    assert counts["standards-metrology"]["circulars"] == 0
 
 
 def test_the_wings_decide_independently_and_the_rpc_covers_only_the_steady_ones(
     monkeypatch,
 ) -> None:
     """A mixed state is NORMAL — ``build_seo_slugs`` finishes one wing at a time —
-    and the sampled wing's number must not be overwritten by the RPC column."""
+    and the sampled wing's number must not be overwritten by the RPC column.
+
+    Three states coexist here, which is the point: judgments ride the RANKED VIEW
+    (never sampled), circulars ride their published sample, and the RPC supplies
+    only what it should."""
     monkeypatch.setattr(
         ls,
         "_published_ids",
-        lambda _supabase, ct: None if ct == "judgment" else ["r1", "r2", "r3"],
+        lambda _supabase, ct: ["c1", "c2", "c3"] if ct == "circular" else None,
     )
     fake = _sample_fake(sector_rows=[{"sector": COMMERCE_AR, **COMMERCE_COUNTS}])
     counts = ls.sector_counts(fake)
 
-    assert fake.rpc_names == ["library_sector_counts"]
-    # judgments (steady) rides the RPC…
+    assert fake.rpc_names == ["library_sector_counts_published"]
+    # judgments (ranked view → steady) rides the RPC…
     assert counts[COMMERCE_SLUG]["judgments"] == COMMERCE_COUNTS["judgments"]
-    # …while regulations (sampled) keeps its servable count, NOT the RPC's 693.
-    assert counts[COMMERCE_SLUG]["regulations"] == 2
+    # …while circulars (sampled) keeps its servable count, NOT the RPC's 162.
+    assert counts[COMMERCE_SLUG]["circulars"] == 2
 
 
 def test_a_wing_self_heals_into_corpus_counts_when_it_is_published(
     monkeypatch,
 ) -> None:
     """Nothing to unwind later: crossing ``SAMPLE_MODE_MAX_IDS`` is the ONLY
-    switch, and it flips on its own."""
+    switch for a wing with no ranked view, and it flips on its own."""
     fake = _sample_fake(sector_rows=[{"sector": COMMERCE_AR, **COMMERCE_COUNTS}])
-    assert ls.sector_counts(fake)[COMMERCE_SLUG]["regulations"] == 2
+    assert ls.sector_counts(fake)[COMMERCE_SLUG]["circulars"] == 2
 
     ls._published_ids_cache.clear()
     monkeypatch.setattr(ls, "_published_ids", lambda _supabase, _ct: None)
     assert (
-        ls.sector_counts(fake)[COMMERCE_SLUG]["regulations"]
-        == COMMERCE_COUNTS["regulations"]
+        ls.sector_counts(fake)[COMMERCE_SLUG]["circulars"]
+        == COMMERCE_COUNTS["circulars"]
     )
 
 
 def test_the_hub_tab_counts_are_servable_too(steady_state, monkeypatch) -> None:
     """Same rule, same reason — the tab chip sizes a paginator that walks exactly
-    this set."""
-    fake = _SectorFake(regulations_v2=[{"id": f"r{i}"} for i in range(7)],
-                       cases=[], services=[], circulars=[])
+    this set. TWO mechanisms now deliver that guarantee and both are asserted: a
+    RANKED wing counts its published-only view, a SAMPLED wing counts its
+    published ids. The corpus count is reachable by neither."""
+    fake = _SectorFake(
+        # 99 in the corpus, 7 in the view — the chip must say 7.
+        library_regulations_ranked=[{"id": f"r{i}"} for i in range(7)],
+        regulations_v2=[{"id": f"r{i}"} for i in range(99)],
+        cases=[], services=[],
+        circulars=[{"id": f"c{i}"} for i in range(7)],
+    )
     assert ls.library_corpus_counts(fake)["regulations"] == 7
 
     ls._published_ids_cache.clear()
     monkeypatch.setattr(
-        ls, "_published_ids", lambda _supabase, ct: ["r1", "r2"] if ct == "regulation" else None
+        ls, "_published_ids", lambda _supabase, ct: ["c1", "c2"] if ct == "circular" else None
     )
-    assert ls.library_corpus_counts(fake)["regulations"] == 2
+    assert ls.library_corpus_counts(fake)["circulars"] == 2
 
 
 def test_the_wall_count_and_the_served_page_agree_in_sample_mode() -> None:
@@ -1048,8 +1088,8 @@ def test_the_wall_count_and_the_served_page_agree_in_sample_mode() -> None:
     that contradicts itself within one session. Same ids, same reader, same
     number."""
     fake = _sample_fake()
-    served = ls.list_regulations_hub(fake, page=1, sector=COMMERCE_AR)["total_pages"]
-    counted = ls.sector_counts(fake)[COMMERCE_SLUG]["regulations"]
+    served = ls.list_circulars_hub(fake, page=1, sector=COMMERCE_AR)["total_pages"]
+    counted = ls.sector_counts(fake)[COMMERCE_SLUG]["circulars"]
 
     assert served == max(1, math.ceil(counted / ls.HUB_PAGE_SIZE))
 

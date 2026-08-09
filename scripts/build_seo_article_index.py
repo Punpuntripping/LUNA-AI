@@ -91,6 +91,12 @@ except Exception:  # noqa: BLE001
 
 from shared.db.client import get_supabase_client
 
+# THE definition of chunk reading order (``corpus DESC, position, chunk_ref``).
+# Imported, never copied: this builder decides which chunk OWNS a مادة by walk
+# order, so it and the reader must agree on what "first" means. See
+# ``_load_regulation_chunks``.
+from backend.app.services.library_service import _ordered_chunk_query
+
 # نظام العمل — pinned first in the default dry-run sample (232 مواد, its
 # ordinal-word headers + amendments are the toughest case, so it anchors QA).
 LABOR_LAW_REG = "da51024f-a713-48e7-af87-b6a541f055e4"
@@ -315,9 +321,11 @@ def _empty_stats() -> dict:
 def _owns_owner_map(chunks: list[dict]) -> dict[int, str]:
     """Map ``article_no -> owning chunk id`` from ``chunks_v2.owns.MADDA``.
 
-    ``chunks`` are position-ordered (``_load_regulation_chunks``), so the FIRST
-    chunk seen listing an article number wins (= lowest position). Used to recover
-    ``chunk_id`` for an articles_v2 row whose ``chunk_parent_id`` is NULL.
+    ``chunks`` are in DOCUMENT reading order (``_load_regulation_chunks``), so the
+    FIRST chunk seen listing an article number wins — and because the body stream
+    is walked before the ملاحق, an appendix chunk can only claim a مادة no body
+    chunk claims. Used to recover ``chunk_id`` for an articles_v2 row whose
+    ``chunk_parent_id`` is NULL.
     """
     owner: dict[int, str] = {}
     for ch in chunks:
@@ -403,15 +411,18 @@ def build_regulation_rows_from_chunks(
     """FALLBACK: slice one regulation's مواد out of ``chunks_v2`` (legacy path).
 
     Used ONLY for a regulation with no ``articles_v2`` rows. ``chunks`` = list of
-    {id, regulation_id, position, title, content, owns} ORDERED BY (position, id).
-    Produces exactly one row per distinct owned article number.
+    {id, regulation_id, position, title, content, owns} in DOCUMENT reading order
+    (``corpus DESC, position, chunk_ref`` — body stream first, then the ملاحق;
+    see ``_load_regulation_chunks``). Produces exactly one row per distinct owned
+    article number.
 
     One-chunk-per-مادة is resolved in TWO passes because ``owns.MADDA`` OVER-CLAIMS
     on some regulations (a first chunk lists 1..15 but physically carries only 1–2):
-      * Pass 1 (extraction): the LOWEST-position chunk that actually HAS a usable
-        header segment claims the article as ``extracted``.
+      * Pass 1 (extraction): the EARLIEST chunk in document order that actually
+        HAS a usable header segment claims the article as ``extracted``.
       * Pass 2 (fallback): every still-unclaimed owned article is bound
-        ``chunk_fallback`` to the LOWEST-position chunk that lists it in owns.
+        ``chunk_fallback`` to the EARLIEST chunk in document order that lists it
+        in owns.
     Returns ``(rows, stats)`` in the normalized stats shape.
     """
     reg_id = chunks[0].get("regulation_id") if chunks else None
@@ -430,9 +441,9 @@ def build_regulation_rows_from_chunks(
         owns_pairs += len(owns_madda)
         segments = extract_chunk_articles(ch.get("content") or "", owns_madda)
         for no in owns_madda:
-            if no not in fallback_owner:          # lowest-position owner (chunks pre-sorted)
+            if no not in fallback_owner:          # earliest owner (chunks pre-sorted, doc order)
                 fallback_owner[no] = ch
-            if no in segments and no not in extracted_claim:  # lowest-position header
+            if no in segments and no not in extracted_claim:  # earliest real header
                 extracted_claim[no] = (ch, segments[no])
 
     stats = _empty_stats()
@@ -491,16 +502,31 @@ def _load_articles_v2(client, reg_id: str) -> list[dict]:
 
 
 def _load_regulation_chunks(client, reg_id: str) -> list[dict]:
-    """Fetch every chunk of one regulation (paged, position-ordered)."""
+    """Fetch every chunk of one regulation (paged) in DOCUMENT reading order.
+
+    Order comes from ``library_service._ordered_chunk_query`` — ``corpus DESC,
+    position, chunk_ref`` — so the body stream is walked to its end before the
+    ملاحق, exactly as the reader renders it.
+
+    ⚠ ``position`` is scoped per STREAM, not per document: appendix chunks
+    (``corpus='appendix'``) restart at 1 alongside the body, and 1,184
+    regulations carry both. The previous ``.order("position").order("id")``
+    therefore walked those documents INTERLEAVED; the uuid tiebreak it carried
+    ("deterministic tiebreak when chunks share a position") only made the
+    interleave reproducible, it never separated the streams.
+
+    Walk order is not cosmetic here — ``_owns_owner_map`` and
+    ``build_regulation_rows_from_chunks`` both award a مادة to the FIRST chunk
+    that lists/carries it, so an interleaved walk lets an appendix chunk
+    out-rank the body chunk that actually holds the article text.
+    """
     rows: list[dict] = []
     offset = 0
     while True:
         res = (
-            client.table("chunks_v2")
-            .select("id, regulation_id, position, title, content, owns")
-            .eq("regulation_id", reg_id)
-            .order("position")
-            .order("id")  # deterministic tiebreak when chunks share a position
+            _ordered_chunk_query(
+                client, str(reg_id), "id, regulation_id, position, title, content, owns"
+            )
             .range(offset, offset + _READ_PAGE - 1)
             .execute()
         )
@@ -542,7 +568,19 @@ def _discover_articles_v2_reg_ids(client) -> list[str]:
 
 def _discover_chunk_madda_reg_ids(client) -> list[str]:
     """Distinct ``regulation_id``s with at least one مادة-owning chunk (fallback
-    universe). Pages ``chunks_v2`` selecting only (regulation_id, owns)."""
+    universe). Pages ``chunks_v2`` selecting only (regulation_id, owns).
+
+    ⚠ The page key must be UNIQUE. ``(regulation_id, position)`` is not:
+    ``position`` restarts at 1 for the appendix stream (see
+    ``_load_regulation_chunks``), so tied rows may be ordered differently by two
+    consecutive ``.range()`` calls — which silently returns some rows twice and
+    skips others across a page boundary, i.e. a regulation can vanish from this
+    universe entirely. ``chunk_ref`` is the unique tiebreaker.
+
+    Document order is deliberately NOT used here (no ``corpus DESC``): this scan
+    only collects a SET of regulation ids, so all it needs from the sort is a
+    stable, total page key.
+    """
     seen: dict[str, None] = {}
     offset = 0
     while True:
@@ -551,6 +589,7 @@ def _discover_chunk_madda_reg_ids(client) -> list[str]:
             .select("regulation_id, owns")
             .order("regulation_id")
             .order("position")
+            .order("chunk_ref")
             .range(offset, offset + _READ_PAGE - 1)
             .execute()
         )

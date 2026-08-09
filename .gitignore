@@ -61,6 +61,27 @@ backend/tests/*
 # docstring delegates to ("CI catches it") — which only holds if it is committed.
 !backend/tests/test_library_sectors.py
 !backend/tests/test_library_sector_wing.py
+# court-section suite is durable for exactly the same reason, one axis over:
+# «الجهة القضائية» is a SECTION too, so `court` must stay OUT of the `filtered`
+# flag or `_visible_total_pages` pins every court page to 2 pages for anon —
+# silently, over a 20,335-judgment section. It also pins that the 12-slug
+# vocabulary resolves in memory (a reserved/unknown slug must never reach the
+# DB) and that the raw `cases.court` variant tuples are matched EXACTLY, which
+# is what keeps the counts stable enough to stay out of the oracle clamp.
+!backend/tests/test_library_courts.py
+# judgments-hub suite is durable — it pins the ranked-view contract that makes
+# publishing past SAMPLE_MODE_MAX_IDS safe (no short pages, exact total_pages,
+# slug carried by the relation) and the NULLS-LAST ordering. The ديوان/زكاة/تأمين
+# feeds have no date_gregorian at all, so a NULLS-FIRST regression would bury
+# every dated judgment behind ~11k dateless ones. It was local-only until
+# 2026-08-08, which is why the ranked-view rewire broke 8 of its tests with CI green.
+!backend/tests/test_library_judgments.py
+# judgment publish-selector suite is durable — it pins the per-feed allocation
+# (insurance takes ALL, shortfall redistributes), the sqrt court spread, and that
+# the sector cap is scoped to the وزارة العدل slice. Sectors exist on NO other
+# feed, so a globally-scoped cap silently stops constraining the one feed that
+# has them. Also pins that no retired publish ceiling is live in the script.
+!backend/tests/test_build_judgment_slugs.py
 # account-settings suite is durable — it pins that /logout revokes via the
 # SERVICE-ROLE admin API. Depending on the shared anon client there lets one
 # user's logout globally revoke a DIFFERENT user's sessions, silently.

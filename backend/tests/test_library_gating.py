@@ -1536,3 +1536,90 @@ def test_a_flipped_regulation_renders_chunk_sections() -> None:
     assert {t["id"] for t in doc["toc"]} == chunk_ids
     # The document is open end-to-end, so nothing is withheld from either surface.
     assert doc["hidden_section_count"] == 0
+
+
+# ---- 7.5 chunk STREAM ORDER — the fallback must land a readable document ----
+#
+# The fallback is only an improvement if the chunks it renders are in document
+# order, and for 1,184 regulations they are not under a naive sort. `position` is
+# scoped PER STREAM: a regulation's appendix chunks (`corpus='appendix'`,
+# chunk_ref `_apx_NNN`) restart at 1 alongside the body chunks
+# (`without_articles` / `with_articles`, `_chunk_NNN`). Ordering by `position`
+# alone therefore INTERLEAVES them — on 17900_reg_128_p2 «ملحق رقم (1)» lands
+# between المادة السادسة and المادة الثانية عشرة — and with no tiebreaker the
+# pairing order is not stable between requests, which an ISR page then bakes in.
+#
+# 86 published regulations carry both streams: 46 chunk-only ones render this way
+# on live pages TODAY, and 3 more would have joined them the moment the coverage
+# rule flipped them — including the labour لائحة that motivated the rule.
+
+
+def _two_stream_chunks() -> list[dict[str, Any]]:
+    """A regulation whose body and appendix streams BOTH number 1..3.
+
+    Single-digit positions on purpose: the fake sorts with `str()`, so "10" would
+    precede "2" and the assertion would be testing the fake, not the service.
+    """
+    body = [
+        {"id": f"bbbbbbbb-0000-0000-0000-{i:012d}", "regulation_id": REG_ID,
+         "title": f"المادة {i}", "position": i, "content": f"نص المادة {i}",
+         "corpus": "without_articles", "chunk_ref": f"17900_reg_128_p2_chunk_{i:03d}"}
+        for i in (1, 2, 3)
+    ]
+    apx = [
+        {"id": f"aaaaaaaa-0000-0000-0000-{i:012d}", "regulation_id": REG_ID,
+         "title": f"ملحق رقم ({i})", "position": i, "content": f"نص الملحق {i}",
+         "corpus": "appendix", "chunk_ref": f"17900_reg_128_p2_apx_{i:03d}"}
+        for i in (1, 2, 3)
+    ]
+    return apx + body          # inserted appendix-first, so a no-op sort fails
+
+
+def test_chunk_stream_order_puts_body_before_appendix() -> None:
+    """The alphabetical dependency `_ordered_chunk_query` leans on, pinned.
+
+    `corpus DESC` is what puts the body first, and that works only because every
+    body-stream name sorts AFTER 'appendix'. A new corpus value that doesn't —
+    'annex' is the obvious trap — would silently reorder every document with an
+    appendix, with no error anywhere. This test is the tripwire.
+    """
+    for body in ls._CHUNK_BODY_CORPORA:
+        assert body > ls._CHUNK_APPENDIX_CORPUS, (
+            f"corpus '{body}' does not sort after "
+            f"'{ls._CHUNK_APPENDIX_CORPUS}' — `.order('corpus', desc=True)` in "
+            f"_ordered_chunk_query would put appendices in the middle of the body"
+        )
+
+
+def test_a_flipped_regulation_renders_its_body_before_its_appendices() -> None:
+    fake = _reg_doc_fake(_holed(232, 68), n_chunks=0)
+    fake.tables["chunks_v2"] = _two_stream_chunks()
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+
+    titles = [s["title"] for s in doc["visible_sections"]]
+    assert titles == ["المادة 1", "المادة 2", "المادة 3",
+                      "ملحق رقم (1)", "ملحق رقم (2)", "ملحق رقم (3)"], titles
+    # The TOC is built from a second query — it must agree, or the rail links to
+    # a different reading order than the page renders.
+    assert [t["title"] for t in doc["toc"]] == titles
+
+
+def test_a_gated_preview_shows_the_first_three_body_chunks_not_an_interleave() -> None:
+    """The 3-chunk preview is the whole first impression of a gated نظام.
+
+    Under `position`-only ordering the fake returns appendix-first at every
+    position, so the preview would have opened with «ملحق رقم (1)» — an appendix
+    presented as the opening of the نظام.
+    """
+    fake = _reg_doc_fake(_holed(232, 68), n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = "gated"
+    fake.tables["chunks_v2"] = _two_stream_chunks()
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    assert [s["title"] for s in doc["visible_sections"]] == [
+        "المادة 1", "المادة 2", "المادة 3",
+    ]
+    assert doc["hidden_section_count"] == 3

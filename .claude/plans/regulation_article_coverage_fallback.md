@@ -313,6 +313,52 @@ Also out: per-مادة detail pages, and any frontend change
 6. Confirm the INFO flip logs list exactly the 15 expected reg_refs — more than 15 means
    the threshold or the gap maths is off
 
+## 8b. Chunk stream order — found during the build, 2026-08-08
+
+`chunks_v2.position` is scoped **per stream**, not per document. A regulation's appendix
+chunks (`corpus='appendix'`, `chunk_ref` `_apx_NNN`) restart at 1 alongside its body
+chunks (`with_articles` / `without_articles`, `_chunk_NNN`). **1,184 regulations carry
+both streams**, so the pre-existing `.order("position")` interleaved them — on the labour
+لائحة «ملحق رقم (1)» rendered between المادة السادسة and المادة الثانية عشرة — with no
+tiebreaker, so the pairing order was not even stable between requests, which ISR bakes in.
+
+This is **pre-existing, not caused by this change**: of the 86 published regulations with
+both streams, **46 chunk-only ones render interleaved on live pages today**; 3 more would
+have joined them the moment the coverage rule flipped them, the labour لائحة among them.
+
+Fixed by `_ordered_chunk_query` — the single definition of chunk reading order —
+`corpus DESC, position, chunk_ref`. Applied to all three `library_service` chunk reads.
+
+### Is "appendices last" actually right?
+
+Verified, because forcing appendices to the end would itself misorder any document whose
+body continues after an appendix. The two streams carry different page signals — body
+chunks populate the `page` column and never contain a marker; appendix chunks always have
+`page` NULL and 3,250 of 5,388 carry a `<!-- Page N -->` marker in the text. Comparing
+`max(body.page)` against `min(appendix marker)`:
+
+| | regs |
+|---|---|
+| corpus regs with both streams | 1,184 |
+| …comparable (page signal on both sides) | 599 |
+| appendix genuinely at the end | **597** |
+| body continues after the appendix starts | **2** |
+| **published** regs with both streams | 86 |
+| …comparable | 56 |
+| …with a mid-document appendix | **0** |
+
+The two exceptions are `17405_reg_645` (الدليل الإرشادي الخاص بتكافؤ المستحضرات الموضعية —
+body to page 19, appendix at page 15) and `17636_reg_091` (الدليل الاسترشادي لإجراءات
+الرقابة على السكن الجماعي — body to page 26, appendix spanning 19–29). Both are أدلة
+إرشادية, both **unpublished and article-less**, so neither is reachable today. ⚠ If either
+is ever published, corpus-last ordering will move a mid-document annex to the end. Re-run
+the detection query before publishing any دليل with an appendix.
+
+⚠ **Coverage limit:** 585 of the 1,184 (49%) cannot be checked at all — the page signal is
+missing on one side or both (2,138 appendix chunks carry no marker; body `page` is NULL on
+roughly half of body chunks). "597 of 599" is 597 of everything checkable, not of
+everything.
+
 ## 9. Risks
 
 - **A flipped document loses its per-مادة anchors.** نظام الشركات goes from a 263-row TOC

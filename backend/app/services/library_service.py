@@ -45,12 +45,13 @@ import re
 import time
 import urllib.parse
 import uuid as _uuid
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import search_service
+from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
 from shared.library.sectors import SECTOR_SLUGS, slug_for_sector
 from shared.seo.judgment_naming import (
     court_level_label,
@@ -127,30 +128,41 @@ _CONTENT_TYPES = ("regulation", "article", "judgment", "circular", "service", "f
 _GATE_DEFAULTS_TTL_SECONDS = 300.0
 _gate_defaults_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
 
-# --- Stage-1 "sample mode" pagination (hub listers) -----------------------
-# During the stage-1 rollout only a small SAMPLE of each wing is slugged
-# (``seo_item_meta.slug NOT NULL``) — e.g. 100 of 3,373 regulations. The hubs
-# paginate the FILTERED CORPUS and drop unslugged rows via ``_slug_map``, which
-# is correct in steady state (every corpus row slugged) but during the sample
-# returns EMPTY pages: the corpus's first pages hold none of the 100 published
-# rows (caught 2026-07-23: /regulations?page=1 → 0 items, total_pages=375).
+# --- Stage-1 "sample mode" pagination (circulars + services only) ---------
+# During the stage-1 rollout only a small SAMPLE of a wing is slugged
+# (``seo_item_meta.slug NOT NULL``) — e.g. 100 of 1,843 circulars. A hub that
+# paginates the FILTERED CORPUS and drops unslugged rows via ``_slug_map`` is
+# correct once every corpus row is slugged, but during the sample it returns
+# EMPTY pages: the corpus's first pages hold none of the 100 published rows
+# (caught 2026-07-23: /regulations?page=1 → 0 items, total_pages=375).
 #
 # ``_published_ids`` detects the sample: when a wing's published-id count is
-# ``<= SAMPLE_MODE_MAX_IDS`` the hub listers paginate over the PUBLISHED ids
+# ``<= SAMPLE_MODE_MAX_IDS`` the hub lister paginates over the PUBLISHED ids
 # (fetched from the sidecar) instead of the corpus, so every page is full and
 # ``total_pages`` is EXACT. Above the ceiling the wing is in full-corpus steady
-# state and the listers keep their legacy corpus-pagination path untouched.
+# state and the lister keeps its legacy corpus-pagination path untouched.
 #
-# ⚠ RAISED 300 → 1000 WHEN /regulations WENT TO 462 PUBLISHED ROWS (migration
-# 116). The regulations LISTER no longer consults this at all — it paginates
-# `library_regulations_ranked`, which is the published set by construction — but
-# `_published_sample_counts` still does, and it is what feeds the SECTOR COUNTS.
-# Crossing the ceiling would have flipped those counts onto the corpus path,
-# where a sector reporting 695 rows of which 0 are servable gets prerendered as
-# a static, indexable, EMPTY page — the soft-404-at-scale failure documented at
-# CROSS-WING COUNTS below. Raising the ceiling keeps the counts measuring what
-# is actually servable. Past ~1000 published rows the counts need their own RPC
-# over the ranked view; the id-list scan is not meant to grow indefinitely.
+# ⚠ THIS CEILING NO LONGER APPLIES TO /regulations OR /judgments — AT ALL.
+# Both wings now have a published-only RANKED VIEW (`library_regulations_ranked`,
+# migration 116; `library_judgments_ranked`, migration 123) and a published-only
+# counts RPC (`library_sector_counts_published`, migration 124). For them
+# "published" is a property of the RELATION rather than a post-filter, so there
+# is no sample to detect and no ceiling to cross: their listers, their page
+# counts and their sector counts all read the view / the published RPC at any
+# corpus size. ``_RANKED_HUB_VIEWS`` is the switch, and
+# ``_published_sample_counts`` short-circuits on it.
+#
+# WHAT IS LEFT: circulars and services (100 published each), which have no
+# ranked view. They are the only callers of ``_published_ids`` now.
+#
+# The ceiling was raised 300 → 1000 on 2026-08-06 when /regulations went to 462
+# published rows, as a stopgap for exactly the failure the views fix: crossing it
+# flipped a wing's counts onto the CORPUS path, where a sector reporting 695 rows
+# of which 0 are servable gets prerendered as a static, indexable, EMPTY page (the
+# soft-404-at-scale failure documented at CROSS-WING COUNTS below). Publishing
+# ~10,000 judgments and 1,188 regulations blows straight through 1000, which is
+# why the stopgap was replaced rather than raised again. Do NOT wire a third wing
+# onto this constant to buy time — give it a ranked view instead.
 SAMPLE_MODE_MAX_IDS = 1000
 
 # In-process TTL cache for the per-content_type published-id list — one entry per
@@ -210,6 +222,7 @@ __all__ = [
     "JUDGMENT_FREE_CHARS",
     "list_judgments_hub",
     "judgments_hub_total_pages",
+    "court_counts",
     "get_judgment_doc",
     "get_full_judgment",
     # Phase 3 — /forms (نماذج)
@@ -1522,6 +1535,10 @@ def _published_ids(
 ) -> Optional[list[str]]:
     """Published (slugged) corpus ids for a wing, or ``None`` in steady state.
 
+    ⚠ ONLY WINGS WITHOUT A RANKED VIEW REACH THIS — circulars and services. A
+    wing that has one (regulations, judgments) has no sample mode to detect: see
+    ``_RANKED_HUB_VIEWS`` and the ``SAMPLE_MODE_MAX_IDS`` header.
+
     Pages the ``seo_item_meta`` sidecar for every ``(content_type=X, slug NOT
     NULL)`` row's ``content_id`` in 1,000-row range chunks — PostgREST clamps any
     response to max-rows=1000 (documented trap at the top of this module), so a
@@ -1529,8 +1546,8 @@ def _published_ids(
     exhausted (or the sample ceiling is passed, see below).
 
     Returns the id list ONLY while the wing is in "sample mode": published count
-    ``<= SAMPLE_MODE_MAX_IDS`` (300). Above that the wing is in full-corpus steady
-    state and this returns ``None`` so the hub listers keep their legacy
+    ``<= SAMPLE_MODE_MAX_IDS`` (1000). Above that the wing is in full-corpus
+    steady state and this returns ``None`` so the hub listers keep their legacy
     corpus-pagination path untouched. (The scan short-circuits as soon as it has
     seen more than the ceiling — a steady-state wing costs exactly one 1,000-row
     id fetch, never a full sidecar walk.)
@@ -1583,11 +1600,12 @@ def _published_ids(
     return value
 
 
-# Chunk size for the ``id IN (...)`` corpus fetch in sample mode. Same reason
-# ``_slug_map`` chunks its sidecar lookup: PostgREST encodes ``in.(...)`` in the
-# query string and hundreds of uuids blow the server's URL-length limit into a
-# 400. The published set is <= SAMPLE_MODE_MAX_IDS (300), so this is at most 2
-# round-trips per wing per page.
+# Chunk size for the ``id IN (...)`` corpus fetch in sample mode and for the BM25
+# candidate fetch. Same reason ``_slug_map`` chunks its sidecar lookup: PostgREST
+# encodes ``in.(...)`` in the query string and hundreds of uuids blow the server's
+# URL-length limit into a 400. A sampled wing's published set is
+# <= SAMPLE_MODE_MAX_IDS (1000) and a search's is <= HUB_SEARCH_LIMIT (200), so
+# this is at most 7 round-trips per wing per page and usually 1–2.
 _ID_IN_CHUNK = 150
 
 
@@ -1744,11 +1762,10 @@ def _hub_result(
 # ⚠ THESE COUNT WHAT IS *SERVABLE*, NOT WHAT IS IN THE CORPUS. Read this before
 # "fixing" a number that looks too small.
 #
-# The hub listers already paginate the PUBLISHED set while a wing is in sample
-# mode (``_published_ids`` → a list of <= 300 slugged ids): today /regulations
-# serves 100 items over ~12 pages, not 3,373 over 375. These two functions follow
-# the same rule per wing, independently, because the alternative is worse than a
-# cosmetic mismatch — measured on live data 2026-08-01:
+# The hub listers paginate the PUBLISHED set — a ranked view for regulations and
+# judgments, the ``_published_ids`` sample list for circulars. These two functions
+# follow the same rule per wing, independently, because the alternative is worse
+# than a cosmetic mismatch — measured on live data 2026-08-01:
 #
 #     sector (أنظمة)          corpus   servable   a corpus-based paginator says
 #     المواصفات والمقاييس        695          0   78 pages, every one EMPTY
@@ -1762,13 +1779,22 @@ def _hub_result(
 # exists to prevent. Servable counts fix indexability, prerendering and display
 # at once, with no frontend change.
 #
+# ⚠ THE STEADY-STATE RPC IS ``library_sector_counts_published()`` (migration 124),
+# NOT ``library_sector_counts()`` (migration 109). The two have the identical
+# signature and 109 is still installed, so this is a one-word difference that
+# changes every number on /library: 109 counts CORPUS rows. It was only ever
+# correct here by accident — no wing had crossed ``SAMPLE_MODE_MAX_IDS``, so
+# nothing reached the fall-through. Publishing ~10,000 judgments and 1,188
+# regulations reaches it on both wings at once, and the failure is SILENT: the
+# grid keeps rendering, advertising 3,951 أنظمة and 30,531 أحكام that the wings
+# cannot serve. Do not "simplify" this back to 109.
+#
 # SELF-HEALING, and that is the whole point of the shape: nothing here is a
-# rollout hack to unwind later. Each wing asks ``_published_ids`` on every memo
-# refresh, so the moment ``build_seo_slugs --apply`` pushes a wing past
-# ``SAMPLE_MODE_MAX_IDS`` that wing silently returns to corpus counts — via the
-# ``library_sector_counts()`` RPC (migration 109), which is the steady-state path
-# and is what the RPC is for. Mixed states are normal and correct: one wing may
-# be sampled while another is complete.
+# rollout hack to unwind later. A wing with a ranked view is always counted from
+# the published relation; a wing without one asks ``_published_ids`` on every
+# memo refresh, so the moment ``build_seo_slugs --apply`` pushes it past
+# ``SAMPLE_MODE_MAX_IDS`` it moves to the published RPC on its own. Mixed states
+# are normal and correct: one wing may be sampled while another is complete.
 #
 # Two functions, because the second NEVER sums to the first and a caller that
 # derives one from the other is wrong twice over (both measured live):
@@ -1785,13 +1811,24 @@ def _hub_result(
 # No arithmetic between them, in either direction.
 # ============================================
 
+# The published-only counts RPC (migration 124). Same signature as migration
+# 109's ``library_sector_counts()``, which counts the CORPUS — see the ⚠ above.
+_SECTOR_COUNTS_RPC = "library_sector_counts_published"
+
 # section name → (corpus table, sidecar content_type, sector array column).
 # Section names match the wing vocabulary used everywhere else in this file
 # (``_total_pages_memo`` keys, item-budget sections, the sitemap map); the
 # content_type is the sidecar's own singular spelling.
+#
+# ⚠ THE CORPUS TABLE HERE IS NOT ALWAYS WHAT GETS COUNTED. A wing with a ranked
+# view is counted over the VIEW (``_RANKED_HUB_VIEWS``, defined beside the hub
+# table constants below, because that is where the view names are owned); the
+# corpus table is then only the fallback nobody reaches. The content_type and the
+# array column are used by both paths.
+#
 # ⚠ ``compliance`` LEFT THIS MAP ON 2026-08-03 with the rest of the wing. The
-# ``library_sector_counts()`` RPC still RETURNS a ``compliance`` column — it reads
-# the corpus, which is untouched — and that column is simply not read any more.
+# counts RPC still RETURNS a ``compliance`` column — it reads the ``services``
+# corpus, which is untouched — and that column is simply not read any more.
 # Do not "fix" the RPC to match; the corpus is still there and the agent pipeline
 # still searches it.
 _SECTION_SOURCES: dict[str, tuple[str, str, str]] = {
@@ -1809,20 +1846,30 @@ def _published_sample_counts(
 ) -> Optional[tuple[int, dict[str, int]]]:
     """``(servable rows, {slug: rows})`` for one wing's PUBLISHED sample.
 
-    Returns ``None`` when the wing is in full-corpus steady state
-    (``_published_ids`` → ``None``), which is the caller's signal to use the
-    corpus path instead.
+    Returns ``None`` — the caller's signal to use the published RPC instead — for
+    a wing that has NO sample to count, which is now two different situations:
+
+      * the wing has a RANKED VIEW (``_RANKED_HUB_VIEWS``: regulations,
+        judgments). Its published set is a relation, not a list of ids, and can
+        be any size; scanning it into memory was never going to survive ~10,000
+        judgments. Short-circuits before touching the sidecar.
+      * the wing has no ranked view and is past ``SAMPLE_MODE_MAX_IDS``
+        (``_published_ids`` → ``None``).
 
     The set counted here is EXACTLY the set the wing's sample-mode lister
     paginates — same ids, same ``_fetch_corpus_by_ids`` reader — so a sector
     page's ``total_pages`` and the page it actually serves cannot disagree. That
     equality is the point; §12.2 failed before it because page 1 reported the
-    lister's sample total while page 2 reported the corpus total.
+    lister's sample total while page 2 reported the corpus total. The ranked-view
+    wings hold the same equality by a stronger route: both numbers come from the
+    same published relation.
 
     A row is counted once per sector it carries (matching what the sector filter
     would return for each of them) and sector values outside the 38 are dropped:
     they have no slug, therefore no public page.
     """
+    if section in _RANKED_HUB_VIEWS:
+        return None
     table, content_type, column = _SECTION_SOURCES[section]
     pub_ids = _published_ids(supabase, content_type)
     if pub_ids is None:
@@ -1845,9 +1892,19 @@ def _published_sample_counts(
 def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
     """Servable row count per wing — the unified hub's three tab chips (§7.3).
 
-    Per wing: the published sample's size while the wing is sampled, else one
-    ``count='exact'`` head query over the corpus (cheap, index-only). The route
-    memoises the result for 5 minutes (§5).
+    Per wing, in order of preference: one ``count='exact'`` head query over the
+    wing's RANKED VIEW (published by construction — regulations, judgments), else
+    the published sample's size while the wing is sampled, else one
+    ``count='exact'`` over the corpus. The route memoises the result for 5
+    minutes (§5).
+
+    ⚠ THE LAST OF THOSE THREE IS THE ONE THAT LIES, and it is unreachable today.
+    A corpus count over ``cases`` says 30,531 while the wing serves ~10,000; the
+    tab chip it sizes belongs to a paginator that walks the published set. A wing
+    reaches it only by having neither a ranked view nor a sample — i.e. by being
+    published past ``SAMPLE_MODE_MAX_IDS`` with no view, which is the state
+    migration 123 exists to make impossible. Give a wing a ranked view before
+    publishing it past the ceiling.
 
     ⚠ ``judgments`` is this wing's own total and is NOT derivable from
     ``sector_counts`` — see the block comment above. Count the wing; do not do
@@ -1856,11 +1913,18 @@ def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
     out: dict[str, int] = {}
     try:
         for section, (table, _content_type, _column) in _SECTION_SOURCES.items():
-            sample = _published_sample_counts(supabase, section)
-            if sample is not None:
-                out[section] = sample[0]
-                continue
-            res = supabase.table(table).select("id", count="exact").limit(1).execute()
+            view = _RANKED_HUB_VIEWS.get(section)
+            if view is None:
+                sample = _published_sample_counts(supabase, section)
+                if sample is not None:
+                    out[section] = sample[0]
+                    continue
+            res = (
+                supabase.table(view or table)
+                .select("id", count="exact")
+                .limit(1)
+                .execute()
+            )
             out[section] = int(res.count or 0)
     except LunaHTTPException:
         raise
@@ -1878,15 +1942,20 @@ def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
     query apiece. Per wing:
 
       * SAMPLED  → one ``id IN (...)`` read of the ~100 published rows, tallied
-        in Python. One query for that wing's whole 38-sector column.
-      * STEADY   → the ``library_sector_counts()`` RPC (migration 109), which
-        does all 38 in one grouped ``unnest`` — PostgREST cannot express that,
-        which is why the RPC exists. The RPC is issued ONCE, and only if at least
-        one wing is in steady state.
+        in Python. One query for that wing's whole 38-sector column. Only wings
+        with no ranked view (circulars) can be here.
+      * OTHERWISE → ``library_sector_counts_published()`` (migration 124), which
+        does all 38 in one grouped ``unnest`` over the corpus ⋈ sidecar —
+        PostgREST cannot express that, which is why the RPC exists. It is issued
+        ONCE per refresh and covers every non-sampled wing at the same time.
 
-    So the worst case is three small reads plus one RPC per 5-minute memo refresh,
-    and the steady-state case is a single RPC. Wings flip between the two paths
-    on their own as ``build_seo_slugs`` publishes them; a mixed state is normal.
+    So the worst case is two small reads plus one RPC per 5-minute memo refresh,
+    and the end state is a single RPC. Wings leave the sampled path on their own
+    as ``build_seo_slugs`` publishes them; a mixed state is normal.
+
+    ⚠ NOT ``library_sector_counts()`` (migration 109) — that one counts the
+    CORPUS and still exists. See the ⚠ in the block comment above; swapping the
+    name back silently re-publishes 3,951 أنظمة and 30,531 أحكام to the grid.
 
     Every one of the 38 slugs is present in the result, seeded to zero, so a
     sector that holds nothing servable still returns a row (the frontend needs
@@ -1904,9 +1973,9 @@ def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
 
     if steady:
         try:
-            res = supabase.rpc("library_sector_counts", {}).execute()
+            res = supabase.rpc(_SECTOR_COUNTS_RPC, {}).execute()
         except Exception as e:  # noqa: BLE001
-            logger.exception("Error reading library_sector_counts(): %s", e)
+            logger.exception("Error reading %s(): %s", _SECTOR_COUNTS_RPC, e)
             raise _hub_error()
         for row in res.data or []:
             # The VOCABULARY is shared/library/sectors.py, not the corpus: a
@@ -1999,6 +2068,36 @@ def _reg_count(supabase, entity, doc_type, sector, q, *, in_force_only=False) ->
 #   * Counts over it are counts of what is SERVABLE, which is what every page
 #     number on this wing has to mean.
 _REG_HUB_TABLE = "library_regulations_ranked"
+
+# ⚠ AND THE /judgments WING DOES THE SAME (migration 123). Identical shape over
+# `cases` ⋈ the sidecar, and it exists for a failure that had already been
+# demonstrated on the other wing: below `SAMPLE_MODE_MAX_IDS` the judgments hub
+# paginated a list of published ids, above it the CORPUS — all 30,531 rows — and
+# it then dropped the unslugged ones AFTER paging, so at ~10,000 of 30,531
+# published a nine-card page would have rendered about three cards across ~3,393
+# mostly-empty pages. Publishing more than 1,000 judgments without this view is
+# the bug; the view is not an optimisation.
+#
+# `rank` is exposed but NOT YET WRITTEN for judgments (`build_usage_rank.py`
+# ranks regulations only), which is why this wing still orders by date — see
+# `list_judgments_hub`. Do not switch the ordering to `rank` until something
+# populates it: PostgREST's ascending NULLS LAST would put the whole wing in
+# arbitrary id order behind nothing at all.
+_JUDGMENT_HUB_TABLE = "library_judgments_ranked"
+
+# section name → its published-only ranked view. THE switch that says a wing has
+# no sample mode: its lister, its page counts and its sector counts all read the
+# published relation at any corpus size. Read by `_published_sample_counts` and
+# `library_corpus_counts`, which are defined ABOVE this line and resolve it at
+# call time — the view names are owned here, next to the wings that read them,
+# and duplicating the strings upstream is how the two would drift.
+#
+# A wing joins this map by getting a `library_<wing>_ranked` view (mirror
+# migration 123) — NOT by having its ceiling raised.
+_RANKED_HUB_VIEWS: dict[str, str] = {
+    "regulations": _REG_HUB_TABLE,
+    "judgments": _JUDGMENT_HUB_TABLE,
+}
 
 # Column set the /regulations hub reads. `slug` rides along from the view, which
 # is why this path issues no sidecar lookup.
@@ -2283,6 +2382,51 @@ def _seo_articles_for_regulation(
     return rows
 
 
+# Chunk streams. ``position`` is scoped PER STREAM, not per document: a
+# regulation's appendix chunks (``corpus='appendix'``, ``chunk_ref`` ending
+# ``_apx_NNN``) restart at position 1 alongside its body chunks
+# (``with_articles`` / ``without_articles``, ``_chunk_NNN``). **1,184 regulations
+# carry both streams**, so ordering by ``position`` ALONE interleaves the
+# appendices into the body — on 17900_reg_128_p2 «ملحق رقم (1)» lands between
+# المادة السادسة and المادة الثانية عشرة — and with no tiebreaker the pairing
+# order is not even stable between requests, which an ISR page bakes in.
+#
+# ``corpus DESC`` is what puts the body first: alphabetically 'without_articles'
+# > 'with_articles' > 'appendix', and a regulation carries at most ONE body
+# stream plus an optional appendix. ``chunk_ref`` is the stable tiebreaker.
+#
+# ⚠ This leans on every body-stream name sorting AFTER 'appendix' descending. A
+# new corpus value that doesn't (say 'annex') would silently reorder documents;
+# ``test_chunk_stream_order_puts_body_before_appendix`` guards it.
+_CHUNK_BODY_CORPORA = ("with_articles", "without_articles")
+_CHUNK_APPENDIX_CORPUS = "appendix"
+
+
+def _ordered_chunk_query(
+    supabase: SupabaseClient, regulation_id: str, columns: str
+) -> Any:
+    """A ``chunks_v2`` query for one regulation, in DOCUMENT reading order.
+
+    THE one place chunk order is defined. Every caller that renders chunks as a
+    document must go through this — ordering by ``position`` alone is wrong
+    whenever the regulation has an appendix (see the note above), and a bare
+    ``.order("position")`` looks so obviously right that it will be
+    reintroduced by anyone who has not read that note.
+
+    Returns the query builder, NOT the rows, so callers can still ``.limit(3)``
+    for a gated preview and get the first three sections of the DOCUMENT rather
+    than the first three of an interleaved jumble.
+    """
+    return (
+        supabase.table("chunks_v2")
+        .select(columns)
+        .eq("regulation_id", str(regulation_id))
+        .order("corpus", desc=True)
+        .order("position")
+        .order("chunk_ref")
+    )
+
+
 def _chunk_row_map(
     supabase: SupabaseClient, chunk_ids: list[Any]
 ) -> dict[str, dict[str, str]]:
@@ -2529,21 +2673,14 @@ def get_regulation_doc(
     else:
         # CHUNK FALLBACK — the legacy chunk-based toc + first-3-chunk preview.
         try:
-            toc_res = (
-                supabase.table("chunks_v2")
-                .select("id, title, position")
-                .eq("regulation_id", content_id)
-                .order("position")
-                .execute()
-            )
+            toc_res = _ordered_chunk_query(
+                supabase, str(content_id), "id, title, position"
+            ).execute()
             toc_rows = toc_res.data or []
 
             # Open → every chunk (the whole نظام); gated → the 3-chunk preview.
-            vis_qb = (
-                supabase.table("chunks_v2")
-                .select("id, title, position, content")
-                .eq("regulation_id", content_id)
-                .order("position")
+            vis_qb = _ordered_chunk_query(
+                supabase, str(content_id), "id, title, position, content"
             )
             if not is_open:
                 vis_qb = vis_qb.limit(3)
@@ -2556,13 +2693,29 @@ def get_regulation_doc(
                 detail="حدث خطأ أثناء جلب النظام",
             )
 
+        # ``position`` here is the DOCUMENT index (1..N in reading order), NOT the
+        # raw ``chunks_v2.position``.
+        #
+        # ⚠ Emitting the raw column re-creates the interleave this query just
+        # removed. The chunk position is scoped PER STREAM — a regulation's
+        # appendix chunks restart at 1 alongside the body — and the doc page sorts
+        # the TOC by this field (`app/regulations/[slug]/page.tsx:149`
+        # `.sort((a, b) => a.position - b.position)`). So the rows arrive in
+        # document order and the client shuffles «ملحق رقم (1)» straight back
+        # between المادة السادسة and المادة الثانية عشرة. Sections looked right,
+        # «محتويات النظام» did not, and the two disagreed with each other.
+        #
+        # A payload whose own sort key does not reproduce its own order is the
+        # bug; renumbering here fixes it for every client rather than asking each
+        # one to preserve array order. Migration 121 makes the same thing true of
+        # the underlying data, after which this is belt-and-braces.
         toc = [
             {
                 "id": str(r.get("id")),
                 "title": r.get("title"),
-                "position": int(r.get("position") or 0),
+                "position": i,
             }
-            for r in toc_rows
+            for i, r in enumerate(toc_rows, start=1)
         ]
 
         visible_sections = []
@@ -3288,7 +3441,8 @@ def list_circulars_hub(
         total = len(all_rows)
         rows = all_rows[offset : offset + ps]
     elif pub_ids is not None:
-        # SAMPLE MODE — paginate the published set in Python (set is <= 300).
+        # SAMPLE MODE — paginate the published set in Python (set is
+        # <= SAMPLE_MODE_MAX_IDS; 100 published today).
         all_rows = _fetch_corpus_by_ids(
             supabase,
             "circulars",
@@ -3984,17 +4138,21 @@ JUDGMENT_FREE_CHARS = 1200
 # above, exactly like a long circular.
 JUDGMENT_FREE_LEADING_SECTIONS = 1
 
-# Column set the /judgments hub reads (shared by the legacy + sample paths).
+# Column set the /judgments hub reads — from ``_JUDGMENT_HUB_TABLE`` (the ranked
+# view), browse and search alike.
 # It carries ALL FOUR title-source columns (short_summary → summary → facts →
 # ruling) even though the card only prints a short_summary snippet: the card
 # title and the doc-page H1 must be byte-identical, and both come from
 # ``judgment_display_title`` walking that same chain. Selecting fewer columns
 # would silently give the ~1k summary-less judgments a different title on the hub
 # than on their own page.
+#
+# ``slug`` rides along from the sidecar half of the view, which is what retired
+# the ``_slug_map`` round-trip this lister used to do per page.
 _JUDGMENT_HUB_SELECT = (
     "id, case_ref, court, court_level, city, case_number, judgment_number, "
     "date_hijri, date_gregorian, legal_domains, short_summary, summary, "
-    "facts, ruling"
+    "facts, ruling, slug"
 )
 
 # Column set the /judgments/{slug} doc page reads: metadata + the title chain +
@@ -4045,45 +4203,35 @@ def _iso_date(value: Any) -> Optional[str]:
     return s or None
 
 
-def _judgment_date_ordinal(value: Any) -> int:
-    """``YYYY-MM-DD`` → ``YYYYMMDD`` as an int; 0 when absent/unparseable.
-
-    Sorting keys need a NUMBER, not a string: the hub orders by date DESCENDING,
-    and a descending sort inside an otherwise-ascending tuple key is expressed by
-    negating the value — which strings cannot do.
-    """
-    iso = _iso_date(value)
-    if not iso:
-        return 0
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", iso)
-    if not m:
-        return 0
-    return int(m.group(1) + m.group(2) + m.group(3))
-
-
-def _judgment_hub_sort_key(r: dict[str, Any]) -> tuple[int, int, str]:
-    """Python ordering for a sample-mode /judgments page: newest first, dateless
-    LAST, then ``id``.
-
-    Mirrors the legacy DB path's ``.order('date_gregorian', desc=True,
-    nullsfirst=False).order('id')`` EXACTLY. The ``nullsfirst=False`` is
-    load-bearing on both sides: Postgres puts NULLs FIRST on a DESC order by
-    default, which would open the hub with the 11,419 dateless judgments — this
-    exact trap has bitten this codebase before. The first key element is the
-    has-a-date partition (0 before 1) and the second is the NEGATED date ordinal
-    (descending inside an ascending tuple).
-    """
-    ordinal = _judgment_date_ordinal(r.get("date_gregorian"))
-    return (0 if ordinal else 1, -ordinal, str(r.get("id") or ""))
-
-
 def _apply_judgment_filters(
-    qb, court_level: Optional[str], domain: Optional[str], q: Optional[str] = None
+    qb,
+    court_level: Optional[str],
+    domain: Optional[str],
+    q: Optional[str] = None,
+    court_variants: Optional[Sequence[str]] = None,
 ):
     """Apply the judgments hub FACET filters to a query builder (chainable).
 
     ``court_level`` = exact match ('first_instance' | 'appeal' | 'supreme');
     ``domain`` = array-contains on ``legal_domains``. Blank filters are no-ops.
+
+    ``court_variants`` is the COURT SECTION (plan §2.3): the raw ``cases.court``
+    strings one bucket claims, straight from ``shared.library.courts``. Three
+    things about it are deliberate:
+
+      * it is ``in.()``, i.e. EXACT matching against a closed vocabulary — never
+        a LIKE and never a regex. ``cases.court`` is free text (30 distinct
+        values, the same body spelled with and without a city), so a pattern
+        match would silently redraw the bucket every time the pipeline ingests a
+        new spelling, and the section's counts would move with it. Exact matching
+        is what keeps a court a SECTION rather than a filter — see the
+        enumeration-oracle comment in ``public_library.py``.
+      * the caller passes VARIANTS, not a slug. The slug→variants resolution is
+        in-memory and happens at the route boundary, before any DB work, so an
+        unknown court costs a dict lookup rather than a query.
+      * an EMPTY tuple is a no-op, not "match nothing". Only ``None``-vs-value
+        distinguishes "no court asked for"; a bucket with zero variants cannot
+        exist (``shared/library/courts.py`` builds them from the map).
 
     ⚠ ``q`` is accepted and IGNORED — it was an ``ilike`` on ``short_summary``
     until Wave B moved the text match to ``bm25_search()``. The property that
@@ -4097,6 +4245,8 @@ def _apply_judgment_filters(
         qb = qb.eq("court_level", court_level)
     if domain:
         qb = qb.contains("legal_domains", [domain])
+    if court_variants:
+        qb = qb.in_("court", list(court_variants))
     return qb
 
 
@@ -4106,26 +4256,51 @@ def _judgment_search_rows(
     domain: Optional[str],
     q: str,
     select_cols: str,
+    court_variants: Optional[Sequence[str]] = None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter)."""
+    """``(rows, truncated)`` for a ``q`` request (shared by lister + counter).
+
+    Reads ``_JUDGMENT_HUB_TABLE``, not ``cases``: the ranked view is where the
+    ``slug`` lives, and the card cannot be built without one. BM25 already
+    returns published-scoped ids, so the view removes no result it would have
+    found — it just spares the lister a sidecar round-trip per page.
+    """
     return _bm25_hub_rows(
         supabase,
         corpus="judgment",
-        table="cases",
+        table=_JUDGMENT_HUB_TABLE,
         select_cols=select_cols,
         q=q,
-        apply_filters=lambda qb: _apply_judgment_filters(qb, court_level, domain),
+        apply_filters=lambda qb: _apply_judgment_filters(
+            qb, court_level, domain, court_variants=court_variants
+        ),
     )
 
 
 def _judgment_count(
-    supabase, court_level: Optional[str], domain: Optional[str], q: Optional[str]
+    supabase,
+    court_level: Optional[str],
+    domain: Optional[str],
+    q: Optional[str],
+    court_variants: Optional[Sequence[str]] = None,
 ) -> int:
+    """Filtered PUBLISHED judgment count.
+
+    Counts ``_JUDGMENT_HUB_TABLE`` — the published relation the lister pages —
+    so the page count and the pages actually served cannot disagree at any
+    corpus or publish size. Counting ``cases`` here (as this did until migration
+    123) reported 30,531 for a wing that serves ~10,000. With ``q`` it counts the
+    BM25 match set instead, for the same reason.
+    """
     if q:
-        # SEARCH MODE — count the BM25 match set, not the corpus.
-        return len(_judgment_search_rows(supabase, court_level, domain, q, "id")[0])
-    qb = supabase.table("cases").select("id", count="exact")
-    qb = _apply_judgment_filters(qb, court_level, domain)
+        # SEARCH MODE — count the BM25 match set, not the whole wing.
+        return len(
+            _judgment_search_rows(
+                supabase, court_level, domain, q, "id", court_variants
+            )[0]
+        )
+    qb = supabase.table(_JUDGMENT_HUB_TABLE).select("id", count="exact")
+    qb = _apply_judgment_filters(qb, court_level, domain, court_variants=court_variants)
     return int((qb.limit(1).execute().count) or 0)
 
 
@@ -4135,29 +4310,18 @@ def judgments_hub_total_pages(
     court_level: Optional[str] = None,
     domain: Optional[str] = None,
     q: Optional[str] = None,
+    court_variants: Optional[Sequence[str]] = None,
 ) -> int:
     """Total hub pages for the filtered judgments set (for the anon-cap body).
 
-    In SAMPLE MODE (``_published_ids`` → list) this counts only the filtered
-    PUBLISHED judgments — an EXACT page count. In full-corpus steady state
-    (``_published_ids`` → None) it counts filtered CORPUS rows (9/page); every
-    judgment is slugged then (``build_judgment_slugs``), so counting all vs.
-    slugged rows is identical.
+    Counts the PUBLISHED rows — ``_judgment_count`` reads the same ranked view
+    the lister paginates, at 9/page. There is no sample-mode branch and no
+    corpus fallback any more: both existed to paper over the gap between "rows
+    in ``cases``" and "rows this wing can serve", and migration 123 closed that
+    gap by making published a property of the relation.
     """
     try:
-        pub_ids = None if q else _published_ids(supabase, "judgment")
-        if pub_ids is not None:
-            rows = _fetch_corpus_by_ids(
-                supabase,
-                "cases",
-                "id",
-                pub_ids,
-                lambda qb: _apply_judgment_filters(qb, court_level, domain),
-            )
-            total = len(rows)
-        else:
-            # With ``q`` this counts the BM25 match set; without it, the corpus.
-            total = _judgment_count(supabase, court_level, domain, q)
+        total = _judgment_count(supabase, court_level, domain, q, court_variants)
     except LunaHTTPException:
         raise
     except Exception as e:  # noqa: BLE001
@@ -4173,28 +4337,46 @@ def list_judgments_hub(
     court_level: Optional[str] = None,
     domain: Optional[str] = None,
     q: Optional[str] = None,
+    court_variants: Optional[Sequence[str]] = None,
 ) -> dict[str, Any]:
     """One page (9 items) of the /judgments hub.
 
-    Ordering = ``date_gregorian`` DESC with dateless judgments LAST, then ``id``
-    — newest first, because recency is what a reader scanning a judgments
-    directory is actually after. Single partition → one DB ``range`` query + one
-    batched sidecar slug lookup. Filters: ``court_level`` (exact), ``domain``
-    (an element of ``legal_domains``), ``q`` (ilike on the free ``short_summary``).
-    Only slugged (published) rows are returned.
+    Ordering contract = ``date_gregorian`` DESC with dateless judgments LAST,
+    then ``id`` — newest first, because recency is what a reader scanning a
+    judgments directory is actually after. One ``.order().range()`` over
+    ``_JUDGMENT_HUB_TABLE``; never fetches more than the 9 rows the page shows.
 
-    Card item shape = ``{slug, title, court, court_level, court_level_label, city,
-    date_hijri, date_gregorian, domains, snippet}``. ``title`` is
-    ``judgment_display_title`` (the derived subject + court + Hijri year) and
-    ``snippet`` is the first ~160 chars of the bullet-stripped ``short_summary``
-    — the always-free lead, NEVER a gated section. Returns ``{"items": [...],
-    "page": page, "total_pages": N}``; the anon depth-cap is enforced by the route.
+    ⚠ ``nullsfirst=False`` IS LOAD-BEARING. Postgres puts NULLs FIRST on a DESC
+    order by default, which would open the hub with the ~11,400 dateless
+    judgments (the ديوان المظالم / ZATCA / تأمين feeds carry no
+    ``date_gregorian`` at all). This trap has bitten this codebase before.
 
-    SAMPLE MODE (stage-1 rollout): when ``_published_ids`` returns a list, the
-    page is cut from the PUBLISHED set — all matching published rows are fetched
-    by id, sorted in Python by ``_judgment_hub_sort_key`` (which reproduces the DB
-    ordering, NULL handling included), and the 9-item window is sliced — so a page
-    never comes back empty. In steady state the legacy ``range`` query runs.
+    ⚠ THE FLIP SIDE OF THAT ORDERING, KNOWN AND ACCEPTED (plan §1.2): those same
+    dateless feeds sort behind every dated MOJ row, so on the UNFILTERED hub they
+    begin around page ~800. The COURT SECTIONS are the intended entry point for
+    them — inside a section the set is homogeneous, so the ordering is fine.
+
+    ⚠ THIS USED TO BE THREE CODE PATHS AND IS NOW ONE (migration 123). The
+    sample-mode branch paginated a list of published ids in Python; the legacy
+    branch paginated the CORPUS and dropped unslugged rows AFTER paging, which
+    only worked while "every judgment is slugged" held. At ~10,000 of 30,531
+    published it does not: that path would have rendered ~3 cards per 9-card page
+    over ~3,393 pages. The view is the published set, so a page cannot come back
+    short.
+
+    Filters: ``court_level`` (exact), ``domain`` (an element of
+    ``legal_domains``), ``court_variants`` (the court SECTION — see
+    ``_apply_judgment_filters``), ``q`` (BM25).
+
+    Card item shape = ``{slug, title, court, court_slug, court_level,
+    court_level_label, city, date_hijri, date_gregorian, domains, snippet}``.
+    ``title`` is ``judgment_display_title`` (the derived subject + court + Hijri
+    year); ``court_slug`` is the bucket the raw ``court`` string belongs to, or
+    ``None`` for an unclaimed value — it is what lets the card's court pill be a
+    link to the section instead of dead text; ``snippet`` is the first ~160 chars
+    of the bullet-stripped ``short_summary`` — the always-free lead, NEVER a
+    gated section. Returns ``{"items": [...], "page": page, "total_pages": N}``;
+    the anon depth-cap is enforced by the route.
 
     SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
     from ``bm25_search()`` in score order. Recency does not order a search result
@@ -4206,33 +4388,24 @@ def list_judgments_hub(
 
     rows: list[dict[str, Any]]
     truncated = False
-    pub_ids = None if q else _published_ids(supabase, "judgment")
 
     if q:
         # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block comment).
         all_rows, truncated = _judgment_search_rows(
-            supabase, court_level, domain, q, _JUDGMENT_HUB_SELECT
+            supabase, court_level, domain, q, _JUDGMENT_HUB_SELECT, court_variants
         )
-        total = len(all_rows)
-        rows = all_rows[offset : offset + ps]
-    elif pub_ids is not None:
-        # SAMPLE MODE — paginate the published set in Python (set is <= 300).
-        all_rows = _fetch_corpus_by_ids(
-            supabase,
-            "cases",
-            _JUDGMENT_HUB_SELECT,
-            pub_ids,
-            lambda qb: _apply_judgment_filters(qb, court_level, domain),
-        )
-        all_rows.sort(key=_judgment_hub_sort_key)
         total = len(all_rows)
         rows = all_rows[offset : offset + ps]
     else:
-        # LEGACY (full-corpus steady state) — single-range query.
+        # BROWSE — one query over the published-only ranked view.
         try:
-            total = _judgment_count(supabase, court_level, domain, None)
-            qb = supabase.table("cases").select(_JUDGMENT_HUB_SELECT)
-            qb = _apply_judgment_filters(qb, court_level, domain)
+            total = _judgment_count(
+                supabase, court_level, domain, None, court_variants
+            )
+            qb = supabase.table(_JUDGMENT_HUB_TABLE).select(_JUDGMENT_HUB_SELECT)
+            qb = _apply_judgment_filters(
+                qb, court_level, domain, court_variants=court_variants
+            )
             res = (
                 qb.order("date_gregorian", desc=True, nullsfirst=False)
                 .order("id")
@@ -4246,18 +4419,20 @@ def list_judgments_hub(
 
     total_pages = max(1, math.ceil(total / ps)) if total else 1
 
-    slugs = _slug_map(supabase, "judgment", [r.get("id") for r in rows])
-
     items: list[dict[str, Any]] = []
     for r in rows:
-        slug = slugs.get(str(r.get("id")))
+        # The view is an INNER JOIN on a non-null slug, so this cannot be empty;
+        # the guard stays as a cheap invariant check rather than a filter.
+        slug = r.get("slug")
         if not slug:
             continue
+        court = (r.get("court") or "").strip()
         items.append(
             {
                 "slug": slug,
                 "title": judgment_display_title(r),
-                "court": (r.get("court") or "").strip(),
+                "court": court,
+                "court_slug": slug_for_court(court),
                 "court_level": r.get("court_level"),
                 "court_level_label": court_level_label(r.get("court_level")),
                 "city": r.get("city"),
@@ -4271,6 +4446,40 @@ def list_judgments_hub(
     return _hub_result(
         items, page, total_pages, q=q, total=total, truncated=truncated
     )
+
+
+def court_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """PUBLISHED judgment count per court slug — all 12, in ``COURT_ORDER``.
+
+    Feeds the court switcher and every court section's ``total_pages`` (plan
+    §2.3.4). ONE ``count='exact'`` head query per bucket over
+    ``_JUDGMENT_HUB_TABLE``, i.e. 12 index-only counts, behind the route's
+    5-minute memo — so the browse grid costs ~12 cheap queries per five minutes,
+    not one per page view. There is no grouped RPC for this the way there is for
+    sectors (migration 109/124) because a 12-row answer over a closed vocabulary
+    does not need one; if the vocabulary ever grows past a few dozen buckets,
+    that is the point to add one.
+
+    ⚠ THESE ARE COUNTS OF WHAT IS SERVABLE. They come from the same relation the
+    lister pages, so «المحكمة التجارية ٤٥٠» and the section's last page agree by
+    construction. The corpus numbers in ``shared/library/courts.py``'s comments
+    are documentation of the CORPUS and will be larger — do not reconcile them.
+
+    Every slug is present, seeded to zero: a court with nothing published still
+    renders (at zero) rather than vanishing from the switcher, which is the same
+    contract ``sector_counts`` holds. Fail-soft per bucket — one failing count
+    costs that number, not the page.
+    """
+    counts: dict[str, int] = {slug: 0 for slug in COURT_ORDER}
+    for slug in COURT_ORDER:
+        variants = COURT_VARIANTS.get(slug) or ()
+        try:
+            qb = supabase.table(_JUDGMENT_HUB_TABLE).select("id", count="exact")
+            qb = _apply_judgment_filters(qb, None, None, court_variants=variants)
+            counts[slug] = int((qb.limit(1).execute().count) or 0)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("court count failed (%s): %s", slug, e)
+    return counts
 
 
 def _judgment_article_int(article_no: str) -> Optional[int]:
@@ -4812,13 +5021,9 @@ def get_full_regulation(
             return {"sections": sections}
 
         # CHUNK FALLBACK — every chunk in reading order (legacy continuous doc).
-        res = (
-            supabase.table("chunks_v2")
-            .select("id, title, position, content")
-            .eq("regulation_id", content_id)
-            .order("position")
-            .execute()
-        )
+        res = _ordered_chunk_query(
+            supabase, str(content_id), "id, title, position, content"
+        ).execute()
         rows = res.data or []
     except Exception as e:  # noqa: BLE001
         logger.exception("Error loading full regulation (%s): %s", slug, e)

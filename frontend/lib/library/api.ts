@@ -511,6 +511,22 @@ export interface JudgmentsFilters {
    * `lib/library/court-levels.ts` — three values, never two.
    */
   court_level?: string;
+  /**
+   * One of the 12 ARABIC court slugs — «الجهة القضائية» (`lib/library/courts.ts`,
+   * mirroring `shared/library/courts.py`). The backend resolves the slug to the
+   * raw `cases.court` variants it claims and filters with `in.(…)`.
+   *
+   * ⚠ A SECTION, NOT A FILTER — and the distinction is load-bearing. It is a
+   * CLOSED, server-owned vocabulary, so it is deliberately kept out of the
+   * backend's `filtered` flag and therefore out of the enumeration-oracle clamp
+   * that pins an anon `total_pages` to 2. Same treatment as `sector_slug`.
+   *
+   * ⚠ Pass it DECODED. This value ends up in `URLSearchParams`, which encodes it
+   * exactly once; a `[court]` route param that was never run through
+   * `normalizeCourtSlug()` is already percent-encoded and would arrive at the
+   * backend as `%25D8…`.
+   */
+  court?: string;
   /** One value out of an item's `domains[]`. */
   domain?: string;
   /**
@@ -770,6 +786,51 @@ export function getJudgmentsHub(
     HUB_REVALIDATE,
   );
 }
+
+/**
+ * One row of `GET /public/library/judgments/courts` — the per-court item count
+ * and page count for «الجهة القضائية».
+ *
+ * `label` is the Arabic display name and the SERVER owns it, exactly as
+ * `court_level_label` is owned server-side on every judgment payload. The local
+ * mirror (`lib/library/courts.ts`) supplies the same string when this call is
+ * unavailable; it is a fallback, not a second source of truth.
+ */
+export interface JudgmentCourtSummary {
+  slug: string;
+  label: string;
+  count: number;
+  total_pages: number;
+}
+
+interface JudgmentCourtsResponse {
+  courts: JudgmentCourtSummary[];
+}
+
+/**
+ * The 12 court sections with their counts, in the server's browse order.
+ *
+ * ⚠ SOFT-FAILS TO `[]` WHERE ITS SIBLINGS THROW, for the same reason
+ * `getSectors` does: this decorates every /judgments page, and a switcher is not
+ * worth taking a hub down over. An empty list degrades to «all 12 tiles, no
+ * counts» via `courtNavItems()` — the links come from the local mirror, so the
+ * second browse axis survives a backend that has not shipped this endpoint yet.
+ *
+ * `cache()` makes it one request per render pass however many callers ask.
+ */
+export const getJudgmentCourts = cache(
+  async (): Promise<JudgmentCourtSummary[]> => {
+    try {
+      const data = await fetchJson<JudgmentCourtsResponse>(
+        `${SERVER_API_BASE}/api/v1/public/library/judgments/courts`,
+        HUB_REVALIDATE,
+      );
+      return data?.courts ?? [];
+    } catch {
+      return [];
+    }
+  },
+);
 
 export function getJudgmentDoc(slug: string): Promise<JudgmentDoc | null> {
   return fetchJson<JudgmentDoc>(

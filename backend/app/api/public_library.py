@@ -74,6 +74,12 @@ from agents.deep_search_v4.shared.sector_vocab.unified import VALID_SECTORS
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
 from shared.db.run import run_db
+from shared.library.courts import (
+    COURT_LABELS,
+    COURT_ORDER,
+    COURT_SLUG_VOCAB,
+    variants_for_slug,
+)
 from shared.library.sectors import (
     SECTOR_SLUGS,
     sector_for_slug,
@@ -447,6 +453,20 @@ def _hub_page_visible(
 #     is the exact failure the 2026-07-30 revision was written to fix.
 #     Combining a sector WITH a free-text/entity filter is filtered again: the
 #     section is the base set, the rest is still a probe.
+#   · A VALIDATED COURT is a SECTION too, on exactly that argument
+#     (``library_court_sections_publish_ramp.md`` §2.3.3, 2026-08-08).
+#     ``shared/library/courts.py`` is a CLOSED 12-value server-owned vocabulary
+#     mapping each slug to the raw ``cases.court`` strings it claims; a court
+#     therefore yields 12 fixed numbers that move only when the corpus does, and
+#     ``court`` must stay OUT of every ``filtered`` flag. Get this wrong and
+#     ``_visible_total_pages`` pins every court page to «1 2» for anon — over
+#     20,335 المحكمة التجارية judgments — which defeats the entire feature
+#     silently, since nothing errors and page 1 still renders.
+#     ⚠ COURT **+** SECTOR IS FILTERED AGAIN, for the reason ``doc_type`` is:
+#     two closed vocabularies MULTIPLY the page-1 surface (12 × 38 = 456), and
+#     456 combinations cannot be memoised the way 12 and 152 are — an unmemoised
+#     count on the anon path is the round-trip §2.1 removed. Same rule, same
+#     reason as «a sector combined with a closed-vocabulary filter».
 #   · DEPTH IS UNCHANGED by all of this. anon 1 · free 3 · paid unbounded, on a
 #     sector page exactly as on any other hub. Real numbers, same walls.
 #
@@ -492,14 +512,33 @@ _sector_memo_at: dict[str, float] = {"at": 0.0}
 # because the sector columns do not sum to them (see ``library_corpus_counts``).
 _corpus_counts_memo: dict[str, Any] = {"at": 0.0, "value": None}
 
+# ── Court counts (court_sections §2.3.4) ────────────────────────────────────
+# The 12 per-court published counts and the page counts derived from them, on
+# the SAME 5-minute TTL and for the same reason: a court is a SECTION, so its
+# wall reports a real number, and a real number on the anon path must not cost a
+# COUNT per request. One refresh fills both dicts (12 index-only counts —
+# ``library_service.court_counts``); nothing here is lazily filled per slug.
+#
+# Separate memos rather than a 13th key on the sector dicts: the two axes are
+# independent (a court is not a sector, and the counts are taken over different
+# predicates), and one shared refresh timestamp would make a sector-page hit
+# refresh the court counts and vice versa.
+_court_counts_memo: dict[str, int] = {}
+_court_total_pages_memo: dict[str, int] = {}
+_court_memo_at: dict[str, float] = {"at": 0.0}
+
 
 def _reset_sector_memos() -> None:
-    """Drop every sector/corpus memo. Test helper — never called in production."""
+    """Drop every sector/court/corpus memo. Test helper — never called in
+    production."""
     _sector_counts_memo.clear()
     _sector_total_pages_memo.clear()
     _sector_memo_at["at"] = 0.0
     _corpus_counts_memo["at"] = 0.0
     _corpus_counts_memo["value"] = None
+    _court_counts_memo.clear()
+    _court_total_pages_memo.clear()
+    _court_memo_at["at"] = 0.0
 
 
 async def _unfiltered_total_pages(
@@ -575,6 +614,52 @@ async def _corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
     return dict(value)
 
 
+async def _court_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """The 12 per-court PUBLISHED judgment counts, memoised for 5 minutes.
+
+    ONE refresh fills the item counts returned here and the derived page counts
+    the CTA wall reads. Cost: 12 ``count='exact'`` head queries over
+    ``library_judgments_ranked`` per refresh (``library_service.court_counts``).
+
+    Returns a COPY — handing out the module dict lets one handler corrupt what
+    every other request reads for the rest of the TTL (the F5 fix on the sector
+    memo, which cost a real bug hunt once).
+    """
+    now = time.monotonic()
+    if _court_counts_memo and now - _court_memo_at["at"] < _TOTAL_PAGES_TTL_SECONDS:
+        return dict(_court_counts_memo)
+
+    counts = await run_db(library_service.court_counts, supabase)
+
+    page_size = library_service.HUB_PAGE_SIZE
+    _court_counts_memo.clear()
+    _court_counts_memo.update(counts)
+    _court_total_pages_memo.clear()
+    for slug, items in counts.items():
+        # An empty court still reports 1 page — the hub listers do the same
+        # (``max(1, ...) if total else 1``), so a court with nothing published
+        # renders a single "no results" page rather than a zero-page paginator.
+        # المحكمة العمالية holds 35 judgments corpus-wide and may well publish
+        # none, so this is a real case, not a defensive branch.
+        _court_total_pages_memo[slug] = (
+            max(1, math.ceil(items / page_size)) if items else 1
+        )
+    _court_memo_at["at"] = now
+    return dict(_court_counts_memo)
+
+
+async def _court_total_pages(supabase: SupabaseClient, court_slug: str) -> int:
+    """Memoised real page count for one court section (§2.3.4).
+
+    Counts what the wing can actually SERVE — ``court_counts`` reads the same
+    published relation ``list_judgments_hub`` pages — so the page-1 body's total
+    and the page-2 wall's cannot disagree. §12.2 failed on exactly that
+    mismatch on another wing.
+    """
+    await _court_counts(supabase)
+    return _court_total_pages_memo.get(court_slug, 1)
+
+
 async def _sector_total_pages(
     supabase: SupabaseClient, section: str, sector_slug: str
 ) -> int:
@@ -599,19 +684,28 @@ async def _wall_total_pages(
     section: str,
     filtered: bool,
     sector_slug: Optional[str] = None,
+    court_slug: Optional[str] = None,
     **kwargs,
 ) -> int:
     """``total_pages`` for a cap_reached body — see the block comment above.
 
     Anon + a filter is the only case that gets the flat ceiling; the count query
-    is skipped entirely there. Anon + a validated SECTION (``sector_slug``, and
-    no other filter) gets the memoised real per-sector count instead — that is
-    the §5 amendment, and it is the whole difference between a sector page whose
-    paginator reads «1 2» and one that reads «1 2 3 … 2243».
+    is skipped entirely there. Anon + a validated SECTION — ``court_slug`` or
+    ``sector_slug``, and no other narrowing — gets that section's memoised real
+    count instead. That is the §5 amendment (and §2.3.3 for courts), and it is
+    the whole difference between a section page whose paginator reads «1 2» and
+    one that reads «1 2 3 … 2243».
+
+    The two section axes are mutually exclusive HERE only because a caller that
+    supplies both has already been marked ``filtered`` (12 × 38 combinations are
+    not memoised — see the block comment), so the branch order never decides a
+    real answer.
     """
     if tier == "anon":
         if filtered:
             return _ANON_WALL_TOTAL_PAGES
+        if court_slug:
+            return await _court_total_pages(supabase, court_slug)
         if sector_slug:
             return await _sector_total_pages(supabase, section, sector_slug)
         return await _unfiltered_total_pages(counter, supabase, section)
@@ -746,6 +840,11 @@ MSG_INVALID_COURT_LEVEL = "درجة محكمة غير معروفة"
 MSG_INVALID_CATEGORY = "تصنيف غير معروف"
 MSG_INVALID_SECTOR = "قطاع غير معروف"
 MSG_SECTOR_NOT_FOUND = "القطاع غير موجود"
+# «الجهة القضائية», never «نوع المحكمة»: rows 9–10 of the vocabulary
+# (العليا / الاستئناف) are court LEVELS that leak into ``cases.court`` on the MOJ
+# feed, so this facet and the ``court_level`` chips compose rather than
+# contradict — the wording is what keeps that legible to a reader.
+MSG_INVALID_COURT = "جهة قضائية غير معروفة"
 
 # THE REAL VOCABULARIES — every one of these is imported from the module that
 # owns it, never retyped, so a new pipeline bucket or court level cannot become a
@@ -758,6 +857,12 @@ MSG_SECTOR_NOT_FOUND = "القطاع غير موجود"
 _DOC_TYPE_VOCAB = frozenset(library_service.DOC_TYPE_BUCKET_LABELS)
 # ``cases.court_level`` — 3 values, verified against the whole 30.5k corpus.
 _COURT_LEVEL_VOCAB = frozenset(COURT_LEVEL_LABELS)
+# The 12 court SECTION slugs. IMPORTED from ``shared/library/courts.py``, which
+# is the only normalizer for ``cases.court`` in the codebase — a 13th bucket
+# added there must not need a second edit here to become servable, and the raw
+# Arabic court strings must never be retyped into this module (30 distinct free
+# text values, several differing only by an invisible double space).
+_COURT_VOCAB = COURT_SLUG_VOCAB
 # ``forms.category`` — the wing's own tuple (the forms table is the only writer).
 _FORM_CATEGORY_VOCAB = frozenset(library_service.FORM_CATEGORIES)
 # The RAW Arabic sector names stored in ``regulations_v2.sectors[]`` /
@@ -960,6 +1065,49 @@ def _sector_is_unslugged(name: Optional[str], slug: Optional[str]) -> bool:
     today; it costs one comparison and removes a wrong-number failure mode.
     """
     return name is not None and slug is None
+
+
+def _court_section(
+    court_slug: Optional[str],
+) -> tuple[Optional[tuple[str, ...]], Optional[str]]:
+    """Resolve the COURT axis of a /judgments request → ``(variants, slug)``.
+
+    ``(None, None)`` means no court was requested — the normal, unfiltered hub.
+    Otherwise the tuple is the RAW ``cases.court`` strings the bucket claims,
+    ready for ``in.()``, plus the canonical slug (trimmed, as the map spells it).
+
+    IN-MEMORY, AND THAT IS THE POINT (mirrors ``_sector_section``, §12.7). The
+    whole decision — is this a real court, is it reserved, what does it match —
+    is a dict lookup in ``shared/library/courts.py``. Probing the namespace
+    therefore costs no DB round-trip, and a refusal cannot become its own load
+    generator. Call this BEFORE tier resolution and before any query.
+
+    Raises 400 «جهة قضائية غير معروفة» for a value outside the 12 and for a
+    RESERVED segment (``page`` / ``mine`` — ``variants_for_slug`` returns None
+    for those even if a future edit adds them to the map, so
+    ``/judgments/courts/page/2`` can never resolve as a court in either
+    namespace).
+
+    ⚠ ONE SPELLING, unlike the sector axis. A sector travels as both a Latin
+    slug and a raw Arabic name because the raw param predates the section
+    concept; a court has never had a raw param, so there is nothing to reconcile
+    and no spelling arbitrage to close. Do not add one: the raw ``cases.court``
+    values are free text and exposing them as a query param would hand back an
+    unbounded, unmemoisable axis — exactly what §5's T4 closed for sectors.
+    """
+    slug = _clean(court_slug)
+    if slug is None:
+        return None, None
+    if slug not in _COURT_VOCAB:
+        raise _reject(MSG_INVALID_COURT)
+    variants = variants_for_slug(slug)
+    if not variants:
+        # In the vocabulary but claiming no raw values — a reserved segment
+        # someone added to the map, or a bucket edited down to nothing. Refusing
+        # is the only safe answer: an empty ``in.()`` is a no-op, so this would
+        # otherwise serve the WHOLE wing under a court URL.
+        raise _reject(MSG_INVALID_COURT)
+    return variants, slug
 
 
 def _entity_name_or_id(value: Optional[str]) -> Optional[str]:
@@ -1289,11 +1437,19 @@ class JudgmentHubItem(BaseModel):
     so the frontend can filter on the raw value and print the label. ``snippet``
     is the first ~160 chars of the bullet-stripped ``short_summary`` — the
     always-free lead, never a gated section. ``date_gregorian`` is an ISO date
-    string or null (11.4k judgments carry only a Hijri date)."""
+    string or null (11.4k judgments carry only a Hijri date).
+
+    ``court_slug`` is the COURT SECTION the raw ``court`` string belongs to, or
+    null when no bucket claims it (today: the single empty-string row). It is
+    what makes the card's court pill a link to
+    ``/judgments/courts/{court_slug}`` instead of dead text — the mapping is
+    30 raw values onto 12 buckets and lives in ``shared/library/courts.py``, so
+    the frontend cannot derive it and must be handed it."""
 
     slug: str
     title: str
     court: str = ""
+    court_slug: Optional[str] = None
     court_level: Optional[str] = None
     court_level_label: Optional[str] = None
     city: Optional[str] = None
@@ -1515,6 +1671,36 @@ class SectorListResponse(BaseModel):
     bury المعاملات التجارية (20,182 items) under الأمن الغذائي (753)."""
 
     sectors: list[SectorSummary] = Field(default_factory=list)
+
+
+class CourtSummary(BaseModel):
+    """One entry of the «الجهة القضائية» switcher.
+
+    ``slug`` is the URL segment (``/judgments/courts/{slug}``) and is ARABIC on
+    this wing — the whole /judgments wing is ``noindex`` behind the PDPL gate, so
+    the "Latin for structural segments" rule had no SEO neutrality left to buy
+    (``shared/library/courts.py`` records the decision). ``label`` is the H1 and
+    the switcher text, and it NEVER contains a city: six ضريبة القيمة المضافة
+    circuits differing only by جدة/الرياض/الدمام are one bucket.
+
+    ``count`` is PUBLISHED judgments, not corpus rows — it sizes a paginator that
+    walks exactly that set — and ``total_pages`` is that count at 9/page, floored
+    at 1 so an empty court still renders one "no results" page."""
+
+    slug: str
+    label: str
+    count: int = 0
+    total_pages: int = 1
+
+
+class CourtListResponse(BaseModel):
+    """``GET /public/library/judgments/courts`` — all 12, memoised 5 minutes.
+
+    ⚠ THE SERVER OWNS THE ORDER: corpus volume descending (``COURT_ORDER``). Do
+    not re-sort on the client — alphabetically المحكمة التجارية (20,335) would
+    sit under المحكمة العامة (69)."""
+
+    courts: list[CourtSummary] = Field(default_factory=list)
 
 
 class SectorPreview(BaseModel):
@@ -2308,6 +2494,13 @@ async def list_judgments(
     sector_slug: Optional[str] = Query(
         None, description="Latin sector slug — the SECTION axis (§5)"
     ),
+    court: Optional[str] = Query(
+        None,
+        description=(
+            "court slug (Arabic) — the «الجهة القضائية» SECTION axis; one of the "
+            "12 in shared/library/courts.py"
+        ),
+    ),
     q: Optional[str] = Query(
         None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
     ),
@@ -2331,13 +2524,33 @@ async def list_judgments(
     the 9,860 sector-less judgments are reachable ONLY through the unfiltered
     hub, which is why the sector page count and the corpus total differ.
 
+    ``court`` is the SECOND section axis (court_sections §2.3) and it is what
+    ``/judgments/courts/{slug}`` travels as. THERE IS NO SEPARATE COURT HUB
+    ENDPOINT, deliberately: a court page is this handler with one validated
+    param, which is what makes it inherit the gating, the item budget, the depth
+    caps and the cache rule unchanged. Forking a hub per court would fork all of
+    that twelve ways, and the copies would drift.
+
     A signed-in caller's yielded items are metered (§2.2)."""
     court_level = _vocab_value(court_level, _COURT_LEVEL_VOCAB, MSG_INVALID_COURT_LEVEL)
     domain, sector_key = _sector_section(sector_slug, domain)
+    court_variants, court_key = _court_section(court)
     search_dropped = _search_was_dropped(q, current_user)
     q = _search_query(q, current_user)
-    # ``domain`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
-    filtered = bool(court_level or q) or _sector_is_unslugged(domain, sector_key)
+    # ⚠ ``domain`` AND ``court`` ARE SECTIONS, NOT FILTERS — neither belongs in
+    # this flag. Adding either one pins anon ``total_pages`` to 2 through
+    # ``_visible_total_pages``, on every sector and every court page, with
+    # nothing failing loudly. Read the CTA-wall block comment (§5 · §2.3.3)
+    # before touching this line.
+    #
+    # Two sections TOGETHER are filtered again: 12 × 38 = 456 combinations are
+    # not memoised, and an unmemoised count on the anon path is the round-trip
+    # §2.1 removed. Same rule as sector + doc_type.
+    filtered = (
+        bool(court_level or q)
+        or _sector_is_unslugged(domain, sector_key)
+        or bool(court_key and sector_key)
+    )
 
     tier, user_id = await _hub_caller(supabase, current_user)
     page = max(1, int(page or 1))
@@ -2353,9 +2566,11 @@ async def list_judgments(
             court_level=court_level,
             domain=domain,
             q=q,
+            court_variants=court_variants,
             section="judgments",
             filtered=filtered,
             sector_slug=sector_key,
+            court_slug=court_key,
         )
         return JudgmentHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -2371,6 +2586,7 @@ async def list_judgments(
         court_level=court_level,
         domain=domain,
         q=q,
+        court_variants=court_variants,
     )
     await _charge_hub_yield(request, supabase, user_id, "judgments", data["items"], tier)
     return JudgmentHubResponse(
@@ -2382,6 +2598,52 @@ async def list_judgments(
         total_count=data.get("total_count"),
         total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
+    )
+
+
+# ⚠ THIS ROUTE MUST STAY ABOVE ``/public/library/judgments/{slug}``. FastAPI
+# matches in DECLARATION order, so a ``/judgments/courts`` declared after the
+# document route would be swallowed by ``{slug}`` and answer 404 «الحكم غير
+# موجود» — the same static-before-dynamic rule that lets ``/judgments/page/2``
+# coexist with ``/judgments/{judgment-slug}`` on the frontend.
+@router.get("/public/library/judgments/courts", response_model=CourtListResponse)
+async def list_judgment_courts(
+    response: Response,
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """All 12 «الجهة القضائية» sections with their PUBLISHED counts (§2.3.4).
+
+    Feeds the court switcher rendered on /judgments and on every court page, and
+    the frontend's ``generateStaticParams`` over the 12 slugs.
+
+    ORDER IS THE SERVER'S — corpus volume descending (``COURT_ORDER``) — and the
+    frontend renders it as given. The slugs, the labels and the raw-string
+    buckets all come from ``shared/library/courts.py``, never from the corpus: a
+    ``cases.court`` value no bucket claims (today: one empty-string row) has no
+    section and simply is not listed. Counts are memoised for 5 minutes.
+
+    ⚠ THE COUNTS ARE OF PUBLISHED JUDGMENTS, not corpus rows, so they are smaller
+    than the numbers in ``courts.py``'s comments (which document the corpus) —
+    that is the point, since each one sizes a paginator that walks exactly the
+    published set.
+
+    No items are yielded, so nothing is metered. The rate limiter collapses this
+    path into the shared ``judgments/:item`` bucket
+    (``normalize_rate_limit_path``), which is correct: it must not buy a caller a
+    second budget alongside the judgment document pages."""
+    counts = await _court_counts(supabase)
+    _apply_hub_cache_headers(response, current_user)
+    return CourtListResponse(
+        courts=[
+            CourtSummary(
+                slug=slug,
+                label=COURT_LABELS[slug],
+                count=int(counts.get(slug, 0)),
+                total_pages=_court_total_pages_memo.get(slug, 1),
+            )
+            for slug in COURT_ORDER
+        ]
     )
 
 

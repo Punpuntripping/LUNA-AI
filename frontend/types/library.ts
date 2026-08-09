@@ -317,6 +317,12 @@ export interface TocListProps {
   title?: string;
   /** Collapse behind a `<summary>` on mobile. Default true. */
   collapsible?: boolean;
+  /**
+   * Whether the `<details>` starts expanded. Default true (the historical
+   * behaviour). Document pages pass `false`: their TOC runs to hundreds of
+   * مواد, and expanded-by-default buries the article text below all of them.
+   */
+  defaultOpen?: boolean;
   /** Optional count pill in the header, e.g. «391 مادة». */
   badge?: string;
   className?: string;

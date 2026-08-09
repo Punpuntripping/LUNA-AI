@@ -7,11 +7,22 @@ import { hrefWithFilters } from "@/lib/library/hub-query";
 import { HubSearchPanel } from "@/components/library/hub/HubSearchPanel";
 import type { JudgmentsFilters } from "@/lib/library/api";
 
-const BASE_PATH = "/judgments";
+/** The unfiltered wing. A court SECTION passes its own path instead. */
+const DEFAULT_BASE_PATH = "/judgments";
 
 /**
  * The /judgments hub filter row: درجة المحكمة chips + the shared search box —
  * and, while a search is live, the results that replace the grid.
+ *
+ * ── THE SECOND AXIS: «الجهة القضائية» (court sections) ──────────────────────
+ * `basePath` is what makes this bar work unchanged inside
+ * `/judgments/courts/{slug}`. The court lives in the PATH, not the query string,
+ * so every chip href here is rebuilt against the section's base path and a
+ * reader who picks «استئناف» inside المحكمة التجارية stays inside المحكمة
+ * التجارية. The two axes COMPOSE: the court switcher (`CourtSwitcher`) changes
+ * the section, these chips narrow it, and neither clears the other. `court`
+ * itself is deliberately NOT a chip and gets no dismiss row — the «جميع الجهات»
+ * tile in the switcher and the breadcrumb are its clear actions.
  *
  * ── WHAT CHANGED, AND WHAT DID NOT (bm25_navigation_search.md §6.1/§6.2) ────
  * The court-level chips are UNTOUCHED: still plain `<Link>`s that rewrite the
@@ -50,26 +61,49 @@ const BASE_PATH = "/judgments";
 export function JudgmentsFilterBar({
   filters,
   sectorSlugs,
+  basePath = DEFAULT_BASE_PATH,
   children,
 }: {
   filters: JudgmentsFilters;
   /** `name_ar → slug` for the sector pills on search result cards (D11). */
   sectorSlugs?: Record<string, string>;
+  /**
+   * Where a chip navigates: `/judgments`, or `/judgments/courts/{slug}` inside
+   * a court section. Always the PAGE-1 path — every filter change resets to
+   * page 1, because landing on page 7 of a freshly-narrowed set shows nothing.
+   */
+  basePath?: string;
   /** The hub's normal body — shown whenever no search is live. */
   children: ReactNode;
 }) {
-  const { court_level = "", domain = "" } = filters;
+  const { court_level = "", domain = "", court = "" } = filters;
 
   return (
     <HubSearchPanel
       section="judgments"
       sectorSlugs={sectorSlugs}
-      // Searching INSIDE the active chips, not around them: a reader who picked
-      // «محكمة الاستئناف» and then typed expects both to apply.
-      filters={{ court_level, domain }}
-      leading={<CourtLevelChips courtLevel={court_level} domain={domain} />}
+      // Searching INSIDE the active chips AND inside the active court section,
+      // not around them: a reader who opened المحكمة التجارية, picked «استئناف»
+      // and then typed expects all three to apply. `court` reaches the wing
+      // endpoint as a query param on the authed search call — which is the same
+      // contract the server-side browse fetch uses, so search and browse narrow
+      // to the identical slice.
+      filters={{ court_level, domain, court }}
+      leading={
+        <CourtLevelChips
+          basePath={basePath}
+          courtLevel={court_level}
+          domain={domain}
+        />
+      }
       below={
-        domain ? <ActiveFilters courtLevel={court_level} domain={domain} /> : null
+        domain ? (
+          <ActiveFilters
+            basePath={basePath}
+            courtLevel={court_level}
+            domain={domain}
+          />
+        ) : null
       }
     >
       {children}
@@ -84,9 +118,11 @@ export function JudgmentsFilterBar({
  * filter's own clear action, which is why it gets no dismiss chip below.
  */
 function CourtLevelChips({
+  basePath,
   courtLevel,
   domain,
 }: {
+  basePath: string;
   courtLevel: string;
   domain: string;
 }) {
@@ -97,7 +133,7 @@ function CourtLevelChips({
         return (
           <li key={option.value || "all"}>
             <Link
-              href={hrefWithFilters(BASE_PATH, {
+              href={hrefWithFilters(basePath, {
                 court_level: option.value,
                 domain,
               })}
@@ -118,11 +154,19 @@ function CourtLevelChips({
   );
 }
 
-/** The dismiss row — `domain` only; see the component note above. */
+/**
+ * The dismiss row — `domain` only; see the component note above.
+ *
+ * Both links target `basePath`, so clearing a domain inside a court section
+ * clears the DOMAIN and keeps the section. «مسح الكل» means "all the filters on
+ * this page", not "leave the section" — the switcher owns that.
+ */
 function ActiveFilters({
+  basePath,
   courtLevel,
   domain,
 }: {
+  basePath: string;
   courtLevel: string;
   domain: string;
 }) {
@@ -130,7 +174,7 @@ function ActiveFilters({
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
       <span>الفلاتر النشطة:</span>
       <Link
-        href={hrefWithFilters(BASE_PATH, { court_level: courtLevel })}
+        href={hrefWithFilters(basePath, { court_level: courtLevel })}
         aria-label={`إزالة فلتر المجال ${domain}`}
         className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-pill"
       >
@@ -138,7 +182,7 @@ function ActiveFilters({
         <X aria-hidden="true" className="h-3 w-3 shrink-0" />
       </Link>
       <Link
-        href={BASE_PATH}
+        href={basePath}
         className="underline-offset-2 transition-colors hover:text-foreground hover:underline"
       >
         مسح الكل
