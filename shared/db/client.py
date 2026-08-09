@@ -94,12 +94,28 @@ def _client_options() -> SyncClientOptions:
     """Belt-and-suspenders timeouts on the ClientOptions level so that even if
     _harden_sessions degrades on a future supabase-py bump, the lazy postgrest /
     storage clients are still constructed with bounded timeouts.
+
+    ``auto_refresh_token=False`` + ``persist_session=False`` because the backend
+    is STATELESS about user sessions — it verifies JWTs with PyJWT and hands
+    tokens to the browser, which owns rotation from then on. With the defaults
+    (both True), every ``sign_in_with_password`` on the shared auth client
+    parked that login's session AND armed a gotrue ``threading.Timer`` at
+    ``expires_at − EXPIRY_MARGIN`` (login + 3590s). When it fired, it replayed
+    the PARKED refresh token — long since rotated away by the browser — and
+    GoTrue's reuse-detection revoked the entire session family, force-logging
+    the user out exactly one hour after login (measured 3589–3591s across 29
+    sessions in auth.refresh_tokens; the ±1s precision is the unthrottled
+    server-side timer). Each later /login re-parked the shared client and
+    cancelled the previous timer, which is why the kill looked sporadic: only
+    the LAST login of the hour on a backend process died.
     """
     return SyncClientOptions(
         postgrest_client_timeout=httpx.Timeout(
             connect=5.0, read=15.0, write=15.0, pool=5.0
         ),
         storage_client_timeout=60,  # storage_client_timeout is int seconds only
+        auto_refresh_token=False,
+        persist_session=False,
     )
 
 
