@@ -2,6 +2,7 @@ import {
   fetchBlogUrls,
   fetchSectionUrls,
   getCalculatorUrls,
+  getCourtUrls,
   getSectorUrls,
   getStaticUrls,
   renderUrlset,
@@ -13,6 +14,7 @@ import {
 //
 //   static                   → hardcoded marketing + legal pages (no backend).
 //   calculators              → local code registry (no backend).
+//   courts                   → the 12 court section pages (no backend).
 //   sectors                  → built from the `/sectors` counts endpoint.
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
 //   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
@@ -49,6 +51,11 @@ export async function GET(
     case "calculators":
       // Local registry — no backend, never throws.
       urls = getCalculatorUrls();
+      break;
+    case "courts":
+      // The 12 court section pages (page 1 only) — compile-time vocabulary,
+      // no backend, never throws. Judgment documents stay out (PDPL gate).
+      urls = getCourtUrls();
       break;
     case "sectors":
       // `/library/{sector}` + every INDEXABLE `/library/{sector}/{type}`, built

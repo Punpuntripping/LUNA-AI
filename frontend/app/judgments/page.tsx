@@ -17,6 +17,10 @@ import { readParam, type RawSearchParams } from "@/lib/library/hub-query";
 //   2. add "judgments" to SITEMAP_SECTIONS in `lib/seo/sitemap.ts` and give it a
 //      case in the `app/sitemaps/[section]` route.
 // Nothing else about the wing is provisional — this is the only gate.
+// CARVE-OUT already live: page 1 of the 12 court sections
+// (`app/judgments/courts/[court]/page.tsx`) is indexable and sitemap-listed
+// (`courts` section) — those pages show derived titles only, never judgment
+// text. The gate above covers everything else, including THIS hub.
 const NOINDEX_PDPL = { index: false, follow: false } as const;
 
 const HUB_TITLE = "الأحكام القضائية السعودية";

@@ -5,6 +5,7 @@
 
 import { CALCULATORS } from "@/lib/calculators/registry";
 import { getSectors } from "@/lib/library/api";
+import { COURT_ORDER } from "@/lib/library/courts";
 import {
   LIBRARY_TYPES,
   sectorPath,
@@ -30,13 +31,19 @@ export const SITE_URL = "https://rayhanai.com";
  * uses the same `{ urls, page, total_pages }` feed contract. Later phases append
  * `judgments`, `circulars`, `articles`, …
  *
- * TODO(pdpl): `judgments` is DELIBERATELY absent. The /judgments wing ships
- * `robots: { index: false, follow: false }` on every page until the PDPL
- * anonymization audit confirms no party-identifying details survive in judgment
- * text — listing it here would invite exactly the crawl those pages must not
- * get yet. Add "judgments" to this tuple + a case in `app/sitemaps/[section]`
- * at the same time the `robots` keys come out of the three page files under
- * `app/judgments/`. Do not do one without the other.
+ * TODO(pdpl): `judgments` (the per-document URLs) is DELIBERATELY absent. The
+ * judgment DOCUMENT pages ship `robots: { index: false, follow: false }` until
+ * the PDPL anonymization audit confirms no party-identifying details survive in
+ * judgment text — listing them here would invite exactly the crawl those pages
+ * must not get yet. Add "judgments" to this tuple + a case in
+ * `app/sitemaps/[section]` at the same time the `robots` keys come out of the
+ * document + hub page files under `app/judgments/`. Do not do one without the
+ * other.
+ *
+ * `courts` is the deliberate CARVE-OUT from that gate: the 12 court section
+ * pages (`/judgments/courts/{slug}`, page 1 only) are indexable — they list
+ * derived titles, never judgment text — so they are the one part of the wing
+ * the sitemap names. Deep pagination and the documents they link stay gated.
  */
 export const SITEMAP_SECTIONS = [
   "static",
@@ -47,6 +54,7 @@ export const SITEMAP_SECTIONS = [
   "forms",
   "calculators",
   "sectors",
+  "courts",
 ] as const;
 
 export type SitemapSection = (typeof SITEMAP_SECTIONS)[number];
@@ -129,6 +137,24 @@ export function getCalculatorUrls(): SitemapUrl[] {
       loc: `${SITE_URL}/calculators/${encodeURIComponent(calc.slug)}`,
     })),
   ];
+}
+
+/**
+ * The 12 court sections — the `courts` section, built LOCALLY from the
+ * compile-time vocabulary in `lib/library/courts.ts` (mirror of
+ * `shared/library/courts.py`). No backend feed: the slug set IS the source of
+ * truth, and a slug this file knows always has a page to point at.
+ *
+ * PAGE 1 ONLY, deliberately: deep pagination (`/page/{n}`) and the judgment
+ * documents the sections link to remain behind the PDPL noindex gate — listing
+ * them would be the "Submitted URL marked noindex" self-contradiction. Each
+ * URL is the Arabic slug encoded exactly ONCE, matching the page's own
+ * canonical (`/judgments/courts/${encodeURIComponent(slug)}`).
+ */
+export function getCourtUrls(): SitemapUrl[] {
+  return COURT_ORDER.map((slug) => ({
+    loc: `${SITE_URL}/judgments/courts/${encodeURIComponent(slug)}`,
+  }));
 }
 
 /**

@@ -31,12 +31,14 @@ import {
 // it once for the backend query param, and `encodeURIComponent` produces the
 // canonical URL. Encoding an already-encoded param yields `%25D8…`, which 404s.
 //
-// ⚠ NOINDEX — PDPL GATE. The whole /judgments wing is `noindex, nofollow` until
-// the anonymization audit passes, and a court section is the SAME judgments
-// sliced differently, so it inherits the same directive. There is deliberately
-// no sitemap entry either — the `TODO(pdpl)` block in `lib/seo/sitemap.ts` stays
-// closed. Lift both in the same commit as the rest of the wing; see the flip
-// checklist at the top of `app/judgments/page.tsx`.
+// ⚠ INDEXABLE — THE ONE CARVE-OUT FROM THE WING'S PDPL GATE. Page 1 of a court
+// section lists derived titles only, never judgment text, so it carries no
+// robots directive (default index, follow) and the 12 URLs are listed in the
+// sitemap's `courts` section (`lib/seo/sitemap.ts`). Everything it links to —
+// the judgment documents, deep pagination — keeps `noindex, nofollow` until the
+// anonymization audit passes; see the flip checklist at the top of
+// `app/judgments/page.tsx`. The unknown-slug fallback below stays noindex: that
+// render 404s and has no business in an index.
 const NOINDEX_PDPL = { index: false, follow: false } as const;
 
 const WING_TITLE = "الأحكام القضائية السعودية";
@@ -83,9 +85,9 @@ export async function generateMetadata({
     title,
     description,
     // Canonical stays the bare section: the درجة المحكمة chips slice the SAME
-    // collection, they are never separate documents.
+    // collection, they are never separate documents. No `robots` key — page 1
+    // of a court section is the wing's indexable carve-out (see header note).
     alternates: { canonical },
-    robots: NOINDEX_PDPL,
     openGraph: {
       title,
       description,

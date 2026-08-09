@@ -20,8 +20,11 @@ import {
 // (`RESERVED_COURT_SLUGS` here and in `shared/library/courts.py`), so
 // `/judgments/courts/page/2` can never resolve as a court in either direction.
 //
-// ⚠ NOINDEX — PDPL GATE, inherited from the wing. See the note at the top of
-// the page-1 sibling. NOTE the `cap_reached` noindex rule the other hubs use
+// ⚠ NOINDEX — PDPL GATE, inherited from the wing. Page 1 of each section is
+// now the wing's indexable, sitemap-listed carve-out (see the page-1 sibling),
+// but deep pages STAY gated: they exist to walk toward judgment documents that
+// are themselves noindex, so indexing them buys nothing and invites the crawl.
+// NOTE the `cap_reached` noindex rule the other hubs use
 // (`{ index: false, follow: true }` on an anon depth-cap wall) is deliberately
 // NOT applied — it would be strictly weaker than the PDPL gate. Restore it as
 // the `capped` branch when the gate is lifted.
