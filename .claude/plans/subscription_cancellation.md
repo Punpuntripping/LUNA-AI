@@ -34,8 +34,8 @@ Survey options (user's wording, keep the spirit):
 | key | Arabic label |
 |---|---|
 | `expensive` | السعر مرتفع |
-| `no_longer_needed` | انتفت حاجتي من التطبيق |
-| `something_wrong` | واجهت شيئًا لم يعجبني |
+| `no_longer_needed` | لم أعد بحاجة إلى التطبيق |
+| `something_wrong` | عدم الرضا عن الخدمة |
 | `other` | سبب آخر (with optional comment) |
 
 Comment textarea is offered for every choice, optional always.

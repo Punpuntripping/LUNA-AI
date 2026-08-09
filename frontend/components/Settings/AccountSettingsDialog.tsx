@@ -125,8 +125,8 @@ function formatTermDate(iso: string | null | undefined): string | null {
 /** The exit survey. Keys mirror the CHECK constraint in migration 120. */
 const CANCEL_REASONS: { key: CancelSubscriptionReason; label: string }[] = [
   { key: "expensive", label: "السعر مرتفع" },
-  { key: "no_longer_needed", label: "انتفت حاجتي من التطبيق" },
-  { key: "something_wrong", label: "واجهت شيئًا لم يعجبني" },
+  { key: "no_longer_needed", label: "لم أعد بحاجة إلى التطبيق" },
+  { key: "something_wrong", label: "عدم الرضا عن الخدمة" },
   { key: "other", label: "سبب آخر" },
 ];
 
