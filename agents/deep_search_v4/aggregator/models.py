@@ -104,7 +104,13 @@ class Reference(BaseModel):
     )
     cross_refs: list[CrossRef] = Field(
         default_factory=list,
-        description="Resolved cross-references (reg domain, reference-view cap)",
+        description=(
+            "Resolved cross-references — the panel's «الإحالات» list "
+            "(reference-view cap). Regulations project cross_references_v2 rows "
+            "directly; cases project their referenced_regulations onto the same "
+            "shape via preprocessor.case_ref_to_cross_ref, so both domains "
+            "render through one renderer"
+        ),
     )
     source_view: SourceView | None = Field(
         default=None,

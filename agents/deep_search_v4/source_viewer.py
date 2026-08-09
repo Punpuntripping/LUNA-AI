@@ -17,8 +17,8 @@ popup.
 View variants the user can click (URA v3.0 -- the reg domain is chunk-shaped,
 the article/section split is gone):
 
-- ``ChunkSourceView``      -- a regulation chunk, full ``chunk_content`` +
-  ``chunk_context`` + parent regulation landing/PDF link.
+- ``ChunkSourceView``      -- a regulation chunk: ``chunk_content`` + the parent
+  regulation's landing link. NOT ``chunk_context`` (see ``_build_reg_view``).
 - ``CaseSourceView``       -- a court ruling; the ``summary`` digest (NOT the
   raw ruling text -- that lives on ``/judgments/{slug}``), one ``details_url``
   and a human-readable composite title.
@@ -64,6 +64,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
+from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
@@ -95,8 +96,10 @@ class ChunkSourceView(BaseModel):
     title: str = ""
     """Parent regulation title (``RegURAResult.reg_title``)."""
     content: str = ""
-    """Full chunk content -- ``chunk_content`` + ``chunk_context`` concatenated
-    (blank line separated) when both are present."""
+    """The chunk's own text (``RegURAResult.chunk_content``) — nothing else.
+    ``chunk_context`` was dropped from this body in 2026-08-08; see
+    ``_build_reg_view``. Payloads persisted before then still carry the
+    concatenated form and render as-is."""
     regulation_title: str = ""
     regulation_source_url: str = ""
     """Parent regulation's ``landing_url`` -- the ONE external click target.
@@ -415,23 +418,24 @@ async def _build_reg_view(
     """Build a ``ChunkSourceView`` from a ``RegURAResult`` (URA v3.0).
 
     The reg domain is chunk-shaped now. ``ura/enrich.py`` has already filled
-    every field this view needs (``chunk_content``, ``chunk_context``,
-    ``reg_title``, ``landing_url``), so no Supabase round-trip is required --
-    ``supabase`` is accepted for signature symmetry only. ``RegURAResult.pdf_url``
-    is deliberately NOT projected: the popup no longer offers a PDF exit.
+    every field this view needs (``chunk_content``, ``reg_title``,
+    ``landing_url``), so no Supabase round-trip is required -- ``supabase`` is
+    accepted for signature symmetry only. ``RegURAResult.pdf_url`` is
+    deliberately NOT projected: the popup no longer offers a PDF exit.
+
+    ``chunk_context`` IS NOT SHOWN (2026-08-08). The popup used to append it
+    under the مقطع — a pipeline-written paragraph placing the chunk in the
+    statute («يقع هذا المقطع ضمن الباب الخامس …»). It is derived commentary, not
+    the cited text, and it reads as part of the نظام because it sits inside the
+    same body with no separator: a reader quoting the popup ends up quoting us.
+    The field survives on ``RegURAResult`` (stored, and still in the forensic
+    dumps) — it just no longer reaches a user surface.
     """
     _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 
-    chunk_content = _strip_line_indent((ura.chunk_content or "").strip())
-    chunk_context = _strip_line_indent((ura.chunk_context or "").strip())
-    if chunk_content and chunk_context:
-        content = f"{chunk_content}\n\n{chunk_context}"
-    else:
-        content = chunk_content or chunk_context
-
     return ChunkSourceView(
         title=ura.reg_title or "",
-        content=content,
+        content=_strip_line_indent((ura.chunk_content or "").strip()),
         regulation_title=ura.reg_title or "",
         regulation_source_url=ura.landing_url or "",
     )
@@ -462,9 +466,14 @@ async def _build_case_view(
     # ``cases.summary`` clipped to 6k by the case_search adapter (see
     # CaseURAResult), so it belongs in this chain, not in the raw-body one — it
     # covers the case where the row fetch missed on a live URA.
-    summary = (
-        row.get("summary") or row.get("short_summary") or ura.case_content or ""
-    ).strip()
+    # strip_resolved_refs_section: ~16.5k `cases.summary` rows end in the
+    # pipeline's resolver-telemetry appendix (internal reg/chunk ids + match
+    # scores). This popup is user-facing, so the appendix must never render —
+    # and the strip also covers stored URAs whose `case_content` was persisted
+    # before the publish-time strip existed.
+    summary = strip_resolved_refs_section(
+        (row.get("summary") or row.get("short_summary") or ura.case_content or "").strip()
+    )
     # The raw ruling rides along ONLY when there is no summary to show. Shipping
     # both would send several unrendered KB per reveal, and the ruling text is
     # exactly the PDPL-sensitive payload the /judgments wing is noindexed over.

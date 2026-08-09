@@ -159,13 +159,15 @@ def _fetch_appendices(supabase, appendix_ids: list[str]) -> dict[str, str]:
 
 
 def _fetch_cases(supabase, case_refs: list[str]) -> dict[str, dict[str, Any]]:
-    """`cases` rows keyed by ``case_ref`` -- details_url/entity_id."""
+    """`cases` rows keyed by ``case_ref`` -- details_url/entity_id/citations."""
     out: dict[str, dict[str, Any]] = {}
     for batch in _batched(case_refs, _ID_BATCH):
         try:
             resp = (
                 supabase.table("cases")
-                .select("case_ref, details_url, entity_id")
+                .select(
+                    "case_ref, details_url, entity_id, referenced_regulations"
+                )
                 .in_("case_ref", batch)
                 .execute()
             )
@@ -313,12 +315,26 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
         res.cross_refs = refs
 
 
+# Mirror of ``case_search/unfold_ura.MAX_REFERENCED_REGULATIONS``: the live
+# search path clips a case's citations to 8 before they ever reach a URA, so the
+# rebuild path below must clip to the same number or a resumed artifact would
+# show more إحالات than the run that produced it (one case carries 275).
+_MAX_CASE_REFS_REBUILD = 8
+
+
 async def _enrich_cases(case_results: list, supabase) -> None:
     """Fill case reference-view fields (2 batched fetches).
 
     Resolves ``details_url`` + ``entity_id`` from ``cases``, then the Arabic
-    ``entity_name`` from ``entities``. Case content / ``referenced_regulations``
-    already arrive via the adapter -- not refetched here.
+    ``entity_name`` from ``entities``. Case content already arrives via the
+    adapter -- not refetched here.
+
+    ``referenced_regulations`` is filled ONLY when the shell arrives empty. On
+    the live search path the adapter already carried it (clipped to 8) and
+    overwriting would silently re-shape the aggregator payload; but
+    ``references_service`` rebuilds case shells from ``workspace_item_references``
+    with nothing but a ``ref_id``, and those shells used to reach the panel with
+    no إحالات at all. This is the fill for that second path.
     """
     if not case_results:
         return
@@ -350,6 +366,10 @@ async def _enrich_cases(case_results: list, supabase) -> None:
         res.entity_id = entity_id
         if entity_id:
             res.entity_name = entities.get(entity_id, "")
+        if not res.referenced_regulations:
+            refs = case.get("referenced_regulations") or []
+            if isinstance(refs, list):
+                res.referenced_regulations = list(refs[:_MAX_CASE_REFS_REBUILD])
 
 
 # -- Public entry point -------------------------------------------------------

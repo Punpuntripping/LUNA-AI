@@ -60,6 +60,9 @@ from agents.deep_search_v4.shared.court_levels import (  # noqa: E402
     CASE_COURT_LEVELS,
     normalize_court_level,
 )
+from agents.deep_search_v4.shared.case_summary import (  # noqa: E402
+    strip_resolved_refs_section,
+)
 
 # Fields the aggregator actually reads. Everything else stays in the DB.
 # `summary` (not `content`) is the synthesis payload — D2. `short_summary` is
@@ -179,6 +182,10 @@ def _resolve_summary(full_row: dict[str, Any]) -> str:
     if not summary:
         # Last resort only — see the D2 carve-out above.
         summary = str(full_row.get("content") or "").strip()
+    # 16,505 summaries end in the pipeline's resolver-telemetry appendix
+    # («## المراجع النظامية المحلولة» — internal reg/chunk ids + scores). It is
+    # not legal content and the synthesis LLM restates it into visible answers.
+    summary = strip_resolved_refs_section(summary)
     return _truncate(summary, MAX_AGGREGATOR_CONTENT_CHARS)
 
 

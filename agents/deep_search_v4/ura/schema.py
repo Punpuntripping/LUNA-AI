@@ -89,6 +89,22 @@ class CrossRef(BaseModel):
 CROSS_REF_REFERENCE_FREE_CHARS = 500
 
 
+# Resolver-telemetry keys the case pipeline wrote into every
+# ``referenced_regulations`` entry — internal corpus/chunk ids and match
+# scores, dropped from any client-bound (reference-view) projection.
+_CASE_REF_INTERNAL_KEYS = frozenset(
+    {
+        "regulation_id",
+        "target_chunk_ids",
+        "confidence",
+        "bm25_score",
+        "vector_score",
+        "combined_score",
+        "match_method",
+    }
+)
+
+
 def _cut_cross_ref_body(body: str) -> str:
     """Cut one body to the free window on a word boundary."""
     if len(body) <= CROSS_REF_REFERENCE_FREE_CHARS:
@@ -124,15 +140,24 @@ def gate_cross_refs_for_reference(refs: list) -> list:
     Handles BOTH shapes that feed ``ReferenceView``: the regulation domain passes
     ``CrossRef`` models, while the case domain's ``referenced_regulations`` is a
     ``list[dict]``. Both land in the same panel, so both must be gated.
+
+    Case dicts additionally get sanitised: the pipeline's resolver wrote its
+    telemetry into each entry (``regulation_id``, ``target_chunk_ids``,
+    ``confidence``, bm25/vector/combined scores, ``match_method``) — internal
+    ids that must not ship in a client payload — and stores its body under
+    ``reference_content``, which the free-window cut must cover too.
     """
     out: list = []
     for cr in refs:
         if isinstance(cr, dict):
-            body = str(cr.get("content") or "")
-            if len(body) <= CROSS_REF_REFERENCE_FREE_CHARS:
-                out.append(cr)
-            else:
-                out.append({**cr, "content": _cut_cross_ref_body(body)})
+            cleaned = {
+                k: v for k, v in cr.items() if k not in _CASE_REF_INTERNAL_KEYS
+            }
+            for body_key in ("content", "reference_content"):
+                body = str(cleaned.get(body_key) or "")
+                if len(body) > CROSS_REF_REFERENCE_FREE_CHARS:
+                    cleaned[body_key] = _cut_cross_ref_body(body)
+            out.append(cleaned)
             continue
 
         body = getattr(cr, "content", "") or ""

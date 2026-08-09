@@ -49,6 +49,11 @@ from typing import Any, Optional
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
+# THE definition of chunk reading order, imported rather than copied so the two
+# can never silently diverge (see ``_ground_regulation``). One-way edge:
+# library_service pulls in search_service + shared only and never imports
+# ask_service, so this cannot cycle.
+from backend.app.services.library_service import _ordered_chunk_query
 from shared.observability import get_logfire
 from shared.seo.judgment_naming import court_level_label
 
@@ -278,15 +283,22 @@ def _resolve_content_id(
 
 
 def _ground_regulation(supabase: SupabaseClient, page_id: str) -> str:
+    """Ground on the first ``REGULATION_CHUNKS`` sections of the DOCUMENT.
+
+    Order comes from ``library_service._ordered_chunk_query`` — the single
+    definition of chunk reading order (``corpus DESC, position, chunk_ref``).
+    A local ``.order("position")`` is wrong here: ``position`` is scoped per
+    STREAM, so the appendix chunks restart at 1 alongside the body and a bare
+    position sort interleaves the ملاحق into the operative text. The
+    ``.limit()`` below then truncates that jumble, i.e. the model would answer
+    about a نظام from text that jumps between the لائحة and its annexes.
+    """
     content_id = _resolve_content_id(supabase, "regulation", page_id)
     if not content_id:
         return ""
     try:
         res = (
-            supabase.table("chunks_v2")
-            .select("content, position")
-            .eq("regulation_id", content_id)
-            .order("position")
+            _ordered_chunk_query(supabase, str(content_id), "content, position")
             .limit(REGULATION_CHUNKS)
             .execute()
         )

@@ -27,6 +27,7 @@ import logging
 from typing import Any, Iterable
 
 from agents.deep_search_v4.reg_compliance_search.models import RerankedResult
+from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
 from agents.deep_search_v4.source_viewer import build_source_view
 from agents.deep_search_v4.ura.schema import (
     AggregatorItem,
@@ -50,6 +51,7 @@ __all__ = [
     "build_snippet",
     "render_aggregator_content",
     "render_cross_ref",
+    "case_ref_to_cross_ref",
     "COURT_LEVEL_AR",
     "_identity_key",
     "_merge_duplicates",
@@ -262,17 +264,99 @@ def render_aggregator_content(item: AggregatorItem) -> str:
                 f"المحكمة: {court} ({level_ar})" if level_ar else f"المحكمة: {court}"
             )
         if item.case_content:
-            parts.append(item.case_content.strip())
+            # Old persisted URAs carry `case_content` from before unfold_ura
+            # stripped the pipeline's resolver-telemetry appendix — strip here
+            # too so a resumed artifact can't feed internal ids to the LLM.
+            parts.append(strip_resolved_refs_section(item.case_content.strip()))
         for rr in item.referenced_regulations or []:
-            if isinstance(rr, dict):
-                text = " ".join(
-                    str(v).strip() for v in rr.values() if v
-                ).strip()
-            else:
-                text = str(rr).strip()
+            text = _render_case_referenced_regulation(rr)
             if text:
                 parts.append(text)
     return "\n\n".join(p for p in parts if p)
+
+
+# ``cases.referenced_regulations`` entries are RESOLVER OUTPUT, not clean
+# citations: alongside the نظام name / مادة number / article text they carry
+# internal corpus ids and match telemetry (``regulation_id``,
+# ``target_chunk_ids``, ``confidence``, ``bm25_score``, ``vector_score``,
+# ``combined_score``, ``match_method``). Dumping every dict value into the
+# synthesis text taught the LLM those ids — it restated them into visible
+# answers — so rendering is now allow-listed to the citation-relevant fields.
+# Key aliases per producer: pipeline (النظام/الرقم/reference_content), legacy
+# search formatter (regulation_name/article_number), URA gate-test shape
+# (target_reg_title/content), plus generic title/article.
+_CASE_REF_NAME_KEYS = ("النظام", "title", "regulation_name", "target_reg_title", "matched_title")
+_CASE_REF_ARTICLE_KEYS = ("الرقم", "article", "article_number", "target_number")
+_CASE_REF_BODY_KEYS = ("reference_content", "content")
+
+
+def _first_str(d: dict, keys: tuple[str, ...]) -> str:
+    for k in keys:
+        v = d.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def _render_case_referenced_regulation(rr) -> str:
+    """Render one case referenced-regulation entry for the synthesis text.
+
+    Name + مادة number + resolved article text only — never the resolver's
+    internal ids or scores. A non-dict entry renders as its string form
+    (legacy artifacts stored plain strings).
+    """
+    if not isinstance(rr, dict):
+        return str(rr).strip()
+    name = _first_str(rr, _CASE_REF_NAME_KEYS)
+    number = _first_str(rr, _CASE_REF_ARTICLE_KEYS)
+    body = _first_str(rr, _CASE_REF_BODY_KEYS)
+    head = name
+    if number:
+        head = f"{name} — المادة {number}" if name else f"المادة {number}"
+    if head and body:
+        return f"{head}\n{body}"
+    return head or body
+
+
+def case_ref_to_cross_ref(rr) -> CrossRef | None:
+    """Project one case ``referenced_regulations`` entry onto a ``CrossRef``.
+
+    The citation panel renders إحالات for regulations AND cases now, and the two
+    domains store the same idea in two different shapes: the reg domain ships
+    typed ``CrossRef`` models out of ``cross_references_v2``, while a case's
+    citations are resolver-written dicts keyed in Arabic (``النظام`` / ``الرقم``
+    / ``reference_content``). Normalising here — rather than teaching the panel a
+    second shape — keeps ONE wire contract and ONE renderer for both.
+
+    Input MUST be an already-gated entry (``ReferenceView.referenced_regulations``,
+    which ran through ``gate_cross_refs_for_reference``): this function reads the
+    citation fields and ignores everything else, but it is not itself the place
+    that drops the resolver's internal ids — see ``_CASE_REF_INTERNAL_KEYS``.
+
+    ``target_type`` is set to the corpus's own ``"madda"`` token so a case إحالة
+    and a reg إحالة render identically. Returns ``None`` for an entry with
+    neither a name nor a number — an unlabelled body is not a citation.
+    """
+    if not isinstance(rr, dict):
+        text = str(rr).strip()
+        return CrossRef(target_reg_title=text) if text else None
+    name = _first_str(rr, _CASE_REF_NAME_KEYS)
+    number = _first_str(rr, _CASE_REF_ARTICLE_KEYS)
+    if not name and not number:
+        return None
+    try:
+        target_number = int(number) if number else None
+    except ValueError:
+        # Non-numeric مادة labels exist («الثانية عشرة»); keep them in the title
+        # rather than dropping the إحالة over an int() that was never load-bearing.
+        target_number = None
+        name = f"{name} — المادة {number}" if name else f"المادة {number}"
+    return CrossRef(
+        target_type="madda" if target_number is not None else "",
+        target_reg_title=name,
+        target_number=target_number,
+        content=_first_str(rr, _CASE_REF_BODY_KEYS),
+    )
 
 
 def build_snippet(result, max_chars: int = 500) -> str:
@@ -397,6 +481,18 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
         )
 
     if view.domain == "cases":
+        # A ruling's إحالات are the أنظمة/مواد it cites. They ride the SAME
+        # ``cross_refs`` field the reg domain uses (see case_ref_to_cross_ref) so
+        # the panel has one shape to render; ``view.referenced_regulations`` is
+        # already gated + telemetry-stripped by ``for_reference()``.
+        case_refs = [
+            cr
+            for cr in (
+                case_ref_to_cross_ref(rr)
+                for rr in (view.referenced_regulations or [])
+            )
+            if cr is not None
+        ]
         return Reference(
             n=n,
             source_type="case",
@@ -408,6 +504,7 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             domain="cases",
             details_url=view.details_url or "",
             entity_name=view.entity_name or "",
+            cross_refs=case_refs,
         )
 
     # Defensive: unknown URA domain. Build a minimal Reference so callers keep

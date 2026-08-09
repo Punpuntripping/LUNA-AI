@@ -272,7 +272,7 @@ def test_summary_none_never_produces_the_literal_none_anywhere():
     # summary body is missing — no empty block, no "None" placeholder.
     assert rendered.splitlines()[0] == "المحكمة: المحكمة التجارية (ابتدائي)"
     assert rendered == (
-        "المحكمة: المحكمة التجارية (ابتدائي)\n\nنظام المحاكم التجارية 20"
+        "المحكمة: المحكمة التجارية (ابتدائي)\n\nنظام المحاكم التجارية — المادة 20"
     )
 
 
@@ -376,6 +376,176 @@ def test_unknown_db_court_level_renders_without_a_parenthetical():
 
 
 # ---------------------------------------------------------------------------
+# D2. The resolver-telemetry appendix must never reach a user or an LLM
+# (16,505 live `cases.summary` rows end in «## المراجع النظامية المحلولة» —
+#  internal reg/chunk ids + match scores written by the ingestion pipeline).
+# ---------------------------------------------------------------------------
+
+LEAKY_SUMMARY = (
+    SUMMARY_MD
+    + "\n## المراجع النظامية المحلولة\n"
+    "- **نظام المحاكم التجارية** — المادة 16 → `17642_reg_003` "
+    "(chunks: 17642_reg_003_article_16) [confidence: 0.9016]"
+)
+
+# The prod shape of one referenced_regulations entry (verified live).
+RESOLVER_REF = {
+    "bm25_score": 1.0,
+    "confidence": 0.9016,
+    "الرقم": "16",
+    "match_method": "combined_auto",
+    "vector_score": 0.7539,
+    "النظام": "نظام المحاكم التجارية",
+    "matched_title": "نظام المحاكم التجارية",
+    "regulation_id": "17642_reg_003",
+    "combined_score": 0.9016,
+    "target_chunk_ids": ["17642_reg_003_article_16"],
+    "reference_content": "اسم النظام: نظام المحاكم التجارية\nالمادة: 16\nتختص المحكمة بالنظر في الآتي.",
+}
+
+
+def test_strip_resolved_refs_section_drops_the_trailing_appendix():
+    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+
+    out = strip_resolved_refs_section(LEAKY_SUMMARY)
+    assert "المراجع النظامية المحلولة" not in out
+    assert "17642_reg_003" not in out
+    assert "confidence" not in out
+    # The real sections survive untouched.
+    assert "## الملخص" in out
+    assert "## المنطوق" in out
+
+
+def test_strip_resolved_refs_section_keeps_following_sections():
+    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+
+    text = (
+        "## الوقائع\nنص.\n\n## المراجع النظامية المحلولة\n- سطر داخلي\n\n"
+        "## المنطوق\nرفض الدعوى."
+    )
+    out = strip_resolved_refs_section(text)
+    assert "سطر داخلي" not in out
+    assert "## المنطوق\nرفض الدعوى." in out
+
+
+def test_strip_resolved_refs_section_is_noop_without_the_block():
+    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+
+    assert strip_resolved_refs_section(SUMMARY_MD) == SUMMARY_MD
+    assert strip_resolved_refs_section("") == ""
+
+
+def test_resolve_summary_strips_the_appendix_before_the_aggregator():
+    reranked, _ = assemble_one(make_case_row(summary=LEAKY_SUMMARY))
+    assert "المراجع النظامية المحلولة" not in reranked.content
+    assert "17642_reg_003" not in reranked.content
+    assert reranked.content.startswith("## الملخص")
+
+
+def test_rendered_referenced_regulations_carry_no_resolver_telemetry():
+    """The prod dict shape: only النظام + المادة + the article text render."""
+    reranked, _ = assemble_one(
+        make_case_row(referenced_regulations=[RESOLVER_REF])
+    )
+    rendered = render_aggregator_content(to_aggregator_item(reranked))
+    assert "نظام المحاكم التجارية — المادة 16" in rendered
+    assert "تختص المحكمة بالنظر في الآتي." in rendered
+    for leaked in ("17642_reg_003", "combined_auto", "0.9016", "0.7539", "1.0"):
+        assert leaked not in rendered, leaked
+
+
+def test_old_persisted_case_content_is_stripped_at_render_time():
+    """Artifacts persisted before the publish-time strip still render clean."""
+    item = AggregatorItem(
+        ref_id="case:x",
+        n=1,
+        domain="cases",
+        relevance="high",
+        case_content=LEAKY_SUMMARY,
+    )
+    rendered = render_aggregator_content(item)
+    assert "المراجع النظامية المحلولة" not in rendered
+    assert "17642_reg_003" not in rendered
+    assert "## الملخص" in rendered
+
+
+def test_case_source_view_popup_never_shows_the_appendix():
+    """THE user-visible surface: the case preview popup renders `cases.summary`."""
+    from agents.deep_search_v4.source_viewer import _build_case_view
+
+    class _CaseTable:
+        def __init__(self, row):
+            self._row = row
+
+        def select(self, cols):
+            return self
+
+        def eq(self, col, val):
+            return self
+
+        def maybe_single(self):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=self._row)
+
+    class _PopupStub:
+        def __init__(self, row):
+            self._row = row
+
+        def table(self, name):
+            assert name == "cases"
+            return _CaseTable(self._row)
+
+    row = make_case_row(summary=LEAKY_SUMMARY)
+    ura = CaseURAResult(
+        ref_id="case:case_00042", source_type="case", relevance="high"
+    )
+    view = asyncio.run(_build_case_view(_PopupStub(row), ura))
+    assert "المراجع النظامية المحلولة" not in view.summary
+    assert "17642_reg_003" not in view.summary
+    assert "## الملخص" in view.summary
+
+    # Stored URAs from before the publish-time strip: case_content still leaky.
+    ura_old = CaseURAResult(
+        ref_id="case:case_00042",
+        source_type="case",
+        relevance="high",
+        case_content=LEAKY_SUMMARY,
+    )
+    view = asyncio.run(_build_case_view(_PopupStub(None), ura_old))
+    assert "المراجع النظامية المحلولة" not in view.summary
+    assert "17642_reg_003" not in view.summary
+
+
+def test_for_reference_drops_internal_keys_and_gates_reference_content():
+    ura = CaseURAResult(
+        ref_id="case:case_00042",
+        source_type="case",
+        relevance="high",
+        referenced_regulations=[
+            {**RESOLVER_REF, "reference_content": "حكم " * 4000}
+        ],
+    )
+    out = ura.for_reference().referenced_regulations[0]
+    assert out["النظام"] == "نظام المحاكم التجارية"
+    assert out["الرقم"] == "16"
+    for key in (
+        "regulation_id",
+        "target_chunk_ids",
+        "confidence",
+        "bm25_score",
+        "vector_score",
+        "combined_score",
+        "match_method",
+    ):
+        assert key not in out, key
+    from agents.deep_search_v4.ura.schema import CROSS_REF_REFERENCE_FREE_CHARS
+
+    assert len(out["reference_content"]) <= CROSS_REF_REFERENCE_FREE_CHARS + 2
+
+
+# ---------------------------------------------------------------------------
 # E. AggregatorItem / CaseURAResult projections
 # ---------------------------------------------------------------------------
 
@@ -433,6 +603,80 @@ def test_for_reference_is_unchanged_by_wave_4():
     # The reference view carries no court_level / content — unchanged contract.
     assert not hasattr(view, "court_level")
     assert not hasattr(view, "case_content")
+
+
+# ---------------------------------------------------------------------------
+# E2. Case إحالات reach the citation panel
+#
+# A ruling's referenced_regulations are projected onto the SAME ``CrossRef``
+# shape the reg domain uses, so the panel renders one list for both domains.
+# ---------------------------------------------------------------------------
+
+
+def _case_reference(**ura_kwargs):
+    from agents.deep_search_v4.aggregator.preprocessor import _reference_from_ura
+
+    ura = CaseURAResult(
+        ref_id="case:case_00042",
+        source_type="case",
+        relevance="high",
+        **ura_kwargs,
+    )
+    return _reference_from_ura(1, ura)
+
+
+def test_case_reference_carries_its_citations_as_cross_refs():
+    ref = _case_reference(referenced_regulations=[RESOLVER_REF])
+    assert ref.domain == "cases"
+    assert len(ref.cross_refs) == 1
+    cr = ref.cross_refs[0]
+    assert cr.target_reg_title == "نظام المحاكم التجارية"
+    assert cr.target_number == 16
+    assert cr.target_type == "madda"
+    assert "تختص المحكمة بالنظر في الآتي." in cr.content
+
+
+def test_case_cross_refs_carry_no_resolver_telemetry():
+    """The panel is a client surface — internal ids must not survive the hop."""
+    ref = _case_reference(referenced_regulations=[RESOLVER_REF])
+    blob = ref.model_dump_json()
+    for leaked in ("17642_reg_003", "combined_auto", "0.9016", "0.7539"):
+        assert leaked not in blob, leaked
+
+
+def test_case_cross_ref_bodies_are_cut_to_the_public_window():
+    """`for_reference()` gates the body BEFORE the CrossRef projection sees it."""
+    from agents.deep_search_v4.ura.schema import CROSS_REF_REFERENCE_FREE_CHARS
+
+    ref = _case_reference(
+        referenced_regulations=[{**RESOLVER_REF, "reference_content": "حكم " * 4000}]
+    )
+    assert len(ref.cross_refs[0].content) <= CROSS_REF_REFERENCE_FREE_CHARS + 2
+
+
+def test_non_numeric_article_labels_survive_in_the_title():
+    """«الثانية عشرة» is a real مادة label — an int() failure must not drop it."""
+    ref = _case_reference(
+        referenced_regulations=[
+            {"النظام": "نظام العمل", "الرقم": "الثانية عشرة"},
+        ]
+    )
+    cr = ref.cross_refs[0]
+    assert cr.target_number is None
+    assert "نظام العمل" in cr.target_reg_title
+    assert "الثانية عشرة" in cr.target_reg_title
+
+
+def test_unlabelled_entries_are_dropped_not_rendered_blank():
+    ref = _case_reference(
+        referenced_regulations=[{"reference_content": "نص بلا عنوان"}, RESOLVER_REF]
+    )
+    assert len(ref.cross_refs) == 1
+    assert ref.cross_refs[0].target_reg_title == "نظام المحاكم التجارية"
+
+
+def test_a_case_with_no_citations_has_an_empty_cross_ref_list():
+    assert _case_reference().cross_refs == []
 
 
 # ---------------------------------------------------------------------------
