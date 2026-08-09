@@ -6,10 +6,17 @@ import type { TocListProps } from "@/types/library";
 
 /**
  * «محتويات النظام» — an anchor/href list of a document's فصول/مواد. Server
- * component: uses a native `<details open>` so it's collapsible on mobile with
- * zero client JS (defaults open on every viewport). `level` indents nested
- * entries via `ps-` (RTL start padding). The desktop reading rail uses the
- * richer, scroll-spied `TocRail`; this stays the mobile-inline surface.
+ * component: uses a native `<details>` so it's collapsible with zero client JS.
+ * `level` indents nested entries via `ps-` (RTL start padding). The desktop
+ * reading rail uses the richer, scroll-spied `TocRail`; this stays the
+ * mobile-inline surface.
+ *
+ * MOBILE: document TOCs run long — sampled الأنظمة reach ~700 entries — so the
+ * list is height-capped and scrolls inside its own box, and document pages pass
+ * `defaultOpen={false}`. Expanded and uncapped, the TOC pushed the actual
+ * article text hundreds of rows down the page on a phone. Links stay in the DOM
+ * either way (a closed `<details>` is still crawlable), and the desktop
+ * `TocRail` renders the same entries visibly.
  *
  * The `steps` variant (a numbered ordered list, for the compliance «الخطوات»
  * block) went with the compliance wing on 2026-08-03 — it had exactly one
@@ -19,11 +26,12 @@ export function TocList({
   entries,
   title = "محتويات النظام",
   collapsible = true,
+  defaultOpen = true,
   badge,
   className,
 }: TocListProps) {
   const list = (
-    <ul className="space-y-0.5">
+    <ul className="scrollbar-thin max-h-[60svh] space-y-0.5 overflow-y-auto overscroll-contain">
       {entries.map((entry) => {
         const locked = entry.locked || !entry.href;
         const { chip, text } = parseTocLabel(entry.label);
@@ -105,7 +113,7 @@ export function TocList({
 
   return (
     <details
-      open
+      open={defaultOpen}
       dir="rtl"
       className={cn(
         "group rounded-xl border border-border bg-card p-4 shadow-xs sm:p-5",

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
@@ -19,13 +20,27 @@ import { groupChildrenBySection, resolveNav } from "@/lib/nav/resolve-nav";
  *
  * The panel is a fixed slide-in from the inline-start (right, in RTL). Every
  * slot is expanded — flat links inline, dropdown groups as labelled sections —
- * so the whole IA is one tap deep. Links are always in the DOM (crawlable);
- * the drawer only translates them off-screen when closed.
+ * so the whole IA is one tap deep. The drawer only translates off-screen when
+ * closed rather than unmounting.
+ *
+ * PORTALLED TO <body>, and it must stay that way. `SiteHeader` carries
+ * `backdrop-blur`, and an element with `backdrop-filter` becomes the containing
+ * block for its `position: fixed` descendants — rendered inline, this panel
+ * resolved `inset-y-0` against the 64px bar and opened as a sliver with no
+ * visible nav. The header's `z-30` also trapped it below page-level fixed UI
+ * such as the `AskRayhanWidget` pill (`z-40`). The portal escapes both.
+ *
+ * The panel is therefore absent from the server HTML. That costs no
+ * crawlability: `SiteNav` (CSS-hidden below `lg`, still server-rendered) and
+ * `SiteFooter` carry the same `SITE_NAV` links on every page.
  */
 export function SiteMobileNav() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
   const [open, setOpen] = useState(false);
+  // `createPortal` needs a live DOM node, so the drawer mounts client-side only.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const authed = isAuthenticated && !isLoading;
   const slots = resolveNav(SITE_NAV, authed);
@@ -45,23 +60,15 @@ export function SiteMobileNav() {
     };
   }, [open]);
 
-  return (
-    <div className="lg:hidden">
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="القائمة"
-        aria-expanded={open}
-        onClick={() => setOpen(true)}
-      >
-        <Menu className="h-5 w-5" />
-      </Button>
-
+  // Portalled out of the header, so `lg:hidden` must sit on these nodes
+  // themselves — they no longer inherit it from the trigger's wrapper.
+  const drawer = (
+    <>
       {/* Overlay */}
       <div
         aria-hidden="true"
         onClick={() => setOpen(false)}
-        className={`fixed inset-0 z-40 bg-black/40 transition-opacity ${
+        className={`fixed inset-0 z-40 bg-black/40 transition-opacity lg:hidden ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
       />
@@ -71,7 +78,8 @@ export function SiteMobileNav() {
         role="dialog"
         aria-modal="true"
         aria-label="التنقّل"
-        className={`fixed inset-y-0 right-0 z-50 flex w-80 max-w-[85vw] flex-col border-l border-border bg-background shadow-xl transition-transform duration-200 ${
+        dir="rtl"
+        className={`fixed inset-y-0 right-0 z-50 flex w-80 max-w-[85vw] flex-col border-l border-border bg-background shadow-xl transition-transform duration-200 lg:hidden ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
@@ -152,6 +160,22 @@ export function SiteMobileNav() {
           <ThemeToggle />
         </div>
       </div>
+    </>
+  );
+
+  return (
+    <div className="lg:hidden">
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="القائمة"
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+      >
+        <Menu className="h-5 w-5" />
+      </Button>
+
+      {mounted ? createPortal(drawer, document.body) : null}
     </div>
   );
 }

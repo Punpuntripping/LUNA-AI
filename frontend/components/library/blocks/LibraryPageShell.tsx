@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { HeaderAuthActions } from "@/components/site/HeaderAuthActions";
+import { SiteMobileNav } from "@/components/site/SiteMobileNav";
 import { BlogConversionCta } from "@/components/blog/BlogConversionCta";
 import { AnonCtaPopup } from "@/components/marketing/AnonCtaPopup";
 import { SiteFooter } from "@/components/site/SiteFooter";
@@ -38,9 +39,23 @@ export function LibraryPageShell({
             </span>
           </Link>
 
+          {/* Desktop keeps the original theme + full auth pair. On mobile the
+              bar carried a toggle and TWO buttons on a 390px width and offered
+              no navigation at all — these are the pages most search traffic
+              lands on. Below `lg` it collapses to the primary CTA plus the
+              shared drawer, which already carries «تسجيل الدخول», the theme
+              toggle and the whole SITE_NAV. */}
           <div className="flex items-center gap-1.5">
-            <ThemeToggle />
-            <HeaderAuthActions />
+            <div className="hidden items-center gap-1.5 lg:flex">
+              <ThemeToggle />
+              <HeaderAuthActions />
+            </div>
+
+            <div className="lg:hidden">
+              <HeaderAuthActions compact />
+            </div>
+
+            <SiteMobileNav />
           </div>
         </div>
       </header>

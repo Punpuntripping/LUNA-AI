@@ -75,7 +75,7 @@ export function TocRail({
     <div
       dir="rtl"
       className={cn(
-        "flex max-h-[calc(100vh-8rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xs",
+        "flex max-h-[calc(100dvh-8rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xs",
         className,
       )}
     >
@@ -110,7 +110,7 @@ export function TocRail({
             constrained it (Chrome max-height/flex quirk), so the list silently
             grew to full content height and the rail could not be scrolled
             independently of the page. 12rem ≈ sticky offset + rail header. */}
-        <ul className="scrollbar-thin max-h-[calc(100vh-12rem)] space-y-0.5 overflow-y-auto px-2 py-2.5">
+        <ul className="scrollbar-thin max-h-[calc(100dvh-12rem)] space-y-0.5 overflow-y-auto overscroll-contain px-2 py-2.5">
           {entries.map((entry) => {
             const { chip, text } = parseTocLabel(entry.label);
             const locked = entry.locked || !entry.href;

@@ -274,6 +274,16 @@
   html[dir="rtl"] {
     text-align: right;
   }
+
+  /* Mobile browser gestures.
+     Pull-to-refresh on Chrome Android reloads the page when a user scrolls up
+     past the top of the chat thread — mid-stream that kills the SSE connection
+     and loses the turn. Overscroll chaining is disabled globally; scroll
+     containers keep their own bounce. */
+  html,
+  body {
+    overscroll-behavior-y: none;
+  }
 }
 
 @layer utilities {

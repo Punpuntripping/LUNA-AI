@@ -20,7 +20,7 @@ export function SidebarPageShell({ children }: SidebarPageShellProps) {
   const setSidebarOpen = useSidebarStore((s) => s.setOpen);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-dvh overflow-hidden bg-background">
       {/* Sidebar — in RTL, this renders on the right side */}
       <Sidebar />
 

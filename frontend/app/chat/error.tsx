@@ -12,7 +12,7 @@ interface ChatErrorProps {
 // eslint-disable-next-line import/no-default-export
 export default function ChatError({ error, reset }: ChatErrorProps) {
   return (
-    <div className="flex h-screen flex-col items-center justify-center gap-4 px-4 text-center">
+    <div className="flex h-dvh flex-col items-center justify-center gap-4 px-4 text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
         <AlertTriangle className="h-6 w-6 text-destructive" />
       </div>

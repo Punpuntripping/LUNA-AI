@@ -224,7 +224,13 @@ export default async function RegulationDocPage({ params }: PageProps) {
 
             {tocEntries.length > 0 && (
               <div className="lg:hidden">
-                <TocList entries={tocEntries} badge={tocBadge} />
+                {/* Collapsed on mobile: an expanded مواد index put the whole
+                    TOC between the reader and the first article. */}
+                <TocList
+                  entries={tocEntries}
+                  badge={tocBadge}
+                  defaultOpen={false}
+                />
               </div>
             )}
 

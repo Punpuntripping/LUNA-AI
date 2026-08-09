@@ -232,6 +232,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                   entries={tocEntries}
                   title="محتويات الحكم"
                   badge={tocBadge}
+                  defaultOpen={false}
                 />
               </div>
             )}

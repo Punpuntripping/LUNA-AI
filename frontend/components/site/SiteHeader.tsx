@@ -15,6 +15,10 @@ import { SiteMobileNav } from "@/components/site/SiteMobileNav";
  * (auth-aware buttons). RTL: brand at the start (right), actions at the end.
  */
 export function SiteHeader() {
+  // NOTE: `backdrop-blur` below makes <header> the containing block for every
+  // `position: fixed` DESCENDANT, and its `z-30` traps them in this stacking
+  // context. Anything fixed and full-screen must therefore portal to <body>
+  // rather than render inside the bar — see `SiteMobileNav`.
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4">
@@ -38,6 +42,16 @@ export function SiteHeader() {
             <ThemeToggle />
             <HeaderAuthActions />
           </div>
+
+          {/* Mobile bar: the primary CTA only. Everything else in this cluster
+              used to sit inside the lg-only wrapper above, which left phones —
+              the majority of search traffic — with a header of nothing but a
+              logo and a hamburger, and no visible way into the product. Nav
+              slots and «تسجيل الدخول» stay one tap away in the drawer. */}
+          <div className="lg:hidden">
+            <HeaderAuthActions compact />
+          </div>
+
           <SiteMobileNav />
         </div>
       </div>
