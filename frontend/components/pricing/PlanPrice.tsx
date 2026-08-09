@@ -1,5 +1,4 @@
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
-import { VAT_INCLUSIVE_NOTE } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
 
 interface PlanPriceProps {
@@ -19,10 +18,8 @@ interface PlanPriceProps {
  * riyal symbol in RTL — ugly and ambiguous on a payment surface. `text-4xl`
  * (not 5xl) keeps «١٨٩٫٩٠» from reflowing the three-card grid at md.
  *
- * «شامل الضريبة» is kept (owner, 2026-08-04 — prices are stated
- * tax-inclusive). Note the asymmetry and don't "fix" it: the RECEIPT email
- * still carries no tax breakdown (backend/tests/test_receipts.py enforces
- * that side).
+ * No VAT wording here — «شامل الضريبة» was removed 2026-08-08 (no VAT
+ * registration yet; see the note in lib/pricing.ts before restoring it).
  */
 export function PlanPrice({ price, period, className }: PlanPriceProps) {
   return (
@@ -34,7 +31,6 @@ export function PlanPrice({ price, period, className }: PlanPriceProps) {
         <RiyalSymbol className="mb-0.5 h-6 w-auto text-foreground" />
         <span className="mb-0.5 text-sm text-muted-foreground">{period}</span>
       </div>
-      <p className="text-xs text-muted-foreground">{VAT_INCLUSIVE_NOTE}</p>
     </div>
   );
 }

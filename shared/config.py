@@ -231,6 +231,12 @@ class Settings(BaseSettings):
     # `domain_name` to GET /v1/applepay/initiate; Apple rejects a session whose
     # domain isn't the registered one, so this must match the production host.
     MOYASAR_APPLEPAY_DOMAIN: str = "rayhanai.com"
+    # Kill-switch while the Apple Pay domain registration awaits approval
+    # (2026-08-08). Served to the browser inside the /payments/checkout session
+    # — like MOYASAR_PUBLISHABLE_KEY, flipping it is a Railway env change on
+    # luna-backend, no frontend rebuild. False = the form never offers Apple
+    # Pay and /payments/applepay/session refuses, even on capable Safari.
+    MOYASAR_APPLEPAY_ENABLED: bool = False
 
     # ── Receipt emails (Gmail SMTP — Google Workspace) ──────────────────────
     # Plain «إيصال دفع» emails on paid/refunded transitions. Transport is the

@@ -9,6 +9,9 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     POST /{payment_id}/refund authed self-serve refund inside 24h
     GET  /history           authed   the caller's receipts
     POST /applepay/session  authed   Apple Pay merchant-validation proxy
+    GET  /subscription      authed   plan + term + cancel eligibility
+    POST /subscription/cancel     authed  opt out of renewal + exit survey
+    POST /subscription/reactivate authed  undo that opt-out
 
 Two things are unusual here and both are deliberate:
 
@@ -36,10 +39,11 @@ from backend.app.deps import get_current_user, get_supabase, validate_uuid
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.models.requests import (
     ApplePaySessionRequest,
+    CancelSubscriptionRequest,
     CheckoutRequest,
     VerifyPaymentRequest,
 )
-from backend.app.services import payment_service
+from backend.app.services import payment_service, subscription_service
 from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
@@ -90,7 +94,8 @@ async def checkout(
           "currency": "SAR",
           "description": "ريحان — الاحترافية",
           "publishable_key": "pk_test_…",
-          "callback_url": "https://rayhanai.com/pay/callback"
+          "callback_url": "https://rayhanai.com/pay/callback",
+          "applepay_enabled": false      # MOYASAR_APPLEPAY_ENABLED — form offers Apple Pay only when true
         }
 
     Errors: 400 PAYMENT_PLAN_NOT_PURCHASABLE (unknown plan / price_sar NULL),
@@ -286,6 +291,98 @@ async def applepay_session(
     ``MOYASAR_APPLEPAY_DOMAIN``.
     """
     result = await payment_service.applepay_session(payload.validation_url)
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+# ── /subscription ────────────────────────────────────────────────────────────
+# The cancellation feature (`.claude/plans/subscription_cancellation.md`). It
+# lives on the payments router because إعدادات الحساب reads it next to the
+# receipts list and because "what did you buy, and until when" is the same
+# question /history answers per row — but the logic is in its own service:
+# nothing here moves money.
+
+@router.get("/subscription")
+async def subscription(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """The caller's subscription as إعدادات الحساب renders it.
+
+    Returns::
+
+        {
+          "plan_id": "pro",                     # null when there is no row
+          "plan_name_ar": "الاحترافية",
+          "expires_at": "2026-09-02T…",         # null for a non-expiring grant
+          "source": "payment",                  # payment|code|manual|signup
+          "cancellable": true,                  # a PAID term still running
+          "renewal_cancelled_at": null          # set = already opted out
+        }
+
+    ``cancellable`` describes the SUBSCRIPTION, not the button: it stays true
+    while ``renewal_cancelled_at`` is set, because an undo makes cancelling
+    legal again. The dialog reads both.
+
+    This exists rather than a ``source`` field on ``GET /usage`` because the
+    quota report is read on the message path by every send — a money-shaped
+    field does not belong on it.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await subscription_service.get_subscription(supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+@router.post("/subscription/cancel")
+async def cancel_subscription(
+    payload: CancelSubscriptionRequest,
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Opt out of renewal and record the exit survey.
+
+    Body ``{"reason": "expensive"|"no_longer_needed"|"something_wrong"|"other",
+    "comment": "…"?}``. Returns the same shape as ``GET /subscription``, with
+    ``renewal_cancelled_at`` now set.
+
+    **Nothing about the current term changes** — access runs to ``expires_at``
+    and then falls back to the free plan, exactly as it would have. This is not
+    a refund (that is ``POST /{payment_id}/refund``, unrelated and unchanged),
+    and in Wave 1 it stops no automatic charge, because there is none.
+
+    Errors: 400 VALIDATION_ERROR (unknown reason),
+    409 SUBSCRIPTION_NOT_CANCELLABLE (no paid subscription with a running term),
+    409 SUBSCRIPTION_ALREADY_CANCELLED (a second call — never a second survey
+    row), 503 when the write itself fails.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await subscription_service.cancel_renewal(
+        supabase, user_id, reason=payload.reason, comment=payload.comment
+    )
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+@router.post("/subscription/reactivate")
+async def reactivate_subscription(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Undo a cancellation («تراجع عن الإلغاء»). Free — no money moved either way.
+
+    Clears ``renewal_cancelled_at`` and stamps ``revoked_at`` on the newest
+    un-revoked survey row. Returns the refreshed ``GET /subscription`` shape.
+
+    Errors: 409 SUBSCRIPTION_NOT_CANCELLABLE (nothing to undo, or the term has
+    already ended — a lapsed plan comes back only through a new purchase),
+    503 when the write itself fails.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await subscription_service.reactivate_renewal(supabase, user_id)
     response.headers["Cache-Control"] = _NO_STORE
     return result
 

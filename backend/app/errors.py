@@ -83,6 +83,10 @@ class ErrorCode(str, Enum):
     PAYMENT_REFUND_WINDOW_CLOSED = "PAYMENT_REFUND_WINDOW_CLOSED"  # 409 — past the 24h window, or the row is not in a refundable state
     PAYMENT_PROVIDER_ERROR = "PAYMENT_PROVIDER_ERROR"              # 400/502 — Moyasar refused / is unreachable / the payment disagrees with our row
 
+    # Subscription lifecycle (إلغاء الاشتراك — subscription_cancellation.md)
+    SUBSCRIPTION_NOT_CANCELLABLE = "SUBSCRIPTION_NOT_CANCELLABLE"  # 409 — no paid running term to cancel, or nothing to undo
+    SUBSCRIPTION_ALREADY_CANCELLED = "SUBSCRIPTION_ALREADY_CANCELLED"  # 409 — renewal already opted out (never a second survey row)
+
     # Library entitlement (access tiers — Layer B refusals, all HTTP 402)
     LIBRARY_QUOTA_EXCEEDED = "LIBRARY_QUOTA_EXCEEDED"  # period allowance spent
     LIBRARY_FROZEN = "LIBRARY_FROZEN"                  # paid-era unlock, now on free

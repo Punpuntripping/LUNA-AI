@@ -20,6 +20,11 @@ The load-bearing assertions:
     forged/tampered event must never reach the DB.
   * ``test_live_key_outside_production_refuses_boot`` — the accident that
     charges real cards from a dev box.
+
+The last section covers ``subscription_service`` (إلغاء الاشتراك,
+`.claude/plans/subscription_cancellation.md`) — same FakeSupabase, because a
+cancellation reads the subscription the payment path writes and the two only
+make sense together (a re-purchase has to clear the opt-out flag).
 """
 from __future__ import annotations
 
@@ -32,6 +37,7 @@ import pytest
 
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services import payment_service as ps
+from backend.app.services import subscription_service as ss
 from shared.config import get_settings
 
 USER = "11111111-1111-1111-1111-111111111111"
@@ -85,6 +91,7 @@ class _Query:
         self._payload: Optional[dict] = None
         self._eq: list[tuple[str, Any]] = []
         self._in: list[tuple[str, list]] = []
+        self._is_null: list[str] = []
         self._single = False
         self._limit: Optional[int] = None
         self._order: Optional[str] = None
@@ -111,6 +118,13 @@ class _Query:
         self._in.append((col, list(vals)))
         return self
 
+    def is_(self, col, val):
+        """PostgREST's IS filter. Only ``"null"`` is used in this codebase (the
+        `revoked_at IS NULL` survey lookup), so only that is modelled."""
+        assert val == "null", f"unsupported is_ value {val!r}"
+        self._is_null.append(col)
+        return self
+
     def order(self, col, desc=False):
         self._order, self._desc = col, desc
         return self
@@ -125,8 +139,10 @@ class _Query:
 
     # execution ----------------------------------------------------------
     def _matches(self, row: dict) -> bool:
-        return all(row.get(c) == v for c, v in self._eq) and all(
-            row.get(c) in vals for c, vals in self._in
+        return (
+            all(row.get(c) == v for c, v in self._eq)
+            and all(row.get(c) in vals for c, vals in self._in)
+            and all(row.get(c) is None for c in self._is_null)
         )
 
     def execute(self):
@@ -134,7 +150,12 @@ class _Query:
 
         if self._op == "insert":
             row = dict(self._payload)
-            row.setdefault("payment_id", str(uuid.uuid4()))
+            # Each table's own PK default, so a survey row does not come back
+            # wearing a payment_id.
+            if self.table == "payment_transactions":
+                row.setdefault("payment_id", str(uuid.uuid4()))
+            else:
+                row.setdefault("id", str(uuid.uuid4()))
             row.setdefault("created_at", _iso(_now()))
             rows.append(row)
             self.db.writes.append((self.table, "insert"))
@@ -166,6 +187,8 @@ class FakeSupabase:
             "user_subscriptions": [dict(subscription)] if subscription else [],
             "payment_transactions": [],
             "audit_logs": [],
+            # The exit-survey ledger (migration 120).
+            "subscription_cancellations": [],
             # The buyer's identity row — read at checkout and snapshotted onto
             # the payment (117), so the record survives the account.
             "users": [{"user_id": USER, "full_name_ar": CUSTOMER_NAME,
@@ -208,10 +231,23 @@ class FakeSupabase:
             expiry = _iso(_now() + timedelta(days=30))
             row["fulfilled_at"] = _iso(_now())
             row["_granted_expiry"] = expiry
-            self.tables["user_subscriptions"] = [
-                {"user_id": row["user_id"], "plan_id": row["plan_id"],
-                 "source": "payment", "expires_at": expiry}
-            ]
+            # MERGE, never replace: the real RPC is an INSERT … ON CONFLICT DO
+            # UPDATE that names its columns (plan_id, source, started_at,
+            # expires_at, redeemed_code), so every OTHER column survives a
+            # grant — renewal_cancelled_at included. A fake that rebuilt the row
+            # would clear the opt-out flag by accident and let
+            # test_paid_fulfilment_clears_the_renewal_flag pass with the
+            # clear_renewal_cancellation call deleted.
+            patch = {"user_id": row["user_id"], "plan_id": row["plan_id"],
+                     "source": "payment", "expires_at": expiry}
+            subs = self.tables.setdefault("user_subscriptions", [])
+            existing = next(
+                (s for s in subs if s.get("user_id") == row["user_id"]), None
+            )
+            if existing is None:
+                subs.append(patch)
+            else:
+                existing.update(patch)
             return _Rpc([{"plan_id": row["plan_id"], "name_ar": "x", "expires_at": expiry}])
 
         if name == "revoke_plan_grant":
@@ -295,10 +331,17 @@ def patch_fetch(monkeypatch, payload=None, exc: Optional[Exception] = None):
     monkeypatch.setattr(ps, "fetch_payment", _fetch)
 
 
-def sub(plan_id="free", source="signup", days_left: Optional[float] = None):
+def sub(
+    plan_id="free",
+    source="signup",
+    days_left: Optional[float] = None,
+    cancelled_at: Optional[str] = None,
+):
     expires = _iso(_now() + timedelta(days=days_left)) if days_left is not None else None
     return {"user_id": USER, "plan_id": plan_id, "source": source,
-            "expires_at": expires, "status": "active"}
+            "expires_at": expires, "status": "active",
+            # migration 120 — NULL means renewal is on, which is every row today.
+            "renewal_cancelled_at": cancelled_at}
 
 
 def checkout(db, plan_id="pro", user_id=USER):
@@ -1331,3 +1374,322 @@ def test_plan_switched_is_no_longer_a_silent_success(keys, monkeypatch):
     result = run(ps.handle_webhook_event(db, _event(row["payment_id"], event="payment_refunded")))
     assert result["revoke_action"] == "plan_switched"
     assert result["revoked"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# إلغاء الاشتراك — renewal opt-out + exit survey
+# (.claude/plans/subscription_cancellation.md · migration 120)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ⚠ WHAT THESE TESTS CANNOT CATCH: FakeSupabase accepts any column name, so a
+# rename or a missing migration passes here and 42703s in prod. Migration 120
+# must be applied BEFORE the backend deploys, and the live cancel/undo smoke in
+# the plan's §5 is mandatory, not optional.
+
+
+def paid_sub(days_left=20, cancelled_at=None, plan_id="pro"):
+    """A subscription bought with money and still running — the only kind that
+    can be cancelled."""
+    return sub(plan_id, source="payment", days_left=days_left, cancelled_at=cancelled_at)
+
+
+def surveys(db):
+    return db.tables["subscription_cancellations"]
+
+
+def current_sub(db):
+    return db.tables["user_subscriptions"][0]
+
+
+# ── state ────────────────────────────────────────────────────────────────────
+
+
+def test_subscription_state_reports_a_cancellable_paid_plan():
+    db = FakeSupabase(paid_sub())
+    state = run(ss.get_subscription(db, USER))
+    assert state["plan_id"] == "pro"
+    assert state["plan_name_ar"] == "الاحترافية"      # from the catalog, not the row
+    assert state["source"] == "payment"
+    assert state["cancellable"] is True
+    assert state["renewal_cancelled_at"] is None
+
+
+def test_subscription_state_of_a_user_with_no_row():
+    """Never a 500 on the settings dialog — «no plan» is an ordinary answer."""
+    state = run(ss.get_subscription(FakeSupabase(), USER))
+    assert state == {"plan_id": None, "plan_name_ar": None, "expires_at": None,
+                     "source": None, "cancellable": False,
+                     "renewal_cancelled_at": None}
+
+
+@pytest.mark.parametrize(
+    "subscription,why",
+    [
+        (sub("free"), "free/signup"),
+        (sub("pro", source="code", days_left=20), "code grant"),
+        (sub("pro", source="manual", days_left=20), "manual grant"),
+        (sub("pro", source="signup", days_left=20), "signup grant"),
+        (sub("pro", source="payment", days_left=-1), "expired paid term"),
+        (sub(None, source="payment", days_left=20), "locked account"),
+        (sub("pro", source="payment"), "non-expiring grant"),
+    ],
+)
+def test_only_a_running_paid_plan_is_cancellable(subscription, why):
+    """Visibility rule: code/marketing/manual/signup grants renew nothing and
+    expire on their own, so a cancel button there is noise — and on an expired
+    or locked account it is a lie."""
+    state = run(ss.get_subscription(FakeSupabase(subscription), USER))
+    assert state["cancellable"] is False, why
+
+
+def test_cancellable_stays_true_while_cancelled():
+    """It describes the SUBSCRIPTION, not the button: an undo makes cancelling
+    legal again, and the dialog branches on renewal_cancelled_at."""
+    state = run(ss.get_subscription(FakeSupabase(paid_sub(cancelled_at=_iso(_now()))), USER))
+    assert state["cancellable"] is True
+    assert state["renewal_cancelled_at"]
+
+
+# ── cancel ───────────────────────────────────────────────────────────────────
+
+
+def test_cancel_sets_the_flag_and_writes_the_survey():
+    db = FakeSupabase(paid_sub(days_left=20))
+    expires_at = current_sub(db)["expires_at"]
+
+    state = run(ss.cancel_renewal(db, USER, reason="expensive", comment="غالي جداً"))
+
+    assert state["renewal_cancelled_at"] and state["cancellable"] is True
+    assert current_sub(db)["renewal_cancelled_at"] == state["renewal_cancelled_at"]
+
+    assert len(surveys(db)) == 1
+    row = surveys(db)[0]
+    assert row["user_id"] == USER
+    assert row["plan_id"] == "pro"
+    assert row["reason"] == "expensive"
+    assert row["comment"] == "غالي جداً"
+    # Snapshotted, so a later grant/refund cannot rewrite what the user was told.
+    assert row["expires_at_snapshot"] == expires_at
+    assert row.get("revoked_at") is None
+
+
+def test_cancel_never_touches_the_term_or_the_plan():
+    """Cancel ≠ refund: access runs to expires_at exactly as before. Writing
+    plan_id in the same UPDATE would also wake the assignment trigger and
+    re-stamp the expiry (the «set expiry ALONE» trap)."""
+    db = FakeSupabase(paid_sub(days_left=20))
+    before = dict(current_sub(db))
+
+    run(ss.cancel_renewal(db, USER, reason="other"))
+
+    after = current_sub(db)
+    assert after["plan_id"] == before["plan_id"]
+    assert after["expires_at"] == before["expires_at"]
+    assert after["source"] == before["source"]
+
+
+def test_cancel_comment_is_optional():
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="no_longer_needed"))
+    assert surveys(db)[0]["comment"] is None
+
+
+def test_cancel_blank_comment_is_stored_as_null():
+    """«   » is not feedback — it should not read as a comment in the report."""
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="other", comment="   \n "))
+    assert surveys(db)[0]["comment"] is None
+
+
+def test_cancel_truncates_an_enormous_comment():
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="other", comment="ب" * 5000))
+    assert len(surveys(db)[0]["comment"]) == ss.COMMENT_MAX_CHARS
+
+
+@pytest.mark.parametrize("reason", ["", "too_expensive", "EXPENSIVE", "other ", None, 7])
+def test_cancel_rejects_an_unknown_reason(reason):
+    """The four keys are a CHECK constraint in 120 — a value that would 23514
+    at the database must be refused in Arabic before it ever gets there."""
+    db = FakeSupabase(paid_sub())
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.cancel_renewal(db, USER, reason=reason))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == ss.INVALID_REASON_AR
+    assert surveys(db) == []
+    assert current_sub(db)["renewal_cancelled_at"] is None
+
+
+@pytest.mark.parametrize(
+    "subscription",
+    [
+        None,                                          # no subscription row
+        sub("free"),
+        sub("pro", source="code", days_left=20),
+        sub("pro", source="manual", days_left=20),
+        sub("pro", source="signup", days_left=20),
+        sub("pro", source="payment", days_left=-1),    # term already over
+    ],
+)
+def test_cancel_refuses_anything_but_a_running_paid_plan(subscription):
+    db = FakeSupabase(subscription)
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.cancel_renewal(db, USER, reason="expensive"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_NOT_CANCELLABLE
+    assert exc.value.detail == ss.NO_PAID_SUBSCRIPTION_AR
+    assert surveys(db) == []
+
+
+def test_double_cancel_is_refused_and_writes_one_survey_row():
+    """Idempotency is a refusal, not a no-op: a second row would double-count
+    one departure in the only data this feature produces."""
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="expensive"))
+    first_flag = current_sub(db)["renewal_cancelled_at"]
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.cancel_renewal(db, USER, reason="something_wrong"))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_ALREADY_CANCELLED
+    assert exc.value.detail == ss.ALREADY_CANCELLED_AR
+
+    assert len(surveys(db)) == 1
+    assert current_sub(db)["renewal_cancelled_at"] == first_flag
+
+
+def test_a_lost_survey_row_never_undoes_the_cancellation(monkeypatch, caplog):
+    """The flag IS the cancellation. Losing the answer is a lost datapoint;
+    reporting the cancellation as failed would be a broken promise."""
+    db = FakeSupabase(paid_sub())
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("survey table unavailable")
+
+    monkeypatch.setattr(ss, "_insert_survey", _boom)
+
+    state = run(ss.cancel_renewal(db, USER, reason="expensive"))
+    assert state["renewal_cancelled_at"]
+    assert current_sub(db)["renewal_cancelled_at"]
+    assert surveys(db) == []
+
+
+def test_a_failed_flag_write_refuses_the_cancel(monkeypatch):
+    """The opposite order: if the flag cannot be written there is no
+    cancellation, so no survey row may claim there was one."""
+    db = FakeSupabase(paid_sub())
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("column renewal_cancelled_at does not exist")
+
+    monkeypatch.setattr(ss, "_write_renewal_flag", _boom)
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.cancel_renewal(db, USER, reason="expensive"))
+    assert exc.value.status_code == 503
+    assert surveys(db) == []
+
+
+# ── reactivate ───────────────────────────────────────────────────────────────
+
+
+def test_reactivate_clears_the_flag_and_revokes_the_newest_survey():
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="expensive"))
+
+    state = run(ss.reactivate_renewal(db, USER))
+
+    assert state["renewal_cancelled_at"] is None
+    assert current_sub(db)["renewal_cancelled_at"] is None
+    assert surveys(db)[0]["revoked_at"]
+
+
+def test_reactivate_revokes_only_the_cancellation_it_undoes():
+    """Cancel → undo → cancel again leaves two true answers on file; today's
+    undo takes back today's."""
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="expensive"))
+    run(ss.reactivate_renewal(db, USER))
+    run(ss.cancel_renewal(db, USER, reason="something_wrong"))
+    run(ss.reactivate_renewal(db, USER))
+
+    rows = sorted(surveys(db), key=lambda r: r["created_at"])
+    assert [r["reason"] for r in rows] == ["expensive", "something_wrong"]
+    assert all(r["revoked_at"] for r in rows)          # each undo hit its own row
+
+
+def test_reactivate_refused_when_nothing_was_cancelled():
+    db = FakeSupabase(paid_sub())
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.reactivate_renewal(db, USER))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.SUBSCRIPTION_NOT_CANCELLABLE
+    assert exc.value.detail == ss.NOT_CANCELLED_AR
+
+
+def test_reactivate_refused_once_the_term_has_ended():
+    """A lapsed plan comes back only through a new purchase — undoing here
+    would promise access that no longer exists."""
+    db = FakeSupabase(paid_sub(days_left=-1, cancelled_at=_iso(_now() - timedelta(days=5))))
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.reactivate_renewal(db, USER))
+    assert exc.value.status_code == 409
+    assert exc.value.detail == ss.TERM_ENDED_AR
+    assert current_sub(db)["renewal_cancelled_at"]     # flag untouched
+
+
+def test_reactivate_survives_a_missing_survey_row():
+    """A flag set by an operator (or a cancel whose survey insert was lost) must
+    still be undoable."""
+    db = FakeSupabase(paid_sub(cancelled_at=_iso(_now())))
+    state = run(ss.reactivate_renewal(db, USER))
+    assert state["renewal_cancelled_at"] is None
+
+
+# ── re-purchase clears the flag ──────────────────────────────────────────────
+
+
+def test_paid_fulfilment_clears_the_renewal_flag(keys, monkeypatch):
+    """Buying again IS re-opting in. grant_plan names its columns, so it leaves
+    the opt-out standing — this is the Python-side clear that follows it."""
+    db = FakeSupabase(paid_sub(days_left=20, cancelled_at=_iso(_now() - timedelta(days=1))))
+
+    pid = checkout(db, "pro")["payment_id"]          # same plan → no credit
+    patch_fetch(monkeypatch, moyasar_payment(pid))
+
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert result["granted"] is True
+    assert current_sub(db)["renewal_cancelled_at"] is None
+
+
+def test_re_purchase_does_not_revoke_the_survey_row():
+    """The survey recorded a true moment. Only an explicit undo un-says it —
+    coming back later does not."""
+    db = FakeSupabase(paid_sub())
+    run(ss.cancel_renewal(db, USER, reason="expensive", comment="سأعود"))
+
+    cleared = ss.clear_renewal_cancellation(db, USER)
+
+    assert cleared is True
+    assert current_sub(db)["renewal_cancelled_at"] is None
+    # .get(): the insert omits revoked_at entirely (the DB defaults it to NULL),
+    # which is the same "no value" the is_("revoked_at","null") lookup matches.
+    assert surveys(db)[0].get("revoked_at") is None
+
+
+def test_clearing_an_unset_flag_writes_nothing():
+    db = FakeSupabase(paid_sub())
+    assert ss.clear_renewal_cancellation(db, USER) is False
+    assert not [w for w in db.writes if w == ("user_subscriptions", "update")]
+
+
+def test_clearing_the_flag_never_raises_into_the_money_path(monkeypatch):
+    """The plan is granted and the money is in; a stale flag is a Wave 2
+    reporting bug, a 500 here would be a customer who paid and saw an error."""
+    db = FakeSupabase(paid_sub(cancelled_at=_iso(_now())))
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ss, "_write_renewal_flag", _boom)
+    assert ss.clear_renewal_cancellation(db, USER) is False

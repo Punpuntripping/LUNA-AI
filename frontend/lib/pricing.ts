@@ -97,14 +97,12 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
 // Phase E — the copy that must appear before purchase
 // -----------------------------------------------
 
-/**
- * «شامل الضريبة» — kept per the owner (2026-08-04): prices are stated
- * tax-inclusive on the UI. Deliberate asymmetry: the RECEIPT email still
- * carries NO tax breakdown (plain إيصال دفع — no VAT registration to invoice
- * under; backend/tests/test_receipts.py enforces that side). Don't "align"
- * the two directions without the owner.
- */
-export const VAT_INCLUSIVE_NOTE = "شامل الضريبة";
+// «شامل الضريبة» REMOVED (owner, 2026-08-08): the business holds no VAT
+// registration yet, and an unregistered business cannot claim to collect VAT.
+// Prices display bare until registration; the server keeps stamping
+// `vat_amount_sar` internally (never shown to the user). When a VAT number
+// exists, reintroduce the note here AND revisit the receipt email, which
+// deliberately carries no tax breakdown (backend/tests/test_receipts.py).
 
 /**
  * Shown ONLY at the refund action (PaymentHistoryDialog — owner decision

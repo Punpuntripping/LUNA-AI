@@ -58,6 +58,11 @@ live subscription state and never re-reading it:
   returned the money and kept the plan (``revoke_plan_grant`` answers
   ``plan_switched`` and no-ops). Refunds now unwind NEWEST-FIRST
   (``_is_superseded``), and ``plan_switched`` is no longer a silent success.
+
+Migration ``120_subscription_cancellation.sql`` adds a renewal opt-out flag that
+this module has exactly ONE dealing with: after a successful grant it clears
+``user_subscriptions.renewal_cancelled_at`` via ``subscription_service`` —
+buying again is re-opting in. Everything else about cancellation lives there.
 """
 from __future__ import annotations
 
@@ -73,6 +78,7 @@ import httpx
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
+from backend.app.services import subscription_service
 from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
@@ -219,6 +225,7 @@ REFUND_SUPERSEDED_AR = (
     "استرد العملية الأحدث أولاً، أو تواصل معنا على support@rayhanai.com"
 )
 APPLEPAY_URL_INVALID_AR = "رابط التحقق غير صالح"
+APPLEPAY_DISABLED_AR = "Apple Pay غير متاح حالياً"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1232,6 +1239,7 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         "description": description,
         "publishable_key": publishable,
         "callback_url": f"{settings.PUBLIC_WEB_URL}/pay/callback",
+        "applepay_enabled": settings.MOYASAR_APPLEPAY_ENABLED,
     }
 
 
@@ -1464,6 +1472,16 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
 
     granted = await run_db(
         _grant_plan, supabase, row["user_id"], row["plan_id"], payment_id
+    )
+
+    # Buying again IS re-opting in. grant_plan's ON CONFLICT DO UPDATE lists its
+    # columns explicitly, so it leaves a standing renewal opt-out alone — and a
+    # user who cancelled in June and buys again in July must not be on the Wave 2
+    # renewal job's skip list. Done HERE in Python and never inside grant_plan
+    # (113's rule: the live money-path RPC is not edited for a side concern).
+    # The call never raises: the plan is granted and the money is in.
+    await run_db(
+        subscription_service.clear_renewal_cancellation, supabase, row["user_id"]
     )
 
     await run_db(
@@ -1987,6 +2005,14 @@ async def applepay_session(validation_url: str) -> dict:
     """
     _secret, publishable = _require_keys()
     settings = get_settings()
+    # Belt-and-braces behind the checkout session's `applepay_enabled` flag —
+    # the form never calls this while disabled, but the route is authed-public.
+    if not settings.MOYASAR_APPLEPAY_ENABLED:
+        raise LunaHTTPException(
+            status_code=502,
+            code=ErrorCode.PAYMENT_PROVIDER_ERROR,
+            detail=APPLEPAY_DISABLED_AR,
+        )
     url = _validate_apple_validation_url(validation_url)
 
     try:

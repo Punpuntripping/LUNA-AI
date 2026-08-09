@@ -12,7 +12,6 @@ import {
 } from "@/lib/moyasar";
 import {
   PAYMENT_TRUST_NOTE,
-  VAT_INCLUSIVE_NOTE,
   findPricingPlan,
   formatHalalas,
   formatSar,
@@ -85,8 +84,13 @@ export default function PayPlanPage() {
         // — it dies mid-render ("Element: null is not a valid element") and the
         // ENTIRE form, card fields included, never appears. Same init without
         // 'applepay' renders fine. So the method is included only where Apple
-        // hardware can actually use it (Safari exposes ApplePaySession).
+        // hardware can actually use it (Safari exposes ApplePaySession) AND the
+        // server says the merchant side is ready (`applepay_enabled`, off while
+        // the Moyasar Apple Pay domain registration is pending — a capable
+        // Safari would otherwise render a button that dies at merchant
+        // validation).
         const canApplePay =
+          session.applepay_enabled &&
           typeof window.ApplePaySession !== "undefined" &&
           window.ApplePaySession.canMakePayments();
 
@@ -221,14 +225,9 @@ export default function PayPlanPage() {
         )}
 
         <div className="mt-1 flex items-end justify-between gap-3 border-t border-border pt-3">
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold text-foreground">
-              المبلغ المستحق
-            </span>
-            <span className="text-xs text-muted-foreground">
-              {VAT_INCLUSIVE_NOTE}
-            </span>
-          </div>
+          <span className="text-sm font-semibold text-foreground">
+            المبلغ المستحق
+          </span>
           <span
             className="flex items-center gap-1.5 text-3xl font-bold leading-none tabular-nums text-foreground"
             data-testid="pay-amount-due"
