@@ -6,6 +6,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { api, conversationsApi, formsApi } from "@/lib/api";
 import { consumePendingIntent } from "@/lib/post-login-intent";
+import { loginHref } from "@/lib/safe-next";
 import { storeClaimedAnswer } from "@/lib/library/ask";
 import { AccountDeletionPendingScreen } from "@/components/auth/AccountDeletionPendingScreen";
 
@@ -75,7 +76,7 @@ const PUBLIC_PREFIXES = [
   "/judgments",
 ] as const;
 
-function isPublicPath(pathname: string | null): boolean {
+export function isPublicPath(pathname: string | null): boolean {
   if (!pathname) return false;
   // The marketing landing page is the public front door. Matched exactly — a
   // bare-prefix "/" would swallow every authenticated route.
@@ -185,7 +186,14 @@ export function AuthGuard({ children }: Props) {
     // anon visitors must see them, and logged-in users may browse them freely.
     if (isPublic) return;
     if (!isAuthenticated && pathname !== "/login") {
-      router.replace("/login");
+      // Carry the page as `?next=` so signing (back) in returns the user here
+      // instead of the hardcoded /chat. Covers both a session dying under a
+      // signed-in user and an anonymous visitor opening a deep link into the
+      // app. `loginHref` validates via safeNext — an unlisted path degrades to
+      // a plain /login, exactly today's behaviour.
+      router.replace(
+        loginHref(pathname ? `${pathname}${window.location.search}` : ""),
+      );
     }
   }, [isLoading, isAuthenticated, pathname, router, isPublic]);
 
@@ -202,7 +210,7 @@ export function AuthGuard({ children }: Props) {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center gap-3">
+      <div className="flex h-dvh items-center justify-center gap-3">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
         <span className="text-sm text-muted-foreground">
           جارٍ تحميل الجلسة...

@@ -61,6 +61,17 @@ const ALLOWED_PREFIXES = [
   // NOT in AuthGuard's PUBLIC_PREFIXES), so this is a navigation decision and
   // not a privilege one, exactly like `/chat` above.
   "/pay",
+  // Session-expiry return targets. When a live session dies out from under the
+  // user (time-boxed, revoked, logged out in another tab), the eject paths —
+  // AuthGuard's /login redirect, apiFetch's 401 handler, AuthSync's SIGNED_OUT
+  // handler — carry the page the user was on so re-login puts them straight
+  // back. These are the private app surfaces a user actually sits on; exactly
+  // like `/chat` and `/pay` above, returning a freshly-authenticated user to
+  // their own pages is a navigation decision, not a privilege one.
+  "/chats",
+  "/templates",
+  "/blogs",
+  "/settings",
 ] as const;
 
 /**

@@ -97,6 +97,11 @@ interface AuthState {
    *  the local user updates first so the prompt never re-opens this session;
    *  a failed PATCH is swallowed (worst case: asked once more next login). */
   saveProfession: (group: string, label: string | null) => Promise<void>;
+  /** Persist «بماذا تحب أن نناديك؟» (users.preferred_name). Pass null to clear
+   *  the override and fall back to the derived name. NOT optimistic and NOT
+   *  swallowed: the settings dialog reports success and failure inline, and
+   *  the server's resolved `call_name` is what lands in the local user. */
+  savePreferredName: (name: string | null) => Promise<void>;
   loadUser: () => Promise<void>;
   revalidateSession: () => Promise<void>;
   clearError: () => void;
@@ -259,6 +264,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Swallow — the optimistic user object keeps the prompt closed for this
       // session; the DB stays NULL so the user is simply asked again later.
     }
+  },
+
+  savePreferredName: async (name) => {
+    const current = get().user;
+    if (!current) return;
+    const saved = await authApi.updatePreferredName(name);
+    set({
+      user: {
+        ...current,
+        preferred_name: saved.preferred_name,
+        call_name: saved.call_name,
+      },
+    });
   },
 
   loadUser: async () => {

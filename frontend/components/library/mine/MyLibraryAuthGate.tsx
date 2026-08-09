@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
+import { loginHref } from "@/lib/safe-next";
 import { MY_LIBRARY_COPY } from "@/components/library/mine/copy";
 
 /**
@@ -24,7 +25,9 @@ export function MyLibraryAuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace("/login");
+      // `?next=` returns the visitor to their shelf after signing in —
+      // /library/mine passes safeNext via the /library prefix.
+      router.replace(loginHref("/library/mine"));
     }
   }, [isLoading, isAuthenticated, router]);
 

@@ -5,6 +5,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useChatStore } from "@/stores/chat-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
+import { isPublicPath } from "@/components/auth/AuthGuard";
+import { loginHref } from "@/lib/safe-next";
 
 /**
  * Cross-tab identity guard — fixes the account-mixing privacy leak.
@@ -57,10 +59,28 @@ export function AuthSync() {
       if (nextId && nextId === boundUserId.current) return;
 
       if (event === "SIGNED_OUT" || nextId === null) {
-        // Session ended here or in another tab — purge and bounce to /login.
+        // Session ended here or in another tab — purge, then part ways with
+        // the page in the least destructive way that still guarantees no
+        // ghost data survives:
+        //
+        //   - PUBLIC page (library, /regulations, /blog…): these render for
+        //     anonymous visitors by design, so bouncing a reader to /login
+        //     just loses their place. Reload in place instead — the tab
+        //     re-hydrates as anon on the same URL (auth-aware chrome flips to
+        //     the signed-out variant; the content stays).
+        //   - PRIVATE page: /login is the only correct destination, but carry
+        //     the page as `?next=` so re-login returns the user here.
         purge();
         boundUserId.current = null;
-        window.location.replace("/login");
+        if (isPublicPath(window.location.pathname)) {
+          window.location.reload();
+        } else {
+          window.location.replace(
+            loginHref(
+              `${window.location.pathname}${window.location.search}`,
+            ),
+          );
+        }
         return;
       }
 

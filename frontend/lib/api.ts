@@ -49,8 +49,11 @@ import type {
   PaymentVerifyResponse,
   PaymentHistoryResponse,
   PaymentRefundResponse,
+  SubscriptionState,
+  CancelSubscriptionReason,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
+import { loginHref } from "@/lib/safe-next";
 // Access-tiers Phase C: the metered reference reveal answers with the SAME D14
 // 402 body as `/library/full/*`, so it reuses that module's defensive parser
 // rather than growing a second one that could drift from it.
@@ -121,6 +124,15 @@ export function clearTokens(): void {
 
 let refreshPromise: Promise<string> | null = null;
 
+/** Hard-eject to /login, carrying the current page as `?next=` so re-login
+ *  puts the user straight back. `loginHref` runs the value through `safeNext`,
+ *  so a page outside the allowlist degrades to a plain `/login`. */
+function ejectToLogin(): void {
+  window.location.href = loginHref(
+    `${window.location.pathname}${window.location.search}`,
+  );
+}
+
 async function refreshAccessToken(): Promise<string> {
   // Deduplicate concurrent refresh attempts
   if (refreshPromise) return refreshPromise;
@@ -130,15 +142,28 @@ async function refreshAccessToken(): Promise<string> {
     // @supabase/ssr manages the refresh token in an HttpOnly cookie,
     // so we don't need to pass it manually.
     const { data, error } = await supabase.auth.refreshSession();
+    let session = data?.session ?? null;
 
-    if (error || !data.session) {
+    // A refreshSession() error is NOT proof the session is dead. Refresh
+    // tokens are single-use, so a concurrent refresh (another tab, the
+    // proactive timer, Supabase's own auto-refresh) may have already rotated
+    // the token — failing this call with "Already Used" while the session is
+    // perfectly alive. Confirm via getSession() (which refreshes an expired
+    // token itself when needed) before ejecting the user — the same
+    // double-check auth-store.loadUser / revalidateSession already do.
+    if (error || !session) {
+      const { data: current } = await supabase.auth.getSession();
+      session = current?.session ?? null;
+    }
+
+    if (!session) {
       clearTokens();
-      window.location.href = "/login";
+      ejectToLogin();
       throw new Error("Token refresh failed");
     }
 
-    accessToken = data.session.access_token;
-    return data.session.access_token;
+    accessToken = session.access_token;
+    return session.access_token;
   })();
 
   try {
@@ -191,7 +216,7 @@ async function apiFetch<T>(
       return apiFetch<T>(path, options, false);
     } catch {
       clearTokens();
-      window.location.href = "/login";
+      ejectToLogin();
       throw new ApiClientError(401, "unauthorized", "Session expired");
     }
   }
@@ -457,6 +482,15 @@ export const authApi = {
   // Account settings (إعدادات الحساب)
   // -----------------------------------------------
 
+  /** Store «بماذا تحب أن نناديك؟» (users.preferred_name — migration 122).
+   *  Pass null to clear the override; the response then carries the derived
+   *  default in `call_name`, so the field can refill from it. */
+  updatePreferredName: (preferred_name: string | null) =>
+    api.patch<{ preferred_name: string | null; call_name: string | null }>(
+      "/auth/preferred-name",
+      { preferred_name },
+    ),
+
   /** Rejected with 400 VALIDATION_ERROR for Google-only accounts (no password
    *  identity); 401 AUTH_INVALID when `current_password` is wrong. */
   changePassword: (current_password: string, new_password: string) =>
@@ -604,7 +638,7 @@ export const messagesApi = {
         return doFetch();
       } catch {
         clearTokens();
-        window.location.href = "/login";
+        ejectToLogin();
         throw new ApiClientError(401, "unauthorized", "Session expired");
       }
     }
@@ -992,6 +1026,42 @@ export const paymentsApi = {
    */
   refund: (paymentId: string) =>
     api.post<PaymentRefundResponse>(`/payments/${paymentId}/refund`),
+
+  /**
+   * Current subscription state for إعدادات الحساب: plan, term end, `source`,
+   * and whether the renewal opt-out applies.
+   *
+   * Separate from `usageApi.get()` on purpose — the quota report carries no
+   * `source`, and it is read on the message path by every send, so a
+   * money-shaped field does not belong on it.
+   */
+  getSubscription: () => api.get<SubscriptionState>("/payments/subscription"),
+
+  /**
+   * Opt out of renewal + record the exit survey. `reason` is REQUIRED (one of
+   * the four keys), `comment` optional for every reason.
+   *
+   * ⚠ This is NOT a refund and NOT an early termination: the current term is
+   * untouched and access runs to `expires_at`. It also stops no automatic
+   * charge — Wave 1 has none. Returns the refreshed `SubscriptionState`.
+   *
+   * Errors arrive as `ApiClientError` with the backend's Arabic message:
+   * `SUBSCRIPTION_NOT_CANCELLABLE` (no paid running term),
+   * `SUBSCRIPTION_ALREADY_CANCELLED` (a second call — the server never writes
+   * a second survey row), `VALIDATION_ERROR` (unknown reason).
+   */
+  cancelSubscription: (body: {
+    reason: CancelSubscriptionReason;
+    comment?: string;
+  }) => api.post<SubscriptionState>("/payments/subscription/cancel", body),
+
+  /**
+   * Undo a cancellation («تراجع عن الإلغاء»). Free — no money moved either way.
+   * `SUBSCRIPTION_NOT_CANCELLABLE` comes back when there is nothing to undo or
+   * the term has already ended (a lapsed plan returns only via a new purchase).
+   */
+  reactivateSubscription: () =>
+    api.post<SubscriptionState>("/payments/subscription/reactivate"),
 };
 
 export const templatesApi = {
@@ -1208,9 +1278,9 @@ export const myLibraryApi = {
    *
    * ⚠ PLAIN `fetch`, NOT `apiFetch` — deliberate, and it must stay that way.
    * This beacon fires on PUBLIC library document pages. `apiFetch`'s 401 path
-   * clears tokens and does `window.location.href = "/login"`, so a reader whose
-   * session merely went stale in a background tab would be ejected off
-   * `/regulations/{slug}` by a fire-and-forget shelf write. Every sibling library
+   * clears tokens and hard-redirects to /login (via `ejectToLogin`), so a
+   * reader whose session merely went stale in a background tab would be
+   * ejected off `/regulations/{slug}` by a fire-and-forget shelf write. Every sibling library
    * call avoids `apiFetch` for exactly this reason (`fetchFullContent`,
    * `fetchLibraryBalance`, `fetchAuthedHubPage`, `getReferenceSource`).
    *
