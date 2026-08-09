@@ -103,6 +103,15 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           z-[60] deliberately clears the sidebar drawer and its floating menu
           button (both z-50): the full-screen workspace is a focused mode, and
           the X in `PaneHeader` (closeWorkspace) is the way back to the chat.
+
+          ⚠ 60 is a CEILING for app chrome, not a floor. Every portalled Radix
+          layer in `components/ui` sits at z-[70] precisely so the surfaces
+          opened from inside this overlay — «عرض المصدر», the add-item menu, the
+          item action bar — render ABOVE it. When they sat at z-50 the dialog
+          opened underneath this div: invisible, while Radix put
+          `pointer-events: none` on <body> and locked scroll, so the whole app
+          went dead with no tappable way out. Anything new added here must stay
+          under 70.
           Safe-area padding is required because `viewportFit: "cover"` lets the
           page paint under the notch and the home indicator. */}
       {showOverlay && (

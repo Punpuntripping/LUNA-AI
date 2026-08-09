@@ -10,6 +10,16 @@ const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
+/**
+ * ⚠ z-[70], not z-50 — see the layering note in `ChatLayoutClient`.
+ *
+ * A modal Radix layer sets `pointer-events: none` on `<body>` and locks scroll
+ * for as long as it is open. If it renders BENEATH full-screen app chrome (the
+ * mobile workspace overlay is `z-[60]`), the user sees no dialog and can tap
+ * nothing: the app reads as frozen, with no way out on a phone since dismissing
+ * needs either a visible overlay to tap or an Esc key. So every portalled layer
+ * in this directory sits above 60, and app chrome stays below it.
+ */
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
@@ -17,7 +27,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      "fixed inset-0 z-[70] bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className
     )}
     {...props}
@@ -34,7 +44,12 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed start-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] rtl:-translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        // `max-h` + `overflow-y-auto`: the content is centred on a fixed layer
+      // with no scroll of its own, and Radix has already locked the page
+      // scroll — so anything taller than the viewport used to be clipped off
+      // both ends with no way to reach it. Bites hardest on a phone, where the
+      // source-reveal dialog stacks a title, a 60vh body and an action bar.
+      "fixed start-[50%] top-[50%] z-[70] grid max-h-[calc(100dvh-2rem)] w-full max-w-lg translate-x-[-50%] rtl:-translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
         className
       )}
       {...props}
