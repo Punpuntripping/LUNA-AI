@@ -371,6 +371,11 @@ def build_snippet(result, max_chars: int = 500) -> str:
 
     Legacy ``RerankedResult``: prefers ``content`` -> ``section_summary`` ->
     ``title`` (pre-URA path, unchanged).
+
+    NOTE: government-service (compliance) snippets are dropped for the UI at
+    the panel's read boundary (``references_service._load_references``), NOT
+    here — this text is still the aggregator prompt's fallback ``<content>``
+    body.
     """
     if isinstance(result, (RegURAResult, ComplianceURAResult, CaseURAResult)):
         source = render_aggregator_content(result.for_aggregator())

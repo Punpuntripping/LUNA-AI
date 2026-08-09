@@ -241,8 +241,22 @@ async def _load_references(
 
         ref = _reference_from_ura(n, shell)
         # Snippet derives from the aggregator-view content (same call the
-        # aggregator preprocessor makes at publish time).
-        ref.snippet = build_snippet(shell)
+        # aggregator preprocessor makes at publish time) — except for
+        # government services, which carry NO snippet at all.
+        #
+        # A service card is the service name and the issuing entity, nothing
+        # else: ``services.service_name_ar`` is «{الجهة} - {اسم الخدمة}» on all
+        # 4,717 rows, so both are already in the title. What the snippet added
+        # was ``services.service_context`` — a blob written for the embedder,
+        # not a reader: the description restated once per beneficiary, an
+        # applicability sentence, then a «مرتبطة بـ: كلمة، كلمة، …» keyword tail
+        # (4,707 of 4,717 rows). Clamped to two lines it read as the same
+        # sentence twice, cut off mid-keyword-list.
+        #
+        # Blanked HERE, at the panel's read boundary, rather than in
+        # ``build_snippet``: that function's output is still the aggregator
+        # prompt's fallback ``<content>`` body, which must keep its text.
+        ref.snippet = "" if ref.domain == "compliance" else build_snippet(shell)
         references.append(ref)
         pending_views.append((ref, shell))
 
