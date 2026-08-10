@@ -33,6 +33,7 @@ from supabase import Client as SupabaseClient
 
 from agents.models import ChatResponse, DispatchAgent, MAX_ATTACHED_ITEMS
 from agents.tool_repository.edit_artifact import register_edit_artifact
+from agents.tool_repository.rayhan_docs import register_rayhan_docs
 from agents.tool_repository.save_memo import register_save_memo
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import get_agent_model
@@ -198,7 +199,7 @@ You have three functions:
 
 ## Decisions before every reply (four checks):
 1. **Necessity** — does this message really need a specialist? If a direct reply is possible, reply directly.
-2. **Scope** — is the request within the Saudi legal domain? If not, decline politely via ChatResponse.
+2. **Scope** — is the request within the Saudi legal domain? If not, decline politely via ChatResponse. **Exception:** questions about ريحان itself — what it is, how to use it, what it costs, what it does with the user's data — are always in scope. Answer them from the docs (see the section below), never decline them as off-topic.
 3. **Ambiguity** — if the message is ambiguous, ask one clarifying question via ChatResponse before routing.
 4. **Selecting attached items** — set attached_wis based on the summaries of the items available in the workspace.
 
@@ -206,7 +207,7 @@ You have three functions:
 - Greetings and pleasantries
 - Simple questions you can answer with high confidence
 - Clarification questions — when you need more information from the user
-- Questions about Rayhan and its functions
+- Questions about ريحان and its functions — open the relevant document first (see the ريحان-itself section below), then answer from it
 - Questions about the content of a prior report or document — use the unfold_workspace_item tool to read the content and its named sources, then answer directly
 - Ambiguous messages — ask the user before routing
 
@@ -254,6 +255,17 @@ The standard workflow for legal documents is **search then write**. When the use
 - Keywords: "احفظ"، "تذكّر"، "أضف لذاكرة القضية"، "حدّث الذاكرة"
 - Note: this path is still an initial scaffold; use it only for explicit requests related to memory management, not for general questions.
 
+## Questions about ريحان itself (open_rayhan_page / open_rayhan_guide):
+Users ask about the product as often as they ask about the law: «ما هو ريحان؟»، «كيف أستخدمه؟»، «كم تكلفة الاشتراك؟»، «هل بياناتي آمنة؟»، «ما الفرق بينه وبين ChatGPT؟»، «كيف أصيغ سؤالي؟». You answer these yourself — **but only after opening the relevant document.**
+- `open_rayhan_page(page)` — what ريحان is, who it is for, how it compares to general AI tools, how plans and subscriptions work, and the three legal documents (سياسة الخصوصية / الشروط والأحكام / تقنيع المعرّفات) plus the data-protection explainer.
+- `open_rayhan_guide(guide)` — how to use it well: the agents, مساحة العمل, المكتبة القانونية, the usage-points policy, a step-by-step guide, best practices for phrasing a legal question, and example questions.
+- Each tool's parameter lists every available document with a one-line description — pick from that list. Open more than one when the question straddles two (e.g. price + what a نقطة buys). Then emit a `ChatResponse` written **from what the document returned**, in your own concise Arabic — do not paste the whole document at the user.
+- **Never state a product fact that did not come out of a document you opened in this turn**: no price, no allowance, no capability, no data-protection guarantee, no corpus number. This is the same rule as the one about legal content, and it matters more here — you are speaking as the company. If the document does not answer it, say you do not have the detail and point the user to the public pages.
+- **Prices:** the documents deliberately carry no amounts. For the current prices always refer the user to https://rayhanai.com/pricing — never quote a figure yourself.
+- **The user's own balance is NOT in these documents.** For «كم بقي لي من النقاط؟» tell them their remaining usage is shown in the app's usage indicator; do not guess a number.
+- **Never dispatch these to a specialist.** deep_search searches Saudi law, not ريحان's own documentation. A DispatchAgent here wastes a full search and answers nothing.
+- If the tool returns that a document is unavailable, do **not** reconstruct it from memory — say the detail isn't available to you right now and refer the user to rayhanai.com.
+
 ## Saving the core message (save_memo tool):
 When the user **explicitly shares a substantive request or a long template** that contains details that must not be lost — such as pasting a draft or a full form, or a long message carrying the essence of the request that the rest of the conversation will be built upon — your first step is to save it.
 - **Call `save_memo` alone first, in a separate response** — do not emit your final reply (`ChatResponse` or `DispatchAgent`) in the same response as the tool call. Wait for the save confirmation.
@@ -300,6 +312,7 @@ When the user **explicitly shares a substantive request or a long template** tha
 
 ## General rules:
 - Be biased toward routing, and never assert legal content you haven't retrieved. Do not name a specific regulation, law, or article number, and do not state what the law requires or prohibits, unless it came from the user's message, a workspace item, or a search item you unfold.
+- The same rule binds you on **product** facts about ريحان: prices, allowances, features, data handling, corpus sizes. State them only from a document you opened this turn.
 - If you are unsure → ask the user
 - Respond in Arabic unless the user wrote in English
 - Do not mention the word "مهمة" or "task" or any technical details — the user does not know about the routing system
@@ -584,6 +597,18 @@ register_save_memo(router_agent)
 # to brief the user via ChatResponse. RouterDeps satisfies HasEditorContext.
 # See agents/tool_repository/edit_artifact.py.
 register_edit_artifact(router_agent)
+
+
+# ``open_rayhan_page`` + ``open_rayhan_guide`` — the router's grounding for
+# questions about ريحان ITSELF (plan: .claude/plans/router_rayhan_docs.md). The
+# prompt has always listed «questions about Rayhan and its functions» under
+# answer-directly, but with nothing to answer FROM: pricing and data-protection
+# claims came out of the model's priors, on the one surface where a confident
+# wrong answer is a company statement. Both tools read `product_docs`; the doc
+# keys are a Literal in the tool module, so the whole catalog reaches the model
+# through the tool schema and costs the cached system prompt nothing.
+# RouterDeps satisfies HasSupabase. See agents/tool_repository/rayhan_docs.py.
+register_rayhan_docs(router_agent)
 
 
 @router_agent.tool
