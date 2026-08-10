@@ -724,6 +724,17 @@ export interface Reference {
    */
   has_source: boolean;
   /**
+   * The cited item's page in OUR library («فتح الحكم في ريحان»). `null` when
+   * the item has no published page — the card then renders the external link
+   * alone, never a hub fallback. Absent on pre-existing blog snapshots.
+   *
+   * NAVIGATION, NOT CONTENT: this link is free and unmetered. The library page
+   * enforces its own access tier; metering the link too would double-charge.
+   * Compliance references never carry one — `/compliance` was retired and has
+   * no wing to point at.
+   */
+  library_url?: string | null;
+  /**
    * Writer-publisher attribution: when this reference was projected onto an
    * ``agent_writing`` workspace item from a source research WI, ``source_wi``
    * carries the LLM-facing alias (e.g. ``"WI-1"``) of that source. Lives

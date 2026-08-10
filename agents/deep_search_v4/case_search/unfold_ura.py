@@ -61,7 +61,7 @@ from agents.deep_search_v4.shared.court_levels import (  # noqa: E402
     normalize_court_level,
 )
 from agents.deep_search_v4.shared.case_summary import (  # noqa: E402
-    strip_resolved_refs_section,
+    strip_pipeline_sections,
 )
 
 # Fields the aggregator actually reads. Everything else stays in the DB.
@@ -183,9 +183,11 @@ def _resolve_summary(full_row: dict[str, Any]) -> str:
         # Last resort only — see the D2 carve-out above.
         summary = str(full_row.get("content") or "").strip()
     # 16,505 summaries end in the pipeline's resolver-telemetry appendix
-    # («## المراجع النظامية المحلولة» — internal reg/chunk ids + scores). It is
-    # not legal content and the synthesis LLM restates it into visible answers.
-    summary = strip_resolved_refs_section(summary)
+    # («## المراجع النظامية المحلولة» — internal reg/chunk ids + scores) and 252
+    # in the classifier's crash dump («## classification_error» +
+    # `ConnectError: … getaddrinfo failed`). Neither is legal content, and the
+    # synthesis LLM restates both into visible answers.
+    summary = strip_pipeline_sections(summary)
     return _truncate(summary, MAX_AGGREGATOR_CONTENT_CHARS)
 
 

@@ -132,7 +132,7 @@ async def fetch_item_references(
     Returns:
         References ordered by ``n`` (ascending). Empty list if no rows.
     """
-    references, _ = await _load_references(
+    references, _resolvable, _rows = await _load_references(
         supabase, wi_id, used_only=used_only, with_source_views=with_source_views
     )
     return references
@@ -160,14 +160,47 @@ async def fetch_item_references_payload(
     ``source_view`` is still present in every entry, always ``null`` — the key is
     kept so an un-migrated client degrades to "no reveal button" instead of
     crashing on a missing property.
+
+    Each entry also carries:
+
+        ``library_url``: str | None — the cited item's page in OUR library
+        («فتح الحكم / النظام / التعميم في ريحان»).
+
+    That one is NAVIGATION, not content: it is a path to a page that enforces its
+    own access tier, so it is resolved for free, for every card, on the LIST
+    (which is why the button no longer requires spending a reveal first). It is
+    ``None`` for a compliance reference (the wing was retired — no page exists)
+    and for any item with no published slug; the panel then renders the external
+    link alone, never a hub fallback.
+
+    ⚠ ``blog.py`` snapshots this payload into ``blog_posts.references_json``, so
+    new posts inherit the key and posts published before it existed simply lack
+    it — hence optional on the client, never required.
     """
-    references, resolvable = await _load_references(
+    references, resolvable, rows = await _load_references(
         supabase, wi_id, used_only=used_only, with_source_views=False
     )
+
+    # ONE batched resolution for the whole panel (≤4 round-trips), never
+    # per-reference and never through ``resolve_access``. Fail-soft to {}.
+    library_urls: dict[int, str] = {}
+    try:
+        from backend.app.services import library_items_service
+
+        library_urls = await library_items_service.public_page_urls_for_reference_rows(
+            supabase, rows
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "references_service: library url resolution failed for wi_id=%s: %s",
+            wi_id, exc,
+        )
+
     out: list[dict] = []
     for ref in references:
         entry = ref.model_dump(mode="json")
         entry["has_source"] = ref.n in resolvable
+        entry["library_url"] = library_urls.get(ref.n)
         out.append(entry)
     return out
 
@@ -178,18 +211,24 @@ async def _load_references(
     *,
     used_only: bool = False,
     with_source_views: bool = False,
-) -> tuple[list[Reference], set[int]]:
-    """Shared read path. Returns ``(references, ns_with_a_resolvable_source)``.
+) -> tuple[list[Reference], set[int], list[dict]]:
+    """Shared read path. Returns ``(references, resolvable_ns, rows)``.
 
-    The second element is what ``has_source`` is derived from: the set of ``n``
+    ``resolvable_ns`` is what ``has_source`` is derived from: the set of ``n``
     values whose URA shell was successfully reconstructed, i.e. the references
     for which ``build_reference_source_view`` has something to build.
+
+    ``rows`` are the raw ``workspace_item_references`` rows this read already
+    paid for. They are handed back rather than re-queried because
+    ``fetch_item_references_payload`` needs ``item_id`` / ``ref_id`` / ``domain``
+    to batch-resolve ``library_url``, and a second SELECT for columns we are
+    already holding would be a round-trip spent on nothing.
     """
     rows = await asyncio.to_thread(
         _select_reference_rows, supabase, wi_id, used_only
     )
     if not rows:
-        return [], set()
+        return [], set(), []
 
     # Group rows by domain so each source-table fetch can be batched.
     by_domain: dict[str, list[dict]] = {
@@ -266,7 +305,7 @@ async def _load_references(
     if pending_views and with_source_views:
         await _attach_source_views(supabase, pending_views)
 
-    return references, {ref.n for ref, _ in pending_views}
+    return references, {ref.n for ref, _ in pending_views}, rows
 
 
 def _select_reference_rows(
@@ -480,6 +519,13 @@ async def _build_case_shells(
     Uses ``ref_id`` to recover ``case_ref`` (the URA-level handle that
     ``enrich._fetch_cases`` queries by). ``item_id`` (cases.id UUID) is
     persisted on the row for cross-WI joins but isn't used here.
+
+    ``with_summary=True`` is the whole reason that flag exists. A rebuilt shell
+    starts with nothing but a ``ref_id`` — no ``case_content`` — so without the
+    ``cases.summary`` column the card has no text to derive its title from and
+    falls back to «حكم {court}». The LIVE search path leaves it False: the
+    adapter already carried the summary in, and refetching ~3 KB × refs on every
+    turn would buy nothing.
     """
     shells_by_n: dict[int, CaseURAResult] = {}
     shells: list[CaseURAResult] = []
@@ -496,7 +542,7 @@ async def _build_case_shells(
         shells_by_n[int(row["n"])] = shell
 
     try:
-        await _enrich_cases(shells, supabase)
+        await _enrich_cases(shells, supabase, with_summary=True)
     except Exception as exc:  # noqa: BLE001
         logger.warning("references_service: case enrichment failed: %s", exc)
 

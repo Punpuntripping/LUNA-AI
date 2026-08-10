@@ -27,7 +27,7 @@ import logging
 from typing import Any, Iterable
 
 from agents.deep_search_v4.reg_compliance_search.models import RerankedResult
-from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from agents.deep_search_v4.source_viewer import build_source_view
 from agents.deep_search_v4.ura.schema import (
     AggregatorItem,
@@ -39,6 +39,7 @@ from agents.deep_search_v4.ura.schema import (
     ReferenceView,
     URAResultBase,
 )
+from shared.seo.judgment_naming import judgment_subject
 
 from .models import AggregatorInput, Reference
 
@@ -265,9 +266,10 @@ def render_aggregator_content(item: AggregatorItem) -> str:
             )
         if item.case_content:
             # Old persisted URAs carry `case_content` from before unfold_ura
-            # stripped the pipeline's resolver-telemetry appendix — strip here
-            # too so a resumed artifact can't feed internal ids to the LLM.
-            parts.append(strip_resolved_refs_section(item.case_content.strip()))
+            # stripped the pipeline's internal sections — strip here too so a
+            # resumed artifact can't feed the LLM internal resolver ids or the
+            # classifier's `ConnectError:` crash dump (252 live rows).
+            parts.append(strip_pipeline_sections(item.case_content.strip()))
         for rr in item.referenced_regulations or []:
             text = _render_case_referenced_regulation(rr)
             if text:
@@ -502,7 +504,30 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             n=n,
             source_type="case",
             regulation_title=view.entity_name or view.court or "",
-            title=view.case_number or view.judgment_number or "قضية",
+            # A card's title says what the ruling is ABOUT — never its case
+            # number, which is not a title and is absent on most rows.
+            #
+            # ``judgment_subject`` is the SINGLE SOURCE OF TRUTH for judgment
+            # naming (``shared/seo/judgment_naming.py``): the 10,000 published
+            # /judgments slugs were cut from it and it renders that page's H1,
+            # so importing it — never re-deriving — is what keeps this label and
+            # the page the card's «فتح الحكم في ريحان» button opens identical.
+            # URLs are permanent; a forked derivation could never be reconciled.
+            #
+            # ``judgment_subject`` deliberately, NOT ``judgment_display_title``:
+            # no « — المحكمة … 1445هـ» tail on a chat card (user decision).
+            # It never returns empty (it bottoms out at «حكم قضائي»), so the
+            # ``or "قضية"`` is belt-and-braces.
+            title=judgment_subject(
+                {
+                    "short_summary": view.short_summary,
+                    "summary": view.summary,
+                    "court": view.court,
+                    "case_number": view.case_number,
+                    "judgment_number": view.judgment_number,
+                }
+            )
+            or "قضية",
             snippet=snippet,
             relevance=view.relevance,
             ref_id=view.ref_id,

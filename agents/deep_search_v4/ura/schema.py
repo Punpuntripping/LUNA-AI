@@ -254,6 +254,16 @@ class ReferenceView(BaseModel):
     details_url: str | None = None
     entity_name: str = ""
     referenced_regulations: list[dict] = Field(default_factory=list)
+    # DERIVATION INPUT ONLY — these two feed ``shared.seo.judgment_naming``
+    # ``judgment_subject()`` so a judgment reference card is labelled with what
+    # the ruling is ABOUT, and with the identical sentence the /judgments page
+    # prints as its H1. A ``ReferenceView`` is a transient intermediate consumed
+    # by ``preprocessor._reference_from_ura`` and is never serialized to a
+    # client, which is what makes carrying ``summary`` (the 6k-clipped
+    # ``cases.summary``) here safe: it is read, reduced to a title, discarded.
+    # Do NOT dump a ReferenceView into a response.
+    short_summary: str = ""
+    summary: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +465,12 @@ class CaseURAResult(URAResultBase):
     domain: Literal["cases"] = "cases"
     case_number: str | None = None
     case_content: str = ""        # aggregator view: cases.summary, clipped 6k
+    # ``cases.short_summary`` — a one-sentence statement of the dispute, present
+    # on 29,567 of 30,531 rows. Filled by ``ura/enrich._enrich_cases`` on EVERY
+    # path (it is ~200 chars, so it is never behind the ``with_summary`` flag),
+    # because it is the first source ``judgment_subject()`` reads and therefore
+    # what keeps a reference card's label identical to the /judgments H1.
+    short_summary: str = ""
     referenced_regulations: list[dict] = Field(default_factory=list)
     judgment_number: str | None = None
     court: str | None = None
@@ -501,6 +517,12 @@ class CaseURAResult(URAResultBase):
             referenced_regulations=gate_cross_refs_for_reference(
                 self.referenced_regulations[:MAX_CROSS_REFS_REF]
             ),
+            # Title-derivation inputs (see ReferenceView). ``case_content`` IS
+            # ``cases.summary`` (clipped to 6k, already pipeline-stripped);
+            # ``judgment_subject`` reads only its first meaningful line, so the
+            # clip is irrelevant to the label.
+            short_summary=self.short_summary,
+            summary=self.case_content,
         )
 
 

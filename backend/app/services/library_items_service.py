@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
@@ -72,6 +73,7 @@ __all__ = [
     "normalize_sort",
     "resolve_content_id",
     "public_page_url",
+    "public_page_urls_for_reference_rows",
     "record_use",
     "save_item",
     "unsave_item",
@@ -867,6 +869,206 @@ async def public_page_url(
     return await run_db(
         _public_page_url, supabase, content_type, content_id, parent_regulation_id
     )
+
+
+# ==========================================================================
+# BATCHED REFERENCE → PAGE URLS (the المراجع panel's «فتح ... في ريحان»)
+#
+# NAVIGATION, NOT CONTENT. Everything below resolves is a PATH to a page that
+# enforces its own access tier — no body, no snippet, no gate decision. It must
+# therefore never touch ``resolve_access``, never write ``library_unlocks``, and
+# never move the balance chip: metering a link would double-charge the reader for
+# the reveal they are about to pay for on the other side, and would break the
+# D15.1 «name what you unlocked» line.
+# ==========================================================================
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _uuid_or_empty(value: Any) -> str:
+    """``value`` as a uuid string, or ``""`` when it is not one."""
+    s = str(value or "").strip()
+    return s if _UUID_RE.match(s) else ""
+
+
+def _chunk_regulation_ids(
+    supabase: SupabaseClient, chunk_ids: list[str]
+) -> dict[str, str]:
+    """``{chunks_v2.id: regulation_id}`` — ONE batched select. SYNC, fail-soft.
+
+    ``owns`` is deliberately NOT read: :func:`_public_page_url` maps an
+    ``article`` to its parent نظام anyway (user decision 2026-08-01), so the
+    مادة/نظام split that ``reference_resolver`` needs for METERING is irrelevant
+    to a link. Skipping it keeps the payload one column wide.
+    """
+    ids = list(dict.fromkeys(c for c in chunk_ids if c))
+    if not ids:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(ids), 150):
+        batch = ids[i : i + 150]
+        try:
+            res = (
+                supabase.table("chunks_v2")
+                .select("id, regulation_id")
+                .in_("id", batch)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("library_items: chunk→regulation lookup failed: %s", e)
+            continue
+        for r in res.data or []:
+            cid = r.get("id")
+            rid = r.get("regulation_id")
+            if cid and rid:
+                out[str(cid)] = str(rid)
+    return out
+
+
+def _public_page_urls_for_reference_rows(
+    supabase: SupabaseClient, rows: list[dict[str, Any]]
+) -> dict[int, str]:
+    """``{n: url}`` for a whole المراجع panel, in ≤ 4 round-trips. SYNC.
+
+    ``rows`` are ``workspace_item_references`` rows — ``n``, ``domain``,
+    ``item_id``, ``ref_id``. The write path (``persist_item_references``) already
+    resolved ``item_id`` to the source-row PK, and that is what makes this cheap:
+
+    ====================  ==========================================  ======
+    domain                content_id                                  lookups
+    ====================  ==========================================  ======
+    ``cases``             ``item_id`` **IS** ``cases.id``              0
+    ``circulars``         ``item_id`` **IS** ``circulars.id``          0
+    ``regulations``       ``chunks_v2.regulation_id``                  1
+    ``compliance``        — no wing —                                  0
+    ====================  ==========================================  ======
+
+    then at most three ``ls._slug_map`` calls (judgment / circular / regulation).
+    **Total ≤ 4 round-trips per panel load, independent of reference count.** A
+    legacy row with a NULL ``item_id`` adds at most ONE more (the batched
+    ``case_ref → cases.id`` lookup below) — still bounded, still batched.
+
+    COMPLIANCE NEVER GETS A URL. ``_URL_PREFIX`` has no ``service`` key: the
+    compliance wing was retired, so a government service has no page in our
+    library. Re-adding it here without rebuilding those pages ships 404s.
+
+    FAIL-SOFT THROUGHOUT. Any error yields no URL for the affected references —
+    never a 500, never a guessed URL. A missing button is correct; a button into
+    a 404 is not, and neither is a panel that fails to load because a sidecar
+    blipped.
+
+    Keys are only present for references that resolved; the caller stamps
+    ``None`` for the rest.
+    """
+    if not rows:
+        return {}
+
+    # ---- phase 1: (n → content_id) per wing, from what the row already holds.
+    judgment_by_n: dict[int, str] = {}
+    circular_by_n: dict[int, str] = {}
+    chunk_by_n: dict[int, str] = {}
+    case_ref_by_n: dict[int, str] = {}   # legacy fallback: NULL item_id
+
+    for row in rows:
+        try:
+            n = int(row.get("n"))
+        except (TypeError, ValueError):
+            continue
+        domain = (row.get("domain") or "").strip()
+        item_id = _uuid_or_empty(row.get("item_id"))
+        ref_id = (row.get("ref_id") or "").strip()
+
+        if domain == "cases":
+            if item_id:
+                judgment_by_n[n] = item_id
+            elif ref_id.startswith("case:"):
+                tail = ref_id[5:].strip()
+                # A pre-URA-v3 row minted ``case:<uuid>`` — that IS cases.id.
+                if _uuid_or_empty(tail):
+                    judgment_by_n[n] = tail
+                elif tail:
+                    case_ref_by_n[n] = tail
+        elif domain == "circulars":
+            circ_id = item_id or _uuid_or_empty(
+                ref_id[len("circular:"):] if ref_id.startswith("circular:") else ""
+            )
+            if circ_id:
+                circular_by_n[n] = circ_id
+        elif domain == "regulations":
+            chunk_id = item_id or _uuid_or_empty(
+                ref_id[4:] if ref_id.startswith("reg:") else ""
+            )
+            if chunk_id:
+                chunk_by_n[n] = chunk_id
+        # compliance → no wing, no URL. Deliberately not an else-branch: an
+        # unknown future domain must fall through to "no button" as well.
+
+    # Legacy case rows: case_ref → cases.id. Reuses the batch helper the write
+    # path already owns rather than minting a second query for the same join.
+    # Imported inside the function because ``references_service`` imports THIS
+    # module at load time — a module-level import here would close the cycle.
+    if case_ref_by_n:
+        try:
+            from backend.app.services.references_service import _fetch_case_ids
+
+            id_by_ref = _fetch_case_ids(supabase, list(case_ref_by_n.values()))
+            for n, case_ref in case_ref_by_n.items():
+                resolved = id_by_ref.get(case_ref)
+                if resolved:
+                    judgment_by_n[n] = str(resolved)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("library_items: legacy case_ref resolution failed: %s", e)
+
+    # Regulations: chunk → its نظام. One batched select.
+    regulation_by_n: dict[int, str] = {}
+    if chunk_by_n:
+        reg_by_chunk = _chunk_regulation_ids(supabase, list(chunk_by_n.values()))
+        for n, chunk_id in chunk_by_n.items():
+            reg_id = reg_by_chunk.get(chunk_id)
+            if reg_id:
+                regulation_by_n[n] = reg_id
+
+    # ---- phase 2: one sidecar slug lookup per wing present on the panel.
+    out: dict[int, str] = {}
+    for content_type, by_n in (
+        ("judgment", judgment_by_n),
+        ("circular", circular_by_n),
+        ("regulation", regulation_by_n),
+    ):
+        if not by_n:
+            continue
+        try:
+            slugs = ls._slug_map(supabase, content_type, list(by_n.values()))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "library_items: slug map failed for %s: %s", content_type, e
+            )
+            continue
+        for n, content_id in by_n.items():
+            url = _url_for(content_type, slugs.get(str(content_id)))
+            if url:
+                out[n] = url
+    return out
+
+
+async def public_page_urls_for_reference_rows(
+    supabase: SupabaseClient, rows: list[dict[str, Any]]
+) -> dict[int, str]:
+    """Async wrapper over :func:`_public_page_urls_for_reference_rows`.
+
+    Every Supabase read happens inside ONE ``run_db`` thread hop. Fail-soft to
+    ``{}``: the panel must render even when nothing can be linked.
+    """
+    if not rows:
+        return {}
+    try:
+        return await run_db(_public_page_urls_for_reference_rows, supabase, rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("library_items: reference url resolution failed: %s", e)
+        return {}
 
 
 def _hydrate(

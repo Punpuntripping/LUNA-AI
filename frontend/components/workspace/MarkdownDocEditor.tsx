@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Save, Loader2 } from "lucide-react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { WorkspaceItemActionBar } from "@/components/workspace/WorkspaceItemActionBar";
 import { useDebounce } from "@/hooks/use-debounce";
@@ -35,8 +40,10 @@ interface MarkdownDocEditorProps {
   bodyPlaceholder?: string;
   /** Optional banner(s) rendered above the title bar (e.g. lock / conflict). */
   headerSlot?: ReactNode;
-  /** Optional content appended inside the preview viewport (e.g. references).
-   *  Rendered below the action bar so the bar sits between body and refs. */
+  /** Optional content appended below the body (e.g. the references panel + the
+   *  AI disclaimer). Rendered inside the SAME scroll column in BOTH modes —
+   *  preview (inside ``ArtifactPreview``'s viewport) and edit (under the
+   *  textarea). Switching to «تحرير» must never make المراجع disappear. */
   footerSlot?: ReactNode;
   /**
    * Action-bar wiring. The معاينة/تحرير toggle + نسخ are always present; the
@@ -110,6 +117,23 @@ export function MarkdownDocEditor({
     title: initialTitle,
     content: initialContent,
   });
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grow the edit textarea to its full content height.
+  //
+  // The textarea is NOT its own scroller — it grows and the surrounding column
+  // scrolls, so ``footerSlot`` (المراجع + the AI disclaimer) stays reachable
+  // below it. A fixed height (the old ``min-h-[400px]``) left dead space in a
+  // tall pane and nested a second scrollbar inside a long draft.
+  //
+  // ``useLayoutEffect``, not ``useEffect``: measuring after paint flashes the
+  // collapsed one-row height for a frame every time the editor opens.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || mode !== "edit") return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [content, mode, docId]);
 
   // When the underlying doc changes, reset local state.
   useEffect(() => {
@@ -205,16 +229,42 @@ export function MarkdownDocEditor({
       </div>
 
       {mode === "edit" ? (
-        <ScrollArea className="flex-1">
+        // ONE native scroll column holding the textarea AND the footer. A Radix
+        // ScrollArea cannot host a filling child — its viewport wrapper is
+        // ``display: table`` with auto height, so ``h-full`` on the textarea
+        // computed to ``auto`` and it fell back to a fixed 400px box.
+        <div
+          className="flex-1 min-h-0 overflow-y-auto"
+          // The textarea grows to its content now, so an empty note is a ~1-row
+          // click target in a full-height pane — and an empty note is precisely
+          // what ``initialMode`` opens in edit mode. Clicking the blank column
+          // below it puts the caret at the end of the body, which is what the
+          // old fixed-height box did by accident.
+          //
+          // ``e.target !== e.currentTarget`` keeps this to the column's OWN
+          // blank area: clicks landing inside ``footerSlot`` (reference cards,
+          // «عرض المصدر», the إحالات toggle) keep their own behaviour.
+          onMouseDown={(e) => {
+            if (readOnly || e.target !== e.currentTarget) return;
+            const el = bodyRef.current;
+            if (!el) return;
+            e.preventDefault(); // no focus flicker, no stray selection
+            el.focus();
+            el.setSelectionRange(el.value.length, el.value.length);
+          }}
+        >
           <textarea
+            ref={bodyRef}
             value={content}
             onChange={(e) => setContent(e.target.value)}
             readOnly={readOnly}
             dir="rtl"
-            className="block h-full min-h-[400px] w-full resize-none border-0 bg-transparent p-4 text-sm leading-relaxed focus:outline-none read-only:cursor-default"
+            rows={1}
+            className="block w-full resize-none overflow-hidden border-0 bg-transparent p-4 text-sm leading-relaxed focus:outline-none read-only:cursor-default"
             placeholder={bodyPlaceholder}
           />
-        </ScrollArea>
+          {footerSlot ? <div className="px-4 pb-4">{footerSlot}</div> : null}
+        </div>
       ) : (
         <ArtifactPreview
           content={content}

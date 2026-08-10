@@ -64,7 +64,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
-from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
@@ -466,12 +466,13 @@ async def _build_case_view(
     # ``cases.summary`` clipped to 6k by the case_search adapter (see
     # CaseURAResult), so it belongs in this chain, not in the raw-body one — it
     # covers the case where the row fetch missed on a live URA.
-    # strip_resolved_refs_section: ~16.5k `cases.summary` rows end in the
-    # pipeline's resolver-telemetry appendix (internal reg/chunk ids + match
-    # scores). This popup is user-facing, so the appendix must never render —
-    # and the strip also covers stored URAs whose `case_content` was persisted
-    # before the publish-time strip existed.
-    summary = strip_resolved_refs_section(
+    # strip_pipeline_sections: ~16.5k `cases.summary` rows end in the pipeline's
+    # resolver-telemetry appendix (internal reg/chunk ids + match scores) and 252
+    # in the classifier's crash dump («## classification_error» +
+    # `ConnectError: … getaddrinfo failed`). This popup is user-facing, so
+    # neither may render — and the strip also covers stored URAs whose
+    # `case_content` was persisted before the publish-time strip existed.
+    summary = strip_pipeline_sections(
         (row.get("summary") or row.get("short_summary") or ura.case_content or "").strip()
     )
     # The raw ruling rides along ONLY when there is no summary to show. Shipping

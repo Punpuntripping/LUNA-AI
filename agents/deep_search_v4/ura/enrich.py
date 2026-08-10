@@ -35,6 +35,8 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
+from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+
 logger = logging.getLogger(__name__)
 
 
@@ -158,16 +160,37 @@ def _fetch_appendices(supabase, appendix_ids: list[str]) -> dict[str, str]:
     return {}
 
 
-def _fetch_cases(supabase, case_refs: list[str]) -> dict[str, dict[str, Any]]:
-    """`cases` rows keyed by ``case_ref`` -- details_url/entity_id/citations."""
+_CASE_COLS = (
+    "case_ref, details_url, entity_id, referenced_regulations, "
+    # ~200 chars combined, fetched on EVERY path: they are the inputs
+    # ``judgment_subject()`` needs to label a reference card with what the
+    # ruling is about (and `court` was silently empty on the panel-rebuild
+    # path, which is what made its fallback render as a bare «حكم»).
+    "short_summary, court"
+)
+
+# ``cases.summary`` is ~3 KB/row. The live search path already holds it (the
+# adapter carried it in as ``case_content``), so fetching it there would be pure
+# waste on every turn; only the panel-rebuild path, whose shells start with
+# nothing but a ``ref_id``, actually needs the column.
+_CASE_COLS_WITH_SUMMARY = _CASE_COLS + ", summary"
+
+
+def _fetch_cases(
+    supabase, case_refs: list[str], *, with_summary: bool = False
+) -> dict[str, dict[str, Any]]:
+    """`cases` rows keyed by ``case_ref`` -- details_url/entity_id/citations.
+
+    ``with_summary`` additionally selects the heavy ``summary`` column; see
+    :data:`_CASE_COLS_WITH_SUMMARY` for why it is opt-in.
+    """
+    cols = _CASE_COLS_WITH_SUMMARY if with_summary else _CASE_COLS
     out: dict[str, dict[str, Any]] = {}
     for batch in _batched(case_refs, _ID_BATCH):
         try:
             resp = (
                 supabase.table("cases")
-                .select(
-                    "case_ref, details_url, entity_id, referenced_regulations"
-                )
+                .select(cols)
                 .in_("case_ref", batch)
                 .execute()
             )
@@ -322,12 +345,28 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
 _MAX_CASE_REFS_REBUILD = 8
 
 
-async def _enrich_cases(case_results: list, supabase) -> None:
+async def _enrich_cases(
+    case_results: list, supabase, *, with_summary: bool = False
+) -> None:
     """Fill case reference-view fields (2 batched fetches).
 
     Resolves ``details_url`` + ``entity_id`` from ``cases``, then the Arabic
-    ``entity_name`` from ``entities``. Case content already arrives via the
-    adapter -- not refetched here.
+    ``entity_name`` from ``entities``.
+
+    ``short_summary`` and ``court`` are filled on EVERY path. They are ~200
+    chars and they are what ``shared.seo.judgment_naming.judgment_subject()``
+    reads to title a judgment reference card — the same function that cut the
+    10,000 published ``/judgments`` slugs, so a card and the page its button
+    opens say the identical sentence. ``court`` in particular used to be filled
+    by the adapter on the live path and left EMPTY on the panel-rebuild path,
+    which is why the naming fallback rendered as a bare «حكم» there.
+
+    Args:
+        with_summary: also fetch ``cases.summary`` (~3 KB/row) and use it to
+            fill an EMPTY ``case_content``. **False on the live search path**,
+            where the adapter already carried the summary in — refetching it
+            would add ~3 KB × refs to every turn for a value we hold. True from
+            ``references_service``, whose shells carry nothing but a ``ref_id``.
 
     ``referenced_regulations`` is filled ONLY when the shell arrives empty. On
     the live search path the adapter already carried it (clipped to 8) and
@@ -351,7 +390,9 @@ async def _enrich_cases(case_results: list, supabase) -> None:
     if not case_refs:
         return
 
-    cases = await asyncio.to_thread(_fetch_cases, supabase, case_refs)
+    cases = await asyncio.to_thread(
+        _fetch_cases, supabase, case_refs, with_summary=with_summary
+    )
 
     entity_ids = [c.get("entity_id") for c in cases.values()]
     entities = await asyncio.to_thread(_fetch_entities, supabase, entity_ids)
@@ -366,6 +407,14 @@ async def _enrich_cases(case_results: list, supabase) -> None:
         res.entity_id = entity_id
         if entity_id:
             res.entity_name = entities.get(entity_id, "")
+        # Title inputs — always. ``court`` keeps whatever the adapter set when
+        # the row's own column is empty (never downgrade a known court to "").
+        res.short_summary = (case.get("short_summary") or "").strip()
+        res.court = (case.get("court") or "").strip() or res.court
+        if with_summary and not (res.case_content or "").strip():
+            res.case_content = strip_pipeline_sections(
+                (case.get("summary") or "").strip()
+            )
         if not res.referenced_regulations:
             refs = case.get("referenced_regulations") or []
             if isinstance(refs, list):

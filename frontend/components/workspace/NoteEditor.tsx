@@ -8,11 +8,13 @@ import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog"
 import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
 import {
+  useConversationWorkspace,
   useSetWorkspaceItemFeedback,
   useUpdateWorkspaceItem,
 } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
 import { ApiClientError } from "@/lib/api";
+import { useChatStore } from "@/stores/chat-store";
 import type {
   Reference,
   WorkspaceFeedback,
@@ -159,6 +161,57 @@ export function NoteEditor({ item }: NoteEditorProps) {
     [rawReferences, metadataRefsView],
   );
 
+  // «من WI-9» → open WI-9 at its own مرجع. The panel is store-agnostic (it also
+  // renders anonymously on /blog/{token}), so the whole lookup lives here.
+  //
+  // Same query key the pane's item list already holds, so this is a cache read
+  // and not a second request.
+  const conversationId = item.conversation_id;
+  const { data: conversationWorkspace } = useConversationWorkspace(
+    conversationId ?? undefined,
+  );
+  const openWorkspaceItem = useChatStore((s) => s.openWorkspaceItem);
+  const openWorkspaceItemAtReference = useChatStore(
+    (s) => s.openWorkspaceItemAtReference,
+  );
+  const wiSeqToItemId = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const wi of conversationWorkspace?.items ?? []) {
+      if (typeof wi.wi_seq === "number") map.set(wi.wi_seq, wi.item_id);
+    }
+    return map;
+  }, [conversationWorkspace]);
+
+  // Asked at RENDER time, before the badge decides what it is. A miss is
+  // ordinary — the source WI can be deleted, or belong to another conversation,
+  // or the list may still be in flight — and it must degrade to plain text
+  // rather than to a button that goes nowhere.
+  const canOpenSourceWi = useCallback(
+    (seq: number) => !!conversationId && wiSeqToItemId.has(seq),
+    [conversationId, wiSeqToItemId],
+  );
+
+  const handleOpenSourceWi = useCallback(
+    (seq: number, sourceN: number | null) => {
+      if (!conversationId) return;
+      const targetId = wiSeqToItemId.get(seq);
+      if (!targetId) return;
+      // Landing on the exact citation is the point — the reader asked "where did
+      // this come from?", not "which file did this come from?".
+      if (sourceN == null) {
+        openWorkspaceItem(conversationId, targetId);
+      } else {
+        openWorkspaceItemAtReference(conversationId, targetId, sourceN);
+      }
+    },
+    [
+      conversationId,
+      wiSeqToItemId,
+      openWorkspaceItem,
+      openWorkspaceItemAtReference,
+    ],
+  );
+
   const handleSave = async (patch: { title?: string; content_md?: string }) => {
     const updated = await update.mutateAsync({
       itemId: item.item_id,
@@ -227,6 +280,8 @@ export function NoteEditor({ item }: NoteEditorProps) {
         isLoading={isLoadingReferences}
         focusedReferenceN={focusedN}
         onFlashDone={() => setFocusedN(null)}
+        onOpenSourceWi={handleOpenSourceWi}
+        canOpenSourceWi={canOpenSourceWi}
       />
       <AgentOutputDisclaimer />
     </>

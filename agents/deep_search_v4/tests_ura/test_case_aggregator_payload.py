@@ -404,10 +404,10 @@ RESOLVER_REF = {
 }
 
 
-def test_strip_resolved_refs_section_drops_the_trailing_appendix():
-    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+def test_strip_pipeline_sections_drops_the_trailing_appendix():
+    from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 
-    out = strip_resolved_refs_section(LEAKY_SUMMARY)
+    out = strip_pipeline_sections(LEAKY_SUMMARY)
     assert "المراجع النظامية المحلولة" not in out
     assert "17642_reg_003" not in out
     assert "confidence" not in out
@@ -416,23 +416,86 @@ def test_strip_resolved_refs_section_drops_the_trailing_appendix():
     assert "## المنطوق" in out
 
 
-def test_strip_resolved_refs_section_keeps_following_sections():
-    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+def test_strip_pipeline_sections_keeps_following_sections():
+    from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 
     text = (
         "## الوقائع\nنص.\n\n## المراجع النظامية المحلولة\n- سطر داخلي\n\n"
         "## المنطوق\nرفض الدعوى."
     )
-    out = strip_resolved_refs_section(text)
+    out = strip_pipeline_sections(text)
     assert "سطر داخلي" not in out
     assert "## المنطوق\nرفض الدعوى." in out
 
 
-def test_strip_resolved_refs_section_is_noop_without_the_block():
-    from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+def test_strip_pipeline_sections_is_noop_without_the_block():
+    from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 
-    assert strip_resolved_refs_section(SUMMARY_MD) == SUMMARY_MD
-    assert strip_resolved_refs_section("") == ""
+    assert strip_pipeline_sections(SUMMARY_MD) == SUMMARY_MD
+    assert strip_pipeline_sections("") == ""
+
+
+# ---------------------------------------------------------------------------
+# The classifier's crash dump — 252 live `cases.summary` rows end in
+# «## classification_error» followed by a Python traceback line the
+# classification step wrote when it failed. English, worthless to the reader,
+# and it has been sitting inside the evidence the aggregator reasons over.
+# ---------------------------------------------------------------------------
+
+ERROR_SUMMARY = (
+    "## منطوق الاستئناف\n"
+    "تأييد حكم المحكمة التجارية بالرياض.\n"
+    "\n"
+    "## classification_error\n"
+    "ConnectError: [Errno 11001] getaddrinfo failed\n"
+)
+
+
+def test_strip_pipeline_sections_drops_the_classification_error_block():
+    """The heading AND its body go; the ruling section right above it stays."""
+    from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+
+    out = strip_pipeline_sections(ERROR_SUMMARY)
+
+    assert "classification_error" not in out
+    assert "ConnectError:" not in out
+    assert "getaddrinfo" not in out
+    # The preceding real section survives, heading and body.
+    assert "## منطوق الاستئناف" in out
+    assert "تأييد حكم المحكمة التجارية بالرياض." in out
+
+
+def test_strip_pipeline_sections_handles_both_blocks_in_one_summary():
+    """Both pipeline artefacts can co-occur; neither pass may shield the other
+    (the resolver strip stops at the `##` of the error block, and vice versa)."""
+    from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+
+    text = (
+        LEAKY_SUMMARY
+        + "\n\n## classification_error\nJSONDecodeError: Expecting value\n"
+    )
+    out = strip_pipeline_sections(text)
+
+    assert "المراجع النظامية المحلولة" not in out
+    assert "17642_reg_003" not in out
+    assert "classification_error" not in out
+    assert "JSONDecodeError" not in out
+    assert "## الملخص" in out
+    assert "## المنطوق" in out
+
+
+def test_classification_error_never_reaches_the_synthesis_prompt():
+    """The reason this matters: the block rides `cases.summary` into the
+    aggregator payload, so the model has been reading a stack trace as evidence
+    on those 252 rulings."""
+    reranked, _ = assemble_one(make_case_row(summary=ERROR_SUMMARY))
+    assert "classification_error" not in reranked.content
+    assert "ConnectError:" not in reranked.content
+    assert "منطوق الاستئناف" in reranked.content
+
+    rendered = render_aggregator_content(to_aggregator_item(reranked))
+    assert "classification_error" not in rendered
+    assert "ConnectError:" not in rendered
 
 
 def test_resolve_summary_strips_the_appendix_before_the_aggregator():

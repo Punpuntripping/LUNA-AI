@@ -42,7 +42,7 @@ from typing import Protocol, Sequence, runtime_checkable
 
 from pydantic_ai import Agent, RunContext
 
-from agents.deep_search_v4.shared.case_summary import strip_resolved_refs_section
+from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 
 logger = logging.getLogger(__name__)
 
@@ -304,10 +304,11 @@ def _resolve_cases(supabase, rows: list[dict]) -> list[SourceLine]:
             lines.append(SourceLine(n=n, text=_FALLBACK_LINE, domain="cases"))
             continue
         number = (case.get("case_number") or "").strip()
-        # strip_resolved_refs_section: ~16.5k summaries end in the pipeline's
-        # resolver-telemetry appendix (internal reg/chunk ids + scores) — this
-        # line lands in an LLM tool result, which echoes ids to the user.
-        summary = strip_resolved_refs_section((case.get("summary") or "").strip())
+        # strip_pipeline_sections: ~16.5k summaries end in the pipeline's
+        # resolver-telemetry appendix (internal reg/chunk ids + scores) and 252
+        # in the classifier's `ConnectError:` crash dump — this line lands in an
+        # LLM tool result, which echoes both back to the user.
+        summary = strip_pipeline_sections((case.get("summary") or "").strip())
         label = f"[{number}] " if number else ""
         text = (label + summary).strip() or _FALLBACK_LINE
         lines.append(SourceLine(n=n, text=text, domain="cases"))

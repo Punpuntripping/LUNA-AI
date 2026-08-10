@@ -90,6 +90,30 @@ interface ReferencePanelProps {
    * layout-shift when the data arrives.
    */
   isLoading?: boolean;
+  /**
+   * Open «WI-{seq}» — the source research item a writer-published reference was
+   * pulled from — at its own ``sourceN`` citation.
+   *
+   * Supplied by IN-CHAT hosts only. This panel also renders anonymously on
+   * ``/blog/{token}`` (PublicAnswerView), where there is no chat store, no
+   * conversation and no workspace, so the navigation cannot be read off a store
+   * in here — it arrives as a callback or not at all. Absent ⇒ the «من WI-9»
+   * badge stays the plain text it has always been.
+   */
+  onOpenSourceWi?: (seq: number, sourceN: number | null) => void;
+  /**
+   * Does ``onOpenSourceWi`` actually have somewhere to go for this ``seq``?
+   *
+   * The host owns the ``wi_seq → item_id`` map, so only the host can answer —
+   * and it must be asked BEFORE we decide what to render, because the target
+   * can be missing for perfectly ordinary reasons (item deleted, published from
+   * another conversation, workspace list not fetched yet). Answers ``false`` ⇒
+   * plain span. **Never a dead button.**
+   *
+   * Both props are needed for a clickable badge; a host that supplies only one
+   * gets the plain span, which is the safe half of the failure.
+   */
+  canOpenSourceWi?: (seq: number) => boolean;
 }
 
 const DOMAIN_META: Record<
@@ -144,6 +168,8 @@ export function ReferencePanel({
   focusedReferenceN,
   onFlashDone,
   isLoading = false,
+  onOpenSourceWi,
+  canOpenSourceWi,
 }: ReferencePanelProps) {
   // The open reference is tracked by ``n``, not by the object: the dialog now
   // owns a fetch keyed on (itemId, n), and holding a stale Reference across a
@@ -256,6 +282,8 @@ export function ReferencePanel({
             }}
             onAnimationEnd={() => handleAnimationEnd(ref.n)}
             onViewSource={() => setOpenN(ref.n)}
+            onOpenSourceWi={onOpenSourceWi}
+            canOpenSourceWi={canOpenSourceWi}
           />
         ))}
       </ul>
@@ -327,12 +355,16 @@ function ReferenceCard({
   registerRef,
   onAnimationEnd,
   onViewSource,
+  onOpenSourceWi,
+  canOpenSourceWi,
 }: {
   reference: Reference;
   canReveal: boolean;
   registerRef: (node: HTMLLIElement | null) => void;
   onAnimationEnd: () => void;
   onViewSource: () => void;
+  onOpenSourceWi?: (seq: number, sourceN: number | null) => void;
+  canOpenSourceWi?: (seq: number) => boolean;
 }) {
   const meta = DOMAIN_META[reference.domain] ?? DOMAIN_META.regulations;
   const Icon = meta.icon;
@@ -347,6 +379,25 @@ function ReferenceCard({
 
   const primaryUrl = referencePrimaryUrl(reference);
   const label = referenceLabel(reference);
+
+  // «من WI-9» — provenance the panel has always DISPLAYED and never acted on.
+  // It becomes a button only when the alias parses AND the host confirms it can
+  // resolve that alias; anything less falls back to the plain span it was.
+  const sourceWiSeq = parseWiSeq(reference.source_wi);
+  const sourceWiOpenable =
+    sourceWiSeq !== null &&
+    !!onOpenSourceWi &&
+    (canOpenSourceWi?.(sourceWiSeq) ?? false);
+  const sourceWiTitle =
+    reference.source_n != null
+      ? `المصدر: ${reference.source_wi} (مرجع ${reference.source_n})`
+      : `المصدر: ${reference.source_wi}`;
+  const sourceWiBadgeClass =
+    "rounded-sm bg-muted px-1 py-px text-[10px] font-medium tabular-nums text-muted-foreground";
+  const handleOpenSourceWi = () => {
+    if (sourceWiSeq === null || !onOpenSourceWi) return;
+    onOpenSourceWi(sourceWiSeq, reference.source_n ?? null);
+  };
 
   return (
     <li
@@ -376,19 +427,32 @@ function ReferenceCard({
             />
             {/* Writer-publisher attribution: surfaces the source-WI alias when
                 this ref was projected onto an agent_writing item from a
-                research WI. Absent for agent_search items. */}
-            {reference.source_wi && (
-              <span
-                className="rounded-sm bg-muted px-1 py-px text-[10px] font-medium tabular-nums text-muted-foreground"
-                title={
-                  reference.source_n != null
-                    ? `المصدر: ${reference.source_wi} (مرجع ${reference.source_n})`
-                    : `المصدر: ${reference.source_wi}`
-                }
-              >
-                من {reference.source_wi}
-              </span>
-            )}
+                research WI. Absent for agent_search items.
+
+                Clickable in chat: it opens the source WI at the very citation
+                the writer pulled (``source_n``), which is why the tooltip has
+                always named both. On the public blog panel — no store, no
+                workspace — it stays exactly the text it is here. */}
+            {reference.source_wi &&
+              (sourceWiOpenable ? (
+                <button
+                  type="button"
+                  onClick={handleOpenSourceWi}
+                  title={`${sourceWiTitle} — اضغط للانتقال`}
+                  className={cn(
+                    sourceWiBadgeClass,
+                    "underline decoration-dotted underline-offset-2 transition-colors",
+                    "hover:bg-accent hover:text-foreground",
+                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  )}
+                >
+                  من {reference.source_wi}
+                </button>
+              ) : (
+                <span className={sourceWiBadgeClass} title={sourceWiTitle}>
+                  من {reference.source_wi}
+                </span>
+              ))}
           </div>
 
           <p className="mt-0.5 text-sm font-medium leading-snug text-foreground">
@@ -416,6 +480,28 @@ function ReferenceCard({
                 <FileText className="h-3 w-3" />
                 {referenceRevealCopy.cta}
               </Button>
+            )}
+            {/* NAVIGATION, NOT A REVEAL — free and unmetered, exactly like the
+                dialog's twin (the library page enforces its own tier, and
+                charging for the link too would double-charge the same read).
+                Dropped when the item has no published page: never a hub
+                fallback, never a guessed URL. Absent on blog snapshots frozen
+                before ``library_url`` existed, which is why the field is
+                optional. New tab on purpose — this panel can sit over a
+                streaming chat, and navigating the tab away kills the stream. */}
+            {reference.library_url && (
+              <Link
+                href={reference.library_url}
+                target="_blank"
+                rel="noopener"
+                className={cn(
+                  buttonVariants({ variant: "ghost", size: "sm" }),
+                  "h-6 gap-1 px-2 text-[11px]"
+                )}
+              >
+                <BookOpen className="h-3 w-3" />
+                فتح {referenceDefiniteType(reference)} في ريحان
+              </Link>
             )}
             {primaryUrl && (
               <a
@@ -1000,6 +1086,22 @@ function SourceViewContent({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * «WI-9» → ``9``. Anything else → ``null``.
+ *
+ * The writer publisher writes exactly this form (``agents/writer/publisher.py``),
+ * so a strict pattern is the honest test: an alias we cannot parse is an alias we
+ * cannot navigate to, and the badge must stay plain text rather than become a
+ * button that goes nowhere.
+ */
+function parseWiSeq(alias: string | null | undefined): number | null {
+  if (!alias) return null;
+  const match = /^WI-(\d+)$/.exec(alias.trim());
+  if (!match) return null;
+  const seq = Number(match[1]);
+  return Number.isSafeInteger(seq) ? seq : null;
+}
 
 /** Best human-readable title for a reference card. */
 export function referenceLabel(ref: Reference): string {

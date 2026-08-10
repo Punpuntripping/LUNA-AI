@@ -27,6 +27,12 @@ backend/tests/*
 !backend/tests/test_rate_limit_library.py
 !backend/tests/test_reference_source.py
 !backend/tests/test_blog_snapshot_gating.py
+# reference-card library links are durable — they pin that «فتح ... في ريحان» is
+# NAVIGATION: never metered, never a guessed URL, and never present for a
+# compliance service (that wing was retired, so any link there is a 404). They
+# also pin the batching bound, which is what keeps a 20-reference panel from
+# turning into 20 sidecar round-trips.
+!backend/tests/test_reference_library_links.py
 # payments is real money — the suite pins the arithmetic (halalas ×100, the
 # inclusive VAT split, the prorated upgrade credit, the 2 SAR refund fee), the
 # paid-path ORDER (snapshot before grant, refunded before revoke), the
