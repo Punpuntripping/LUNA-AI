@@ -1479,13 +1479,13 @@ class JudgmentHubResponse(HubSearchTotals):
 class JudgmentSection(BaseModel):
     """One rendered section of a judgment (الوقائع، الأسباب والتسبيب، المنطوق…).
 
-    ``id`` is the source column name and is STABLE across the anon payload and the
-    authed full-content payload, so the client-side enhancer can swap a truncated
-    section for its full text in place. ``is_free`` says which layer the section
-    belongs to: the free layer (الوقائع / المنطوق / منطوق حكم الاستئناف) says WHAT
-    happened and WHAT was decided and is never truncated; the gated layer is the
-    legal argumentation. When ``is_truncated`` is true the hidden bytes are NOT in
-    this payload — the gate is server-side, not CSS — and
+    ``id`` is positional (``s1``, ``s2``…) and is STABLE across the anon payload
+    and the authed full-content payload, so the client-side enhancer can swap a
+    truncated section for its full text in place. ``is_free`` means this section
+    reached the reader WHOLE — one document-wide budget is spent across sections
+    in reading order, so it is a description of where the allowance ran out, not
+    a fixed free/gated layer split. When ``is_truncated`` is true the hidden bytes
+    are NOT in this payload — the gate is server-side, not CSS — and
     ``hidden_placeholder_lines`` sizes the placeholder bars."""
 
     id: str
@@ -1518,10 +1518,13 @@ class JudgmentDocResponse(BaseModel):
     that subject plus court + Hijri year (the ``<title>`` base and card title).
     ``summary_md`` (``short_summary``) is ALWAYS free. ``sections`` is the ordered
     section model — empty source columns are skipped entirely, so a first-instance
-    judgment simply has no استئناف sections. ``gate_effective`` is the resolved
-    gate ('open' | 'gated') and ``hidden_section_count`` counts the sections
-    ACTUALLY truncated (a gated section shorter than the free budget is not
-    hidden). ``cited_total`` is the deduped citation count before any free-cap."""
+    judgment simply has no استئناف sections. ``gate_effective`` is the gate AFTER
+    ``gate_decision`` ('open' | 'gated'), so a ruling too short to gate honestly
+    reports 'open' and ships whole. ``hidden_section_count`` counts the sections
+    ACTUALLY truncated and sizes the CTA; ``withheld_chars`` / ``withheld_pct``
+    are the real exposure measure — a section count goes to 0 on exactly the
+    documents that are giving everything away. ``cited_total`` is the deduped
+    citation count before any free-cap."""
 
     slug: str
     title: str
@@ -1545,6 +1548,8 @@ class JudgmentDocResponse(BaseModel):
     official_sources: list[OfficialSource] = Field(default_factory=list)
     gate_effective: str  # 'open' | 'gated'
     hidden_section_count: int = 0
+    withheld_chars: int = 0
+    withheld_pct: float = 0.0
 
 
 # --- Forms hub + detail + writer handoff (نماذج, Phase 3) ------------------

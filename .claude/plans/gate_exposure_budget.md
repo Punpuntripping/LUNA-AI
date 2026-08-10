@@ -1,8 +1,12 @@
 # Gate Exposure Budget — re-basing every free preview on a *fraction of the document*
 
-Status: **PLAN** (nothing built). Measured live 2026-08-10 against prod
-(`dwgghvxogtwyaxmbgjod`). Supersedes the per-wing character constants in
-`backend/app/services/library_service.py`.
+Status: **JUDGMENTS BUILT, NOT DEPLOYED** (steps 1–3, 6 of §4 · 2026-08-10).
+Regulations / circulars / forms / مواد still on the old per-section budgets.
+Measured live against prod (`dwgghvxogtwyaxmbgjod`). Supersedes the per-wing
+character constants in `backend/app/services/library_service.py`.
+
+⚠ **Deploying this requires an ISR purge of /judgments** — 10,000 pages are
+24h-cached and would otherwise keep serving the old previews.
 
 Trigger: `https://rayhanai.com/regulations/ضوابط-إسكان-الحجاج` serves ~48% of its
 نص plus a complete LLM summary to an anonymous reader, while reporting
@@ -134,9 +138,10 @@ For أنظمة this is the dominant term, and it is a **policy call, not a bug**
   unique text, not public-domain نص, and it is what ranks. Then accept ~25%
   document-level exposure on أنظمة and stop calling it a leak.
 
-**Recommendation: A.** It keeps one dial for the whole wing, preserves a real
-free lead for SEO, and it is the only option under which the ratio in §3.1
-describes what a reader actually receives.
+**DECIDED 2026-08-10 — Option A.** `llm_summary` chars are spent from the
+document budget before any نص. It keeps one dial for the whole wing, preserves a
+real free lead for SEO, and it is the only option under which the ratio in §3.1
+describes what a reader actually receives. Applies when step 4 lands.
 
 `short_summary` on judgments (238 chars avg) is small enough to leave free under
 any option.
@@ -164,26 +169,62 @@ This is also what makes §5 auditable rather than re-eyeballed.
 
 ## 4. Build order
 
-1. **`free_budget` + `spend_budget_across_sections`** in `library_service.py`,
-   pure functions, unit-tested. No callers yet.
-2. **`gate_decision(total_chars, gate)`** implementing §3.2 — returns
-   `('open'|'gated', budget)`. Replaces `effective_circular_gate`.
-3. Re-point **judgment** doc builder (biggest win, single wing, easy to verify).
-4. Re-point **regulation** doc builder + resolve §3.3.
-5. Re-point **circular**, **form**, **مادة**.
-6. **`get_full_*` parity check** — the authed reveal must stay structurally
-   identical to what the crawler saw (the existing `use_article_surface` rule).
-7. **ISR purge** — every affected page is 24h-cached. `/api/revalidate` sweep is
-   mandatory, per `project_isr_bake_docker_cache_trap`.
+1. ✅ **`GateBudget` + `free_budget` + `spend_budget_across_sections`** in
+   `library_service.py`, pure, unit-tested.
+2. ✅ **`gate_decision(total_chars, gate, budget)`** implementing §3.2.
+   `effective_circular_gate` still stands until step 5 re-points circulars onto it.
+3. ✅ **Judgments** — `JUDGMENT_BUDGET = GateBudget(0.15, 600, 2000)`;
+   `JUDGMENT_FREE_CHARS` and `JUDGMENT_FREE_LEADING_SECTIONS` deleted.
+4. ⬜ Re-point **regulation** doc builder + apply §3.3 (Option A).
+5. ⬜ Re-point **circular**, **form**, **مادة**.
+6. ✅ **`get_full_judgment` parity** — unaffected: it re-parses `content` with the
+   same `_parse_judgment_body`, so ids/titles/order still match section-for-section
+   and the client-side enhancer swaps in place. Steps 4–5 must re-verify this.
+7. ⬜ **ISR purge** — every affected page is 24h-cached. `/api/revalidate` sweep is
+   mandatory, per `project_isr_bake_docker_cache_trap`. **Not yet run — nothing
+   here is deployed.**
+
+### What step 3 measured, after the fact (10,000 published أحكام)
+
+| | Before | After |
+|---|---|---|
+| Mean body exposure | **42.0%** | **17.2%** |
+| Corpus-wide (bytes served ÷ bytes held) | 39.1% | **12.7%** |
+| Gated rulings exposing >50% | **3,012** | **0** |
+| Rulings exposing ≥90% | 846 | 0 |
+| Downgraded to honest `open` | — | 184 (1.84%) |
+
+The 184 downgrades give nothing away that was not already given: under the old
+rule they averaged **99.3%** exposed, 166 of them exactly 100%. They now ship
+without a dead CTA and publish their وزارة العدل source link.
+
+Two decisions taken during the build, both worth knowing before steps 4–5 reuse
+the primitives:
+
+- **A truncated section EXHAUSTS the allowance.** `truncate_for_gate` cuts at the
+  last whitespace inside the window, so a truncation leaves a few unspent chars;
+  carrying them forward put a 3-character stub («قصي») under the next section's
+  heading. Not a preview — corrupted text.
+- **`is_free` was redefined** from "sits in the free layer" to "reached the reader
+  whole". With one shared budget there are no layers, only where the allowance ran
+  out. `is_truncated` still drives the render, so no component changed.
 
 ## 5. The audit that replaces guessing
 
-Extend `scripts/gate_audit.sql` with an **exposure distribution per wing**
-(the queries in §2 of this document are the draft), and add a backend test that
-fails when:
+✅ `scripts/gate_audit.sql` **§7** now carries the exposure measure — §7a the
+shipped judgment rule, §7b the regulation before-picture. `gated_but_over_half`
+in §7a must stay 0; a nonzero row means the withheld floor has been breached.
+Re-run it before touching any dial rather than trusting a remembered number.
 
-- any wing's mean body exposure exceeds its ratio + 5 pts, **or**
-- any item reports `gate: "gated"` with `withheld_chars == 0`.
+✅ `test_gated_judgment_withholds_the_majority_of_the_ruling` asserts the same
+invariant per item (`withheld_pct >= MIN_WITHHELD_RATIO*100`,
+`withheld_chars >= MIN_WITHHELD_CHARS`).
+
+⬜ Extend both to the remaining wings as steps 4–5 land.
+
+The constants were originally chosen by feel and drifted 25–30 pts from their
+stated intent (§2, the judgment comment). A test is the only thing that keeps
+them honest as the corpus grows.
 
 The constants were originally chosen by feel and drifted 25–30 pts away from
 their stated intent (§2, the judgment comment). A test is the only thing that

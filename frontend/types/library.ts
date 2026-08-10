@@ -188,7 +188,11 @@ export interface JudgmentSection {
   text: string;
   is_truncated: boolean;
   hidden_placeholder_lines: number;
-  /** Backend's own free/gated marker. `is_truncated` is what drives the render. */
+  /**
+   * This section reached the reader WHOLE. One document-wide budget is spent
+   * across sections in reading order, so this describes where the allowance ran
+   * out — not a fixed free/gated layer. `is_truncated` drives the render.
+   */
   is_free: boolean;
 }
 
@@ -233,8 +237,17 @@ export interface JudgmentDoc {
   /** Total citations found — the surplus over `cited_regulations` is gated. */
   cited_total: number;
   official_sources: JudgmentOfficialSource[];
+  /**
+   * The gate AFTER the exposure budget decides: a ruling too short to gate
+   * honestly reports "open" and ships whole, with no CTA.
+   */
   gate_effective: "open" | "gated";
+  /** Sections actually truncated — sizes the placeholder bars and the CTA. */
   hidden_section_count: number;
+  /** Bytes withheld server-side. The real exposure measure, unlike the count above. */
+  withheld_chars: number;
+  /** `withheld_chars` as a % of the ruling. */
+  withheld_pct: number;
 }
 
 /** The page type a page belongs to — used by AskRayhanWidget context params. */

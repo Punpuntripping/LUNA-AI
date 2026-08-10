@@ -367,8 +367,11 @@ def test_judgments_sitemap_section_not_served_yet() -> None:
 # ---------------------------------------------------------------------------
 
 
+# is_free = "this section reached the reader whole". Under the shared document
+# budget nothing in this 3-section, ~6k-char fixture does: the allowance is
+# ~915 chars and is spent front-to-back, so s1 truncates and s2/s3 get nothing.
 EXPECTED_SECTIONS = [
-    ("s1", "نص الحكم", True),
+    ("s1", "نص الحكم", False),
     ("s2", "تسبيب الحكم", False),
     ("s3", "منطوق الحكم", False),
 ]
@@ -396,10 +399,34 @@ def test_section_order_ids_titles_and_free_flags() -> None:
     assert got == EXPECTED_SECTIONS
 
 
-def test_only_the_leading_sections_are_free() -> None:
+def test_the_budget_is_one_document_allowance_not_one_per_section() -> None:
+    """THE regression this wing was re-gated for.
+
+    The old rule gave 1,200 chars to EVERY section and rendered the first one
+    whole, so free bytes grew with however finely a ruling happened to be
+    subdivided — measured at 42% of the corpus body, against a stated intent of
+    10–15%. The allowance is now computed once from the document's own length.
+    """
     doc = ls.get_judgment_doc(_fake(), SLUG)
-    free = [s["id"] for s in doc["sections"] if s["is_free"]]
-    assert free == ["s1"][: ls.JUDGMENT_FREE_LEADING_SECTIONS]
+    total = sum(len(s["text"]) for s in ls._parse_judgment_body(JUDGMENT_CONTENT))
+    served = sum(len(s["text"]) for s in doc["sections"])
+
+    assert served <= ls.free_budget(total, ls.JUDGMENT_BUDGET)
+    # The old rule would have served all of s1 plus 1,200 of each of s2/s3.
+    assert served < len(ls._parse_judgment_body(JUDGMENT_CONTENT)[0]["text"])
+
+
+def test_the_budget_is_front_loaded_and_later_sections_render_as_bars() -> None:
+    """The opening carries the search terms; the reasoning is what an unlock buys."""
+    doc = ls.get_judgment_doc(_fake(), SLUG)
+    assert doc["sections"][0]["text"].startswith("OPENING")
+    assert len(doc["sections"][0]["text"]) > 0
+    for tail in doc["sections"][1:]:
+        assert tail["text"] == ""
+        assert tail["is_truncated"] is True
+        # An empty section must still size its placeholder bars, or the page
+        # renders a titled void with no signal that anything was withheld.
+        assert tail["hidden_placeholder_lines"] > 0
 
 
 def test_frontmatter_block_is_stripped_from_the_body() -> None:
@@ -421,12 +448,11 @@ def test_body_without_headings_renders_as_one_section() -> None:
 
 
 def test_single_section_document_is_still_gated() -> None:
-    """The free-leading rule must never swallow the WHOLE ruling.
+    """A one-section ruling — 60% of the corpus — must not ship whole.
 
     Most of the corpus is one section (no headings, or a single «## نص الحكم»).
-    Applying "first section is free" literally there would ship the entire
-    judgment ungated while still reporting gate='gated' — the gate would be
-    decorative. At least one section always faces the gate.
+    A per-section budget applied there would have shipped the entire judgment
+    ungated while still reporting gate='gated' — a decorative gate.
     """
     body = "SOLE " + " ".join(["كلمة"] * 600) + " SOLE-END"
     for content in (body, "## نص الحكم\n\n" + body):
@@ -435,9 +461,10 @@ def test_single_section_document_is_still_gated() -> None:
         sole = doc["sections"][0]
         assert sole["is_free"] is False
         assert sole["is_truncated"] is True
-        assert len(sole["text"]) <= ls.JUDGMENT_FREE_CHARS
+        assert len(sole["text"]) <= ls.free_budget(len(body), ls.JUDGMENT_BUDGET)
         assert "SOLE-END" not in json.dumps(doc, ensure_ascii=False)
         assert doc["hidden_section_count"] == 1
+        assert doc["withheld_pct"] >= 50.0
 
 
 def test_empty_content_yields_no_sections() -> None:
@@ -455,6 +482,64 @@ def test_heading_trailing_colon_is_dropped_from_the_title() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The exposure budget primitives (pure — no DB, no wing)
+# ---------------------------------------------------------------------------
+
+
+BUDGET = ls.GateBudget(ratio=0.15, floor=600, ceiling=2000)
+
+
+@pytest.mark.parametrize(
+    "total, expected",
+    [
+        (100, 600),  # floor wins on a tiny document
+        (4000, 600),  # 15% = 600, exactly the floor
+        (10_000, 1500),  # the ratio governs the middle of the range
+        (100_000, 2000),  # ceiling caps a long statute's leak
+    ],
+)
+def test_free_budget_is_a_clamped_fraction(total: int, expected: int) -> None:
+    assert ls.free_budget(total, BUDGET) == expected
+
+
+def test_gate_decision_cuts_deeper_rather_than_breach_the_withheld_floor() -> None:
+    """Between "the ratio budget" and "too short to gate" sits a band where the
+    floor would over-serve. There we serve less, not more."""
+    total = 2000  # target 600; withholding 1400 clears both floors
+    assert ls.gate_decision(total, "gated", BUDGET) == ("gated", 600)
+
+    total = 1500  # target 600 → withholds 900 (>=800, >=50%): still fine
+    assert ls.gate_decision(total, "gated", BUDGET) == ("gated", 600)
+
+    # 1300: the 600 floor would withhold only 700 — under MIN_WITHHELD_CHARS —
+    # and cutting to the deepest legal serve (500) falls under the floor, so the
+    # document cannot be gated honestly at all.
+    assert ls.gate_decision(1300, "gated", BUDGET) == ("open", 1300)
+
+
+def test_gate_decision_never_touches_an_open_document() -> None:
+    assert ls.gate_decision(50_000, "open", BUDGET) == ("open", 50_000)
+
+
+def test_spend_budget_is_shared_not_per_section() -> None:
+    texts = ["A" * 1000, "B" * 1000, "C" * 1000]
+    cuts = ls.spend_budget_across_sections(texts, "gated", 900)
+    served = sum(len(c["visible_text"]) for c in cuts)
+    assert served <= 900
+    # The old behaviour would have served 900 from EVERY section.
+    assert served < 900 * 3
+    assert cuts[0]["visible_text"].startswith("A")
+    assert cuts[1]["visible_text"] == ""
+
+
+def test_spend_budget_passes_an_open_document_through_whole() -> None:
+    texts = ["A" * 5000, "B" * 5000]
+    cuts = ls.spend_budget_across_sections(texts, "open", 600)
+    assert [c["visible_text"] for c in cuts] == texts
+    assert all(c["is_truncated"] is False for c in cuts)
+
+
+# ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
 
@@ -465,13 +550,42 @@ def test_gated_truncation_removes_bytes_from_the_payload() -> None:
     assert doc["gate_effective"] == "gated"
 
     body = json.dumps(doc, ensure_ascii=False)
-    for marker in ("REASONING-END", "RULING-END"):
+    for marker in ("OPENING-END", "REASONING-END", "RULING-END"):
         assert marker not in body, f"gated bytes leaked: {marker}"
 
     reasoning = next(s for s in doc["sections"] if s["id"] == "s2")
     assert reasoning["is_truncated"] is True
-    assert len(reasoning["text"]) <= ls.JUDGMENT_FREE_CHARS
     assert reasoning["hidden_placeholder_lines"] > 0
+
+
+def test_gated_judgment_withholds_the_majority_of_the_ruling() -> None:
+    """The invariant the wing lacked: «gated» must actually withhold something.
+
+    `hidden_section_count` cannot express this — it counts sections and reads 0
+    on precisely the documents giving everything away, which is how the old gate
+    hid its own leak. Assert on BYTES.
+    """
+    doc = ls.get_judgment_doc(_fake(), SLUG)
+    assert doc["gate_effective"] == "gated"
+    assert doc["withheld_pct"] >= ls.MIN_WITHHELD_RATIO * 100
+    assert doc["withheld_chars"] >= ls.MIN_WITHHELD_CHARS
+
+
+def test_a_ruling_too_short_to_gate_honestly_is_marked_open() -> None:
+    """No paywall over a document we are not withholding.
+
+    `gate_decision` step 3: below the withheld floor the item ships whole,
+    reports 'open', drops the CTA and publishes its official source — the same
+    downgrade `effective_circular_gate` has always applied to short تعاميم.
+    """
+    body = "قصير " + " ".join(["كلمة"] * 100)  # ~600 chars, cannot clear the floor
+    doc = ls.get_judgment_doc(_fake({**FULL_CASE, "content": body}), SLUG)
+
+    assert doc["gate_effective"] == "open"
+    assert doc["withheld_chars"] == 0
+    assert doc["hidden_section_count"] == 0
+    assert all(s["is_truncated"] is False for s in doc["sections"])
+    assert doc["official_sources"], "an open ruling publishes its MOJ source link"
 
 
 def test_gated_payload_survives_the_response_model_unchanged() -> None:
@@ -482,15 +596,8 @@ def test_gated_payload_survives_the_response_model_unchanged() -> None:
     doc = ls.get_judgment_doc(_fake(), SLUG)
     dumped = JudgmentDocResponse(**doc).model_dump_json()
     assert "REASONING-END" not in dumped
-    assert "OPENING-END" in dumped  # free layer survives intact
-
-
-def test_free_sections_are_never_truncated_even_when_gated() -> None:
-    doc = ls.get_judgment_doc(_fake(), SLUG)
-    opening = doc["sections"][0]
-    assert opening["is_truncated"] is False
-    assert opening["hidden_placeholder_lines"] == 0
-    assert opening["text"].endswith("OPENING-END")
+    assert "OPENING-END" not in dumped
+    assert "OPENING" in dumped  # the front-loaded preview survives intact
 
 
 def test_open_gate_ships_every_section_whole() -> None:
@@ -502,8 +609,14 @@ def test_open_gate_ships_every_section_whole() -> None:
     assert all(sec["is_truncated"] is False for sec in doc["sections"])
 
 
-def test_hidden_section_count_counts_only_truncated_sections() -> None:
-    """A gated section shorter than the free budget is not 'hidden'."""
+def test_a_short_trailing_section_is_hidden_once_the_budget_is_spent() -> None:
+    """Section length no longer decides — the remaining allowance does.
+
+    Under the old per-section budget this trailing «قصير جدًا.» rendered free
+    because it happened to be shorter than 1,200 chars, and that "short sections
+    are free" behaviour is exactly what let short documents through whole. With
+    one shared allowance, a long opening consumes it and the tail is bars.
+    """
     content = "\n".join(
         [
             "## نص الحكم",
@@ -514,9 +627,9 @@ def test_hidden_section_count_counts_only_truncated_sections() -> None:
     )
     doc = ls.get_judgment_doc(_fake({**FULL_CASE, "content": content}), SLUG)
     short = next(s for s in doc["sections"] if s["id"] == "s2")
-    assert short["is_truncated"] is False
-    assert short["text"] == "قصير جدًا."
-    assert doc["hidden_section_count"] == 0
+    assert short["is_truncated"] is True
+    assert short["text"] == ""
+    assert doc["hidden_section_count"] == 2
 
 
 def test_summary_md_is_always_free() -> None:
@@ -536,7 +649,7 @@ def test_doc_payload_keys_are_the_frontend_contract() -> None:
         "city", "case_number", "judgment_number", "date_hijri", "date_gregorian",
         "hijri_year", "appeal_result", "domains", "metadata", "summary_md",
         "sections", "cited_regulations", "cited_total", "official_sources",
-        "gate_effective", "hidden_section_count",
+        "gate_effective", "hidden_section_count", "withheld_chars", "withheld_pct",
     }
 
 

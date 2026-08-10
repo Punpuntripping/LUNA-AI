@@ -45,6 +45,7 @@ import re
 import time
 import urllib.parse
 import uuid as _uuid
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from supabase import Client as SupabaseClient
@@ -188,6 +189,13 @@ __all__ = [
     "resolve_gate",
     "truncate_for_gate",
     "effective_circular_gate",
+    # The exposure budget — gate on a fraction of the document, not per section
+    "GateBudget",
+    "MIN_WITHHELD_RATIO",
+    "MIN_WITHHELD_CHARS",
+    "free_budget",
+    "gate_decision",
+    "spend_budget_across_sections",
     "hub_page_allowed",
     # Phase 2 — content endpoints (/regulations)
     "HUB_PAGE_SIZE",
@@ -217,9 +225,8 @@ __all__ = [
     "circulars_hub_total_pages",
     "get_circular_doc",
     # Phase 5 — /judgments
-    "JUDGMENT_FREE_LEADING_SECTIONS",
     "JUDGMENT_CITED_FREE_LIMIT",
-    "JUDGMENT_FREE_CHARS",
+    "JUDGMENT_BUDGET",
     "list_judgments_hub",
     "judgments_hub_total_pages",
     "court_counts",
@@ -568,6 +575,125 @@ def truncate_for_gate(
     }
 
 
+# --- The exposure budget: gate on a FRACTION of the document ---------------
+#
+# ⚠ `truncate_for_gate` above is an ABSOLUTE PER-SECTION budget, and that is the
+# root cause of the exposure this layer exists to fix. Measured on prod
+# 2026-08-10: judgments served 42.0% of the ruling body free (846 of 10,000 at
+# ≥90%), circulars 45.6%, and the 877 أنظمة with ≤3 chunks 61.2% — because a
+# per-section budget MULTIPLIES by section count and never asks what fraction of
+# THIS document it is giving away. Plan: `.claude/plans/gate_exposure_budget.md`.
+#
+# The replacement is one budget computed ONCE from the document's own length and
+# then SPENT across its sections in reading order. Callers must not re-derive it.
+
+
+@dataclass(frozen=True)
+class GateBudget:
+    """A wing's exposure dial. ``ratio`` is the policy; the bounds keep it sane.
+
+    ``floor`` exists for SEO — thin content ranks badly, and an over-tight gate
+    costs the traffic these pages are published for. ``ceiling`` exists for the
+    opposite reason: a 45k-char نظام must not leak 7k just because it is long.
+    """
+
+    ratio: float
+    floor: int
+    ceiling: int
+
+
+# «gated» has to MEAN something. A document that cannot clear both of these after
+# truncation is not being gated — it is being decorated with a paywall — so
+# `gate_decision` either cuts it deeper or marks it honestly open.
+MIN_WITHHELD_RATIO = 0.5
+MIN_WITHHELD_CHARS = 800
+
+
+def free_budget(total_chars: int, budget: GateBudget) -> int:
+    """The document-wide free allowance in characters. Pure, no DB."""
+    return min(
+        max(round(budget.ratio * max(0, int(total_chars))), budget.floor),
+        budget.ceiling,
+    )
+
+
+def gate_decision(
+    total_chars: int, gate: str, budget: GateBudget
+) -> tuple[str, int]:
+    """``(effective_gate, free_chars)`` for a whole document.
+
+    Generalises ``effective_circular_gate``'s hand-tuned ≤800 downgrade into the
+    rule every wing shares. An ``'open'`` gate passes through untouched (open
+    means open — the caller ships everything). For a ``'gated'`` document:
+
+      1. Take the ratio budget.
+      2. If honouring it would withhold less than ``MIN_WITHHELD_RATIO`` of the
+         document or less than ``MIN_WITHHELD_CHARS``, cut DEEPER — down to the
+         most that can be served while still clearing both floors.
+      3. If cutting that deep would leave less than ``budget.floor`` (the
+         document is simply too short to gate honestly), return ``'open'`` and
+         the whole thing. No CTA, no placeholder bars, full crawl value.
+
+    Step 3 is a deliberate, visible trade: some short items become genuinely
+    free. They already were — the only change is that the page stops claiming
+    otherwise.
+    """
+    total = max(0, int(total_chars))
+    if gate != "gated" or total == 0:
+        return ("open" if gate != "gated" else "gated", total)
+
+    target = free_budget(total, budget)
+    # The deepest we may serve while still withholding a real remainder.
+    max_servable = min(
+        total - MIN_WITHHELD_CHARS,
+        int(total * (1.0 - MIN_WITHHELD_RATIO)),
+    )
+    if max_servable >= target:
+        return ("gated", target)
+    if max_servable >= budget.floor:
+        return ("gated", max_servable)
+    return ("open", total)
+
+
+def spend_budget_across_sections(
+    texts: list[str], gate: str, free_chars: int
+) -> list[dict[str, Any]]:
+    """Spend ONE document budget across sections in reading order.
+
+    Returns one ``truncate_for_gate``-shaped dict per input text. The budget is
+    front-loaded deliberately: the opening of a document is its narrative setup —
+    the part carrying the search terms that tell a reader whether this is about
+    their problem — and the reasoning that follows is what an unlock buys. Once
+    the allowance is exhausted, later sections truncate to nothing and render as
+    placeholder bars, which is the correct signal that there IS more.
+
+    This replaces "budget × N sections", under which free bytes grew linearly
+    with how finely a document happened to be subdivided.
+    """
+    if gate != "gated":
+        return [
+            {
+                "visible_text": t,
+                "is_truncated": False,
+                "hidden_placeholder_lines": 0,
+            }
+            for t in texts
+        ]
+
+    remaining = max(0, int(free_chars))
+    out: list[dict[str, Any]] = []
+    for text in texts:
+        cut = truncate_for_gate(text or "", "gated", free_chars=remaining)
+        # A truncated section EXHAUSTS the allowance rather than carrying its
+        # remainder forward. `truncate_for_gate` cuts at the last whitespace
+        # inside the window, so a truncation typically leaves a few unspent
+        # chars — carried forward those become a «قصي» stub at the head of the
+        # next section: not a preview, just corrupted text under a heading.
+        remaining = 0 if cut["is_truncated"] else remaining - len(cut["visible_text"])
+        out.append(cut)
+    return out
+
+
 def effective_circular_gate(gate: str, body_len: int) -> str:
     """Downgrade a gated circular to ``'open'`` when its body is short.
 
@@ -638,7 +764,6 @@ def hub_page_allowed(page: int, tier: str) -> bool:
 # flips the first clause true and restores the whole shelf at once.
 # ==========================================================================
 
-from dataclasses import dataclass                  # noqa: E402
 from datetime import datetime                      # noqa: E402
 
 from shared import quota as _quota                 # noqa: E402
@@ -4118,25 +4243,24 @@ def _parse_judgment_body(content: str) -> list[dict[str, str]]:
 # crawl graph, not the user's value. Set to 3 to restore the plan's free-3 cap.
 JUDGMENT_CITED_FREE_LIMIT: Optional[int] = None
 
-# Free-character budget for a GATED judgment section — this wing's own, like
-# ARTICLE_FREE_CHARS and FORM_BODY_FREE_CHARS, because the shared
-# GATE_FREE_CHARS_DEFAULT (400) is not calibrated for this body.
+# Exposure dial for a GATED judgment — a fraction of the RULING, not a budget
+# per section. See `GateBudget` / `gate_decision` for the mechanism and
+# `.claude/plans/gate_exposure_budget.md` for why it changed.
 #
-# Sized against the REAL ruling text (mean ~11k chars, median ~7k), not the
-# ~475-char summary columns the sections used to be built from: 1,200 chars gives
-# an anonymous reader and a crawler a substantial, genuinely rankable passage of
-# the court's own words — thin content ranks badly, so an over-tight gate costs
-# traffic — while still withholding roughly 85–90% of a typical judgment.
-JUDGMENT_FREE_CHARS = 1200
-
-# The first parsed section renders FREE; everything after it is gated. The
-# opening of a ruling is its narrative setup (parties, وقائع, المطالبات) — the
-# part that carries the search terms and tells a reader whether this judgment is
-# about their problem. What follows is the التسبيب and the المنطوق: the reasoning
-# and the disposition, which is the value a signup buys. A single-section
-# document (no `##` headings — the common case) is gated with the free budget
-# above, exactly like a long circular.
-JUDGMENT_FREE_LEADING_SECTIONS = 1
+# ⚠ WHAT THIS REPLACED, so nobody reinstates it: `JUDGMENT_FREE_CHARS = 1200`
+# granted 1,200 chars to EVERY section, and `JUDGMENT_FREE_LEADING_SECTIONS = 1`
+# rendered section 1 WHOLE on top of that. Its comment claimed the rule withheld
+# "roughly 85–90% of a typical judgment" and asserted that a single-section
+# document was the common case. Measured on prod 2026-08-10, on 10,000 published
+# أحكام: 40% (3,994) have ≥2 sections, mean exposure was 42.0% of the body — not
+# 10–15% — and 846 rulings shipped ≥90% free. A five-section ruling collected
+# 4 × 1,200 chars PLUS the entirety of its وقائع.
+#
+# 0.15 / 600 / 2000 brings that to a measured 16.8%. The floor keeps a rankable
+# passage of the court's own words on the page (thin content ranks badly, and an
+# over-tight gate costs the traffic this wing is published for); the ceiling
+# stops a 30k-char ruling from leaking 4.5k.
+JUDGMENT_BUDGET = GateBudget(ratio=0.15, floor=600, ceiling=2000)
 
 # Column set the /judgments hub reads — from ``_JUDGMENT_HUB_TABLE`` (the ranked
 # view), browse and search alike.
@@ -4713,16 +4837,22 @@ def get_judgment_doc(
       * ``sections`` = the REAL ruling text (``content``) parsed by
         ``_parse_judgment_body`` into the document's own ``##`` sections, each
         ``{id, title, text, is_truncated, hidden_placeholder_lines, is_free}``.
-        The first ``JUDGMENT_FREE_LEADING_SECTIONS`` render whole; the rest go
-        through ``truncate_for_gate(..., free_chars=JUDGMENT_FREE_CHARS)`` when
-        the gate resolves to ``'gated'`` — the hidden bytes are DROPPED here, not
+        ONE document-wide budget — ``gate_decision(total, gate,
+        JUDGMENT_BUDGET)`` — is spent across them in reading order by
+        ``spend_budget_across_sections``; the hidden bytes are DROPPED here, not
         hidden client-side. ``id`` is positional (``s1``, ``s2``…) and matches the
         authed ``get_full_judgment`` payload, so the client-side enhancer can
         swap section-for-section.
       * ``cited_regulations`` = the internal-linking mesh (see
         ``_judgment_cited_regulations``); ``cited_total`` is its pre-cap size.
-      * ``hidden_section_count`` counts the sections ACTUALLY truncated (a gated
-        section shorter than the free budget is not "hidden").
+      * ``hidden_section_count`` counts the sections ACTUALLY truncated — it
+        sizes the placeholder bars and the CTA. It is NOT the exposure measure:
+        ``withheld_chars`` / ``withheld_pct`` are, and they are what the §5 audit
+        and ``test_gated_judgment_withholds_the_majority_of_the_ruling`` read.
+      * ``gate_effective`` may be ``'open'`` on a ``'gated'`` ruling too short to
+        gate honestly (``gate_decision`` step 3) — the same downgrade
+        ``effective_circular_gate`` has always applied to short تعاميم. Such a
+        page ships whole, drops its CTA, and publishes ``official_sources``.
 
     ``title`` / ``subject`` / ``court_level_label`` / ``hijri_year`` are all
     DERIVED via ``shared/seo/judgment_naming`` — the same module the frozen slug
@@ -4737,28 +4867,23 @@ def get_judgment_doc(
     gate = resolve_gate(supabase, "judgment", str(content_id))
 
     parsed_sections = _parse_judgment_body(row.get("content") or "")
-    # NEVER let the free-leading rule swallow the whole document: a judgment with
-    # one section (no `##` headings, or a single «## نص الحكم» — the majority of
-    # the corpus) would otherwise render entirely free while still reporting
-    # gate='gated'. Cap the free run so at least one section always faces the gate.
-    free_leading = min(JUDGMENT_FREE_LEADING_SECTIONS, max(0, len(parsed_sections) - 1))
+
+    # ONE budget for the whole ruling, measured against the ruling's OWN length
+    # (the parsed body — frontmatter is already stripped, so raw `content` would
+    # overstate the document and buy the reader free chars for metadata bullets).
+    total_chars = sum(len(p["text"]) for p in parsed_sections)
+    gate_effective, free_chars = gate_decision(total_chars, gate, JUDGMENT_BUDGET)
+    cuts = spend_budget_across_sections(
+        [p["text"] for p in parsed_sections], gate_effective, free_chars
+    )
 
     sections: list[dict[str, Any]] = []
     hidden_section_count = 0
-    for index, parsed in enumerate(parsed_sections):
-        is_free = index < free_leading
-        if is_free:
-            cut = {
-                "visible_text": parsed["text"],
-                "is_truncated": False,
-                "hidden_placeholder_lines": 0,
-            }
-        else:
-            cut = truncate_for_gate(
-                parsed["text"], gate, free_chars=JUDGMENT_FREE_CHARS
-            )
+    withheld_chars = 0
+    for parsed, cut in zip(parsed_sections, cuts):
         if cut["is_truncated"]:
             hidden_section_count += 1
+        withheld_chars += len(parsed["text"]) - len(cut["visible_text"])
         sections.append(
             {
                 "id": parsed["id"],
@@ -4766,18 +4891,25 @@ def get_judgment_doc(
                 "text": cut["visible_text"],
                 "is_truncated": cut["is_truncated"],
                 "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
-                "is_free": is_free,
+                # `is_free` = this section reached the reader whole. It used to
+                # mean "sits in the free LAYER" under the leading-sections rule;
+                # with one shared budget there are no layers, only what the
+                # allowance reached. `is_truncated` still drives the render.
+                "is_free": not cut["is_truncated"],
             }
         )
 
     cited, cited_total = _judgment_cited_regulations(supabase, row)
 
-    # Withheld for GATED أحكام only — see the note in get_regulation_doc. Every
-    # judgment is gated today (``seo_gate_defaults``), so this is currently the
-    # withholding branch in practice.
+    # Withheld for GATED أحكام only — see the note in get_regulation_doc. Keyed
+    # on ``gate_effective``, matching what `get_circular_doc` has always done: a
+    # ruling `gate_decision` downgraded to open has no crosswalk left to protect,
+    # because this same payload already ships its entire text. Every judgment
+    # starts 'gated' (``seo_gate_defaults``), so the downgrade is the only way
+    # this branch fires today.
     official_sources: list[dict[str, str]] = []
     details_url = (row.get("details_url") or "").strip()
-    if gate == "open" and (
+    if gate_effective == "open" and (
         details_url.startswith("http://") or details_url.startswith("https://")
     ):
         official_sources.append(
@@ -4805,8 +4937,15 @@ def get_judgment_doc(
         "cited_regulations": cited,
         "cited_total": cited_total,
         "official_sources": official_sources,
-        "gate_effective": gate,
+        "gate_effective": gate_effective,
         "hidden_section_count": hidden_section_count,
+        # The honest exposure numbers. `hidden_section_count` counts sections and
+        # goes to 0 on a short document that is giving everything away — which is
+        # exactly how the old regulation gate hid its own leak. These count BYTES.
+        "withheld_chars": withheld_chars,
+        "withheld_pct": (
+            round(100.0 * withheld_chars / total_chars, 1) if total_chars else 0.0
+        ),
     }
 
 
