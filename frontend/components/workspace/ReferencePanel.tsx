@@ -495,7 +495,12 @@ function ReferenceCard({
                 target="_blank"
                 rel="noopener"
                 className={cn(
-                  buttonVariants({ variant: "ghost", size: "sm" }),
+                  // FILLED (primary), not ghost — the same treatment its twin
+                  // has in the reveal dialog. This is the one action on the card
+                  // that keeps the reader inside ريحان; «عرض المصدر» and «فتح
+                  // المصدر الرسمي» are ghosts beside it, so the emphasis is what
+                  // tells them apart at a glance.
+                  buttonVariants({ size: "sm" }),
                   "h-6 gap-1 px-2 text-[11px]"
                 )}
               >
