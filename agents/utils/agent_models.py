@@ -218,6 +218,13 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # (one per family: refs vs meta). Short structured outputs — reasoning
     # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
     "item_analyzer":              ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — Layer-4 memory agent that compacts the oldest span
+    # of a conversation into a single carry-forward summary (user intent + produced
+    # WIs + open threads). One LLM call per compaction, fires at most once per turn
+    # and only above the 10k-token threshold. reasoning=medium: the job is inference
+    # over a long noisy span (what is the user actually after?), not extraction —
+    # but it does not warrant max-effort latency in a pre-router hook.
+    "convo_compactor":            _FLASH_MEDIUM,
     # Tier_2 DeepSeek-primary — Layer-4 transformer that cleans ONE raw legal
     # document into a reusable, placeholder'd, uniquely-titled template saved to
     # user_templates. One LLM call per ingestion; deepseek-flash can emit the

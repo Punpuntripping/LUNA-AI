@@ -242,6 +242,11 @@ async def _build_writer_planner_deps_from_input(
         intent=major_input.describe_query,
         recent_messages=list(major_input.recent_messages),
         case_brief=None,  # v1 — placeholder; case_brief loader is in a separate plan
+        # Conversation compaction back-story. Already encoded with the turn codec
+        # by the orchestrator (fresh dispatch inherits load_router_context's
+        # encode; the resume paths encode in _load_compaction_summary), so it is
+        # forwarded verbatim — see WriterPlannerDeps.compaction_summary_md.
+        compaction_summary_md=major_input.compaction_summary_md,
         attached_items=list(major_input.attached_items),
         prior_artifacts=prior_artifacts,
         user_templates=user_templates,

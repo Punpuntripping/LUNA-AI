@@ -8,8 +8,9 @@ Three objects model the planner's runtime state — see PLANNER_REDESIGN_PLAN.md
   work. Holds ``_agg_output`` — the ``AggregatorOutput`` stash read by phase 3
   and the degraded fallback. Also holds the per-turn **comprehension inputs**
   (post Wave 2 / Phase C): ``case_brief``, ``recent_messages``,
-  ``prior_searches``, ``attached_items``, plus ``user_id`` / ``conversation_id``
-  (scope identifiers retained for telemetry + downstream retrieval).
+  ``prior_searches``, ``attached_items``, ``compaction_summary_md``, plus
+  ``user_id`` / ``conversation_id`` (scope identifiers retained for telemetry +
+  downstream retrieval).
 - :class:`~.apply.RetrievalConfig` — the mode-derived knobs (lives in ``apply.py``).
 - ``FullLoopDeps`` — the executor-config object assembled inside ``run_retrieval``.
 
@@ -17,9 +18,10 @@ Three objects model the planner's runtime state — see PLANNER_REDESIGN_PLAN.md
 It is rebuilt fresh by :func:`build_planner_deps` on every entry, including the
 resume path. Only ``agent_runs.message_history`` (the decider's bytes) crosses
 the pause boundary. Per Phase C, the **comprehension fields** (``case_brief``,
-``recent_messages``, ``prior_searches``, ``attached_items``) are hydrated per
-turn from the orchestrator's loaders — they are never persisted across a pause;
-on resume they are re-loaded fresh (per §6.3.1 of the redesign spec).
+``recent_messages``, ``prior_searches``, ``attached_items``,
+``compaction_summary_md``) are hydrated per turn from the orchestrator's loaders
+— they are never persisted across a pause; on resume they are re-loaded fresh
+(per §6.3.1 of the redesign spec).
 
 The decider's ``deps_type`` is :class:`PlannerDeps` — phase 1 reads the
 comprehension inputs (the dynamic instructions render ``recent_messages`` /
@@ -91,6 +93,18 @@ class PlannerDeps:
     prior_searches: list[PriorSearchSummary] = field(default_factory=list)
     attached_items: list[WorkspaceItemSnapshot] = field(default_factory=list)
 
+    # The latest ``convo_context`` compaction summary (workspace_items.content_md
+    # written by ``convo_compactor``). ``recent_messages`` is a fixed-size tail of
+    # the conversation and is NOT filtered by ``compacted_through_message_id`` —
+    # so after a compaction the turns behind the cutoff are invisible to the
+    # decider unless this stands in for them. Mirrors the router's
+    # ``RouterDeps.compaction_summary_md`` / ``inject_compaction_summary``.
+    #
+    # وضع السرية: stored REAL in the DB; the ORCHESTRATOR encodes it with the
+    # turn codec before it lands here (fresh dispatch inherits the already-encoded
+    # value from ``load_router_context``). Renderers treat it as prompt-ready.
+    compaction_summary_md: str | None = None
+
     # Migration 052 / agent communication protocol: per-conversation
     # ``WI-{seq}`` alias → workspace_items.item_id lookup. Built once per
     # turn from ``prior_searches`` + ``attached_items`` + any other WIs the
@@ -147,6 +161,7 @@ def build_planner_deps(
     recent_messages: list[ChatMessageSnapshot] | None = None,
     prior_searches: list[PriorSearchSummary] | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
+    compaction_summary_md: str | None = None,
     wi_alias_map: dict[int, str] | None = None,
 ) -> PlannerDeps:
     """Construct a fresh :class:`PlannerDeps`.
@@ -157,9 +172,10 @@ def build_planner_deps(
     module-level invariant), which removes the dead-``http_client`` risk class.
 
     Comprehension kwargs (``case_brief``, ``recent_messages``, ``prior_searches``,
-    ``attached_items``, plus ``user_id`` / ``conversation_id``) are Phase C
-    additions — hydrated by the orchestrator per turn. They default to empty so
-    legacy callers (tests, scripts) construct without changes.
+    ``attached_items``, ``compaction_summary_md``, plus ``user_id`` /
+    ``conversation_id``) are Phase C additions — hydrated by the orchestrator per
+    turn. They default to empty so legacy callers (tests, scripts) construct
+    without changes.
     """
     return PlannerDeps(
         supabase=supabase,
@@ -179,6 +195,7 @@ def build_planner_deps(
         recent_messages=list(recent_messages) if recent_messages else [],
         prior_searches=list(prior_searches) if prior_searches else [],
         attached_items=list(attached_items) if attached_items else [],
+        compaction_summary_md=compaction_summary_md or None,
         wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
     )
 

@@ -3,8 +3,9 @@
 Two LLM phases, two prompts:
 
 - :data:`PLANNER_DECIDER_SYSTEM_PROMPT` — phase 1. The decider reads the user
-  query AND the per-turn comprehension surface (case_brief, recent_messages,
-  prior_searches, attached_items) and emits a
+  query AND the per-turn comprehension surface (case_brief,
+  compaction_summary_md, recent_messages, prior_searches, attached_items) and
+  emits a
   :class:`~.models.PlannerDecision` — mode + support PLUS ``query_restatement``
   (a faithful, zero-bias restatement of the user's real question that becomes
   the canonical retrieval query), ``planner_brief`` (novel factual context,
@@ -20,8 +21,9 @@ Two LLM phases, two prompts:
 Both phases get a **dynamic instruction**:
 
 - :func:`build_decider_instructions` — phase 1. Renders the comprehension XML
-  blocks (``<case_brief>`` / ``<recent_messages>`` / ``<prior_searches>`` /
-  ``<attached_items>``) from ``PlannerDeps`` per turn, and — ONLY when
+  blocks (``<case_brief>`` / ``<conversation_summary>`` / ``<recent_messages>``
+  / ``<prior_searches>`` / ``<attached_items>``) from ``PlannerDeps`` per turn,
+  and — ONLY when
   attachments or prior searches are present — appends the detailed
   ``planner_brief`` editing rules (kept out of the static prompt so the common
   no-attachment turn pays no tokens for guidance it won't use).
@@ -102,11 +104,12 @@ An aspect is "real" when the user asks for it explicitly or implicitly, not when
 Injected below (as available):
 
 - `<case_brief>` — the case information and its memory (if the conversation is linked to a case).
+- `<conversation_summary>` — a summary of the **earlier part of this conversation**, written when it grew long enough to be compacted: what the user asked for, what was produced, and what is still open. **Those turns are NOT in `<recent_messages>`** — this block is the only trace of them, so read it as the conversation's back-story before reading the recent window. (Absent = nothing has been compacted yet, i.e. `<recent_messages>` covers the whole conversation.)
 - `<recent_messages>` — the latest conversation messages (role, content, creation time).
 - `<prior_searches>` — prior search tasks in the conversation: `title`, `describe_query`, `confidence`, and (when available) a `summary` that recaps what the search covered and what it missed.
 - `<attached_items>` — attached items the router selected, with their full content (memos / notes / highly relevant documents).
 
-Only three blocks flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), and `prior_search_lessons` (a summary of `<prior_searches>`). `<recent_messages>` and `<attached_items>` are for you alone — if you find in them a fact the search needs, carry it into `planner_brief`.
+Only three blocks flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), and `prior_search_lessons` (a summary of `<prior_searches>`). `<conversation_summary>`, `<recent_messages>` and `<attached_items>` are for you alone — if you find in them a fact the search needs, carry it into `planner_brief`.
 
 ## The `unfold_workspace_item` tool — reveal a prior item's sources
 
@@ -322,6 +325,35 @@ def _render_case_brief(case_brief: str | None) -> str | None:
     return f"<case_brief>\n{_esc(case_brief)}\n</case_brief>"
 
 
+def _render_compaction_summary(compaction_summary_md: str | None) -> str | None:
+    """Render the ``<conversation_summary>`` block when a compaction exists.
+
+    ``deps.compaction_summary_md`` is the ``content_md`` of the latest
+    ``kind='convo_context'`` workspace item (written by ``convo_compactor``).
+    It stands in for the turns that fell behind ``compacted_through_message_id``
+    — turns the decider's ``<recent_messages>`` window (a fixed-size tail, NOT
+    cutoff-filtered) does not contain. The trailing note is what makes the
+    boundary explicit to the LLM; the router's ``inject_compaction_summary``
+    conveys the same "before the current window" framing in one line.
+
+    Empty / ``None`` → ``None`` (block omitted entirely), matching every other
+    renderer here and the router's "inject nothing" behaviour.
+
+    وضع السرية: the summary is stored REAL; the orchestrator encodes it with the
+    turn codec before it reaches ``PlannerDeps`` (see ``deps.py``), so this
+    renderer never touches the codec.
+    """
+    if not compaction_summary_md or not compaction_summary_md.strip():
+        return None
+    return (
+        "<conversation_summary>\n"
+        f"{_esc(compaction_summary_md.strip())}\n"
+        "</conversation_summary>\n"
+        "<!-- The turns summarised above are NOT in <recent_messages> — they were "
+        "compacted out of the window. Treat this as the conversation's back-story. -->"
+    )
+
+
 def _render_recent_messages(messages) -> str | None:
     """Render the recent_messages XML block when non-empty.
 
@@ -433,10 +465,11 @@ def _render_attached_items(attached_items) -> str | None:
 def build_decider_instructions(deps) -> str:
     """Dynamic phase-1 instruction — comprehension XML blocks (+ brief rules).
 
-    Reads ``deps.case_brief`` / ``deps.recent_messages`` / ``deps.prior_searches``
-    / ``deps.attached_items`` and renders the four ``<…>`` blocks. Blocks are
-    omitted when their source is empty — the decider system prompt instructs the
-    LLM to treat absence as "not available".
+    Reads ``deps.case_brief`` / ``deps.compaction_summary_md`` /
+    ``deps.recent_messages`` / ``deps.prior_searches`` / ``deps.attached_items``
+    and renders the five ``<…>`` blocks. Blocks are omitted when their source is
+    empty — the decider system prompt instructs the LLM to treat absence as
+    "not available".
 
     Token discipline: the detailed ``planner_brief`` editing rules
     (:data:`_PLANNER_BRIEF_DETAIL_RULES`) live here and are appended ONLY when
@@ -450,6 +483,13 @@ def build_decider_instructions(deps) -> str:
     case_block = _render_case_brief(getattr(deps, "case_brief", None))
     if case_block is not None:
         blocks.append(case_block)
+    # Chronological order: the compacted back-story comes BEFORE the recent
+    # window it precedes.
+    compaction_block = _render_compaction_summary(
+        getattr(deps, "compaction_summary_md", None)
+    )
+    if compaction_block is not None:
+        blocks.append(compaction_block)
     messages_block = _render_recent_messages(getattr(deps, "recent_messages", None))
     if messages_block is not None:
         blocks.append(messages_block)

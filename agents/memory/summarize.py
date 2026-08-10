@@ -46,7 +46,11 @@ _logfire = get_logfire()
 # dominate the prompt.
 ATTACHMENT_CONTEXT_MESSAGE_COUNT = 6
 ATTACHMENT_CONTEXT_MESSAGE_CLIP_CHARS = 600
-ATTACHMENT_CONTEXT_COMPACTION_CLIP_CHARS = 1500
+# Sized to fit a WHOLE compaction summary. The convo_compactor targets 200-500
+# Arabic words, which lands around 1200-3000 chars — the previous 1500 cut the
+# upper half of that range mid-sentence, and since خيوط مفتوحة is the last of the
+# three prescribed sections, the open-threads list was the part that got dropped.
+ATTACHMENT_CONTEXT_COMPACTION_CLIP_CHARS = 3200
 
 
 # Below this many characters of content_md, we skip the LLM entirely and leave

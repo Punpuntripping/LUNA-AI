@@ -414,6 +414,79 @@ def _load_case_brief(
     return memory_md
 
 
+def _load_compaction_summary(
+    supabase: SupabaseClient, conversation_id: str, user_id: str
+) -> str | None:
+    """Latest ``kind='convo_context'`` ``content_md`` — the compaction back-story.
+
+    **RESUME PATHS ONLY.** A fresh dispatch already has this value: ``_route``
+    calls ``load_router_context``, which returns it (encoded) as
+    ``ctx.compaction_summary_md`` on its way into ``run_router``, and passes it
+    down to ``_dispatch`` — re-querying there would be a second DB round-trip per
+    turn for a value already in hand. The resume legs (``_resume_major_agent``)
+    skip the router entirely, so they have no such value and call this.
+
+    Same contract as ``agents.router.context._load_workspace_item_summaries``
+    (which returns this alongside the item summaries the router needs): most
+    recent non-deleted ``convo_context`` row for the conversation. Narrowed to
+    ``kind='convo_context'`` + ``LIMIT 1`` because the resume legs want ONLY this
+    — the router's variant also carries every other item's title/summary.
+
+    The ``.eq("user_id", user_id)`` filter is **load-bearing**: this client runs
+    as ``service_role`` and bypasses RLS, so the explicit owner filter is the
+    scope enforcement. The text lands verbatim in a planner's system prompt, so a
+    row belonging to another user reaching it is a prompt-injection surface, not
+    merely a data leak.
+
+    وضع السرية: ``convo_context.content_md`` is stored REAL (store-real
+    invariant). Encoded here at load — the same place, and for the same reason,
+    as ``_load_case_brief`` — and any minted fakes are persisted immediately so a
+    fresh-process resume can decode them. Byte passthrough when masking is off.
+
+    Never raises: any DB failure returns ``None`` (the block is then simply
+    omitted, exactly as on a conversation that was never compacted).
+    """
+    if not conversation_id:
+        return None
+    try:
+        resp = (
+            supabase.table("workspace_items")
+            .select("content_md")
+            .eq("conversation_id", conversation_id)
+            .eq("user_id", user_id)
+            .eq("kind", "convo_context")
+            .is_("deleted_at", "null")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = (getattr(resp, "data", None) or [])
+    except Exception as e:
+        logger.warning(
+            "_load_compaction_summary failed for conversation_id=%s: %s",
+            conversation_id, e,
+        )
+        return None
+    if not rows:
+        return None
+    md = (rows[0].get("content_md") or "").strip() or None
+    if md is None:
+        return None
+
+    from backend.app.services.masking_service import (
+        active_codec,
+        encode_active,
+        persist_new_mappings,
+    )
+
+    codec = active_codec()
+    if codec is not None:
+        md = encode_active(md)
+        if user_id:
+            persist_new_mappings(supabase, user_id, codec)
+    return md
+
+
 def _load_prior_search_summaries(
     supabase: SupabaseClient, conversation_id: str, user_id: str
 ) -> list[PriorSearchSummary]:
@@ -764,6 +837,13 @@ async def _resume_major_agent_inner(
             recent_messages = _load_recent_messages(
                 supabase, conversation_id, user_id=user_id
             )
+            # Resume skips the router, so there is no load_router_context value
+            # to inherit — load (and encode) it here. Without this a resumed
+            # writer_planner silently loses the conversation's back-story that
+            # the fresh dispatch had.
+            compaction_summary_md = _load_compaction_summary(
+                supabase, conversation_id, user_id
+            )
             resumed_task_label = (
                 (pending.get("task_label") or "").strip() or "متابعة المحادثة"
             )
@@ -772,6 +852,7 @@ async def _resume_major_agent_inner(
                 task_label=resumed_task_label,
                 attached_items=attached_items,
                 recent_messages=recent_messages,
+                compaction_summary_md=compaction_summary_md,
                 target_item_id=None,
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -916,6 +997,14 @@ async def _resume_major_agent_inner(
         _resume_recent_messages = _load_recent_messages(
             supabase, conversation_id, user_id=user_id
         )
+        # Resume skips the router, so there is no load_router_context value to
+        # inherit — load (and encode) it here. Loaded ONCE and reused by the
+        # phase-2/3 MajorAgentInput below, so the resume leg still costs a single
+        # read. Without it a resumed decider loses the back-story the fresh
+        # dispatch had, which is the same bug in a different path.
+        _resume_compaction_summary = _load_compaction_summary(
+            supabase, conversation_id, user_id
+        )
         _resume_settings = _get_settings()
 
         # Rebuild the WI alias map on resume — PlannerDeps is never persisted
@@ -955,6 +1044,7 @@ async def _resume_major_agent_inner(
                 conversation_id=conversation_id,
                 case_brief=_resume_case_brief,
                 recent_messages=_resume_recent_messages,
+                compaction_summary_md=_resume_compaction_summary,
                 prior_searches=_resume_prior_searches,
                 attached_items=_resume_attached_items,
                 wi_alias_map=_resume_alias_map,
@@ -1065,6 +1155,9 @@ async def _resume_major_agent_inner(
             task_label=resumed_task_label,
             attached_items=attached_items,
             recent_messages=recent_messages,
+            # Reuse the value the decider resume above already loaded + encoded
+            # — no second read on the same leg.
+            compaction_summary_md=_resume_compaction_summary,
             target_item_id=None,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1603,6 +1696,11 @@ async def _route(
             case_id=case_id,
             user_message_id=user_message_id,
             assistant_message_id=assistant_message_id,
+            # Reuse the value load_router_context already produced for the
+            # router (encoded there, persisted by the persist_new_mappings call
+            # above) — the specialists' planners need the same back-story, and
+            # re-querying it here would be a second DB round-trip per turn.
+            compaction_summary_md=ctx.compaction_summary_md,
         ):
             yield ev
         return
@@ -1771,6 +1869,7 @@ async def _dispatch(
     case_id: str | None,
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
+    compaction_summary_md: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -1782,6 +1881,11 @@ async def _dispatch(
     redesign — was ``briefing`` pre-redesign). ``task_label`` is the
     router-emitted short Arabic content-derived label used as both the
     workspace item title and the ``agent_runs.task_label`` value.
+
+    ``compaction_summary_md`` is handed down from ``_route``, which got it from
+    ``load_router_context`` (already encoded with the turn codec) — NOT re-read
+    here. It rides ``MajorAgentInput`` to both planners, which have no other
+    trace of the turns behind ``compacted_through_message_id``.
     """
     # ── Cap pre-flight ──────────────────────────────────────────────────
     if agent_family in ("deep_search", "writing") and target_item_id is None:
@@ -1854,6 +1958,7 @@ async def _dispatch(
                 task_label=task_label,
                 attached_items=attached_items,
                 recent_messages=recent_messages,
+                compaction_summary_md=compaction_summary_md,
                 target_item_id=target_item_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
@@ -2232,6 +2337,12 @@ async def _run_deep_search(
             conversation_id=input.conversation_id,
             case_brief=case_brief,
             recent_messages=list(input.recent_messages),
+            # The compacted back-story for the turns `recent_messages` (a fixed
+            # tail, NOT cutoff-filtered) no longer shows. Rides MajorAgentInput
+            # from _dispatch/_resume_major_agent already encoded with the turn
+            # codec — do NOT re-encode (idempotent, but pointless) and do NOT
+            # re-query (the caller already paid for the read).
+            compaction_summary_md=input.compaction_summary_md,
             prior_searches=prior_searches,
             attached_items=_planner_attached,
             wi_alias_map=wi_alias_map,

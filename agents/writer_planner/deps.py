@@ -9,7 +9,8 @@ views) plus mutable loop state (present_count).
 pause.** It is rebuilt fresh by :func:`build_writer_planner_deps` on every
 entry, including the resume path. Only ``agent_runs.message_history`` (the
 decider's bytes) crosses the pause boundary. On resume, the orchestrator
-re-loads attached_items + prior_artifacts + recent_messages.
+re-loads attached_items + prior_artifacts + recent_messages +
+compaction_summary_md.
 
 **Core invariant — see writer_planner.md § Core invariant** — this deps shape
 intentionally does NOT expose any ``content_md`` field. The planner LLM
@@ -65,6 +66,20 @@ class WriterPlannerDeps:
     intent: str = ""
     recent_messages: list[ChatMessageSnapshot] = field(default_factory=list)
     case_brief: str | None = None
+
+    # The latest ``convo_context`` compaction summary (workspace_items.content_md
+    # written by ``convo_compactor``). ``recent_messages`` is a fixed-size tail of
+    # the conversation and is NOT filtered by ``compacted_through_message_id`` —
+    # so after a compaction the turns behind the cutoff are invisible here unless
+    # this stands in for them. Mirrors the router's
+    # ``RouterDeps.compaction_summary_md`` / ``inject_compaction_summary``.
+    #
+    # وضع السرية: stored REAL in the DB; the ORCHESTRATOR encodes it with the turn
+    # codec before it reaches this deps object (fresh dispatch inherits the
+    # already-encoded value from ``load_router_context``), so the renderer in
+    # prompts.py treats it as prompt-ready — unlike attached_items /
+    # prior_artifacts, which are encoded at render.
+    compaction_summary_md: str | None = None
 
     # Router-selected workspace_items for THIS turn. The planner sees
     # (item_id, kind, title, summary, word_count) — never content_md.
@@ -160,6 +175,7 @@ class WriterPlannerDeps:
             "prior_artifacts": len(self.prior_artifacts),
             "recent_messages": len(self.recent_messages),
             "case_brief_present": self.case_brief is not None,
+            "compaction_summary_present": bool(self.compaction_summary_md),
             "detail_level": self.style.detail_level,
             "present_count": self.present_count,
         }
@@ -180,6 +196,7 @@ class WriterPlannerDeps:
             ],
             "prior_artifacts": [getattr(a, "summary", str(a)) for a in self.prior_artifacts],
             "case_brief": self.case_brief,
+            "compaction_summary_md": self.compaction_summary_md,
         }
 
 
@@ -241,6 +258,7 @@ def build_writer_planner_deps(
     intent: str = "",
     recent_messages: list[ChatMessageSnapshot] | None = None,
     case_brief: str | None = None,
+    compaction_summary_md: str | None = None,
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     prior_artifacts: list[ArtifactSummaryView] | None = None,
     user_templates: list[UserTemplateTitle] | None = None,
@@ -266,6 +284,7 @@ def build_writer_planner_deps(
         intent=intent or "",
         recent_messages=list(recent_messages or []),
         case_brief=case_brief,
+        compaction_summary_md=compaction_summary_md or None,
         attached_items=attached_list,
         prior_artifacts=prior_list,
         wi_alias_map=_compute_wi_alias_map(attached_list, prior_list),

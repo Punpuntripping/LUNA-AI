@@ -9,8 +9,8 @@ Two pieces:
   examine-before-asking protocol, and the iteration cap.
 - :func:`build_writer_planner_instructions` — dynamic instruction renderer
   called per-turn via ``@agent.instructions``. Renders the current user
-  message + recent_messages + attached_items + prior_artifacts into the
-  prompt. Per the core invariant, this function NEVER touches
+  message + conversation_summary + recent_messages + attached_items +
+  prior_artifacts into the prompt. Per the core invariant, this function NEVER touches
   ``content_md`` — only ``(WI-{seq}, kind, title, summary, word_count)``.
 
 Per ``.claude/plans/agent_communication_protocol.md``, this surface emits
@@ -176,7 +176,14 @@ user anything that can be inferred from what's already on screen:
 2. **Read each `<attached_items>` and `<prior_artifacts>` summary** to
    identify the role each item plays (template / source / reference /
    prior_draft).
-3. **Identify what is actually missing** AFTER the inspection — not before.
+3. **Read `<conversation_summary>` when present** — it recaps the earlier
+   part of this conversation (what the user asked for, what was produced,
+   what is still open) after it grew long enough to be compacted. **Those
+   turns are NOT in `<recent_messages>`**, so it is the only trace of them;
+   a request that reads as under-specified in the recent window is often
+   already answered there. Absent = nothing compacted yet, i.e.
+   `<recent_messages>` covers the whole conversation.
+4. **Identify what is actually missing** AFTER the inspection — not before.
 
 **Hard rule**: if every critical input is present, do NOT call `ask_user`.
 Going directly to a final `PlannerDecision` (with or without
@@ -383,6 +390,35 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
     return body
 
 
+def _render_compaction_summary(compaction_summary_md: str | None) -> str:
+    """Render the compacted conversation back-story, or ``""`` when absent.
+
+    ``deps.compaction_summary_md`` is the ``content_md`` of the latest
+    ``kind='convo_context'`` workspace item (written by ``convo_compactor``).
+    It stands in for the turns that fell behind ``compacted_through_message_id``
+    — turns ``<recent_messages>`` (a fixed-size tail, NOT cutoff-filtered) does
+    not contain. The trailing note is what makes that boundary explicit; the
+    router's ``inject_compaction_summary`` conveys the same "before the current
+    window" framing in one line.
+
+    Empty / ``None`` → ``""`` so ``build_writer_planner_instructions`` omits the
+    block entirely (same "inject nothing" contract as the router).
+
+    وضع السرية: the summary is stored REAL; the ORCHESTRATOR encodes it with the
+    turn codec before it reaches deps, so — unlike ``_render_attached_items`` /
+    ``_render_prior_artifacts`` — this renderer does not call ``encode_active``.
+    Not truncated: dropping the tail of a compaction summary would silently
+    delete conversation history the planner has no other way to recover.
+    """
+    if not compaction_summary_md or not compaction_summary_md.strip():
+        return ""
+    return (
+        compaction_summary_md.strip()
+        + "\n  (These turns are NOT in <recent_messages> — they were compacted "
+          "out of the window. Treat this as the conversation's back-story.)"
+    )
+
+
 def _wi_label(wi_seq: int | None, *, debug_ref: str = "") -> str:
     """Render the WI-{seq} alias, or a placeholder for rare seq-less rows.
 
@@ -501,6 +537,7 @@ def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
     """
     intent = _truncate(deps.intent, max_chars=2000)
     case_brief = _truncate(deps.case_brief, max_chars=500)
+    compaction = _render_compaction_summary(deps.compaction_summary_md)
     msgs = _render_recent_messages(deps.recent_messages)
     attached = _render_attached_items(deps.attached_items)
     prior = _render_prior_artifacts(deps.prior_artifacts)
@@ -518,6 +555,12 @@ def build_writer_planner_instructions(deps: "WriterPlannerDeps") -> str:
         parts.append("<case_brief>")
         parts.append(case_brief)
         parts.append("</case_brief>")
+        parts.append("")
+    # Chronological order: the compacted back-story precedes the recent window.
+    if compaction:
+        parts.append("<conversation_summary>")
+        parts.append(compaction)
+        parts.append("</conversation_summary>")
         parts.append("")
     if msgs:
         parts.append("<recent_messages>")

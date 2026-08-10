@@ -195,6 +195,18 @@ class MajorAgentInput(BaseModel):
         default_factory=list,
         description="Last N chat messages (default 3, per-agent overridable).",
     )
+    compaction_summary_md: str | None = Field(
+        default=None,
+        description=(
+            "content_md of the latest kind='convo_context' workspace item — the "
+            "convo_compactor's summary of the turns that fell behind "
+            "conversations.compacted_through_message_id. ``recent_messages`` is "
+            "a fixed-size tail and is NOT filtered by that cutoff, so without "
+            "this the specialists see no trace of a compacted conversation. "
+            "وضع السرية: carried ALREADY ENCODED with the turn codec (the "
+            "orchestrator encodes at load; masked-mode-off is byte passthrough)."
+        ),
+    )
     target_item_id: str | None = Field(
         default=None,
         description="Existing workspace item to edit/extend; None for fresh output.",
