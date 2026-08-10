@@ -39,6 +39,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
+import { WiBadge } from "@/components/workspace/WiBadge";
 import type { Attachment, Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
@@ -50,6 +51,8 @@ export interface ArtifactLookupEntry {
   /** ``metadata.subtype`` — names the artifact far better than kind does
    *  («التحليل القانوني» rather than «المسودة»). */
   subtype?: string | null;
+  /** ``wi_seq`` — the «WI-3» alias the reply text itself may cite. */
+  wi_seq?: number | null;
 }
 
 export type ArtifactLookup = Record<string, ArtifactLookupEntry>;
@@ -499,6 +502,7 @@ export const MessageBubble = memo(function MessageBubble({
                       key={id}
                       itemId={id}
                       label={artifactLookup?.[id]?.title}
+                      seq={artifactLookup?.[id]?.wi_seq}
                       onJump={onJumpToReferencedItem}
                     />
                   ))}
@@ -748,6 +752,7 @@ function ArtifactChip({
 
   if (artifactIds.length === 1) {
     const id = artifactIds[0];
+    const seq = artifactLookup?.[id]?.wi_seq;
     return (
       <Button
         size="sm"
@@ -756,6 +761,14 @@ function ArtifactChip({
       >
         <BookOpen className="h-3.5 w-3.5" />
         افتح {definiteArtifactName(artifactLookup?.[id])}
+        {/* The alias the reply body may have named («… (WI-1)»). Rendered as
+            plain dimmed text rather than a WiBadge — inside a solid primary
+            CTA a bordered grey pill reads as a second button. */}
+        {seq !== null && seq !== undefined && (
+          <span dir="ltr" className="font-mono text-[10px] opacity-70">
+            WI-{seq}
+          </span>
+        )}
       </Button>
     );
   }
@@ -780,6 +793,9 @@ function ArtifactChip({
             >
               <FileSearch className="h-3 w-3 me-1.5 shrink-0 text-muted-foreground" />
               <span className="truncate">{label}</span>
+              {/* Alias at the row's end: with several cards on one turn this is
+                  what tells «WI-2» from «WI-3» before opening either. */}
+              <WiBadge seq={entry?.wi_seq} className="ms-auto" />
             </DropdownMenuItem>
           );
         })}
@@ -796,6 +812,8 @@ interface ReferencedItemChipProps {
   itemId: string;
   /** Optional resolved title from the workspace list cache. */
   label?: string;
+  /** ``wi_seq`` of the referenced card — the alias the reply may have cited. */
+  seq?: number | null;
   onJump?: (itemId: string) => void;
 }
 
@@ -809,7 +827,12 @@ interface ReferencedItemChipProps {
  * user can tell at a glance that "this conversation re-used a prior card"
  * vs "this turn produced its own card".
  */
-function ReferencedItemChip({ itemId, label, onJump }: ReferencedItemChipProps) {
+function ReferencedItemChip({
+  itemId,
+  label,
+  seq,
+  onJump,
+}: ReferencedItemChipProps) {
   const labelText = label ? `راجع: ${label}` : "راجع البطاقة السابقة";
   return (
     <Button
@@ -825,6 +848,7 @@ function ReferencedItemChip({ itemId, label, onJump }: ReferencedItemChipProps) 
     >
       <CornerUpLeft className="h-3 w-3" />
       <span className="truncate max-w-[280px]">{labelText}</span>
+      <WiBadge seq={seq} />
     </Button>
   );
 }

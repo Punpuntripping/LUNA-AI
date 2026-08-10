@@ -15,6 +15,7 @@ import { ConvoContextViewer } from "./ConvoContextViewer";
 import { ReferencesRenderer } from "./ReferencesRenderer";
 import { WorkspaceList } from "./WorkspaceList";
 import { WorkspaceAddMenu } from "./WorkspaceAddMenu";
+import { WiBadge } from "./WiBadge";
 import type { WorkspaceItem } from "@/types";
 
 interface WorkspacePaneProps {
@@ -132,6 +133,9 @@ function PaneHeader({
       <h2 className="flex-1 truncate px-1 text-sm font-semibold text-foreground">
         {inDetailMode ? item?.title ?? "..." : "العناصر"}
       </h2>
+      {/* Detail mode only: the alias the agents cite in chat, beside the title
+          of the item the user just opened. */}
+      {inDetailMode && <WiBadge seq={item?.wi_seq} className="me-1" />}
       <Button
         variant="ghost"
         size="icon"

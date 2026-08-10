@@ -95,6 +95,9 @@ export function MessageList({
         // Same read as WorkspaceCard's badge, so the «افتح ال…» button names
         // the card by exactly what the card itself calls itself.
         subtype: (item.metadata as { subtype?: string } | undefined)?.subtype,
+        // Migration 052 alias: lets the chips echo the «WI-1» the reply text
+        // cites, so the sentence and the button name the same thing.
+        wi_seq: item.wi_seq,
       };
     }
     return out;

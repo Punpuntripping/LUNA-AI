@@ -107,12 +107,21 @@ class UpdateFeedbackRequest(BaseModel):
 def _to_response(data: dict) -> WorkspaceItemResponse:
     """Translate a workspace_items row into the response model."""
     item_id = data.get("item_id") or data.get("artifact_id") or ""
+    # Migration 052 alias. Coerced defensively: pre-052 rows and case-only items
+    # carry NULL, and a bad value must not 500 the whole list — the badge simply
+    # doesn't render.
+    raw_wi_seq = data.get("wi_seq")
+    try:
+        wi_seq = int(raw_wi_seq) if raw_wi_seq is not None else None
+    except (TypeError, ValueError):
+        wi_seq = None
     return WorkspaceItemResponse(
         item_id=item_id,
         user_id=data["user_id"],
         conversation_id=data.get("conversation_id"),
         case_id=data.get("case_id"),
         message_id=data.get("message_id"),
+        wi_seq=wi_seq,
         agent_family=data.get("agent_family"),
         kind=data.get("kind", "agent_search"),
         created_by=data.get("created_by", "agent"),

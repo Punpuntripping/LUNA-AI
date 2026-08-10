@@ -292,6 +292,11 @@ class WorkspaceItemResponse(BaseModel):
     conversation_id: Optional[str] = None
     case_id: Optional[str] = None
     message_id: Optional[str] = None
+    # Migration 052: conversation-scoped 1-based alias — the "{seq}" in the
+    # «WI-{seq}» the router/planner speak OUT LOUD to the user ("حفظته … (WI-1)").
+    # The UI renders it as a badge on the card so that sentence resolves to a
+    # visible thing. NULL for items with no conversation home.
+    wi_seq: Optional[int] = None
     agent_family: Optional[str] = None
     kind: str
     created_by: str

@@ -526,6 +526,15 @@ export interface WorkspaceItem {
   conversation_id: string | null;
   case_id: string | null;
   message_id?: string | null;
+  /**
+   * Migration 052: conversation-scoped 1-based alias. The router and the
+   * planners address items as «WI-{wi_seq}» and say that alias out loud in chat
+   * («حفظت النص … (WI-1)»), so the UI renders it via ``WiBadge`` — otherwise the
+   * reader has no way to tell which card the sentence points at. ``null`` for
+   * items with no conversation home; ``undefined`` on responses from a backend
+   * older than this field.
+   */
+  wi_seq?: number | null;
   agent_family: AgentFamily | null;
   kind: WorkspaceItemKind;
   created_by: WorkspaceCreator;

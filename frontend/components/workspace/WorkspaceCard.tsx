@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { FileText, Paperclip, NotebookPen, BookOpen, MessageSquare } from "lucide-react";
 import { cn, getRelativeTimeAr } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { WiBadge } from "./WiBadge";
 import type { WorkspaceItem, WorkspaceItemKind } from "@/types";
 
 const KIND_ICON: Record<WorkspaceItemKind, typeof FileText> = {
@@ -116,6 +117,10 @@ export function WorkspaceCard({ item, onClick }: WorkspaceCardProps) {
           </p>
 
           <div className="flex items-center gap-2">
+            {/* The alias the agents speak in chat («WI-1»), directly under the
+                title so «... (WI-1)» in a reply resolves to this card. */}
+            <WiBadge seq={item.wi_seq} />
+
             <span
               className={cn(
                 "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
