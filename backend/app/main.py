@@ -160,10 +160,11 @@ async def lifespan(app: FastAPI):
 
     app.state.redis_supervisor = asyncio.create_task(_redis_supervisor())
 
-    # 3. APScheduler — daily PDF-attachment cleanup sweep. Hard-deletes
-    #    workspace PDF attachments older than 24h (storage file + DB row).
-    #    Runs in-process; the backend is single-worker so the job fires
-    #    exactly once per day.
+    # 3. APScheduler — daily PDF-attachment retention sweep. Purges the storage
+    #    FILE of workspace PDF attachments past their window; the DB row and its
+    #    OCR text (content_md) survive, because that text is what the agents
+    #    read and message_attachments cascades off the row. Runs in-process; the
+    #    backend is single-worker so the job fires exactly once per day.
     scheduler = AsyncIOScheduler()
 
     async def _run_pdf_cleanup() -> None:

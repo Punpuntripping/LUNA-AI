@@ -929,6 +929,10 @@ async def get_workspace_file_url(
         * Otherwise resolve ``document_id`` -> ``case_documents.storage_path``
           and sign that. (No file copy -- linked attachments share the
           underlying object with the case library.)
+        * 404 with a purge-specific message once the retention sweep has
+          cleared ``storage_path`` (``metadata.original_purged_at`` is set).
+          The item itself is alive and ``content_md`` still holds its text --
+          only the original file is gone.
     """
     validate_uuid(item_id, "معرف العنصر")
     item = await run_db(
@@ -977,10 +981,18 @@ async def get_workspace_file_url(
         storage_path = doc_row.data.get("storage_path")
 
     if not storage_path:
+        # A purged attachment is not a broken one: the retention sweep removed
+        # the original but kept the item and its extracted text, so say which
+        # of the two happened rather than reporting a generic missing file.
+        purged = (item.get("metadata") or {}).get("original_purged_at")
         raise LunaHTTPException(
             status_code=404,
             code=ErrorCode.DOC_NOT_FOUND,
-            detail="ملف المستند غير موجود",
+            detail=(
+                "حُذف الملف الأصلي بعد انتهاء مدة الاحتفاظ — النص المستخرج منه ما زال محفوظاً"
+                if purged
+                else "ملف المستند غير موجود"
+            ),
         )
 
     try:

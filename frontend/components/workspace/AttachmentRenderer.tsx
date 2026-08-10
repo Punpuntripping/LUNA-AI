@@ -18,6 +18,13 @@ interface AttachmentMetadata {
    * ``skipped_*`` = extraction did not produce text.
    */
   ocr_status?: string;
+  /**
+   * Retention-sweep marker (backend/app/services/attachment_cleanup.py): the
+   * original file has been removed from storage. The item and its extracted
+   * text survive — this is the only thing that is gone, so there is nothing to
+   * toggle to and no error to report.
+   */
+  original_purged_at?: string;
 }
 
 interface AttachmentRendererProps {
@@ -33,29 +40,61 @@ interface AttachmentRendererProps {
  * saw. A toolbar toggle switches to the original file (signed-URL image /
  * PDF iframe), which is also the automatic fallback while no extraction
  * exists yet (pre-send) or when OCR failed/was skipped.
+ *
+ * Once the retention sweep has purged the original (``metadata
+ * .original_purged_at``) there is no second view: the extraction IS the item,
+ * and the toggle is replaced by a line saying where the file went. The item
+ * itself never disappears — losing it would take the WI alias and the chat
+ * history's attachment tag with it.
  */
 export function AttachmentRenderer({ item }: AttachmentRendererProps) {
   const meta = (item.metadata as AttachmentMetadata) || {};
   const ocrText = (item.content_md ?? "").trim();
+  // The retention sweep removed the original. Never offer a toggle to a file
+  // that cannot load — the extracted text is now the whole item.
+  const purged = Boolean(meta.original_purged_at);
   const [showOriginal, setShowOriginal] = useState(false);
 
-  if (ocrText && !showOriginal) {
+  if (ocrText && (purged || !showOriginal)) {
     return (
       <ArtifactPreview
         content={ocrText}
         copyLabel="نسخ النص المستخرج"
         headerActions={
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-8 gap-1.5 text-xs"
-            onClick={() => setShowOriginal(true)}
-          >
-            <FileText className="h-3.5 w-3.5" />
-            الملف الأصلي
-          </Button>
+          purged ? (
+            <span className="text-xs text-muted-foreground">
+              حُذف الملف الأصلي بعد انتهاء مدة الاحتفاظ
+            </span>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => setShowOriginal(true)}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              الملف الأصلي
+            </Button>
+          )
         }
       />
+    );
+  }
+
+  // Purged with nothing extracted — the only honest thing left to show is why.
+  if (purged) {
+    return (
+      <div className="flex h-full flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <FileWarning className="h-8 w-8 text-muted-foreground/70" />
+        <p className="text-sm text-muted-foreground">
+          حُذف الملف الأصلي بعد انتهاء مدة الاحتفاظ
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {meta.ocr_status === "empty"
+            ? "ولم يكن يحتوي على نص قابل للاستخراج"
+            : "ولم يُستخرج منه نص"}
+        </p>
+      </div>
     );
   }
 

@@ -98,6 +98,14 @@ backend/tests/*
 # fake instruction block. It also pins the compound-first-name rule: taking
 # token[0] blindly addresses «عبد الله» as «عبد».
 !backend/tests/test_preferred_name.py
+# attachment-retention suite is durable — it pins that the daily sweep purges the
+# FILE and never the row. message_attachments cascades off workspace_items, so a
+# DELETE there silently destroys the OCR text (the only form of a document any
+# agent ever reads), the WI-{seq} alias and the history tag in one statement.
+# That is not hypothetical: it had already eaten 22 of 46 extractions before it
+# was caught. Also pins UPDATE-before-DELETE, which is what makes a deploy
+# landing ahead of migration 125 a no-op instead of unrecoverable file loss.
+!backend/tests/test_attachment_retention.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock
