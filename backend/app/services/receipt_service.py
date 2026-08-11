@@ -320,6 +320,151 @@ async def _send(
         logger.exception("receipt email failed (%s, payment=%s)", kind, payment_id)
 
 
+def render_renewal_failed_notice(
+    *,
+    customer_name: str,
+    plan_name_ar: str,
+    amount_sar: Any,
+    expires_at: Optional[datetime],
+    final: bool,
+) -> tuple[str, str]:
+    """→ ``(subject, html)`` for a declined auto-renewal (dunning, plan §8).
+
+    NOT a receipt: no money moved, so there is no receipt number and no amount
+    "paid" — the amount appears only as what the renewal WOULD have cost.
+
+    Two shapes, one template. The first-failure copy says we will try again; the
+    final one says we will not, and that the subscription ends. Both point at
+    the same place — إعدادات الحساب, where the stored card lives — because a
+    dunning email whose link goes nowhere is theatre (plan §8).
+    """
+    settings = get_settings()
+    # ⚠ There is no deep link to the account-settings dialog today: it is a
+    # Radix dialog opened from the app chrome, and `frontend/app/settings/` is
+    # an empty directory. So the CTA lands on the app and the copy tells the
+    # user where to go. When a `?settings=account` (or a real /settings page)
+    # lands, point this at it — a dunning email whose link needs instructions is
+    # a worse version of the same email.
+    manage_url = f"{settings.PUBLIC_WEB_URL}/chat"
+
+    if final:
+        subject = "انتهى اشتراكك في ريحان — تعذّر تجديد الدفع"
+        headline = "تعذّر تجديد اشتراكك"
+        body = (
+            "حاولنا تجديد اشتراكك أكثر من مرة ولم يتم قبول عملية الدفع من البنك، "
+            "لذلك لن نحاول مرة أخرى. سينتهي اشتراكك في نهاية المدة المدفوعة "
+            "وسيعود حسابك إلى الباقة المجانية — بياناتك ومحادثاتك تبقى كما هي."
+        )
+        cta = "فتح ريحان"
+    else:
+        subject = "تعذّر تجديد اشتراكك في ريحان"
+        headline = "تعذّر تجديد اشتراكك"
+        body = (
+            "حاولنا تجديد اشتراكك ولم يتم قبول عملية الدفع من البنك. "
+            "سنحاول تلقائياً مرة أخرى خلال الأيام القادمة، ويستمر اشتراكك "
+            "حتى نهاية المدة المدفوعة. لتفادي انقطاع الخدمة يمكنك تحديث "
+            "بطاقتك الآن."
+        )
+        cta = "فتح ريحان"
+
+    rows = _row("الباقة", plan_name_ar) + _row(
+        "قيمة التجديد", f"{_ar_amount(amount_sar)} ريال سعودي"
+    )
+    if expires_at is not None:
+        rows += _row("اشتراكك فعّال حتى", _ar_date(expires_at))
+
+    inner = (
+        f'<div style="font-size:15px;line-height:2;color:#2C2A28;padding-bottom:14px;">{body}</div>'
+        + rows
+        + f'<div style="padding-top:18px;">'
+        f'<a href="{manage_url}" style="display:inline-block;background:#3D5A4D;'
+        f'color:#FFFFFF;text-decoration:none;padding:11px 20px;border-radius:10px;'
+        f'font-size:14px;font-weight:700;">{cta}</a></div>'
+        '<div style="font-size:12px;color:#8A8378;padding-top:14px;line-height:1.9;">'
+        "لتحديث بطاقتك أو إيقاف التجديد التلقائي: افتح ريحان ← إعدادات الحساب."
+        "</div>"
+    )
+    return subject, _shell(headline, inner)
+
+
+async def send_renewal_failed_notice(
+    supabase: SupabaseClient,
+    *,
+    payment_row: dict,
+    plan_name_ar: str,
+    expires_at: Any = None,
+    final: bool = False,
+) -> None:
+    """Dunning email for a declined renewal. Never raises.
+
+    ⚠ **THE TRANSPORT IS CURRENTLY BLOCKED.** The receipt SMTP path is parked on
+    the 465/SSL issue (see the boot probe below and
+    `.claude/plans/moyasar_payments.md`), so in practice this logs and returns.
+    That is deliberate: the plan says to WIRE the call rather than invent a
+    second transport, so when receipts are unblocked dunning emails start
+    flowing with no further work. Every skip is logged at WARNING with the
+    payment id, because a silent renewal failure with no customer contact is the
+    complaint that becomes a chargeback.
+
+    No at-most-once claim column, unlike the receipts above: each dunning email
+    belongs to ONE ``payment_transactions`` row that was just marked failed by
+    the caller, and that transition happens exactly once per row. Claiming on
+    ``receipt_sent_at`` was rejected — a late ``payment_paid`` webhook can still
+    flip a failed row to paid, and it would then find the receipt stamp already
+    burned and send no receipt for a real charge.
+    """
+    payment_id = payment_row.get("payment_id")
+    try:
+        if not (get_settings().RECEIPTS_SMTP_PASSWORD or "").strip():
+            logger.warning(
+                "RENEWAL DUNNING EMAIL NOT SENT (payment=%s, final=%s): "
+                "RECEIPTS_SMTP_PASSWORD unset — the customer has NOT been told "
+                "their renewal failed. Unblock the receipt transport.",
+                payment_id, final,
+            )
+            return
+
+        user_id = payment_row.get("user_id")
+        recipient = await run_db(_fetch_recipient, supabase, user_id) if user_id else None
+        email = (recipient or {}).get("email") or payment_row.get("customer_email_snapshot")
+        if not email:
+            logger.warning(
+                "renewal dunning email skipped (payment=%s): no recipient email",
+                payment_id,
+            )
+            return
+
+        name = (
+            ((recipient or {}).get("full_name_ar") or "").strip()
+            or (payment_row.get("customer_name_snapshot") or "").strip()
+            or "عميل ريحان"
+        )
+        expiry_dt = expires_at
+        if isinstance(expiry_dt, str):
+            try:
+                expiry_dt = datetime.fromisoformat(expiry_dt.replace("Z", "+00:00"))
+            except ValueError:
+                expiry_dt = None
+
+        subject, html = render_renewal_failed_notice(
+            customer_name=name,
+            plan_name_ar=plan_name_ar,
+            amount_sar=payment_row.get("amount_sar"),
+            expires_at=expiry_dt,
+            final=final,
+        )
+        await run_db(_smtp_send_sync, email, subject, html)
+        logger.info(
+            "renewal dunning email sent: payment=%s final=%s", payment_id, final
+        )
+    except Exception:
+        logger.exception(
+            "renewal dunning email failed (payment=%s, final=%s) — the customer "
+            "has NOT been told their renewal failed",
+            payment_id, final,
+        )
+
+
 async def send_payment_receipt(supabase: SupabaseClient, payment_row: dict) -> None:
     """Purchase receipt — call after the grant succeeds. Never raises."""
     await _send(supabase, payment_row, stamp_column="receipt_sent_at", kind="payment")

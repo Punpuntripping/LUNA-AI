@@ -396,11 +396,19 @@ begin
             v_markers;
     end if;
 
-    -- [6] is the NEW Act 3 anchor (citation-6). The tour's copy promises a
-    -- نظام with إحالات; `referenceDefiniteType` derives «فتح النظام في ريحان»
-    -- from the DOMAIN, so this assertion is what keeps that button's wording
-    -- honest. The in_force check lives upstream of SQL — it is the whole reason
-    -- this migration exists, so re-read status_class before ever moving it.
+    -- [6] is the NEW Act 3 anchor (citation-6), and it must stay a regulations
+    -- reference: it is the only domain whose cards carry إحالات, which is the
+    -- whole point of the step that anchors here.
+    --
+    -- ⚠ It does NOT keep the button reading «فتح النظام في ريحان».
+    -- `referenceDefiniteType` (ReferencePanel.tsx) only falls back to the domain
+    -- when `doc_type` is null or «غير محدد»; this card's doc_type is «دليل»
+    -- (verified on the live payload), so DEFINITE_DOC_TYPE wins and the button
+    -- reads «فتح الدليل في ريحان». That is why tour-content.ts step 9 no longer
+    -- names a document type at all. Do not "restore" the نظام wording.
+    --
+    -- The in_force check lives upstream of SQL — it is the whole reason this
+    -- migration exists, so re-read status_class before ever moving this anchor.
     select domain into v_domain
       from workspace_item_references where wi_id = v_wi and n = 6;
     if v_domain is distinct from 'regulations' then

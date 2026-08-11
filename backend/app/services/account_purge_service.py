@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 def _purge_one(supabase: SupabaseClient, user_id: str, auth_id: str) -> None:
-    """Erase one account: storage → child rows → auth user. Raises on failure.
+    """Erase one account: storage → card tokens → child rows → auth user.
+
+    Raises on failure.
 
     ORDERING IS LOAD-BEARING. The ``users`` row is this sweep's selection marker
     and dies ONLY in step (d) — in the same DB transaction as the auth.users row
@@ -52,6 +54,23 @@ def _purge_one(supabase: SupabaseClient, user_id: str, auth_id: str) -> None:
     files = delete_folder_recursive(bucket, f"general/{user_id}", supabase=supabase)
     for case_id in case_ids:
         files += delete_folder_recursive(bucket, f"cases/{case_id}", supabase=supabase)
+
+    # (b2) Stored card tokens — REVOKED AT THE PROVIDER, not merely deleted.
+    #      `.claude/plans/subscription_auto_renewal.md` §10: "a live token on a
+    #      deleted account is the worst version of this bug". Deleting the
+    #      payment_methods row (which step (c) does) removes our ability to ever
+    #      revoke it, so the provider call has to happen while the row still
+    #      exists — hence here, before the RPC.
+    #
+    #      Never raises (the helper swallows everything and logs): a purge that
+    #      failed over a card token would miss a PDPL erasure deadline, which is
+    #      the worse of the two failures. A token the provider would not confirm
+    #      is logged at ERROR for manual revocation from the dashboard.
+    #      Not flag-gated — tokens stored while auto-renewal was ON must still
+    #      die after it is switched off.
+    from backend.app.services.payment_method_service import revoke_all_for_user_sync
+
+    revoke_all_for_user_sync(supabase, user_id, reason="account_purge")
 
     # (c) Child tables — one transaction (service-role only RPC, migration 090).
     supabase.rpc("purge_user_data", {"p_user_id": user_id}).execute()
