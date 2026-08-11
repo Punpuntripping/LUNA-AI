@@ -32,23 +32,18 @@ import {
 // Soft bridge to `preferences-store`
 //
 // The `tour_workspace_seen` flag (plan §4.3) lives on a store this file does
-// not own. Reading it through a typed selector would hard-couple the two files
-// and break the build until both land, so it is read structurally instead:
-// absent ⇒ "seen", which is the same fail-closed default `onboardingSeen`
-// uses (an API blip must never re-nag an existing user), and which also keeps
-// the auto-start below inert until the flag actually exists.
+// not own, so it is written structurally rather than through a typed selector,
+// which would hard-couple the two files.
+//
+// It is WRITTEN ONLY — nothing reads it back. The tour re-runs on every entry
+// to «محادثة تجريبية» (see `useTourAutoStart`), so there is no seen-gate left to
+// read. The write is kept because it records whether a user ever completed the
+// tour, and because restoring the once-per-account behaviour is then a
+// one-condition change rather than a re-plumb.
 // ---------------------------------------------------------------------------
 
-/** Expected camelCase mirror of the flat preference key `tour_workspace_seen`. */
-const TOUR_SEEN_FIELD = "tourWorkspaceSeen";
 /** Candidate action names, in preference order — whichever exists is called. */
 const TOUR_SEEN_ACTIONS = ["markTourWorkspaceSeen", "markTourSeen"] as const;
-
-function readTourSeen(state: unknown): boolean {
-  if (typeof state !== "object" || state === null) return true;
-  const value = (state as Record<string, unknown>)[TOUR_SEEN_FIELD];
-  return typeof value === "boolean" ? value : true;
-}
 
 function markTourSeen(): void {
   const state = usePreferencesStore.getState() as unknown as Record<string, unknown>;
@@ -99,36 +94,52 @@ function isSatisfied(condition: TourCondition, snapshot: BeatSnapshot): boolean 
 }
 
 /**
- * First-run trigger (§8), deliberately conservative.
+ * Entry trigger: the tour runs EVERY time «محادثة تجريبية» is opened, not once
+ * per account (owner decision 2026-08-11). That conversation exists only to be
+ * toured, so arriving there IS the request to see it — and a user who wants to
+ * re-watch shouldn't have to hunt through the settings popover for it.
  *
- * Fires only when: authenticated · preferences hydrated · «اتعرف على ريحان» is
- * NOT on screen (never both at once) · the flag says unseen · this is the demo
- * conversation · and Act 1's anchor has actually rendered. The last two are
- * separate tests on purpose: the first says the script matches this screen, the
- * second says the screen has finished painting it.
+ * Fires when: authenticated · preferences hydrated · «اتعرف على ريحان» is NOT on
+ * screen (never both at once) · this is the demo conversation · and Act 1's
+ * anchor has actually rendered. The last two are separate tests on purpose: the
+ * first says the script matches this screen, the second says the screen has
+ * finished painting it.
  *
- * The seen-flag is read structurally (see the bridge above), so a rename of
- * that field degrades to "already seen" — a tour that fails to auto-start, never
- * one that nags. Any other entry point (the sidebar settings item) just calls
+ * RE-ARMING IS KEYED ON THE CONVERSATION, NOT ON A BOOLEAN. `startedForRef`
+ * holds the conversation the tour was last auto-started for, so:
+ *   - skip/finish while STAYING on the demo → stays closed (the ref still
+ *     matches, so no effect re-run can reopen it). Dismissal must mean dismissed.
+ *   - navigate away and come back → the ref no longer matches, so it runs again.
+ * A plain boolean could only do one of those two.
+ *
+ * `tour_workspace_seen` is deliberately NOT consulted here any more. It is still
+ * written on finish/skip — it costs nothing, records whether a user has ever
+ * completed the tour, and keeps this decision one line from being reverted.
+ * Any other entry point (the sidebar settings item) just calls
  * `useTourStore.getState().open()`.
  */
 function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
-  const tourSeen = usePreferencesStore((s) => readTourSeen(s));
   const onboardingOpen = useOnboardingStore((s) => s.isOpen);
   const isDemo = useIsDemoConversation(conversationId);
-  const startedRef = useRef(false);
+  const startedForRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isOpen || startedRef.current) return;
-    if (!isAuthenticated || !isHydrated || onboardingOpen || tourSeen) return;
-    if (!isDemo) return;
+    // Left the demo (or landed on an ordinary chat): forget the last run so
+    // coming back re-arms. Done here rather than in a cleanup so a re-render
+    // that merely toggles `isOpen` cannot clear it.
+    if (!isDemo || !conversationId) {
+      startedForRef.current = null;
+      return;
+    }
+    if (isOpen || startedForRef.current === conversationId) return;
+    if (!isAuthenticated || !isHydrated || onboardingOpen) return;
 
     const tryStart = (): boolean => {
-      if (startedRef.current) return true;
+      if (startedForRef.current === conversationId) return true;
       if (queryTourAnchor("artifact-chip") === null) return false;
-      startedRef.current = true;
+      startedForRef.current = conversationId;
       useTourStore.getState().open();
       return true;
     };
@@ -143,7 +154,7 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
       }
     }, AUTO_START_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
-  }, [isOpen, isAuthenticated, isHydrated, onboardingOpen, tourSeen, isDemo]);
+  }, [isOpen, isAuthenticated, isHydrated, onboardingOpen, isDemo, conversationId]);
 }
 
 /**
