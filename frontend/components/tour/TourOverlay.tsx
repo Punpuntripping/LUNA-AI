@@ -79,8 +79,11 @@ function isSatisfied(condition: TourCondition, snapshot: BeatSnapshot): boolean 
         return snapshot.openItemId !== null;
       case "wi-closed":
         return snapshot.openItemId === null;
-      case "reference-3":
-        return snapshot.focusedReferenceN === 3;
+      // [6] after migration 128 renumbered the fixture — see the DATA COUPLING
+      // note in tour-content.ts. The number lives in both files and must move
+      // in lockstep; 128's verification block is what catches a mismatch.
+      case "reference-6":
+        return snapshot.focusedReferenceN === 6;
       case "pane-closed":
         return !snapshot.paneOpen;
     }

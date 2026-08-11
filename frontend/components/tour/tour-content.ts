@@ -11,9 +11,20 @@
  * five.
  *
  * DATA COUPLING (plan §10 trap 2): steps 6–10 assume the demo conversation's
- * trimmed 10-reference set — `[3]` is a نظام with a library page and ≥1 إحالة,
- * and `[10]` is the compliance card that deliberately lacks the library button.
- * Re-trim the reference set and this copy starts lying.
+ * trimmed reference set, as left by migration 128 — **[6]** is an in-force
+ * دليل with a library page and 5 إحالات (the Act 3 anchor), and **[9]** is the
+ * compliance card that deliberately lacks the library button. Re-trim the
+ * reference set and this copy starts lying.
+ *
+ * ⚠ THOSE TWO NUMBERS ARE HARDCODED IN EIGHT PLACES. Migration 128 renumbered
+ * the set (it dropped a draft-status نظام that migration 127 had left at [3]),
+ * and every one of these had to move together:
+ *   this file  — TOUR_ANCHOR_IDS · the step `key` · `anchors` · `cta` text ·
+ *                `fallbackClick` · the `TourStoreBeat` union member
+ *   TourOverlay — the `case` label and the `focusedReferenceN === N` compare
+ * The SQL side is what actually catches a mismatch: 128's verification block
+ * asserts [6] is `regulations` and [9] is `compliance` and aborts otherwise.
+ * If these move a third time, collapse them into one exported constant first.
  */
 
 // ---------------------------------------------------------------------------
@@ -23,12 +34,12 @@
 export const TOUR_ANCHOR_IDS = [
   "chat-thread",
   "artifact-chip",
-  "citation-3",
+  "citation-6",
   "wi-body",
   "wi-badge",
   "pane-close",
   "pane-back",
-  "ref-card-10",
+  "ref-card-9",
   "source-dialog",
   "ref-crossrefs",
   "ref-exits",
@@ -53,8 +64,8 @@ export type TourStoreBeat =
   | "wi-open"
   /** `openItemId` became null again (back to the item list). */
   | "wi-closed"
-  /** `focusedReferenceN === 3`. */
-  | "reference-3"
+  /** `focusedReferenceN === 6` — the Act 3 anchor (migration 128). */
+  | "reference-6"
   /** The whole pane closed (`isOpen === false`). */
   | "pane-closed";
 
@@ -175,22 +186,22 @@ export const TOUR_STEPS: readonly TourStep[] = [
 
   // --- Act 3 — المراجع (5) ------------------------------------------------
   {
-    key: "citation-3",
+    key: "citation-6",
     act: ACT_REFS,
-    anchors: ["citation-3"],
+    anchors: ["citation-6"],
     stage: "workspace",
     title: "كل رقم في النص مرجع",
     body: "تفتح المرجع من الرقم نفسه داخل النص، أو من قائمة المراجع أسفل البطاقة.",
-    cta: "جرّب اضغط [3].",
+    cta: "جرّب اضغط [6].",
     // Two conditions on purpose. The store beat covers a citation click that
     // goes through `openWorkspaceItemAtReference`; the DOM beat covers the
     // in-body marker, which is wired to AgentSearchViewer's LOCAL state and
     // never touches the store — its only observable effect is this dialog.
     advanceWhen: [
-      { kind: "store", beat: "reference-3" },
+      { kind: "store", beat: "reference-6" },
       { kind: "dom", beat: "source-dialog-open" },
     ],
-    fallbackClick: "citation-3",
+    fallbackClick: "citation-6",
   },
   {
     key: "source-body",
@@ -217,12 +228,18 @@ export const TOUR_STEPS: readonly TourStep[] = [
     anchors: ["ref-exits"],
     stage: "workspace",
     title: "من أين تكمل القراءة",
-    body: "«فتح المصدر الرسمي» يأخذك لموقع الجهة المُصدِرة · «فتح النظام في ريحان» يفتح الوثيقة كاملة داخل مكتبتنا. كل مرجع موثّق بمصدره الرسمي.",
+    // The in-app button's label is derived from the document type
+    // (referenceDefiniteType in ReferencePanel: النظام / اللائحة / الدليل /
+    // الحكم …), so this line must NOT name one — the Act 3 anchor is a دليل and
+    // the old copy said «فتح النظام في ريحان», which the screen contradicted.
+    // The blanket «كل مرجع موثّق بمصدره الرسمي» is gone too: one case card in
+    // the fixture has no details_url, so it renders the library button alone.
+    body: "«فتح المصدر الرسمي» يأخذك لموقع الجهة المُصدِرة · وزر «فتح … في ريحان» يفتح الوثيقة كاملة داخل مكتبتنا — واسم الزر يتغيّر حسب نوع المرجع: نظام أو لائحة أو دليل أو حكم.",
   },
   {
     key: "ref-domains",
     act: ACT_REFS,
-    anchors: ["ref-card-10"],
+    anchors: ["ref-card-9"],
     stage: "workspace",
     title: "أربعة أنواع من المصادر",
     body: "نظام · قضية · تعميم · خدمة حكومية. كلها تُفتح داخل مكتبة ريحان، ما عدا الخدمات الحكومية — تبقى عند جهتها، ولهذا هذه البطاقة وحدها بلا زر المكتبة.",
