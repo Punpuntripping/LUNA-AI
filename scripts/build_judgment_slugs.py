@@ -20,6 +20,24 @@ Sibling of ``scripts/build_seo_slugs.py`` (regulation / service / circular) and
     never ALTERed and never written to. (Note it is the JUDGMENTS corpus — not
     ``lawyer_cases``, the private per-user table, which this script never touches.)
 
+TWO FLAGS, TWO QUESTIONS — ``--indexable``
+------------------------------------------
+Publishing (the default action) sets a slug and answers "can the wing SERVE this
+page". Since migration 130 there is a second, independent question — "may a
+CRAWLER have it" — held in ``seo_item_meta.indexable`` and driven by
+``--indexable``. Judgments are the only wing where the two differ, and they have
+to: all 10,000 published rulings must stay servable because the 12 court sections
+paginate over them, while only a PDPL-cleared subset belongs in the sitemap.
+
+    python scripts/build_judgment_slugs.py --indexable --limit 3000          # dry-run
+    python scripts/build_judgment_slugs.py --indexable --limit 3000 --apply
+
+``--indexable`` never writes a slug and never publishes anything: it selects from
+rows that are ALREADY published, minus those the PDPL view flags, and flips the
+boolean. It is convergent — the set is recomputed whole on every run and the
+difference written in both directions — so re-running at the same ``--limit`` is
+a no-op and re-running at a bigger one is a top-up. See :func:`cmd_index`.
+
 WHERE THE TITLES AND SLUGS COME FROM
 ------------------------------------
 ``cases`` has no title and no slug column, so both are DERIVED by
@@ -405,6 +423,48 @@ _FEED_ALLOCATION: dict[str, Any] = {
     _FEED_OTHER: 0,
 }
 
+# THE INDEXABLE ALLOCATION — the default for `--indexable` only (user decision
+# 2026-08-11). Publishing and indexing want different shapes, so they get
+# different constants rather than one compromise.
+#
+# WHY IT DIFFERS. Publishing feeds the 12 court sections, where a bucket's size
+# should track the corpus. Indexing feeds Google, where 3,000 near-identical
+# commercial rulings compete with each other for the same queries and the
+# marginal URL is worth much less than the first ruling from a court nobody else
+# has published. The default allocation above sends وزارة العدل `rest` = 77% of
+# a 3,000-row run, and the MOJ eligible pool is ~98% commercial, so المحكمة
+# التجارية lands at 68.8% — the sqrt court weighting cannot correct that, because
+# it only ever redistributes WITHIN a feed and MOJ's other courts hold ~246 clean
+# rows between them. The feed split is the only lever that moves this number.
+#
+# MEASURED at --limit 3000 over the PDPL-clean pool, so these are the real
+# trade-offs and not a projection:
+#
+#   allocation                     التجارية       citation mesh   dated
+#   default (0.10/0.10/0.03)      2,064  68.8%      82.5%         76.1%
+#   THIS (0.20/0.22/all)          1,361  45.4%      65.2%         52.6%   <- shipped
+#   all/all/all                     804  26.8%      53.7%         33.9%
+#
+# The flattest curve is NOT free: mesh is the share of selected rulings that cite
+# a regulation, i.e. the internal links this wing exists to send into
+# /regulations, and `dated` is the share carrying a real `datePublished` rather
+# than a churning "now". Draining the three small feeds outright also leaves a
+# later ramp nothing to add there. 0.20/0.22/all is the point where every one of
+# the 12 court sections has a real presence and two thirds of the mesh survives.
+#
+# ⚠ RE-RUN WITH THIS, NOT WITH THE PUBLISH DEFAULT. cmd_index is convergent: it
+# writes the difference in both directions, so re-running `--indexable` under the
+# publish allocation would not "top up" — it would de-index ~700 live URLs and
+# index ~700 others. That is why this is a constant and not a set of flags
+# someone has to remember.
+_INDEX_FEED_ALLOCATION: dict[str, Any] = {
+    FEED_INSURANCE: _ALLOC_ALL,
+    FEED_BOG: 0.22,
+    FEED_ZATCA: 0.20,
+    FEED_MOJ: _ALLOC_REST,
+    _FEED_OTHER: 0,
+}
+
 # ── usage bonus knobs ──────────────────────────────────────────────────────
 # §4.1 per-reference quality points, identical to scripts/build_usage_rank.py.
 _USAGE_POINTS: dict[tuple[bool, Any], float] = {
@@ -580,6 +640,66 @@ def _published(client) -> list[tuple[str, str]]:
             cid, slug = r.get("content_id"), r.get("slug")
             if cid and slug:
                 out.append((str(cid), slug))
+        if len(batch) < _READ_PAGE:
+            break
+        offset += _READ_PAGE
+    return out
+
+
+def _load_pdpl_risk_ids(client) -> set[str]:
+    """Content ids of judgments carrying a PDPL risk marker (migration 130).
+
+    Reads ``public.library_judgment_pdpl_risk``, which derives the two markers
+    from ``cases.content`` AT READ TIME — a corpus re-ingest therefore cannot
+    leave a stale "clean" verdict behind, which a materialised flag on the
+    sidecar could. Only ``at_risk`` rows are fetched, so this pages ~1.7k ids
+    rather than the 30,531-row view.
+
+    The view seq-scans the whole judgment corpus (~330 MB of text). That is
+    acceptable exactly once per selector run and nowhere else — never call this
+    from a request path.
+    """
+    out: set[str] = set()
+    offset = 0
+    while True:
+        res = (
+            client.table("library_judgment_pdpl_risk")
+            .select("content_id")
+            .eq("at_risk", True)
+            .order("content_id")
+            .range(offset, offset + _READ_PAGE - 1)
+            .execute()
+        )
+        batch = res.data or []
+        for r in batch:
+            cid = r.get("content_id")
+            if cid:
+                out.add(str(cid))
+        if len(batch) < _READ_PAGE:
+            break
+        offset += _READ_PAGE
+    return out
+
+
+def _indexable_ids(client) -> set[str]:
+    """Content ids of judgments currently flagged ``indexable`` in the sidecar."""
+    out: set[str] = set()
+    offset = 0
+    while True:
+        res = (
+            client.table("seo_item_meta")
+            .select("content_id")
+            .eq("content_type", CONTENT_TYPE)
+            .eq("indexable", True)
+            .order("content_id")
+            .range(offset, offset + _READ_PAGE - 1)
+            .execute()
+        )
+        batch = res.data or []
+        for r in batch:
+            cid = r.get("content_id")
+            if cid:
+                out.add(str(cid))
         if len(batch) < _READ_PAGE:
             break
         offset += _READ_PAGE
@@ -1049,7 +1169,10 @@ def _fill_feed(
 
 
 def select_sample(
-    client, limit: int, alloc: Optional[dict[str, Any]] = None
+    client,
+    limit: int,
+    alloc: Optional[dict[str, Any]] = None,
+    pool: Optional[set[str]] = None,
 ) -> tuple[list[dict], dict]:
     """Pick the ``limit`` judgments to publish. Deterministic and re-runnable.
 
@@ -1057,9 +1180,21 @@ def select_sample(
     stages here are: eligibility → score (citation mesh + capped usage bonus) →
     bucket by (feed, level, court) → allocate ``limit`` across feeds → fill each
     feed independently → cross-feed top-up.
+
+    ``pool`` restricts the candidate set to those corpus ids before ANY stage
+    runs — the hook :func:`cmd_index` uses to re-run this exact policy over the
+    already-published, PDPL-clean rows instead of the whole corpus. Restricting
+    here rather than filtering the result afterwards is what keeps the policy
+    meaningful: the sqrt court allotment and the domain ceiling both read bucket
+    SIZES, so they have to see the pool's shape, not the corpus's. Filtering
+    3,000 rows out of a 10,000-row selection afterwards would apply the diversity
+    policy to a population that is not the one being chosen from, and the result
+    would inherit the corpus's concentration rather than correct it.
     """
     alloc = dict(alloc or _FEED_ALLOCATION)
     candidates = _load_candidates(client)
+    if pool is not None:
+        candidates = [r for r in candidates if str(r.get("id")) in pool]
 
     # Stage 1 — eligibility. The four field gates already ran server-side; what
     # remains is rejecting rows whose derived subject is the naming fallback.
@@ -1187,6 +1322,7 @@ def select_sample(
         "refs_corpus": len(refs_ids),
         "selected": len(selected),
         "alloc": alloc,
+        "pool_size": len(pool) if pool is not None else None,
     }
     return selected, stats
 
@@ -1478,14 +1614,149 @@ def cmd_publish(
     print()
 
 
-def parse_feed_alloc(pairs: Optional[list[str]]) -> dict[str, Any]:
-    """Overlay ``FEED=SPEC`` CLI pairs onto ``_FEED_ALLOCATION``.
+def cmd_index(
+    client, limit: int, apply: bool, base: str, alloc: Optional[dict[str, Any]] = None
+) -> None:
+    """Choose which PUBLISHED judgments a crawler may have, and flip ``indexable``.
+
+    A DIFFERENT QUESTION FROM ``cmd_publish``, over a different population.
+    Publishing writes a slug and makes a ruling servable; all 10,000 published
+    rulings must stay that way, because the 12 court sections paginate over them.
+    This picks the subset that additionally goes into the sitemap and drops its
+    ``noindex`` — migration 130's ``seo_item_meta.indexable``.
+
+    Two gates, in this order:
+
+      1. PDPL (hard, non-negotiable). Any ruling whose text still carries an
+         identity marker is removed from the candidate pool BEFORE selection —
+         see :func:`_load_pdpl_risk_ids`. It stays published and servable behind
+         the signup gate; it simply never becomes a crawlable URL. This gate is
+         re-asserted immediately before the write, because a bug that let one of
+         these through would not be recoverable by editing the sitemap after the
+         fact.
+      2. DIVERSITY (the same policy as publishing). The surviving pool is handed
+         to :func:`select_sample` as its ``pool``, so the identical feed
+         allocation → level mix → sqrt court allotment → domain ceiling machinery
+         runs, just over the published-and-clean rows. Reusing it is the point:
+         two selectors with two notions of "diverse" would drift, and the wing
+         would end up indexing a differently-shaped set than it publishes.
+
+    CONVERGENT, NOT INCREMENTAL. Every run recomputes the whole set and writes
+    the difference in both directions, so re-running with the same ``--limit``
+    is a no-op and re-running with a bigger one is a top-up. The write closes the
+    wing before it opens the winners: the transient state is "fewer URLs than
+    intended", never "more", which is the only safe direction for a PDPL gate.
+
+    ``updated_at`` is deliberately NOT touched. It is the sitemap's ``lastmod``,
+    and this flip changes our willingness to list a ruling, not the ruling.
+    Bumping it would tell Google every indexed judgment changed on every run.
+    """
+    published = dict(_published(client))
+    risk = _load_pdpl_risk_ids(client)
+    risky_published = {cid for cid in published if cid in risk}
+    pool_ids = set(published) - risk
+
+    print(
+        f"\n--- indexable funnel ---\n"
+        f"  published (servable)      : {len(published)}\n"
+        f"  rejected: PDPL marker     : {len(risky_published)}"
+        f"  (identity phrase or national-ID-shaped number)\n"
+        f"  clean pool for selection  : {len(pool_ids)}"
+    )
+    if len(pool_ids) < limit:
+        print(
+            f"  NOTE: the clean pool holds only {len(pool_ids)} rows — this run "
+            f"cannot reach --limit {limit}."
+        )
+
+    rows, stats = select_sample(client, limit, alloc, pool=pool_ids)
+    winners = {str(r.get("id")) for r in rows}
+
+    # Gate 1, re-asserted. Cheap, and the failure it guards is unrecoverable.
+    leaked = winners & risk
+    if leaked:
+        raise SystemExit(
+            f"ABORT: {len(leaked)} PDPL-flagged judgment(s) reached the indexable "
+            f"selection — refusing to write. First: {sorted(leaked)[:3]}"
+        )
+
+    currently = _indexable_ids(client)
+    to_on = winners - currently
+    to_off = currently - winners
+
+    _print_breakdown(rows, stats)
+
+    print(
+        f"\n--- indexable set ---\n"
+        f"  selected this run         : {len(winners)} (--limit {limit})\n"
+        f"  already indexable         : {len(winners & currently)}\n"
+        f"    - to turn ON            : {len(to_on)}\n"
+        f"    - to turn OFF           : {len(to_off)}"
+    )
+
+    if not apply:
+        print(
+            f"\n  DRY-RUN: would flip {len(to_on)} on and {len(to_off)} off "
+            f"(pass --apply to write)."
+        )
+        print()
+        return
+
+    if not to_on and not to_off:
+        print("\n  nothing to write (the indexable set already matches).")
+        print()
+        return
+
+    # Close first, then open — see the docstring. One statement closes the wing;
+    # the winners are re-opened in _ID_CHUNK-sized `in_()` batches for URL-length
+    # safety (the same bound the corpus reads use).
+    client.table("seo_item_meta").update({"indexable": False}).eq(
+        "content_type", CONTENT_TYPE
+    ).eq("indexable", True).execute()
+
+    ordered = sorted(winners)
+    opened = 0
+    batches = (len(ordered) + _ID_CHUNK - 1) // _ID_CHUNK
+    for i in range(0, len(ordered), _ID_CHUNK):
+        chunk = ordered[i : i + _ID_CHUNK]
+        client.table("seo_item_meta").update({"indexable": True}).eq(
+            "content_type", CONTENT_TYPE
+        ).in_("content_id", chunk).execute()
+        opened += len(chunk)
+        print(f"    … batch {i // _ID_CHUNK + 1}/{batches}: {opened}/{len(ordered)}")
+
+    final = _indexable_ids(client)
+    print(f"\n  APPLIED: {len(final)} judgment(s) are now indexable.")
+    if final != winners:
+        print(
+            f"  WARNING: post-write set differs from the selection by "
+            f"{len(final ^ winners)} row(s) — investigate before purging ISR."
+        )
+    if base:
+        print(f"  URL shape                 : {base}/judgments/<slug>")
+    print(
+        "\n  ⚠ NEXT STEP — PURGE ISR. This script does not revalidate. POST\n"
+        "    /api/revalidate for /sitemaps/judgments and every judgment whose\n"
+        "    indexable state changed, or the pages keep serving the bake that\n"
+        "    still carries the old robots meta."
+    )
+    print()
+
+
+def parse_feed_alloc(
+    pairs: Optional[list[str]], base: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    """Overlay ``FEED=SPEC`` CLI pairs onto ``base`` (default ``_FEED_ALLOCATION``).
 
     SPEC is ``all``, ``rest``, a float in (0,1) read as a share of ``--limit``,
     or an integer read as an absolute row count. Raises ``ValueError`` with a
     usable message; the caller turns that into an argparse error.
+
+    ``base`` is ``_INDEX_FEED_ALLOCATION`` in ``--indexable`` mode, so the two
+    actions keep their own defaults and an explicit ``--feed-alloc`` still wins
+    over whichever one applies.
     """
-    alloc = dict(_FEED_ALLOCATION)
+    alloc = dict(base if base is not None else _FEED_ALLOCATION)
     for raw in pairs or []:
         key, sep, spec = raw.partition("=")
         if not sep:
@@ -1529,8 +1800,14 @@ def main() -> None:
         metavar="FEED=SPEC",
         help="override the per-feed allocation, repeatable. FEED is one of "
         f"{', '.join(sorted(_FEED_ALIASES))}; SPEC is 'all', 'rest', a share in "
-        "(0,1), or an absolute row count. Default: "
-        + ", ".join(f"{f}={_FEED_ALLOCATION[f]}" for f in _FEED_ORDER if f in _FEED_ALLOCATION),
+        "(0,1), or an absolute row count. Publish default: "
+        + ", ".join(f"{f}={_FEED_ALLOCATION[f]}" for f in _FEED_ORDER if f in _FEED_ALLOCATION)
+        + ". --indexable default: "
+        + ", ".join(
+            f"{f}={_INDEX_FEED_ALLOCATION[f]}"
+            for f in _FEED_ORDER
+            if f in _INDEX_FEED_ALLOCATION
+        ),
     )
     ap.add_argument(
         "--apply",
@@ -1554,14 +1831,28 @@ def main() -> None:
         action="store_true",
         help="clear ALL judgment slugs from the sidecar (requires --apply)",
     )
+    ap.add_argument(
+        "--indexable",
+        action="store_true",
+        help="do NOT publish; instead choose which ALREADY-PUBLISHED judgments a "
+        "crawler may have and flip seo_item_meta.indexable (migration 130). "
+        "Selects --limit rows from the PDPL-clean published pool using the same "
+        "feed/level/court/domain policy as publishing. Convergent: re-running "
+        "with the same --limit is a no-op.",
+    )
     args = ap.parse_args()
 
     if args.limit < 1:
         ap.error("--limit must be >= 1")
     if args.list_only and args.unpublish_all:
         ap.error("--list and --unpublish-all are mutually exclusive")
+    if args.indexable and args.unpublish_all:
+        ap.error("--indexable and --unpublish-all are mutually exclusive")
     try:
-        alloc = parse_feed_alloc(args.feed_alloc)
+        alloc = parse_feed_alloc(
+            args.feed_alloc,
+            _INDEX_FEED_ALLOCATION if args.indexable else _FEED_ALLOCATION,
+        )
     except ValueError as exc:
         ap.error(str(exc))
 
@@ -1587,8 +1878,15 @@ def main() -> None:
         return
 
     alloc_s = ", ".join(f"{f}={alloc[f]}" for f in _FEED_ORDER if f in alloc)
-    print(f"build_judgment_slugs — mode={mode}, limit={args.limit}\n  feed allocation: {alloc_s}")
-    cmd_publish(client, args.limit, args.apply, base, alloc)
+    action = "index" if args.indexable else "publish"
+    print(
+        f"build_judgment_slugs — mode={mode}, action={action}, limit={args.limit}"
+        f"\n  feed allocation: {alloc_s}"
+    )
+    if args.indexable:
+        cmd_index(client, args.limit, args.apply, base, alloc)
+    else:
+        cmd_publish(client, args.limit, args.apply, base, alloc)
     if not args.apply:
         print("(no rows written — re-run with --apply to persist)\n")
 

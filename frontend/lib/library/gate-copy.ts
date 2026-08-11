@@ -288,6 +288,46 @@ export const hubWallCopy = {
 } as const;
 
 // ------------------------------------------------------------------
+// The SECTION wall — a sector or court slice is a paid surface (2026-08-11)
+// ------------------------------------------------------------------
+
+/** Which pre-cut slice was refused — picks the wording and the way out. */
+export type SectionScope = "sector" | "court";
+
+/**
+ * The wall for a SECTION-scoped list: `/library/{sector}/{type}` and
+ * `/judgments/courts/{slug}`. Backend rule in `public_library.py`
+ * (`section_scope_allowed`) — paid only, at every page including page 1.
+ *
+ * ⚠ ANONYMOUS AND FREE GET THE SAME CARD, AND IT POINTS AT /pricing — NOT
+ * /login. This is the one place the depth wall's shape would lie: that wall
+ * shows anon «سجّل مجاناً» because a free account really does buy two more
+ * pages, and the framing rule above it («a wall is a promise made at the moment
+ * of signup — it has to survive contact with the quota the user meets ten
+ * minutes later») is exactly what a signup CTA would break here. A reader who
+ * signs up for this lands on the identical wall. So there is one card, it names
+ * the plan, and it never promises what a free account cannot deliver.
+ *
+ * NEVER A DEAD END (§1.2). Both variants name a surface the refused reader can
+ * still use: the sector overview — which stays ungated and carries a ≤3-item
+ * strip of each type — and the unfiltered wing, which every tier browses.
+ */
+export function sectionWallCopy(scope: SectionScope): RefusalCardCopy {
+  if (scope === "court") {
+    return {
+      title: "تصفّح الجهات القضائية — باقة مدفوعة",
+      body: "قائمة أحكام الجهة القضائية كاملةً متاحة في الباقات المدفوعة. يمكنك تصفّح الأحكام القضائية من قسمها العام.",
+      ...PRICING_CTA,
+    };
+  }
+  return {
+    title: "تصفّح القطاعات — باقة مدفوعة",
+    body: "قوائم القطاع كاملةً متاحة في الباقات المدفوعة. يمكنك استعراض أبرز مصادر القطاع من صفحة القطاع، أو تصفّح المكتبة من أقسامها.",
+    ...PRICING_CTA,
+  };
+}
+
+// ------------------------------------------------------------------
 // Settings → حدود الاستخدام (the third bar)
 // ------------------------------------------------------------------
 

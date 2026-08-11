@@ -2,7 +2,6 @@ import {
   fetchBlogUrls,
   fetchSectionUrls,
   getCalculatorUrls,
-  getCourtUrls,
   getSectorUrls,
   getStaticUrls,
   renderUrlset,
@@ -14,10 +13,10 @@ import {
 //
 //   static                   → hardcoded marketing + legal pages (no backend).
 //   calculators              → local code registry (no backend).
-//   courts                   → the 12 court section pages (no backend).
-//   sectors                  → built from the `/sectors` counts endpoint.
+//   sectors                  → the 38 sector OVERVIEW pages, from `/sectors`.
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
 //   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
+//   judgments                → backend feed, `indexable` rows only (3k of 10k).
 //   other                    → 404.
 //
 // Fail-safe rule: if the backend is unreachable we return an EMPTY but VALID
@@ -52,15 +51,14 @@ export async function GET(
       // Local registry — no backend, never throws.
       urls = getCalculatorUrls();
       break;
-    case "courts":
-      // The 12 court section pages (page 1 only) — compile-time vocabulary,
-      // no backend, never throws. Judgment documents stay out (PDPL gate).
-      urls = getCourtUrls();
-      break;
+    // `courts` was a case here until 2026-08-11. A court section is paid-only
+    // now, so its pages are `noindex` and there is nothing to list — the section
+    // is gone from `SITEMAP_SECTIONS` too, and falls through to the 404 below
+    // like any other unknown name. See that tuple's comment to restore it.
     case "sectors":
-      // `/library/{sector}` + every INDEXABLE `/library/{sector}/{type}`, built
-      // from the `/sectors` counts endpoint and filtered through the SAME
-      // `sectorTypeRobots()` the pages use. Soft-fails to [] like the feeds.
+      // The 38 sector OVERVIEW pages. The 109 `/library/{sector}/{type}` lists
+      // left with the paid-only gate (they are `noindex` — see `getSectorUrls`).
+      // Soft-fails to [] like the feeds.
       urls = await getSectorUrls();
       break;
     case "blog":
@@ -71,9 +69,15 @@ export async function GET(
     case "articles":
     case "circulars":
     case "forms":
+    case "judgments":
       // Same feed contract; fetchSectionUrls never throws. `articles` is the
       // ~50k per-مادة URL feed (backend joins seo_articles × regulation slugs);
       // `forms` lists approved+published rows only (empty until review).
+      // `judgments` lists ONLY the rows flagged `seo_item_meta.indexable` —
+      // 3,000 PDPL-cleared rulings of the 10,000 published, the same flag
+      // `app/judgments/[slug]` reads for its `robots` meta. Re-closing the wing
+      // is a data change (`UPDATE seo_item_meta SET indexable = false …`), which
+      // leaves this case serving a valid empty <urlset> rather than a 404.
       urls = await fetchSectionUrls(section);
       break;
     default:

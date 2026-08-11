@@ -18,6 +18,7 @@ import {
   courtPath,
 } from "@/lib/library/courts";
 import { formatCount } from "@/lib/library/sectors";
+import type { SectionScope } from "@/lib/library/gate-copy";
 import { toFilterQuery } from "@/lib/library/hub-query";
 import type { BreadcrumbItem } from "@/types/library";
 
@@ -109,6 +110,18 @@ export async function JudgmentsHubView({
   const anonMaxPage = data?.max_page ?? data?.max_anon_page ?? 1;
   const hasFilters = Boolean(filters.court_level || filters.domain);
 
+  // Which SECTION axis (if any) narrowed this list — the two the backend refuses
+  // below `paid` since 2026-08-11 (`section_scope_allowed`). Court wins the
+  // wording when both are present: it is the one that owns the URL path, so it
+  // is what the reader thinks they asked for. `court_level` is deliberately
+  // absent — it is a FILTER over the wing, not a pre-cut slice, and it is not
+  // gated. See `sectionWallCopy` and the block comment in `public_library.py`.
+  const sectionScope: SectionScope | undefined = court
+    ? "court"
+    : filters.domain || filters.sector_slug
+      ? "sector"
+      : undefined;
+
   const courts = courtNavItems(courtRows);
   const activeCount = courtRows.find((row) => row.slug === court)?.count ?? null;
 
@@ -185,6 +198,7 @@ export async function JudgmentsHubView({
               query={fetchQuery}
               linkQuery={linkQuery}
               sectorSlugs={sectorSlugs}
+              sectionScope={sectionScope}
             />
           ) : items.length === 0 ? (
             <p className="py-16 text-center text-sm text-muted-foreground">

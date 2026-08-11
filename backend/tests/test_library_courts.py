@@ -159,6 +159,18 @@ def _client(supabase: Any = None, user: Optional[_User] = None) -> TestClient:
     return TestClient(_app(fake, user), client=("8.8.8.8", 51000))
 
 
+def _paid_client() -> TestClient:
+    """A signed-in caller on a PAID plan — the only tier a court section serves.
+
+    ⚠ THE SECTION GATE (2026-08-11). A court is a SECTION, and a section-scoped
+    hub request is refused below ``paid`` at every page including page 1, so an
+    anonymous body can no longer witness anything about a SERVED court page. The
+    §2.3.3 count rules below are unchanged — only the tier that can observe them
+    moved. The gate itself is tested in §9.
+    """
+    return _client(_hub_fake(plan="pro", limit=100), _User())
+
+
 def _stub_item(n: int) -> dict[str, Any]:
     return {
         "slug": f"judgment-{n}",
@@ -314,8 +326,10 @@ def test_every_slug_is_accepted_by_the_hub(stubs) -> None:
 def test_the_slug_reaches_the_service_as_RAW_COURT_VARIANTS(stubs) -> None:
     """The corpus column stores the raw court strings; the slug is a URL
     affordance only. Passing the slug through to ``in.()`` would match zero rows
-    on every court page at once — the failure mode that hit the sector axis."""
-    _client().get(JUD_HUB, params={"court": MULTI_VARIANT})
+    on every court page at once — the failure mode that hit the sector axis.
+
+    PAID — a gated request never reaches a lister at all (see ``_paid_client``)."""
+    _paid_client().get(JUD_HUB, params={"court": MULTI_VARIANT})
     assert stubs["listers"][-1]["court_variants"] == COURT_VARIANTS[MULTI_VARIANT]
 
 
@@ -339,12 +353,19 @@ def test_an_anon_court_wall_reports_the_REAL_page_count(stubs) -> None:
     assert body["total_pages"] == COURT_PAGES[COMMERCIAL]
 
 
-def test_an_anon_caller_can_page_past_two_on_a_court_route(stubs) -> None:
-    """THE INVARIANT, stated as bluntly as it deserves: the paginator an
-    anonymous reader is handed must reach past page 2. Both the served body and
-    the wall body carry a real total — clamping only one of them was never a fix,
-    because page 1 leaks the same number at the same granularity."""
-    served = _client().get(JUD_HUB, params={"page": 1, "court": COMMERCIAL}).json()
+def test_a_court_route_never_reports_a_two_page_corpus(stubs) -> None:
+    """THE INVARIANT, stated as bluntly as it deserves: the paginator a reader is
+    handed on a court route must reach past page 2. Under the FILTERED rule both
+    bodies would have read «1 2» over 6,142 judgments.
+
+    The two bodies are taken at the tier that can still see each: since the
+    section gate the anonymous one is always the WALL (its count is the memo's,
+    and anon gets it because 12 fixed numbers steer with nothing), while a SERVED
+    body needs paid. Clamping only one of them was never a fix — a served page 1
+    leaks the same number at the same granularity — so both are still asserted."""
+    served = _paid_client().get(
+        JUD_HUB, params={"page": 1, "court": COMMERCIAL}
+    ).json()
     wall = _client().get(JUD_HUB, params={"page": 2, "court": COMMERCIAL}).json()
 
     assert served["total_pages"] > pl._ANON_WALL_TOTAL_PAGES
@@ -354,7 +375,10 @@ def test_an_anon_caller_can_page_past_two_on_a_court_route(stubs) -> None:
 
 
 def test_a_SERVED_court_page_reports_the_listers_real_total(stubs) -> None:
-    body = _client().get(JUD_HUB, params={"page": 1, "court": COMMERCIAL}).json()
+    """PAID — a court section serves no one below it (see ``_paid_client``)."""
+    body = _paid_client().get(
+        JUD_HUB, params={"page": 1, "court": COMMERCIAL}
+    ).json()
     assert body["cap_reached"] is False
     assert body["total_pages"] == TRUE_TOTAL_PAGES
 
@@ -919,3 +943,77 @@ def test_the_wing_totals_count_the_ranked_views() -> None:
     assert counts["judgments"] == 4
     assert "cases" not in fake.reads
     assert "regulations_v2" not in fake.reads
+
+
+# ===========================================================================
+# 9. THE SECTION GATE — a court section is a PAID surface (2026-08-11)
+#
+# A court is the wing's SECOND section axis, and it multiplies the depth cap the
+# same way the sector axis does: a free reader's 3 pages become 3 pages per
+# court, twelve times over. So it is refused below `paid` at every page.
+#
+# ⚠ THESE CLIENTS ARE ANONYMOUS/FREE ON PURPOSE — do NOT "fix" a failure here by
+# moving them to `_paid_client()`. Every assertion is about a caller who must not
+# be served.
+# ===========================================================================
+
+
+def test_an_anon_caller_is_refused_a_court_page_ONE(stubs) -> None:
+    """Page 1, not page 2. The depth cap already refused page 2; the gate is
+    about the first page of a slice."""
+    body = _client().get(JUD_HUB, params={"page": 1, "court": COMMERCIAL}).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+def test_a_free_account_is_refused_a_court_page_ONE(stubs) -> None:
+    body = _client(_hub_fake(plan="free", limit=10), _User()).get(
+        JUD_HUB, params={"page": 1, "court": COMMERCIAL}
+    ).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+def test_a_paid_caller_is_still_served_a_court_page(stubs) -> None:
+    """The gate is a tier boundary, not a shutdown — the 12 sections still have
+    a reader."""
+    body = _paid_client().get(
+        JUD_HUB, params={"page": 1, "court": COMMERCIAL}
+    ).json()
+
+    assert body["cap_reached"] is False
+    assert len(body["items"]) == 9
+
+
+def test_the_UNFILTERED_judgments_wing_is_untouched_by_the_court_gate(stubs) -> None:
+    """The blast radius is the court axis. `/judgments` itself still serves an
+    anonymous reader page 1."""
+    body = _client().get(JUD_HUB, params={"page": 1}).json()
+
+    assert body["cap_reached"] is False
+    assert len(body["items"]) == 9
+
+
+def test_a_verified_crawler_does_NOT_get_past_the_court_gate(stubs) -> None:
+    """§3.7 waives DEPTH for a verified crawler because the body matches what a
+    human reaches one tier up. No signed-out human reaches a court slice now, so
+    the waiver must not carry — and the pages are `noindex` in the frontend for
+    the same reason (`app/judgments/courts/[court]/page.tsx`)."""
+    body = _client().get(
+        JUD_HUB,
+        params={"page": 1, "court": COMMERCIAL},
+        headers={"user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"},
+    ).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+def test_a_gated_court_request_never_reaches_the_lister(stubs) -> None:
+    """Refused before any DB work — a refusal that still ran the query would make
+    the 12 sections a free load generator."""
+    _client().get(JUD_HUB, params={"page": 1, "court": COMMERCIAL})
+
+    assert stubs["listers"] == []

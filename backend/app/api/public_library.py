@@ -110,6 +110,7 @@ _SITEMAP_CACHE_CONTROL = "public, max-age=3600"
 _LIBRARY_SITEMAP_SECTIONS = {
     "regulations": ("regulation", "regulations"),
     "circulars": ("circular", "circulars"),
+    "judgments": ("judgment", "judgments"),
 }
 # ``compliance`` was a third entry until 2026-08-03. The whole wing was retired —
 # there are no /compliance/{slug} pages left to list, so feeding a crawler that
@@ -119,17 +120,31 @@ _LIBRARY_SITEMAP_SECTIONS = {
 # reg-slug/article-slug path — both handled by their own service functions in the
 # sitemap route below.
 #
-# TODO(pdpl): ``judgments`` is DELIBERATELY ABSENT until the PDPL anonymization
-# audit passes (plan § Phase 5 — "sitemap waves: judgments (passed-audit only)").
-# Judgment pages are SERVED (the /judgments routes below), but nothing must hand a
-# crawler an enumerable list of them: this map is the only thing that makes
-# ``GET /public/library/sitemap/judgments`` answer, and it would answer to ANY
-# anonymous caller — a one-request dump of every published judgment URL, which is
-# exactly what the audit is meant to gate. After the audit, enabling the section
-# is this one line here:
-#     "judgments": ("judgment", "judgments"),
-# plus adding "judgments" to the frontend's SITEMAP_SECTIONS + the
-# ``app/sitemaps/[section]/route.ts`` switch (the frontend is what Google reads).
+# ``judgments`` WAS held out of this map behind a TODO(pdpl) until 2026-08-11.
+# The gate it enforced is now enforced better, one level down. Read this before
+# touching the section:
+#
+#   * The feed no longer lists "every published judgment". It lists every
+#     judgment flagged ``seo_item_meta.indexable`` (migration 130) — 3,000 of the
+#     10,000 published, chosen by ``scripts/build_judgment_slugs.py --indexable``
+#     from a pool that EXCLUDES every ruling whose text still carries an identity
+#     marker (``library_judgment_pdpl_risk``). The other 7,000 stay servable and
+#     stay ``noindex``; they are simply not enumerable here.
+#   * The old comment's real worry — "this map is the only thing that makes the
+#     endpoint answer, and it answers to ANY anonymous caller" — still holds, and
+#     is still the reason the set is curated rather than complete. An anonymous
+#     one-request dump of 3,000 vetted URLs is the SAME set Google is being asked
+#     to crawl, so it discloses nothing the sitemap does not already publish.
+#   * The document pages' ``robots`` meta is driven by the SAME flag, via
+#     ``indexable`` on the judgment doc payload. That pairing is not optional: a
+#     sitemap listing a URL the page marks ``noindex`` is the "Submitted URL
+#     marked noindex" self-contradiction, and the two rules must never be
+#     restated independently. Frontend side: "judgments" in ``SITEMAP_SECTIONS``
+#     + the ``app/sitemaps/[section]/route.ts`` switch + ``app/judgments/[slug]``.
+#
+# To re-close the wing entirely, flip the data, not this map:
+#     UPDATE seo_item_meta SET indexable = false WHERE content_type = 'judgment';
+# then purge ISR. The section then serves a valid, empty <urlset>.
 
 # Content endpoints (hubs + doc/service pages) share the same anon hour-cache.
 _LIBRARY_CACHE_CONTROL = "public, max-age=3600"
@@ -386,6 +401,57 @@ def is_verified_crawler(request: Request) -> bool:
     return any(token in ua for token in _VERIFIED_CRAWLER_UA_TOKENS)
 
 
+# ============================================
+# THE SECTION GATE — a sector/court slice is a PAID surface
+# (2026-08-11, user request)
+#
+# ⚠ THE SECTION AXIS MULTIPLIES THE DEPTH CAP, WHICH IS WHY DEPTH ALONE DID NOT
+# HOLD. A free reader gets 3 pages = 27 items of ``/regulations``. Add the
+# section axis and that becomes 27 items PER SECTION: 38 sectors × 4 wings = 152
+# slices ≈ 4,100 items, and the 12 court sections another ~324 — all reachable by
+# walking links, no filter-crafting required. The depth cap counts PAGES within
+# one URL and cannot see that; the sector wing hands out a fresh page-1 budget
+# for every slice. So a request narrowed to a SECTION is refused outright below
+# ``paid``, at page 1, rather than merely capped.
+#
+# THE SAME PREDICATE THE REST OF THE FILE ALREADY OWNS. ``sector``/``court`` were
+# deliberately kept OUT of every ``filtered`` flag (§5 / §2.3.3) because a
+# validated section yields FIXED counts and must report real totals — that
+# reasoning is untouched and must stay untouched. This gate is a separate
+# question asked of the same resolved values: not "does this narrowing move with
+# attacker input" (it does not) but "who may READ a pre-cut slice" (paid only).
+# Do not merge the two flags.
+#
+# ⚠ IT MUST BIND ON THE RESOLVED SECTOR *NAME*, NOT THE SLUG. ``_sector_section``
+# accepts both spellings, and in the drift case a real sector can resolve to a
+# name with no Latin slug (``_sector_is_unslugged``). Keying the gate on the slug
+# would let ``?domain=<الاسم العربي>`` walk straight past it — the spelling
+# arbitrage §5's T4 exists to close, reopened on a different question.
+#
+# ⚠ NO CRAWLER EXEMPTION HERE, unlike the depth cap. §3.7 waives depth on the
+# argument that the body is byte-identical to what a human reaches one tier up —
+# true for depth, FALSE for this: no anonymous human ever sees a section slice
+# now, so serving one to Googlebot would be cloaking, not crawl reach. The
+# frontend answer is the other half: every ``/library/{sector}/{type}`` and
+# ``/judgments/courts/{slug}`` page is ``noindex, follow`` and off the sitemap
+# (``lib/library/sectors.ts`` · ``lib/seo/sitemap.ts``). One decision, both
+# layers — flip them together or not at all.
+# ============================================
+
+# The one tier a section-scoped hub request will serve. A set rather than a
+# comparison so a future «free gets sectors back» is a data edit, not a rewrite.
+_SECTION_SCOPE_TIERS: frozenset[str] = frozenset({"paid"})
+
+
+def section_scope_allowed(tier: str) -> bool:
+    """Whether ``tier`` may read a SECTION-scoped hub slice (sector or court).
+
+    Pure, no DB, no request. An unknown tier string is refused — fail-closed,
+    the same convention ``hub_page_allowed`` uses for a bad tier.
+    """
+    return tier in _SECTION_SCOPE_TIERS
+
+
 def _hub_page_visible(
     request: Request,
     response: Response,
@@ -394,13 +460,20 @@ def _hub_page_visible(
     tier: str,
     current_user: Optional[AuthUser],
     search_dropped: bool = False,
+    section_scoped: bool = False,
 ) -> bool:
-    """Depth-cap decision + the ``Cache-Control`` header, in one call.
+    """Depth-cap + section-gate decision, and the ``Cache-Control`` header, in one
+    call.
 
     Returns True when the hub may serve real items. Sets the cache header on the
-    way through, because the two decisions are coupled: a crawler served past the
+    way through, because the decisions are coupled: a crawler served past the
     cap must not leave a shareable body behind (see ``_apply_hub_cache_headers``).
     Call this on EVERY hub handler before touching the DB.
+
+    ``section_scoped`` says this request is narrowed to a validated SECTION — a
+    sector (either spelling) or a court. Below ``paid`` that is refused at every
+    page including page 1, and the verified-crawler exemption does NOT apply. See
+    the block comment above for why depth and section are two different bounds.
     """
     allowed = library_service.hub_page_allowed(page, tier)
     bypass = False
@@ -411,6 +484,14 @@ def _hub_page_visible(
             "Hub depth cap waived for a verified crawler (page=%s ua=%r)",
             page, (request.headers.get("user-agent") or "")[:120],
         )
+    if section_scoped and not section_scope_allowed(tier):
+        # LAST, and it overrides the waiver above: a crawler that walked in past
+        # the depth cap must not ride that waiver into a section slice. Clearing
+        # `bypass` with it keeps the cache header honest — the body is now the
+        # ordinary anonymous wall, identical for every caller at this tier, so it
+        # is shareable again and there is nothing private to protect.
+        allowed = False
+        bypass = False
     _apply_hub_cache_headers(
         response, current_user, crawler_bypass=bypass, search_dropped=search_dropped
     )
@@ -1552,6 +1633,13 @@ class JudgmentDocResponse(BaseModel):
     cited_total: int = 0
     official_sources: list[OfficialSource] = Field(default_factory=list)
     gate_effective: str  # 'open' | 'gated'
+    # May a crawler have this ruling — `seo_item_meta.indexable` (migration 130).
+    # The page renders its `robots` meta from this, and the judgments sitemap
+    # section lists exactly the rows carrying it, so the two can never disagree.
+    # NOT a gate: an indexable judgment is still gate-truncated for Googlebot
+    # exactly as it is for an anonymous human. Defaults FALSE so a payload built
+    # before this field existed reads as noindex rather than as indexable.
+    indexable: bool = False
     hidden_section_count: int = 0
     withheld_chars: int = 0
     withheld_pct: float = 0.0
@@ -2203,6 +2291,9 @@ async def list_regulations(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
+        # `sector`, not `sector_key` — the RESOLVED NAME is the axis; an
+        # unslugged sector must not walk past the gate. See the block comment.
+        section_scoped=bool(sector),
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -2337,6 +2428,8 @@ async def list_compliance(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
+        # The resolved NAME, not the slug — see the section-gate block comment.
+        section_scoped=bool(sector),
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -2428,6 +2521,8 @@ async def list_circulars(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
+        # The resolved NAME, not the slug — see the section-gate block comment.
+        section_scoped=bool(sector),
     ):
         total_pages = await _wall_total_pages(
             tier,
@@ -2573,6 +2668,10 @@ async def list_judgments(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
+        # BOTH section axes. `domain` is the resolved sector NAME (this wing's
+        # spelling of it) and `court_variants` the court bucket — either one
+        # alone makes this a pre-cut slice. See the section-gate block comment.
+        section_scoped=bool(domain or court_variants),
     ):
         total_pages = await _wall_total_pages(
             tier,

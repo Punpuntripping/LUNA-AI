@@ -10,7 +10,9 @@ import { useAuthStore } from "@/stores/auth-store";
 import {
   hubWallCopy,
   rateLimitedCopy,
+  sectionWallCopy,
   type RefusalCardCopy,
+  type SectionScope,
 } from "@/lib/library/gate-copy";
 import { HubPagination } from "@/components/library/hub/HubPagination";
 import {
@@ -68,6 +70,16 @@ interface HubCtaWallProps {
   linkQuery?: string;
   /** `name_ar → slug` for the sector pills on the revealed cards (D11). */
   sectorSlugs?: Record<string, string>;
+  /**
+   * Set when this list is narrowed to a SECTION (a sector or a court) rather
+   * than being a page of the unfiltered wing. Swaps BOTH refusal cards for the
+   * section wall: the bound being reported is no longer depth, so neither
+   * «سجّل مجاناً» nor «باقتك الحالية تتيح ٣ صفحات» describes what happened.
+   *
+   * It changes copy ONLY. The authed fetch below still runs and still decides —
+   * a paid reader gets the real cards on exactly this path.
+   */
+  sectionScope?: SectionScope;
 }
 
 type Phase = "loading" | "ready" | "capped" | "error" | "rate_limited";
@@ -97,6 +109,12 @@ type Phase = "loading" | "ready" | "capped" | "error" | "rate_limited";
  *                        (free reaches page 3; paid is unbounded)
  *   signed-in, past it → the UPGRADE wall, sized by the caller's own `max_page`
  *
+ * …and orthogonally to all three, `sectionScope` (2026-08-11): on a sector or
+ * court list the backend refuses every page below `paid`, so BOTH walls become
+ * the section wall and only a paid reader ever reaches the cards branch. The
+ * mechanism is unchanged — same fetch, same phases, different copy — because the
+ * refusal arrives in the same `cap_reached` envelope.
+ *
  * The route's `generateMetadata` keeps deciding `noindex` off the ANON
  * `cap_reached`, which is correct and unchanged: what Googlebot sees is the wall,
  * and a signup/upgrade wall carries no SEO value. Same response for Googlebot and
@@ -111,6 +129,7 @@ export function HubCtaWall({
   query,
   linkQuery,
   sectorSlugs,
+  sectionScope,
 }: HubCtaWallProps) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const [phase, setPhase] = useState<Phase>("loading");
@@ -150,8 +169,14 @@ export function HubCtaWall({
   }, [isAuthenticated, section, page, query, anonMaxPage]);
 
   // ── Anonymous: the signup wall (also the SSR + Googlebot render). ──────────
+  // On a SECTION list it is the section wall instead — a free account buys
+  // nothing here, so «سجّل مجاناً» would be a promise the next screen breaks.
   if (!isAuthenticated) {
-    return <Wall copy={hubWallCopy.anon} />;
+    return (
+      <Wall
+        copy={sectionScope ? sectionWallCopy(sectionScope) : hubWallCopy.anon}
+      />
+    );
   }
 
   if (phase === "loading") {
@@ -183,8 +208,19 @@ export function HubCtaWall({
     );
   }
 
+  // Signed in and still refused. On a section list that is the section gate, not
+  // the depth cap — quoting a page allowance would name the wrong bound (a free
+  // reader's 3 pages are real, they just do not apply to a pre-cut slice).
   if (phase === "capped" || !data) {
-    return <Wall copy={hubWallCopy.upgrade(callerMaxPage)} />;
+    return (
+      <Wall
+        copy={
+          sectionScope
+            ? sectionWallCopy(sectionScope)
+            : hubWallCopy.upgrade(callerMaxPage)
+        }
+      />
+    );
   }
 
   return (

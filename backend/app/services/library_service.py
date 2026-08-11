@@ -335,12 +335,24 @@ def sitemap_library_urls(
 ) -> tuple[list[dict[str, Any]], int]:
     """Sitemap feed for a library wing, driven by the ``seo_item_meta`` sidecar.
 
-    Emits one URL per sidecar row of ``content_type`` that has a slug —
-    i.e. exactly the pages the wing can actually serve. ``loc`` =
-    ``{base}/{path_prefix}/{percent-encoded slug}`` (Arabic slugs are
-    percent-encoded for maximally-compatible ``<loc>`` values), ``lastmod`` =
-    the sidecar ``updated_at``. Same ``(urls, total_pages)`` contract as
-    ``sitemap_blog_urls``. Read-only, no side effects.
+    Emits one URL per sidecar row of ``content_type`` that has a slug AND is
+    flagged ``indexable``. ``loc`` = ``{base}/{path_prefix}/{percent-encoded
+    slug}`` (Arabic slugs are percent-encoded for maximally-compatible ``<loc>``
+    values), ``lastmod`` = the sidecar ``updated_at``. Same ``(urls,
+    total_pages)`` contract as ``sitemap_blog_urls``. Read-only, no side effects.
+
+    ⚠ TWO PREDICATES, TWO QUESTIONS (migration 130). ``slug IS NOT NULL`` means
+    the wing can SERVE the page; ``indexable`` means a crawler may HAVE it. They
+    were the same thing until judgments needed to differ — all 10,000 published
+    rulings stay servable because the court sections paginate over them, while
+    only the PDPL-cleared 3,000 belong in a sitemap.
+
+    The ``indexable`` filter is applied to EVERY wing, not special-cased to
+    judgments. It is a no-op for the others (migration 130 defaults the column
+    true and only judgments were flipped), and applying it universally means the
+    next wing that wants a curated index is a data change rather than a code
+    change — and, more to the point, that nobody has to remember to add the
+    filter when it becomes load-bearing somewhere new.
     """
     page = max(1, int(page or 1))
     page_size = max(1, int(page_size or SITEMAP_PAGE_SIZE))
@@ -352,6 +364,7 @@ def sitemap_library_urls(
             .select("slug, updated_at", count="exact")
             .eq("content_type", content_type)
             .not_.is_("slug", "null")
+            .eq("indexable", True)
             .order("updated_at", desc=True)
             .order("content_id", desc=False)
             .range(offset, offset + page_size - 1)
@@ -4813,7 +4826,7 @@ def _judgment_row_for_slug(
     try:
         meta = (
             supabase.table("seo_item_meta")
-            .select("content_id")
+            .select("content_id, indexable")
             .eq("content_type", "judgment")
             .eq("slug", slug)
             .limit(1)
@@ -4842,7 +4855,17 @@ def _judgment_row_for_slug(
             detail="حدث خطأ أثناء جلب الحكم",
         )
 
-    return case_rows[0] if case_rows else None
+    if not case_rows:
+        return None
+
+    # Carry the sidecar's `indexable` (migration 130) onto the corpus row under a
+    # private key. The alternative — a second `get_item_meta` round-trip inside
+    # `get_judgment_doc` — would ask the same table the same question twice on
+    # every ISR render of every judgment page. `cases` has no such column, so the
+    # underscore prefix cannot collide with a corpus field.
+    row = dict(case_rows[0])
+    row["_indexable"] = bool(meta_rows[0].get("indexable"))
+    return row
 
 
 def get_judgment_doc(
@@ -4973,6 +4996,17 @@ def get_judgment_doc(
         "cited_total": cited_total,
         "official_sources": official_sources,
         "gate_effective": gate_effective,
+        # May a crawler have this ruling — `seo_item_meta.indexable` (migration
+        # 130), NOT a gate decision. The page turns this into its `robots` meta,
+        # and the SAME flag decides whether the sitemap lists the URL. Publishing
+        # it here rather than re-deriving it in the frontend is what keeps those
+        # two answers from drifting into "Submitted URL marked noindex".
+        #
+        # ⚠ ORTHOGONAL TO `gate_effective`. An indexable ruling is still gated:
+        # Googlebot gets exactly the truncated body an anonymous human gets,
+        # which is the whole point of the paywall JSON-LD. Do not collapse these
+        # two fields into one — "crawlable" and "free" are different questions.
+        "indexable": bool(row.get("_indexable")),
         "hidden_section_count": hidden_section_count,
         # The honest exposure numbers. `hidden_section_count` counts sections and
         # goes to 0 on a short document that is giving everything away — which is

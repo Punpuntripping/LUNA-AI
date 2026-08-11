@@ -35,18 +35,33 @@ import type {
 
 const SITE_URL = "https://rayhanai.com";
 
-// ⚠ NOINDEX — PDPL GATE. Every /judgments URL is `noindex, nofollow` until the
-// PDPL anonymization audit passes: judgment text may still contain
-// party-identifying details, and once Google has crawled a page we cannot
-// un-publish it. Everything else on this page ships as production UI.
-// TO FLIP AFTER THE AUDIT PASSES:
-//   1. delete the `robots` key from `generateMetadata` here and in both hub
-//      files (`app/judgments/page.tsx`, `app/judgments/page/[n]/page.tsx`);
-//   2. add "judgments" to SITEMAP_SECTIONS in `lib/seo/sitemap.ts` + a case in
-//      the `app/sitemaps/[section]` route.
-// The Article JSON-LD + paywall fragment below are already correct and need no
-// change — they simply have no audience while the gate holds.
+// ⚠ PDPL GATE — NOW PER-RULING, NOT PER-WING (2026-08-11).
+//
+// This page used to be unconditionally `noindex, nofollow`, because judgment
+// text may still name a party and a crawl cannot be taken back. That gate is
+// still here; it just moved from "every judgment" to "every judgment that has
+// not been cleared", carried by `doc.indexable` (`seo_item_meta.indexable`,
+// migration 130). 3,000 of the 10,000 published rulings are cleared: chosen by
+// `scripts/build_judgment_slugs.py --indexable` from a pool that EXCLUDES every
+// ruling whose text still carries an identity marker.
+//
+// ⚠ THE SITEMAP READS THE SAME FLAG. `/sitemaps/judgments` lists exactly the
+// rows where `indexable` is true, and this file marks exactly those rows
+// indexable. Do not re-derive either side from anything else — a sitemap that
+// lists a URL its page marks `noindex` is the "Submitted URL marked noindex"
+// error in Search Console, and that is what happens the moment these two rules
+// stop being the same rule.
+//
+// UNKNOWN → NOINDEX. A missing doc (404 metadata) and a payload from a backend
+// too old to send the field both fall here, and both must read as "not
+// cleared". The gate fails closed or it is not a gate.
 const NOINDEX_PDPL = { index: false, follow: false } as const;
+
+// `follow: true` on a cleared ruling — its citation list is the internal-linking
+// mesh into /regulations, and that is the reason this wing exists for SEO.
+// `nofollow` would index the page while discarding the links that make it worth
+// indexing.
+const INDEXABLE = { index: true, follow: true } as const;
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -91,7 +106,7 @@ export async function generateMetadata({
     title,
     description,
     alternates: { canonical },
-    robots: NOINDEX_PDPL,
+    robots: doc.indexable ? INDEXABLE : NOINDEX_PDPL,
     openGraph: {
       title,
       description,

@@ -31,14 +31,23 @@ import {
 // it once for the backend query param, and `encodeURIComponent` produces the
 // canonical URL. Encoding an already-encoded param yields `%25D8…`, which 404s.
 //
-// ⚠ INDEXABLE — THE ONE CARVE-OUT FROM THE WING'S PDPL GATE. Page 1 of a court
-// section lists derived titles only, never judgment text, so it carries no
-// robots directive (default index, follow) and the 12 URLs are listed in the
-// sitemap's `courts` section (`lib/seo/sitemap.ts`). Everything it links to —
-// the judgment documents, deep pagination — keeps `noindex, nofollow` until the
-// anonymization audit passes; see the flip checklist at the top of
-// `app/judgments/page.tsx`. The unknown-slug fallback below stays noindex: that
-// render 404s and has no business in an index.
+// ⚠ THE INDEXABLE CARVE-OUT IS WITHDRAWN (2026-08-11) — THIS PAGE IS NOINDEX
+// AGAIN, LIKE THE REST OF THE WING. It was the one exception to the PDPL gate:
+// page 1 of a court section lists derived titles only, never judgment text, so
+// it carried no robots directive and its 12 URLs were listed in the sitemap's
+// `courts` section. Then a court became a paid-only SECTION
+// (`section_scope_allowed` in `backend/app/api/public_library.py`), which means
+// the body an anonymous visitor gets here is the section wall — and since
+// Googlebot is anonymous, that is what a crawler would index. A walled page is
+// worth no index slot, and serving a crawler the cards no signed-out human can
+// reach would be cloaking. So the directive is back and the sitemap section is
+// gone (`lib/seo/sitemap.ts`).
+//
+// TO RESTORE: un-gate the court axis, drop the `robots` keys below, and re-add
+// "courts" to SITEMAP_SECTIONS + its route case, in ONE commit. Everything this
+// page links to — the judgment documents, deep pagination — stays `noindex,
+// nofollow` regardless until the anonymization audit passes; see the flip
+// checklist at the top of `app/judgments/page.tsx`.
 const NOINDEX_PDPL = { index: false, follow: false } as const;
 
 const WING_TITLE = "الأحكام القضائية السعودية";
@@ -85,9 +94,10 @@ export async function generateMetadata({
     title,
     description,
     // Canonical stays the bare section: the درجة المحكمة chips slice the SAME
-    // collection, they are never separate documents. No `robots` key — page 1
-    // of a court section is the wing's indexable carve-out (see header note).
+    // collection, they are never separate documents. `robots` is back on since
+    // the section went paid-only — see the header note.
     alternates: { canonical },
+    robots: NOINDEX_PDPL,
     openGraph: {
       title,
       description,

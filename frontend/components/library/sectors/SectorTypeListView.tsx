@@ -31,33 +31,43 @@ import type { BreadcrumbItem } from "@/types/library";
  * template exactly: CTA wall on the anon depth cap, empty state on a null
  * payload, else the 3×3 grid + pagination.
  *
- * A SECTOR IS A SECTION, NOT A FILTER (D8/§5). That is a backend decision, but
- * it is what makes this page honest: an anonymous reader sees 9 items, a CTA
- * wall, and the TRUE total page count — not the two-page stub every other
- * filtered view gets.
+ * A SECTOR IS A SECTION, NOT A FILTER (D8/§5). That is a backend decision about
+ * COUNTS and it still holds: the numbers on this page are the real ones, not the
+ * two-page stub every filtered view gets.
  *
- * `verifiedBot` is the §3.7 crawler exemption, passed in by the DEEP-page route
- * ONLY. Page 1 never sets it and must never start: it is a statically
- * prerendered segment, and reading the request headers the flag is derived from
- * is exactly what would make it dynamic.
+ * ⚠ SINCE 2026-08-11 THIS WHOLE LIST IS PAID-ONLY. The section axis handed every
+ * tier a fresh page-1 budget per slice — 152 of them — which is the bound the
+ * depth cap cannot see, so `public_library.py` now refuses a section-scoped hub
+ * request below `paid` at EVERY page. Concretely: `cap_reached` is true on the
+ * anonymous (and therefore ISR-baked) render, so the branch below is always the
+ * wall, and only the client-side authed fetch inside `HubCtaWall` can produce
+ * cards. `sectionScope="sector"` is what makes that wall say so. The sector
+ * OVERVIEW (`/library/{sector}`) is deliberately NOT gated and keeps its ≤3-item
+ * strips — it is the way out this page's wall points at.
+ *
+ * ⚠ THERE IS NO `verifiedBot` PROP ANY MORE, AND ADDING ONE BACK WOULD BE A BUG.
+ * This view used to take the §3.7 crawler exemption from the deep-page route and
+ * forward it on the hub fetch. The gate does not honour that waiver — see
+ * `_hub_page_visible` — so the flag could not change the answer, while reading
+ * the request headers it derives from would cost BOTH segments their static
+ * render. Page 1 in particular must stay statically prerendered: it is the whole
+ * anon-serving path, and its baked HTML is what Googlebot gets.
  */
 export async function SectorTypeListView({
   slug,
   type,
   page,
-  verifiedBot,
 }: {
   slug: string;
   type: LibraryType;
   page: number;
-  verifiedBot?: boolean;
 }) {
   // Reserved segments never reach the backend (T2).
   if (isReservedSectorSlug(slug)) notFound();
 
   const [detail, data, sectors, sectorSlugs] = await Promise.all([
     getSectorDetail(slug),
-    getSectorTypeHub(type, slug, page, { verifiedBot }),
+    getSectorTypeHub(type, slug, page),
     getSectors(),
     getSectorSlugMap(),
   ]);
@@ -137,6 +147,7 @@ export async function SectorTypeListView({
               query={fetchQuery}
               linkQuery=""
               sectorSlugs={sectorSlugs}
+              sectionScope="sector"
             />
           ) : items.length === 0 ? (
             <p className="py-16 text-center text-sm text-muted-foreground">

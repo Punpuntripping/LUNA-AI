@@ -177,6 +177,21 @@ def _client(supabase: Any = None, user: Optional[_User] = None) -> TestClient:
     return TestClient(_app(fake, user), client=("8.8.8.8", 51000))
 
 
+def _paid_client() -> TestClient:
+    """A signed-in caller on a PAID plan — the only tier a sector slice serves.
+
+    ⚠ THE SECTION GATE (2026-08-11) IS WHY HALF THIS FILE NEEDS ONE. Everything
+    about a SERVED sector page — the real total, the slug→Arabic translation, the
+    lister actually being reached — used to be assertable through an anonymous
+    client, because anon got page 1. It does not any more: a section-scoped
+    request is refused below ``paid`` at every page, so an anonymous body carries
+    ``cap_reached`` and no items and can no longer witness any of it. The
+    behaviours themselves are unchanged, so the tests moved tier rather than
+    being deleted; the gate itself gets its own section (§10) below.
+    """
+    return _client(_hub_fake(plan="pro", limit=100), _User())
+
+
 def _stub_item(n: int) -> dict[str, Any]:
     """One card, valid for EVERY hub model (each response model reads only the
     fields it declares)."""
@@ -504,8 +519,11 @@ def test_a_free_account_still_stops_at_page_three_on_a_sector_page(stubs) -> Non
 def test_a_SERVED_sector_page_reports_the_real_total(stubs, path) -> None:
     """Clamping only the wall would not have closed the old oracle and must not
     now shrink a legitimate section: page 1 carries the lister's real total,
-    unclamped, because a section is not a filter."""
-    body = _client().get(
+    unclamped, because a section is not a filter.
+
+    PAID, since the section gate — see ``_paid_client``. The §5 rule this asserts
+    is about COUNTS and is untouched by the gate; only who can witness it moved."""
+    body = _paid_client().get(
         path, params={"page": 1, "sector_slug": COMMERCE_SLUG}
     ).json()
 
@@ -514,10 +532,17 @@ def test_a_SERVED_sector_page_reports_the_real_total(stubs, path) -> None:
 
 
 @pytest.mark.parametrize("path", WING_PATHS)
-def test_a_SERVED_sector_plus_a_filter_page_is_still_clamped(stubs, path) -> None:
-    """Clamping the WALL alone never closed the oracle — page 1 is served and
-    carries the same filtered total at the same granularity. So a filtered anon
-    page 1 is clamped too, on a sector page like anywhere else."""
+def test_an_anon_sector_plus_a_filter_still_reports_the_flat_ceiling(
+    stubs, path
+) -> None:
+    """§2.1's oracle stays shut on a sector page, through whichever path answers.
+
+    It used to be the SERVED one: clamping the wall alone never closed the
+    oracle, because anon got page 1 and it carried the same filtered total at the
+    same granularity, so `_visible_total_pages` clamped it. Since the section
+    gate anon reaches the WALL here instead, and `_wall_total_pages` clamps it on
+    the `filtered=True` branch. Two mechanisms, one number — which is why this
+    test asserts the NUMBER and no longer names a path."""
     params = {"page": 1, "sector_slug": COMMERCE_SLUG, **ANON_FILTER[path]}
     body = _client().get(path, params=params).json()
     assert body["total_pages"] == pl._ANON_WALL_TOTAL_PAGES
@@ -601,8 +626,10 @@ def test_an_empty_sector_section_reports_one_page_not_zero(stubs) -> None:
 def test_the_circulars_sector_filter_reaches_the_service(stubs) -> None:
     """``CircularsFilters`` was ``entity`` + ``q`` only despite
     ``circulars.sectors`` being 100% populated (1,843/1,843), so the التعاميم tab
-    on a sector page could not scope at all."""
-    _client().get(CIRC_HUB, params={"sector_slug": COMMERCE_SLUG})
+    on a sector page could not scope at all.
+
+    PAID — a gated request never reaches a lister at all (see ``_paid_client``)."""
+    _paid_client().get(CIRC_HUB, params={"sector_slug": COMMERCE_SLUG})
 
     name, kwargs = stubs["listers"][-1]
     assert name == "list_circulars_hub"
@@ -622,8 +649,10 @@ def test_the_slug_is_translated_to_the_raw_arabic_name_for_the_query(
 ) -> None:
     """The corpus columns store the ARABIC name; the slug is a URL affordance
     only (D4/D6). Passing the slug through to ``.contains()`` would match zero
-    rows on every wing at once."""
-    _client().get(path, params={"sector_slug": COMMERCE_SLUG})
+    rows on every wing at once.
+
+    PAID — a gated request never reaches a lister at all (see ``_paid_client``)."""
+    _paid_client().get(path, params={"sector_slug": COMMERCE_SLUG})
     name, kwargs = stubs["listers"][-1]
     assert name == lister
     assert kwargs[key] == COMMERCE_AR
@@ -1198,3 +1227,127 @@ def test_an_unslugged_sector_falls_back_to_the_filtered_branch(
 
     assert body["total_pages"] == pl._ANON_WALL_TOTAL_PAGES
     assert stubs["sector_counts"] == 0
+
+
+# ===========================================================================
+# 10. THE SECTION GATE — a sector slice is a PAID surface (2026-08-11)
+#
+# The section axis multiplies the depth cap rather than being bounded by it: a
+# free reader's 3 pages become 3 pages PER SLICE, 152 of them. So a request
+# narrowed to a sector is refused below `paid` at every page, page 1 included.
+#
+# ⚠ THIS BLOCK IS THE GATE'S ONLY WITNESS, AND IT MUST NOT BE "FIXED" BY MOVING
+# ITS CLIENTS TO PAID THE WAY §3's WERE. Every assertion here is about a caller
+# who must NOT be served.
+# ===========================================================================
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_an_anon_caller_is_refused_a_sector_page_ONE(stubs, path) -> None:
+    """Page 1 — not page 2. The depth cap already handled page 2; the whole
+    point of the gate is that the FIRST page of a slice is refused too."""
+    body = _client().get(path, params={"page": 1, "sector_slug": COMMERCE_SLUG}).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_a_free_account_is_refused_a_sector_page_ONE(stubs, path) -> None:
+    """A free account's 3-page allowance is real and unchanged — it just does not
+    apply to a pre-cut slice. Getting this wrong is silent: the reader sees cards
+    and nothing errors."""
+    body = _client(_hub_fake(plan="free", limit=10), _User()).get(
+        path, params={"page": 1, "sector_slug": COMMERCE_SLUG}
+    ).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_a_paid_caller_is_still_served_a_sector_page(stubs, path) -> None:
+    """The gate is a tier boundary, not a shutdown. If this fails the wing is
+    dead for everyone and the feature has no reader at all."""
+    body = _paid_client().get(
+        path, params={"page": 1, "sector_slug": COMMERCE_SLUG}
+    ).json()
+
+    assert body["cap_reached"] is False
+    assert len(body["items"]) == 9
+
+
+@pytest.mark.parametrize("path,_section,param,_counter", WINGS)
+def test_the_RAW_ARABIC_spelling_is_gated_too(stubs, path, _section, param, _counter) -> None:
+    """⚠ THE SPELLING ARBITRAGE. Both params name the same axis, and `?sector=` /
+    `?domain=` carry the raw Arabic name — the door `/judgments?domain=…` walks
+    through. A gate keyed on the SLUG would leave it wide open, which is why the
+    handlers pass the resolved NAME."""
+    body = _client().get(path, params={"page": 1, param: COMMERCE_AR}).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_the_UNFILTERED_wing_is_untouched_by_the_gate(stubs, path) -> None:
+    """The blast radius is the section axis and nothing else. An anonymous reader
+    still gets page 1 of the wing itself — that is the whole public library."""
+    body = _client().get(path, params={"page": 1}).json()
+
+    assert body["cap_reached"] is False
+    assert len(body["items"]) == 9
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_a_verified_crawler_does_NOT_get_past_the_section_gate(stubs, path) -> None:
+    """§3.7 waives the DEPTH cap for a verified crawler, on the argument that the
+    body is byte-identical to what a human reaches one tier up. That argument
+    does not survive here: no signed-out human sees a section slice now, so
+    serving one to Googlebot would be cloaking. The waiver must not carry."""
+    body = _client().get(
+        path,
+        params={"page": 1, "sector_slug": COMMERCE_SLUG},
+        headers={"user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"},
+    ).json()
+
+    assert body["cap_reached"] is True
+    assert body["items"] == []
+
+
+def test_a_crawler_refused_by_the_gate_still_leaves_a_SHARED_cache_body(
+    stubs,
+) -> None:
+    """The crawler-bypass header rule is `private, no-store`, and it exists so an
+    uncapped crawler body is never replayed to anonymous humans. A body the gate
+    refused is not that body — it is the ordinary anonymous wall, identical for
+    every caller at this tier — so it must stay shareable. Marking it private
+    would cost the edge cache on the wing's most-crawled URLs for nothing."""
+    res = _client().get(
+        REG_HUB,
+        params={"page": 1, "sector_slug": COMMERCE_SLUG},
+        headers={"user-agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"},
+    )
+
+    assert res.headers["cache-control"] == pl._LIBRARY_CACHE_CONTROL
+    assert res.headers["vary"] == "Authorization"
+
+
+@pytest.mark.parametrize("path", WING_PATHS)
+def test_a_gated_request_never_reaches_the_lister(stubs, path) -> None:
+    """Refused before any DB work — the gate is a bound on cost as much as on
+    bytes, and a refusal that still ran the query would make the wing a free
+    load generator."""
+    _client().get(path, params={"page": 1, "sector_slug": COMMERCE_SLUG})
+
+    assert stubs["listers"] == []
+
+
+def test_the_tier_predicate_is_pure_and_fails_closed() -> None:
+    """`section_scope_allowed` is the whole rule, and an unknown tier string must
+    be refused — the same fail-closed convention `hub_page_allowed` uses."""
+    assert pl.section_scope_allowed("paid") is True
+    assert pl.section_scope_allowed("free") is False
+    assert pl.section_scope_allowed("anon") is False
+    assert pl.section_scope_allowed("") is False
+    assert pl.section_scope_allowed("PAID") is False

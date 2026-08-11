@@ -1017,25 +1017,30 @@ export const getSectorDetail = cache(
  * `library_budget` metering are all inherited unchanged. One gating path, not
  * two.
  *
- * `getJudgmentsHub` takes no `ServerFetchOptions` on purpose — the whole
- * /judgments wing is `noindex, nofollow` behind the PDPL gate, so it has no
- * crawler to exempt. Restore the argument in the same commit that lifts the
- * gate.
+ * ⚠ NO `ServerFetchOptions` — THE CRAWLER EXEMPTION DOES NOT REACH THIS WING.
+ * This used to forward one so a verified crawler could be served past the anon
+ * depth cap on a deep sector page. Since the section gate (2026-08-11) the
+ * backend refuses a sector-scoped request below `paid` and pointedly does NOT
+ * honour the §3.7 waiver there — no signed-out human sees these cards, so
+ * serving them to a crawler would be cloaking — which left the argument unable
+ * to change any answer while still forcing a dynamic render at the call site.
+ * Restore it only alongside `section_scope_allowed`. (The /judgments case never
+ * had one anyway: that whole wing is `noindex, nofollow` behind the PDPL gate,
+ * so it has no crawler to exempt.)
  */
 export function getSectorTypeHub(
   type: LibraryType,
   sectorSlug: string,
   page: number,
-  opts?: ServerFetchOptions,
 ): Promise<SectorHubEnvelope | null> {
   switch (type) {
     case "regulations":
-      return getRegulationsHub(page, { sector_slug: sectorSlug }, opts);
+      return getRegulationsHub(page, { sector_slug: sectorSlug });
     case "judgments":
       return getJudgmentsHub(page, { sector_slug: sectorSlug });
     case "compliance":
-      return getComplianceHub(page, { sector_slug: sectorSlug }, opts);
+      return getComplianceHub(page, { sector_slug: sectorSlug });
     case "circulars":
-      return getCircularsHub(page, { sector_slug: sectorSlug }, opts);
+      return getCircularsHub(page, { sector_slug: sectorSlug });
   }
 }

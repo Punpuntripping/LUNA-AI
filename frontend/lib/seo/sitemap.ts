@@ -5,13 +5,7 @@
 
 import { CALCULATORS } from "@/lib/calculators/registry";
 import { getSectors } from "@/lib/library/api";
-import { COURT_ORDER } from "@/lib/library/courts";
-import {
-  LIBRARY_TYPES,
-  sectorPath,
-  sectorTypePath,
-  sectorTypeRobots,
-} from "@/lib/library/sectors";
+import { sectorPath } from "@/lib/library/sectors";
 // Backend origin + request init for the anon sitemap feed endpoints. Server-only,
 // and deliberately the SAME pair the library fetchers use: `INTERNAL_API_URL`
 // (runtime, Railway private network) → `NEXT_PUBLIC_API_URL` (Docker build ARG)
@@ -31,19 +25,38 @@ export const SITE_URL = "https://rayhanai.com";
  * uses the same `{ urls, page, total_pages }` feed contract. Later phases append
  * `judgments`, `circulars`, `articles`, …
  *
- * TODO(pdpl): `judgments` (the per-document URLs) is DELIBERATELY absent. The
- * judgment DOCUMENT pages ship `robots: { index: false, follow: false }` until
- * the PDPL anonymization audit confirms no party-identifying details survive in
- * judgment text — listing them here would invite exactly the crawl those pages
- * must not get yet. Add "judgments" to this tuple + a case in
- * `app/sitemaps/[section]` at the same time the `robots` keys come out of the
- * document + hub page files under `app/judgments/`. Do not do one without the
- * other.
+ * `judgments` (the per-document URLs) joined on 2026-08-11, and is NOT the whole
+ * wing. The backend feed lists only rows flagged `seo_item_meta.indexable`
+ * (migration 130) — 3,000 of the 10,000 published rulings, PDPL-cleared and
+ * diversity-selected by `scripts/build_judgment_slugs.py --indexable`. The other
+ * 7,000 stay servable and stay `noindex`.
  *
- * `courts` is the deliberate CARVE-OUT from that gate: the 12 court section
- * pages (`/judgments/courts/{slug}`, page 1 only) are indexable — they list
- * derived titles, never judgment text — so they are the one part of the wing
- * the sitemap names. Deep pagination and the documents they link stay gated.
+ * ⚠ THE DOCUMENT PAGE READS THE SAME FLAG. `app/judgments/[slug]/page.tsx` sets
+ * `robots` from `doc.indexable`; this section lists exactly the rows carrying
+ * it. One rule, two consumers, and it has to stay that way — restating it
+ * independently on either side is how a URL ends up listed here and `noindex`
+ * there, which Search Console reports as "Submitted URL marked noindex".
+ * Changing WHICH rulings are indexed is a DATA change (re-run the selector, then
+ * purge ISR), never an edit to this file.
+ *
+ * The judgment HUB (`/judgments`, `/judgments/page/{n}`) stays out, and stays
+ * `noindex`: an enumerable index of every ruling is the crawl the PDPL gate
+ * exists to prevent.
+ *
+ * ⚠ `courts` WAS HERE AND IS NOT ANY MORE (removed 2026-08-11). The 12 court
+ * section pages were the one carve-out from that gate — indexable because they
+ * list derived titles, never judgment text. Then a court became a paid-only
+ * SECTION (`section_scope_allowed` in `public_library.py`), so what an anonymous
+ * visitor — and therefore Googlebot — now gets at `/judgments/courts/{slug}` is
+ * the section wall, and the pages went back to `noindex, nofollow` with the rest
+ * of the wing. With no indexable page left there is no `courts` urlset to serve,
+ * so the section is gone from this tuple AND its case is gone from
+ * `app/sitemaps/[section]` — a listed section with an empty urlset is a file
+ * Google refetches hourly to learn nothing.
+ *
+ * Restoring it is the same three-part edit as before, in reverse: un-gate the
+ * court axis, drop the `robots` key from `app/judgments/courts/[court]/page.tsx`,
+ * and re-add "courts" here plus its route case. Do not do one without the others.
  */
 export const SITEMAP_SECTIONS = [
   "static",
@@ -54,7 +67,7 @@ export const SITEMAP_SECTIONS = [
   "forms",
   "calculators",
   "sectors",
-  "courts",
+  "judgments",
 ] as const;
 
 export type SitemapSection = (typeof SITEMAP_SECTIONS)[number];
@@ -140,63 +153,39 @@ export function getCalculatorUrls(): SitemapUrl[] {
 }
 
 /**
- * The 12 court sections — the `courts` section, built LOCALLY from the
- * compile-time vocabulary in `lib/library/courts.ts` (mirror of
- * `shared/library/courts.py`). No backend feed: the slug set IS the source of
- * truth, and a slug this file knows always has a page to point at.
- *
- * PAGE 1 ONLY, deliberately: deep pagination (`/page/{n}`) and the judgment
- * documents the sections link to remain behind the PDPL noindex gate — listing
- * them would be the "Submitted URL marked noindex" self-contradiction. Each
- * URL is the Arabic slug encoded exactly ONCE, matching the page's own
- * canonical (`/judgments/courts/${encodeURIComponent(slug)}`).
- */
-export function getCourtUrls(): SitemapUrl[] {
-  return COURT_ORDER.map((slug) => ({
-    loc: `${SITE_URL}/judgments/courts/${encodeURIComponent(slug)}`,
-  }));
-}
-
-/**
- * The sector wing — `/library/{sector}` plus every INDEXABLE
- * `/library/{sector}/{type}` list (`library_sectors.md` §12.6).
+ * The sector wing — the 38 `/library/{sector}` OVERVIEW pages, and nothing else
+ * (`library_sectors.md` §12.6, amended 2026-08-11).
  *
  * Built LOCALLY from the `/sectors` counts endpoint rather than from a backend
  * sitemap feed, because that endpoint already carries everything the decision
- * needs: the slugs, and the 152 per-type counts. A second feed would be a second
- * copy of the indexability rule, and the two would drift.
+ * needs: the slugs. A second feed would be a second copy of the indexability
+ * rule, and the two would drift.
  *
- * WHICH URLS QUALIFY — the filter is `sectorTypeRobots()`, THE SAME PREDICATE
- * THE PAGES THEMSELVES USE for their `<meta name="robots">`. That shared call is
- * the point: a sitemap that lists a URL the page marks `noindex` is a
- * self-contradiction Search Console reports as "Submitted URL marked noindex",
- * and it is the exact drift that happens when the rule gets restated here.
- * `capped: false` is correct — only page 1 of each list is ever listed, and page
- * 1 is inside every tier's depth cap.
+ * ⚠ THE 109 `/library/{sector}/{type}` LISTS WERE REMOVED WHEN THE WING WENT
+ * PAID-ONLY (2026-08-11). They are `noindex` now — `sectorTypeRobots()` returns
+ * a directive for every type, unconditionally — and a sitemap that lists a URL
+ * the page marks `noindex` is the self-contradiction Search Console reports as
+ * "Submitted URL marked noindex". The old code filtered on that shared predicate
+ * for exactly this reason; with the predicate now always truthy the filter can
+ * only ever skip, so the loop is gone rather than left as a branch that cannot
+ * be taken. RESTORING THEM IS A ONE-PLACE EDIT — un-gate `sectorTypeRobots` and
+ * re-add the inner loop here; that function's comment carries the full rule.
  *
- * That currently yields 147 URLs (verified against the live corpus 2026-08-01):
- * 38 overviews + 109 sector×type lists. The plan's "~142" estimate predates two
- * exclusions it did not account for — the 38 أحكام combinations held back by the
- * PDPL gate, and 4 more under the D9 thin-page threshold.
+ * The overview pages stay: `/library/{sector}` is deliberately NOT gated, still
+ * carries its ≤3-item strips, and is now the wing's only crawl entry point —
+ * which is why the lists it links to keep `follow`.
+ *
+ * That yields 38 URLs, down from 147 (verified against the live corpus
+ * 2026-08-01: 38 overviews + 109 lists).
  *
  * Fail-safe: `getSectors()` returns [] rather than throwing when the backend is
  * unreachable, so this degrades to an empty-but-valid <urlset>, never a 5xx.
  */
 export async function getSectorUrls(): Promise<SitemapUrl[]> {
   const sectors = await getSectors();
-  const urls: SitemapUrl[] = [];
-
-  for (const sector of sectors) {
-    urls.push({ loc: `${SITE_URL}${sectorPath(sector.slug)}` });
-    for (const type of LIBRARY_TYPES) {
-      const count = sector.counts[type] ?? 0;
-      if (count === 0) continue; // renders no tab, 404s on a direct hit (D9)
-      if (sectorTypeRobots(type, count, false)) continue; // noindex — do not list
-      urls.push({ loc: `${SITE_URL}${sectorTypePath(sector.slug, type)}` });
-    }
-  }
-
-  return urls;
+  return sectors.map((sector) => ({
+    loc: `${SITE_URL}${sectorPath(sector.slug)}`,
+  }));
 }
 
 /** Shape of one page of a backend sitemap feed (shared by every section). */

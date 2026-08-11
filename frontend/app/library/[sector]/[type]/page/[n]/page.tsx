@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { SectorTypeListView } from "@/components/library/sectors/SectorTypeListView";
-import { getSectorDetail, getSectorTypeHub } from "@/lib/library/api";
+import { getSectorDetail } from "@/lib/library/api";
 import {
   LIBRARY_TYPE_META,
   isLibraryType,
@@ -9,25 +9,28 @@ import {
   sectorTypeHeading,
   sectorTypeRobots,
 } from "@/lib/library/sectors";
-import { readVerifiedBotSignal } from "@/lib/library/crawler-signal";
-
 // Deep pages of one sector×type list, at `/library/{sector}/{type}/page/{n}`.
 // `n` must be an integer ≥ 2 (page 1 lives at `/library/{sector}/{type}`, its
 // own canonical); anything else → 404. Server component, ISR (NO force-dynamic).
 //
-// ⚠ THIS SEGMENT — AND ONLY THIS SEGMENT — CAN GO DYNAMIC (plan §3.7).
-// `readVerifiedBotSignal()` reads the incoming request headers, which opts a
-// render out of static generation. Scoped here on purpose, exactly as in
-// `app/regulations/page/[n]/page.tsx`, which carries the full reasoning:
-// page 1 and the sector overview import nothing from `crawler-signal.ts` and
-// stay statically prerendered; deep pages are the only ones the anon depth cap
-// blocks, and a crawler's uncapped render must never reach the Full Route Cache
-// where it would be replayed to anonymous humans.
+// ⚠ THE §3.7 CRAWLER SIGNAL WAS REMOVED FROM THIS SEGMENT (2026-08-11), AND
+// PUTTING IT BACK WOULD BE A REGRESSION, NOT A RESTORATION. This used to be the
+// one sector-wing route that could go dynamic: it called `readVerifiedBotSignal()`
+// and forwarded the result on the hub fetch, so a verified crawler was served
+// past the anon DEPTH cap. The section gate ended that — `section_scope_allowed`
+// in `backend/app/api/public_library.py` refuses a sector-scoped request below
+// `paid` and deliberately does NOT honour the crawler waiver, because no
+// signed-out human reaches this list any more and serving one to Googlebot would
+// be cloaking. So the signal could no longer change the answer, while still
+// costing this segment its static render (reading request headers is what opts a
+// route out). Dead plumbing that also reads as a promise the backend does not
+// keep — hence gone, along with the hub fetch in `generateMetadata`.
 //
 // ⚠ Do NOT add `export const dynamic = "force-dynamic"` as "documentation" —
 // implicit bailout is what keeps `fetchCache` at `auto` and the Data Cache in
-// play. Until `EDGE_SECRET` is set this segment does not go dynamic at all:
-// `readVerifiedBotSignal()` returns before touching `headers()`.
+// play. `app/regulations/page/[n]/page.tsx` still carries the full §3.7
+// reasoning and still uses the signal: THAT wing is ungated, so the exemption is
+// still live and still correct there.
 
 interface PageProps {
   params: Promise<{ sector: string; type: string; n: string }>;
@@ -52,34 +55,26 @@ export async function generateMetadata({
     return { title: `${LIBRARY_TYPE_META[type].longLabel} — صفحة ${n} | ريحان` };
   }
 
-  // ⚠ THE LIST FETCH HERE IS DELIBERATELY UNEXEMPTED (trap T5) — do NOT pass
-  // the §3.7 signal. It asks the ANON question ("is this depth capped?"), and
-  // the answer drives `noindex, follow`. Exempting it would report
-  // `cap_reached: false` to a crawler and hand it an INDEXABLE deep page,
-  // turning §3.7 from crawl reach into index bloat. The split is the design:
-  // metadata stays capped-and-noindexed, the BODY below is exempted so the
-  // crawler can follow its links down to the document pages. Getting this
-  // backwards is the failure mode the trap is named for.
-  const [detail, data] = await Promise.all([
-    getSectorDetail(sector),
-    getSectorTypeHub(type, sector, pageNum),
-  ]);
+  // ⚠ TRAP T5 IS NOW MOOT HERE, AND THE FETCH IS GONE WITH IT. The robots call
+  // used to need this page's own `cap_reached` from a DELIBERATELY UNEXEMPTED
+  // fetch, because indexability turned on the anon depth cap. Since the wing
+  // went paid-only (2026-08-11) `sectorTypeRobots` answers `noindex` for every
+  // page unconditionally, so there is nothing left for a hub fetch to decide —
+  // and issuing one anyway would be a per-render round-trip bought for a
+  // constant. The BODY below is still §3.7-exempted, which is unchanged: the
+  // crawler follows links down to the document pages.
+  const detail = await getSectorDetail(sector);
   if (!detail) return { title: LIBRARY_TYPE_META[type].longLabel };
 
   const heading = sectorTypeHeading(type, detail.name_ar);
   const title = `${heading} — صفحة ${n} | ريحان`;
   const description = `${LIBRARY_TYPE_META[type].description} — قطاع ${detail.name_ar}، صفحة ${n}.`;
-  const robots = sectorTypeRobots(
-    type,
-    detail.counts[type] ?? 0,
-    data?.cap_reached ?? false,
-  );
 
   return {
     title,
     description,
     alternates: { canonical: `/library/${detail.slug}/${type}/page/${n}` },
-    ...(robots ? { robots } : {}),
+    robots: sectorTypeRobots(type),
   };
 }
 
@@ -90,13 +85,7 @@ export default async function SectorTypeDeepPage({ params }: PageProps) {
   if (!isLibraryType(type)) notFound();
   const pageNum = parsePage(n);
   if (pageNum === null) notFound();
-  const verifiedBot = await readVerifiedBotSignal();
-  return (
-    <SectorTypeListView
-      slug={sector}
-      type={type}
-      page={pageNum}
-      verifiedBot={verifiedBot}
-    />
-  );
+  // No crawler signal — see the header note. `SectorTypeListView` no longer
+  // takes one either; this was its only caller that ever passed it.
+  return <SectorTypeListView slug={sector} type={type} page={pageNum} />;
 }

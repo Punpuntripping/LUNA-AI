@@ -58,23 +58,23 @@ export async function generateMetadata({
   const detail = await getSectorDetail(sector);
   if (!detail) return { title: LIBRARY_TYPE_META[type].longLabel };
 
-  const count = detail.counts[type] ?? 0;
   const heading = sectorTypeHeading(type, detail.name_ar);
   const title = `${heading} | ريحان`;
   const description = `${LIBRARY_TYPE_META[type].description} — قطاع ${detail.name_ar} في مكتبة ريحان القانونية.`;
   const ogImage = `/og?title=${encodeURIComponent(heading)}`;
 
-  // D9 / T5 — a list under 3 items is `noindex, follow`. Page 1 is never depth-
-  // capped, so `capped` is false here; the deep-page sibling passes the real
-  // value from a DELIBERATELY UNEXEMPTED fetch. الأحكام inherit the wing's PDPL
-  // gate. All three rules live in `sectorTypeRobots`, one place.
-  const robots = sectorTypeRobots(type, count, false);
+  // Always `noindex` since the wing went paid-only (2026-08-11): this page's
+  // anonymous body — which, being statically prerendered, is the body Googlebot
+  // gets — is the section wall. `follow` still passes crawlers through to the
+  // document pages; الأحكام inherit the wing's PDPL `nofollow`. Both rules live
+  // in `sectorTypeRobots`, one place, shared with the sitemap.
+  const robots = sectorTypeRobots(type);
 
   return {
     title,
     description,
     alternates: { canonical: `/library/${detail.slug}/${type}` },
-    ...(robots ? { robots } : {}),
+    robots,
     openGraph: {
       title,
       description,

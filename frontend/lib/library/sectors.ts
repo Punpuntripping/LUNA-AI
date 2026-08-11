@@ -139,6 +139,13 @@ export function sectorHeading(nameAr: string): string {
  * follow`: too thin to earn an index slot, still worth crawling for the links
  * it carries. An EMPTY combination renders no tab at all and 404s on a direct
  * hit (there are 3 of those out of 152, plus 7 more in the 1–2 range).
+ *
+ * ⚠ DORMANT SINCE 2026-08-11 — the paid-only gate makes EVERY page of this wing
+ * `noindex` (see `sectorTypeRobots`), so the thin-page rule has nothing left to
+ * decide. Kept, not deleted: it is D9's threshold and the number to restore if
+ * the gate is ever lifted. The EMPTY-combination rule it shares a paragraph with
+ * is very much still live — `SectorTypeListView` 404s a zero-count combination
+ * and `getSectorUrls()` skips it.
  */
 export const THIN_PAGE_THRESHOLD = 3;
 
@@ -163,30 +170,38 @@ export interface RobotsDirective {
 const JUDGMENTS_PDPL_ROBOTS: RobotsDirective = { index: false, follow: false };
 
 /**
- * The `robots` directive for one sector×type list page, or `undefined` for
- * "index it normally".
+ * The `robots` directive for one sector×type list page. NEVER `undefined` any
+ * more — every page of this wing is now `noindex`.
  *
- * Three rules, in precedence order:
- *   1. الأحكام → the PDPL gate above, always.
- *   2. `capped` → the anon depth wall. What a crawler sees on a capped page IS
- *      the signup wall, and a wall carries no SEO value.
- *   3. D9 — under `THIN_PAGE_THRESHOLD` items → `noindex, follow`: too thin to
- *      earn an index slot, still worth crawling for the links it carries.
+ * ⚠ THE WING BECAME PAID-ONLY ON 2026-08-11, AND THIS IS THE OTHER HALF OF THAT
+ * DECISION. `public_library.py` (`section_scope_allowed`) refuses a
+ * section-scoped hub request below `paid` at every page, so what an anonymous
+ * visitor gets here is the section wall — and page 1 is STATICALLY PRERENDERED,
+ * which means the baked HTML *is* the anonymous body. Googlebot sees the wall.
+ * Indexing it would submit ~109 URLs of identical walled boilerplate, and the
+ * only way to hand a crawler the real cards would be to serve it something no
+ * human can reach, which is cloaking. So: out of the index, and out of the
+ * sitemap — `getSectorUrls()` filters on this same predicate, which is why one
+ * function decides both and they cannot drift.
  *
- * ⚠ THE `capped` INPUT MUST COME FROM AN UNEXEMPTED FETCH (trap T5). It answers
- * the ANON question ("is this depth capped?"). Feeding it a §3.7 crawler-
- * exempted response reports `cap_reached: false` to a crawler and hands it an
- * INDEXABLE deep page — turning crawl reach into index bloat. The page BODY is
- * the half that gets exempted. See `app/regulations/page/[n]/page.tsx`.
+ * `follow` is kept (except on الأحكام) on purpose: the LINKS are still worth
+ * crawling. A crawler that lands here walks on to the document pages, which are
+ * indexed and ungated, and the sector OVERVIEW (`/library/{sector}`) stays
+ * ungated and indexable as the wing's crawl entry point.
+ *
+ * Two rules now, in precedence order:
+ *   1. الأحكام → the PDPL gate above (`noindex, nofollow`), always.
+ *   2. everything else → `noindex, follow`, per the gate.
+ *
+ * TO REOPEN: this reverts together with `section_scope_allowed` and the sitemap
+ * — a page that is indexable but walled is the failure this comment describes.
+ * The pre-gate rule, kept here because it is what to restore: index normally
+ * unless the list held fewer than `THIN_PAGE_THRESHOLD` items or the anon depth
+ * cap had been hit.
  */
-export function sectorTypeRobots(
-  type: LibraryType,
-  count: number,
-  capped: boolean,
-): RobotsDirective | undefined {
+export function sectorTypeRobots(type: LibraryType): RobotsDirective {
   if (type === "judgments") return JUDGMENTS_PDPL_ROBOTS;
-  if (capped || count < THIN_PAGE_THRESHOLD) return { index: false, follow: true };
-  return undefined;
+  return { index: false, follow: true };
 }
 
 /**

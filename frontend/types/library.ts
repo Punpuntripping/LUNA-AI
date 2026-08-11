@@ -250,6 +250,18 @@ export interface JudgmentDoc {
    * honestly reports "open" and ships whole, with no CTA.
    */
   gate_effective: "open" | "gated";
+  /**
+   * May a crawler have this ruling — `seo_item_meta.indexable` (migration 130).
+   * 3,000 of the 10,000 published judgments carry it: the PDPL-cleared, diversity-
+   * selected set that `/sitemaps/judgments` lists. The page renders its `robots`
+   * meta from THIS field, which is what keeps the sitemap and the meta tag from
+   * contradicting each other.
+   *
+   * NOT a gate. An indexable ruling is still gate-truncated — Googlebot sees the
+   * same withheld body an anonymous human sees. `gate_effective` answers "how
+   * much of it is free"; this answers "may it be crawled at all".
+   */
+  indexable: boolean;
   /** Sections actually truncated — sizes the placeholder bars and the CTA. */
   hidden_section_count: number;
   /** Bytes withheld server-side. The real exposure measure, unlike the count above. */

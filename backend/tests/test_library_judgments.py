@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Optional
+from urllib.parse import quote
 
 import pytest
 
@@ -321,14 +322,25 @@ META_ROW = {
     "slug": SLUG,
     "seo_tier": None,
     "gate_override": None,
+    # Migration 130 — "may a crawler have this", independent of the slug. The
+    # fixture is indexable so the default payload exercises the cleared path;
+    # `_fake(indexable=False)` covers the 7,000 that stay noindex.
+    "indexable": True,
     "updated_at": "2026-07-25T00:00:00+00:00",
 }
 
 
-def _fake(case: Optional[dict] = None, *, gate_override: Optional[str] = None, **extra):
+def _fake(
+    case: Optional[dict] = None,
+    *,
+    gate_override: Optional[str] = None,
+    indexable: bool = True,
+    **extra,
+):
     meta = dict(META_ROW)
     if gate_override:
         meta["gate_override"] = gate_override
+    meta["indexable"] = indexable
     return FakeSupabase(
         cases=[case or FULL_CASE],
         seo_item_meta=[meta],
@@ -355,11 +367,73 @@ def test_judgment_registered_for_authed_full_content() -> None:
     assert "judgment" in public_library._FULL_CONTENT_TYPES
 
 
-def test_judgments_sitemap_section_not_served_yet() -> None:
-    """PDPL audit pending — the judgments sitemap section must stay unreachable."""
+def test_judgments_sitemap_section_is_served() -> None:
+    """The judgments sitemap section is registered (2026-08-11).
+
+    Replaces ``test_judgments_sitemap_section_not_served_yet``. The PDPL gate did
+    not go away — it moved from "the wing is unreachable" to "only cleared rows
+    are listed", enforced by ``seo_item_meta.indexable`` (migration 130) and
+    asserted by the two tests below.
+    """
     from backend.app.api import public_library
 
-    assert "judgments" not in public_library._LIBRARY_SITEMAP_SECTIONS
+    assert public_library._LIBRARY_SITEMAP_SECTIONS["judgments"] == (
+        "judgment",
+        "judgments",
+    )
+
+
+def test_sitemap_feed_lists_only_indexable_rows() -> None:
+    """The feed filters on ``indexable``, not merely on having a slug.
+
+    This is the half of the PDPL gate that lives in the query. Without the
+    ``indexable`` predicate the section would enumerate all 10,000 published
+    rulings — including the 1,665 the selector excluded for carrying an identity
+    marker — which is exactly what the old "section unreachable" rule bought.
+    """
+    cleared = {**META_ROW, "content_id": "c-1", "slug": "حكم-مصرّح", "indexable": True}
+    withheld = {**META_ROW, "content_id": "c-2", "slug": "حكم-محجوب", "indexable": False}
+    fake = FakeSupabase(seo_item_meta=[cleared, withheld])
+
+    urls, _pages = ls.sitemap_library_urls(
+        fake, "https://x.test", "judgment", "judgments"
+    )
+
+    locs = [u["loc"] for u in urls]
+    assert locs == [f"https://x.test/judgments/{quote('حكم-مصرّح', safe='')}"]
+    assert all("محجوب" not in quote(loc, safe="") for loc in locs)
+
+
+def test_sitemap_feed_skips_indexable_rows_that_lost_their_slug() -> None:
+    """Both predicates bind. `indexable` alone is not a servable page.
+
+    An unpublished row cannot be listed however its flag reads — the two
+    questions are independent, so the feed has to ask both.
+    """
+    unpublished = {
+        **META_ROW,
+        "content_id": "c-3",
+        "slug": None,
+        "indexable": True,
+    }
+    fake = FakeSupabase(seo_item_meta=[unpublished])
+
+    urls, _pages = ls.sitemap_library_urls(
+        fake, "https://x.test", "judgment", "judgments"
+    )
+
+    assert urls == []
+
+
+def test_doc_payload_carries_the_indexable_flag() -> None:
+    """``indexable`` reaches the page, and is FALSE when the sidecar says so.
+
+    The page's ``robots`` meta and the sitemap read this one flag; if it stopped
+    riding the payload the page would silently fall back to its noindex default
+    while the sitemap kept listing the URL.
+    """
+    assert ls.get_judgment_doc(_fake(), SLUG)["indexable"] is True
+    assert ls.get_judgment_doc(_fake(indexable=False), SLUG)["indexable"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +723,7 @@ def test_doc_payload_keys_are_the_frontend_contract() -> None:
         "city", "case_number", "judgment_number", "date_hijri", "date_gregorian",
         "hijri_year", "appeal_result", "domains", "metadata", "summary_md",
         "has_summary", "sections", "cited_regulations", "cited_total",
-        "official_sources", "gate_effective", "hidden_section_count",
+        "official_sources", "gate_effective", "indexable", "hidden_section_count",
         "withheld_chars", "withheld_pct",
     }
 
