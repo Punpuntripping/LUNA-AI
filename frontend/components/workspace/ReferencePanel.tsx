@@ -303,7 +303,8 @@ export function ReferencePanel({
           onFlashDone?.();
         }}
       >
-        <DialogContent className="max-w-2xl" dir="rtl">
+        {/* Tour anchor (Act 3, step 7) — the revealed source body. Inert. */}
+        <DialogContent className="max-w-2xl" dir="rtl" data-tour="source-dialog">
           {openReference && (
             <SourceRevealBody
               itemId={itemId}
@@ -403,6 +404,10 @@ function ReferenceCard({
     <li
       ref={registerRef}
       id={`ref-${reference.n}`}
+      // Tour anchor (Act 3, step 10 resolves `ref-card-10` — the compliance
+      // card, the one that visibly lacks a «في ريحان» button). Emitted for
+      // every card; inert, and distinct from the `id` the flash path uses.
+      data-tour={`ref-card-${reference.n}`}
       onAnimationEnd={onAnimationEnd}
       className="rounded-lg border bg-card px-3 py-2.5 ref-flash-target"
     >
@@ -733,7 +738,9 @@ function RevealedSource({
         </p>
       )}
 
-      <div className="mt-1 flex flex-wrap items-center gap-2">
+      {/* Tour anchor (Act 3, step 9) — the dialog's two exits: «فتح المصدر
+          الرسمي» (the issuing body) + «فتح ال… في ريحان» (our library). */}
+      <div className="mt-1 flex flex-wrap items-center gap-2" data-tour="ref-exits">
         {externalUrl && (
           <a
             href={externalUrl}
@@ -816,6 +823,9 @@ function CrossRefsSection({ crossRefs }: { crossRefs: CrossRef[] }) {
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
+        // Tour anchor (Act 3, step 8) — «الإحالات … جرّب افتحها». The step
+        // advances on `aria-expanded`, which this button already published.
+        data-tour="ref-crossrefs"
         className="flex w-full items-center gap-1.5 rounded-md py-1 text-start text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ChevronDown

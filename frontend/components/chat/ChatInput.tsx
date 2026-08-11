@@ -9,11 +9,18 @@ import {
   type KeyboardEvent,
 } from "react";
 import TextareaAutosize from "react-textarea-autosize";
-import { Send, Square } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Send, Square, Sparkles, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { useSidebarStore } from "@/stores/sidebar-store";
+import {
+  DEMO_COMPOSER_CTA,
+  DEMO_COMPOSER_HINT,
+  useIsDemoConversation,
+} from "@/hooks/use-demo-conversation";
 import { FilePreview } from "@/components/chat/FilePreview";
 import { BlogChips } from "@/components/chat/BlogChip";
 import { TemplateChip } from "@/components/chat/TemplateChip";
@@ -71,6 +78,11 @@ export function ChatInput({
   // upload terminates (completed/failed/cancelled).
   const uploadHandlesRef = useRef<Map<string, ImperativeUploadHandle>>(new Map());
   const qc = useQueryClient();
+  const router = useRouter();
+  // The ONE shared demo conversation is read-only for everyone (D2). Every
+  // send path is refused server-side anyway; this replaces the composer with
+  // the conversion affordance instead of letting the user type into a wall.
+  const isDemo = useIsDemoConversation(conversationId);
 
   const isStreaming = useChatStore((s) => s.isStreaming);
   const pendingFiles = useChatStore((s) => s.pendingFiles);
@@ -585,6 +597,49 @@ export function ChatInput({
   const handleStopClick = useCallback(() => {
     onStop?.();
   }, [onStop]);
+
+  // D7: the demo's only exit is a real conversation. Mirrors the sidebar /
+  // /chats "new chat" flow exactly — no row is persisted here; `/chat` is the
+  // empty composer and creates the conversation on the first send.
+  const handleStartRealChat = useCallback(() => {
+    useSidebarStore.getState().setSelectedConversation(null);
+    router.push("/chat");
+  }, [router]);
+
+  // ==========================================================================
+  // DEMO CONVERSATION — hint bar in place of the composer (plan §4.2 / D7).
+  // Declared AFTER every hook above so the hook order is identical in both
+  // branches; only the returned tree differs.
+  // ==========================================================================
+  if (isDemo) {
+    return (
+      <div
+        dir="rtl"
+        lang="ar"
+        className={cn("border-t bg-background px-4 py-3", className)}
+      >
+        {/* Same max-w-3xl rail as the composer it replaces, so the thread
+            column doesn't jump when the user opens the demo. */}
+        <div className="mx-auto w-full max-w-3xl">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-border bg-muted/40 px-4 py-3">
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+              {DEMO_COMPOSER_HINT}
+            </p>
+            <Button
+              size="sm"
+              className="gap-1.5"
+              onClick={handleStartRealChat}
+              data-testid="demo-start-real-chat"
+            >
+              <Plus className="h-4 w-4" />
+              {DEMO_COMPOSER_CTA}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div dir="rtl" lang="ar" className={cn("border-t bg-background px-4 py-3", className)}>

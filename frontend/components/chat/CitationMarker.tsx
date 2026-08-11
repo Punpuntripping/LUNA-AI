@@ -23,6 +23,10 @@ export function CitationMarker({ n, onClick }: CitationMarkerProps) {
       type="button"
       dir="ltr"
       style={{ unicodeBidi: "isolate" }}
+      // Tour anchor (Act 3, step 6 resolves `citation-3`). Emitted for every
+      // marker so the script can point at any `[n]`; inert — an attribute the
+      // tour engine reads, nothing else.
+      data-tour={`citation-${n}`}
       onClick={() => onClick?.(n)}
       aria-label={`فتح المرجع رقم ${n}`}
       disabled={!onClick}

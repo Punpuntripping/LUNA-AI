@@ -176,6 +176,16 @@ const config: Config = {
       },
 
       fontSize: {
+        /* Stock Tailwind tiers, re-pointed at CSS variables so the reading
+           scale can step up on phones without touching desktop. Desktop
+           values are byte-identical to Tailwind's defaults — see the
+           "Reading scale" block in globals.css. */
+        xs:   ["var(--fs-xs)",   { lineHeight: "var(--lh-xs)"   }],
+        sm:   ["var(--fs-sm)",   { lineHeight: "var(--lh-sm)"   }],
+        base: ["var(--fs-base)", { lineHeight: "var(--lh-base)" }],
+        lg:   ["var(--fs-lg)",   { lineHeight: "var(--lh-lg)"   }],
+        xl:   ["var(--fs-xl)",   { lineHeight: "var(--lh-xl)"   }],
+
         display:   ["56px", { lineHeight: "1.05", letterSpacing: "-0.02em", fontWeight: "700" }],
         h1:        ["32px", { lineHeight: "1.20", letterSpacing: "-0.01em", fontWeight: "600" }],
         h2:        ["22px", { lineHeight: "1.30", fontWeight: "600" }],

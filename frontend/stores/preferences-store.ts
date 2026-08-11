@@ -33,6 +33,21 @@ interface PreferencesState {
    * backend opens it.
    */
   onboardingSeen: boolean;
+  /**
+   * «جولة المخرجات» — the coach-mark tour over the shared demo conversation.
+   * Fail-closed exactly like `onboardingSeen`: defaults to true (= seen) so an
+   * API blip can never re-nag an existing user. Only an explicit absent/false
+   * value from a SUCCESSFUL hydrate opens it, and only after «اتعرف على ريحان»
+   * has been dismissed (never both on screen at once).
+   */
+  tourWorkspaceSeen: boolean;
+  /**
+   * D8: the user pressed «إخفاء» on the shared demo conversation. Fail-OPEN
+   * (defaults to false = visible) — the opposite of the flag above on purpose:
+   * this one hides a row rather than opening a modal, and wrongly hiding a
+   * conversation off a failed hydrate is worse than showing furniture twice.
+   */
+  demoConversationHidden: boolean;
   isHydrated: boolean;
   isSaving: boolean;
   error: string | null;
@@ -45,6 +60,10 @@ interface PreferencesState {
   setPrivacyMasking: (enabled: boolean) => Promise<void>;
   /** Mark the onboarding tour as seen; PATCH /preferences (no rollback — worst case the tour shows once more next session). */
   markOnboardingSeen: () => Promise<void>;
+  /** Mark «جولة المخرجات» as seen (finish OR skip); same no-rollback contract. */
+  markTourWorkspaceSeen: () => Promise<void>;
+  /** «إخفاء» the shared demo conversation for THIS user only (D8). */
+  hideDemoConversation: () => Promise<void>;
   /** Clear the last error (e.g. after the user dismisses a toast). */
   clearError: () => void;
   /** Reset to defaults (used on logout). */
@@ -55,6 +74,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   detailLevel: DEFAULT_DETAIL_LEVEL,
   privacyMasking: DEFAULT_PRIVACY_MASKING,
   onboardingSeen: true,
+  tourWorkspaceSeen: true,
+  demoConversationHidden: false,
   isHydrated: false,
   isSaving: false,
   error: null,
@@ -66,6 +87,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       detailLevel: DEFAULT_DETAIL_LEVEL,
       privacyMasking: DEFAULT_PRIVACY_MASKING,
       onboardingSeen: true,
+      tourWorkspaceSeen: true,
+      demoConversationHidden: false,
       isHydrated: false,
       isSaving: false,
       error: null,
@@ -81,6 +104,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         // Only an explicit true counts as seen — a brand-new user has no
         // stored key, which is exactly the "open the tour" signal.
         onboardingSeen: prefs.onboarding_seen === true,
+        tourWorkspaceSeen: prefs.tour_workspace_seen === true,
+        demoConversationHidden: prefs.demo_conversation_hidden === true,
         isHydrated: true,
         error: null,
       });
@@ -90,8 +115,11 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       set({
         detailLevel: DEFAULT_DETAIL_LEVEL,
         privacyMasking: DEFAULT_PRIVACY_MASKING,
-        // Fail-closed: never open the tour off a failed hydrate.
+        // Fail-closed: never open a tour off a failed hydrate.
         onboardingSeen: true,
+        tourWorkspaceSeen: true,
+        // Fail-open: never hide the user's demo row off a failed hydrate.
+        demoConversationHidden: false,
         isHydrated: true,
         error:
           err instanceof ApiClientError
@@ -129,6 +157,33 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     } catch {
       // Swallow — keep the local flag so the tour doesn't reappear this
       // session; worst case it shows once more next login.
+    }
+  },
+
+  markTourWorkspaceSeen: async () => {
+    if (get().tourWorkspaceSeen) return;
+    set({ tourWorkspaceSeen: true });
+    try {
+      // FLAT key — `merge_preferences` is a SHALLOW merge, so nesting this
+      // under a `tour: {…}` object would let one tab's write clobber every
+      // sibling preference another tab set ([[project_edu_popups]]).
+      await preferencesApi.update({ tour_workspace_seen: true });
+    } catch {
+      // Same contract as markOnboardingSeen: keep the local flag; worst case
+      // the tour offers itself once more next login.
+    }
+  },
+
+  hideDemoConversation: async () => {
+    if (get().demoConversationHidden) return;
+    // Optimistic — the row leaves the sidebar on the click, not on the 200.
+    set({ demoConversationHidden: true });
+    try {
+      await preferencesApi.update({ demo_conversation_hidden: true });
+    } catch {
+      // Swallow, and deliberately do NOT roll back: «إخفاء» is a dismissal,
+      // and a row springing back into the sidebar because a PATCH lost a race
+      // reads as a bug. Worst case it returns next login.
     }
   },
 

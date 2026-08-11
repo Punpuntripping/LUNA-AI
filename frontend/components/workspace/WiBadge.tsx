@@ -6,6 +6,15 @@ interface WiBadgeProps {
   /** ``workspace_item.wi_seq`` — the number in «WI-3». */
   seq?: number | null;
   className?: string;
+  /**
+   * Optional ``data-tour`` id for the product tour's anchor resolver.
+   *
+   * A prop rather than a wrapping element on purpose: this badge sits in flex
+   * rows whose spacing it owns (``me-1`` in the pane header), and wrapping it
+   * would add a flex item — and, when ``seq`` is null and the badge renders
+   * nothing, a stray margin. The tour anchors must be inert.
+   */
+  dataTour?: string;
 }
 
 /**
@@ -24,11 +33,12 @@ interface WiBadgeProps {
  * Renders nothing when there is no alias — case-only items have ``wi_seq =
  * NULL`` (the trigger only assigns within a conversation).
  */
-export function WiBadge({ seq, className }: WiBadgeProps) {
+export function WiBadge({ seq, className, dataTour }: WiBadgeProps) {
   if (seq === null || seq === undefined) return null;
   return (
     <span
       dir="ltr"
+      data-tour={dataTour}
       title={`رمز العنصر في هذه المحادثة: WI-${seq}`}
       className={cn(
         "inline-flex shrink-0 items-center rounded-full border border-border/70",

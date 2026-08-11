@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { useSendMessage } from "@/hooks/use-chat";
 import { useChatStore } from "@/stores/chat-store";
 import { useConversationDetail } from "@/hooks/use-conversations";
+import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { MessageList } from "@/components/chat/MessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { QuotaBanner } from "@/components/chat/QuotaBanner";
@@ -29,6 +30,9 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   const { data: convData } = useConversationDetail(conversationId);
   const conversation = convData?.conversation;
   const caseId = conversation?.case_id ?? null;
+  // Read-only shared demo conversation: the ⋯ menu drops star / rename /
+  // delete (all refused server-side, all shared) for a per-user «إخفاء».
+  const isDemo = isDemoConversation(conversation);
 
   const handleSend = useCallback(
     (content: string) => {
@@ -76,6 +80,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
               conversationId={conversationId}
               title={conversation.title_ar || "محادثة جديدة"}
               isStarred={conversation.is_starred}
+              isDemo={isDemo}
             />
           )}
         </div>

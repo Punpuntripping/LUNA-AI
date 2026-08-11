@@ -50,6 +50,11 @@ from typing import Any, Optional, Sequence
 
 from supabase import Client as SupabaseClient
 
+# ``cases.summary`` — the «ملخص ريحان» served on the judgment page — is
+# pipeline-owned and ~16.5k rows carry a trailing internal appendix (resolver ids,
+# a classification crash dump). EVERY consumer must strip it at render; see the
+# module docstring of ``case_summary``. This is that rule applied to the library.
+from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import search_service
 from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
@@ -4235,6 +4240,25 @@ def _parse_judgment_body(content: str) -> list[dict[str, str]]:
 
     return [s for s in sections if s["text"]]
 
+
+def _rayhan_summary(row: dict[str, Any]) -> Optional[str]:
+    """«ملخص ريحان» — ``cases.summary``, cleaned, or ``None`` when there is none.
+
+    This is NOT ``short_summary`` (the ~250-char always-free lead the page already
+    prints above the ruling). It is the pipeline's structured AI summary of the
+    ruling — mean ~2.2k chars across ``## الملخص / الوقائع / المطالبات / تسبيب
+    الحكم / منطوق الحكم`` — present on 30,513 of 30,531 rows (live 2026-08-11).
+
+    ⚠ ALWAYS through ``strip_pipeline_sections``: 16.5k rows end in an internal
+    «المراجع النظامية المحلولة» appendix (corpus ids, chunk ids, match scores) and
+    252 carry a ``## classification_error`` Python traceback. Neither may reach a
+    reader. Returns ``None`` — never ``""`` — when nothing survives the strip, so
+    callers can treat "no summary" as one condition.
+    """
+    cleaned = strip_pipeline_sections((row.get("summary") or "").strip()).strip()
+    return cleaned or None
+
+
 # How many cited-regulation mesh links an ANON judgment page shows. ``None`` =
 # show all, which is the deliberate default: the list carries only the regulation
 # NAME + the article NUMBER (never a line of the regulation's content), and it IS
@@ -4834,6 +4858,11 @@ def get_judgment_doc(
       * ``summary_md`` = ``short_summary`` — the ALWAYS-FREE lead at the top of
         the page, never gated. A labelled ملخص ABOVE the ruling, not a stand-in
         for it.
+      * ``has_summary`` = does a «ملخص ريحان» (``cases.summary``) exist. A
+        BOOLEAN, never the text: that summary is gated and is served only by
+        ``get_full_judgment``. The page renders its reveal button on this flag, so
+        the ~18 rulings with no summary offer no action rather than spending an
+        unlock on nothing.
       * ``sections`` = the REAL ruling text (``content``) parsed by
         ``_parse_judgment_body`` into the document's own ``##`` sections, each
         ``{id, title, text, is_truncated, hidden_placeholder_lines, is_free}``.
@@ -4933,6 +4962,12 @@ def get_judgment_doc(
         "domains": [d for d in (row.get("legal_domains") or []) if d],
         "metadata": _judgment_metadata(row),
         "summary_md": row.get("short_summary"),
+        # Does a «ملخص ريحان» EXIST for this ruling — never the summary itself.
+        # It is gated content, served only by ``get_full_judgment``; this boolean
+        # is what lets the page decide whether to render the reveal button at all,
+        # so an unlock is never spendable on a ruling that has no summary. It
+        # leaks nothing: 99.9% of rulings answer true.
+        "has_summary": _rayhan_summary(row) is not None,
         "sections": sections,
         "cited_regulations": cited,
         "cited_total": cited_total,
@@ -5339,25 +5374,36 @@ def get_full_judgment(
 ) -> Optional[dict[str, Any]]:
     """FULL judgment payload for /library/full/judgment/{slug} (AUTHED).
 
-    Returns ``{"sections": [{"id", "title", "text"}, ...]}`` — the FULL ruling
-    text (``content``) parsed by the SAME ``_parse_judgment_body`` the anon page
-    uses, so ids (``s1``, ``s2``…), titles and order match position-for-position,
-    with NO truncation. That id parity is the whole point: the client-side
-    enhancer matches each returned section to the DOM node it is upgrading, so a
-    gated teaser is replaced in place by the full text.
+    Returns ``{"sections": [{"id", "title", "text"}, ...], "summary_md": str|None}``:
 
-    Parsing (rather than returning the raw blob) is what keeps the two payloads
-    in lockstep — deriving the anon sections one way and the authed reveal
-    another would desynchronise them the first time a heading changed.
+      * ``sections`` — the FULL ruling text (``content``) parsed by the SAME
+        ``_parse_judgment_body`` the anon page uses, so ids (``s1``, ``s2``…),
+        titles and order match position-for-position, with NO truncation. That id
+        parity is the whole point: the client-side enhancer matches each returned
+        section to the DOM node it is upgrading, so a gated teaser is replaced in
+        place by the full text. Parsing (rather than returning the raw blob) is
+        what keeps the two payloads in lockstep — deriving the anon sections one
+        way and the authed reveal another would desynchronise them the first time
+        a heading changed.
+      * ``summary_md`` — «ملخص ريحان» (``cases.summary`` via ``_rayhan_summary``),
+        the structured AI summary of the ruling. It appears in NO anon payload:
+        ``get_judgment_doc`` publishes only the boolean ``has_summary``, so the
+        one way to read it is this metered reveal. It rides the SAME unlock as the
+        body by construction — one call, one charge, both surfaces — which is why
+        the page's «ملخص ريحان» button and its «اعرض النص كاملاً» panel share one
+        reveal instead of billing twice for one ruling.
 
     No gating, no ``resolve_gate``: auth is the boundary (the route's
     ``get_current_user``). ``None`` when the slug is unknown (route → 404 «الحكم
     غير موجود»). Read-only, no counters.
     """
-    row = _judgment_row_for_slug(supabase, slug, "id, content")
+    row = _judgment_row_for_slug(supabase, slug, "id, content, summary")
     if row is None:
         return None
-    return {"sections": _parse_judgment_body(row.get("content") or "")}
+    return {
+        "sections": _parse_judgment_body(row.get("content") or ""),
+        "summary_md": _rayhan_summary(row),
+    }
 
 
 def get_full_form(

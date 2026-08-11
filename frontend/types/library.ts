@@ -232,6 +232,14 @@ export interface JudgmentDoc {
   domains: string[];
   metadata: JudgmentMetadataRow[];
   summary_md: string | null;
+  /**
+   * Does a «ملخص ريحان» (`cases.summary` — the structured AI summary of the
+   * ruling) exist for this judgment. The summary TEXT is gated and never rides
+   * this payload; it arrives only with the metered reveal, on the same unlock as
+   * the body. This flag is what decides whether the reveal button renders at
+   * all, so the ~18 summary-less rulings offer no action.
+   */
+  has_summary: boolean;
   sections: JudgmentSection[];
   cited_regulations: JudgmentCitedRegulation[];
   /** Total citations found — the surplus over `cited_regulations` is gated. */
@@ -289,6 +297,12 @@ export interface MetadataCardProps {
   status?: DocStatus;
   /** Card heading. Default «المعلومات الأساسية». */
   title?: string;
+  /**
+   * An action rendered below the grid, behind a divider — the judgment page's
+   * «ملخص ريحان» reveal. A client component may be passed here from a server
+   * page; the card itself stays a server component.
+   */
+  footer?: ReactNode;
   className?: string;
 }
 

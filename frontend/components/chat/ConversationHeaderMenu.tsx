@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { MoreVertical, Pencil, Trash2, Star, StarOff } from "lucide-react";
+import { MoreVertical, Pencil, Trash2, Star, StarOff, EyeOff } from "lucide-react";
 import { useSidebarStore } from "@/stores/sidebar-store";
+import { usePreferencesStore } from "@/stores/preferences-store";
 import {
   useDeleteConversation,
   useRenameConversation,
@@ -40,6 +41,13 @@ interface ConversationHeaderMenuProps {
   /** Current title (used to pre-fill the rename dialog). */
   title: string;
   isStarred: boolean;
+  /**
+   * The ONE shared demo conversation. Star / rename / delete all write to a
+   * row every account sees — and are all refused server-side — so the menu
+   * collapses to a single «إخفاء» that sets a per-user preference flag (D8).
+   * A soft-delete by one user would vanish the demo for everyone.
+   */
+  isDemo?: boolean;
 }
 
 /**
@@ -47,11 +55,15 @@ interface ConversationHeaderMenuProps {
  * header. Opens Star / Rename / Delete. Rename uses a dialog; delete navigates
  * back to the empty composer since the conversation being deleted is the one on
  * screen. No title is rendered here (the header shows its own label).
+ *
+ * On the shared demo conversation the whole menu becomes «إخفاء» — see
+ * ``isDemo``.
  */
 export function ConversationHeaderMenu({
   conversationId,
   title,
   isStarred,
+  isDemo = false,
 }: ConversationHeaderMenuProps) {
   const router = useRouter();
   const { setSelectedConversation } = useSidebarStore();
@@ -88,6 +100,14 @@ export function ConversationHeaderMenu({
     setShowRenameDialog(false);
   };
 
+  /** D8 dismiss — a preference flag, never a delete. Leaves the demo behind
+   *  because the row it hides is the one on screen. */
+  const handleHideDemo = () => {
+    void usePreferencesStore.getState().hideDemoConversation();
+    setSelectedConversation(null);
+    router.push("/chat");
+  };
+
   const handleConfirmDelete = () => {
     deleteConversation.mutate(conversationId, {
       onSuccess: () => {
@@ -112,31 +132,40 @@ export function ConversationHeaderMenu({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-44">
-          <DropdownMenuItem onClick={handleToggleStar}>
-            {isStarred ? (
-              <>
-                <StarOff className="h-3.5 w-3.5 me-2" />
-                إزالة التمييز
-              </>
-            ) : (
-              <>
-                <Star className="h-3.5 w-3.5 me-2" />
-                تمييز بنجمة
-              </>
-            )}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={handleStartRename}>
-            <Pencil className="h-3.5 w-3.5 me-2" />
-            إعادة تسمية
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => setShowDeleteDialog(true)}
-            className="text-destructive focus:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5 me-2" />
-            حذف
-          </DropdownMenuItem>
+          {isDemo ? (
+            <DropdownMenuItem onClick={handleHideDemo}>
+              <EyeOff className="h-3.5 w-3.5 me-2" />
+              إخفاء
+            </DropdownMenuItem>
+          ) : (
+            <>
+              <DropdownMenuItem onClick={handleToggleStar}>
+                {isStarred ? (
+                  <>
+                    <StarOff className="h-3.5 w-3.5 me-2" />
+                    إزالة التمييز
+                  </>
+                ) : (
+                  <>
+                    <Star className="h-3.5 w-3.5 me-2" />
+                    تمييز بنجمة
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleStartRename}>
+                <Pencil className="h-3.5 w-3.5 me-2" />
+                إعادة تسمية
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setShowDeleteDialog(true)}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5 me-2" />
+                حذف
+              </DropdownMenuItem>
+            </>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 

@@ -111,6 +111,28 @@ export const sharhRevealCopy = {
   retryCta: revealCopy.retryCta,
 } as const;
 
+/**
+ * The judgment page's «ملخص ريحان» action — the SECOND trigger on the one
+ * judgment reveal, sitting in the المعلومات الأساسية card.
+ *
+ * It is not a second CTA competing with «اعرض النص كاملاً» at the bottom of the
+ * ruling: both fire the same fetch and spend the same single unlock, and this
+ * one is worded for what the reader clicks it FOR — the summary. `hint` says the
+ * rest out loud, because a button that also opens the whole ruling must not do
+ * that silently.
+ */
+export const judgmentSummaryCopy = {
+  /** The button in the card. Signed in OR anonymous — the label never changes. */
+  cta: "ملخص ريحان",
+  loadingCta: "جارٍ فتح الملخص…",
+  /** Sub-line under the button, before any click. */
+  hint: "ملخص منظَّم للحكم من ريحان — يفتح معه نص الحكم كاملاً.",
+  /** Anonymous readers go to /login; the API is never touched. */
+  anonHint: "افتح حسابك المجاني لعرض ملخص الحكم ونصه كاملاً.",
+  /** Heading of the revealed panel. */
+  panelTitle: "ملخص ريحان",
+} as const;
+
 /** What a given reveal action actually buys — picks the CTA wording. */
 export type RevealTarget = "content" | "sharh";
 

@@ -9,13 +9,17 @@ import type { MetadataCardProps } from "@/types/library";
  * (الجهة المصدرة، رقم المرسوم، القطاع، …) and, when a `status` is supplied, an
  * embedded StatusBadge in the header. Each cell carries a subtle start-side
  * accent rule so the grid reads as a structured info panel. Values with an
- * `href` render as internal links and long decree citations wrap. Server
- * component. Uses a `<dl>` for semantics + rich-result clarity.
+ * `href` render as internal links and long decree citations wrap. An optional
+ * `footer` renders below the grid behind a divider — the judgment page puts its
+ * «ملخص ريحان» reveal there. Server component (a client `footer` is fine: it is
+ * passed in as an already-created element). Uses a `<dl>` for semantics + rich-
+ * result clarity.
  */
 export function MetadataCard({
   items,
   status,
   title = "المعلومات الأساسية",
+  footer,
   className,
 }: MetadataCardProps) {
   return (
@@ -58,6 +62,13 @@ export function MetadataCard({
           </div>
         ))}
       </dl>
+
+      {/* `empty:hidden` — the footer is a CLIENT component whose whole render
+          can go away (the judgment summary button disappears once revealed).
+          Keying the divider off `footer` being truthy would leave a stray ruled
+          strip behind; keying it off `:empty` follows what actually rendered.
+          Do not introduce whitespace inside this div — a text node defeats it. */}
+      <div className="mt-4 border-t border-border pt-4 empty:hidden">{footer}</div>
     </section>
   );
 }

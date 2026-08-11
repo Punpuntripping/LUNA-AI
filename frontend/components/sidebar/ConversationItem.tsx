@@ -2,14 +2,25 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { MoreVertical, Pencil, Trash2, Check, X, Star, StarOff } from "lucide-react";
+import {
+  MoreVertical,
+  Pencil,
+  Trash2,
+  Check,
+  X,
+  Star,
+  StarOff,
+  EyeOff,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
+import { usePreferencesStore } from "@/stores/preferences-store";
 import {
   useDeleteConversation,
   useRenameConversation,
   useStarConversation,
 } from "@/hooks/use-conversations";
+import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -70,6 +81,12 @@ export function ConversationItem({
   // the chat with a 5-retry "فشل الاتصال" loop. Disable clicks until the
   // real UUID arrives via the list invalidate.
   const isPendingCreate = conversation.conversation_id.startsWith("optimistic-");
+  // The ONE shared «محادثة تجريبية». Every menu action on it is a write to a
+  // row every account sees, so the menu collapses to «إخفاء» — a per-user
+  // preference flag (D8), never a soft-delete. Star is dropped for the same
+  // reason it is excluded from /chats: this is furniture, not the user's
+  // content.
+  const isDemo = isDemoConversation(conversation);
 
   useEffect(() => {
     if (isRenaming && inputRef.current) {
@@ -117,6 +134,14 @@ export function ConversationItem({
       handleConfirmRename();
     } else if (e.key === "Escape") {
       handleCancelRename();
+    }
+  };
+
+  const handleHideDemo = () => {
+    void usePreferencesStore.getState().hideDemoConversation();
+    if (isActive) {
+      setSelectedConversation(null);
+      router.push("/chat");
     }
   };
 
@@ -177,7 +202,7 @@ export function ConversationItem({
           <>
             <div className="flex flex-1 min-w-0 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-1.5">
-                {isStarred && (
+                {isStarred && !isDemo && (
                   <Star className="h-3 w-3 shrink-0 fill-accent-brand text-accent-brand" />
                 )}
                 <p
@@ -190,6 +215,13 @@ export function ConversationItem({
                     title
                   )}
                 </p>
+                {/* «تجريبية» — names the row as furniture, not the user's own
+                    content, before they click into a read-only conversation. */}
+                {isDemo && (
+                  <span className="shrink-0 rounded-full bg-pill px-1.5 py-0.5 text-[10px] font-medium leading-none text-pill-fg">
+                    تجريبية
+                  </span>
+                )}
               </div>
 
               {snippet && (
@@ -215,31 +247,40 @@ export function ConversationItem({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-40">
-                  <DropdownMenuItem onClick={handleToggleStar}>
-                    {isStarred ? (
-                      <>
-                        <StarOff className="h-3.5 w-3.5 me-2" />
-                        إزالة التمييز
-                      </>
-                    ) : (
-                      <>
-                        <Star className="h-3.5 w-3.5 me-2" />
-                        تمييز بنجمة
-                      </>
-                    )}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleStartRename}>
-                    <Pencil className="h-3.5 w-3.5 me-2" />
-                    إعادة تسمية
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setShowDeleteDialog(true)}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5 me-2" />
-                    حذف
-                  </DropdownMenuItem>
+                  {isDemo ? (
+                    <DropdownMenuItem onClick={handleHideDemo}>
+                      <EyeOff className="h-3.5 w-3.5 me-2" />
+                      إخفاء
+                    </DropdownMenuItem>
+                  ) : (
+                    <>
+                      <DropdownMenuItem onClick={handleToggleStar}>
+                        {isStarred ? (
+                          <>
+                            <StarOff className="h-3.5 w-3.5 me-2" />
+                            إزالة التمييز
+                          </>
+                        ) : (
+                          <>
+                            <Star className="h-3.5 w-3.5 me-2" />
+                            تمييز بنجمة
+                          </>
+                        )}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={handleStartRename}>
+                        <Pencil className="h-3.5 w-3.5 me-2" />
+                        إعادة تسمية
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => setShowDeleteDialog(true)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 me-2" />
+                        حذف
+                      </DropdownMenuItem>
+                    </>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>

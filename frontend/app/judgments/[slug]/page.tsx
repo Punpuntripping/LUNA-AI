@@ -8,6 +8,8 @@ import {
   TrustLine,
   MetadataCard,
   CourtLevelBadge,
+  JudgmentSummaryButton,
+  JudgmentSummaryPanel,
   LeadSummary,
   TocList,
   TocRail,
@@ -18,6 +20,7 @@ import {
   AskRayhanWidget,
 } from "@/components/library/blocks";
 import { FullContentGate } from "@/components/library/FullContentGate";
+import { LibraryRevealProvider } from "@/components/library/LibraryReveal";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
 import { getJudgmentDoc, toSnippet } from "@/lib/library/api";
@@ -183,9 +186,23 @@ export default async function JudgmentDocPage({ params }: PageProps) {
       : {}),
   };
 
+  // Is any of the RULING behind the gate. Read by the use beacon, the shared
+  // reveal and the body gate — deriving it three times is how the three drift.
+  // NOT the same question as «is there anything to unlock on this page»: «ملخص
+  // ريحان» is gated on every ruling that has one, including a short ruling whose
+  // text ships whole.
+  const bodyGated =
+    doc.gate_effective === "gated" ||
+    doc.hidden_section_count > 0 ||
+    doc.sections.some((section) => section.is_truncated);
+
   return (
     <LibraryPageShell maxWidth="hub">
-      <LibraryUseBeacon contentType="judgment" slug={doc.slug} gate={doc.gate_effective === "gated" || doc.hidden_section_count > 0 || doc.sections.some((s) => s.is_truncated) ? "gated" : "open"} />
+      <LibraryUseBeacon
+        contentType="judgment"
+        slug={doc.slug}
+        gate={bodyGated ? "gated" : "open"}
+      />
       <JsonLd data={articleNode} />
 
       <div className="space-y-6">
@@ -219,107 +236,134 @@ export default async function JudgmentDocPage({ params }: PageProps) {
             sticky beside the scrolling text. On mobile the rail is hidden and
             the TOC renders inline before the sections. */}
         <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start lg:gap-10">
-          <div className="min-w-0 space-y-6 lg:max-w-3xl">
-            {metadataItems.length > 0 && <MetadataCard items={metadataItems} />}
-
-            {/* ALWAYS FREE — the AI-written lead is the ranking layer and is
-                never gated, whatever `gate_effective` says about the body. */}
-            {doc.summary_md && <LeadSummary text={doc.summary_md} />}
-
-            {tocEntries.length > 0 && (
-              <div className="lg:hidden">
-                <TocList
-                  entries={tocEntries}
-                  title="محتويات الحكم"
-                  badge={tocBadge}
-                  defaultOpen={false}
+          {/* ONE unlock for this ruling. The provider renders no DOM — it only
+              hands the «ملخص ريحان» button in the metadata card and the body's
+              `FullContentGate` the SAME reveal state, because one
+              `/library/full/judgment/{slug}` response carries both the summary
+              and the full sections. Without it the two surfaces would each open
+              (and each charge for) their own copy of one ruling. */}
+          <LibraryRevealProvider
+            contentType="judgment"
+            fullKey={doc.slug}
+            gated={bodyGated || doc.has_summary}
+          >
+            <div className="min-w-0 space-y-6 lg:max-w-3xl">
+              {metadataItems.length > 0 && (
+                <MetadataCard
+                  items={metadataItems}
+                  footer={
+                    <JudgmentSummaryButton
+                      hasSummary={doc.has_summary}
+                      // A ruling that ships whole renders no body gate, so this
+                      // button is then the page's ONLY metered action and has to
+                      // carry the allowance chip itself.
+                      showBalance={!bodyGated}
+                    />
+                  }
                 />
-              </div>
-            )}
-
-            {/* The ruling itself. Anon readers get the free sections (الوقائع،
-                المنطوق، منطوق حكم الاستئناف) plus gate-truncated previews of the
-                rest; a signed-in reader's browser swaps in the full section list
-                via the authed endpoint — `kind="sections"` consumes the exact
-                same `{ sections: [...] }` envelope regulations use. Additive:
-                any failure leaves the anon render untouched. */}
-            <FullContentGate
-              contentType="judgment"
-              kind="sections"
-              fullKey={doc.slug}
-              // No reveal action on a ruling that already renders in full — an
-              // unlock must never be spendable on nothing.
-              gated={
-                doc.gate_effective === "gated" ||
-                doc.hidden_section_count > 0 ||
-                doc.sections.some((section) => section.is_truncated)
-              }
-              hiddenSections={doc.hidden_section_count}
-            >
-              {doc.sections.length > 0 && (
-                <div className="space-y-8">
-                  {doc.sections.map((section) => {
-                    const gate: GateInfo | undefined = section.is_truncated
-                      ? {
-                          isTruncated: true,
-                          hiddenPlaceholderLines:
-                            section.hidden_placeholder_lines,
-                          ctaHref: "/login",
-                        }
-                      : undefined;
-                    return (
-                      <section
-                        key={section.id}
-                        id={`sec-${section.id}`}
-                        className="scroll-mt-24 space-y-3.5"
-                      >
-                        <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
-                          {section.title}
-                        </h2>
-                        <ArticleBody
-                          visibleText={section.text}
-                          gate={gate}
-                          plain
-                          dedupeHeading={section.title}
-                          // When the document also has a trailing hidden-section
-                          // CTA card, every per-section gate renders bars-only so
-                          // that single card is the ONE conversion surface (no
-                          // stacked cards at the truncation tail).
-                          gateBarsOnly={doc.hidden_section_count > 0}
-                        />
-                      </section>
-                    );
-                  })}
-                </div>
               )}
 
-              {doc.hidden_section_count > 0 && (
-                /* id = the TocRail click-fallback target: an anon click on a
-                   section that isn't rendered lands here (the gate). */
-                <div id="library-doc-gate" className="scroll-mt-24">
-                  <GateBanner
-                    hiddenPlaceholderLines={Math.min(
-                      doc.hidden_section_count,
-                      6,
-                    )}
-                    ctaHref="/login"
-                    ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا من الحكم بانتظارك — سجّل مجانًا لعرضه كاملًا`}
+              {/* The revealed «ملخص ريحان» — renders nothing until the button
+                  above (or the body CTA below) spends the unlock. */}
+              <JudgmentSummaryPanel />
+
+              {/* ALWAYS FREE — the AI-written lead is the ranking layer and is
+                  never gated, whatever `gate_effective` says about the body. */}
+              {doc.summary_md && <LeadSummary text={doc.summary_md} />}
+
+              {tocEntries.length > 0 && (
+                <div className="lg:hidden">
+                  <TocList
+                    entries={tocEntries}
+                    title="محتويات الحكم"
+                    badge={tocBadge}
+                    defaultOpen={false}
                   />
                 </div>
               )}
-            </FullContentGate>
 
-            {/* The citation mesh — every ruling is an inbound link into the
-                /regulations corpus, and the reason this wing exists for SEO. */}
-            <CitedRegulations
-              items={doc.cited_regulations}
-              total={doc.cited_total}
-            />
+              {/* The ruling itself. Anon readers get the free sections (الوقائع،
+                  المنطوق، منطوق حكم الاستئناف) plus gate-truncated previews of
+                  the rest; a signed-in reader's browser swaps in the full section
+                  list via the authed endpoint — `kind="sections"` consumes the
+                  exact same `{ sections: [...] }` envelope regulations use.
+                  Additive: any failure leaves the anon render untouched. */}
+              <FullContentGate
+                contentType="judgment"
+                kind="sections"
+                fullKey={doc.slug}
+                // No reveal action on a ruling that already renders in full — an
+                // unlock must never be spendable on nothing. This is the BODY's
+                // question only: a ruling that ships whole still offers «ملخص
+                // ريحان» in the card above, which is gated on its own.
+                gated={bodyGated}
+                hiddenSections={doc.hidden_section_count}
+              >
+                {doc.sections.length > 0 && (
+                  <div className="space-y-8">
+                    {doc.sections.map((section) => {
+                      const gate: GateInfo | undefined = section.is_truncated
+                        ? {
+                            isTruncated: true,
+                            hiddenPlaceholderLines:
+                              section.hidden_placeholder_lines,
+                            ctaHref: "/login",
+                          }
+                        : undefined;
+                      return (
+                        <section
+                          key={section.id}
+                          id={`sec-${section.id}`}
+                          className="scroll-mt-24 space-y-3.5"
+                        >
+                          <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
+                            {section.title}
+                          </h2>
+                          <ArticleBody
+                            visibleText={section.text}
+                            gate={gate}
+                            plain
+                            dedupeHeading={section.title}
+                            // When the document also has a trailing hidden-section
+                            // CTA card, every per-section gate renders bars-only
+                            // so that single card is the ONE conversion surface
+                            // (no stacked cards at the truncation tail).
+                            gateBarsOnly={doc.hidden_section_count > 0}
+                          />
+                        </section>
+                      );
+                    })}
+                  </div>
+                )}
 
-            {officialSources.length > 0 && (
-              <OfficialSources sources={officialSources} />
-            )}
-          </div>
+                {doc.hidden_section_count > 0 && (
+                  /* id = the TocRail click-fallback target: an anon click on a
+                     section that isn't rendered lands here (the gate). */
+                  <div id="library-doc-gate" className="scroll-mt-24">
+                    <GateBanner
+                      hiddenPlaceholderLines={Math.min(
+                        doc.hidden_section_count,
+                        6,
+                      )}
+                      ctaHref="/login"
+                      ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا من الحكم بانتظارك — سجّل مجانًا لعرضه كاملًا`}
+                    />
+                  </div>
+                )}
+              </FullContentGate>
+
+              {/* The citation mesh — every ruling is an inbound link into the
+                  /regulations corpus, and the reason this wing exists for SEO. */}
+              <CitedRegulations
+                items={doc.cited_regulations}
+                total={doc.cited_total}
+              />
+
+              {officialSources.length > 0 && (
+                <OfficialSources sources={officialSources} />
+              )}
+            </div>
+          </LibraryRevealProvider>
 
           {tocEntries.length > 0 && (
             <aside

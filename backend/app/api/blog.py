@@ -73,6 +73,7 @@ from backend.app.services import (
     workspace_service,
 )
 from backend.app.services.case_service import get_user_id
+from backend.app.services.demo_service import is_demo_item
 from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
 from backend.app.services.references_service import (
     build_reference_source_view,
@@ -397,6 +398,18 @@ async def share_artifact(
     blog_service.assert_publishable(item)
 
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+
+    # The demo allowance in ``get_workspace_item`` is READ-only, and this is the
+    # one write it did not refuse for free: the demo WI is ``kind='agent_search'``,
+    # which ``assert_publishable`` accepts, so without this guard any account
+    # could mint a blog post out of the tour's fixture. Owner behaviour is
+    # unchanged — only non-owners are turned away.
+    if is_demo_item(item_id) and item.get("user_id") != user_id:
+        raise LunaHTTPException(
+            status_code=403,
+            code=ErrorCode.FORBIDDEN,
+            detail="لا يمكن نشر عنصر من المحادثة التجريبية",
+        )
 
     # Snapshot fields from the artifact.
     metadata = item.get("metadata") or {}

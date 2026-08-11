@@ -14,6 +14,10 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
+from backend.app.services.demo_service import (
+    DEMO_CONVERSATION_ID,
+    is_demo_conversation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,13 @@ def list_conversations(
     When ``starred`` is True, only starred conversations are returned.
     Ordering: starred first (most-recently-starred), then most-recent updated.
     Returns dict with conversations list, total count, and has_more flag.
+
+    The shared demo conversation (``demo_service``) is prepended to the FIRST
+    page of the plain, unfiltered list — and only there. It is furniture, not
+    the user's content, so it must not appear inside a ``case_id`` view, inside
+    the starred view, or on page 2+ (where it would duplicate itself on every
+    scroll). Search has its own entry point (``search_conversations``) and is
+    deliberately left demo-free for the same reason.
     """
     user_id = get_user_id(supabase, auth_id)
 
@@ -69,13 +80,28 @@ def list_conversations(
     total = result.count or 0
     conversations = result.data or []
 
-    # Enrich with is_active / is_starred derived fields
+    # Enrich with is_active / is_starred / is_demo derived fields
     enriched = [_enrich_conversation(c) for c in conversations]
+
+    # ``has_more`` is computed from the RAW count, before the demo row is
+    # added: it drives the infinite-scroll cursor, and the demo occupies no
+    # slot in the underlying offset window. Bumping it here would hand the
+    # sidebar an extra, empty page.
+    has_more = (offset + limit) < total
+
+    # The demo allowance — first page of the plain list only.
+    if offset == 0 and case_id is None and not starred:
+        demo = _fetch_demo_conversation(supabase)
+        # The owner already has it in ``conversations`` above; prepending would
+        # show it to them twice.
+        if demo is not None and demo.get("user_id") != user_id:
+            enriched.insert(0, _enrich_conversation(demo))
+            total += 1
 
     return {
         "conversations": enriched,
         "total": total,
-        "has_more": (offset + limit) < total,
+        "has_more": has_more,
     }
 
 
@@ -265,19 +291,25 @@ def get_conversation(
     """
     Get a single conversation by ID.
     Verifies ownership (returns 404 if not owned or not found).
+
+    Exception: the shared demo conversation is readable by every account, so
+    the ``user_id`` filter is dropped for that ONE hardcoded id
+    (``demo_service``). This is a read; ``update``/``delete``/``end_session``
+    keep going through ``_verify_conversation_ownership`` and keep refusing
+    non-owners.
     """
     user_id = get_user_id(supabase, auth_id)
 
     try:
-        result = (
+        query = (
             supabase.table("conversations")
             .select("*")
             .eq("conversation_id", conversation_id)
-            .eq("user_id", user_id)
             .is_("deleted_at", "null")
-            .maybe_single()
-            .execute()
         )
+        if not is_demo_conversation(conversation_id):
+            query = query.eq("user_id", user_id)
+        result = query.maybe_single().execute()
     except Exception as e:
         logger.exception("Error fetching conversation: %s", e)
         raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ أثناء جلب المحادثة")
@@ -407,11 +439,42 @@ def _enrich_conversation(conv: dict) -> dict:
     Add derived fields to a raw conversation row:
       * is_active  — ended_at is None
       * is_starred — starred_at is not None
+      * is_demo    — this is the shared demo conversation
     Returns the same dict (mutated) for convenience.
+
+    ``is_demo`` is DERIVED, never stored and never echoed back from the client.
+    The frontend pins/chips/read-onlys off this boolean and so never has to
+    carry the id — and cannot spoof it, because nothing reads it inbound.
     """
     conv["is_active"] = conv.get("ended_at") is None
     conv["is_starred"] = conv.get("starred_at") is not None
+    conv["is_demo"] = is_demo_conversation(conv.get("conversation_id"))
     return conv
+
+
+def _fetch_demo_conversation(supabase: SupabaseClient) -> Optional[dict]:
+    """The shared demo conversation row, or None.
+
+    Fail-soft on EVERY path: a missing fixture (wrong environment, row deleted)
+    or a query error must degrade to "no demo in the sidebar", never to a 500
+    on the user's conversation list.
+    """
+    try:
+        result = (
+            supabase.table("conversations")
+            .select("*")
+            .eq("conversation_id", DEMO_CONVERSATION_ID)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001 — best effort
+        logger.warning("Demo conversation lookup failed: %s", e)
+        return None
+
+    if result is None or result.data is None:
+        return None
+    return result.data
 
 
 def _escape_ilike(value: str) -> str:

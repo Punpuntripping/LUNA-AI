@@ -10,7 +10,7 @@
 //
 //   GET /api/v1/library/full/{content_type}/{key}
 //     200 → regulation → { sections: [{ id, title, text }] }
-//           judgment   → { sections: [{ id, title, text }] }   (same shape)
+//           judgment   → { sections: [...], summary_md }  (+ «ملخص ريحان»)
 //           article    → { text, sharh_md }
 //           circular   → { text }
 //           form       → { body_md }
@@ -84,6 +84,19 @@ export interface FullRegulation extends WithOfficialSources {
   sections: FullSection[];
 }
 
+/**
+ * A judgment's reveal: the regulation envelope PLUS «ملخص ريحان» — the
+ * structured AI summary of the ruling (`cases.summary`, pipeline sections
+ * stripped server-side). Null when that ruling has none (~18 of 30,531).
+ *
+ * It rides the SAME response as `sections`, so ONE unlock buys both: the page's
+ * summary button and its «اعرض النص كاملاً» panel share a single reveal rather
+ * than charging twice for one ruling.
+ */
+export interface FullJudgment extends FullRegulation {
+  summary_md?: string | null;
+}
+
 export interface FullArticle extends WithOfficialSources {
   text: string;
   /**
@@ -104,6 +117,7 @@ export interface FullForm extends WithOfficialSources {
 
 export type FullContentPayload =
   | FullRegulation
+  | FullJudgment
   | FullArticle
   | FullCircular
   | FullForm;

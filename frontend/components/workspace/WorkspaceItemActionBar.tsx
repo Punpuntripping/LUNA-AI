@@ -1,6 +1,11 @@
 "use client";
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import {
   Eye,
   Pencil,
@@ -45,6 +50,16 @@ interface WorkspaceItemActionBarProps {
    */
   onSaveBlog?: () => void;
   /**
+   * When set, «مشاركة» and «حفظ كمدونة» still RENDER but are disabled, with
+   * this string as the hover hint («متاح في محادثاتك»).
+   *
+   * Used by the shared demo conversation, where both are refused server-side
+   * anyway (§3.4) — the point is that the refusal is *visible* as a disabled
+   * affordance instead of arriving as an error, and that the tour's Act 4 has
+   * something to point at.
+   */
+  publishDisabledHint?: string;
+  /**
    * Current 👍/👎 rating. Pass with ``onFeedback`` to render the like/dislike
    * pair (agent outputs only). Clicking the active thumb clears the rating.
    */
@@ -81,6 +96,7 @@ export function WorkspaceItemActionBar({
   editDisabled = false,
   onShare,
   onSaveBlog,
+  publishDisabledHint,
   feedback,
   onFeedback,
   feedbackPending = false,
@@ -104,6 +120,7 @@ export function WorkspaceItemActionBar({
   const showToggle = mode !== undefined && onModeChange !== undefined;
   const showFeedback = onFeedback !== undefined;
   const canCopy = copyText.trim().length > 0;
+  const publishDisabled = !!publishDisabledHint;
 
   const handleCopy = async () => {
     try {
@@ -167,6 +184,8 @@ export function WorkspaceItemActionBar({
       <div
         ref={barRef}
         dir="rtl"
+        // Tour anchor (Act 4, step 11) — مشاركة + حفظ كمدونة. Inert attribute.
+        data-tour="wi-action-bar"
         className={cn(
           floating
             ? "absolute z-20 flex select-none items-center gap-1 rounded-lg border bg-background/95 px-1.5 py-1 shadow-md backdrop-blur supports-[backdrop-filter]:bg-background/80"
@@ -230,31 +249,37 @@ export function WorkspaceItemActionBar({
         )}
 
         {onShare && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-            onClick={onShare}
-            aria-label="مشاركة عبر رابط"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            مشاركة
-          </Button>
+          <DisabledHint hint={publishDisabledHint}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={onShare}
+              disabled={publishDisabled}
+              aria-label="مشاركة عبر رابط"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              مشاركة
+            </Button>
+          </DisabledHint>
         )}
 
         {onSaveBlog && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-            onClick={onSaveBlog}
-            aria-label="حفظ كمدونة"
-          >
-            <BookmarkPlus className="h-3.5 w-3.5" />
-            حفظ كمدونة
-          </Button>
+          <DisabledHint hint={publishDisabledHint}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={onSaveBlog}
+              disabled={publishDisabled}
+              aria-label="حفظ كمدونة"
+            >
+              <BookmarkPlus className="h-3.5 w-3.5" />
+              حفظ كمدونة
+            </Button>
+          </DisabledHint>
         )}
 
         <Button
@@ -344,5 +369,32 @@ export function WorkspaceItemActionBar({
         )}
       </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Hover hint for a DISABLED button.
+ *
+ * A wrapper rather than a `title` on the button itself: browsers suppress
+ * pointer events on disabled form controls, so a `title` sitting on the button
+ * never surfaces — the ancestor's does. Radix `Tooltip` has the same problem
+ * for the same reason (its trigger never sees `pointerenter`), which is why
+ * this is a native title.
+ *
+ * With no hint it renders the child untouched — no extra element, so the
+ * ordinary (enabled) bar keeps exactly the flex layout it always had.
+ */
+function DisabledHint({
+  hint,
+  children,
+}: {
+  hint?: string;
+  children: ReactNode;
+}) {
+  if (!hint) return <>{children}</>;
+  return (
+    <span title={hint} className="inline-flex">
+      {children}
+    </span>
   );
 }

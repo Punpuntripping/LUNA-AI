@@ -46,6 +46,7 @@ from backend.app.models.responses import (
 from backend.app.models.requests import UpdateWorkspaceItemRequest, UploadInitRequest
 from backend.app.services import library_service, message_service, workspace_service
 from backend.app.services.case_service import get_user_id
+from backend.app.services.demo_service import is_demo_item
 from backend.app.services.reference_resolver import ResolvedRef, resolve_ref
 from backend.app.services.references_service import (
     build_reference_source_view,
@@ -363,7 +364,14 @@ async def get_reference_source(
     4. **Entitlement** via ``resolve_access(..., surface='reference')``.
        ``surface`` is analytics ONLY — it must never change the charge, or this
        endpoint becomes the bypass it was built to close (migration 104).
-    5. **Build + shelf.** One ``record_use`` call, here (D16.2).
+       The one exemption above ``resolve_access`` is the shared demo item, and
+       it is keyed on a HARDCODED ``item_id`` (``demo_service.DEMO_ITEM_ID``),
+       never on caller-supplied input — no query param, no header, no body
+       flag. That is precisely why it is not the migration-104 bypass: the
+       caller cannot name the thing that goes free.
+    5. **Build + shelf.** One ``record_use`` call, here (D16.2) — skipped for
+       the demo item, so a tutorial never writes into the user's «مكتبتي» or
+       «استُخدم مؤخرًا».
 
     Returns 200 with ``source_view``, ``unlocked`` (what was unlocked — the نظام,
     not the chunk, per D15.1) and ``balance``; or the D14 402 refusal body;
@@ -400,7 +408,21 @@ async def get_reference_source(
     # 4. ENTITLEMENT. user_id is a users.user_id — NEVER an auth_id.
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
 
-    if resolved.always_free:
+    # The product tour reveals sources to teach what a reference IS. Charging
+    # for that would bill a new user for the demo, and — worse — a locked meter
+    # would make the tour dead-end on step 6. Free, no ledger row, no balance
+    # movement.
+    #
+    # SECURITY: the guard is ``is_demo_item(item_id)`` and nothing looser.
+    # ``item_id`` is a path segment that must equal one hardcoded uuid; there is
+    # no "demo" flag, header or query param a caller could set, and ``surface``
+    # is untouched. Widening this to anything the client controls re-opens the
+    # metering bypass of migration 104.
+    if is_demo_item(item_id):
+        decision = library_service.AccessDecision(
+            may_unlock=True, charged=False, reason="open"
+        )
+    elif resolved.always_free:
         # Policy-open: a compliance service (§1.3) or a short circular that the
         # public page already serves in full. No charge, no ledger row — and no
         # quota numbers either, so the balance chip is left alone.
@@ -434,10 +456,14 @@ async def get_reference_source(
             headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
         )
 
-    # 6. Shelf the use — once, here, charged or not (D16.2).
-    await _record_library_use(
-        supabase, user_id, resolved.content_type, resolved.content_id
-    )
+    # 6. Shelf the use — once, here, charged or not (D16.2). The demo is the
+    # single exception: a tutorial must not push rows onto the user's library
+    # shelf or pollute «استُخدم مؤخرًا» with sources they never chose to read.
+    # Skipping the whole call (not just the charge) is the point.
+    if not is_demo_item(item_id):
+        await _record_library_use(
+            supabase, user_id, resolved.content_type, resolved.content_id
+        )
 
     response.headers["Cache-Control"] = _SOURCE_CACHE_CONTROL
     return {

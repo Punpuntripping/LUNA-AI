@@ -93,6 +93,31 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
   return PRICING_PLANS.find((plan) => plan.id === id);
 }
 
+/**
+ * The cheapest purchasable plan — what «ابتداءً من …» quotes in the free-quota
+ * upgrade dialog.
+ *
+ * Derived, never hard-coded: a repricing that reorders the catalog would
+ * otherwise leave the dialog advertising a price no card shows. Compared on the
+ * parsed Arabic-Indic string rather than a second numeric field, so there is
+ * still exactly one place a price is written down.
+ */
+export function cheapestPricingPlan(): PricingPlan {
+  return PRICING_PLANS.reduce((cheapest, plan) =>
+    arabicPriceToNumber(plan.price) < arabicPriceToNumber(cheapest.price)
+      ? plan
+      : cheapest,
+  );
+}
+
+/** «٤٩٫٩٠» → 49.9. Arabic-Indic digits + the ٫ separator back to a JS number. */
+function arabicPriceToNumber(price: string): number {
+  const latin = price.replace(/[٠-٩]/g, (d) =>
+    String("٠١٢٣٤٥٦٧٨٩".indexOf(d)),
+  );
+  return Number(latin.replace("٫", "."));
+}
+
 // -----------------------------------------------
 // Phase E — the copy that must appear before purchase
 // -----------------------------------------------

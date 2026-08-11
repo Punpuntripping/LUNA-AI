@@ -428,6 +428,10 @@ export const MessageBubble = memo(function MessageBubble({
       <div
         dir="rtl"
         lang="ar"
+        // Tour anchor (Act 1, step 1) — «محادثتك والردود، تمامًا كما تتوقع».
+        // Inert: an attribute the tour engine resolves with
+        // `[data-tour="chat-thread"]`; it changes no behaviour and no layout.
+        data-tour="chat-thread"
         className={cn(
           "w-full group/bubble",
           // An agent question binds tightly to the user's upcoming reply;
@@ -756,6 +760,10 @@ function ArtifactChip({
     return (
       <Button
         size="sm"
+        // Tour anchor (Act 1, step 2) — the «افتح التحليل القانوني WI-1» CTA
+        // the user is asked to click. Inert attribute; both branches of this
+        // chip carry it, and only one ever renders per message.
+        data-tour="artifact-chip"
         className={baseButtonClass}
         onClick={() => onOpenArtifact?.(id)}
       >
@@ -776,7 +784,12 @@ function ArtifactChip({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" className={baseButtonClass} aria-label="فتح المصادر">
+        <Button
+          size="sm"
+          data-tour="artifact-chip"
+          className={baseButtonClass}
+          aria-label="فتح المصادر"
+        >
           <BookOpen className="h-3.5 w-3.5" />
           افتح المصادر ({artifactIds.length})
         </Button>

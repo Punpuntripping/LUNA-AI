@@ -3,6 +3,8 @@
 import { MessageSquareOff, ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useConversations } from "@/hooks/use-conversations";
+import { isDemoConversation } from "@/hooks/use-demo-conversation";
+import { usePreferencesStore } from "@/stores/preferences-store";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
 
 /** Cap the sidebar at the top recent conversations (starred float in first). */
@@ -21,6 +23,10 @@ function ConversationSkeleton() {
 export function ConversationList() {
   const router = useRouter();
   const { data, isLoading, isError } = useConversations(null);
+  // D8: «إخفاء» is a per-user preference, never a delete — the demo row is one
+  // shared conversation, so hiding it can only ever be a client-side filter.
+  // Defaults to false and only flips on a successful hydrate.
+  const demoHidden = usePreferencesStore((s) => s.demoConversationHidden);
 
   if (isLoading) {
     return (
@@ -42,8 +48,18 @@ export function ConversationList() {
     );
   }
 
-  const allConversations = data?.conversations ?? [];
-  // Server already orders starred-first then most-recent; just cap the sidebar.
+  const visible = (data?.conversations ?? []).filter(
+    (conv) => !(demoHidden && isDemoConversation(conv)),
+  );
+  // Server already orders starred-first then most-recent. The demo pins ABOVE
+  // all of it (§4.1) — a stable partition, so the server's ordering survives
+  // inside each group and a starred conversation still leads the real list.
+  const allConversations = [
+    ...visible.filter(isDemoConversation),
+    ...visible.filter((conv) => !isDemoConversation(conv)),
+  ];
+  // Cap the sidebar AFTER pinning, or the demo could fall off the end of a
+  // busy account's list.
   const conversations = allConversations.slice(0, SIDEBAR_LIMIT);
 
   if (allConversations.length === 0) {

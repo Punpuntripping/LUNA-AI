@@ -21,6 +21,7 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
+from backend.app.services.demo_service import is_demo_conversation
 from backend.app.services.masking_service import (
     build_turn_codec,
     decode_text,
@@ -183,6 +184,44 @@ def verify_conversation_ownership(
     return result.data
 
 
+def verify_conversation_read_access(
+    supabase: SupabaseClient,
+    conversation_id: str,
+    user_id: str,
+) -> dict:
+    """READ-ONLY gate: ownership, OR the shared demo conversation.
+
+    ⚠ Never call this from a write path. ``verify_conversation_ownership`` is
+    the gate for POST/PATCH/DELETE — sending a message, uploading an
+    attachment, importing a blog into a conversation — and it is deliberately
+    left strict so a non-owner is still refused everywhere in the demo. This
+    variant exists only so ``list_messages`` can render the tour's transcript.
+
+    The relaxation is keyed on the hardcoded ``DEMO_CONVERSATION_ID`` alone;
+    the row must still exist and still be un-deleted.
+    """
+    if not is_demo_conversation(conversation_id):
+        return verify_conversation_ownership(supabase, conversation_id, user_id)
+
+    try:
+        result = (
+            supabase.table("conversations")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error loading demo conversation: %s", e)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.INTERNAL_ERROR, detail="حدث خطأ داخلي")
+
+    if result is None or result.data is None:
+        raise LunaHTTPException(status_code=404, code=ErrorCode.CONV_NOT_FOUND, detail="المحادثة غير موجودة")
+
+    return result.data
+
+
 def list_messages(
     supabase: SupabaseClient,
     auth_id: str,
@@ -191,12 +230,17 @@ def list_messages(
     limit: int = 50,
     before: Optional[str] = None,
 ) -> dict:
-    """Paginated message list with ownership check. Newest first."""
+    """Paginated message list with ownership check. Newest first.
+
+    Read path — so it goes through ``verify_conversation_read_access``, which
+    is ownership plus the one shared demo conversation. Sending a message still
+    goes through the strict ``verify_conversation_ownership``.
+    """
     user_id = get_user_id(supabase, auth_id)
     # ``verify_conversation_ownership`` already short-circuits on invalid UUID
     # via the _is_valid_uuid pre-flight, so the optimistic-placeholder case
     # is handled here transparently.
-    verify_conversation_ownership(supabase, conversation_id, user_id)
+    verify_conversation_read_access(supabase, conversation_id, user_id)
 
     limit = max(1, min(limit, 100))
 
@@ -492,11 +536,90 @@ async def send_message_stream(
     # after the dedup check and before ANY await. A placeholder message_id is
     # used; the real assistant_msg_id is written into the slot once the
     # placeholder is inserted below. This closes the race: if a concurrent send
-    # arrives during any of the awaits that follow (user-msg insert, quota check,
+    # arrives during any of the awaits that follow (quota check, user-msg insert,
     # placeholder insert) it will see task=None and block. Every early-return
     # path between here and the task-spawn must explicitly clear the slot.
     _SLOT_PLACEHOLDER = "__reserving__"
     _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=_SLOT_PLACEHOLDER)
+
+    # 0c. Quota gate — fires once per message, BEFORE anything is persisted.
+    #
+    # Ordering matters and is deliberate: a blocked send writes NOTHING. An
+    # earlier build saved the user row first and let the gate reject afterwards,
+    # which left a permanently unanswered user message in the thread — nothing
+    # ever picked it back up when the window reset, no retry path could reach it
+    # (`QuotaBanner` has no retry, and `retryMessage` re-sends the *content* as a
+    # new row), and `context_service` fed the orphan turn into the NEXT request's
+    # history as a second consecutive user message. The client re-hydrates the
+    # composer from the `quota_exceeded` event instead, so nothing is lost.
+    #
+    # Nothing here depends on the user message existing — the meters key off
+    # user_id, and OCR projection off attachment_ids — so the gate sits cleanly
+    # above the insert. Three independent meters (ocr / ord / web): if any
+    # (meter, period) is over limit, emit `quota_exceeded` and end the stream
+    # without spawning the pipeline.
+    #
+    # Project OCR pages from each attachment's stored page count (client-reported
+    # at upload; real ocr_pages on a re-sent file) so the gate counts multi-page
+    # documents accurately before OCR runs — not 1 page per file. Falls back to a
+    # 1-page floor per attachment when unknown. The post-OCR settle remains the
+    # authoritative billing count; this only drives the pre-send block decision.
+    est_ocr_pages = 0
+    if attachment_ids:
+        try:
+            est_ocr_pages = await run_db(
+                _estimate_ocr_pages, supabase, attachment_ids
+            )
+        except Exception:  # noqa: BLE001
+            est_ocr_pages = len(attachment_ids)
+    try:
+        await quota.check(
+            getattr(request.app.state, "redis", None),
+            supabase,
+            user_id,
+            needs_ocr=bool(attachment_ids),
+            est_ocr_pages=est_ocr_pages,
+            needs_ord=True,
+            needs_web=False,  # future skill
+        )
+    except quota.PlanInactive as pi:
+        # No plan assigned (users.plan_id IS NULL) — account locked until the
+        # operator activates it in Supabase. Same SSE event as quota_exceeded
+        # so the existing banner renders the Arabic notice. Carries plan_id=None
+        # so the frontend does NOT offer plans for sale: buying one does not
+        # unlock an unactivated account.
+        _logfire.info("message.plan_inactive", conversation_id=conversation_id)
+        _active_runs.pop(conversation_id, None)  # release slot — task never created
+        yield _sse_event("quota_exceeded", pi.to_event_payload())
+        return
+    except quota.QuotaExceeded as qe:
+        _logfire.info(
+            "message.quota_exceeded",
+            conversation_id=conversation_id,
+            meter=qe.meter,
+            period=qe.period,
+            used=float(qe.used),
+            limit=float(qe.limit),
+            plan_id=qe.plan_id,
+        )
+        _active_runs.pop(conversation_id, None)  # release slot — task never created
+        yield _sse_event("quota_exceeded", qe.to_event_payload())
+        return
+    except quota.QuotaUnavailable as qu:
+        # Quota store is degraded — fail closed so we don't silently allow
+        # unlimited spend. Nothing has been persisted yet, so no orphan rows.
+        _logfire.warn(
+            "message.quota_unavailable",
+            conversation_id=conversation_id,
+            meter=qu.meter,
+            period=qu.period,
+        )
+        _active_runs.pop(conversation_id, None)  # release slot — task never created
+        yield _sse_event("error", {
+            "detail": quota.QUOTA_UNAVAILABLE_AR,
+            "code": "QUOTA_UNAVAILABLE",
+        })
+        return
 
     # 1. Save user message BEFORE AI call (Absolute Rule #7)
     user_msg_id = str(uuid.uuid4())
@@ -529,71 +652,6 @@ async def send_message_stream(
             )
         except Exception as e:
             logger.warning("Error linking attachments: %s", e)
-
-    # 1c. Quota gate — fires once per message, before OCR + router. Three
-    # independent meters (ocr / ord / web): if any (meter, period) is over
-    # limit, emit a quota_exceeded SSE event and end the stream without
-    # spawning the pipeline. The user message is already saved (kept in
-    # history); no assistant placeholder is created.
-    # Project OCR pages from each attachment's stored page count (client-reported
-    # at upload; real ocr_pages on a re-sent file) so the gate counts multi-page
-    # documents accurately before OCR runs — not 1 page per file. Falls back to a
-    # 1-page floor per attachment when unknown. The post-OCR settle remains the
-    # authoritative billing count; this only drives the pre-send block decision.
-    est_ocr_pages = 0
-    if attachment_ids:
-        try:
-            est_ocr_pages = await run_db(
-                _estimate_ocr_pages, supabase, attachment_ids
-            )
-        except Exception:  # noqa: BLE001
-            est_ocr_pages = len(attachment_ids)
-    try:
-        await quota.check(
-            getattr(request.app.state, "redis", None),
-            supabase,
-            user_id,
-            needs_ocr=bool(attachment_ids),
-            est_ocr_pages=est_ocr_pages,
-            needs_ord=True,
-            needs_web=False,  # future skill
-        )
-    except quota.PlanInactive as pi:
-        # No plan assigned (users.plan_id IS NULL) — account locked until the
-        # operator activates it in Supabase. Same SSE event as quota_exceeded
-        # so the existing banner renders the Arabic notice.
-        _logfire.info("message.plan_inactive", conversation_id=conversation_id)
-        _active_runs.pop(conversation_id, None)  # release slot — task never created
-        yield _sse_event("quota_exceeded", pi.to_event_payload())
-        return
-    except quota.QuotaExceeded as qe:
-        _logfire.info(
-            "message.quota_exceeded",
-            conversation_id=conversation_id,
-            meter=qe.meter,
-            period=qe.period,
-            used=float(qe.used),
-            limit=float(qe.limit),
-        )
-        _active_runs.pop(conversation_id, None)  # release slot — task never created
-        yield _sse_event("quota_exceeded", qe.to_event_payload())
-        return
-    except quota.QuotaUnavailable as qu:
-        # Quota store is degraded — fail closed so we don't silently allow
-        # unlimited spend. No assistant placeholder has been created yet, so
-        # no orphan row.
-        _logfire.warn(
-            "message.quota_unavailable",
-            conversation_id=conversation_id,
-            meter=qu.meter,
-            period=qu.period,
-        )
-        _active_runs.pop(conversation_id, None)  # release slot — task never created
-        yield _sse_event("error", {
-            "detail": quota.QUOTA_UNAVAILABLE_AR,
-            "code": "QUOTA_UNAVAILABLE",
-        })
-        return
 
     # 2. Create assistant message placeholder
     assistant_msg_id = str(uuid.uuid4())

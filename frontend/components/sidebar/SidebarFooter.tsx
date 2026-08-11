@@ -9,6 +9,7 @@ import {
   KeyRound,
   LogOut,
   Receipt,
+  Route,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -18,6 +19,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
+import { useTourStore } from "@/stores/tour-store";
 import { LEGAL_ROUTES } from "@/lib/legal";
 import { userDisplayName } from "@/lib/user-name";
 import { cn } from "@/lib/utils";
@@ -270,6 +272,19 @@ export function SidebarFooter() {
                     المزيد
                   </Button>
                 </div>
+                {/* Re-entry for «جولة المخرجات» (plan §8) — beside «اكتشف
+                    ريحان», because they are the same errand at two depths: the
+                    dialog is a modal skim with drawings, this one runs on the
+                    real UI. `open()` always resets to step 0. */}
+                <Button
+                  variant="ghost"
+                  className="w-full justify-start gap-2 px-2 text-sm font-medium"
+                  onClick={() => useTourStore.getState().open()}
+                  data-testid="sidebar-settings-tour-trigger"
+                >
+                  <Route className="h-4 w-4" />
+                  جولة المخرجات
+                </Button>
               </div>
             </PopoverContent>
           </Popover>

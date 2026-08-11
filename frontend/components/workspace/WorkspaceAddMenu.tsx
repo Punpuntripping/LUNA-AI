@@ -32,11 +32,20 @@ import {
 } from "@/hooks/use-workspace";
 import { useDocuments } from "@/hooks/use-documents";
 import { useChatStore } from "@/stores/chat-store";
+import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
 import type { Document } from "@/types";
 
 interface WorkspaceAddMenuProps {
   conversationId: string;
   caseId: string | null;
+  /**
+   * Shared demo conversation (plan §4.2): the button is **rendered but
+   * disabled**, with a hover hint. Act 5 of the tour points at it and explains
+   * it — hiding it would delete the anchor; enabling it would let one reader
+   * write items into everybody's conversation (the POST is refused server-side
+   * regardless; this makes the refusal visible instead of an error).
+   */
+  isDemo?: boolean;
 }
 
 /**
@@ -53,6 +62,7 @@ interface WorkspaceAddMenuProps {
 export function WorkspaceAddMenu({
   conversationId,
   caseId,
+  isDemo = false,
 }: WorkspaceAddMenuProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
@@ -96,15 +106,24 @@ export function WorkspaceAddMenu({
 
   return (
     <>
-      <div dir="rtl" className="border-t bg-background p-2">
+      {/* The hint lives on this wrapper, not on the button: browsers suppress
+          pointer events on a disabled control, so its own `title` would never
+          surface. `title` is undefined off-demo, so nothing changes there. */}
+      <div
+        dir="rtl"
+        className="border-t bg-background p-2"
+        title={isDemo ? DEMO_DISABLED_HINT : undefined}
+      >
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
               size="sm"
+              // Tour anchor (Act 5, step 13) — «كل مخرجات المحادثة تتجمّع هنا».
+              data-tour="workspace-add"
               className="w-full justify-center gap-2 h-9 rounded-full"
               aria-label="إضافة عنصر"
-              disabled={isPending}
+              disabled={isPending || isDemo}
             >
               {isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />

@@ -8,6 +8,7 @@ import {
   useConversationWorkspace,
 } from "@/hooks/use-workspace";
 import { useConversationDetail } from "@/hooks/use-conversations";
+import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { AttachmentRenderer } from "./AttachmentRenderer";
 import { NoteEditor } from "./NoteEditor";
 import { AgentSearchViewer } from "./AgentSearchViewer";
@@ -63,6 +64,10 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
   // Needed by WorkspaceAddMenu to enable the "link from case docs" option.
   const { data: convData } = useConversationDetail(conversationId);
   const caseId = convData?.conversation?.case_id ?? null;
+  // The ONE shared demo conversation is read-only for everyone. Derived here
+  // (off the row this pane already holds) and drilled down, so no viewer or
+  // action bar ever learns the fixture id — they only learn "this is a demo".
+  const isDemo = isDemoConversation(convData?.conversation);
 
   const inDetailMode = openItemId !== null;
 
@@ -91,6 +96,7 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
             item={item}
             focusedReferenceN={focusedReferenceN}
             onFlashDone={() => clearFocusedReference(conversationId)}
+            isDemo={isDemo}
           />
         )}
       </div>
@@ -99,7 +105,11 @@ export function WorkspacePane({ conversationId }: WorkspacePaneProps) {
           Detail mode has its own kind-specific viewer footer (e.g. autosave
           status) and shouldn't show the create-new dropdown. */}
       {!inDetailMode && (
-        <WorkspaceAddMenu conversationId={conversationId} caseId={caseId} />
+        <WorkspaceAddMenu
+          conversationId={conversationId}
+          caseId={caseId}
+          isDemo={isDemo}
+        />
       )}
     </div>
   );
@@ -122,6 +132,8 @@ function PaneHeader({
         <Button
           variant="ghost"
           size="icon"
+          // Tour anchors (Act 2 step 5, Act 5 step 12). Inert attributes.
+          data-tour="pane-back"
           className="h-8 w-8 shrink-0"
           onClick={onBack}
           aria-label="رجوع إلى قائمة العناصر"
@@ -135,10 +147,13 @@ function PaneHeader({
       </h2>
       {/* Detail mode only: the alias the agents cite in chat, beside the title
           of the item the user just opened. */}
-      {inDetailMode && <WiBadge seq={item?.wi_seq} className="me-1" />}
+      {inDetailMode && (
+        <WiBadge seq={item?.wi_seq} className="me-1" dataTour="wi-badge" />
+      )}
       <Button
         variant="ghost"
         size="icon"
+        data-tour="pane-close"
         className="h-8 w-8 shrink-0"
         onClick={onClose}
         aria-label="إغلاق لوحة العناصر"
@@ -169,10 +184,13 @@ function KindRouter({
   item,
   focusedReferenceN,
   onFlashDone,
+  isDemo,
 }: {
   item: WorkspaceItem;
   focusedReferenceN: number | null;
   onFlashDone: () => void;
+  /** Read-only shared demo conversation — see AgentSearchViewer.isDemo. */
+  isDemo: boolean;
 }) {
   switch (item.kind) {
     case "attachment":
@@ -186,6 +204,7 @@ function KindRouter({
           item={item}
           focusedReferenceN={focusedReferenceN}
           onFlashDone={onFlashDone}
+          isDemo={isDemo}
         />
       );
     case "convo_context":

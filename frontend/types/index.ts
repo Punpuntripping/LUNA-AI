@@ -132,6 +132,20 @@ export interface ConversationSummary {
    * listings.
    */
   match_type?: 'title' | 'message' | null;
+  /**
+   * DERIVED, server-side: this row is the ONE shared «محادثة تجريبية» every
+   * account sees (demo_conversation_product_tour §3.2). The id itself never
+   * reaches the client — components branch on this flag alone, so the fixture
+   * can be repointed backend-side without a frontend release.
+   *
+   * Read-only for everyone (D2): the composer becomes a hint bar, the WI's
+   * 👍/👎 are hidden (`workspace_items.feedback` is ONE shared column),
+   * مشاركة / حفظ كمدونة / «+» render disabled, and «حذف» becomes «إخفاء» —
+   * a per-user preference flag, never a shared soft-delete (D8).
+   *
+   * Absent on every ordinary conversation, hence optional.
+   */
+  is_demo?: boolean;
 }
 
 export interface ConversationDetail extends ConversationSummary {
@@ -391,6 +405,14 @@ export interface SSEQuotaExceeded {
   limit: number;
   resets_at: string;
   message_ar: string;
+  /**
+   * The plan the block was enforced against — EFFECTIVE, so an expired paid
+   * subscription that fell back reports `"free"`. Drives the upgrade dialog:
+   * only `"free"` opens it. `null` = no plan assigned (account not activated),
+   * which buying a plan does not fix. Optional so a pre-deploy backend that
+   * omits the field degrades to the banner rather than mis-triggering.
+   */
+  plan_id?: string | null;
 }
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.
@@ -987,6 +1009,23 @@ export interface UserPreferencesData {
    * endpoint as the other keys — no backend change needed.
    */
   onboarding_seen?: boolean;
+  /**
+   * «جولة المخرجات» — the 13-step coach-mark tour over the shared demo
+   * conversation. Absent/false → the tour auto-starts once, AFTER «اتعرف على
+   * ريحان» is dismissed; finishing or skipping PATCHes it to true.
+   */
+  tour_workspace_seen?: boolean;
+  /**
+   * D8 dismiss for the shared demo conversation: «إخفاء» hides the row from
+   * THIS user's sidebar only. Never a soft-delete — the conversation is one
+   * shared row, so a delete by one user would vanish it for everyone.
+   */
+  demo_conversation_hidden?: boolean;
+  /**
+   * ⚠ Every key in here is FLAT and stays flat. `merge_preferences` is a
+   * SHALLOW merge server-side, so a nested object written by one tab clobbers
+   * the sibling keys another tab wrote (see [[project_edu_popups]]).
+   */
   [key: string]: unknown;
 }
 

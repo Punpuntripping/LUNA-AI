@@ -144,10 +144,17 @@ export function useSendMessage(): UseSendMessageReturn {
           })),
       );
 
-      // Clear pending files immediately after capture — the bytes already
-      // live on Supabase, the workspace cache will refresh on its own.
-      if (pendingFiles.length > 0) clearPendingFiles();
-      if (pendingBlogs.length > 0) clearPendingBlogs();
+      // Composer attachments are released only once the backend CONFIRMS the
+      // send (`message_start`). The quota gate now rejects BEFORE anything is
+      // persisted, so a blocked send must leave the chips exactly where they
+      // were — the OCR meter blocks precisely when files are attached, and
+      // making the user re-pick their PDFs after subscribing is the worst
+      // possible moment to lose them. `message_start` lands within a round-trip
+      // of the POST, so the chips never visibly linger on the happy path.
+      const releaseComposerAttachments = () => {
+        if (pendingFiles.length > 0) clearPendingFiles();
+        if (pendingBlogs.length > 0) clearPendingBlogs();
+      };
 
       // If no text but files are pending, use a default (backend requires min_length=1)
       const messageContent = content || (optimisticAttachments.length > 0 ? "مرفق" : "");
@@ -375,6 +382,9 @@ export function useSendMessage(): UseSendMessageReturn {
               const payload = data as SSEMessageStart;
               assistantMessageId = payload.assistant_message_id;
               messageStartSeen = true;
+              // The send is committed server-side — only now do the composer
+              // chips go away. See `releaseComposerAttachments`.
+              releaseComposerAttachments();
               // Re-assert the user message from the real id. The normal path
               // swaps the optimistic row in place; but a brand-new
               // conversation's initial messages-fetch can land empty (before
@@ -416,18 +426,28 @@ export function useSendMessage(): UseSendMessageReturn {
               break;
             }
             case "quota_exceeded": {
-              // Per-user quota gate (shared/quota) rejected this send. The
-              // user message is saved server-side; no assistant placeholder
-              // exists. Refetch so the message list catches up, surface the
-              // banner via quotaInfo, end streaming. Don't mark failed —
-              // the message itself is fine; the request just couldn't run.
+              // Per-user quota gate (shared/quota) rejected this send. The gate
+              // runs BEFORE any write, so the server persisted nothing: no user
+              // row, no assistant placeholder, no attachment links.
+              //
+              // So the client must put the user back exactly where they were.
+              // Drop the optimistic bubble (there is no server row for it to
+              // resolve into — left alone it would vanish on the next refetch
+              // anyway, which reads as the app eating the message), and return
+              // the text to the composer. The attachment chips were never
+              // released (see `releaseComposerAttachments`), so one Enter
+              // re-sends the identical message once the user subscribes.
+              //
+              // `content`, not `messageContent`: the latter substitutes the
+              // «مرفق» placeholder for an attachments-only send, and injecting
+              // that literal into an empty composer would put a word there the
+              // user never typed.
               const payload = data as SSEQuotaExceeded;
+              removeOptimisticMessage(qc, conversationId, optimisticId);
+              if (content) useChatStore.getState().injectComposerText(content);
               useChatStore.getState().finishStreaming();
               useChatStore.getState().resetReconnect();
               useChatStore.getState().setQuotaInfo(payload);
-              void qc.invalidateQueries({
-                queryKey: messageKeys.list(conversationId),
-              });
               break;
             }
             case "token": {

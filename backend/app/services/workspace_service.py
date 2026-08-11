@@ -28,6 +28,7 @@ from supabase import Client as SupabaseClient
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import upload_session_service
 from backend.app.services.case_service import get_user_id
+from backend.app.services.demo_service import is_demo_conversation, is_demo_item
 from shared.config import get_settings
 from shared.storage.client import build_storage_path, upload_file
 
@@ -209,22 +210,28 @@ def list_workspace_items_by_conversation(
     via ``count="exact"`` so clients can detect truncation. ``limit`` defaults
     to 100 (preserving the previous one-page behaviour for normal users) and is
     clamped to ``[1, 200]``; ``offset`` is clamped to ``>= 0``.
+
+    Exception: for the shared demo conversation (``demo_service``) the
+    ``user_id`` filter is dropped, so every account sees the tour's مخرجات.
+    Read-only by construction — this function has no write callers, and the
+    mutating endpoints all keep their own ``.eq("user_id", …)`` filters.
     """
     user_id = get_user_id(supabase, auth_id)
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
     try:
-        result = (
+        query = (
             supabase.table("workspace_items")
             .select("*", count="exact")
-            .eq("user_id", user_id)
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", "null")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
-            .execute()
         )
+        if not is_demo_conversation(conversation_id):
+            query = query.eq("user_id", user_id)
+        result = query.execute()
     except Exception as e:
         logger.exception("Error listing workspace_items by conversation: %s", e)
         raise LunaHTTPException(
@@ -280,19 +287,42 @@ def get_workspace_item(
     auth_id: str,
     item_id: str,
 ) -> dict:
-    """Get single workspace_item. Returns 404 if not found or not owned."""
+    """Get single workspace_item. Returns 404 if not found or not owned.
+
+    Exception: the ONE shared demo item (``demo_service.DEMO_ITEM_ID``) is
+    readable by every account, so the ``user_id`` filter is dropped for that
+    hardcoded id. Nothing the caller supplies can widen this.
+
+    This function is also the ownership gate for several mutating callers, so
+    the allowance was audited against each of them — all still refuse a
+    non-owner:
+
+      * ``update_workspace_item``  → ``_assert_writable`` 403 (the demo item is
+        ``kind='agent_search'``, not user-editable) AND the UPDATE itself is
+        filtered by ``user_id``.
+      * ``update_visibility`` / ``update_feedback`` → the UPDATE is filtered by
+        ``user_id`` and matches no row → 404. (This is what keeps
+        ``workspace_items.feedback``, a single shared column, from taking one
+        user's 👍 on everybody's behalf.)
+      * ``finalize_attachment_upload`` → 409, the demo item is not an
+        attachment.
+      * ``api/workspace.py::get_workspace_file_url`` → 404, same reason.
+      * ``api/blog.py::share_artifact`` → ``agent_search`` IS a publishable
+        kind, so that one needed (and got) an explicit demo refusal at the
+        handler. See the note there.
+    """
     user_id = get_user_id(supabase, auth_id)
 
     try:
-        result = (
+        query = (
             supabase.table("workspace_items")
             .select("*")
             .eq("item_id", item_id)
-            .eq("user_id", user_id)
             .is_("deleted_at", "null")
-            .maybe_single()
-            .execute()
         )
+        if not is_demo_item(item_id):
+            query = query.eq("user_id", user_id)
+        result = query.maybe_single().execute()
     except Exception as e:
         logger.exception("Error fetching workspace_item: %s", e)
         raise LunaHTTPException(

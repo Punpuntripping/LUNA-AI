@@ -1542,6 +1542,11 @@ class JudgmentDocResponse(BaseModel):
     domains: list[str] = Field(default_factory=list)
     metadata: list[MetadataEntry] = Field(default_factory=list)
     summary_md: Optional[str] = None
+    # Does a «ملخص ريحان» exist for this ruling — the flag the page's reveal
+    # button renders on. The summary ITSELF is gated and never appears in this
+    # anon payload; it is served only by the metered reveal
+    # (``LibraryFullResponse.summary_md``).
+    has_summary: bool = False
     sections: list[JudgmentSection] = Field(default_factory=list)
     cited_regulations: list[JudgmentCitedRegulation] = Field(default_factory=list)
     cited_total: int = 0
@@ -1774,7 +1779,10 @@ class LibraryFullResponse(BaseModel):
         is what must not put it there.
       - ``judgment``   → ``sections`` (EVERY non-empty judgment section, full, in
         order — ``id``s match the anon page's sections so the enhancer swaps them
-        in place).
+        in place) PLUS ``summary_md``, the «ملخص ريحان» (``cases.summary``). The
+        anon doc payload carries only the boolean ``has_summary``, so this is the
+        one path to that text — and it rides the SAME unlock as the body, which
+        is why the page's summary button and its body CTA share one reveal.
       - ``circular``   → ``text`` (full body).
       - ``form``       → ``body_md`` (full template body; approved+published only).
 
@@ -1793,6 +1801,8 @@ class LibraryFullResponse(BaseModel):
     sections: Optional[list[LibraryFullSection]] = None
     text: Optional[str] = None
     sharh_md: Optional[str] = None
+    # «ملخص ريحان» — judgment only; null for every other content type.
+    summary_md: Optional[str] = None
     body_md: Optional[str] = None
     official_sources: list[OfficialSource] = Field(default_factory=list)
 

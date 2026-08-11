@@ -1,17 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import Link from "next/link";
 import { BookOpen, Loader2, Lock, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { useAuthStore } from "@/stores/auth-store";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
 import { GateCtaSuppressor } from "@/components/library/blocks/GateBanner";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import {
-  fetchFullContent,
-  fetchLibraryBalance,
+  BalanceChip,
+  useLibraryReveal,
+  useSharedLibraryReveal,
+} from "@/components/library/LibraryReveal";
+import {
   type FullContentType,
   type FullContentPayload,
   type FullRegulation,
@@ -23,14 +25,8 @@ import {
 } from "@/lib/library/full-content";
 import { OfficialSources } from "@/components/library/blocks/OfficialSources";
 import {
-  balanceCopy,
-  refusalCardCopy,
   revealCopy,
   revealCopyFor,
-  rateLimitedCopy,
-  sourceUnavailableCopy,
-  staleSessionCopy,
-  transportErrorCopy,
   type RefusalCardCopy,
   type RevealTarget,
 } from "@/lib/library/gate-copy";
@@ -89,6 +85,12 @@ interface FullContentGateProps {
  * revealing a page the reader already unlocked simply works — entitlement is
  * NEVER cached client-side, and nothing here tries to predict the answer.
  *
+ * "ONE action" is per REVEAL, not per component. A page whose unlock buys more
+ * than one region — the judgment page, where the same response carries «ملخص
+ * ريحان» and the full ruling — wraps both in a `LibraryRevealProvider`; this
+ * component then shares that state instead of opening a second, separately
+ * charged one. See `components/library/LibraryReveal.tsx`.
+ *
  * Failure is layered, and the layers are distinguishable — that is the other half
  * of the PART 5 bug, where the old code returned `null` on every non-OK response
  * and an exhausted quota looked exactly like being logged out:
@@ -108,76 +110,21 @@ export function FullContentGate({
   revealTarget = "content",
   children,
 }: FullContentGateProps) {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const [full, setFull] = useState<FullContentPayload | null>(null);
-  const [isRevealing, setIsRevealing] = useState(false);
-  const [card, setCard] = useState<RefusalCardCopy | null>(null);
-  const [balance, setBalance] = useState<LibraryBalance | null>(null);
-
-  // A client-side navigation between two مواد reuses this component instance —
-  // drop any revealed content so item B never renders under item A's key.
-  useEffect(() => {
-    setFull(null);
-    setCard(null);
-    setIsRevealing(false);
-  }, [contentType, fullKey]);
-
-  // Passive balance — «no prompt, but never a silent meter» (§5.1). Reading the
-  // allowance costs nothing and charges nothing, so this one IS a mount effect.
-  useEffect(() => {
-    if (!isAuthenticated || !gated) {
-      setBalance(null);
-      return;
-    }
-    let active = true;
-    void (async () => {
-      const next = await fetchLibraryBalance();
-      if (active) setBalance(next);
-    })();
-    return () => {
-      active = false;
-    };
-  }, [isAuthenticated, gated]);
-
-  const reveal = useCallback(async () => {
-    setIsRevealing(true);
-    setCard(null);
-
-    const result = await fetchFullContent<FullContentPayload>(
-      contentType,
-      fullKey,
-    );
-
-    if (result.ok) {
-      setFull(result.data);
-      // An unlock may have just been spent — resync the chip so the next
-      // document in this visit shows a truthful balance.
-      void fetchLibraryBalance().then(setBalance);
-    } else if (result.kind === "refusal") {
-      setCard(
-        refusalCardCopy({
-          reason: result.refusal.reason,
-          resetsAt: result.refusal.resets_at,
-          storedCount: result.refusal.stored_count,
-        }),
-      );
-    } else if (result.error === "unauthorized" || result.error === "no_token") {
-      setCard(staleSessionCopy);
-    } else if (result.error === "rate_limited") {
-      // NOT a refusal and NOT a network fault. `/library/full` shares one 20/min
-      // budget with the reference-source endpoint (D13.2), so this is reachable
-      // in normal use — and its copy says explicitly that nothing was charged.
-      setCard(rateLimitedCopy);
-    } else if (result.error === "not_found") {
-      // Unknown slug, unpublished form, or a corpus row that vanished. Retrying
-      // cannot help, so it must not render as a retryable transport error.
-      setCard(sourceUnavailableCopy);
-    } else {
-      setCard(transportErrorCopy);
-    }
-
-    setIsRevealing(false);
-  }, [contentType, fullKey]);
+  // A page with a SECOND trigger for the same unlock (the judgment page's «ملخص
+  // ريحان» button) hoists this state into a `LibraryRevealProvider`; both
+  // surfaces then read and write one reveal. Everywhere else there is no
+  // provider and this component owns its state exactly as it always did — the
+  // fallback instance skips its balance read when a shared one is in charge, so
+  // `/usage` is never fetched twice.
+  const shared = useSharedLibraryReveal();
+  const own = useLibraryReveal({
+    contentType,
+    fullKey,
+    gated,
+    enabled: !shared,
+  });
+  const { isAuthenticated, full, isRevealing, card, balance, reveal } =
+    shared ?? own;
 
   const revealed = full ? renderFull(kind, full) : null;
   if (revealed) {
@@ -186,8 +133,17 @@ export function FullContentGate({
     // an empty list, so the page-level <OfficialSources> renders nothing — this
     // is the only place the block reaches a reader, and it must therefore sit
     // INSIDE the revealed branch rather than beside it.
-    const sources = (full as { official_sources?: FullOfficialSource[] })
-      .official_sources;
+    //
+    // ⚠ `gated &&` is what keeps that "only place" true. An OPEN item's anon
+    // payload already PUBLISHES its sources, so the page renders the block
+    // itself; the reveal ships them regardless, and printing them again here
+    // would duplicate it. Unreachable while a reveal could only be triggered by
+    // this component's own gated panel — reachable now that a page can reveal
+    // from elsewhere (the judgment «ملخص ريحان» button on a ruling short enough
+    // to ship whole).
+    const sources = gated
+      ? (full as { official_sources?: FullOfficialSource[] }).official_sources
+      : undefined;
     return (
       <>
         {revealed}
@@ -310,34 +266,6 @@ function RevealPanel({
         {copy.authedHint}
       </p>
     </section>
-  );
-}
-
-/**
- * The passive meter beside the reveal action. Silent when the allowance could
- * not be read (anonymous, locked account, or a failed usage call) — a wrong
- * number beside a spend button is worse than no number.
- */
-function BalanceChip({ balance }: { balance: LibraryBalance | null }) {
-  if (!balance) return null;
-
-  const label =
-    balance.limit === null
-      ? balanceCopy.unlimited
-      : balance.remaining !== null && balance.remaining > 0
-        ? balanceCopy.remaining(balance.remaining, balance.limit)
-        : balanceCopy.exhausted;
-
-  const renews =
-    balance.limit === null ? "" : balanceCopy.renewsOn(balance.resets_at);
-
-  return (
-    <p className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 text-xs text-text-secondary">
-      <span className="rounded-full bg-pill px-2.5 py-0.5 font-medium tabular-nums text-pill-fg">
-        {label}
-      </span>
-      {renews && <span className="text-muted-foreground">{renews}</span>}
-    </p>
   );
 }
 

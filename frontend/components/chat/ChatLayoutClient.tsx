@@ -6,6 +6,7 @@ import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
+import TourOverlay from "@/components/tour/TourOverlay";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -133,6 +134,21 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
 
       {/* first-run «اتعرف على ريحان» tour — self-gating, renders nothing once seen */}
       <OnboardingDialog />
+
+      {/* «جولة المخرجات» — the 13-step coach-mark tour over the shared demo
+          conversation. Also self-gating and also renders null when closed, so
+          it mounts unconditionally beside its sibling above.
+
+          The two must never share the screen: the tour gates on
+          `preferences.tour_workspace_seen !== true` AND a successful hydrate
+          AND «اتعرف على ريحان» being closed (plan §8). Both flags fail CLOSED
+          on a hydrate failure — `preferences-store` defaults them to `true` —
+          so an API blip can never re-nag an existing user.
+
+          Its root sits at z-[80]: above the mobile workspace overlay (z-[60])
+          and above every portalled Radix layer (z-[70]), because Act 3 points
+          INSIDE the «عرض المصدر» dialog. */}
+      <TourOverlay />
     </div>
   );
 }

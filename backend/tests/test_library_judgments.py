@@ -648,8 +648,9 @@ def test_doc_payload_keys_are_the_frontend_contract() -> None:
         "slug", "title", "subject", "court", "court_level", "court_level_label",
         "city", "case_number", "judgment_number", "date_hijri", "date_gregorian",
         "hijri_year", "appeal_result", "domains", "metadata", "summary_md",
-        "sections", "cited_regulations", "cited_total", "official_sources",
-        "gate_effective", "hidden_section_count", "withheld_chars", "withheld_pct",
+        "has_summary", "sections", "cited_regulations", "cited_total",
+        "official_sources", "gate_effective", "hidden_section_count",
+        "withheld_chars", "withheld_pct",
     }
 
 
@@ -740,7 +741,7 @@ def test_sidecar_pointing_at_a_missing_case_returns_none() -> None:
 
 def test_full_judgment_returns_every_section_untruncated() -> None:
     full = ls.get_full_judgment(_fake(), SLUG)
-    assert set(full) == {"sections"}
+    assert set(full) == {"sections", "summary_md"}
     assert [s["id"] for s in full["sections"]] == [i for i, _, _ in EXPECTED_SECTIONS]
     assert [s["title"] for s in full["sections"]] == [t for _, t, _ in EXPECTED_SECTIONS]
     for sec in full["sections"]:
@@ -771,6 +772,76 @@ def test_full_judgment_serializes_through_the_shared_full_model() -> None:
     model = LibraryFullResponse(content_type="judgment", key=SLUG, **full)
     assert model.sections is not None
     assert model.sections[1].text.endswith("REASONING-END")
+    assert model.summary_md == FULL_CASE["summary"]
+
+
+# ---------------------------------------------------------------------------
+# «ملخص ريحان» — cases.summary, gated, on the SAME unlock as the ruling
+# ---------------------------------------------------------------------------
+
+
+def test_rayhan_summary_never_reaches_the_anon_payload() -> None:
+    """The anon page publishes the BOOLEAN, never the summary.
+
+    `summary_md` on the doc payload stays `short_summary` (the always-free
+    ~250-char lead); `cases.summary` is gated content and its only path to a
+    reader is the metered reveal.
+    """
+    doc = ls.get_judgment_doc(_fake(), SLUG)
+    assert doc["has_summary"] is True
+    assert doc["summary_md"] == FULL_CASE["short_summary"]
+    assert FULL_CASE["summary"] not in json.dumps(doc, ensure_ascii=False)
+
+
+def test_the_reveal_serves_the_rayhan_summary_alongside_the_ruling() -> None:
+    """ONE response, both payloads — which is what makes it ONE unlock. The
+    page's «ملخص ريحان» button and its «اعرض النص كاملاً» panel share this call,
+    so a reader is never charged twice for one ruling."""
+    full = ls.get_full_judgment(_fake(), SLUG)
+    assert full["summary_md"] == FULL_CASE["summary"]
+    assert full["sections"], "the same response must still carry the ruling"
+
+
+def test_has_summary_is_false_when_the_ruling_has_none() -> None:
+    """~18 of 30,531 rulings. The button renders on this flag, so it must be
+    honest — an unlock is never spendable on nothing."""
+    for empty in (None, "", "   "):
+        case = {**FULL_CASE, "summary": empty}
+        assert ls.get_judgment_doc(_fake(case), SLUG)["has_summary"] is False
+        assert ls.get_full_judgment(_fake(case), SLUG)["summary_md"] is None
+
+
+def test_rayhan_summary_strips_the_pipeline_sections() -> None:
+    """16.5k rows end in a «المراجع النظامية المحلولة» appendix of internal
+    corpus/chunk ids and match scores; 252 carry a `## classification_error`
+    Python traceback. Neither may reach a reader — the strip is render-time
+    because the table is pipeline-owned and a re-ingest restores both.
+    """
+    dirty = "\n".join(
+        [
+            "## الملخص",
+            "- نزاع حول انتهاك علامة تجارية.",
+            "",
+            "## المراجع النظامية المحلولة",
+            "- **نظام العلامات التجارية** — المادة 16 → `17642_reg_003`",
+            "  (chunks: 17642_reg_003_article_16) [confidence: 0.9016]",
+            "",
+            "## classification_error",
+            "ConnectError: [Errno 11001] getaddrinfo failed",
+        ]
+    )
+    case = {**FULL_CASE, "summary": dirty}
+
+    served = ls.get_full_judgment(_fake(case), SLUG)["summary_md"]
+    assert served == "## الملخص\n- نزاع حول انتهاك علامة تجارية."
+    assert "17642_reg_003" not in served
+    assert "confidence" not in served
+    assert "classification_error" not in served
+    assert "getaddrinfo" not in served
+
+    # And a summary that is NOTHING BUT the appendix counts as no summary at all.
+    only_noise = {**FULL_CASE, "summary": "## classification_error\nJSONDecodeError"}
+    assert ls.get_judgment_doc(_fake(only_noise), SLUG)["has_summary"] is False
 
 
 # ---------------------------------------------------------------------------

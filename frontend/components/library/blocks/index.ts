@@ -8,6 +8,10 @@ export { TrustLine } from "./TrustLine";
 export { MetadataCard } from "./MetadataCard";
 export { StatusBadge } from "./StatusBadge";
 export { CourtLevelBadge } from "./CourtLevelBadge";
+export {
+  JudgmentSummaryButton,
+  JudgmentSummaryPanel,
+} from "./JudgmentSummary";
 export { LeadSummary } from "./LeadSummary";
 export { TocList } from "./TocList";
 export { TocRail } from "./TocRail";

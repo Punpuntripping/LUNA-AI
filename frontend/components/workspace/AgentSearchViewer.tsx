@@ -9,6 +9,7 @@ import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
 import { WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
 import { useSetWorkspaceItemFeedback } from "@/hooks/use-workspace";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import { DEMO_DISABLED_HINT } from "@/hooks/use-demo-conversation";
 import type { WorkspaceFeedback, WorkspaceItem } from "@/types";
 
 interface AgentSearchViewerProps {
@@ -20,6 +21,17 @@ interface AgentSearchViewerProps {
    */
   focusedReferenceN?: number | null;
   onFlashDone?: () => void;
+  /**
+   * This item lives in the ONE shared demo conversation, so the publish
+   * actions change shape (plan §4.2):
+   *
+   * - 👍/👎 **hidden**. ``workspace_items.feedback`` is a single shared column
+   *   on a single shared row — one reader's thumb would be every reader's.
+   * - «مشاركة» / «حفظ كمدونة» **rendered but disabled**, with a hover hint.
+   *   Act 4 of the tour points at them and explains them; it never invokes
+   *   them, and hiding them would delete the thing the step points at.
+   */
+  isDemo?: boolean;
 }
 
 /**
@@ -47,6 +59,7 @@ export function AgentSearchViewer({
   item,
   focusedReferenceN,
   onFlashDone,
+  isDemo = false,
 }: AgentSearchViewerProps) {
   const { data: references = [], isLoading: isLoadingReferences } =
     useWorkspaceItemReferences(item.item_id);
@@ -101,7 +114,13 @@ export function AgentSearchViewer({
   }, [item.content_md, references]);
 
   return (
-    <div className="relative flex flex-1 min-h-0 flex-col">
+    <div
+      className="relative flex flex-1 min-h-0 flex-col"
+      // Tour anchor (Act 2, step 3) — «التحليل الكامل: أطول من الرد…». The
+      // whole artifact surface: body + المراجع, which is exactly the contrast
+      // the step is making against the chat snippet. Inert attribute.
+      data-tour="wi-body"
+    >
       <ArtifactPreview
         content={item.content_md ?? ""}
         copyContent={copyContent}
@@ -129,8 +148,11 @@ export function AgentSearchViewer({
         copyText={copyContent}
         onShare={() => setShareOpen(true)}
         onSaveBlog={() => setSaveBlogOpen(true)}
-        feedback={item.feedback}
-        onFeedback={handleFeedback}
+        publishDisabledHint={isDemo ? DEMO_DISABLED_HINT : undefined}
+        // Omitting `onFeedback` is what HIDES the thumbs (the bar keys the
+        // pair off that prop) — the shared-column reason is on `isDemo`.
+        feedback={isDemo ? undefined : item.feedback}
+        onFeedback={isDemo ? undefined : handleFeedback}
         feedbackPending={setFeedback.isPending}
       />
       <ShareArtifactDialog

@@ -92,6 +92,11 @@ class QuotaExceeded(Exception):
     used: float    # ord: points; ocr: pages; web: calls
     limit: float
     resets_at: datetime
+    # The plan the block was enforced against — the EFFECTIVE one, so an expired
+    # paid subscription that fell back to `free` reports "free". The frontend
+    # keys the upgrade dialog off this: only a free-plan block offers plans to
+    # buy; a paid user who ran their window down gets the reset banner instead.
+    plan_id: str | None = None
 
     def __post_init__(self) -> None:
         super().__init__(
@@ -107,6 +112,7 @@ class QuotaExceeded(Exception):
             "limit": round(float(self.limit), 6),
             "resets_at": self.resets_at.isoformat(),
             "message_ar": _arabic_message(self.meter, self.period, self.limit),
+            "plan_id": self.plan_id,
         }
 
 
@@ -132,6 +138,10 @@ class PlanInactive(Exception):
             "limit": 0,
             "resets_at": "",
             "message_ar": PLAN_INACTIVE_AR,
+            # No plan assigned at all — deliberately NOT "free". An unactivated
+            # account is an operator problem, not something buying a plan fixes,
+            # so this must never open the upgrade dialog.
+            "plan_id": None,
         }
 
 
@@ -357,33 +367,46 @@ async def check(
     if st is None or st.get("locked"):
         raise PlanInactive()
 
+    # The plan actually being enforced. `effective_plan_id` is what the RPC
+    # resolves after expiry fallback, so an expired `pro` reports `free` — which
+    # is exactly what the upgrade dialog needs to key on.
+    plan = st.get("effective_plan_id") or st.get("plan_id")
+
     if needs_ord:
         # Session — fixed 5h block anchored at the first message (migration 083).
         if st.get("points_session") is not None:
             used = float(st.get("session_cost") or 0.0) * POINTS_PER_USD
             if used >= float(st["points_session"]):
                 resets = _rolling_reset(st.get("session_oldest"), SESSION_WINDOW_S)
-                raise QuotaExceeded("ord", "session", used, float(st["points_session"]), resets)
+                raise QuotaExceeded(
+                    "ord", "session", used, float(st["points_session"]), resets, plan
+                )
 
         # Weekly — rolling last 7 days.
         if st.get("points_weekly") is not None:
             used = float(st.get("weekly_cost") or 0.0) * POINTS_PER_USD
             if used >= float(st["points_weekly"]):
                 resets = _rolling_reset(st.get("weekly_oldest"), WEEK_WINDOW_S)
-                raise QuotaExceeded("ord", "weekly", used, float(st["points_weekly"]), resets)
+                raise QuotaExceeded(
+                    "ord", "weekly", used, float(st["points_weekly"]), resets, plan
+                )
 
     if needs_ocr and st.get("ocr_pages_monthly") is not None:
         m_limit = int(st["ocr_pages_monthly"])
         ocr_resets = _rolling_reset(st.get("ocr_oldest"), MONTH_WINDOW_S)
         if m_limit <= 0:
-            raise QuotaExceeded("ocr", "monthly", 0, 0, ocr_resets)
+            raise QuotaExceeded("ocr", "monthly", 0, 0, ocr_resets, plan)
         used_pages = int(st.get("ocr_pages") or 0)
         if used_pages + est_ocr_pages > m_limit:       # projected overage
-            raise QuotaExceeded("ocr", "monthly", used_pages + est_ocr_pages, m_limit, ocr_resets)
+            raise QuotaExceeded(
+                "ocr", "monthly", used_pages + est_ocr_pages, m_limit, ocr_resets, plan
+            )
 
     if needs_web and st.get("web_calls_monthly") is not None and int(st["web_calls_monthly"]) <= 0:
         # Internet search is not a live feature — any plan that lists it is 0.
-        raise QuotaExceeded("web", "monthly", 0, 0, _rolling_reset(None, MONTH_WINDOW_S))
+        raise QuotaExceeded(
+            "web", "monthly", 0, 0, _rolling_reset(None, MONTH_WINDOW_S), plan
+        )
 
 
 # ── read-only snapshot for the UI ───────────────────────────────────────────

@@ -109,6 +109,11 @@ class ConversationSummary(BaseModel):
     is_active: bool = True
     is_starred: bool = False
     starred_at: Optional[str] = None  # ISO string or null
+    # Derived server-side from the hardcoded demo id (``demo_service``), never
+    # stored and never read back off the client. True for the one shared
+    # «محادثة تجريبية» the product tour runs on — the frontend pins it, chips
+    # it and renders it read-only off this flag alone, so the id stays server-side.
+    is_demo: bool = False
     created_at: datetime
     updated_at: datetime
     # Search-result-only fields. ``snippet`` is a ~160-char excerpt of the

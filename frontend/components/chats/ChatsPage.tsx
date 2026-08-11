@@ -10,6 +10,8 @@ import {
   useConversationsIndex,
   useSearchConversations,
 } from "@/hooks/use-conversations";
+import { isDemoConversation } from "@/hooks/use-demo-conversation";
+import { usePreferencesStore } from "@/stores/preferences-store";
 import { ConversationItem } from "@/components/sidebar/ConversationItem";
 import { ConversationSearch } from "@/components/sidebar/ConversationSearch";
 import { SearchEmptyState } from "@/components/search/SearchEmptyState";
@@ -73,10 +75,18 @@ export function ChatsPage() {
     isFetchingNextPage,
   } = active;
 
-  const conversations: ConversationSummary[] = useMemo(
-    () => data?.pages.flatMap((page) => page.conversations) ?? [],
-    [data],
-  );
+  // D8 «إخفاء» — a per-user preference flag, so the filter is client-side.
+  const demoHidden = usePreferencesStore((s) => s.demoConversationHidden);
+
+  const conversations: ConversationSummary[] = useMemo(() => {
+    const rows = data?.pages.flatMap((page) => page.conversations) ?? [];
+    // §4.1: the demo is furniture, not the user's content — it is excluded
+    // from search and from «المميّزة» (it cannot be starred at all). The
+    // backend already omits it from both, so this is a second lock on the
+    // same door, and the one that also honours «إخفاء».
+    const dropDemo = demoHidden || isSearching || starred;
+    return dropDemo ? rows.filter((row) => !isDemoConversation(row)) : rows;
+  }, [data, demoHidden, isSearching, starred]);
 
   // Infinite scroll: load the next page when the bottom sentinel scrolls in.
   const sentinelRef = useRef<HTMLDivElement | null>(null);

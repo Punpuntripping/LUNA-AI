@@ -119,12 +119,55 @@
     --text-meta:    11px;
     --text-code:    13px;
 
+    /* ---------- Reading scale (text-xs … text-xl) ----------
+     * The app sizes almost all of its copy with the stock Tailwind tiers —
+     * text-base for assistant markdown, text-sm for user bubbles and most
+     * UI, text-xs for chrome. tailwind.config.ts points those five tiers at
+     * these variables instead of hardcoding rem, which buys one lever: the
+     * whole scale can move at a breakpoint without editing a component.
+     *
+     * The values below are Tailwind's own defaults, so desktop renders
+     * exactly as before. The phone override lives further down. */
+    --fs-xs:   0.75rem;   --lh-xs:   1rem;
+    --fs-sm:   0.875rem;  --lh-sm:   1.25rem;
+    --fs-base: 1rem;      --lh-base: 1.5rem;
+    --fs-lg:   1.125rem;  --lh-lg:   1.75rem;
+    --fs-xl:   1.25rem;   --lh-xl:   1.75rem;
+
     /* ---------- Motion ---------- */
     --duration-fast: 150ms;
     --duration-base: 200ms;
     --duration-slow: 300ms;
     --ease-standard:    cubic-bezier(0.4, 0, 0.2, 1);
     --ease-emphasized:  cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /* ============================================================
+   * Phone reading scale — one step up, phones only
+   *
+   * Noto Naskh Arabic carries less visual height than Latin at the same
+   * px, so the desktop scale reads cramped on a handset. Every tier moves
+   * up ~1px and gains a little leading; spacing, radii and layout widths
+   * are untouched, so this enlarges type without re-flowing containers.
+   *
+   * The breakpoint is 639px, i.e. strictly below Tailwind's `sm`, on
+   * purpose. `sm:text-*` variants (~70 of them, mostly hero headings)
+   * start at 640px — keeping the override below that line means a
+   * component's own responsive step is never fighting this one.
+   *
+   * text-2xl and up are deliberately left alone: they are already large
+   * on a phone and several pages step them with sm:/md: variants.
+   *
+   * To dial the whole app's phone type up or down, edit only this block.
+   * ============================================================ */
+  @media (max-width: 639px) {
+    :root {
+      --fs-xs:   0.8125rem;  --lh-xs:   1.125rem;   /* 12 → 13 */
+      --fs-sm:   0.9375rem;  --lh-sm:   1.4375rem;  /* 14 → 15 */
+      --fs-base: 1.0625rem;  --lh-base: 1.625rem;   /* 16 → 17 */
+      --fs-lg:   1.1875rem;  --lh-lg:   1.8125rem;  /* 18 → 19 */
+      --fs-xl:   1.3125rem;  --lh-xl:   1.875rem;   /* 20 → 21 */
+    }
   }
 
   /* ============================================================
