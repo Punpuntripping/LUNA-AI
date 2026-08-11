@@ -154,6 +154,11 @@ class _Query:
             # wearing a payment_id.
             if self.table == "payment_transactions":
                 row.setdefault("payment_id", str(uuid.uuid4()))
+                # Migration 132: `initiated_by text NOT NULL DEFAULT 'user'`.
+                # Modelled here because _expire_open_checkouts now filters on
+                # it — an ADD COLUMN … NOT NULL DEFAULT backfills every existing
+                # row, so in prod there is no such thing as a NULL here.
+                row.setdefault("initiated_by", "user")
             else:
                 row.setdefault("id", str(uuid.uuid4()))
             row.setdefault("created_at", _iso(_now()))
@@ -281,6 +286,40 @@ class FakeSupabase:
                 action = "subtracted"
             return _Rpc([{"plan_id": row["plan_id"], "name_ar": "x",
                           "expires_at": None, "action": action}])
+
+        if name == "stamp_usage_reset":
+            # Mirrors migration 131. Three things the real RPC does that this
+            # fake must too, or a test here will pass over a bug there:
+            #   * rank is `plans.price_sar` — a NULL price on EITHER side is
+            #     rank-less (free / marketing_* / dev) and never resets, which
+            #     is why a free→basic purchase leaves usage_reset_at alone.
+            #   * the stamp is the payment's `paid_at`, never `now()`, so the
+            #     replayed paid path (webhook + /verify) writes the identical
+            #     value instead of silently erasing points spent in between.
+            #   * it only ever moves forward, so an out-of-order replay of an
+            #     older payment cannot rewind a newer reset.
+            if row is None:
+                return _Rpc([{"action": "payment_not_found"}])
+
+            def _price(plan_id):
+                plan = next(
+                    (p for p in self.tables["plans"] if p.get("plan_id") == plan_id),
+                    None,
+                )
+                raw = plan.get("price_sar") if plan else None
+                return float(raw) if raw is not None else None
+
+            new_price = _price(row.get("plan_id"))
+            prior_price = _price(row.get("prior_plan_id"))
+            if new_price is None or prior_price is None or new_price <= prior_price:
+                return _Rpc([{"action": "not_an_upgrade"}])
+            subs = self.tables.get("user_subscriptions") or []
+            stamp = row.get("paid_at")
+            if subs and stamp:
+                prev = subs[0].get("usage_reset_at")
+                if prev is None or stamp > prev:
+                    subs[0]["usage_reset_at"] = stamp
+            return _Rpc([{"action": "reset"}])
 
         raise AssertionError(f"unexpected rpc {name}")
 
@@ -615,7 +654,7 @@ def test_paid_path_stamps_snapshot_before_grant(keys, monkeypatch):
     patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
 
     run(ps.verify_payment(db, USER, MOYASAR_ID))
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
     row = db.tables["payment_transactions"][0]
     assert row["prior_plan_id"] == "pro"      # what a refund would restore
 
@@ -757,7 +796,7 @@ def test_webhook_paid_grants(keys, monkeypatch):
 
     result = run(ps.handle_webhook_event(db, _event(pid)))
     assert result["status"] == "paid" and result["granted"] is True
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
 
 
 def test_webhook_retry_grants_exactly_once(keys, monkeypatch):
@@ -1148,7 +1187,7 @@ def test_stockpiled_credited_checkouts_grant_exactly_once(keys, monkeypatch):
         results.append(run(ps.verify_payment(db, USER, MOYASAR_ID)))
 
     assert [r["granted"] for r in results] == [True, False, False]
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]  # once, total
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]  # once, total
     assert db.tables["user_subscriptions"][0]["plan_id"] == "max"
 
     held = [r for r in db.tables["payment_transactions"] if not r.get("fulfilled_at")]
@@ -1201,7 +1240,7 @@ def test_an_honest_upgrade_still_grants(keys, monkeypatch):
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is True
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan"]
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
 
 
 def test_a_credited_upgrade_is_idempotent_across_both_paths(keys, monkeypatch):

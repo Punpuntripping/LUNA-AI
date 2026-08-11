@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
-import { CheckCircle2, Eye, EyeOff, Loader2 } from "lucide-react";
+import { CheckCircle2, CreditCard, Eye, EyeOff, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,9 @@ import { ApiClientError, authApi, paymentsApi } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
+import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
+import { pricingPlansAbove } from "@/lib/pricing";
+import { usePaymentMethod, useRemovePaymentMethod } from "@/hooks/use-payments";
 import type { CancelSubscriptionReason, SubscriptionState } from "@/types";
 
 // Same rule as signup (LoginForm) — keep the messages identical.
@@ -130,6 +133,50 @@ const CANCEL_REASONS: { key: CancelSubscriptionReason; label: string }[] = [
   { key: "other", label: "سبب آخر" },
 ];
 
+// ── وسيلة الدفع ──────────────────────────────────────────────────────────────
+// `.claude/plans/subscription_auto_renewal.md` §9. Everything here is display
+// data returned by the provider at tokenization; the token itself never leaves
+// the backend, so there is nothing on this surface worth stealing.
+
+/** Card expiry — month + year, same Arabic locale as the term dates above. */
+const CARD_EXPIRY_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+  year: "numeric",
+  month: "long",
+});
+
+/** Provider brand strings → Arabic. mada first: it is the dominant network here. */
+const CARD_BRANDS: Record<string, string> = {
+  mada: "مدى",
+  visa: "فيزا",
+  mastercard: "ماستركارد",
+  amex: "أمريكان إكسبريس",
+};
+
+/** An unknown brand renders verbatim rather than vanishing — an English word
+ *  beats a card the user cannot identify before deleting it. */
+function formatCardBrand(brand: string | null | undefined): string {
+  if (!brand) return "بطاقة";
+  return CARD_BRANDS[brand.trim().toLowerCase()] ?? brand;
+}
+
+/**
+ * «أغسطس ٢٠٢٧» from `exp_month` + `exp_year`, or null for anything unusable.
+ *
+ * ⚠ LOCAL midnight, never `Date.UTC`: formatting a UTC instant in a
+ * negative-offset zone lands on the previous day, and for a first-of-month date
+ * that silently shifts the whole label back a month.
+ */
+function formatCardExpiry(
+  month: number | null | undefined,
+  year: number | null | undefined,
+): string | null {
+  if (!month || !year || month < 1 || month > 12) return null;
+  // Providers send either a full year (2027) or two digits (27).
+  const fullYear = year < 100 ? 2000 + year : year;
+  if (fullYear < 2000 || fullYear > 2100) return null;
+  return CARD_EXPIRY_FORMAT.format(new Date(fullYear, month - 1, 1));
+}
+
 interface AccountSettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -181,6 +228,7 @@ export function AccountSettingsDialog({
     null,
   );
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [cancelReason, setCancelReason] =
     useState<CancelSubscriptionReason | null>(null);
   const [cancelComment, setCancelComment] = useState("");
@@ -188,6 +236,14 @@ export function AccountSettingsDialog({
   const [isCancelling, setIsCancelling] = useState(false);
   const [reactivateError, setReactivateError] = useState<string | null>(null);
   const [isReactivating, setIsReactivating] = useState(false);
+
+  // وسيلة الدفع — read only while the dialog is open, and fail-quiet exactly
+  // like the subscription read above: no card (or no such endpoint, which is
+  // what a backend with the renewal flag off looks like) → no section.
+  const { data: paymentMethod } = usePaymentMethod(open);
+  const removeCard = useRemovePaymentMethod();
+  const [removeCardOpen, setRemoveCardOpen] = useState(false);
+  const [removeCardError, setRemoveCardError] = useState<string | null>(null);
 
   // Seed the field from the resolved name every time the dialog opens — and
   // again after a save, since the server may answer with something other than
@@ -259,6 +315,9 @@ export function AccountSettingsDialog({
       setCancelOpen(false);
       resetCancelForm();
       setReactivateError(null);
+      setRemoveCardOpen(false);
+      setRemoveCardError(null);
+      removeCard.reset();
     }
     onOpenChange(next);
   };
@@ -371,6 +430,20 @@ export function AccountSettingsDialog({
     }
   };
 
+  const handleRemovePaymentMethod = async () => {
+    setRemoveCardError(null);
+    try {
+      await removeCard.mutateAsync();
+      setRemoveCardOpen(false);
+    } catch (err) {
+      setRemoveCardError(
+        err instanceof ApiClientError && err.message
+          ? err.message
+          : "تعذّر إزالة البطاقة. حاول مجددًا.",
+      );
+    }
+  };
+
   const handleLogoutAll = async () => {
     setLogoutAllError(null);
     setIsLoggingOutAll(true);
@@ -394,6 +467,23 @@ export function AccountSettingsDialog({
   const showSubscription = Boolean(
     subscription && (subscription.cancellable || (isCancelled && termStillRunning)),
   );
+
+  // The upgrade path, offered BEFORE a wall is hit — the quota banner only ever
+  // catches someone already blocked. Derived by price from the catalog: there is
+  // no blocking window here to ask the server about, and price order mirrors the
+  // server's downgrade guard, so nothing offered can be refused at checkout.
+  // Empty for `max` (nothing above it) — and then no button at all.
+  const upgradePlans = pricingPlansAbove(subscription?.plan_id);
+
+  // The stored-card surface. Shown on `has_method` ALONE — never gated on a
+  // running subscription: a credential the user cannot see is a credential they
+  // cannot remove, and it outlives the term that created it.
+  const hasCard = paymentMethod?.has_method === true;
+  const cardExpiry = formatCardExpiry(
+    paymentMethod?.exp_month,
+    paymentMethod?.exp_year,
+  );
+  const cardConsentAt = formatTermDate(paymentMethod?.consent_given_at);
 
   return (
     <>
@@ -597,10 +687,11 @@ export function AccountSettingsDialog({
                   {isCancelled ? (
                     <>
                       {/* Deliberately says «لن يُجدَّد» and NOT «سيتم إيقاف
-                          الدفع التلقائي»: Wave 1 sells one-time purchases, so
-                          there is no automatic charge to stop, and /pricing
-                          already promises «بدون تجديد تلقائي». This wording
-                          stays true after the Wave 2 renewal engine ships. */}
+                          الدفع التلقائي»: pro/max are meant to auto-renew, but
+                          the engine has not shipped, so there is no automatic
+                          charge to stop today. The forward-looking wording is
+                          the one sentence true both now and after the Wave 2
+                          renewal engine lands. */}
                       <p
                         className="text-sm leading-relaxed text-muted-foreground"
                         data-testid="subscription-cancelled-note"
@@ -640,23 +731,96 @@ export function AccountSettingsDialog({
                           تنتهي في {termEndsAt}
                         </p>
                       )}
-                      {/* Subdued: cancelling is allowed, not encouraged, and it
-                          sits one section above منطقة الخطر — it must not read
-                          as destructive either. */}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="w-fit px-0 text-muted-foreground hover:text-foreground"
-                        onClick={() => {
-                          resetCancelForm();
-                          setCancelOpen(true);
-                        }}
-                        data-testid="subscription-cancel-open"
-                      >
-                        إلغاء الاشتراك
-                      </Button>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {upgradePlans.length > 0 && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setUpgradeOpen(true)}
+                            data-testid="subscription-upgrade-open"
+                          >
+                            ترقية الباقة
+                          </Button>
+                        )}
+                        {/* Subdued: cancelling is allowed, not encouraged, and
+                            it sits one section above منطقة الخطر — it must not
+                            read as destructive either. */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-fit px-0 text-muted-foreground hover:text-foreground"
+                          onClick={() => {
+                            resetCancelForm();
+                            setCancelOpen(true);
+                          }}
+                          data-testid="subscription-cancel-open"
+                        >
+                          إلغاء الاشتراك
+                        </Button>
+                      </div>
                     </>
                   )}
+                </div>
+
+                <Separator />
+              </>
+            )}
+
+            {hasCard && paymentMethod && (
+              <>
+                <div
+                  className="flex flex-col gap-3"
+                  data-testid="payment-method-section"
+                >
+                  <h3 className="text-sm font-semibold text-foreground">
+                    وسيلة الدفع
+                  </h3>
+
+                  <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                    <CreditCard className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    {formatCardBrand(paymentMethod.brand)}
+                    {paymentMethod.last4 && (
+                      // Latin digits, LTR: these four characters exist to be
+                      // matched against the plastic (and the banking app),
+                      // where they are printed in Latin. Amounts and dates
+                      // stay Arabic-Indic — an identifier is not a number.
+                      <span
+                        dir="ltr"
+                        className="tabular-nums"
+                        data-testid="payment-method-last4"
+                      >
+                        •••• {paymentMethod.last4}
+                      </span>
+                    )}
+                  </p>
+
+                  {cardExpiry && (
+                    <p className="text-sm text-muted-foreground">
+                      تنتهي صلاحيتها في {cardExpiry}
+                    </p>
+                  )}
+
+                  {cardConsentAt && (
+                    <p className="text-sm text-muted-foreground">
+                      سُجّلت موافقتك على التجديد التلقائي في {cardConsentAt}.
+                    </p>
+                  )}
+
+                  {/* Subdued for the same reason as «إلغاء الاشتراك» above:
+                      allowed, not encouraged, and it must not read as
+                      destructive one section from منطقة الخطر. */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-fit px-0 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setRemoveCardError(null);
+                      setRemoveCardOpen(true);
+                    }}
+                    data-testid="payment-method-remove-open"
+                  >
+                    إزالة البطاقة
+                  </Button>
                 </div>
 
                 <Separator />
@@ -803,11 +967,93 @@ export function AccountSettingsDialog({
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog
+        open={removeCardOpen}
+        onOpenChange={(next) => {
+          if (!next && !removeCard.isPending) {
+            setRemoveCardOpen(false);
+            setRemoveCardError(null);
+          }
+        }}
+      >
+        <AlertDialogContent dir="rtl" lang="ar">
+          <AlertDialogHeader>
+            <AlertDialogTitle>إزالة البطاقة المحفوظة؟</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              {/* asChild + div: same reason as the cancel dialog — the body is
+                  more than one paragraph. */}
+              <div className="flex flex-col gap-2 text-start">
+                {/* The consequence, stated plainly and FIRST. «لن يُجدَّد» and
+                    never «سيتم إيقاف الدفع التلقائي»: the forward-looking
+                    wording is true both before and after the renewal engine
+                    ships, and the second phrasing asserts a live recurring
+                    charge that may not exist yet. */}
+                <span
+                  className="text-sm font-medium text-foreground"
+                  data-testid="payment-method-remove-consequence"
+                >
+                  لن يُجدَّد اشتراكك تلقائياً بعد إزالة البطاقة.
+                </span>
+                <span className="text-sm text-muted-foreground">
+                  {termStillRunning && termEndsAt
+                    ? `تبقى باقتك فعّالة حتى ${termEndsAt} ثم تنتقل إلى الباقة المجانية. `
+                    : ""}
+                  يمكنك حفظ بطاقة جديدة عند أي عملية دفع لاحقة.
+                </span>
+                {removeCardError && (
+                  <span
+                    className="text-sm text-destructive"
+                    data-testid="payment-method-remove-error"
+                  >
+                    {removeCardError}
+                  </span>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removeCard.isPending}>
+              تراجع
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                // Held open while the request is in flight so the error has
+                // somewhere to render — AlertDialogAction closes on click.
+                e.preventDefault();
+                void handleRemovePaymentMethod();
+              }}
+              disabled={removeCard.isPending}
+              className={cn(buttonVariants({ variant: "destructive" }))}
+              data-testid="payment-method-remove-confirm"
+            >
+              {removeCard.isPending && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              إزالة البطاقة
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <DeleteAccountDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         hasPasswordIdentity={hasPasswordIdentity ?? false}
       />
+
+      {/* Same dialog the quota block opens, minus the block: no `info`, because
+          nothing has been exceeded here and a fabricated quota event would put
+          invented usage numbers on screen. It reads the plan and derives the
+          ladder itself. Rendered as a sibling of the settings Dialog — the
+          established pattern in this file (see DeleteAccountDialog) — so it
+          stacks above rather than inside it. */}
+      {upgradePlans.length > 0 && (
+        <QuotaUpgradeDialog
+          open={upgradeOpen}
+          onOpenChange={setUpgradeOpen}
+          currentPlanId={subscription?.plan_id}
+        />
+      )}
     </>
   );
 }

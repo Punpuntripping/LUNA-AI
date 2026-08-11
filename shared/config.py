@@ -238,6 +238,27 @@ class Settings(BaseSettings):
     # Pay and /payments/applepay/session refuses, even on capable Safari.
     MOYASAR_APPLEPAY_ENABLED: bool = False
 
+    # ── Auto-renewal (التجديد التلقائي) — pro/max, MASTER KILL-SWITCH ───────
+    # `.claude/plans/subscription_auto_renewal.md`. OFF by default and it must
+    # STAY off until Moyasar confirms, in writing, all four items in that plan's
+    # §4 (tokenization enabled, MIT permitted, mada MIT behaviour, 3DS-on-
+    # renewal handling) AND migration 132 is applied to prod.
+    #
+    # False means, in exactly these words:
+    #   * the renewal CronTrigger job is never registered (backend/app/main.py);
+    #   * `save_card` is never requested and no token is ever persisted
+    #     (payment_method_service.capture_payment_method returns immediately);
+    #   * the checkout session answers requires_recurring_consent=false /
+    #     recurring_disclosure_ar=null, so the form shows no recurring copy;
+    #   * POST /payments/{id}/consent answers a clean {"enabled": false}.
+    # No card is stored, no card is charged, and no user-visible string changes.
+    #
+    # Env var name == field name (no validation_alias), so flipping it is a
+    # single Railway env change on luna-backend — no rebuild, no redeploy of the
+    # frontend. Flip it ONLY after the live-card renewal smoke in the plan's §11
+    # trap 7 has passed.
+    SUBSCRIPTION_AUTO_RENEWAL_ENABLED: bool = False
+
     # ── Receipt emails (Gmail SMTP — Google Workspace) ──────────────────────
     # Plain «إيصال دفع» emails on paid/refunded transitions. Transport is the
     # EXISTING Google Workspace for rayhanai.com (MX smtp.google.com, Google

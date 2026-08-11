@@ -245,6 +245,54 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # 6b. APScheduler — daily subscription auto-renewal (pro/max).
+    #     `.claude/plans/subscription_auto_renewal.md` §7. THIS JOB MOVES REAL
+    #     MONEY, so it is registered ONLY when the master kill-switch is on:
+    #     with SUBSCRIPTION_AUTO_RENEWAL_ENABLED false the scheduler never learns
+    #     about it, there is no tick, no query and no reachable path to a card.
+    #     Do not flip the flag until Moyasar has confirmed tokenization + MIT in
+    #     writing (plan §4) and migration 132 is applied to prod.
+    #
+    #     03:30 UTC — 15 min after the upload reconciler, per the plan, so the
+    #     jobs do not fight for the same postgrest pool. It shares that slot with
+    #     the summary sweep; both are I/O-bound and neither is latency-sensitive.
+    #
+    #     Awaited directly rather than wrapped in asyncio.to_thread (unlike the
+    #     PDF/purge jobs): the sweep is a coroutine — it makes async HTTP calls
+    #     to Moyasar — and every DB touch inside it is already offloaded through
+    #     run_db(). Same shape as the summary sweep above.
+    if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED:
+        async def _run_subscription_renewals() -> None:
+            try:
+                from backend.app.services.renewal_service import run_due_renewals
+
+                stats = await run_due_renewals(app.state.supabase)
+                logger.info("Subscription renewal sweep complete: %s", stats)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Subscription renewal sweep failed: %s", e)
+
+        scheduler.add_job(
+            _run_subscription_renewals,
+            trigger=CronTrigger(hour=3, minute=30),  # daily at 03:30 UTC
+            id="subscription_renewals",
+            replace_existing=True,
+            # A tick that overruns must never overlap the next one: two
+            # concurrent sweeps would race on the same due rows. The DB unique
+            # index makes a double charge impossible anyway, but not overlapping
+            # is cheaper than relying on the backstop.
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        logger.warning(
+            "AUTO-RENEWAL IS ON — stored cards will be charged daily at 03:30 UTC"
+        )
+    else:
+        logger.info(
+            "Auto-renewal disabled (SUBSCRIPTION_AUTO_RENEWAL_ENABLED=false) — "
+            "no renewal job registered, no card is stored or charged"
+        )
+
     # 7. APScheduler — one-shot startup catch-up for the upload reconciler. The
     #    03:15 cron silently skips a day whenever the process restarts across
     #    it; the reconciler is idempotent and cheap, so run it once shortly
@@ -306,8 +354,9 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     logger.info(
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
-        "summary sweep 03:30, account purge 03:45 UTC, + one-shot "
-        "upload-reconciler, blog-job & account-purge catch-up on boot"
+        "summary sweep 03:30, account purge 03:45 UTC%s, + one-shot "
+        "upload-reconciler, blog-job & account-purge catch-up on boot",
+        ", subscription renewals 03:30" if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED else "",
     )
 
     logger.info(

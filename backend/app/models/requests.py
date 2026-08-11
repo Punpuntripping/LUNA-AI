@@ -337,6 +337,22 @@ class CancelSubscriptionRequest(BaseModel):
         return _reject_null_bytes(v) if isinstance(v, str) else v
 
 
+class RecurringConsentRequest(BaseModel):
+    """POST /api/v1/payments/{payment_id}/consent
+
+    ``{"accepted": true}`` and nothing else — deliberately. The disclosure TEXT
+    is never sent by the client: the server builds it from ``plans`` (see
+    ``payment_method_service.recurring_disclosure_ar``), publishes it on the
+    checkout session so the page renders exactly those words, and hashes that
+    same string. A client cannot therefore claim it agreed to different terms
+    than the ones on file.
+
+    ``accepted: false`` is refused with 400 rather than silently recording a
+    non-consent: there is no such thing as consent by omission here.
+    """
+    accepted: bool = Field(...)
+
+
 class ApplePaySessionRequest(BaseModel):
     """POST /api/v1/payments/applepay/session
 

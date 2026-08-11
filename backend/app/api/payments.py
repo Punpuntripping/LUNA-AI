@@ -7,7 +7,10 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     POST /verify            authed   sync one payment with Moyasar's truth
     POST /webhook/moyasar   NO JWT   Moyasar's server-to-server event
     POST /{payment_id}/refund authed self-serve refund inside 24h
+    POST /{payment_id}/consent authed record auto-renewal consent (flag-gated)
     GET  /history           authed   the caller's receipts
+    GET  /method            authed   the stored card (brand/last4 only, never the token)
+    DELETE /method          authed   forget the stored card + revoke it at Moyasar
     POST /applepay/session  authed   Apple Pay merchant-validation proxy
     GET  /subscription      authed   plan + term + cancel eligibility
     POST /subscription/cancel     authed  opt out of renewal + exit survey
@@ -41,9 +44,14 @@ from backend.app.models.requests import (
     ApplePaySessionRequest,
     CancelSubscriptionRequest,
     CheckoutRequest,
+    RecurringConsentRequest,
     VerifyPaymentRequest,
 )
-from backend.app.services import payment_service, subscription_service
+from backend.app.services import (
+    payment_method_service,
+    payment_service,
+    subscription_service,
+)
 from backend.app.services.case_service import get_user_id
 from shared.auth.jwt import AuthUser
 from shared.config import get_settings
@@ -383,6 +391,138 @@ async def reactivate_subscription(
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     result = await subscription_service.reactivate_renewal(supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+# ── /method (stored card — auto-renewal plan §6 / §8) ────────────────────────
+# The card-update surface the dunning ladder needs. Read is display-only; the
+# token itself has no route, on any method, ever.
+
+@router.get("/method")
+async def payment_method(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """The caller's stored card, as إعدادات الحساب renders it.
+
+    Returns (flat — ``has_method`` is the only field guaranteed meaningful)::
+
+        {
+          "enabled": true,                  # SUBSCRIPTION_AUTO_RENEWAL_ENABLED
+          "has_method": true,
+          "payment_method_id": "<uuid>",
+          "provider": "moyasar",
+          "brand": "mada",                  # may be null
+          "last4": "1234",                  # may be null
+          "exp_month": 12, "exp_year": 2030,
+          "consent_given_at": "2026-08-11T…",
+          "created_at": "2026-08-11T…"
+        }
+
+    With the feature off, or with nothing stored, every field but ``enabled``
+    is null/false and the DB is not touched at all — so "feature off", "no
+    card" and "backend predates this endpoint" all look the same to the
+    settings dialog, which is what keeps a billing hiccup from standing in
+    front of the password and delete-account controls.
+
+    There is **no field carrying the provider token**, on any branch: it is not
+    selected on this path, so it cannot be serialized by accident.
+    """
+    response.headers["Cache-Control"] = _NO_STORE
+    if not payment_method_service.auto_renewal_enabled():
+        return {"enabled": False, **payment_method_service.describe_method(None)}
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    row = await run_db(payment_method_service.get_active_method, supabase, user_id)
+    return {"enabled": True, **payment_method_service.describe_method(row)}
+
+
+@router.delete("/method")
+async def delete_payment_method(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Forget the caller's stored card («حذف البطاقة المحفوظة»).
+
+    Marks the row revoked AND asks Moyasar to invalidate the token — a live
+    token behind a card the user believes they deleted is the bug this endpoint
+    exists to prevent.
+
+    Deliberately NOT gated on the feature flag: a card stored while the feature
+    was on must remain deletable after it is turned off.
+
+    Returns ``{"revoked": bool, "provider_confirmed": bool, "has_method": false,
+    …the emptied card shape}`` — the emptied state rides along so the caller can
+    write it straight into its cache.
+
+    ``revoked: false`` simply means there was nothing stored (idempotent, never
+    an error). ``provider_confirmed: false`` with ``revoked: true`` means our row
+    is gone but Moyasar did not confirm — logged at ERROR for an operator; the
+    user is still shown a success, because from their side the card IS
+    forgotten.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await payment_method_service.revoke_active_method(
+        supabase, user_id, reason="user_request"
+    )
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
+# ── /{payment_id}/consent ────────────────────────────────────────────────────
+# Declared before /{payment_id}/refund but after every static path, for the
+# same declaration-order reason noted below.
+
+@router.post("/{payment_id}/consent")
+async def recurring_consent(
+    payment_id: str,
+    payload: RecurringConsentRequest,
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Record consent to auto-renewal for an open checkout, BEFORE it is paid.
+
+    Body: ``{"accepted": true}``. The page must call this after the user ticks
+    the checkbox and **before** mounting the Moyasar form with
+    ``credit_card: {save_card: true}`` — a token stored against a payment with
+    no consent record is refused at capture time and silently discarded.
+
+    Returns::
+
+        {"enabled": true, "accepted": true, "payment_id": "<uuid>",
+         "plan_id": "pro", "consent_given_at": "2026-08-11T…",
+         "disclosure_version": "v1",
+         "recurring_disclosure_ar": "بتأكيد الشراء تُفوّض «ريحان» …"}
+
+    …or, when the feature is off::
+
+        {"enabled": false, "accepted": false, "payment_id": "<uuid>",
+         "consent_given_at": null}
+
+    The flag-off answer is a **200**, not an error: the page calls this
+    unconditionally for pro/max and branches on ``enabled``. It is also exactly
+    what the checkout session's ``requires_recurring_consent: false`` already
+    told the page to expect, so a correct client never gets here with the flag
+    down.
+
+    Idempotent — a reload returns the FIRST consent, with its original
+    timestamp.
+
+    Errors: 400 VALIDATION_ERROR (``accepted`` not true),
+    404 PAYMENT_NOT_FOUND (unknown / another user's payment),
+    409 PAYMENT_CONSENT_INVALID (the payment is no longer an open checkout, or
+    the plan does not renew — ``basic`` never does),
+    503 SERVICE_UNAVAILABLE (the consent write failed; the purchase must not
+    proceed as a recurring one on an unprovable consent).
+    """
+    validate_uuid(payment_id, "معرف عملية الدفع")
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await payment_service.record_recurring_consent(
+        supabase, user_id, payment_id, accepted=payload.accepted
+    )
     response.headers["Cache-Control"] = _NO_STORE
     return result
 

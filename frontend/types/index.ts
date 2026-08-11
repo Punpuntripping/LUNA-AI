@@ -407,12 +407,32 @@ export interface SSEQuotaExceeded {
   message_ar: string;
   /**
    * The plan the block was enforced against — EFFECTIVE, so an expired paid
-   * subscription that fell back reports `"free"`. Drives the upgrade dialog:
-   * only `"free"` opens it. `null` = no plan assigned (account not activated),
-   * which buying a plan does not fix. Optional so a pre-deploy backend that
-   * omits the field degrades to the banner rather than mis-triggering.
+   * subscription that fell back reports `"free"`. `null` = no plan assigned
+   * (account not activated), which buying a plan does not fix. Optional so a
+   * pre-deploy backend that omits the field degrades to the banner rather than
+   * mis-triggering.
+   *
+   * Drives the AUTO-OPENING modal only, which stays free-only — WHAT to offer
+   * comes from `upgrade_options`. A full-screen pitch at someone who already
+   * paid reads differently than one at a free user.
    */
   plan_id?: string | null;
+  /**
+   * The plans that would actually unblock this send: purchasable, priced above
+   * the user's plan, AND with a strictly higher limit on the window that
+   * blocked them — ordered by price, cheapest first.
+   *
+   * Computed server-side (`shared/quota._upgrade_options`) because the enforced
+   * limits live in the `plans` table and `lib/pricing.ts` carries them only as
+   * Arabic prose; a client-side ladder would need a second copy of every number
+   * to drift against.
+   *
+   * Empty = there is nothing to sell: `max` is already at the top of the ladder,
+   * and an unactivated account (`plan_id: null`) is not fixed by a purchase.
+   * Optional so a pre-deploy backend that omits the field degrades to
+   * banner-only (a missed upsell, never a pitch that cannot help).
+   */
+  upgrade_options?: string[];
 }
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.
@@ -1408,6 +1428,31 @@ export interface PaymentCheckoutResponse {
    * capability gate. Off while the Moyasar domain registration is pending.
    */
   applepay_enabled: boolean;
+  /**
+   * The recurring-billing disclosure to show BEFORE the card form, **rendered
+   * verbatim**. Null whenever no consent is required (basic, or the renewal
+   * feature flag off).
+   *
+   * ⚠ NEVER BUILD THIS SENTENCE CLIENT-SIDE and never reword it. The server
+   * hashes its own copy of this exact string into `consent_text_hash` — that
+   * hash IS the consent artefact, and a client that paraphrases (or localises,
+   * or re-orders the amount and the date) makes it prove nothing. If the flag
+   * is on and this is empty, the page degrades to a plain one-time purchase
+   * rather than inventing a disclosure.
+   */
+  recurring_disclosure_ar: string | null;
+  /**
+   * Server verdict: this checkout may not proceed until the user has ticked
+   * the disclosure above and the tick has been recorded via
+   * `POST /payments/{payment_id}/consent`.
+   *
+   * The single gate for the whole feature — true only for `pro`/`max` with the
+   * backend renewal flag on. A backend that predates the feature omits the
+   * field entirely, which reads as `undefined` → falsy → today's behaviour
+   * exactly. Card tokenization (`credit_card.save_card`) is gated on this and
+   * nothing else.
+   */
+  requires_recurring_consent: boolean;
 }
 
 /**
@@ -1497,6 +1542,64 @@ export interface PaymentRefundResponse {
 }
 
 // -----------------------------------------------
+// Recurring consent + the stored card (التجديد التلقائي)
+// (.claude/plans/subscription_auto_renewal.md §6 + §9)
+// -----------------------------------------------
+//
+// ⚠ NO CARD DATA EVER TRAVELS THROUGH THESE SHAPES. The provider token lives
+// server-side in `payment_methods` behind an RLS lockdown and is never
+// serialised to a browser; what comes back here is a display mask (brand +
+// last4 + expiry) plus the timestamp of the consent. Nothing in this block
+// should ever grow a token, a PAN or a CVV field.
+
+/**
+ * `POST /payments/{payment_id}/consent` with `{accepted: true}`.
+ *
+ * The caller only needs the 2xx — the artefact (`consent_given_at` +
+ * `consent_text_hash`) is written server-side against the text the server
+ * itself chose. Every field is optional so a `204 No Content` (which
+ * `apiFetch` hands back as `{}`) is a perfectly valid answer.
+ */
+export interface PaymentConsentResponse {
+  accepted?: boolean;
+  /** ISO timestamp the consent was recorded. */
+  consent_given_at?: string | null;
+}
+
+/**
+ * `GET /payments/method` — the stored-credential surface for إعدادات الحساب.
+ *
+ * `has_method` is the ONLY field guaranteed to be meaningful: everything else
+ * is null when nothing is stored, and the display fields are whatever the
+ * provider returned at tokenization (never anything the user typed here).
+ * A backend without this endpoint 404s, which the hook treats as "no method"
+ * — so the section simply does not render.
+ */
+export interface PaymentMethodState {
+  has_method: boolean;
+  /** `mada` | `visa` | `mastercard` | … — provider wording, mapped for display. */
+  brand: string | null;
+  /** Last four digits, as the provider returned them. Rendered LTR. */
+  last4: string | null;
+  /** 1–12. */
+  exp_month: number | null;
+  /** Four-digit year (a two-digit year is normalised at display time). */
+  exp_year: number | null;
+  /** When the recurring disclosure was accepted. A method with no consent is
+   *  not chargeable — the renewal job treats it as absent. */
+  consent_given_at: string | null;
+}
+
+/**
+ * `DELETE /payments/method` → revocation.
+ *
+ * Typed permissive because the useful answer is the status code: the server may
+ * reply with the emptied state or with `204`. The client never reads the body —
+ * it writes the known-empty state into the cache and re-reads.
+ */
+export type PaymentMethodRevokeResponse = Partial<PaymentMethodState>;
+
+// -----------------------------------------------
 // Subscription cancellation (إلغاء الاشتراك)
 // (.claude/plans/subscription_cancellation.md)
 // -----------------------------------------------
@@ -1512,11 +1615,14 @@ export type CancelSubscriptionReason =
  * `GET /payments/subscription` — and the answer to both cancel and reactivate,
  * so the settings dialog re-renders straight from the mutation response.
  *
- * ⚠ Cancelling stops NO automatic charge: Wave 1 sells one-time purchases and
- * `/pricing` promises «بدون تجديد تلقائي». It records the intent
+ * ⚠ Cancelling stops NO automatic charge TODAY: pro/max are meant to auto-renew
+ * (owner 2026-08-10, /terms §5.2) but the engine does not exist yet, so every
+ * sale is still effectively a one-time term. This records the intent
  * (`renewal_cancelled_at`, which the Wave 2 renewal job must honour) and leaves
- * the current term completely alone. Copy built on this shape must never say
- * «سيتم إيقاف الدفع التلقائي».
+ * the current term completely alone. Copy built on this shape must therefore say
+ * «لن يُجدَّد» — a forward-looking statement true in both worlds — and never
+ * «سيتم إيقاف الدفع التلقائي», which asserts a live charge that does not exist.
+ * See .claude/plans/subscription_auto_renewal.md.
  */
 export interface SubscriptionState {
   /** null when the user has no subscription row at all. */

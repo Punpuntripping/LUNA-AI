@@ -63,6 +63,26 @@ Migration ``120_subscription_cancellation.sql`` adds a renewal opt-out flag that
 this module has exactly ONE dealing with: after a successful grant it clears
 ``user_subscriptions.renewal_cancelled_at`` via ``subscription_service`` —
 buying again is re-opting in. Everything else about cancellation lives there.
+
+Migration ``132_subscription_auto_renewal.sql`` (⚠ NOT APPLIED at the time of
+writing) turns that flag load-bearing. This module gains exactly three dealings
+with auto-renewal, and every one of them is inert while
+``settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` is False:
+
+* ``create_checkout`` publishes ``requires_recurring_consent`` +
+  ``recurring_disclosure_ar`` (false/null with the flag down, and always for
+  ``basic``);
+* ``record_recurring_consent`` stamps the consent artefact on an open row;
+* ``_mark_paid_and_grant`` hands the provider payload to
+  ``payment_method_service.capture_payment_method``, which stores the card token
+  — from BOTH confirmation paths, because 3DS destroys the callback page.
+* ``_expire_open_checkouts`` now excludes ``initiated_by='renewal'``: a renewal
+  row is ``initiated`` too, and superseding it would let a user kill their own
+  renewal just by opening ``/pay``.
+
+The job that spends those tokens lives in ``renewal_service`` — a separate
+module, on the 113/120 precedent that the grant path is not edited for a side
+concern.
 """
 from __future__ import annotations
 
@@ -78,7 +98,7 @@ import httpx
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
-from backend.app.services import subscription_service
+from backend.app.services import payment_method_service, subscription_service
 from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
@@ -544,6 +564,50 @@ async def refund_at_provider(provider_ref: str, amount_halalas: int) -> dict:
     )
 
 
+async def charge_saved_card(
+    *,
+    token: str,
+    amount_halalas: int,
+    description: str,
+    payment_id: str,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """``POST /v1/payments`` against a STORED TOKEN — a merchant-initiated charge.
+
+    ⚠⚠ **UNVERIFIED AGAINST THE LIVE MOYASAR API.** The request body below (a
+    ``source`` of ``{"type": "token", "token": …}``) is inferred from Moyasar's
+    documentation and has never been exercised on this merchant account. Worse,
+    MIT is a SEPARATE permission from tokenization and, as of the plan's §4, has
+    not been confirmed enabled. **Do not flip
+    ``SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` until a real charge has been made and
+    this body, and the response's ``status``, have been checked.**
+
+    Two hard rules, both inherited from ``refund_at_provider``:
+
+    * **NEVER RETRIED.** ``retries=0``. This POST is not idempotent, and a
+      duplicated renewal charge is materially worse than a missed one. A
+      transport failure therefore leaves an AMBIGUOUS outcome, and
+      ``renewal_service`` treats ambiguity as fail-closed (the row stays
+      ``initiated`` and blocks every later attempt for that period until a human
+      or the webhook resolves it).
+    * **The amount comes from the caller, which read it from ``plans``.** No
+      client is anywhere near this call.
+
+    ``metadata.payment_id`` is what lets both ``/verify`` and the webhook find
+    our row again (``_locate_transaction``) — it is the same binding a browser
+    purchase carries, and it is what makes a late ``payment_paid`` webhook able
+    to finish a renewal whose HTTP response we lost.
+    """
+    body: dict[str, Any] = {
+        "amount": int(amount_halalas),
+        "currency": CURRENCY,
+        "description": description,
+        "source": {"type": "token", "token": str(token)},
+        "metadata": {"payment_id": str(payment_id), **(metadata or {})},
+    }
+    return await _moyasar_request("POST", "/payments", json_body=body, retries=0)
+
+
 def event_mode_matches(live_flag: Any) -> bool:
     """Does an event's ``live`` flag agree with our configured key mode?
 
@@ -664,6 +728,26 @@ def _is_unique_violation(exc: Exception) -> bool:
     return "23505" in text or "duplicate key" in text or "already exists" in text
 
 
+def _is_undefined_column(exc: Exception) -> bool:
+    """Is this "migration 132 is not applied yet" rather than a real failure?
+
+    Only used by ``_expire_open_checkouts``, whose new ``initiated_by`` filter is
+    on the LIVE checkout path: a backend deployed ahead of 132 must degrade to
+    its pre-132 behaviour, not 503 every purchase. (That degradation is exactly
+    correct pre-132, because without the column there are no renewal rows to
+    protect.)
+    """
+    text = str(exc).lower()
+    return "42703" in text or "pgrst204" in text or "does not exist" in text
+
+
+# ``payment_transactions.initiated_by`` (migration 132) — 'user' for a browser
+# purchase, 'renewal' for a job-created charge. Named here because BOTH the
+# sweep below and renewal_service key on it.
+INITIATED_BY_USER = "user"
+INITIATED_BY_RENEWAL = "renewal"
+
+
 def _expire_open_checkouts(supabase: SupabaseClient, user_id: str) -> int:
     """Supersede every open ``initiated`` row of this user (H-4, layer 2).
 
@@ -682,14 +766,46 @@ def _expire_open_checkouts(supabase: SupabaseClient, user_id: str) -> int:
     live before this was written — it assigns only when ``NEW.status = 'paid'``,
     so the sequential series 117 must keep hole-free is untouched. Anything that
     widens that trigger has to revisit this call.
+
+    ⚠ **RENEWAL ROWS ARE EXCLUDED** (auto-renewal plan §7). A renewal charge
+    opens an ``initiated`` row too, and it is emphatically NOT a competing quote
+    — nobody is looking at a page, there is no credit to stockpile, and the row
+    is mid-flight against Moyasar. Without the ``initiated_by = 'user'`` filter,
+    a subscriber who happens to open ``/pay`` during their renewal window
+    silently supersedes their own renewal row; the charge then lands on an
+    ``expired`` row and the DB-level idempotency key is spent, so the next tick
+    skips them and the subscription lapses despite a working card. The user
+    would have caused it and could never explain it.
+
+    The filter degrades safely if this backend is somehow deployed ahead of 132:
+    an undefined column falls back to the pre-132 unfiltered sweep, which is
+    correct then — no ``initiated_by`` column means no renewal rows exist.
     """
-    res = (
-        supabase.table("payment_transactions")
-        .update({"status": STATUS_EXPIRED, "updated_at": _now_iso()})
-        .eq("user_id", user_id)
-        .eq("status", "initiated")
-        .execute()
-    )
+    patch = {"status": STATUS_EXPIRED, "updated_at": _now_iso()}
+    try:
+        res = (
+            supabase.table("payment_transactions")
+            .update(patch)
+            .eq("user_id", user_id)
+            .eq("status", "initiated")
+            .eq("initiated_by", INITIATED_BY_USER)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        if not _is_undefined_column(exc):
+            raise
+        logger.warning(
+            "supersede: payment_transactions.initiated_by is missing (migration "
+            "132 unapplied) — falling back to the pre-132 unfiltered sweep. That "
+            "is safe only because no renewal rows can exist without the column."
+        )
+        res = (
+            supabase.table("payment_transactions")
+            .update(patch)
+            .eq("user_id", user_id)
+            .eq("status", "initiated")
+            .execute()
+        )
     return len(getattr(res, "data", None) or [])
 
 
@@ -804,6 +920,39 @@ def _stamp_prior_snapshot(supabase: SupabaseClient, payment_id: str) -> Optional
             payment_id, exc,
         )
         return None
+
+
+def _stamp_usage_reset(supabase: SupabaseClient, payment_id: str) -> None:
+    """``stamp_usage_reset(payment_id)`` (migration 131).
+
+    Zeroes the points already spent this cycle when a payment moved the user UP
+    the ladder, by stamping ``user_subscriptions.usage_reset_at`` — the windows
+    then sum only calls made after it. The clocks are untouched: the session
+    still expires at its original boundary, the user just walks in with 0 spent.
+
+    **Runs AFTER ``grant_plan``**, deliberately: a reset that fails must never
+    cost the customer the plan they paid for. The reverse order would put a
+    convenience feature in front of the money path.
+
+    The RPC decides FOR ITSELF whether this was a rank increase (it compares
+    ``plans.price_sar`` of the new and prior plans, and stamps ``paid_at`` rather
+    than ``now()`` so a webhook + client-confirm double-run writes the identical
+    value). Python deliberately does NOT re-check ``PLAN_RANK`` here — two copies
+    of that decision would be one too many, and the SQL side is the one holding
+    the row.
+
+    Never raises into the caller, and tolerates the RPC not existing yet (131 is
+    unapplied): the worst case is a user who keeps their pre-upgrade usage until
+    the window rolls off on its own, which is simply today's behaviour.
+    """
+    try:
+        supabase.rpc("stamp_usage_reset", {"p_payment_id": payment_id}).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "stamp_usage_reset failed for payment=%s (plan IS granted; the user "
+            "keeps their pre-upgrade usage until the window rolls off): %s",
+            payment_id, exc,
+        )
 
 
 # Every `action` revoke_plan_grant can return where the term WAS dealt with.
@@ -1240,6 +1389,128 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         "publishable_key": publishable,
         "callback_url": f"{settings.PUBLIC_WEB_URL}/pay/callback",
         "applepay_enabled": settings.MOYASAR_APPLEPAY_ENABLED,
+        # ── recurring consent (auto-renewal plan §6 + §9) ──────────────────
+        # The SERVER owns the disclosure text: the page renders this string
+        # verbatim next to the checkbox, and POST /payments/{id}/consent hashes
+        # the very same string, rebuilt here from `plans`. The browser never
+        # supplies it, so a client cannot claim it was shown different words.
+        #
+        # Both fields are inert (false / null) whenever
+        # SUBSCRIPTION_AUTO_RENEWAL_ENABLED is off, and always for `basic` —
+        # which does not renew, so tokenizing its card would collect a
+        # credential with no purpose.
+        "requires_recurring_consent": payment_method_service.requires_recurring_consent(plan),
+        "recurring_disclosure_ar": (
+            payment_method_service.recurring_disclosure_ar(plan)
+            if payment_method_service.requires_recurring_consent(plan)
+            else None
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6b. Recurring consent (auto-renewal plan §6) — stamped BEFORE the money moves
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def record_recurring_consent(
+    supabase: SupabaseClient, user_id: str, payment_id: str, *, accepted: bool
+) -> dict:
+    """Record the caller's consent to auto-renewal for ONE open checkout row.
+
+    Called from ``POST /payments/{payment_id}/consent`` after the user ticks the
+    disclosure checkbox and BEFORE the Moyasar form is mounted. The artefact
+    (hash of the SERVER's disclosure text + the timestamp) is written by
+    ``payment_method_service``; this function owns only the payment-row guards,
+    because it is the module that knows how to bind a payment to its caller.
+
+    Guard order — refuse before writing anything:
+      1. the feature flag is off → a clean, non-error "not enabled" answer. The
+         page must be able to call this unconditionally and get a shape it can
+         branch on rather than an exception to swallow;
+      2. ``accepted`` is not literally True → 400. There is no "consent by
+         omission" here;
+      3. the row is not the caller's → 404 (never an existence oracle);
+      4. the row is not still open (``initiated``) → 409. Consent stamped after
+         the money moved is not consent, it is paperwork;
+      5. the plan does not renew → 409. Nothing to consent to, and storing a
+         `basic` card would be a credential with no purpose.
+
+    Idempotent: a page reload re-posts and gets the FIRST artefact back, with
+    its original timestamp. Rewriting it would quietly change when the user
+    agreed.
+    """
+    if not payment_method_service.auto_renewal_enabled():
+        return {
+            "enabled": False,
+            "accepted": False,
+            "payment_id": payment_id,
+            "consent_given_at": None,
+        }
+
+    if accepted is not True:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=payment_method_service.CONSENT_REQUIRED_AR,
+        )
+
+    row = await run_db(_get_transaction, supabase, payment_id)
+    if row is None or row.get("user_id") != user_id:
+        raise LunaHTTPException(
+            status_code=404, code=ErrorCode.PAYMENT_NOT_FOUND, detail=PAYMENT_NOT_FOUND_AR
+        )
+
+    if row.get("status") != "initiated":
+        logger.warning(
+            "recurring consent refused: payment=%s is '%s', not an open checkout",
+            payment_id, row.get("status"),
+        )
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_CONSENT_INVALID,
+            detail=payment_method_service.CONSENT_NOT_OPEN_AR,
+        )
+
+    plans = await run_db(_fetch_plans, supabase, [row.get("plan_id")])
+    plan = plans.get(str(row.get("plan_id")))
+    if not payment_method_service.plan_renews(plan):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_CONSENT_INVALID,
+            detail=payment_method_service.CONSENT_NOT_APPLICABLE_AR,
+        )
+
+    try:
+        consent = await payment_method_service.record_consent(
+            supabase, user_id=user_id, payment_row=row, plan=plan
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A consent we cannot prove is a consent we do not have. Unlike an audit
+        # row, this one refuses the request rather than swallowing the failure.
+        logger.exception(
+            "recurring consent write failed for payment=%s user=%s: %s",
+            payment_id, user_id, exc,
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=payment_method_service.CONSENT_STORE_FAILED_AR,
+            headers={"Retry-After": "5"},
+        )
+
+    return {
+        "enabled": True,
+        # `accepted`, echoing the request field, is the name the frontend's
+        # PaymentConsentResponse already reads. One name for one fact.
+        "accepted": True,
+        "payment_id": payment_id,
+        "plan_id": row.get("plan_id"),
+        "consent_given_at": consent.get("consent_given_at"),
+        "disclosure_version": consent.get("disclosure_version"),
+        # The exact text that was hashed, echoed back so the page can render the
+        # confirmed wording without re-fetching the checkout session.
+        "recurring_disclosure_ar": payment_method_service.recurring_disclosure_ar(plan),
     }
 
 
@@ -1464,15 +1735,22 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     if not verdict["ok"]:
         return await _hold_for_review(supabase, state, verdict)
 
-    # ORDER IS LOAD-BEARING: paid → snapshot → grant. grant_plan overwrites the
-    # subscription row, so the "what were they on before" snapshot has to be
-    # taken while it still exists (migration 113 owns that write; we never set
-    # prior_plan_id/prior_expires_at from Python).
+    # ORDER IS LOAD-BEARING: paid → snapshot → grant → usage reset. grant_plan
+    # overwrites the subscription row, so the "what were they on before" snapshot
+    # has to be taken while it still exists (migration 113 owns that write; we
+    # never set prior_plan_id/prior_expires_at from Python).
     prior_plan_id = await run_db(_stamp_prior_snapshot, supabase, payment_id)
 
     granted = await run_db(
         _grant_plan, supabase, row["user_id"], row["plan_id"], payment_id
     )
+
+    # …and LAST: an upgrade zeroes the points already spent this cycle, so the
+    # user is unblocked the moment they pay instead of buying a bigger cap they
+    # are still sitting on top of. Non-fatal by design and self-guarding inside
+    # the RPC (no-op unless the new plan is priced above the prior one) — see
+    # _stamp_usage_reset.
+    await run_db(_stamp_usage_reset, supabase, payment_id)
 
     # Buying again IS re-opting in. grant_plan's ON CONFLICT DO UPDATE lists its
     # columns explicitly, so it leaves a standing renewal opt-out alone — and a
@@ -1483,6 +1761,15 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     await run_db(
         subscription_service.clear_renewal_cancellation, supabase, row["user_id"]
     )
+
+    # ── tokenize (auto-renewal plan §6) ────────────────────────────────────
+    # BOTH confirmation paths run this function, which is precisely why the
+    # capture lives here and not in verify_payment: 3DS destroys the page, so
+    # the callback alone is not sufficient (that is why `on_completed` and the
+    # webhook exist at all). The call is idempotent, never raises, and returns
+    # immediately when SUBSCRIPTION_AUTO_RENEWAL_ENABLED is off — with the flag
+    # down no token is ever extracted, let alone stored.
+    await payment_method_service.capture_payment_method(supabase, state, fetched)
 
     await run_db(
         write_audit_log,

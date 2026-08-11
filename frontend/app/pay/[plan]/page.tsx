@@ -16,8 +16,10 @@ import {
   formatHalalas,
   formatSar,
 } from "@/lib/pricing";
-import { useCheckout } from "@/hooks/use-payments";
+import { cn } from "@/lib/utils";
+import { useCheckout, useRecurringConsent } from "@/hooks/use-payments";
 import { Button } from "@/components/ui/button";
+import { RecurringConsentGate } from "@/components/payments/RecurringConsentGate";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
 
 /**
@@ -28,6 +30,10 @@ import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
  *      `plans.price_sar` (minus any prorated upgrade credit) and inserts an
  *      `initiated` row. NO AMOUNT IS SENT FROM HERE, ever.
  *   2. Load the pinned moyasar.js bundle (CDN, CSP-gated).
+ *   2b. IF the server asked for recurring consent: render its disclosure
+ *      verbatim and wait for the tick, which POSTs
+ *      `/payments/{payment_id}/consent`. The card form is not initialised until
+ *      that resolves — see the consent notes on the mount effect below.
  *   3. `Moyasar.init` with `metadata.payment_id` — the thread that lets the
  *      webhook and the callback both find our row.
  *   4. `on_completed` POSTs the Moyasar id to `/verify` BEFORE the 3DS redirect,
@@ -48,10 +54,27 @@ export default function PayPlanPage() {
   const checkout = useCheckout();
   const { mutate: startCheckout, data: session } = checkout;
 
+  const consent = useRecurringConsent();
+  const [consentAccepted, setConsentAccepted] = useState(false);
+
   const startedRef = useRef(false);
   const mountedRef = useRef(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [formLoading, setFormLoading] = useState(false);
+
+  // The recurring-consent gate, and the ONLY switch the whole feature hangs on.
+  //
+  // Two conditions, both from the server: it asked for consent, AND it supplied
+  // the disclosure to show. A flag with no text is a backend bug, and the safe
+  // degradation is a plain one-time purchase — the page then behaves exactly as
+  // it does today and, crucially, never passes `save_card`, so no credential is
+  // stored under a disclosure nobody saw. Inventing the sentence locally would
+  // be the one unrecoverable mistake here (see RecurringConsentGate).
+  const disclosure = session?.recurring_disclosure_ar?.trim() || null;
+  const requiresConsent = Boolean(
+    session?.requires_recurring_consent && disclosure,
+  );
+  const consentSatisfied = !requiresConsent || consentAccepted;
 
   // Step 1 — open the checkout exactly once.
   //
@@ -65,9 +88,25 @@ export default function PayPlanPage() {
     startCheckout(plan.id);
   }, [plan, startCheckout]);
 
-  // Steps 2–4 — mount the form once the server has answered.
+  // Step 2b — record the recurring consent, once, before the form exists.
+  const handleAcceptConsent = () => {
+    if (!session || consentAccepted || consent.isPending) return;
+    consent.mutate(session.payment_id, {
+      // Only a recorded artefact unlocks the form: a failed POST leaves
+      // `consentAccepted` false, the checkbox re-arms, and no card can be
+      // tokenized in the meantime.
+      onSuccess: () => setConsentAccepted(true),
+    });
+  };
+
+  // Steps 2–4 — mount the form once the server has answered (and, where
+  // required, once consent has been recorded).
   useEffect(() => {
     if (!session || mountedRef.current) return;
+    // ⚠ BEFORE the ref flips, never after: an early `mountedRef = true` would
+    // burn the one-shot on the pre-consent pass and the form would never mount
+    // at all. The gate is a plain `return` so the effect re-runs on the tick.
+    if (requiresConsent && !consentAccepted) return;
     mountedRef.current = true;
 
     let cancelled = false;
@@ -118,6 +157,14 @@ export default function PayPlanPage() {
           methods: canApplePay ? ["creditcard", "applepay"] : ["creditcard"],
           supported_networks: ["mada", "visa", "mastercard"],
           language: "ar",
+          // Tokenize ONLY behind a recorded consent. Reaching this line with
+          // `requiresConsent` true means the gate above let us through, i.e.
+          // `/payments/{id}/consent` already answered 2xx — so a stored token
+          // always has a consent row (and its text hash) behind it. `basic`
+          // never gets here: the server does not set the flag for a plan that
+          // cannot renew, and storing a credential with no purpose is exactly
+          // what PDPL data-minimisation forbids.
+          ...(requiresConsent ? { credit_card: { save_card: true } } : {}),
           ...(canApplePay
             ? {
                 apple_pay: {
@@ -162,7 +209,7 @@ export default function PayPlanPage() {
     return () => {
       cancelled = true;
     };
-  }, [session]);
+  }, [session, requiresConsent, consentAccepted]);
 
   if (!plan) {
     return (
@@ -272,10 +319,35 @@ export default function PayPlanPage() {
         </div>
       )}
 
+      {/* Recurring consent, above the card fields and never beside them: the
+          disclosure has to be readable BEFORE a card is entered for it to be
+          the consent artefact the schemes (and KSA e-commerce rules) mean. */}
+      {session && requiresConsent && disclosure && (
+        <RecurringConsentGate
+          disclosure={disclosure}
+          accepted={consentAccepted}
+          pending={consent.isPending}
+          error={
+            consent.isError
+              ? consent.error?.message ||
+                "تعذّر تسجيل موافقتك. حاول مرة أخرى."
+              : null
+          }
+          onAccept={handleAcceptConsent}
+        />
+      )}
+
       {/* The Moyasar form replaces this node's contents. It must stay mounted
-          for the whole visit — re-rendering it away would drop the live form. */}
+          for the whole visit — re-rendering it away would drop the live form.
+          ⚠ Which is why the consent gate HIDES this subtree instead of
+          unmounting it: the node is created in the same commit as the session,
+          keeps its identity for the rest of the visit, and only its
+          `display` changes when consent lands. A conditional render here would
+          be a remount, and a remounted form is a dead form. */}
       {session && (
-        <section className="flex flex-col gap-4">
+        <section
+          className={cn("flex flex-col gap-4", !consentSatisfied && "hidden")}
+        >
           {formLoading && (
             <div className="flex items-center justify-center gap-3 py-6">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />

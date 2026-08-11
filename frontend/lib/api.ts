@@ -49,6 +49,9 @@ import type {
   PaymentVerifyResponse,
   PaymentHistoryResponse,
   PaymentRefundResponse,
+  PaymentConsentResponse,
+  PaymentMethodState,
+  PaymentMethodRevokeResponse,
   SubscriptionState,
   CancelSubscriptionReason,
 } from "@/types";
@@ -1015,8 +1018,45 @@ export const paymentsApi = {
       moyasar_id: moyasarId,
     }),
 
+  /**
+   * Record the pre-purchase recurring consent for an OPEN checkout
+   * (`.claude/plans/subscription_auto_renewal.md` §6 + §9).
+   *
+   * ⚠ The body is `{accepted: true}` and nothing else. There is no "false"
+   * call: withdrawing consent is `removePaymentMethod()`, a different verb on
+   * a different resource, because a stored credential is what actually has to
+   * go away. Sending the disclosure text from here would be worse than
+   * pointless — the server hashes ITS copy, so a client-supplied string could
+   * only ever disagree with the artefact.
+   *
+   * Must resolve BEFORE the Moyasar form is mounted with `save_card`: a token
+   * stored against no consent row is unusable by the renewal job by design.
+   */
+  acceptRecurringConsent: (paymentId: string) =>
+    api.post<PaymentConsentResponse>(`/payments/${paymentId}/consent`, {
+      accepted: true,
+    }),
+
   /** The caller's own receipts (سجل المدفوعات). RLS scopes it server-side. */
   history: () => api.get<PaymentHistoryResponse>("/payments/history"),
+
+  /**
+   * The caller's stored card — brand, last4, expiry, and when consent was
+   * given. **Never a token**: `payment_methods.provider_token` has no
+   * user-facing read path at all (RLS lockdown, backend-only access).
+   *
+   * Answers `has_method:false` when nothing is stored, which is also what the
+   * whole feature looks like while the backend renewal flag is off.
+   */
+  getPaymentMethod: () => api.get<PaymentMethodState>("/payments/method"),
+
+  /**
+   * Revoke the stored card («إزالة البطاقة»). The subscription and the current
+   * term are untouched — this removes the credential, so nothing can be
+   * charged again without a fresh purchase.
+   */
+  removePaymentMethod: () =>
+    api.delete<PaymentMethodRevokeResponse>("/payments/method"),
 
   /**
    * Self-serve refund inside the 24-hour window. The processing fee is applied
