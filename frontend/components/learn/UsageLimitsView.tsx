@@ -26,7 +26,12 @@ import { cn } from "@/lib/utils";
  *     deep_search median 3.96 p25–p75 3.19–4.61 → «٣–٥ نقاط»
  *
  * The per-plan counts are those medians divided into `plans.points_session` /
- * `points_weekly` (live values: free 5/5 · basic 10/50 · pro 15/75 · max 50/250).
+ * `points_weekly` (live values: basic 10/50 · pro 15/75 · max 50/250).
+ *
+ * `free` is deliberately NOT in that table any more (migration 129): it has no
+ * session and no weekly limit at all, just 5 points per rolling 30 days. Its
+ * old row read «٥ / ٥» in the session and weekly columns, which stopped being
+ * true the moment those limits went NULL.
  * An earlier draft claimed 4–6 deep searches per session on pro; the ledger says
  * 3–4 at the 15-point cap, and the honest number shipped (owner decision
  * 2026-08-02). If the model mix or the caps change, RE-RUN the ledger query
@@ -111,13 +116,6 @@ interface PlanRow {
  *  divided by the measured 3.19–4.61 deep_search range. */
 const PLAN_ROWS: readonly PlanRow[] = [
   {
-    plan: "المجانية",
-    session: "٥",
-    sessionRuns: "١",
-    weekly: "٥",
-    weeklyRuns: "١",
-  },
-  {
     plan: "الأساسية",
     session: "١٠",
     sessionRuns: "٢–٣",
@@ -149,6 +147,10 @@ const WINDOW_POINTS = [
   {
     title: "الأسبوع — نافذة متحركة ٧ أيام",
     body: "تبدأ من أول استخدام لاشتراكك وتتحرك معه، فلا يضيع عليك جزء من الأسبوع لأن اشتراكك بدأ يوم أربعاء.",
+  },
+  {
+    title: "المجانية — نافذة واحدة ٣٠ يوماً",
+    body: "لا جلسة ولا أسبوع في الباقة المجانية: ٥ نقاط تتحرك على آخر ٣٠ يوماً، تكفي لتجربة بحث معمّق قبل أن تقرر.",
   },
   {
     title: "النقاط لا تُرحّل",
@@ -349,6 +351,13 @@ export function UsageLimitsView() {
             الأعمدة تفترض أن كل نقطة تذهب إلى البحث المعمّق وحده. الاستخدام
             الواقعي يخلط الأسئلة والصياغة، فالعدد الفعلي أعلى من ذلك عادةً.
           </p>
+          {/* free is out of the table on purpose — it has neither of the two
+              columns the table is built on. Stating its single window here is
+              clearer than a row of «—». */}
+          <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
+            الباقة المجانية خارج الجدول: نافذة واحدة بـ٥ نقاط كل ٣٠ يوماً — بحث
+            معمّق واحد تقريباً، لتجربة ريحان قبل الاشتراك.
+          </p>
         </div>
       </section>
 
@@ -360,7 +369,7 @@ export function UsageLimitsView() {
               كيف تُحسب النوافذ؟
             </h2>
             <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-              الحدود تعمل على نافذتين تتحركان معك، لا على تقويم ثابت:
+              الحدود تعمل على نوافذ تتحرك معك، لا على تقويم ثابت:
             </p>
           </div>
           <ol className="mt-8 space-y-5">
@@ -420,11 +429,12 @@ export function UsageLimitsView() {
               <b className="text-foreground"> استخراج النص</b> من الملفات
               بالصفحات (١٥ · ٤٠ · ٢٠٠ شهرياً).
             </p>
-            <p className="text-center text-xs leading-relaxed text-muted-foreground">
-              يعمل خلف النوافذ الأسبوعية سقفٌ شهري احتياطي (٣٠٠ نقطة للاحترافية،
-              ١٠٠٠ للقصوى) لمنع الاستخدام الشاذ. الاستخدام المهني الطبيعي لا
-              يبلغه.
-            </p>
+            {/* The «سقف شهري احتياطي (٣٠٠ / ١٠٠٠)» line that stood here was
+                removed with migration 129: those numbers were set to NULL so
+                re-enabling the monthly window for the free plan would not
+                quietly start capping people who had already paid. There is no
+                monthly backstop on the paid plans now — so the page must not
+                claim one. Restore this line only alongside the limits. */}
           </div>
         </div>
       </section>

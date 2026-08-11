@@ -237,6 +237,19 @@ export function UsageLimitsDialog({
             now={now}
             fractionDigits={1}
           />
+          {/* Migration 129: the free plan's ONLY window. Its session and weekly
+              limits are NULL, so the two rows above render «بلا حد» and this is
+              the one that actually stops them — omitting it would leave a free
+              user unable to see their own limit anywhere in the app. Paid plans
+              are the mirror image: points_monthly is NULL, so this row reads
+              «بلا حد» and the two above carry the real numbers. */}
+          <BarRow
+            label="الشهري (٣٠ يوماً)"
+            unit="نقطة"
+            bar={data.points.monthly}
+            now={now}
+            fractionDigits={1}
+          />
         </section>
 
         <section className="flex flex-col gap-3">

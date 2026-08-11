@@ -10,13 +10,24 @@
  * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit — migration 113 and this
  * file must always move as one.
  *
- * Billing model (Moyasar Wave 1, 2026-08-03):
- *   - ALL THREE plans are ONE-TIME purchases with a term. Moyasar has no
- *     subscription engine, so auto-renewal is our own scheduler and is Wave 2.
- *     Until that ships, no card here may promise «تجديد تلقائي» — a field that
- *     lies is the bug migration 091 was written to kill.
- *   - basic — 7-day term; pro / max — 30-day term. An early re-purchase of the
- *     same plan STACKS (extends the term) rather than resetting it.
+ * Billing model (owner, 2026-08-10 — see .claude/plans/subscription_auto_renewal.md):
+ *   - basic — a ONE-TIME 7-day purchase that ends without any further charge.
+ *     Its card is the ONLY one that states a renewal position, and it states
+ *     «بدون تجديد تلقائي», because a term that simply stops is the thing a buyer
+ *     has to be told before paying.
+ *   - pro / max — 30-day terms that AUTO-RENEW. That is the owner's model and it
+ *     is what /terms §5.2 has promised publicly since 2026-08-10.
+ *   - An early re-purchase of the same plan STACKS (extends the term) rather
+ *     than resetting it.
+ *
+ * ⚠ WHY pro/max SAY NOTHING ABOUT RENEWAL HERE. The engine does not exist yet —
+ * no card tokenization, no renewal job, `plans.billing_cycle` still `one_time`.
+ * Silence is the only wording true both today and after Wave 2 ships:
+ *   - «بدون تجديد تلقائي» (what these two cards used to say) contradicts the
+ *     live terms — do NOT restore it;
+ *   - «تجديد تلقائي» is equally wrong until the engine ships TOGETHER WITH an
+ *     explicit pre-purchase recurring consent on /pay. Promising a renewal the
+ *     scheduler cannot perform is the same class of bug pointed the other way.
  *
  * Usage points: the headline allowance shown is the WEEKLY points window, which
  * is anchored to the user's first message and runs 7 days (so for `basic` it
@@ -38,7 +49,11 @@ export interface PricingPlan {
   price: string;
   /** Billing cadence label shown next to the price. */
   period: "أسبوعياً" | "شهرياً";
-  /** Small muted line under the price: renewal model + term. */
+  /**
+   * Small muted line under the price. Carries the TERM always, and the renewal
+   * position only on `basic` — see the ⚠ block in this file's header for why
+   * pro/max are deliberately silent on renewal.
+   */
   billingNote: string;
   features: string[];
   /** The visually emphasised "most popular" card. */
@@ -65,7 +80,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     tagline: "الأنسب للممارسة اليومية",
     price: "٨٩٫٩٠",
     period: "شهرياً",
-    billingNote: "بدون تجديد تلقائي · فترة الاشتراك ٣٠ يوماً",
+    billingNote: "فترة الاشتراك ٣٠ يوماً",
     highlighted: true,
     features: [
       "٧٥ نقطة استخدام أسبوعياً",
@@ -79,7 +94,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     tagline: "أقصى سعة للقضايا المكثّفة",
     price: "١٨٩٫٩٠",
     period: "شهرياً",
-    billingNote: "بدون تجديد تلقائي · فترة الاشتراك ٣٠ يوماً",
+    billingNote: "فترة الاشتراك ٣٠ يوماً",
     features: [
       "٢٥٠ نقطة استخدام أسبوعياً",
       "٥٠ نقطة لكل جلسة (٥ ساعات)",
@@ -108,6 +123,35 @@ export function cheapestPricingPlan(): PricingPlan {
       ? plan
       : cheapest,
   );
+}
+
+/**
+ * The upgrade ladder for a surface with NO blocking window to ask the server
+ * about — Settings → الاشتراك, where a subscriber may upgrade before hitting a
+ * wall. Strictly more expensive than `planId`, cheapest first.
+ *
+ * Display-only and deliberately price-based: it mirrors the server's downgrade
+ * guard (`payment_service.PLAN_RANK`, and `plans.price_sar` in SQL), so it can
+ * never offer something checkout would refuse. The blocked-send path does NOT
+ * use this — there the ladder arrives on the wire (`upgrade_options`) already
+ * filtered by the limit that actually blocked the user, which needs numbers
+ * this file does not carry.
+ *
+ * A plan we cannot price — unknown slug, or a grant like `marketing_lawyer` /
+ * `dev` that has no card here — yields an EMPTY list rather than the whole
+ * catalog: we cannot prove any of these is an upgrade for them, and
+ * `marketing_lawyer` (74 points weekly) would be shown `basic` (50) as a step
+ * up. Failing quiet costs an upsell; failing loud sells a downgrade.
+ */
+export function pricingPlansAbove(
+  planId: string | null | undefined,
+): PricingPlan[] {
+  const current = planId ? findPricingPlan(planId) : undefined;
+  if (!current) return [];
+  const floor = arabicPriceToNumber(current.price);
+  return PRICING_PLANS.filter(
+    (plan) => arabicPriceToNumber(plan.price) > floor,
+  ).sort((a, b) => arabicPriceToNumber(a.price) - arabicPriceToNumber(b.price));
 }
 
 /** «٤٩٫٩٠» → 49.9. Arabic-Indic digits + the ٫ separator back to a JS number. */

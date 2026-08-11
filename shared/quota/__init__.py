@@ -43,8 +43,10 @@ used figure drops), not a calendar boundary.
 
 Public API:
     check(redis, supabase, user_id, *, needs_ocr=..., est_ocr_pages=..., ...)
-        Raises PlanInactive (no plan assigned) or QuotaExceeded on the first
-        failing (meter, period).
+        Raises PlanInactive (no plan assigned) or QuotaExceeded on a failing
+        (meter, period). When more than one ord window is blown it reports the
+        one that binds LONGEST, and every block carries the upgrade ladder that
+        would clear that specific window.
     current_usage_report(redis, supabase, user_id) -> dict
         Read-only snapshot: plan block + every meter+period the UI renders.
     settle_ord / settle_ocr / settle_web (async + _sync variants)
@@ -56,7 +58,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -97,6 +99,12 @@ class QuotaExceeded(Exception):
     # keys the upgrade dialog off this: only a free-plan block offers plans to
     # buy; a paid user who ran their window down gets the reset banner instead.
     plan_id: str | None = None
+    # The purchasable plans that would ACTUALLY clear *this* block, cheapest
+    # first — see _upgrade_options(). Empty means "waiting is the only option"
+    # (a blocked `max`, or the ladder could not be computed), and the frontend
+    # renders the banner with no upgrade button. Never a mutable default: a
+    # shared list on the class would leak one block's ladder into the next.
+    upgrade_options: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         super().__init__(
@@ -113,6 +121,7 @@ class QuotaExceeded(Exception):
             "resets_at": self.resets_at.isoformat(),
             "message_ar": _arabic_message(self.meter, self.period, self.limit),
             "plan_id": self.plan_id,
+            "upgrade_options": list(self.upgrade_options or []),
         }
 
 
@@ -142,6 +151,9 @@ class PlanInactive(Exception):
             # account is an operator problem, not something buying a plan fixes,
             # so this must never open the upgrade dialog.
             "plan_id": None,
+            # Same reason: there is no plan to sell here. An empty ladder is the
+            # honest answer — buying anything leaves the account just as locked.
+            "upgrade_options": [],
         }
 
 
@@ -333,6 +345,148 @@ async def library_state(supabase: SupabaseClient, user_id: str) -> LibraryQuotaS
     return _library_state_from_row(await _quota_state(supabase, user_id))
 
 
+# ── the upgrade ladder (block path only) ────────────────────────────────────
+#
+# Usage is a rolling SUM over llm_calls, not a balance: re-buying the same plan
+# leaves the same spend sitting in the same window against the same cap. Only a
+# HIGHER limit on the window that blocked you clears the block, so the ladder is
+# not a generic upsell list — it is "the plans that would actually unblock you".
+
+# (meter, period) → the plans column that governs that window. A block on a
+# window with no column here yields an empty ladder rather than a guess.
+_LIMIT_COLUMN: dict[tuple[str, str], str] = {
+    ("ord", "session"): "points_session",
+    ("ord", "weekly"): "points_weekly",
+    ("ord", "monthly"): "points_monthly",
+    ("ocr", "monthly"): "ocr_pages_monthly",
+    ("web", "monthly"): "web_calls_monthly",
+}
+
+
+def _price(value: Any) -> float | None:
+    """plans.price_sar as a float. numeric(10,2) arrives from PostgREST as a
+    float or a string depending on the client version; NULL = not purchasable."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _upgrade_options(
+    supabase: SupabaseClient,
+    plan_id: str | None,
+    meter: Meter,
+    period: Period,
+) -> list[str]:
+    """The plans a blocked user could buy that would clear THIS block, ordered
+    cheapest first. Empty = waiting is the only option (a blocked ``max``).
+
+    ONE read of the small ``plans`` catalog; every comparison is then done in
+    Python because both sides of both filters live in that same table (PostgREST
+    cannot compare a column to another row's value). Called only on the block
+    path — blocks are rare, so the extra round trip is free.
+
+    Two filters, both load-bearing:
+
+    * **price** — only plans priced strictly ABOVE the current one. This mirrors
+      the ``PLAN_RANK`` downgrade guard in payment_service, so the dialog can
+      never offer something checkout would refuse. A current plan with a NULL
+      price (free / marketing_* / dev) is below every priced plan, so all of
+      them qualify.
+    * **strictly greater limit on the BLOCKING window** — offering a plan that
+      does not raise the limit that blocked you is the same error as offering a
+      downgrade. This is what makes ``marketing_lawyer`` fall out for free: on a
+      *session* block their 15 ties ``pro``'s 15, so only ``max`` (50) is
+      offered; on a *weekly* block both ``pro`` and ``max`` clear it.
+
+    NULL limits follow the module-wide convention — NULL = unlimited, so a
+    candidate's NULL beats any number (this is what offers all three paid plans
+    to a free user blocked on the 30-day window they alone carry, since paid
+    plans keep ``points_monthly`` NULL after 129), while a NULL on the CURRENT
+    plan means the window is unenforceable and nothing can beat it.
+    """
+    column = _LIMIT_COLUMN.get((str(meter), str(period)))
+    if column is None:
+        return []
+
+    def _call() -> list[dict[str, Any]]:
+        res = supabase.table("plans").select(f"plan_id, price_sar, {column}").execute()
+        return list(getattr(res, "data", None) or [])
+
+    rows = await asyncio.to_thread(_call)
+
+    current = next((r for r in rows if r.get("plan_id") == plan_id), None)
+    if current is None:
+        # The enforced plan is not in the catalog (or there is none). Without its
+        # price and limit there is no honest comparison to make, so offer
+        # nothing — failing towards "wait" never sells a plan that would not
+        # help.
+        logger.warning("upgrade ladder: plan %r not in the catalog", plan_id)
+        return []
+
+    # A current limit of 0 is "the plan does not include this" (free + OCR), NOT
+    # "no allowance to beat": every priced plan carrying a positive limit clears
+    # it, so plain `>` is exactly right and must not be guarded away.
+    current_limit = current.get(column)
+    if current_limit is None:
+        # Unlimited on the blocking window — an unlimited window cannot block, so
+        # this is unreachable in practice. Fail quiet (nothing beats unlimited)
+        # rather than falling through to "offer the whole catalog".
+        return []
+    current_price = _price(current.get("price_sar"))
+
+    ladder: list[tuple[float, str]] = []
+    for row in rows:
+        pid = row.get("plan_id")
+        if not pid or pid == plan_id:
+            continue                      # re-buying the same plan clears nothing
+        price = _price(row.get("price_sar"))
+        if price is None:
+            continue                      # not purchasable (free / marketing_* / dev)
+        if current_price is not None and price <= current_price:
+            continue                      # downgrade or sidestep — checkout refuses it
+        limit = row.get(column)
+        # `limit is None` is UNLIMITED and therefore beats every finite number —
+        # it must not poison the comparison the way SQL's `NULL > 5` would. This
+        # single condition is what keeps the flagship path working: after 129 the
+        # paid plans all carry points_monthly = NULL, so a free user blocked on
+        # the 30-day window would otherwise be offered nothing at all.
+        if limit is not None and float(limit) <= float(current_limit):
+            continue                      # would not raise the limit that blocked them
+        ladder.append((price, str(pid)))
+
+    ladder.sort(key=lambda item: (item[0], item[1]))
+    return [pid for _, pid in ladder]
+
+
+async def _quota_block(
+    supabase: SupabaseClient,
+    plan: str | None,
+    meter: Meter,
+    period: Period,
+    used: float,
+    limit: float,
+    resets_at: datetime,
+) -> QuotaExceeded:
+    """Build the QuotaExceeded for a confirmed block, ladder included.
+
+    The ladder is best-effort by construction: a failure computing an upsell
+    must never turn a clean quota block into a 500, so any exception degrades to
+    an empty list (banner, no upgrade button) and is logged.
+    """
+    try:
+        options = await _upgrade_options(supabase, plan, meter, period)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "upgrade ladder failed for plan=%s %s/%s (block stands, no options "
+            "offered): %s", plan, meter, period, exc,
+        )
+        options = []
+    return QuotaExceeded(meter, period, used, limit, resets_at, plan, options)
+
+
 # ── the gate ────────────────────────────────────────────────────────────────
 
 async def check(
@@ -346,17 +500,30 @@ async def check(
     needs_web: bool = False,
     est_web_calls: int = 0,
 ) -> None:
-    """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on the first
-    failing (meter, period), or ``QuotaUnavailable`` when the quota-state RPC is
+    """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on a failing
+    (meter, period), or ``QuotaUnavailable`` when the quota-state RPC is
     unreachable (fail closed — blocking unknowable spend is the gate's job).
 
-    Ord windows are checked shortest-first (session → weekly) so the user sees
-    the soonest-to-recover limit. A NULL limit skips the window entirely
-    (unlimited). OCR is *projected* (``current + est > limit``); the ord meter is
-    checked against current spend only — LLM token cost can't be forecast before
-    the call. ``redis``/``est_web_calls`` are kept for call-site compatibility but
-    unused: the gate and the dialog read the SAME RPC row, so a block is always
-    what's shown.
+    **Ord windows are ALL evaluated, and the block reported is the one with the
+    FURTHEST ``resets_at``** — i.e. the window that actually binds. The gate used
+    to raise on the first (shortest) breach on the theory that the user should
+    see the soonest-to-recover limit; with two windows blown that told someone
+    stuck for five days that they were back in four hours. The soonest limit is
+    only the one that matters when it is also the last one to clear. A single
+    breach behaves exactly as before, and ties keep the shorter window (the
+    message differs, the countdown does not).
+
+    OCR and web keep raising immediately: they are independent meters, not
+    competing windows over the same resource, so there is nothing to compare.
+
+    A NULL limit skips the window entirely (unlimited) — which is how the plans
+    differ after migration 129: `free` has ONLY the 30-day window, paid plans
+    have only session + weekly. OCR is *projected* (``current + est > limit``);
+    the ord meter is checked against current spend only — LLM token cost can't be
+    forecast before the call. Every block carries the upgrade ladder for its own
+    window (see ``_upgrade_options``). ``redis``/``est_web_calls`` are kept for
+    call-site compatibility but unused: the gate and the dialog read the SAME RPC
+    row, so a block is always what's shown.
     """
     try:
         st = await _quota_state(supabase, user_id)
@@ -373,39 +540,73 @@ async def check(
     plan = st.get("effective_plan_id") or st.get("plan_id")
 
     if needs_ord:
+        # EVERY ord window is evaluated before anything is raised. They are
+        # competing windows over the SAME resource (points), so the one the user
+        # must be told about is the one they are stuck behind longest — not
+        # whichever happens to be shortest. (period, used, limit, resets_at):
+        breaches: list[tuple[Period, float, float, datetime]] = []
+
         # Session — fixed 5h block anchored at the first message (migration 083).
         if st.get("points_session") is not None:
             used = float(st.get("session_cost") or 0.0) * POINTS_PER_USD
             if used >= float(st["points_session"]):
-                resets = _rolling_reset(st.get("session_oldest"), SESSION_WINDOW_S)
-                raise QuotaExceeded(
-                    "ord", "session", used, float(st["points_session"]), resets, plan
-                )
+                breaches.append((
+                    "session", used, float(st["points_session"]),
+                    _rolling_reset(st.get("session_oldest"), SESSION_WINDOW_S),
+                ))
 
         # Weekly — rolling last 7 days.
         if st.get("points_weekly") is not None:
             used = float(st.get("weekly_cost") or 0.0) * POINTS_PER_USD
             if used >= float(st["points_weekly"]):
-                resets = _rolling_reset(st.get("weekly_oldest"), WEEK_WINDOW_S)
-                raise QuotaExceeded(
-                    "ord", "weekly", used, float(st["points_weekly"]), resets, plan
-                )
+                breaches.append((
+                    "weekly", used, float(st["points_weekly"]),
+                    _rolling_reset(st.get("weekly_oldest"), WEEK_WINDOW_S),
+                ))
+
+        # Monthly — rolling last 30 days (migration 129).
+        #
+        # This is the ONLY window the free plan has: its session and weekly
+        # limits are NULL, so a free user reaches only this one and the block
+        # they see counts down in days, not hours. Telling someone their free
+        # quota returns in four hours is an argument against paying.
+        #
+        # Paid plans carry points_monthly = NULL and are unaffected — the
+        # window stays retired for them. See migration 129.
+        if st.get("points_monthly") is not None:
+            used = float(st.get("monthly_cost") or 0.0) * POINTS_PER_USD
+            if used >= float(st["points_monthly"]):
+                breaches.append((
+                    "monthly", used, float(st["points_monthly"]),
+                    _rolling_reset(st.get("monthly_oldest"), MONTH_WINDOW_S),
+                ))
+
+        if breaches:
+            # max() keeps the FIRST maximal element, so equal reset instants fall
+            # back to the order above (session → weekly → monthly) — the shorter
+            # window wins a tie, which is what the gate did before.
+            period, used, limit, resets = max(breaches, key=lambda b: b[3])
+            raise await _quota_block(
+                supabase, plan, "ord", period, used, limit, resets
+            )
 
     if needs_ocr and st.get("ocr_pages_monthly") is not None:
         m_limit = int(st["ocr_pages_monthly"])
         ocr_resets = _rolling_reset(st.get("ocr_oldest"), MONTH_WINDOW_S)
         if m_limit <= 0:
-            raise QuotaExceeded("ocr", "monthly", 0, 0, ocr_resets, plan)
+            raise await _quota_block(supabase, plan, "ocr", "monthly", 0, 0, ocr_resets)
         used_pages = int(st.get("ocr_pages") or 0)
         if used_pages + est_ocr_pages > m_limit:       # projected overage
-            raise QuotaExceeded(
-                "ocr", "monthly", used_pages + est_ocr_pages, m_limit, ocr_resets, plan
+            raise await _quota_block(
+                supabase, plan, "ocr", "monthly",
+                used_pages + est_ocr_pages, m_limit, ocr_resets,
             )
 
     if needs_web and st.get("web_calls_monthly") is not None and int(st["web_calls_monthly"]) <= 0:
         # Internet search is not a live feature — any plan that lists it is 0.
-        raise QuotaExceeded(
-            "web", "monthly", 0, 0, _rolling_reset(None, MONTH_WINDOW_S), plan
+        raise await _quota_block(
+            supabase, plan, "web", "monthly", 0, 0,
+            _rolling_reset(None, MONTH_WINDOW_S),
         )
 
 
@@ -445,7 +646,8 @@ async def current_usage_report(
           "points": {                      # ord meter, in points (1$ = 100)
             "session": {"used", "limit"|null, "pct", "resets_at", "approximate"},
             "weekly":  {...},
-            "monthly": null                # retired window — kept null for contract
+            "monthly": {...}               # rolling 30 days — the free plan's
+                                           # only window (129)
           },
           "ocr": {"monthly": {...}},       # pages
           "web": {"monthly": null},        # retired feature — kept null for contract
@@ -527,7 +729,14 @@ async def current_usage_report(
                 st.get("weekly_cost"), st.get("points_weekly"),
                 st.get("weekly_oldest"), WEEK_WINDOW_S,
             ),
-            "monthly": None,   # retired window — kept null for the frontend contract
+            # Un-retired in 129 — this is the free plan's ONLY window, so a free
+            # user whose dialog omitted it could not see the limit that actually
+            # governs them. Paid plans carry points_monthly = NULL, which
+            # _points_bar renders as «بلا حد» and the gate skips.
+            "monthly": _points_bar(
+                st.get("monthly_cost"), st.get("points_monthly"),
+                st.get("monthly_oldest"), MONTH_WINDOW_S,
+            ),
         },
         "ocr": {"monthly": _count_bar(
             st.get("ocr_pages"), st.get("ocr_pages_monthly"), st.get("ocr_oldest"), MONTH_WINDOW_S,

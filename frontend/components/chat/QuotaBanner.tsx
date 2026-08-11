@@ -9,22 +9,40 @@ import { formatReset } from "@/lib/quota-reset";
 import type { SSEQuotaExceeded } from "@/types";
 
 /**
- * A quota block offers plans only when the user is actually on the free plan.
+ * Whether this block has anything to sell — i.e. whether the SERVER found a
+ * plan that would actually unblock this user.
  *
- *   - `"free"`        → the paywall: nothing resets soon enough to matter, and
- *                       buying is the only way forward. Opens the dialog.
- *   - `null`          → `PlanInactive`. The account is not activated; a purchase
- *                       does NOT unlock it, so selling here would take money for
- *                       nothing. Banner only.
- *   - a paid plan     → they already bought. They need the reset time, not a
- *                       pitch. Banner only.
- *   - `undefined`     → backend predates the `plan_id` field (deploy skew).
- *                       Falls through to banner-only: showing no dialog to a
- *                       free user is a missed upsell; showing one to a paying
- *                       user is a bad experience. Fail toward the quiet option.
+ * `upgrade_options` is computed on the block path from the window that tripped:
+ * purchasable, priced above the current plan, and with a strictly higher limit
+ * on that window. Reading it here instead of re-deriving a ladder from
+ * `plan_id` keeps the offer honest in the cases a plan name cannot express —
+ * `marketing_lawyer` blocked on the 5-hour session is offered `max` only,
+ * because `pro`'s session limit ties theirs and would change nothing.
+ *
+ *   - non-empty  → show the button (and, for free, the modal — see below).
+ *   - empty      → `max` is already at the top of the ladder, or the account is
+ *                  not activated (`PlanInactive`, which a purchase does not
+ *                  fix). Banner only: there is nothing to offer.
+ *   - undefined  → backend predates the ladder (deploy skew). Treated as empty,
+ *                  so the failure mode is a missed upsell rather than a pitch
+ *                  that cannot help — the same "fail toward the quiet option"
+ *                  choice this component made when `plan_id` was new.
  */
 function shouldOfferUpgrade(info: SSEQuotaExceeded | null): boolean {
-  return info?.plan_id === "free";
+  return (info?.upgrade_options?.length ?? 0) > 0;
+}
+
+/**
+ * The modal opens BY ITSELF for free users only (locked decision 9).
+ *
+ * A paying subscriber who ran their window down has already bought; a
+ * full-screen sales modal thrown at them mid-work reads as a shakedown, not as
+ * help. They get the banner and a «ترقية الباقة» button, and the same dialog
+ * opens the moment they ask for it. `plan_id` is EFFECTIVE, so an expired
+ * subscription that fell back to `free` correctly gets the paywall again.
+ */
+function shouldAutoOpen(info: SSEQuotaExceeded | null): boolean {
+  return shouldOfferUpgrade(info) && info?.plan_id === "free";
 }
 
 export function QuotaBanner() {
@@ -45,7 +63,7 @@ export function QuotaBanner() {
   // they hit the wall again, show the plans.
   const shownFor = useRef<SSEQuotaExceeded | null>(null);
   useEffect(() => {
-    if (!quotaInfo || !shouldOfferUpgrade(quotaInfo)) return;
+    if (!quotaInfo || !shouldAutoOpen(quotaInfo)) return;
     if (shownFor.current === quotaInfo) return;
     shownFor.current = quotaInfo;
     setDialogOpen(true);
@@ -80,16 +98,19 @@ export function QuotaBanner() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {/* The way back to the plans after the modal is closed — without it,
-              dismissing the dialog strands the user with no route to buy. */}
+          {/* For a free user this is the way back to the plans after the modal
+              is closed — without it, dismissing strands them with no route to
+              buy. For a paying user it is the ONLY route, by design: the offer
+              is available on request and never pushed. */}
           {offersUpgrade && (
             <Button
               variant="outline"
               size="sm"
               className="h-7 border-warning-fg/30 bg-transparent text-xs text-warning-fg hover:bg-warning-fg/10 hover:text-warning-fg"
               onClick={handleReopen}
+              data-testid="quota-upgrade-open"
             >
-              عرض الباقات
+              {quotaInfo.plan_id === "free" ? "عرض الباقات" : "ترقية الباقة"}
             </Button>
           )}
           <Button

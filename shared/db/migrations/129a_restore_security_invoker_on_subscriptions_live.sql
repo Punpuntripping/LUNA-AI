@@ -1,0 +1,54 @@
+-- ============================================================================
+-- Migration 129a — restore `security_invoker` on user_subscriptions_live
+-- Applied to prod 2026-08-11, immediately after 129.
+-- ============================================================================
+--
+-- WHAT HAPPENED
+-- -------------
+-- 120 created `user_subscriptions_live` WITH (security_invoker = true). 129 had
+-- to DROP and recreate the view (it appends monthly_cost / monthly_oldest to
+-- get_user_quota_state's return table, and PostgreSQL will not let CREATE OR
+-- REPLACE change a function's return type), and the recreate used a plain
+-- CREATE VIEW — dropping the option.
+--
+-- This was not discovered by review. 132 §6 PREDICTED it in writing and
+-- deliberately refused to fix it inline, on the grounds that "a change of
+-- security posture on a view that joins users to subscriptions deserves its own
+-- migration and its own verification, not a silent re-add inside an auto-renewal
+-- change". It was then confirmed by reading pg_class.reloptions right after 129
+-- was applied: NULL, i.e. security-definer. This file is that separate
+-- migration.
+--
+-- WHY ALTER VIEW AND NOT DROP + CREATE
+-- ------------------------------------
+-- The view BODY that 129 installed is correct — it was built from a live
+-- pg_get_viewdef read. Only the execution posture was lost. Rebuilding the view
+-- to fix an option would mean reconstructing 33 columns from a file, which is
+-- precisely the trap 120, 129 and 131 each warn about in their own headers
+-- ("reconstructing it from an older migration silently drops operator columns").
+-- ALTER VIEW ... SET changes the one thing that is wrong and cannot touch the
+-- other 33.
+--
+-- BLAST RADIUS: NIL TODAY, LOAD-BEARING TOMORROW
+-- ----------------------------------------------
+-- The view is REVOKEd from anon and authenticated and granted to service_role
+-- alone, and service_role bypasses RLS anyway — so no query changes its answer
+-- today. It matters the first time anyone else is granted SELECT: without
+-- security_invoker the view executes with its OWNER's privileges (postgres), so
+-- the grantee would read straight past the RLS on users and user_subscriptions.
+-- The posture is restored now, while it is free, rather than at the moment
+-- someone adds that grant.
+--
+-- 129 itself has also been corrected in this repo so a fresh apply produces the
+-- right view directly. This file remains because it is what prod actually ran;
+-- both paths converge on the same state and both are idempotent.
+--
+-- VERIFY (EXPECT: {security_invoker=true} and 33)
+--   SELECT c.reloptions,
+--          (SELECT count(*) FROM information_schema.columns
+--            WHERE table_schema='public' AND table_name='user_subscriptions_live')
+--     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+--    WHERE n.nspname='public' AND c.relname='user_subscriptions_live';
+-- ============================================================================
+
+ALTER VIEW public.user_subscriptions_live SET (security_invoker = true);
