@@ -343,27 +343,37 @@ async def record_consent(
 def extract_card_token(fetched: Optional[dict]) -> Optional[dict]:
     """Pull the reusable card token + display fields out of a Moyasar payment.
 
-    ⚠⚠ **UNVERIFIED.** Every field name below is inferred from Moyasar's public
-    documentation and has NEVER been checked against a real ``save_card: true``
-    response on this merchant account — as of 2026-08-08 tokenization was not
-    even enabled on it (see `.claude/plans/subscription_cancellation.md`). This
-    function is the ONE place the guesswork lives, deliberately: verifying the
-    feature means dumping one real payment object and correcting this function,
-    not auditing the codebase.
+    Tokenization was ENABLED on the live merchant account on 2026-08-12 (Moyasar
+    support, in writing). The field names below are now checked against the
+    published contract at docs.moyasar.com/guides/tokenization — but NOT yet
+    against a real response from this account, so treat the shape as documented,
+    not observed.
 
-    **DO NOT FLIP ``SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` UNTIL THIS HAS BEEN
-    CHECKED AGAINST A REAL RESPONSE.** The failure mode if it is wrong is benign
-    by construction (no token found → nothing stored → nothing renews → the
-    subscription lapses exactly as it does today), which is why it is safe to
-    ship — but it is a silent no-op, not a loud error, so it will not announce
-    itself.
+    VERIFIED FROM THE DOCS — a payment created with ``save_card: true``::
 
-    Expected shape (unverified)::
+        {"id": "…", "status": "initiated", "amount": 10000, "currency": "SAR",
+         "source": {"type": "creditcard", "company": "visa", "name": "John Doe",
+                    "number": "XXXX-XXXX-XXXX-1111",
+                    "token": "token_qbmmXzo…",
+                    "transaction_url": "…"}}
 
-        {"id": "...", "status": "paid",
-         "source": {"type": "creditcard", "company": "mada",
-                    "name": "…", "number": "4111-11XX-XXXX-1111",
-                    "token": "token_xxx", "month": "12", "year": "2030"}}
+    ⚠ **THE PAYMENT RESPONSE CARRIES NO EXPIRY.** There is no ``month``/``year``
+    inside that ``source``; only the TOKEN object does::
+
+        GET /v1/tokens/:id →
+        {"id": "token_…", "status": "active", "brand": "visa",
+         "funding": "credit", "country": "SA", "month": "12", "year": "2030",
+         "name": "…", "last_four": "1111", …}
+
+    So ``exp_month``/``exp_year`` come back None from a save_card capture and the
+    stored card renders without an expiry line. Fetching the token object after
+    capture is what fixes that — and it is the only way to read ``status``, which
+    matters because ONLY an ``active`` token can be charged (``initiated`` and
+    ``inactive`` are rejected at the provider). Not wired yet.
+
+    Note the two objects name the same things differently — ``company`` vs
+    ``brand``, ``number`` vs ``last_four`` — so both spellings are accepted below
+    and this function works on either.
 
     Returns ``{"provider_token", "brand", "last4", "exp_month", "exp_year"}`` or
     None. Only ``provider_token`` is required; the display fields are best-effort
@@ -395,8 +405,15 @@ def extract_card_token(fetched: Optional[dict]) -> Optional[dict]:
 
     # Moyasar masks the PAN as e.g. "4111-11XX-XXXX-1111"; the last 4 real
     # digits are the trailing run. Never store more than four.
+    # ``number`` is the PAYMENT response's masked PAN. ``last_four`` is what the
+    # TOKEN object (GET /v1/tokens/:id) calls the same thing — both are accepted
+    # so this function works on either object.
     last4 = None
-    number = source.get("number") or source.get("masked_number")
+    number = (
+        source.get("number")
+        or source.get("last_four")
+        or source.get("masked_number")
+    )
     if isinstance(number, str):
         digits = "".join(ch for ch in number if ch.isdigit())
         if len(digits) >= 4:
@@ -427,6 +444,67 @@ def extract_card_token(fetched: Optional[dict]) -> Optional[dict]:
         "exp_month": exp_month,
         "exp_year": exp_year,
     }
+
+
+#: Token statuses Moyasar will actually charge. Per
+#: docs.moyasar.com/guides/tokenization/tokenized-cards only ``active`` is
+#: chargeable — ``initiated`` and ``inactive`` are rejected at the provider.
+TOKEN_STATUS_ACTIVE = "active"
+
+
+def fetch_token_at_provider(token: str) -> Optional[dict]:
+    """``GET /v1/tokens/{id}`` — the token object. SYNC — call via ``run_db``.
+
+    Exists for two reasons, and the second is not cosmetic:
+
+    1. **The expiry lives ONLY here.** A payment created with ``save_card: true``
+       returns ``source.token`` but no ``month``/``year`` (verified against the
+       docs), so without this call the stored card renders with no expiry line.
+    2. **``status`` lives only here too**, and only an ``active`` token can be
+       charged. Storing a token we could have known was unchargeable would show
+       the user «مدى ••1234» in إعدادات الحساب, implying renewal is set up, while
+       every renewal silently declines.
+
+    Shape (per the docs)::
+
+        {"id": "token_…", "status": "active", "brand": "visa",
+         "funding": "credit", "country": "SA", "month": "12", "year": "2030",
+         "name": "…", "last_four": "1111", "metadata": null, …}
+
+    Returns the parsed object, or None on ANY failure. None means "unknown", NOT
+    "bad" — the caller must treat it as an enrichment that didn't arrive and
+    proceed, never as a reason to refuse a token. This call is not on the
+    money path and must never become a gate we depend on.
+
+    Sync for the same reason as ``revoke_token_at_provider``: one implementation,
+    reachable from both the sync purge sweep and async callers via ``run_db``.
+    """
+    secret = (get_settings().MOYASAR_SECRET_KEY or "").strip()
+    if not secret or not token:
+        return None
+    try:
+        with httpx.Client(timeout=HTTP_TIMEOUT_S) as client:
+            response = client.get(
+                f"{MOYASAR_API_BASE}/tokens/{quote(str(token), safe='')}",
+                auth=(secret, ""),
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("token fetch: transport failure (display fields degrade): %s", exc)
+        return None
+
+    if response.status_code != 200:
+        logger.warning(
+            "token fetch: Moyasar answered %d (%s) — display fields degrade and "
+            "token status is unknown",
+            response.status_code, response.text[:200],
+        )
+        return None
+    try:
+        parsed = response.json()
+    except ValueError:
+        logger.warning("token fetch: response was not JSON")
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def revoke_token_at_provider(token: str) -> bool:
@@ -677,6 +755,43 @@ async def capture_payment_method(
         existing = await run_db(_select_active_with_token_safe, supabase, str(user_id))
         if existing and existing.get("provider_token") == card["provider_token"]:
             return str(existing.get("payment_method_id"))       # the other path won
+
+        # Enrich from the token object — AFTER the dedup short-circuit above, so
+        # only the winning confirmation path spends a provider call.
+        #
+        # Two things come back that the payment response cannot give us: the
+        # expiry, and `status`. On status the rule is asymmetric ON PURPOSE:
+        #   * unknown (fetch failed) → PROCEED. The fetch is an enrichment and
+        #     must never become a gate; a Moyasar hiccup here would otherwise
+        #     silently stop every card from being saved.
+        #   * known and not `active` → REFUSE. The provider will reject every
+        #     charge against it, so storing it would put «مدى ••1234» in
+        #     إعدادات الحساب — telling the user renewal is set up while every
+        #     renewal declines. Better to store nothing and lapse like today.
+        token_obj = await run_db(fetch_token_at_provider, card["provider_token"])
+        if token_obj:
+            status = str(token_obj.get("status") or "").strip().lower()
+            if status and status != TOKEN_STATUS_ACTIVE:
+                logger.error(
+                    "payment=%s produced a token with status=%r, which Moyasar "
+                    "will NOT charge — refusing to store it. If this repeats, the "
+                    "save_card flow is minting save_only tokens and "
+                    "capture_payment_method needs revisiting.",
+                    payment_id, status,
+                )
+                return None
+            # Fill only what the payment response left empty — the payment's own
+            # `company`/`number` are equally authoritative and already parsed.
+            #
+            # ⚠ `token` is injected from `id`: the token object names its own id
+            # `id`, while extract_card_token keys off `source.token`. Without this
+            # the reuse silently returns None and the whole enrichment no-ops.
+            enriched = extract_card_token(
+                {"source": {**token_obj, "token": token_obj.get("id") or "x"}}
+            ) or {}
+            for field in ("brand", "last4", "exp_month", "exp_year"):
+                if card.get(field) in (None, "") and enriched.get(field) not in (None, ""):
+                    card[field] = enriched[field]
 
         if existing:
             # A DIFFERENT card on the same account. One active method per user

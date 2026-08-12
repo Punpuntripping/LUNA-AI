@@ -574,13 +574,23 @@ async def charge_saved_card(
 ) -> dict:
     """``POST /v1/payments`` against a STORED TOKEN — a merchant-initiated charge.
 
-    ⚠⚠ **UNVERIFIED AGAINST THE LIVE MOYASAR API.** The request body below (a
-    ``source`` of ``{"type": "token", "token": …}``) is inferred from Moyasar's
-    documentation and has never been exercised on this merchant account. Worse,
-    MIT is a SEPARATE permission from tokenization and, as of the plan's §4, has
-    not been confirmed enabled. **Do not flip
-    ``SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` until a real charge has been made and
-    this body, and the response's ``status``, have been checked.**
+    The body below matches Moyasar's published contract verbatim
+    (docs.moyasar.com/guides/tokenization/tokenized-cards), and tokenization was
+    enabled on the live account 2026-08-12. Two consequences worth knowing:
+
+    * **3DS is NOT triggered on a token charge** — per the docs, "the payment
+      method was already verified when the token was created or saved". So the
+      cardholder-absent problem the plan worried about does not arise for an
+      ``active`` token. (A ``save_only`` token always challenges; ours are
+      created by a real payment, so they are not save_only. ``"3ds": true`` can
+      be added inside ``source`` to force a challenge — we never want that here.)
+    * **ONLY an ``active`` token can be charged.** ``initiated`` / ``inactive``
+      are rejected by the provider. Nothing reads token status yet — see the note
+      in ``payment_method_service.extract_card_token``.
+
+    ⚠ Still not exercised against this account. **Do not flip
+    ``SUBSCRIPTION_AUTO_RENEWAL_ENABLED`` until one real charge has been made and
+    the response's ``status`` checked.**
 
     Two hard rules, both inherited from ``refund_at_provider``:
 
@@ -1819,17 +1829,40 @@ async def _mark_failed(supabase: SupabaseClient, row: dict, fetched: dict) -> di
         )
         return {"status": row.get("status"), "payment_id": payment_id, "granted": False}
 
-    await run_db(
-        _update_transaction,
-        supabase,
-        payment_id,
-        {"status": "failed", "provider_ref": fetched.get("id"), "raw_payload": fetched},
-    )
     source = fetched.get("source") or {}
-    logger.info(
-        "payment failed: payment=%s message=%s",
-        payment_id, (source.get("message") if isinstance(source, dict) else None),
-    )
+    message = source.get("message") if isinstance(source, dict) else None
+
+    # `decline_reason` (migration 133) — the provider's own words, promoted out of
+    # raw_payload so declines can be GROUPed BY. Truncated because a provider is
+    # free to return an essay, and this column exists to be aggregated, not read
+    # as a document; the untruncated original stays in raw_payload.
+    #
+    # Written through the same tolerant update as everything else here: if 133 has
+    # not been applied yet, the column is simply absent and the write must not
+    # take a payment row down with it — a lost reason string is a reporting gap,
+    # while a failed _mark_failed would leave a dead payment marked live.
+    update: dict[str, Any] = {
+        "status": "failed",
+        "provider_ref": fetched.get("id"),
+        "raw_payload": fetched,
+    }
+    if isinstance(message, str) and message.strip():
+        update["decline_reason"] = message.strip()[:500]
+
+    try:
+        await run_db(_update_transaction, supabase, payment_id, update)
+    except Exception as exc:  # noqa: BLE001
+        if "decline_reason" not in update:
+            raise
+        logger.warning(
+            "payment=%s: failure update rejected (%s) — retrying without "
+            "decline_reason; apply migration 133 to record it",
+            payment_id, exc,
+        )
+        update.pop("decline_reason")
+        await run_db(_update_transaction, supabase, payment_id, update)
+
+    logger.info("payment failed: payment=%s message=%s", payment_id, message)
     return {
         "status": "failed",
         "payment_id": payment_id,
