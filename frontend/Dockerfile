@@ -31,6 +31,35 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 
+# ⚠ THE PRERENDER PASS IS A REAL API CLIENT, AND IT NEEDS TO SAY WHO IT IS.
+# `RUN npm run build` below fetches the backend for every prerendered hub and
+# sector×type page. Railway passes service variables as build args, but Docker
+# only exposes one to the RUN environment if the stage DECLARES it — so without
+# this ARG, `process.env.ISR_BAKE_SECRET` is undefined during the build and
+# `serverFetchInit` (frontend/lib/library/api.ts) attaches no
+# `X-ISR-Bake-Secret`. That made the bake anonymous to the backend, which has
+# two consequences:
+#
+#   1. `rate_limit.is_isr_bake_request` never matched at BUILD time, so the
+#      bypass added in f4a173a — written precisely because the 2026-08-06
+#      publish made `next build` 429 its own prerender — only ever protected
+#      RUNTIME revalidation, where the variable really is in the container env.
+#   2. Post-Cloudflare-cutover it is worse: the build reaches the backend over
+#      the PUBLIC origin (INTERNAL_API_URL is deliberately NOT declared here —
+#      Railway's private network is runtime-only, so the prerender must fall
+#      through to `NEXT_PUBLIC_API_URL`), which means it transits the edge as an
+#      unheadered datacenter caller and Browser Integrity Check evaluates it.
+#      WAF rule 1's skip list keys on this header, so it cannot fire unless the
+#      header exists. A blocked bake FAILS SILENTLY: `getSectors()` soft-fails
+#      to [], `generateStaticParams` returns nothing, hubs bake empty, and the
+#      build still reports SUCCESS.
+#
+# Not `NEXT_PUBLIC_`, so it never reaches the browser bundle. Do NOT add
+# EDGE_SECRET here: that one proves EDGE TRANSIT, and a build machine asserting
+# it from outside Cloudflare is the exact forgery the origin lock exists to stop.
+ARG ISR_BAKE_SECRET
+ENV ISR_BAKE_SECRET=$ISR_BAKE_SECRET
+
 # Disable Next.js telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
 

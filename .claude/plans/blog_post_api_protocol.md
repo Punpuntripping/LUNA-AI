@@ -26,7 +26,20 @@ Posts are **private/unlisted** — reachable only via their unguessable `token` 
 | Environment | Base URL |
 |---|---|
 | Production | `https://api.rayhanai.com` |
-| Production (Railway alias) | `https://luna-backend-production-35ba.up.railway.app` |
+| ~~Production (Railway alias)~~ | ~~`https://luna-backend-production-35ba.up.railway.app`~~ — **DO NOT USE**, see below |
+
+⚠ **USE `api.rayhanai.com`. THE RAILWAY ALIAS IS SCHEDULED TO STOP WORKING.** It was listed
+here as an equivalent fallback and it is not one. The Cloudflare cutover
+(`.claude/plans/cloudflare_navigation_hardening.md` §3.4) arms an **origin lock**: the backend
+begins rejecting, with `403`, every request that did not transit Cloudflare — proven by an
+`X-Edge-Secret` header the edge injects. Traffic to the raw `*.up.railway.app` hostname bypasses
+Cloudflare by definition, so it carries no such header and **every call on the alias will 403**,
+including authenticated ones. The bearer key will not save it: the key is *authentication*, the
+lock is a *network boundary*, and `/internal/*` is deliberately NOT exempt from it.
+
+This breaks silently from the caller's side — a `403` on a route that worked yesterday, with no
+deploy on your end. If you hold a copy of this document, change your base URL to
+`https://api.rayhanai.com` now; it already works and will keep working.
 
 All routes below are relative to the base URL. There is no `/api/v1` prefix — these are `/internal/*` service routes.
 
