@@ -82,6 +82,35 @@ ORIGIN_LOCK_MESSAGE = "غير مصرح بالوصول"
 # suppressed count attached.
 _LOG_THROTTLE_SECONDS = 60.0
 
+# ============================================
+# OBSERVE MODE — measure the header before trusting it
+# (cloudflare_navigation_hardening.md §3.4 step 5, added 2026-08-13)
+#
+# Arming this lock is the one cutover step whose failure mode is TOTAL: a wrong
+# assumption about the header and 100% of production 403s, with rollback costing
+# an env-var change plus a redeploy. Step 5 of the plan therefore says to verify
+# the header "actually arrives at the origin — and capture its on-the-wire shape
+# while a client also sends the header" BEFORE step 6 sets ``EDGE_SECRET``.
+#
+# That was previously unobservable: with the lock disabled the middleware
+# forwarded blind and logged nothing, so the only way to learn the shape was to
+# arm it and find out. This closes that gap — while DISABLED, it reports what it
+# would have matched against, and never enforces.
+#
+# ⚠ WHAT WE ARE ACTUALLY MEASURING IS THE *VALUE COUNT*, NOT PRESENCE.
+# ``_header_matches`` uses ``getlist``, which only separates DISTINCT header
+# LINES. Cloudflare appending its real secret alongside a client-supplied forgery
+# yields two lines → the real one still matches → 200. But if the edge ever FOLDS
+# them into one comma-joined line ("forged, real"), no single value equals the
+# secret and the origin 403s its OWN legitimate traffic — a self-inflicted DoS
+# any third party could trigger by pre-sending the header. Presence alone cannot
+# distinguish those two worlds; the count and a comma can.
+#
+# ⚠ THE SECRET VALUE IS NEVER LOGGED. Lengths and a comma flag only — enough to
+# tell a full secret from a truncated one, and an appended header from a folded
+# one, without putting the credential in a log aggregator.
+_OBSERVE_THROTTLE_SECONDS = 300.0
+
 
 def origin_locked_response() -> JSONResponse:
     """The 403 body. Same envelope ``luna_exception_handler`` produces, built by
@@ -140,6 +169,13 @@ class OriginLockMiddleware:
         self._expected: Optional[bytes] = cleaned.encode("utf-8") if cleaned else None
         self._last_log_at = 0.0
         self._suppressed = 0
+        # Observe mode (disabled path only): shapes already reported, and when the
+        # last line was emitted. Keyed by SHAPE rather than time so a NEW shape —
+        # the forged-header probe step 5 calls for — is reported the moment it
+        # appears instead of waiting out a throttle window. Bounded by
+        # construction: the key space is (small value count) × (folded bool).
+        self._observed_shapes: set[tuple[int, bool]] = set()
+        self._last_observe_at = 0.0
 
         if self._expected is None:
             logger.info(
@@ -165,6 +201,8 @@ class OriginLockMiddleware:
         # Disabled, or lifespan/websocket traffic → forward untouched. The
         # disabled check is first so the off state is as close to free as it gets.
         if self._expected is None or scope["type"] != "http":
+            if self._expected is None and scope["type"] == "http":
+                self._observe(scope)
             await self.app(scope, receive, send)
             return
 
@@ -202,6 +240,41 @@ class OriginLockMiddleware:
             if hmac.compare_digest(value.strip().encode("utf-8"), self._expected or b""):
                 matched = True
         return matched
+
+    def _observe(self, scope: Scope) -> None:
+        """Report the shape of ``X-Edge-Secret`` while the lock is DISABLED.
+
+        Runs on the hot disabled path, so it is ordered cheapest-first: a float
+        compare rejects the common case before anything touches the headers, and
+        only a request in an unseen shape (or one past the throttle) pays for
+        building ``Headers`` and formatting a line.
+
+        Never enforces, never raises, and never logs the secret — see the block
+        comment above for why the VALUE COUNT and the comma flag are the two
+        things worth measuring.
+        """
+        now = time.monotonic()
+        throttled = now - self._last_observe_at < _OBSERVE_THROTTLE_SECONDS
+        values = [v.strip() for v in Headers(scope=scope).getlist(EDGE_SECRET_HEADER)]
+        # A comma inside a value is the FOLD signature: the edge joined its own
+        # header with a client-supplied one instead of appending a second line.
+        folded = any("," in v for v in values)
+        shape = (len(values), folded)
+        if shape in self._observed_shapes and throttled:
+            return
+        self._observed_shapes.add(shape)
+        self._last_observe_at = now
+        logger.info(
+            "Origin lock OBSERVE (not enforcing): %s %s — %d value(s) of %s, "
+            "lengths=%s, folded=%s. Arming is safe only while a legitimate "
+            "request yields >=1 value and folded=False.",
+            scope.get("method", "?"),
+            scope.get("path", "?"),
+            len(values),
+            EDGE_SECRET_HEADER,
+            [len(v) for v in values],
+            folded,
+        )
 
     def _log_rejection(self, scope: Scope) -> None:
         """Throttled WARNING. During cutover these lines are the signal that

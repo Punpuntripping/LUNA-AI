@@ -351,3 +351,76 @@ def test_real_app_health_reachable_with_lock_armed(monkeypatch):
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# OBSERVE MODE — measure the header before trusting it (§3.4 step 5)
+#
+# Arming the lock is the one cutover step whose failure mode is total, and step 5
+# says to capture the header's ON-THE-WIRE SHAPE before step 6 sets EDGE_SECRET.
+# These pin the two properties that makes that safe: it reports the VALUE COUNT
+# (not mere presence — `getlist` only separates distinct header LINES, so a
+# comma-FOLDED edge would 403 legitimate traffic and presence cannot see it), and
+# it never, ever enforces.
+# ---------------------------------------------------------------------------
+
+
+def test_observe_runs_only_while_disabled_and_never_enforces(caplog):
+    """The whole point: a disabled lock now SAYS what it saw, and still forwards
+    everything. If this ever starts rejecting, observe mode has become the outage
+    it was built to prevent."""
+    client = TestClient(_build_app(None))
+    with caplog.at_level("INFO"):
+        r = client.get("/api/v1/cases")
+    assert r.status_code == 200
+    assert any("OBSERVE" in rec.message for rec in caplog.records)
+
+
+def test_observe_reports_the_value_COUNT_not_just_presence(caplog):
+    """Two distinct header LINES must be reported as 2 values — that is the shape
+    `_header_matches` survives (any-match wins). Reporting only "present" would
+    make this world indistinguishable from the folded one below."""
+    client = TestClient(_build_app(None))
+    with caplog.at_level("INFO"):
+        client.get(
+            "/api/v1/cases",
+            headers=[(EDGE_SECRET_HEADER, "forged-by-client"), (EDGE_SECRET_HEADER, SECRET)],
+        )
+    line = next(rec.getMessage() for rec in caplog.records if "OBSERVE" in rec.message)
+    assert "2 value(s)" in line
+    assert "folded=False" in line
+
+
+def test_observe_flags_a_COMMA_FOLDED_header(caplog):
+    """⚠ THE SELF-INFLICTED DoS. One comma-joined line ("forged, real") means no
+    single value equals the secret, so arming would 403 our own proxied traffic —
+    triggerable by any third party who pre-sends the header. `folded=True` is the
+    signal that must block step 6."""
+    client = TestClient(_build_app(None))
+    with caplog.at_level("INFO"):
+        client.get(
+            "/api/v1/cases",
+            headers={EDGE_SECRET_HEADER: f"forged-by-client, {SECRET}"},
+        )
+    line = next(rec.getMessage() for rec in caplog.records if "OBSERVE" in rec.message)
+    assert "folded=True" in line
+
+
+def test_observe_never_logs_the_secret_value(caplog):
+    """Lengths and a comma flag only. A credential in a log aggregator is a
+    credential leaked, and observe mode runs on every request of the disabled
+    path — the highest-volume place it could possibly leak from."""
+    client = TestClient(_build_app(None))
+    with caplog.at_level("INFO"):
+        client.get("/api/v1/cases", headers={EDGE_SECRET_HEADER: SECRET})
+    for rec in caplog.records:
+        assert SECRET not in (rec.getMessage())
+
+
+def test_observe_is_silent_once_ARMED(caplog):
+    """An armed lock has nothing to observe — it enforces, and `_log_rejection`
+    owns the logging. Leaving observe on would double every rejection line."""
+    client = TestClient(_build_app(SECRET))
+    with caplog.at_level("INFO"):
+        client.get("/api/v1/cases", headers={EDGE_SECRET_HEADER: SECRET})
+    assert not any("OBSERVE" in rec.message for rec in caplog.records)
