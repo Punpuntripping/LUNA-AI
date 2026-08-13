@@ -41,7 +41,7 @@ export function ReadAfter({
                   {item.title}
                 </span>
               </span>
-              <span className="inline-flex w-fit rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+              <span className="inline-flex w-fit rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
                 {REFERENCE_KIND_LABEL[item.kind]}
               </span>
             </Link>

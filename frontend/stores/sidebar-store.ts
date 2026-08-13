@@ -25,8 +25,24 @@ interface SidebarState {
   setImportBlogDialogOpen: (open: boolean) => void;
 }
 
+/**
+ * The rail starts open on a desktop viewport and closed below `md`.
+ *
+ * Read ONCE, at store creation, from `matchMedia` rather than in an effect:
+ * an effect-based close runs after the first paint, which is exactly the
+ * 288px drawer that used to flash open on every phone load
+ * (mobile_compatibility §1.8). Server-side there is no viewport to ask, so it
+ * falls back to the desktop answer — `Sidebar` renders the rail `hidden`
+ * below `md` and pins its expanded/collapsed classes there, so the server
+ * markup and the client's first render still agree byte-for-byte.
+ */
+function initialSidebarOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.matchMedia("(min-width: 768px)").matches;
+}
+
 export const useSidebarStore = create<SidebarState>((set) => ({
-  isOpen: true,
+  isOpen: initialSidebarOpen(),
   activeTab: "conversations",
   expandedCases: new Set<string>(),
   selectedConversationId: null,

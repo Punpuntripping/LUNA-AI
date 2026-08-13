@@ -23,7 +23,7 @@ import { sectorPath } from "@/lib/library/sectors";
  * into the client graph only where its parent card already does.
  */
 const PILL_CLASS =
-  "inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg";
+  "inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg";
 
 export function SectorPills({
   names,

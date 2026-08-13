@@ -79,7 +79,7 @@ export function TemplateSaveOfferChip({
       <div
         dir="rtl"
         lang="ar"
-        className="flex items-center gap-1.5 rounded-full bg-muted/50 px-3 py-1.5 text-[11px] text-muted-foreground"
+        className="flex items-center gap-1.5 rounded-full bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground"
       >
         <Check className="h-3.5 w-3.5 text-success-fg shrink-0" />
         <span className="truncate max-w-[280px]">
@@ -95,7 +95,7 @@ export function TemplateSaveOfferChip({
       <div
         dir="rtl"
         lang="ar"
-        className="flex items-center gap-1.5 rounded-full bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"
+        className="flex items-center gap-1.5 rounded-full bg-destructive/10 px-3 py-1.5 text-xs text-destructive"
       >
         <AlertCircle className="h-3.5 w-3.5 shrink-0" />
         <span>{state.message}</span>
@@ -111,7 +111,7 @@ export function TemplateSaveOfferChip({
       lang="ar"
       className="flex items-center gap-2 rounded-full border border-border/70 bg-muted/30 ps-3 pe-1.5 py-1"
     >
-      <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Save className="h-3.5 w-3.5 shrink-0" />
         <span className="truncate max-w-[220px]">
           احفظ «{titleHint}» كقالب؟
@@ -120,7 +120,7 @@ export function TemplateSaveOfferChip({
       <Button
         variant="secondary"
         size="sm"
-        className={cn("h-6 gap-1 rounded-full px-2.5 text-[11px]")}
+        className={cn("h-6 gap-1 rounded-full px-2.5 text-xs")}
         onClick={handleSave}
         disabled={isSaving}
         aria-label="احفظ المرفق كقالب"

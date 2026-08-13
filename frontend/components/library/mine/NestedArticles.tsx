@@ -42,7 +42,7 @@ export function NestedArticles({ articles }: { articles: MyLibraryArticle[] }) {
                 title={MY_LIBRARY_COPY.unavailableNote}
               >
                 {label}
-                <span className="ms-1 text-[10px]">
+                <span className="ms-1 text-xs">
                   ({MY_LIBRARY_COPY.unavailableBadge})
                 </span>
               </span>
@@ -55,7 +55,7 @@ export function NestedArticles({ articles }: { articles: MyLibraryArticle[] }) {
               />
             )}
 
-            <span className="shrink-0 text-[11px] text-text-muted">
+            <span className="shrink-0 text-xs text-text-muted">
               {usageLabel(article.use_count)}
             </span>
 

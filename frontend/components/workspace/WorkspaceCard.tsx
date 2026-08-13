@@ -123,14 +123,14 @@ export function WorkspaceCard({ item, onClick }: WorkspaceCardProps) {
 
             <span
               className={cn(
-                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium",
+                "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
                 badgeColor,
               )}
             >
               {label}
             </span>
 
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {getRelativeTimeAr(item.created_at)}
             </span>
           </div>

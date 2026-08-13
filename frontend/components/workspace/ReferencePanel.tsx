@@ -304,7 +304,12 @@ export function ReferencePanel({
         }}
       >
         {/* Tour anchor (Act 3, step 7) — the revealed source body. Inert. */}
-        <DialogContent className="max-w-2xl" dir="rtl" data-tour="source-dialog">
+        <DialogContent
+          className="max-w-2xl"
+          presentation="mobileSheet"
+          dir="rtl"
+          data-tour="source-dialog"
+        >
           {openReference && (
             <SourceRevealBody
               itemId={itemId}
@@ -338,7 +343,7 @@ function BalanceChip({ balance }: { balance: LibraryBalance | null }) {
 
   return (
     <span
-      className="rounded-full bg-pill px-2.5 py-0.5 text-[11px] font-medium tabular-nums text-pill-fg"
+      className="rounded-full bg-pill px-2.5 py-0.5 text-xs font-medium tabular-nums text-pill-fg"
       title={[revealCopy.authedHint, renews].filter(Boolean).join(" ")}
     >
       {label}
@@ -394,7 +399,7 @@ function ReferenceCard({
       ? `المصدر: ${reference.source_wi} (مرجع ${reference.source_n})`
       : `المصدر: ${reference.source_wi}`;
   const sourceWiBadgeClass =
-    "rounded-sm bg-muted px-1 py-px text-[10px] font-medium tabular-nums text-muted-foreground";
+    "rounded-sm bg-muted px-1 py-px text-xs font-medium tabular-nums text-muted-foreground";
   const handleOpenSourceWi = () => {
     if (sourceWiSeq === null || !onOpenSourceWi) return;
     onOpenSourceWi(sourceWiSeq, reference.source_n ?? null);
@@ -420,7 +425,7 @@ function ReferenceCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <Icon className={cn("h-3.5 w-3.5 shrink-0", meta.tint)} />
-            <span className="text-[11px] font-medium text-muted-foreground">
+            <span className="text-xs font-medium text-muted-foreground">
               {typeLabel}
             </span>
             <span
@@ -470,8 +475,10 @@ function ReferenceCard({
             </p>
           )}
 
-          {/* Actions */}
-          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+          {/* Actions — three of these wrap on a phone, so below `md` they get
+              the 36px touch height and a wider gap instead of a cramped
+              three-across row of 24px pills. */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1 max-md:gap-1.5">
             {/* PHASE C: gated on ``has_source`` (via ``canReveal``), NEVER on
                 ``source_view`` — which is null on every list entry now. The
                 click opens the dialog, and the dialog does the fetching. */}
@@ -479,7 +486,7 @@ function ReferenceCard({
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 gap-1 px-2 text-[11px]"
+                className="h-6 max-md:h-9 gap-1 px-2 text-xs"
                 onClick={onViewSource}
               >
                 <FileText className="h-3 w-3" />
@@ -506,7 +513,7 @@ function ReferenceCard({
                   // المصدر الرسمي» are ghosts beside it, so the emphasis is what
                   // tells them apart at a glance.
                   buttonVariants({ size: "sm" }),
-                  "h-6 gap-1 px-2 text-[11px]"
+                  "h-6 max-md:h-9 gap-1 px-2 text-xs"
                 )}
               >
                 <BookOpen className="h-3 w-3" />
@@ -520,7 +527,7 @@ function ReferenceCard({
                 rel="noopener noreferrer"
                 className={cn(
                   buttonVariants({ variant: "ghost", size: "sm" }),
-                  "h-6 gap-1 px-2 text-[11px]"
+                  "h-6 max-md:h-9 gap-1 px-2 text-xs"
                 )}
               >
                 <ExternalLink className="h-3 w-3" />
@@ -698,7 +705,7 @@ function RevealedSource({
         </DialogTitle>
       </DialogHeader>
       <div
-        className="max-h-[60vh] overflow-y-auto text-sm leading-relaxed text-foreground"
+        className="max-h-[60dvh] overflow-y-auto text-sm leading-relaxed text-foreground"
         dir="rtl"
       >
         <SourceViewContent
@@ -713,7 +720,7 @@ function RevealedSource({
         <p
           role="status"
           className={cn(
-            "flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-2 text-[11px] leading-relaxed",
+            "flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-3 py-2 text-xs leading-relaxed",
             charged
               ? "bg-primary/5 text-foreground ring-1 ring-primary/15"
               : "bg-muted/50 text-muted-foreground",
@@ -1041,7 +1048,7 @@ function SourceViewContent({
     return (
       <div className="space-y-3">
         {view.summary && (
-          <p className="text-[11px] font-medium text-muted-foreground">
+          <p className="text-xs font-medium text-muted-foreground">
             {hasFullTextExit ? "ملخص الحكم — النص الكامل بالأسفل" : "ملخص الحكم"}
           </p>
         )}

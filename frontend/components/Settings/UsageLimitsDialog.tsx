@@ -307,6 +307,7 @@ export function UsageLimitsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-w-md"
+        presentation="mobileSheet"
         dir="rtl"
         lang="ar"
         data-testid="usage-limits-dialog"

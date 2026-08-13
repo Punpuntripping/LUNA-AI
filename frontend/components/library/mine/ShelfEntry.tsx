@@ -95,7 +95,7 @@ function RegulationGroupHeader({
       dir="rtl"
       className="flex h-full flex-col rounded-xl border border-dashed border-border bg-surface-2/40 p-4 sm:p-5"
     >
-      <span className="text-[11px] font-medium text-text-muted">
+      <span className="text-xs font-medium text-text-muted">
         {MY_LIBRARY_COPY.groupHeaderNote}
       </span>
 

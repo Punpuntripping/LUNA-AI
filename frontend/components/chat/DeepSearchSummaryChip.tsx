@@ -79,7 +79,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
             aria-label={isOpen ? COLLAPSE_LABEL : EXPAND_LABEL}
             className={cn(
               "flex h-7 items-center gap-1.5 rounded-full border bg-muted/40 px-2.5",
-              "text-[11px] text-muted-foreground transition-colors",
+              "text-xs text-muted-foreground transition-colors",
               "hover:bg-muted hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             )}
@@ -102,7 +102,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
         {isOpen && (
           <div className="mt-1.5 mb-1 max-h-64 overflow-y-auto rounded-2xl border bg-card px-3 py-2">
             {summary.log.length === 0 ? (
-              <p className="text-[11px] leading-4 text-muted-foreground">
+              <p className="text-xs leading-4 text-muted-foreground">
                 {EMPTY_LOG}
               </p>
             ) : (
@@ -110,7 +110,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
                 {summary.log.map((line, i) => (
                   <li
                     key={`${i}-${line}`}
-                    className="flex gap-1.5 text-[11px] leading-4 text-muted-foreground"
+                    className="flex gap-1.5 text-xs leading-4 text-muted-foreground"
                   >
                     <span className="shrink-0 tabular-nums text-muted-foreground/60">
                       {toArabicDigits(i + 1)}.

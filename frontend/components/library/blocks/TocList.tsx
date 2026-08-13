@@ -49,7 +49,7 @@ export function TocList({
                 />
                 {/* Keep the مادة number on locked rows (matches TocRail). */}
                 {chip && (
-                  <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-text-subtle">
+                  <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-text-subtle">
                     {chip}
                   </span>
                 )}
@@ -63,7 +63,7 @@ export function TocList({
                   {text}
                 </span>
                 {chip ? (
-                  <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-text-muted transition-colors group-hover:bg-accent-soft group-hover:text-primary">
+                  <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-text-muted transition-colors group-hover:bg-accent-soft group-hover:text-primary">
                     {chip}
                   </span>
                 ) : (
@@ -88,7 +88,7 @@ export function TocList({
   );
 
   const badgePill = badge ? (
-    <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-primary">
+    <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold text-primary">
       {badge}
     </span>
   ) : null;

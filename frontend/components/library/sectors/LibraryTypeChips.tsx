@@ -72,7 +72,7 @@ export function LibraryTypeChips({
               {count > 0 && (
                 <span
                   className={cn(
-                    "text-[11px] font-medium tabular-nums",
+                    "text-xs font-medium tabular-nums",
                     isActive ? "text-primary" : "text-text-muted",
                   )}
                 >

@@ -44,7 +44,7 @@ export function MetadataCard({
             key={`${item.label}-${index}`}
             className="flex flex-col gap-1 border-s-2 border-border ps-3"
           >
-            <dt className="text-[11px] font-medium text-text-muted">
+            <dt className="text-xs font-medium text-text-muted">
               {item.label}
             </dt>
             <dd className="break-words text-sm font-semibold text-foreground">

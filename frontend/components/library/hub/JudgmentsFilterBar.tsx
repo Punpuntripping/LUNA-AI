@@ -139,7 +139,7 @@ function CourtLevelChips({
               })}
               aria-current={isActive ? "true" : undefined}
               className={cn(
-                "inline-flex h-8 items-center rounded-full border px-3 text-[13px] font-medium transition-colors",
+                "inline-flex h-8 items-center rounded-full border px-3 text-sm font-medium transition-colors",
                 isActive
                   ? "border-primary bg-primary text-primary-foreground shadow-xs"
                   : "border-border bg-card text-text-secondary hover:border-primary/40 hover:text-primary",
@@ -176,7 +176,7 @@ function ActiveFilters({
       <Link
         href={hrefWithFilters(basePath, { court_level: courtLevel })}
         aria-label={`إزالة فلتر المجال ${domain}`}
-        className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-pill"
+        className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-pill"
       >
         {domain}
         <X aria-hidden="true" className="h-3 w-3 shrink-0" />

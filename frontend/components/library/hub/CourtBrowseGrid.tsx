@@ -63,7 +63,7 @@ export function CourtBrowseGrid({
           aria-current={activeSlug ? undefined : "page"}
           className={tileClass(!activeSlug)}
         >
-          <span className="truncate text-[13px] font-medium text-foreground">
+          <span className="truncate text-sm font-medium text-foreground">
             جميع الجهات القضائية
           </span>
         </Link>
@@ -78,11 +78,11 @@ export function CourtBrowseGrid({
               aria-current={isActive ? "page" : undefined}
               className={tileClass(isActive)}
             >
-              <span className="truncate text-[13px] font-medium text-foreground">
+              <span className="truncate text-sm font-medium text-foreground">
                 {court.label}
               </span>
               {court.count !== null && (
-                <span className="shrink-0 text-[11px] tabular-nums text-text-muted">
+                <span className="shrink-0 text-xs tabular-nums text-text-muted">
                   {formatCount(court.count)}
                 </span>
               )}

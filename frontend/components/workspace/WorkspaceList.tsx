@@ -134,7 +134,7 @@ export function WorkspaceList({
                 <ChevronDown className="h-3.5 w-3.5 shrink-0" />
               )}
               <span>{label}</span>
-              <span className="ms-auto text-[10px] font-normal tabular-nums">
+              <span className="ms-auto text-xs font-normal tabular-nums">
                 {groupItems.length}
               </span>
             </button>

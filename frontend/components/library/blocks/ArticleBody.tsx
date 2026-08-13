@@ -46,12 +46,17 @@ export function ArticleBody({
   return (
     <div dir="rtl" className={cn(truncated && "gated-body", className)}>
       {plain ? (
-        <div className="space-y-4 text-[15px] leading-[1.95] text-foreground sm:text-base sm:leading-[2]">
+        // `text-base` (not a hardcoded 15px): the token is 17px on phones via
+        // the reading-scale bump in globals.css and 16px from `sm` up, which is
+        // what every other reading surface in the app renders at. `break-words`
+        // guards the long decree numbers / URLs that legal text carries — inside
+        // `whitespace-pre-line` they used to overflow a 360px viewport.
+        <div className="space-y-4 break-words text-base leading-[1.95] text-foreground sm:leading-[2]">
           {blocks.map((block, index) =>
             block.type === "heading" ? (
               <p
                 key={index}
-                className="border-s-[3px] border-primary/40 ps-3 pt-1 text-[15px] font-bold leading-snug text-foreground sm:text-base"
+                className="border-s-[3px] border-primary/40 ps-3 pt-1 text-base font-bold leading-snug text-foreground"
               >
                 {renderInline(block.text)}
               </p>

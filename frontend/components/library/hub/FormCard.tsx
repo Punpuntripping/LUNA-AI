@@ -14,12 +14,12 @@ export function FormCard({ item, href }: { item: FormHubItem; href?: string | nu
   return (
     <CardShell href={target}>
       <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
-        <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-primary">
+        <span className="inline-flex items-center gap-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold text-primary">
           <FileText aria-hidden="true" className="h-3 w-3" />
           نموذج
         </span>
         {item.category && (
-          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             {item.category}
           </span>
         )}

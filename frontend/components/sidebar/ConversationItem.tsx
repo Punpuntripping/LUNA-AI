@@ -162,8 +162,9 @@ export function ConversationItem({
       <div
         className={cn(
           // Match the sidebar NavItem rows exactly — same radius, padding and
-          // color scheme, so nav and chats read as one list.
-          "group flex items-center gap-2 rounded-lg px-2.5 py-1.5 transition-colors",
+          // color scheme, so nav and chats read as one list. `max-md:py-2.5`
+          // lifts a ~30px row to the 44px touch floor inside the drawer.
+          "group flex items-center gap-2 rounded-lg px-2.5 py-1.5 max-md:py-2.5 transition-colors",
           isPendingCreate
             ? "cursor-wait opacity-60"
             : "cursor-pointer",
@@ -218,7 +219,7 @@ export function ConversationItem({
                 {/* «تجريبية» — names the row as furniture, not the user's own
                     content, before they click into a read-only conversation. */}
                 {isDemo && (
-                  <span className="shrink-0 rounded-full bg-pill px-1.5 py-0.5 text-[10px] font-medium leading-none text-pill-fg">
+                  <span className="shrink-0 rounded-full bg-pill px-1.5 py-0.5 text-xs font-medium leading-none text-pill-fg">
                     تجريبية
                   </span>
                 )}
@@ -242,7 +243,12 @@ export function ConversationItem({
             >
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-6 w-6">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 max-md:h-9 max-md:w-9"
+                    aria-label="خيارات المحادثة"
+                  >
                     <MoreVertical className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>

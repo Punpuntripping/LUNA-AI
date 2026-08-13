@@ -156,20 +156,20 @@ export function AttachmentUploadCard({
                 style={{ width: `${progressPct}%` }}
               />
             </div>
-            <p className="text-[10px] text-muted-foreground tabular-nums">
+            <p className="text-xs text-muted-foreground tabular-nums">
               {progressPct}% · {formatBytes(file.size)}
             </p>
           </>
         )}
 
         {isCompleted && (
-          <span className="inline-block rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="inline-block rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
             {getFileExtension(file.name)} · {formatBytes(file.size)}
           </span>
         )}
 
         {isFailed && (
-          <p className="text-[10px] text-destructive">
+          <p className="text-xs text-destructive">
             {file.errorMessage ?? "فشل الرفع"}
           </p>
         )}

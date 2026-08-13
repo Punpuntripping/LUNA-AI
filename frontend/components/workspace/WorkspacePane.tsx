@@ -134,7 +134,7 @@ function PaneHeader({
           size="icon"
           // Tour anchors (Act 2 step 5, Act 5 step 12). Inert attributes.
           data-tour="pane-back"
-          className="h-8 w-8 shrink-0"
+          className="h-8 w-8 max-md:h-10 max-md:w-10 shrink-0"
           onClick={onBack}
           aria-label="رجوع إلى قائمة العناصر"
         >

@@ -244,7 +244,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
           </span>
           <button
             onClick={() => setConflict(null)}
-            className="text-[11px] underline hover:opacity-80"
+            className="text-xs underline hover:opacity-80"
           >
             إخفاء
           </button>

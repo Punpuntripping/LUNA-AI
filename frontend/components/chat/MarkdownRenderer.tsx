@@ -125,7 +125,7 @@ function buildMarkdownComponents(
       return (
         <code
           className={cn(
-            "rounded px-1.5 py-0.5 text-[13px] font-mono",
+            "rounded px-1.5 py-0.5 text-xs font-mono",
             "bg-muted/60 text-foreground",
             className
           )}
@@ -221,8 +221,12 @@ function buildMarkdownComponents(
 
     // --- Headers ---
     // Two scales, switched on ``headingAnchors``:
-    //   • OFF (default, chat) → compact chat-scaled headings. The className
-    //     string is byte-IDENTICAL to before so chat rendering is untouched.
+    //   • OFF (default, chat) → the chat heading ladder. Every step is a full
+    //     token apart (xl → lg → base → sm) and every step is BOLD, so a long
+    //     answer's structure survives the phone type bump: before the mobile
+    //     pass h2–h4 all rendered at or below the body size (`p` is
+    //     `text-base`), which flattened three levels of legal structure into
+    //     one. See .claude/plans/mobile_compatibility.md §1.4.
     //   • ON (مدونة article)  → larger EDITORIAL sizes + ``id`` anchor +
     //     ``scroll-mt-24`` so TOC jumps land below the sticky header.
     // ``id`` is undefined when off → React omits the attribute entirely.
@@ -233,7 +237,7 @@ function buildMarkdownComponents(
           className={
             headingAnchors
               ? "text-2xl font-bold mt-8 mb-3 text-foreground scroll-mt-24"
-              : "text-lg font-bold mt-4 mb-2 text-foreground"
+              : "text-xl font-bold mt-4 mb-2 text-foreground"
           }
         >
           {children}
@@ -247,7 +251,7 @@ function buildMarkdownComponents(
           className={
             headingAnchors
               ? "text-xl font-bold mt-7 mb-2.5 text-foreground border-t border-border/40 pt-4 scroll-mt-24"
-              : "text-base font-bold mt-3 mb-1.5 text-foreground"
+              : "text-lg font-bold mt-3 mb-1.5 text-foreground"
           }
         >
           {children}
@@ -261,7 +265,7 @@ function buildMarkdownComponents(
           className={
             headingAnchors
               ? "text-lg font-semibold mt-5 mb-2 text-foreground scroll-mt-24"
-              : "text-base font-semibold mt-3 mb-1 text-foreground"
+              : "text-base font-bold mt-3 mb-1 text-foreground"
           }
         >
           {children}
@@ -275,7 +279,7 @@ function buildMarkdownComponents(
           className={
             headingAnchors
               ? "text-base font-semibold mt-4 mb-1.5 text-foreground scroll-mt-24"
-              : "text-sm font-semibold mt-2 mb-1 text-foreground"
+              : "text-sm font-bold mt-2 mb-1 text-foreground"
           }
         >
           {children}

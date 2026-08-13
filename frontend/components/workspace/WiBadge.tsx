@@ -42,7 +42,7 @@ export function WiBadge({ seq, className, dataTour }: WiBadgeProps) {
       title={`رمز العنصر في هذه المحادثة: WI-${seq}`}
       className={cn(
         "inline-flex shrink-0 items-center rounded-full border border-border/70",
-        "bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] font-medium",
+        "bg-muted/50 px-1.5 py-0.5 font-mono text-xs font-medium",
         "tabular-nums leading-none text-muted-foreground",
         className,
       )}

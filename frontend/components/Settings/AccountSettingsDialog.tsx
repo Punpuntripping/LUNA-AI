@@ -492,7 +492,8 @@ export function AccountSettingsDialog({
           // Three stacked sections overflow a short viewport, and DialogContent
           // is centred with translate-y-[-50%] — without a bounded height the
           // overflow is simply unreachable. Same fix as OnboardingDialog.
-          className="max-h-[85vh] max-w-md overflow-y-auto"
+          className="max-h-[85dvh] max-w-md overflow-y-auto"
+          presentation="mobileSheet"
           dir="rtl"
           lang="ar"
           data-testid="account-settings-dialog"

@@ -285,6 +285,25 @@ export function MessageList({
     });
   }, [isStreaming]);
 
+  // iOS keyboard resilience (mobile_compatibility §3.7). Opening the keyboard
+  // shrinks the VISUAL viewport without reflowing the layout viewport — Safari
+  // does not honour `interactiveWidget: "resizes-content"` — so the newest
+  // message ends up behind the keys with no scroll event to react to. The
+  // `visualViewport` resize is the only signal that fires, and re-running the
+  // same pin-to-bottom write keeps the reader where they were. Guarded by
+  // `isNearBottomRef` so a user reading history is never yanked down.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const handleViewportResize = () => {
+      if (!isNearBottomRef.current) return;
+      const container = scrollContainerRef.current;
+      if (container) container.scrollTop = container.scrollHeight;
+    };
+    viewport.addEventListener("resize", handleViewportResize);
+    return () => viewport.removeEventListener("resize", handleViewportResize);
+  }, []);
+
   // Reset initial load flag when conversation changes
   useEffect(() => {
     isInitialLoadRef.current = true;

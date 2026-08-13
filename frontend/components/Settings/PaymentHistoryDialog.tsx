@@ -258,7 +258,8 @@ export function PaymentHistoryDialog({
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent
-          className="max-h-[85vh] max-w-md overflow-y-auto"
+          className="max-h-[85dvh] max-w-md overflow-y-auto"
+          presentation="mobileSheet"
           dir="rtl"
           lang="ar"
           data-testid="payment-history-dialog"

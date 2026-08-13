@@ -85,9 +85,12 @@ export function SidebarFooter() {
   return (
     <div>
       <Separator />
-      <div className="flex items-center justify-between p-3">
+      {/* The drawer's last row sits on the home indicator once the sidebar is a
+          full-height sheet on a phone, so the bottom padding carries
+          `env(safe-area-inset-bottom)` (0 everywhere else). */}
+      <div className="flex items-center justify-between p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+          <div className="flex h-7 w-7 max-md:h-9 max-md:w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <User className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0">
@@ -111,7 +114,7 @@ export function SidebarFooter() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground"
+                    className="h-7 w-7 max-md:h-9 max-md:w-9 shrink-0 text-muted-foreground"
                     aria-label="الإعدادات"
                     data-testid="sidebar-settings-trigger"
                   >
@@ -126,7 +129,7 @@ export function SidebarFooter() {
             <PopoverContent
               side="top"
               align="end"
-              className="max-h-[min(80vh,34rem)] w-72 overflow-y-auto"
+              className="max-h-[min(80dvh,34rem)] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto"
               data-testid="sidebar-settings-popover"
             >
               <div className="flex flex-col gap-3" dir="rtl">
@@ -308,8 +311,9 @@ export function SidebarFooter() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                className="h-7 w-7 max-md:h-9 max-md:w-9 shrink-0 text-muted-foreground hover:text-destructive"
                 onClick={handleLogout}
+                aria-label="تسجيل الخروج"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </Button>

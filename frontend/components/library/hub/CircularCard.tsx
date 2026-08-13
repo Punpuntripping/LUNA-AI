@@ -35,7 +35,7 @@ export function CircularCard({
     >
       {item.entity_name && (
         <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="inline-flex items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             <ScrollText aria-hidden="true" className="h-3 w-3 shrink-0" />
             {item.entity_name}
           </span>

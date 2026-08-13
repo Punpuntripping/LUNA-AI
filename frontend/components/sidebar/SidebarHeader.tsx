@@ -12,9 +12,20 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export function SidebarHeader() {
+interface SidebarHeaderProps {
+  /**
+   * Whether the sidebar body is on screen at full width. Defaults to the
+   * store's `isOpen`, which is the desktop rail's collapse state; inside the
+   * mobile drawer the host passes `true` — being open is what put the drawer
+   * on screen in the first place.
+   */
+  expanded?: boolean;
+}
+
+export function SidebarHeader({ expanded }: SidebarHeaderProps = {}) {
   const { isOpen, toggle } = useSidebarStore();
   const user = useAuthStore((s) => s.user);
+  const showBrand = expanded ?? isOpen;
 
   const initial = useMemo(
     () => userInitial(user),
@@ -23,7 +34,7 @@ export function SidebarHeader() {
 
   return (
     <div className="flex items-center justify-between gap-2 p-3 border-b border-sidebar-border">
-      {isOpen && (
+      {showBrand && (
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
             {initial}
@@ -33,7 +44,7 @@ export function SidebarHeader() {
               <span className="text-sm font-semibold text-sidebar-foreground truncate">
                 ريحان
               </span>
-              <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-medium leading-none text-primary">
+              <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-0.5 text-xs font-medium leading-none text-primary">
                 إطلاق تجريبي
               </span>
             </div>
@@ -49,10 +60,11 @@ export function SidebarHeader() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0 text-sidebar-foreground"
+            className="h-8 w-8 max-md:h-10 max-md:w-10 shrink-0 text-sidebar-foreground"
             onClick={toggle}
+            aria-label={showBrand ? "طي الشريط الجانبي" : "فتح الشريط الجانبي"}
           >
-            {isOpen ? (
+            {showBrand ? (
               <PanelRightClose className="h-4 w-4" />
             ) : (
               <PanelRightOpen className="h-4 w-4" />
@@ -60,7 +72,7 @@ export function SidebarHeader() {
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          <p>{isOpen ? "طي الشريط الجانبي" : "فتح الشريط الجانبي"}</p>
+          <p>{showBrand ? "طي الشريط الجانبي" : "فتح الشريط الجانبي"}</p>
         </TooltipContent>
       </Tooltip>
     </div>

@@ -222,7 +222,7 @@ export function MarkdownDocEditor({
         />
       </div>
       {titleMissing && (
-        <p className="px-4 pb-2 -mt-1 text-[11px] text-destructive">
+        <p className="px-4 pb-2 -mt-1 text-xs text-destructive">
           العنوان مطلوب
         </p>
       )}
@@ -274,7 +274,7 @@ export function MarkdownDocEditor({
         />
       )}
 
-      <div className="flex items-center justify-between border-t px-4 py-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
         <span>
           {isSaving ? (
             <span className="inline-flex items-center gap-1.5">

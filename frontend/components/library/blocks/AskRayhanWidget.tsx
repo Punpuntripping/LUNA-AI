@@ -184,7 +184,10 @@ export function AskRayhanWidget({
         type="button"
         onClick={() => setOpen(true)}
         aria-label={`اسأل ريحان عن: ${pageTitle}`}
-        className="animate-fab-in fixed bottom-5 left-5 z-40 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-lg ring-1 ring-primary/20 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-primary-hover hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:bottom-6 sm:left-6"
+        // The offset is measured from the SAFE bottom edge: `viewportFit:"cover"`
+        // (app/layout.tsx) puts the viewport under the iPhone home indicator, so
+        // a bare `bottom-5` parks the pill on top of it.
+        className="animate-fab-in fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom))] left-5 z-40 inline-flex items-center gap-2 rounded-full bg-primary px-4 py-3 text-sm font-semibold text-primary-foreground shadow-lg ring-1 ring-primary/20 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-primary-hover hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:bottom-[calc(1.5rem+env(safe-area-inset-bottom))] sm:left-6"
       >
         <Sparkles aria-hidden="true" className="h-4 w-4" />
         اسأل ريحان
@@ -205,7 +208,10 @@ export function AskRayhanWidget({
         dir="rtl"
         role="dialog"
         aria-label="اسأل ريحان"
-        className="fixed inset-x-0 bottom-0 z-50 flex max-h-[82vh] flex-col rounded-t-2xl border border-border bg-card shadow-2xl sm:inset-x-auto sm:bottom-24 sm:left-6 sm:w-[380px] sm:rounded-2xl"
+        // `pb-[env(safe-area-inset-bottom)]` only on the phone sheet (it is
+        // flush with the screen edge); the ≥sm floating card already sits well
+        // above the home indicator, so it resets the padding.
+        className="fixed inset-x-0 bottom-0 z-50 flex max-h-[82vh] flex-col rounded-t-2xl border border-border bg-card pb-[env(safe-area-inset-bottom)] shadow-2xl sm:inset-x-auto sm:bottom-24 sm:left-6 sm:w-[380px] sm:rounded-2xl sm:pb-0"
       >
         {/* Header */}
         <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -303,7 +309,7 @@ function AskForm({
           interaction, and never blocks إرسال. */}
       <TurnstileGate key={turnstileKey} onStateChange={onTurnstileState} />
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-xs text-muted-foreground">
           {question.trim().length}/{MAX_LEN}
         </span>
         <button

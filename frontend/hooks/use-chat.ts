@@ -5,6 +5,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
+import { isMobileViewport } from "@/hooks/use-media-query";
 import type {
   Attachment,
   Message,
@@ -578,9 +579,17 @@ export function useSendMessage(): UseSendMessageReturn {
               void qc.invalidateQueries({
                 queryKey: workspaceKeys.byConversation(conversationId),
               });
-              useChatStore
-                .getState()
-                .openWorkspaceItem(conversationId, payload.item_id);
+              // Auto-open is a DESKTOP affordance: there the pane appears
+              // beside the still-visible thread. On a phone it is a
+              // full-viewport overlay, so opening it mid-stream yanks the user
+              // off the answer they are reading — with no back button to undo
+              // it. Discovery is covered either way: the assistant bubble
+              // renders its «افتح التحليل …» chip the moment the run seals.
+              if (!isMobileViewport()) {
+                useChatStore
+                  .getState()
+                  .openWorkspaceItem(conversationId, payload.item_id);
+              }
               break;
             }
             case "agent_run_started": {

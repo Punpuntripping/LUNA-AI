@@ -56,7 +56,7 @@ export function FailedResponseBubble({
         )}
 
         <div className="flex items-center mt-2">
-          <span className="text-[10px] text-muted-foreground select-none">
+          <span className="text-xs text-muted-foreground select-none">
             {getRelativeTimeAr(createdAt)}
           </span>
         </div>

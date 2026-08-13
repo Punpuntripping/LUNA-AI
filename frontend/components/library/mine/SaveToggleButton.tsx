@@ -56,7 +56,7 @@ export function SaveToggleButton({
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors",
+        "inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
         isSaved
           ? "border-primary/40 bg-primary/5 text-primary hover:bg-primary/10"

@@ -310,7 +310,7 @@ export function ShareArtifactDialog({
                 type="button"
                 variant="secondary"
                 size="sm"
-                className="h-7 shrink-0 gap-1.5 px-2 text-[11px]"
+                className="h-7 shrink-0 gap-1.5 px-2 text-xs"
                 onClick={() => copyToClipboard(publicUrl)}
               >
                 {copied ? (

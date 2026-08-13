@@ -477,11 +477,11 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
             className="h-3.5 w-3.5 shrink-0 text-primary"
             aria-hidden="true"
           />
-          <span className="text-[13px] font-semibold text-foreground">
+          <span className="text-xs font-semibold text-foreground">
             {TITLE}
           </span>
         </div>
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+        <span className="text-xs tabular-nums text-muted-foreground">
           {formatElapsedAr(elapsedMs)}
         </span>
       </div>
@@ -540,7 +540,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
               <div className="min-w-0 flex-1">
                 <p
                   className={cn(
-                    "text-[13px] leading-5",
+                    "text-xs leading-5",
                     state === "active"
                       ? "font-medium text-foreground"
                       : state === "done"
@@ -571,7 +571,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
                       )}
                       <CrossfadeLine
                         text={detailText}
-                        className="text-[11px] leading-4 text-muted-foreground"
+                        className="text-xs leading-4 text-muted-foreground"
                       />
                     </div>
 
@@ -585,7 +585,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
                           className="flex items-start gap-1.5 animate-ds-fade-in motion-reduce:animate-none"
                         >
                           <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-current text-text-subtle" />
-                          <span className="truncate text-[11px] leading-4 text-text-subtle">
+                          <span className="truncate text-xs leading-4 text-text-subtle">
                             {formatTopic(topic)}
                           </span>
                         </div>
@@ -595,7 +595,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
                     {/* Counts / live query counter — one reserved line. */}
                     <div className="min-h-[1rem]">
                       {metaLine && (
-                        <p className="text-[11px] leading-4 tabular-nums text-muted-foreground">
+                        <p className="text-xs leading-4 tabular-nums text-muted-foreground">
                           {metaLine}
                         </p>
                       )}

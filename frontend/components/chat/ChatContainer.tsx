@@ -71,7 +71,10 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
       <div
         dir="rtl"
         lang="ar"
-        className="flex items-center justify-between border-b px-4 py-2 shrink-0"
+        // `max-md:ps-12` clears the fixed hamburger the sidebar parks at
+        // `top-3 start-3` on a phone — without it «المحادثة» and its ⋯ menu
+        // render underneath the button and are unreachable.
+        className="flex items-center justify-between border-b px-4 py-2 shrink-0 max-md:ps-12"
       >
         <div className="flex items-center gap-1">
           <h2 className="text-sm font-medium text-muted-foreground">المحادثة</h2>

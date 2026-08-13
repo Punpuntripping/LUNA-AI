@@ -376,6 +376,15 @@ export interface TocRailProps {
   className?: string;
 }
 
+export interface TocFloatingProps {
+  /** The SAME entries the page hands `TocList` — no extra server work. */
+  entries: TocEntry[];
+  /** Sheet heading + pill fallback label. Default «محتويات النظام». */
+  title?: string;
+  /** Count pill in the sheet header, e.g. «391 مادة». */
+  badge?: string;
+}
+
 export interface ArticleBodyProps {
   /**
    * The VISIBLE text only (already server-truncated for gated items). Rendered

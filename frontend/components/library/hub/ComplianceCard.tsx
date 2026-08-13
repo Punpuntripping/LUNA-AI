@@ -30,7 +30,7 @@ export function ComplianceCard({
     <CardShell href={target}>
       {item.provider_name && (
         <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             {item.provider_name}
           </span>
         </div>

@@ -57,7 +57,7 @@ export function ShelfMetaBar({
     <div
       dir="rtl"
       className={cn(
-        "mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[11px] text-text-muted",
+        "mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-text-muted",
         className,
       )}
     >

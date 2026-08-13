@@ -55,7 +55,7 @@ export function SectorPreviewStrip({
 
         <Link
           href={href}
-          className="inline-flex shrink-0 items-center gap-1 text-[13px] font-medium text-primary transition-colors hover:text-primary-hover"
+          className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary transition-colors hover:text-primary-hover"
         >
           عرض الكل
           {count > 0 && (

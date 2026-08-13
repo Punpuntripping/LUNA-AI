@@ -113,7 +113,7 @@ export function ArtifactPreview({
             disabled={!hasCopyText}
             aria-label={copied ? "تم النسخ" : copyLabel}
             className={cn(
-              "pointer-events-auto h-7 gap-1.5 px-2 text-[11px] shadow-sm",
+              "pointer-events-auto h-7 gap-1.5 px-2 text-xs shadow-sm",
               "bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60",
             )}
           >
@@ -134,8 +134,14 @@ export function ArtifactPreview({
 
       <ScrollArea className="flex-1" data-testid={testId}>
         {/* Extra top padding only when the floating toolbar overlaps the body;
-            hidden-toolbar callers (action-bar viewers) use even padding. */}
-        <div className={cn("p-6", hideToolbar ? "pt-6" : "pt-12")} dir="rtl">
+            hidden-toolbar callers (action-bar viewers) use even padding.
+            `max-md:pb-20` clears the action bar, which is docked to the
+            viewport bottom below `md` (WorkspaceItemActionBar §3.6) — without
+            it the last lines of the artifact sit under the bar. */}
+        <div
+          className={cn("p-6 max-md:pb-20", hideToolbar ? "pt-6" : "pt-12")}
+          dir="rtl"
+        >
           {hasContent ? (
             <MarkdownRenderer
               content={content}

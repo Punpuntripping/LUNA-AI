@@ -53,10 +53,10 @@ export function SectorBrowseGrid({
                   : "border-border bg-card hover:border-primary/40 hover:bg-accent/40",
               )}
             >
-              <span className="truncate text-[13px] font-medium text-foreground">
+              <span className="truncate text-sm font-medium text-foreground">
                 {sector.name_ar}
               </span>
-              <span className="shrink-0 text-[11px] tabular-nums text-text-muted">
+              <span className="shrink-0 text-xs tabular-nums text-text-muted">
                 {formatCount(sector.counts.total)}
               </span>
             </Link>

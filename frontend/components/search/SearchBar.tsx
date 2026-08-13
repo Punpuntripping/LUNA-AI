@@ -187,7 +187,7 @@ export function SearchBar({
           aria-describedby={showHint ? hintId : undefined}
           aria-haspopup={locked ? "dialog" : undefined}
           className={cn(
-            "h-9 w-full rounded-full border border-border bg-card ps-9 pe-9 text-[13px] text-foreground outline-none transition-colors",
+            "h-9 w-full rounded-full border border-border bg-card ps-9 pe-9 text-sm text-foreground outline-none transition-colors",
             "placeholder:text-text-muted focus:border-primary/50",
             // `type="search"` earns the searchbox role and native Esc handling,
             // but WebKit also draws its OWN cancel button — which would sit
@@ -217,7 +217,7 @@ export function SearchBar({
           Reserves no layout: it replaces nothing and appears under a box that
           already sits in a `gap`-spaced row. */}
       {showHint && (
-        <p id={hintId} className="mt-1 ps-3 text-[11px] leading-tight text-text-muted">
+        <p id={hintId} className="mt-1 ps-3 text-xs leading-tight text-text-muted">
           {SEARCH_COPY.minLengthHint}
         </p>
       )}

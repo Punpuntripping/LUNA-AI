@@ -51,7 +51,7 @@ export function ScrollToBottom({
             className={cn(
               "absolute -top-1.5 -end-1.5 flex items-center justify-center",
               "min-w-[20px] h-5 px-1 rounded-full",
-              "bg-primary text-primary-foreground text-[11px] font-medium",
+              "bg-primary text-primary-foreground text-xs font-medium",
               "animate-in fade-in zoom-in-75 duration-150"
             )}
           >

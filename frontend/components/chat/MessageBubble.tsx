@@ -263,11 +263,11 @@ export const MessageBubble = memo(function MessageBubble({
           {/* Sender name — small caption on the same right rail the bubble
               starts from */}
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-medium text-muted-foreground select-none">
+            <span className="text-xs font-medium text-muted-foreground select-none">
               {userName}
             </span>
             {isAgentAnswer && (
-              <span className="text-[10px] font-medium text-muted-foreground bg-muted/60 rounded px-1.5 py-0.5 select-none">
+              <span className="text-xs font-medium text-muted-foreground bg-muted/60 rounded px-1.5 py-0.5 select-none">
                 (جواب)
               </span>
             )}
@@ -315,14 +315,14 @@ export const MessageBubble = memo(function MessageBubble({
               {isCurrentlyStreaming ? (
                 <div
                   dir="auto"
-                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-[15px] leading-[1.75] text-foreground"
+                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-sm leading-[1.75] text-foreground"
                 >
                   <StreamingText content={streamingContent ?? ""} />
                 </div>
               ) : (
                 <div
                   dir="auto"
-                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-[15px] leading-[1.75] text-foreground whitespace-pre-wrap"
+                  className="w-fit max-w-[85%] sm:max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-start text-sm leading-[1.75] text-foreground whitespace-pre-wrap"
                 >
                   {displayContent}
                 </div>
@@ -344,7 +344,7 @@ export const MessageBubble = memo(function MessageBubble({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
                         onClick={handleCopy}
                         aria-label="نسخ"
                       >
@@ -365,7 +365,7 @@ export const MessageBubble = memo(function MessageBubble({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
                         onClick={handleStartEdit}
                         aria-label="تعديل"
                       >
@@ -377,7 +377,7 @@ export const MessageBubble = memo(function MessageBubble({
                     </TooltipContent>
                   </Tooltip>
 
-                  <span className="ps-1 text-[11px] text-muted-foreground select-none max-sm:hidden">
+                  <span className="ps-1 text-xs text-muted-foreground select-none max-sm:hidden">
                     {getRelativeTimeAr(message.created_at)}
                   </span>
                 </div>
@@ -442,7 +442,7 @@ export const MessageBubble = memo(function MessageBubble({
       >
         {/* Sender name — mirrors the user caption, same rail */}
         <div className="mb-1.5 flex items-center">
-          <span className="text-[11px] font-medium text-muted-foreground select-none">
+          <span className="text-xs font-medium text-muted-foreground select-none">
             ريحان
           </span>
         </div>
@@ -452,8 +452,13 @@ export const MessageBubble = memo(function MessageBubble({
             // Justified paragraphs (flush at both edges, like a legal document)
             // + Arabic-comfortable line-height. On the container rather than
             // MarkdownRenderer so the streaming path gets the same treatment.
+            //
+            // The justification itself starts at `sm` (640px): at ~340px of
+            // usable width Arabic justify stretches inter-word space into
+            // visible rivers down the column, so a phone gets ragged-right.
+            // The line-height is unconditional — it is comfort, not alignment.
             !isAgentQuestion &&
-              "[text-justify:inter-word] [&_li]:text-justify [&_li]:leading-[1.85] [&_p]:text-justify [&_p]:leading-[1.85]",
+              "sm:[text-justify:inter-word] sm:[&_li]:text-justify [&_li]:leading-[1.85] sm:[&_p]:text-justify [&_p]:leading-[1.85]",
             isFramed &&
               "relative w-fit max-w-full rounded-2xl border bg-card px-4 py-3 shadow-sm",
             message.isFailed && "border-destructive border-2",
@@ -465,7 +470,7 @@ export const MessageBubble = memo(function MessageBubble({
           {isAgentQuestion && (
             <div className="flex items-center gap-1.5 mb-1.5">
               <HelpCircle className="h-3.5 w-3.5 text-primary" />
-              <span className="text-[11px] font-semibold text-primary">
+              <span className="text-xs font-semibold text-primary">
                 السؤال
               </span>
             </div>
@@ -526,7 +531,7 @@ export const MessageBubble = memo(function MessageBubble({
               {agentSuggestions.map((s, i) => (
                 <span
                   key={i}
-                  className="text-[11px] text-muted-foreground bg-muted/60 rounded-full px-2.5 py-1"
+                  className="text-xs text-muted-foreground bg-muted/60 rounded-full px-2.5 py-1"
                 >
                   {s}
                 </span>
@@ -564,7 +569,10 @@ export const MessageBubble = memo(function MessageBubble({
           {isCompleted && !message.isFailed && (
             <div
               className={cn(
-                "flex h-8 items-center gap-0.5 mt-1.5",
+                // `max-md:h-11` — the reserved row has to clear the 36px
+                // touch-target buttons below `md` (3.4), or the taller icons
+                // spill out of the 32px slot the desktop bar reserves.
+                "flex h-8 max-md:h-11 items-center gap-0.5 mt-1.5",
                 "opacity-0 group-hover/bubble:opacity-100 group-focus-within/bubble:opacity-100 transition-opacity duration-200",
                 "max-sm:opacity-100"
               )}
@@ -574,7 +582,7 @@ export const MessageBubble = memo(function MessageBubble({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
                     onClick={handleCopy}
                     aria-label="نسخ"
                   >
@@ -595,7 +603,7 @@ export const MessageBubble = memo(function MessageBubble({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
                     onClick={handleRegenerate}
                     aria-label="إعادة التوليد"
                   >
@@ -613,8 +621,8 @@ export const MessageBubble = memo(function MessageBubble({
                     variant="ghost"
                     size="icon"
                     className={cn(
-                      "h-7 w-7",
-                      feedback === "up"
+                      "h-7 w-7 max-md:h-9 max-md:w-9",
+                      feedback ==="up"
                         ? "text-primary"
                         : "text-muted-foreground hover:text-foreground"
                     )}
@@ -640,8 +648,8 @@ export const MessageBubble = memo(function MessageBubble({
                     variant="ghost"
                     size="icon"
                     className={cn(
-                      "h-7 w-7",
-                      feedback === "down"
+                      "h-7 w-7 max-md:h-9 max-md:w-9",
+                      feedback ==="down"
                         ? "text-destructive"
                         : "text-muted-foreground hover:text-foreground"
                     )}
@@ -661,7 +669,7 @@ export const MessageBubble = memo(function MessageBubble({
                 </TooltipContent>
               </Tooltip>
 
-              <span className="ms-auto flex items-center gap-1.5 text-[11px] text-muted-foreground select-none">
+              <span className="ms-auto flex items-center gap-1.5 text-xs text-muted-foreground select-none">
                 {message.model && (
                   <>
                     <span dir="ltr" className="[unicode-bidi:isolate]">
@@ -678,7 +686,7 @@ export const MessageBubble = memo(function MessageBubble({
           {/* Failed state keeps its timestamp inside the card */}
           {message.isFailed && (
             <div className="flex items-center mt-2">
-              <span className="text-[10px] text-muted-foreground select-none">
+              <span className="text-xs text-muted-foreground select-none">
                 {getRelativeTimeAr(message.created_at)}
               </span>
             </div>
@@ -773,7 +781,7 @@ function ArtifactChip({
             plain dimmed text rather than a WiBadge — inside a solid primary
             CTA a bordered grey pill reads as a second button. */}
         {seq !== null && seq !== undefined && (
-          <span dir="ltr" className="font-mono text-[10px] opacity-70">
+          <span dir="ltr" className="font-mono text-xs opacity-70">
             WI-{seq}
           </span>
         )}
@@ -852,7 +860,7 @@ function ReferencedItemChip({
       variant="outline"
       size="sm"
       className={cn(
-        "h-7 gap-1.5 px-2.5 text-[11px]",
+        "h-7 gap-1.5 px-2.5 text-xs",
         "rounded-full border-border/70 text-muted-foreground hover:text-foreground",
         "hover:bg-accent/40 transition-colors",
       )}
@@ -975,7 +983,7 @@ function AttachmentChip({
           kindStyle?.iconClass ?? "text-muted-foreground",
         )}
       />
-      <span className="text-[11px] text-muted-foreground truncate max-w-[160px]">
+      <span className="text-xs text-muted-foreground truncate max-w-[160px]">
         {name}
       </span>
     </>

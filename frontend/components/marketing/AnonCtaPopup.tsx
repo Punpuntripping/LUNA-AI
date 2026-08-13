@@ -363,6 +363,10 @@ export function AnonCtaPopup() {
           // demotes; a sheet occupying the bottom 60% leaves the article
           // readable and sits outside that definition. Do not drop it.
           "bottom-0 top-auto start-0 end-0 mx-auto max-h-[60vh] max-w-full translate-y-0 overflow-y-auto rounded-t-2xl",
+          // The sheet is flush with the screen edge and `viewportFit:"cover"`
+          // extends that edge under the home indicator — pad the DialogContent's
+          // own p-6 by the inset so the CTA buttons stay tappable.
+          "max-sm:pb-[calc(1.5rem+env(safe-area-inset-bottom))]",
           // Horizontal transform centring is removed at BOTH breakpoints so the
           // entrance keyframe (which REPLACES `transform`) never has to guess
           // the resting offset — in RTL the shadcn default would otherwise slide

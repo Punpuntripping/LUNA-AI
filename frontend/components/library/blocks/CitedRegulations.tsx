@@ -82,7 +82,7 @@ export function CitedRegulations({
               {hasArticle && (
                 <Link
                   href={`/regulations/${item.reg_slug}/${item.article_slug}`}
-                  className="shrink-0 rounded-full bg-pill px-2.5 py-0.5 text-[11px] font-medium text-pill-fg transition-colors hover:bg-accent-soft hover:text-primary"
+                  className="shrink-0 rounded-full bg-pill px-2.5 py-0.5 text-xs font-medium text-pill-fg transition-colors hover:bg-accent-soft hover:text-primary"
                 >
                   المادة {item.article_no}
                 </Link>

@@ -4,6 +4,7 @@ import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { Button } from "@/components/ui/button";
 import { useSidebarStore } from "@/stores/sidebar-store";
+import { useIsMobile } from "@/hooks/use-media-query";
 
 interface SidebarPageShellProps {
   children: React.ReactNode;
@@ -18,6 +19,7 @@ interface SidebarPageShellProps {
 export function SidebarPageShell({ children }: SidebarPageShellProps) {
   const isSidebarOpen = useSidebarStore((s) => s.isOpen);
   const setSidebarOpen = useSidebarStore((s) => s.setOpen);
+  const isMobile = useIsMobile();
 
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
@@ -26,12 +28,13 @@ export function SidebarPageShell({ children }: SidebarPageShellProps) {
 
       {/* Main content area */}
       <main className="relative flex-1 flex min-w-0 overflow-hidden">
-        {/* Floating sidebar toggle — shown when sidebar is closed on desktop */}
-        {!isSidebarOpen && (
+        {/* Floating sidebar toggle — DESKTOP ONLY; below `md` the sidebar's own
+            fixed hamburger owns this corner (see ChatLayoutClient). */}
+        {!isSidebarOpen && !isMobile && (
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-3 start-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground"
+            className="absolute top-3 start-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground max-md:hidden"
             onClick={() => setSidebarOpen(true)}
             aria-label="فتح الشريط الجانبي"
           >

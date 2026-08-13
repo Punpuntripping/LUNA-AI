@@ -358,7 +358,7 @@ function Chip({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "inline-flex h-8 items-center rounded-full border px-3 text-[13px] font-medium transition-colors",
+        "inline-flex h-8 items-center rounded-full border px-3 text-sm font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
           ? "border-primary bg-primary text-primary-foreground shadow-xs"

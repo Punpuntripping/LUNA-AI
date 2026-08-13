@@ -53,6 +53,7 @@ export function RedeemCodeDialog({ open, onOpenChange }: RedeemCodeDialogProps) 
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="max-w-sm"
+        presentation="mobileSheet"
         dir="rtl"
         lang="ar"
         data-testid="redeem-code-dialog"

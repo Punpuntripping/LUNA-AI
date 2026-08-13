@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -43,6 +43,56 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
   const showSplit = isWorkspaceOpen && conversationId && !isMobile;
   const showOverlay = isWorkspaceOpen && conversationId && isMobile;
 
+  const closeWorkspace = useChatStore((s) => s.closeWorkspace);
+
+  /**
+   * Dismissal contract for the full-viewport mobile overlay: Android back,
+   * Escape, and a page that cannot scroll underneath it.
+   *
+   * The back button is the important one — on a phone the overlay covers the
+   * whole conversation, and the system back gesture is what every user reaches
+   * for first. Without an entry of our own on the history stack it exited the
+   * conversation entirely, losing the thread they were reading.
+   *
+   * The pushed state is MERGED into whatever the App Router put there
+   * (`__NA`, the private tree): the URL is unchanged, so Next's entry stays
+   * valid and only gains a marker. On any other kind of dismissal the cleanup
+   * pops our entry back off, so «رجوع» never has to be pressed twice.
+   */
+  useEffect(() => {
+    if (!showOverlay || !conversationId) return;
+
+    const href = window.location.href;
+    window.history.pushState(
+      { ...(window.history.state as Record<string, unknown> | null), wsOverlay: true },
+      "",
+    );
+
+    const close = () => closeWorkspace(conversationId);
+    const handlePopState = () => close();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    window.addEventListener("keydown", handleKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      // Closed by something other than Back (the X, a nav, the desktop
+      // breakpoint) → our entry is still on top; drop it. The URL guard keeps
+      // this from undoing a real navigation that unmounted the overlay.
+      const state = window.history.state as { wsOverlay?: boolean } | null;
+      if (state?.wsOverlay && window.location.href === href) {
+        window.history.back();
+      }
+    };
+  }, [showOverlay, conversationId, closeWorkspace]);
+
   const handleLayout = useCallback(
     (sizes: number[]) => {
       // ``sizes`` is [chat, workspace]; we store the chat-side ratio.
@@ -60,12 +110,16 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
 
       {/* Main content area */}
       <main className="relative flex-1 flex min-w-0 overflow-hidden">
-        {/* Floating sidebar toggle — shown when sidebar is closed on desktop */}
-        {!isSidebarOpen && (
+        {/* Floating sidebar toggle — DESKTOP ONLY. Below `md` the sidebar
+            renders its own fixed hamburger (Sidebar.tsx), and this one stacked
+            on top of it at the same corner, intercepting the taps meant for it.
+            Gated twice on purpose: `!isMobile` keeps it out of the tree, and
+            `max-md:hidden` covers the pre-hydration frame. */}
+        {!isSidebarOpen && !isMobile && (
           <Button
             variant="ghost"
             size="icon"
-            className="absolute top-3 start-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground"
+            className="absolute top-3 start-3 z-30 h-9 w-9 text-muted-foreground hover:text-foreground max-md:hidden"
             onClick={() => setSidebarOpen(true)}
             aria-label="فتح الشريط الجانبي"
           >

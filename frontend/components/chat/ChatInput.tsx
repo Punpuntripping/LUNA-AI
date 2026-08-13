@@ -53,6 +53,16 @@ interface ChatInputProps {
   onRequireConversation?: (files: File[]) => void;
 }
 
+/**
+ * `viewportFit: "cover"` (app/layout.tsx) lets the page paint under the home
+ * indicator, so the composer's bottom padding has to carry the inset itself or
+ * the send button sits under the system bar. `env()` is 0 everywhere else, so
+ * this is a no-op on desktop rather than a `max-md:` special case. The 0.75rem
+ * is the wrapper's own `py-3`, written as a literal rem to match the
+ * arbitrary-value convention the FAB and the anon CTA sheet already use.
+ */
+const COMPOSER_SAFE_AREA = "pb-[calc(0.75rem+env(safe-area-inset-bottom))]";
+
 const MAX_CHARS = 10_000;
 const MAX_FILES = 5;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -71,6 +81,19 @@ export function ChatInput({
 }: ChatInputProps) {
   const [content, setContent] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
+  // INPUT MODALITY, not viewport (mobile_compatibility §1.3): on a coarse
+  // pointer Enter is the keyboard's newline key and there is no Shift to pair
+  // with it, so send-on-Enter makes a multi-line legal question impossible to
+  // type. Deliberately NOT `useIsMobile` — a 768px iPad with a hardware
+  // keyboard should keep the desktop behaviour. Read once per mount: the
+  // pointer type of a session does not change under us, and re-reading per
+  // keystroke would cost a layout query on the hot path. `typeof window`
+  // guards the SSR pass; nothing it feeds is rendered, so no hydration risk.
+  const [isCoarsePointer] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia("(pointer: coarse)").matches,
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Keep live cancel handles keyed by pendingFile.id so removePendingFile
@@ -232,13 +255,29 @@ export function ChatInput({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // Touch keyboards: Enter inserts a newline (default action, not
+      // prevented) and the send button is the only way to send.
+      if (isCoarsePointer) return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         if (canSend) handleSend();
       }
     },
-    [canSend, handleSend],
+    [canSend, handleSend, isCoarsePointer],
   );
+
+  /**
+   * iOS shrinks the VISUAL viewport when the keyboard opens but does not
+   * reflow the layout viewport (`interactiveWidget: "resizes-content"` is not
+   * honoured), so a focused composer can end up behind the keyboard. Scrolling
+   * it into view after a frame — once the keyboard animation has told the
+   * browser the new visual viewport — lifts it back above the keys.
+   */
+  const handleTextareaFocus = useCallback(() => {
+    requestAnimationFrame(() => {
+      textareaRef.current?.scrollIntoView({ block: "nearest" });
+    });
+  }, []);
 
   /**
    * Wraps `removePendingFile` so the matching tus upload (if any) is
@@ -616,7 +655,11 @@ export function ChatInput({
       <div
         dir="rtl"
         lang="ar"
-        className={cn("border-t bg-background px-4 py-3", className)}
+        className={cn(
+          "border-t bg-background px-4 py-3",
+          COMPOSER_SAFE_AREA,
+          className,
+        )}
       >
         {/* Same max-w-3xl rail as the composer it replaces, so the thread
             column doesn't jump when the user opens the demo. */}
@@ -642,7 +685,15 @@ export function ChatInput({
   }
 
   return (
-    <div dir="rtl" lang="ar" className={cn("border-t bg-background px-4 py-3", className)}>
+    <div
+      dir="rtl"
+      lang="ar"
+      className={cn(
+        "border-t bg-background px-4 py-3",
+        COMPOSER_SAFE_AREA,
+        className,
+      )}
+    >
       {/* Same column rail as MessageList so the composer aligns with the thread */}
       <div className="mx-auto w-full max-w-3xl">
       {pendingFiles.length > 0 && (
@@ -691,6 +742,7 @@ export function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
+          onFocus={handleTextareaFocus}
           placeholder="اكتب رسالتك هنا..."
           minRows={1}
           maxRows={6}

@@ -11,6 +11,7 @@ import {
   LeadSummary,
   TocList,
   TocRail,
+  TocFloating,
   ArticleBody,
   GateBanner,
   OfficialSources,
@@ -231,6 +232,11 @@ export default async function RegulationDocPage({ params }: PageProps) {
                   badge={tocBadge}
                   defaultOpen={false}
                 />
+                {/* …and the floating index takes over once that list has
+                    scrolled away: a 700-مادة نظام is ~156,000px tall on a
+                    phone, so «back to the index» cannot mean «scroll to the
+                    top of the document». Desktop keeps the sticky TocRail. */}
+                <TocFloating entries={tocEntries} badge={tocBadge} />
               </div>
             )}
 
@@ -267,7 +273,10 @@ export default async function RegulationDocPage({ params }: PageProps) {
                       <section
                         key={section.id}
                         id={`sec-${section.id}`}
-                        className="scroll-mt-24 space-y-3.5"
+                        // scroll-mt-20 (80px): the library header is 60–64px, so
+                        // the old 96px offset left every TOC jump a third of a
+                        // screen short of its مادة.
+                        className="scroll-mt-20 space-y-3.5"
                       >
                         <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
                           {/* A merged fallback run covers several مواد but renders
@@ -280,7 +289,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
                               key={id}
                               id={`sec-${id}`}
                               aria-hidden="true"
-                              className="scroll-mt-24"
+                              className="scroll-mt-20"
                             />
                           ))}
                           {section.title}
@@ -305,7 +314,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
               {doc.hidden_section_count > 0 && (
                 /* id = the TocRail click-fallback target: an anon click on a
                    مادة whose section isn't rendered lands here (the gate). */
-                <div id="library-doc-gate" className="scroll-mt-24">
+                <div id="library-doc-gate" className="scroll-mt-20">
                   <GateBanner
                     hiddenPlaceholderLines={Math.min(doc.hidden_section_count, 6)}
                     ctaHref="/login"

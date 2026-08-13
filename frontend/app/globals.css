@@ -171,6 +171,33 @@
   }
 
   /* ============================================================
+   * iOS zoom-on-focus guard — phones only
+   *
+   * Mobile Safari zooms the viewport when a focused form field computes
+   * below 16px, and it does NOT zoom back out on blur: the whole app is
+   * left scaled and horizontally scrollable. Every field in the app is
+   * 13–15px (`text-sm` is 15px even after the phone bump above), so the
+   * composer, the library search box, rename inputs and the doc editor
+   * all trigger it.
+   *
+   * `max(1rem, 1em)`: never below 16px, but a field inside a genuinely
+   * larger typographic context still inherits that larger size.
+   *
+   * `!important` is load-bearing, not laziness. Tailwind v3 emits flat
+   * CSS, so a bare `input {…}` (specificity 0,0,1) always loses to the
+   * `text-sm` / `text-[13px]` utility (0,1,0) sitting on the element —
+   * the rule would silently do nothing. Checkboxes/radios/ranges are
+   * excluded: their box is font-relative in some engines.
+   * ============================================================ */
+  @media (max-width: 639px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+    textarea,
+    select {
+      font-size: max(1rem, 1em) !important;
+    }
+  }
+
+  /* ============================================================
    * L2 — Conservatory (light alt — green-tinted, pairs with D4)
    * Sage = identity (CTA, focus, brand). Aubergine = architecture (text, user voice).
    * Canvas is faintly chlorophyll-touched — the room is the conservatory.

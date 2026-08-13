@@ -18,7 +18,7 @@ export function AgentOutputDisclaimer({ className }: { className?: string }) {
     <div
       dir="rtl"
       className={cn(
-        "mt-6 flex items-start gap-2 border-t pt-3 text-[11px] leading-relaxed text-muted-foreground",
+        "mt-6 flex items-start gap-2 border-t pt-3 text-xs leading-relaxed text-muted-foreground",
         className,
       )}
     >

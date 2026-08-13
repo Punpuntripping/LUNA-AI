@@ -61,7 +61,7 @@ export const CodeBlock = memo(function CodeBlock({
         <pre className="!m-0 !p-0 !bg-transparent">
           <code
             className={cn(
-              "!bg-transparent text-code-fg text-[13px] leading-relaxed",
+              "!bg-transparent text-code-fg text-xs leading-relaxed",
               language && `hljs language-${language}`
             )}
           >

@@ -13,6 +13,7 @@ import {
   LeadSummary,
   TocList,
   TocRail,
+  TocFloating,
   ArticleBody,
   GateBanner,
   CitedRegulations,
@@ -294,6 +295,14 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                     badge={tocBadge}
                     defaultOpen={false}
                   />
+                  {/* The floating index takes over once the inline list has
+                      scrolled away — same widget the regulation doc page uses.
+                      Desktop keeps the sticky TocRail. */}
+                  <TocFloating
+                    entries={tocEntries}
+                    title="محتويات الحكم"
+                    badge={tocBadge}
+                  />
                 </div>
               )}
 
@@ -329,7 +338,10 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                         <section
                           key={section.id}
                           id={`sec-${section.id}`}
-                          className="scroll-mt-24 space-y-3.5"
+                          // scroll-mt-20 (80px): the library header is 60–64px,
+                          // so the old 96px offset left every TOC jump short of
+                          // its section heading.
+                          className="scroll-mt-20 space-y-3.5"
                         >
                           <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
                             {section.title}
@@ -354,7 +366,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                 {doc.hidden_section_count > 0 && (
                   /* id = the TocRail click-fallback target: an anon click on a
                      section that isn't rendered lands here (the gate). */
-                  <div id="library-doc-gate" className="scroll-mt-24">
+                  <div id="library-doc-gate" className="scroll-mt-20">
                     <GateBanner
                       hiddenPlaceholderLines={Math.min(
                         doc.hidden_section_count,

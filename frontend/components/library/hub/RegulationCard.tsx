@@ -33,7 +33,7 @@ export function RegulationCard({
     >
       <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
         {item.doc_type && (
-          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             {item.doc_type}
           </span>
         )}

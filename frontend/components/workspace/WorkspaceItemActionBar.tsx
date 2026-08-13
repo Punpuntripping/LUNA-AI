@@ -24,6 +24,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useIsMobile } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
 import type { WorkspaceFeedback } from "@/types";
 
@@ -104,6 +105,12 @@ export function WorkspaceItemActionBar({
   className,
 }: WorkspaceItemActionBarProps) {
   const [copied, setCopied] = useState(false);
+  // Below `md` the pane IS the viewport (the workspace overlay), so a floating
+  // draggable pill is the wrong object: the 20×28px grip competes with page
+  // scroll under a thumb, and wherever it is parked it covers the end of the
+  // artifact and the top of المراجع. There it becomes a docked bottom bar.
+  const isMobile = useIsMobile();
+  const dockedBar = floating && isMobile;
 
   // Drag state for floating mode. ``pos`` is null until the first drag, while
   // the bar uses its CSS anchor (bottom-right); after a drag it switches to
@@ -187,20 +194,24 @@ export function WorkspaceItemActionBar({
         // Tour anchor (Act 4, step 11) — مشاركة + حفظ كمدونة. Inert attribute.
         data-tour="wi-action-bar"
         className={cn(
-          floating
-            ? "absolute z-20 flex select-none items-center gap-1 rounded-lg border bg-background/95 px-1.5 py-1 shadow-md backdrop-blur supports-[backdrop-filter]:bg-background/80"
-            : "mt-6 flex items-center gap-1.5 border-t pt-3",
+          dockedBar
+            ? // Full-width dock at the viewport bottom, above the overlay's own
+              // chrome and padded for the home indicator.
+              "fixed inset-x-0 bottom-0 z-30 flex h-[calc(3rem+env(safe-area-inset-bottom))] select-none items-center gap-1 overflow-x-auto border-t bg-background/95 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-1px_3px_rgba(0,0,0,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/90"
+            : floating
+              ? "absolute z-20 flex select-none items-center gap-1 rounded-lg border bg-background/95 px-1.5 py-1 shadow-md backdrop-blur supports-[backdrop-filter]:bg-background/80"
+              : "mt-6 flex items-center gap-1.5 border-t pt-3",
           // Default anchor: flush to the bottom-left corner until first drag.
-          floating && pos === null && "bottom-0 left-0",
+          floating && !dockedBar && pos === null && "bottom-0 left-0",
           className,
         )}
         style={
-          floating && pos
+          floating && !dockedBar && pos
             ? { left: pos.x, top: pos.y, right: "auto", bottom: "auto" }
             : undefined
         }
       >
-        {floating && (
+        {floating && !dockedBar && (
           <button
             type="button"
             onPointerDown={handleDragStart}
@@ -224,7 +235,7 @@ export function WorkspaceItemActionBar({
               type="button"
               variant={mode === "edit" ? "default" : "ghost"}
               size="sm"
-              className="h-6 gap-1 px-2 text-[11px]"
+              className="h-6 max-md:h-9 gap-1 px-2 text-xs"
               role="tab"
               aria-selected={mode === "edit"}
               onClick={() => onModeChange?.("edit")}
@@ -237,7 +248,7 @@ export function WorkspaceItemActionBar({
               type="button"
               variant={mode === "preview" ? "default" : "ghost"}
               size="sm"
-              className="h-6 gap-1 px-2 text-[11px]"
+              className="h-6 max-md:h-9 gap-1 px-2 text-xs"
               role="tab"
               aria-selected={mode === "preview"}
               onClick={() => onModeChange?.("preview")}
@@ -254,7 +265,7 @@ export function WorkspaceItemActionBar({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              className="h-7 max-md:h-9 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={onShare}
               disabled={publishDisabled}
               aria-label="مشاركة عبر رابط"
@@ -271,7 +282,7 @@ export function WorkspaceItemActionBar({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              className="h-7 max-md:h-9 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={onSaveBlog}
               disabled={publishDisabled}
               aria-label="حفظ كمدونة"
@@ -286,7 +297,7 @@ export function WorkspaceItemActionBar({
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+          className="h-7 max-md:h-9 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
           onClick={handleCopy}
           disabled={!canCopy}
           aria-label={copied ? "تم النسخ" : "نسخ"}
@@ -313,7 +324,7 @@ export function WorkspaceItemActionBar({
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    "h-7 w-7",
+                    "h-7 w-7 max-md:h-9 max-md:w-9",
                     feedback === "up"
                       ? "text-primary"
                       : "text-muted-foreground hover:text-foreground",
@@ -343,7 +354,7 @@ export function WorkspaceItemActionBar({
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    "h-7 w-7",
+                    "h-7 w-7 max-md:h-9 max-md:w-9",
                     feedback === "down"
                       ? "text-destructive"
                       : "text-muted-foreground hover:text-foreground",

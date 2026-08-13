@@ -72,12 +72,12 @@ export function LibrarySearchResultRow({
     <>
       <div className="flex items-start gap-2.5">
         {corpus && (
-          <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             {Icon && <Icon aria-hidden="true" className="h-3 w-3 shrink-0" />}
             {corpusLabel(corpus)}
           </span>
         )}
-        <h3 className="line-clamp-2 flex-1 text-[15px] font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">
+        <h3 className="line-clamp-2 flex-1 text-base font-semibold leading-snug text-foreground transition-colors group-hover:text-primary">
           {hit.title}
         </h3>
       </div>

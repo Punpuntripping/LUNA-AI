@@ -47,7 +47,7 @@ function CaseListSkeleton() {
 function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div className="px-4 pt-3 pb-2 shrink-0">
-      <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground/60">
+      <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground/60">
         {children}
       </p>
     </div>

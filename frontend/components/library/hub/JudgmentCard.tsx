@@ -36,7 +36,7 @@ export function JudgmentCard({
     >
       <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
         {item.court && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+          <span className="inline-flex items-center gap-1 rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
             <Gavel aria-hidden="true" className="h-3 w-3 shrink-0" />
             {item.court}
           </span>
@@ -44,7 +44,7 @@ export function JudgmentCard({
         <CourtLevelBadge
           level={item.court_level}
           label={item.court_level_label}
-          className="text-[11px]"
+          className="text-xs"
         />
       </div>
 
@@ -53,7 +53,7 @@ export function JudgmentCard({
       </h2>
 
       {(item.city || item.date_hijri) && (
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
           {item.city && (
             <span className="inline-flex items-center gap-1">
               <MapPin aria-hidden="true" className="h-3 w-3 shrink-0" />

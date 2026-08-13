@@ -42,7 +42,7 @@ export function ReferencesMesh({
               <span className="flex-1 text-sm font-medium text-foreground group-hover:text-primary">
                 {item.title}
               </span>
-              <span className="shrink-0 rounded-full bg-pill px-2 py-0.5 text-[11px] font-medium text-pill-fg">
+              <span className="shrink-0 rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
                 {REFERENCE_KIND_LABEL[item.kind]}
               </span>
             </Link>

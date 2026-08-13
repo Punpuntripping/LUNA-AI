@@ -168,7 +168,12 @@ export function QuotaUpgradeDialog({
       {/* Width only — `DialogContent` already carries
           `max-h-[calc(100dvh-2rem)] overflow-y-auto`, and `dvh` handles the
           mobile URL bar in a way a `90vh` override here would undo. */}
-      <DialogContent dir="rtl" lang="ar" className={widthClass}>
+      <DialogContent
+        dir="rtl"
+        lang="ar"
+        presentation="mobileSheet"
+        className={widthClass}
+      >
         <DialogHeader className="text-right sm:text-right">
           <DialogTitle className="text-xl">{title}</DialogTitle>
           <DialogDescription className="text-right leading-relaxed">

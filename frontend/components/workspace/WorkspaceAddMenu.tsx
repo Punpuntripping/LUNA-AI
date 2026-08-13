@@ -208,7 +208,10 @@ function CaseDocumentPicker({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-[500px] max-h-[70vh] flex flex-col">
+      <DialogContent
+        className="sm:max-w-[500px] max-h-[70dvh] flex flex-col"
+        presentation="mobileSheet"
+      >
         <DialogHeader>
           <DialogTitle dir="rtl">اختر مستنداً من القضية</DialogTitle>
         </DialogHeader>

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ListTree, ChevronLeft, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseTocLabel } from "@/lib/library/toc";
+import { useTocScrollspy } from "@/hooks/use-toc-scrollspy";
 import type { TocRailProps } from "@/types/library";
 
 /**
@@ -19,6 +19,10 @@ import type { TocRailProps } from "@/types/library";
  * that link out to مادة pages (the common article-index case) never need a spy —
  * they simply navigate. Client component; degrades to a plain rail when no
  * `#sec-` targets exist in the DOM.
+ *
+ * The spy and the missing-anchor click fallback live in `useTocScrollspy` —
+ * shared verbatim with the phone `TocFloating` widget so both surfaces mark the
+ * same مادة active and both land a gated row on the signup gate.
  */
 export function TocRail({
   entries,
@@ -26,50 +30,7 @@ export function TocRail({
   badge,
   className,
 }: TocRailProps) {
-  const [activeId, setActiveId] = useState<string | null>(null);
-
-  // Every anchor row is clickable. When the target section exists (the free
-  // visible sections, or the FULL document a signed-in reader's browser swapped
-  // in) → smooth-scroll to it. When it doesn't (anon reader, gated section) →
-  // land on the signup gate (#library-doc-gate) so the click always goes
-  // somewhere meaningful.
-  function handleAnchorClick(
-    event: React.MouseEvent<HTMLAnchorElement>,
-    href: string,
-  ) {
-    if (!href.startsWith("#")) return;
-    event.preventDefault();
-    const target =
-      document.getElementById(href.slice(1)) ??
-      document.getElementById("library-doc-gate");
-    target?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  useEffect(() => {
-    const spyIds = entries
-      .filter((e) => e.href?.startsWith("#sec-"))
-      .map((e) => e.href!.slice(1));
-    if (spyIds.length === 0) return;
-
-    const targets = spyIds
-      .map((id) => document.getElementById(id))
-      .filter((el): el is HTMLElement => Boolean(el));
-    if (targets.length === 0) return;
-
-    const observer = new IntersectionObserver(
-      (observed) => {
-        const inView = observed
-          .filter((o) => o.isIntersecting)
-          .sort(
-            (a, b) => a.boundingClientRect.top - b.boundingClientRect.top,
-          );
-        if (inView[0]) setActiveId(inView[0].target.id);
-      },
-      { rootMargin: "-96px 0px -60% 0px", threshold: 0 },
-    );
-    targets.forEach((t) => observer.observe(t));
-    return () => observer.disconnect();
-  }, [entries]);
+  const { activeId, handleAnchorClick } = useTocScrollspy(entries);
 
   return (
     <div
@@ -80,7 +41,7 @@ export function TocRail({
       )}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border px-3.5 py-3">
-        <span className="flex items-center gap-2 text-[13px] font-bold text-foreground">
+        <span className="flex items-center gap-2 text-sm font-bold text-foreground">
           <ListTree
             aria-hidden="true"
             className="h-4 w-4 shrink-0 text-primary"
@@ -88,7 +49,7 @@ export function TocRail({
           {title}
         </span>
         {badge && (
-          <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-[11px] font-semibold text-primary">
+          <span className="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold text-primary">
             {badge}
           </span>
         )}
@@ -120,7 +81,7 @@ export function TocRail({
             if (locked) {
               return (
                 <li key={entry.id}>
-                  <span className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-text-muted">
+                  <span className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-text-muted">
                     <span className="flex-1 truncate">{text}</span>
                     <Lock
                       aria-hidden="true"
@@ -129,7 +90,7 @@ export function TocRail({
                     {/* Keep the مادة number visible on locked rows — the lock
                         alone made every row an identical unnumbered «المادة». */}
                     {chip && (
-                      <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums text-text-subtle">
+                      <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-text-subtle">
                         {chip}
                       </span>
                     )}
@@ -153,7 +114,7 @@ export function TocRail({
                 >
                   <span
                     className={cn(
-                      "flex-1 truncate text-[13px] transition-colors",
+                      "flex-1 truncate text-sm transition-colors",
                       isActive
                         ? "font-semibold text-primary"
                         : "text-text-secondary group-hover:text-primary",
@@ -164,7 +125,7 @@ export function TocRail({
                   {chip ? (
                     <span
                       className={cn(
-                        "shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[11px] font-semibold tabular-nums transition-colors",
+                        "shrink-0 rounded-md px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums transition-colors",
                         isActive
                           ? "bg-primary text-primary-foreground"
                           : "bg-surface-2 text-text-muted group-hover:bg-accent-soft group-hover:text-primary",
