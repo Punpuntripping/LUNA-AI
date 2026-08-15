@@ -813,10 +813,19 @@ def test_token_object_spellings_are_understood():
                     "exp_month": 9, "exp_year": 2029}
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def provider_token_object(monkeypatch):
     """Stub ``GET /v1/tokens/{id}``. ``box[0]`` is what the provider answers;
-    None models any failure (transport, 404, non-JSON)."""
+    None models any failure (transport, 404, non-JSON).
+
+    ⚠ AUTOUSE ON PURPOSE. Without it, any test that reaches
+    ``capture_payment_method`` makes a REAL HTTPS call to Moyasar — observed
+    once (a live 401 in the suite output) before this was made autouse. A unit
+    suite must never touch a payment provider: it is slow, flaky, offline-hostile,
+    and one bad refactor away from hitting a live endpoint with a real key.
+    Tests wanting a specific token object just request this fixture and set
+    ``box[0]``; everyone else silently gets the None default.
+    """
     box: list = [None]
     monkeypatch.setattr(pm, "fetch_token_at_provider", lambda token: box[0])
     return box
@@ -883,11 +892,47 @@ def test_an_unreachable_token_fetch_does_not_block_the_capture(flag_on, provider
     assert db.tables["payment_methods"][0]["provider_token"] == TOKEN
 
 
-def test_a_token_without_consent_is_never_stored(flag_on):
+def test_a_purchase_with_no_explicit_consent_row_is_still_consented(flag_on):
+    """v2 (owner, 2026-08-12): the consent CHECKBOX is gone. The disclosure is a
+    plain reminder on /pay and the affirmative act is completing the purchase,
+    so a paid renewing plan carries consent even with no audit row.
+
+    ⚠ This test asserted the OPPOSITE until 2026-08-12, and the inversion is the
+    point: under the old model a missing consent row meant "refuse to store".
+    Keeping that behaviour after the checkbox was deleted would have disabled
+    tokenization entirely — silently, since capture never raises.
+    """
     db = FakeSupabase(sub("pro", hours_left=720))
-    row = {"payment_id": str(uuid.uuid4()), "user_id": USER, "plan_id": "pro"}
-    assert run(pm.capture_payment_method(db, row, _paid_payload(row["payment_id"]))) is None
-    assert db.tables["payment_methods"] == []
+    pid = str(uuid.uuid4())
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro",
+           "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _paid_payload(pid)))
+    stored = db.tables["payment_methods"][0]
+    assert stored["provider_token"] == TOKEN
+    # The artefact is still real and still provable — hashed from the server's
+    # own constant, not from anything the client sent.
+    assert stored["consent_text_hash"] == pm.consent_text_hash(
+        pm.RECURRING_DISCLOSURE_AR
+    )
+    assert stored["consent_given_at"]
+
+
+def test_an_explicit_consent_row_still_wins(flag_on):
+    """A user who ticked the v1 checkbox keeps v1's hash — evidence of the
+    longer text THEY saw, not the shorter text we show today."""
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    db.tables["audit_logs"].append({
+        "resource_type": "payment_transaction", "resource_id": pid,
+        "created_at": _iso(_now()),
+        "metadata": {"event": pm.CONSENT_EVENT, "consent_text_hash": FAKE_HASH,
+                     "consented_at": _iso(_now())},
+    })
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro"}
+
+    assert run(pm.capture_payment_method(db, row, _paid_payload(pid)))
+    assert db.tables["payment_methods"][0]["consent_text_hash"] == FAKE_HASH
 
 
 def test_basic_never_tokenizes(flag_on):

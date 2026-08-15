@@ -93,6 +93,15 @@ DISCLOSURE_VERSION = "v2"
 
 # ── Arabic (rule 5) ──────────────────────────────────────────────────────────
 
+#: THE disclosure, verbatim. A module constant since v2 because it no longer
+#: interpolates plan name, price or term — which is what lets a completed
+#: purchase carry a provable hash without a separate checkbox (see
+#: ``capture_payment_method``). Change this and bump ``DISCLOSURE_VERSION``.
+RECURRING_DISCLOSURE_AR = (
+    "التجديد التلقائي مُفعّل على هذه الباقة، ويمكنك إيقاف التجديد في أي "
+    "وقت من إعدادات الحساب."
+)
+
 CONSENT_REQUIRED_AR = "يلزم الموافقة على شروط التجديد التلقائي"
 CONSENT_NOT_APPLICABLE_AR = "هذه الباقة لا تتضمن تجديداً تلقائياً"
 CONSENT_NOT_OPEN_AR = "لا يمكن تسجيل الموافقة على عملية دفع منتهية"
@@ -202,10 +211,7 @@ def recurring_disclosure_ar(plan: Optional[dict]) -> Optional[str]:
     """
     if not plan_renews(plan):
         return None
-    return (
-        "التجديد التلقائي مُفعّل على هذه الباقة، ويمكنك إيقاف التجديد في أي "
-        "وقت من إعدادات الحساب."
-    )
+    return RECURRING_DISCLOSURE_AR
 
 
 def consent_text_hash(text: str) -> str:
@@ -753,13 +759,35 @@ async def capture_payment_method(
             )
             return None
 
+        # The consent artefact.
+        #
+        # v2 (owner, 2026-08-12): there is no consent CHECKBOX any more — the
+        # disclosure renders as a plain reminder on /pay and the affirmative act
+        # is completing the purchase after being shown it. So an explicit consent
+        # row is no longer required, only preferred:
+        #
+        #   * an explicit row (someone who ticked the old checkbox, or any future
+        #     caller of POST /payments/{id}/consent) WINS — it carries the real
+        #     moment and the exact text that user saw, including v1's longer
+        #     wording;
+        #   * otherwise the completed purchase IS the consent, stamped at
+        #     ``paid_at`` and hashed against RECURRING_DISCLOSURE_AR.
+        #
+        # That fallback is only sound because the disclosure is now a CONSTANT.
+        # If it ever interpolates price or plan again, this hash stops being
+        # reproducible from here and the served text must be persisted at
+        # checkout instead — do not paper over it by hashing a rebuilt string.
         consent = await run_db(fetch_consent, supabase, str(payment_id))
         if not consent or not consent.get("consent_text_hash"):
-            logger.warning(
-                "payment=%s returned a card token but carries NO recurring "
-                "consent — refusing to store it (plan §6)", payment_id,
+            consent = {
+                "consent_given_at": payment_row.get("paid_at") or _now_iso(),
+                "consent_text_hash": consent_text_hash(RECURRING_DISCLOSURE_AR),
+            }
+            logger.info(
+                "payment=%s carries no explicit consent row — treating the "
+                "completed purchase as consent (disclosure %s)",
+                payment_id, DISCLOSURE_VERSION,
             )
-            return None
 
         existing = await run_db(_select_active_with_token_safe, supabase, str(user_id))
         if existing and existing.get("provider_token") == card["provider_token"]:
