@@ -350,6 +350,67 @@ def _insert_user_message(
     }).execute()
 
 
+def _insert_unsent_message(
+    supabase: SupabaseClient,
+    row: dict,
+) -> None:
+    """Record a send the quota gate refused (migration 135).
+
+    Deliberately writes to `unsent_messages`, NOT to `messages` — see the
+    migration header. Nothing downstream reads this table, so a row here is
+    invisible to conversation history, to the memory agents and to the message
+    endpoint by construction rather than by filtering.
+    """
+    supabase.table("unsent_messages").insert(row).execute()
+
+
+async def _record_unsent(
+    supabase: SupabaseClient,
+    *,
+    user_id: str,
+    conversation_id: str,
+    content: str,
+    reason: str,
+    attachment_ids: list[str] | None,
+    plan_id: str | None = None,
+    meter: str | None = None,
+    period: str | None = None,
+    used: float | None = None,
+    limit: float | None = None,
+) -> None:
+    """Best-effort capture of a blocked send. NEVER raises.
+
+    This runs on the user's way out of a refused send, so it must not be able
+    to change that outcome: if the insert fails the user still gets their
+    `quota_exceeded` event and their composer back. Losing one analytics row is
+    strictly preferable to turning a quota block into an error.
+    """
+    try:
+        await run_db(
+            _insert_unsent_message,
+            supabase,
+            {
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "content": content,
+                "reason": reason,
+                "plan_id": plan_id,
+                "meter": meter,
+                "period": period,
+                "used_amount": used,
+                "limit_amount": limit,
+                "attachment_ids": list(attachment_ids or []) or None,
+            },
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Failed to record unsent message (reason=%s, conversation=%s)",
+            reason,
+            conversation_id,
+            exc_info=True,
+        )
+
+
 def _insert_attachment_links(
     supabase: SupabaseClient,
     user_msg_id: str,
@@ -544,14 +605,22 @@ async def send_message_stream(
 
     # 0c. Quota gate — fires once per message, BEFORE anything is persisted.
     #
-    # Ordering matters and is deliberate: a blocked send writes NOTHING. An
-    # earlier build saved the user row first and let the gate reject afterwards,
-    # which left a permanently unanswered user message in the thread — nothing
-    # ever picked it back up when the window reset, no retry path could reach it
-    # (`QuotaBanner` has no retry, and `retryMessage` re-sends the *content* as a
-    # new row), and `context_service` fed the orphan turn into the NEXT request's
-    # history as a second consecutive user message. The client re-hydrates the
-    # composer from the `quota_exceeded` event instead, so nothing is lost.
+    # Ordering matters and is deliberate: a blocked send writes NOTHING THE
+    # THREAD CAN SEE. An earlier build saved the user row first and let the gate
+    # reject afterwards, which left a permanently unanswered user message in the
+    # thread — nothing ever picked it back up when the window reset, no retry
+    # path could reach it (`QuotaBanner` has no retry, and `retryMessage`
+    # re-sends the *content* as a new row), and `context_service` fed the orphan
+    # turn into the NEXT request's history as a second consecutive user message.
+    # The client re-hydrates the composer from the `quota_exceeded` event
+    # instead, so nothing is lost.
+    #
+    # The refused text IS captured, but into `unsent_messages` (migration 135)
+    # via `_record_unsent` on each block path below — a table no history
+    # builder, memory agent or message endpoint queries, so it cannot reproduce
+    # the orphan-turn bug. It exists to answer "what were users trying to ask
+    # when they hit the wall", nothing more: nothing replays those rows, and
+    # they must never be inserted into `messages` instead.
     #
     # Nothing here depends on the user message existing — the meters key off
     # user_id, and OCR projection off attachment_ids — so the gate sits cleanly
@@ -590,6 +659,14 @@ async def send_message_stream(
         # unlock an unactivated account.
         _logfire.info("message.plan_inactive", conversation_id=conversation_id)
         _active_runs.pop(conversation_id, None)  # release slot — task never created
+        await _record_unsent(
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            reason="plan_inactive",
+            attachment_ids=attachment_ids,
+        )
         yield _sse_event("quota_exceeded", pi.to_event_payload())
         return
     except quota.QuotaExceeded as qe:
@@ -603,6 +680,19 @@ async def send_message_stream(
             plan_id=qe.plan_id,
         )
         _active_runs.pop(conversation_id, None)  # release slot — task never created
+        await _record_unsent(
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            reason="quota_exceeded",
+            attachment_ids=attachment_ids,
+            plan_id=qe.plan_id,
+            meter=qe.meter,
+            period=qe.period,
+            used=float(qe.used),
+            limit=float(qe.limit),
+        )
         yield _sse_event("quota_exceeded", qe.to_event_payload())
         return
     except quota.QuotaUnavailable as qu:
@@ -615,6 +705,16 @@ async def send_message_stream(
             period=qu.period,
         )
         _active_runs.pop(conversation_id, None)  # release slot — task never created
+        await _record_unsent(
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            reason="quota_unavailable",
+            attachment_ids=attachment_ids,
+            meter=qu.meter,
+            period=qu.period,
+        )
         yield _sse_event("error", {
             "detail": quota.QUOTA_UNAVAILABLE_AR,
             "code": "QUOTA_UNAVAILABLE",
