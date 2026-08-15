@@ -269,7 +269,18 @@ Two selection inputs the user asked for, with their real limits:
 Order: §1 deployed → `--limit 10000` dry run → review the distribution report → `--apply`
 → purge ISR.
 
-### 3.2 Regulations — 502 → 1,188
+### 3.2 Regulations — 502 → 1,188 → 1,686
+
+> **RAMPED AGAIN 2026-08-14 — live total is 1,686, not 1,188.** Re-priced to
+> `--pct 0.375 --floor 5` (498 new) on user request for "another 500". Ran the full
+> sequence: `build_entity_quota_ids.py --out` → `build_seo_slugs.py --ids-file --apply`
+> (498 new slugs, 6 collisions resolved, 0 title fallbacks) → `build_usage_rank.py --apply`
+> (1,686 rows ranked, churn 1,663 — the new rows interleave through the tail) → ISR purge
+> of 230 paths. Verified live: hub `total_pages` 132 → **188**, sitemap 1,188 → **1,686**
+> URLs, sector pairs 3,141 → **4,444**, `rank` dense 1..1686 with no duplicate slug, all
+> 400 entities still represented. The 0.25/3 defaults below now yield 0 new — they are the
+> *original* pricing, kept for provenance.
+
 
 **Rule (user decision 2026-08-08): `quota_e = min(entity_regs, max(3, ceil(0.25 × entity_regs)))`,
 applied to all 135 entities, additive.** An entity already above quota keeps what it has —
