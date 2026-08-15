@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
-import { Check, Search } from "lucide-react";
+import { Check, Info, Search } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { DEEP_SEARCH_TOPIC_PREFIX, useChatStore } from "@/stores/chat-store";
@@ -19,6 +19,16 @@ import type { DeepSearchStage } from "@/types";
 
 /** Card title. */
 const TITLE = "بحث معمّق";
+
+/**
+ * Standing note ABOVE the card. Its whole job is to set the expectation before
+ * the wait starts: this run is long *by design*, and leaving the tab is safe —
+ * the run lives on the server, so the answer is here on return.
+ */
+const NOTE_TITLE = "شكرًا لتجربتك ريحان";
+const NOTE_BODY =
+  "البحث المعمّق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من ٣ إلى ٥ دقائق. " +
+  "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
 
 /** The four stages, in pipeline order. `done` is not a step — it fills all four. */
 type RunningStage = Exclude<DeepSearchStage, "done">;
@@ -281,6 +291,34 @@ function CrossfadeLine({
   );
 }
 
+/**
+ * The expectation-setting note that sits above the tracker for the whole run.
+ * Static copy — it never reacts to progress, so it stays out of the tracker's
+ * render path and out of the card's live region.
+ */
+function DeepSearchNote() {
+  return (
+    <div
+      dir="rtl"
+      lang="ar"
+      className="w-full rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3"
+    >
+      <div className="flex items-start gap-2">
+        <Info
+          className="mt-[2px] h-3.5 w-3.5 shrink-0 text-primary"
+          aria-hidden="true"
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-foreground">{NOTE_TITLE}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {NOTE_BODY}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DeepSearchProgressProps {
@@ -377,7 +415,16 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   // A deep_search run whose backend never emitted `agent_progress` (deploy
   // skew, resume leg without the hook) degrades to the generic indicator
   // rather than rendering an empty shell.
-  if (!progress) return <TypingIndicator className={className} />;
+  // The note still belongs here: that degraded run is just as long, so the
+  // expectation it sets is the same one.
+  if (!progress) {
+    return (
+      <div className={cn("w-full space-y-2", className)}>
+        <DeepSearchNote />
+        <TypingIndicator />
+      </div>
+    );
+  }
 
   const isDone = progress.stage === "done";
   const stageIndex = STEPS.findIndex((s) => s.key === progress.stage);
@@ -460,153 +507,154 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   const metaLine = metaParts.length > 0 ? metaParts.join(" · ") : null;
 
   return (
-    <div
-      dir="rtl"
-      lang="ar"
-      aria-busy={!isDone}
-      className={cn(
-        "w-full rounded-2xl border bg-card px-4 py-3 shadow-sm",
-        className,
-      )}
-    >
-      {/* Header: title + elapsed. The timer is deliberately OUTSIDE the live
-          region below — announcing it would speak once per second. */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <Search
-            className="h-3.5 w-3.5 shrink-0 text-primary"
-            aria-hidden="true"
-          />
-          <span className="text-xs font-semibold text-foreground">
-            {TITLE}
+    <div className={cn("w-full space-y-2", className)}>
+      <DeepSearchNote />
+
+      <div
+        dir="rtl"
+        lang="ar"
+        aria-busy={!isDone}
+        className="w-full rounded-2xl border bg-card px-4 py-3 shadow-sm"
+      >
+        {/* Header: title + elapsed. The timer is deliberately OUTSIDE the live
+            region below — announcing it would speak once per second. */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <Search
+              className="h-3.5 w-3.5 shrink-0 text-primary"
+              aria-hidden="true"
+            />
+            <span className="text-xs font-semibold text-foreground">
+              {TITLE}
+            </span>
+          </div>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {formatElapsedAr(elapsedMs)}
           </span>
         </div>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {formatElapsedAr(elapsedMs)}
+
+        {/* The only live region: it holds the active stage label and nothing
+            else, so screen readers announce stage TRANSITIONS only — not every
+            status line, count bump, or token. */}
+        <span role="status" aria-live="polite" className="sr-only">
+          {STEPS[activeIndex].label}
         </span>
-      </div>
 
-      {/* The only live region: it holds the active stage label and nothing
-          else, so screen readers announce stage TRANSITIONS only — not every
-          status line, count bump, or token. */}
-      <span role="status" aria-live="polite" className="sr-only">
-        {STEPS[activeIndex].label}
-      </span>
-
-      {/* Bar — canonical Luna markup (AttachmentUploadCard). The card is
-          dir="rtl", so the fill grows from the right edge. Width = stage anchor
-          + capped time creep (see STAGE_ANCHORS): continuously moving, but it
-          can only cross a milestone when the pipeline actually reaches it. The
-          transition is LINEAR and matched to the tick so consecutive creep
-          updates read as one smooth sweep instead of 4/sec ease-out stutters; a
-          glossy highlight sweeps the filled portion for motion even when the
-          creep has flattened out. Sweep is disabled under reduced-motion. */}
-      <div
-        className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-muted"
-        aria-hidden="true"
-      >
+        {/* Bar — canonical Luna markup (AttachmentUploadCard). The card is
+            dir="rtl", so the fill grows from the right edge. Width = stage anchor
+            + capped time creep (see STAGE_ANCHORS): continuously moving, but it
+            can only cross a milestone when the pipeline actually reaches it. The
+            transition is LINEAR and matched to the tick so consecutive creep
+            updates read as one smooth sweep instead of 4/sec ease-out stutters; a
+            glossy highlight sweeps the filled portion for motion even when the
+            creep has flattened out. Sweep is disabled under reduced-motion. */}
         <div
-          className="relative h-full overflow-hidden rounded-full bg-primary transition-[width] duration-300 ease-linear motion-reduce:transition-none"
-          style={{ width: `${barPercent}%` }}
+          className="mt-2.5 h-1 w-full overflow-hidden rounded-full bg-muted"
+          aria-hidden="true"
         >
-          <span className="absolute inset-0 animate-ds-bar-sweep bg-gradient-to-r from-transparent via-primary-fg to-transparent opacity-30 motion-reduce:hidden" />
+          <div
+            className="relative h-full overflow-hidden rounded-full bg-primary transition-[width] duration-300 ease-linear motion-reduce:transition-none"
+            style={{ width: `${barPercent}%` }}
+          >
+            <span className="absolute inset-0 animate-ds-bar-sweep bg-gradient-to-r from-transparent via-primary-fg to-transparent opacity-30 motion-reduce:hidden" />
+          </div>
         </div>
-      </div>
 
-      {/* Steps */}
-      <ol className="mt-3 space-y-1.5">
-        {STEPS.map((step, i) => {
-          const state =
-            isDone || i < activeIndex
-              ? "done"
-              : i === activeIndex
-                ? "active"
-                : "pending";
-          return (
-            <li key={step.key} className="flex items-start gap-2">
-              <span
-                className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-                aria-hidden="true"
-              >
-                {state === "done" ? (
-                  <Check className="h-3.5 w-3.5 text-primary" />
-                ) : state === "active" ? (
-                  <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
-                ) : (
-                  <span className="h-2 w-2 rounded-full border border-muted-foreground/40" />
-                )}
-              </span>
-
-              <div className="min-w-0 flex-1">
-                <p
-                  className={cn(
-                    "text-xs leading-5",
-                    state === "active"
-                      ? "font-medium text-foreground"
-                      : state === "done"
-                        ? "text-muted-foreground"
-                        : "text-muted-foreground/50",
-                  )}
+        {/* Steps */}
+        <ol className="mt-3 space-y-1.5">
+          {STEPS.map((step, i) => {
+            const state =
+              isDone || i < activeIndex
+                ? "done"
+                : i === activeIndex
+                  ? "active"
+                  : "pending";
+            return (
+              <li key={step.key} className="flex items-start gap-2">
+                <span
+                  className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+                  aria-hidden="true"
                 >
-                  {step.label}
-                </p>
+                  {state === "done" ? (
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                  ) : state === "active" ? (
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+                  ) : (
+                    <span className="h-2 w-2 rounded-full border border-muted-foreground/40" />
+                  )}
+                </span>
 
-                {/* Live evidence under the ACTIVE step only. Every sub-block
-                    keeps a FIXED reserved height (detail 1 line + feed 2 lines +
-                    meta 1 line) so the card never changes height for the whole
-                    run — the active step just moves down the list. Decorative,
-                    so the whole block is aria-hidden (the sr-only live region
-                    above announces stage transitions instead). */}
-                {state === "active" && (
-                  <div className="mt-1 space-y-0.5" aria-hidden="true">
-                    {/* Detail line — crossfades on every new topic (search
-                        stages) or rotated phrase (the stages that stream none).
-                        The magnifier marks a real sub-query; the dot marks a
-                        phrase, so the two are never mistaken for each other. */}
-                    <div className="flex items-start gap-1.5">
-                      {showTopicAsDetail ? (
-                        <Search className="mt-[3px] h-3 w-3 shrink-0 text-primary" />
-                      ) : (
-                        <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-primary" />
-                      )}
-                      <CrossfadeLine
-                        text={detailText}
-                        className="text-xs leading-4 text-muted-foreground"
-                      />
-                    </div>
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={cn(
+                      "text-xs leading-5",
+                      state === "active"
+                        ? "font-medium text-foreground"
+                        : state === "done"
+                          ? "text-muted-foreground"
+                          : "text-muted-foreground/50",
+                    )}
+                  >
+                    {step.label}
+                  </p>
 
-                    {/* Recent-topics feed (searching only). Fixed 2-line box,
-                        reserved even when empty, so the card height is constant
-                        across every stage. Each new line eases in. */}
-                    <div className="h-9 space-y-0.5 overflow-hidden">
-                      {recentTopics.map((topic) => (
-                        <div
-                          key={topic}
-                          className="flex items-start gap-1.5 animate-ds-fade-in motion-reduce:animate-none"
-                        >
-                          <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-current text-text-subtle" />
-                          <span className="truncate text-xs leading-4 text-text-subtle">
-                            {formatTopic(topic)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                  {/* Live evidence under the ACTIVE step only. Every sub-block
+                      keeps a FIXED reserved height (detail 1 line + feed 2 lines +
+                      meta 1 line) so the card never changes height for the whole
+                      run — the active step just moves down the list. Decorative,
+                      so the whole block is aria-hidden (the sr-only live region
+                      above announces stage transitions instead). */}
+                  {state === "active" && (
+                    <div className="mt-1 space-y-0.5" aria-hidden="true">
+                      {/* Detail line — crossfades on every new topic (search
+                          stages) or rotated phrase (the stages that stream none).
+                          The magnifier marks a real sub-query; the dot marks a
+                          phrase, so the two are never mistaken for each other. */}
+                      <div className="flex items-start gap-1.5">
+                        {showTopicAsDetail ? (
+                          <Search className="mt-[3px] h-3 w-3 shrink-0 text-primary" />
+                        ) : (
+                          <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-primary" />
+                        )}
+                        <CrossfadeLine
+                          text={detailText}
+                          className="text-xs leading-4 text-muted-foreground"
+                        />
+                      </div>
 
-                    {/* Counts / live query counter — one reserved line. */}
-                    <div className="min-h-[1rem]">
-                      {metaLine && (
-                        <p className="text-xs leading-4 tabular-nums text-muted-foreground">
-                          {metaLine}
-                        </p>
-                      )}
+                      {/* Recent-topics feed (searching only). Fixed 2-line box,
+                          reserved even when empty, so the card height is constant
+                          across every stage. Each new line eases in. */}
+                      <div className="h-9 space-y-0.5 overflow-hidden">
+                        {recentTopics.map((topic) => (
+                          <div
+                            key={topic}
+                            className="flex items-start gap-1.5 animate-ds-fade-in motion-reduce:animate-none"
+                          >
+                            <span className="mt-[6px] h-1 w-1 shrink-0 rounded-full bg-current text-text-subtle" />
+                            <span className="truncate text-xs leading-4 text-text-subtle">
+                              {formatTopic(topic)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Counts / live query counter — one reserved line. */}
+                      <div className="min-h-[1rem]">
+                        {metaLine && (
+                          <p className="text-xs leading-4 tabular-nums text-muted-foreground">
+                            {metaLine}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
     </div>
   );
 });
