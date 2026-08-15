@@ -666,15 +666,31 @@ def test_only_recurring_plans_get_a_disclosure(flag_on):
         assert (result["recurring_disclosure_ar"] is not None) is expected, plan_id
 
 
-def test_the_disclosure_states_amount_cadence_and_how_to_stop(flag_on):
+def test_the_disclosure_states_that_renewal_is_on_and_how_to_stop(flag_on):
+    """v2 (owner, 2026-08-12): the disclosure says renewal is on and where to
+    stop it — nothing else.
+
+    ⚠ The amount and cadence assertions this test used to carry were REMOVED
+    deliberately, not because they stopped mattering. They are now disclosed by
+    the /pay layout (order summary + billingNote) instead of by the hashed text,
+    which no backend test can see. If that layout ever drops either number, this
+    string becomes the only disclosure left and must take them back — so treat a
+    /pay redesign as a change to this contract too.
+    """
     text = pm.recurring_disclosure_ar(
         {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "89.90",
          "duration_days": 30, "billing_cycle": "recurring_30d"}
     )
-    assert "89.90" in text and "30" in text
-    assert "الاحترافية" in text
-    assert "إيقاف التجديد" in text            # how to stop
-    assert "إعدادات الحساب" in text           # where
+    assert "التجديد التلقائي" in text          # renewal is on
+    assert "إيقاف التجديد" in text             # how to stop
+    assert "إعدادات الحساب" in text            # where
+
+
+def test_the_disclosure_version_tracks_the_text(flag_on):
+    """A wording change that does not bump the version silently makes every
+    older audit row claim the new words — which is the one thing the hash exists
+    to prevent."""
+    assert pm.DISCLOSURE_VERSION == "v2"
 
 
 def test_a_one_time_billing_cycle_never_renews(flag_on):

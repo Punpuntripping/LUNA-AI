@@ -84,7 +84,12 @@ RENEWABLE_PLAN_IDS = frozenset({"pro", "max"})
 
 # Consent bookkeeping.
 CONSENT_EVENT = "recurring_consent"
-DISCLOSURE_VERSION = "v1"
+# v2 (2026-08-12): shortened to renewal-is-on + how-to-stop; the amount and
+# cadence moved out of the hashed text and are carried by the /pay layout. v1
+# consents keep their own hash and remain evidence of the longer text those
+# users saw — which is the entire reason this is versioned rather than edited
+# in place.
+DISCLOSURE_VERSION = "v2"
 
 # ── Arabic (rule 5) ──────────────────────────────────────────────────────────
 
@@ -173,29 +178,33 @@ def recurring_disclosure_ar(plan: Optional[dict]) -> Optional[str]:
     both, and it is built from ``plans`` so it cannot disagree with what is
     actually charged.
 
-    It states, in this order: the amount, the cadence, that the card is stored,
-    and how to stop. It deliberately does NOT state an absolute next-charge
-    DATE: at checkout that date is not yet knowable — ``grant_plan`` stacks a
-    same-plan purchase onto a live term, so the real boundary is whatever
-    ``expires_at`` ends up being after the grant. A relative cadence is the
-    strongest statement that is true for every buyer.
+    It states two things: that renewal is on, and how to stop it.
+
+    ⚠ **THE AMOUNT AND CADENCE ARE DELIBERATELY NOT IN THIS STRING** (owner,
+    2026-08-12 — the v1 wording was judged too heavy at the point of sale). They
+    are still disclosed, but by the PAGE rather than by the hashed artefact:
+    `/pay` renders «المبلغ المستحق ٨٩٫٩٠» in the order summary and «فترة الاشتراك
+    ٣٠ يوماً» under the plan name, both directly above this box. If that layout
+    ever changes, this string becomes the only disclosure left and must take the
+    numbers back — a recurring consent that never states a price is not worth
+    much in a dispute.
+
+    No absolute next-charge DATE either, for a different and permanent reason: at
+    checkout it is not yet knowable, because ``grant_plan`` stacks a same-plan
+    purchase onto a live term, so the real boundary is whatever ``expires_at``
+    ends up being after the grant.
 
     ⚠ CHANGING ONE CHARACTER OF THIS STRING CHANGES THE HASH. That is the point
     (``consent_text_hash`` exists so a wording change stays provable), but bump
     ``DISCLOSURE_VERSION`` at the same time so the audit rows say which text a
-    given user actually agreed to.
+    given user actually agreed to. Consents recorded under v1 keep v1's hash and
+    remain valid evidence of the longer text those users were shown.
     """
     if not plan_renews(plan):
         return None
-    name = str(plan.get("name_ar") or plan.get("plan_id") or "").strip()
-    price = _fmt_price(plan.get("price_sar"))
-    days = int(plan.get("duration_days") or 30)
     return (
-        f"بتأكيد الشراء تُفوّض «ريحان» بحفظ بطاقتك لدى مزوّد الدفع وخصم "
-        f"{price} ريال سعودي كل {days} يوماً لتجديد باقة {name} تلقائياً، "
-        f"إلى أن توقف التجديد. يمكنك إيقاف التجديد في أي وقت من إعدادات "
-        f"الحساب، ويستمر اشتراكك حتى نهاية المدة المدفوعة. لن يُخصم أي مبلغ "
-        f"إضافي بعد الإيقاف."
+        "التجديد التلقائي مُفعّل على هذه الباقة، ويمكنك إيقاف التجديد في أي "
+        "وقت من إعدادات الحساب."
     )
 
 
