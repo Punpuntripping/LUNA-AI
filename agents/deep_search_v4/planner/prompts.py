@@ -556,9 +556,19 @@ def build_responder_instructions(deps) -> str:
     framing = _MODE_FRAMING.get(mode, _MODE_FRAMING["reg_compliance_led"])
     planner_brief_block = _render_planner_brief_block(decision)
 
+    # رسائل الترحيب — first, and ahead of the mode framing, because it is the
+    # one instruction that outranks «start with the rule» / «start with the
+    # essence». A new user whose opening message went straight to deep_search
+    # meets ريحان here, not through the router. Carried on the degraded path
+    # too: a search that failed is still that user's first reply.
+    welcome_block = getattr(deps, "welcome_instruction", None) or ""
+    if welcome_block:
+        welcome_block = f"{welcome_block}\n"
+
     if agg is None:
         # Degraded path — phase 2 produced nothing. Keep the responder honest.
         return (
+            f"{welcome_block}"
             f"{framing}\n\n"
             f"{planner_brief_block}"
             "## Search outcome\n"
@@ -585,7 +595,7 @@ def build_responder_instructions(deps) -> str:
     )
 
     return f"""\
-{framing}
+{welcome_block}{framing}
 
 {planner_brief_block}## Search outcome (a digest for reference — do not copy it verbatim)
 

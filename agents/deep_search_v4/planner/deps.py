@@ -112,6 +112,15 @@ class PlannerDeps:
     # this map to resolve a WI-{n} alias back to a workspace_items.item_id.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
 
+    # رسائل الترحيب: the rendered welcome block for this turn, or None. When a
+    # brand-new user's first message is dispatched straight to deep_search, the
+    # responder — not the router — is the first thing they ever read from
+    # ريحان, so it carries the greeting. Built by the orchestrator via
+    # ``agents.utils.welcome.render_welcome_instruction`` and, like every other
+    # per-turn field here, never persisted across a pause: the resume leg
+    # rebuilds deps and by then the conversation is no longer new.
+    welcome_instruction: str | None = None
+
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
@@ -163,6 +172,7 @@ def build_planner_deps(
     attached_items: list[WorkspaceItemSnapshot] | None = None,
     compaction_summary_md: str | None = None,
     wi_alias_map: dict[int, str] | None = None,
+    welcome_instruction: str | None = None,
 ) -> PlannerDeps:
     """Construct a fresh :class:`PlannerDeps`.
 
@@ -197,6 +207,7 @@ def build_planner_deps(
         attached_items=list(attached_items) if attached_items else [],
         compaction_summary_md=compaction_summary_md or None,
         wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
+        welcome_instruction=welcome_instruction or None,
     )
 
 

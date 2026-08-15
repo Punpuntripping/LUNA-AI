@@ -94,6 +94,13 @@ class WriterDeps:
     # ``format_writer_context`` keeps firing instead. See
     # .claude/plans/writer_redesign.md § Deps shape.
     package: Optional[WriterPackage] = None
+    # رسائل الترحيب: the rendered welcome block, or None. The executor writes
+    # ``chat_summary`` — the only text of a writing turn the user reads in the
+    # chat bubble — so when a brand-new user's first message is a drafting
+    # request, this agent is their first responder. Built once per turn by
+    # ``agents.utils.welcome.render_welcome_instruction`` and threaded down
+    # through MajorAgentInput → the writer_planner runner.
+    welcome_instruction: Optional[str] = None
     # Mutable run-state ------------------------------------------------------
     _events: list[dict] = field(default_factory=list)
 
@@ -143,6 +150,7 @@ def build_writer_deps(
     detail_level: str = "standard",
     tone: str = "neutral",
     package: Optional[WriterPackage] = None,
+    welcome_instruction: Optional[str] = None,
 ) -> WriterDeps:
     """Build deps with env override + kwarg precedence.
 
@@ -181,6 +189,7 @@ def build_writer_deps(
         detail_level=detail_level,
         tone=tone,
         package=package,
+        welcome_instruction=welcome_instruction or None,
     )
 
 

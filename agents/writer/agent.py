@@ -13,6 +13,8 @@ Instruction stack (concatenated by Pydantic AI in registration order):
      human frame (describe_query, task_label, revision marker, style prefs).
      In the legacy path (``deps.package is None``) falls back to
      ``format_writer_context`` so ``attached_items`` still get rendered.
+  4. ``@agent.instructions welcome_block`` — رسائل الترحيب: the opening line
+     for ``chat_summary`` when this turn is the user's first. Empty otherwise.
 
 See ``.claude/plans/writer_redesign.md`` § Dynamic instructions for the
 rationale on splitting into two callables.
@@ -28,6 +30,7 @@ from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
 from agents.utils.structured_output import make_json_salvager
+from agents.utils.welcome import WELCOME_CHAR_ALLOWANCE
 
 from .context import format_writer_context, format_writer_envelope
 from .deps import WriterDeps
@@ -138,13 +141,27 @@ def create_writer_agent(
             tone=ctx.deps.tone,
         )
 
+    @agent.instructions
+    async def welcome_block(ctx: RunContext[WriterDeps]) -> str:
+        """Open ``chat_summary`` with the welcome line, when the turn earns one.
+
+        A drafting request («اكتب لي عقد عمل») is a perfectly ordinary first
+        message, and on that turn nothing the router said reaches the user —
+        this executor's ``chat_summary`` is the whole reply.
+        """
+        return ctx.deps.welcome_instruction or ""
+
     @agent.output_validator
     async def _validate_summary_length(
         ctx: RunContext[WriterDeps],
         value: WriterLLMOutput,
     ) -> WriterLLMOutput:
-        if len(value.chat_summary) > 500:
-            value.chat_summary = value.chat_summary[:500].rstrip()
+        # A welcomed turn gets the greeting's characters ON TOP of the summary
+        # budget. Truncating at a flat 500 would keep the greeting and chop the
+        # end of the summary it was prepended to.
+        limit = 500 + (WELCOME_CHAR_ALLOWANCE if ctx.deps.welcome_instruction else 0)
+        if len(value.chat_summary) > limit:
+            value.chat_summary = value.chat_summary[:limit].rstrip()
         if len(value.key_findings) > 5:
             value.key_findings = value.key_findings[:5]
         return value

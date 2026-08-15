@@ -211,6 +211,18 @@ class MajorAgentInput(BaseModel):
         default=None,
         description="Existing workspace item to edit/extend; None for fresh output.",
     )
+    welcome_instruction: str | None = Field(
+        default=None,
+        description=(
+            "رسائل الترحيب: the rendered prompt block telling whichever agent "
+            "writes this turn's chat reply to open with the welcome line — the "
+            "specialist, not the router, is the first responder whenever a new "
+            "user's opening message is dispatched. Built once per turn by "
+            "``agents.utils.welcome.render_welcome_instruction``; None on every "
+            "turn that opens with no greeting, which is all but the first of a "
+            "conversation."
+        ),
+    )
     user_id: str
     conversation_id: str
     case_id: str | None = None

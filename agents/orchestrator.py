@@ -33,9 +33,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
-from typing import AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator
 
 from supabase import Client as SupabaseClient
+
+if TYPE_CHECKING:  # annotation only — the helpers are imported where used.
+    from agents.utils.welcome import WelcomeState
 
 import agents.memory.agent as memory
 from agents.memory.ocr_extractor import run_ocr_extraction
@@ -1621,8 +1624,17 @@ async def _route(
     """Run the router LLM; on ChatResponse stream tokens; on DispatchAgent call _dispatch."""
     from agents.router.context import load_router_context
     from agents.router.router import run_router
+    from agents.utils.welcome import mark_welcomed, resolve_welcome
 
     ctx = load_router_context(supabase, user_id, conversation_id, case_id)
+
+    # رسائل الترحيب — resolved ONCE here and handed to whichever agent ends up
+    # writing this turn's reply (router / planner_responder / writer_planner),
+    # so the three can never disagree about whether the user was greeted.
+    # Resolving in _route rather than handle_message is deliberate: the resume
+    # path (_resume_major_agent) never reaches here, so a run that paused for a
+    # clarifying question cannot re-greet the user mid-conversation.
+    welcome = resolve_welcome(supabase, user_id, conversation_id)
 
     # وضع السرية: load_router_context assembled the router's prior-turn history
     # through messages_to_history, which encodes each message via the active
@@ -1643,6 +1655,7 @@ async def _route(
         case_metadata=ctx.case_metadata,
         user_preferences=ctx.user_preferences,
         user_call_name=ctx.user_call_name,
+        welcome=welcome,
         message_history=ctx.message_history,
         workspace_item_summaries=ctx.workspace_item_summaries,
         compaction_summary_md=ctx.compaction_summary_md,
@@ -1663,6 +1676,9 @@ async def _route(
             token = word if i == 0 else f" {word}"
             yield {"type": "token", "text": token}
             await asyncio.sleep(0.03)
+
+        # The reply reached the user — stamp the first-ever welcome as spent.
+        mark_welcomed(supabase, user_id, welcome)
 
         yield {
             "type": "done",
@@ -1701,6 +1717,7 @@ async def _route(
             # above) — the specialists' planners need the same back-story, and
             # re-querying it here would be a second DB round-trip per turn.
             compaction_summary_md=ctx.compaction_summary_md,
+            welcome=welcome,
         ):
             yield ev
         return
@@ -1870,6 +1887,7 @@ async def _dispatch(
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
     compaction_summary_md: str | None = None,
+    welcome: "WelcomeState | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -1886,6 +1904,12 @@ async def _dispatch(
     ``load_router_context`` (already encoded with the turn codec) — NOT re-read
     here. It rides ``MajorAgentInput`` to both planners, which have no other
     trace of the turns behind ``compacted_through_message_id``.
+
+    ``welcome`` likewise rides down from ``_route``: when the dispatched
+    specialist is the one that writes this turn's reply, it owns the greeting
+    (see ``agents/utils/welcome.py``). It is stamped as spent only once the run
+    has actually produced a result — a paused run leaves it unspent so the
+    user's welcome survives to their next conversation.
     """
     # ── Cap pre-flight ──────────────────────────────────────────────────
     if agent_family in ("deep_search", "writing") and target_item_id is None:
@@ -1953,6 +1977,11 @@ async def _dispatch(
                 supabase, conversation_id, user_id=user_id
             )
 
+            # The rendered block travels, not the state: the specialists need
+            # the words, and keeping the composition in welcome.py is what makes
+            # the router's greeting and a specialist's greeting identical.
+            from agents.utils.welcome import render_welcome_instruction
+
             major_input = MajorAgentInput(
                 describe_query=describe_query,
                 task_label=task_label,
@@ -1960,6 +1989,7 @@ async def _dispatch(
                 recent_messages=recent_messages,
                 compaction_summary_md=compaction_summary_md,
                 target_item_id=target_item_id,
+                welcome_instruction=render_welcome_instruction(welcome) or None,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 case_id=case_id,
@@ -2117,6 +2147,13 @@ async def _dispatch(
             # Stream chat_summary to chat — full body stays in workspace item only.
             if run_result.chat_summary:
                 yield {"type": "token", "text": run_result.chat_summary}
+                # The specialist wrote this turn's reply, welcome and all, and
+                # it reached the user. Every paused branch above raised
+                # _SkipRunRecord before here, so a first turn that stopped to
+                # ask a clarifying question leaves the welcome unspent.
+                from agents.utils.welcome import mark_welcomed
+
+                mark_welcomed(supabase, user_id, welcome)
 
             # Stream key_findings as a single token block after chat_summary.
             if run_result.key_findings:
@@ -2346,6 +2383,9 @@ async def _run_deep_search(
             prior_searches=prior_searches,
             attached_items=_planner_attached,
             wi_alias_map=wi_alias_map,
+            # رسائل الترحيب — set only when this dispatch is a user's opening
+            # turn, in which case the responder writes their first ever reply.
+            welcome_instruction=input.welcome_instruction,
             # Live progress sink (None outside _dispatch → hook stays dead).
             emit_sse=emit_sse,
         )

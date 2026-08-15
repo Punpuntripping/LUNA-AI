@@ -599,6 +599,9 @@ async def handle_writer_planner_turn(
             ),
             detail_level=deps.style.detail_level,
             tone=deps.style.tone,
+            # رسائل الترحيب — set only when this is the user's opening turn, in
+            # which case the executor's chat_summary is their first ever reply.
+            welcome_instruction=major_input.welcome_instruction,
         )
 
         # وضع السرية: the writer executor's system prompt is assembled by
