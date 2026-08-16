@@ -116,7 +116,7 @@ export function AgentSearchViewer({
   return (
     <div
       className="relative flex flex-1 min-h-0 flex-col"
-      // Tour anchor (Act 2, step 3) — «التحليل الكامل: أطول من الرد…». The
+      // Tour anchor `wi-body` (step 2) — «هذا هو المخرج: أطول من الرد…». The
       // whole artifact surface: body + المراجع, which is exactly the contrast
       // the step is making against the chat snippet. Inert attribute.
       data-tour="wi-body"

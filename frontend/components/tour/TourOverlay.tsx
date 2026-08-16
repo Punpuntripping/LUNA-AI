@@ -64,6 +64,14 @@ const NO_ANCHORS: readonly TourAnchorId[] = [];
 const AUTO_START_ATTEMPTS = 14;
 const AUTO_START_INTERVAL_MS = 700;
 
+/**
+ * Grace between dismissing the reveal dialog and closing the WI underneath it
+ * (`onEnter: "return-to-item-list"`). Comfortably longer than the Radix close
+ * animation, short enough that the last step's anchor is found well inside the
+ * missing-anchor fuse.
+ */
+const DIALOG_SETTLE_MS = 220;
+
 interface BeatSnapshot {
   openItemId: string | null;
   focusedReferenceN: number | null;
@@ -232,7 +240,7 @@ function TourRunner() {
     markTourSeen();
   }, []);
 
-  // Deterministic start state. Step 2 asks the user to open the WI; if the
+  // Deterministic start state. Step 1 asks the user to open the WI; if the
   // pane were already open, that step's beat would be satisfied on arrival and
   // the tour would fast-forward past its own instruction. Runs once, on open.
   const didResetRef = useRef(false);
@@ -256,11 +264,29 @@ function TourRunner() {
     step?.advanceWhen?.some((condition) => condition.kind === "dom") ?? false;
   const beats = useTourDomBeats(needsDomBeats);
 
-  // Step side effect: Act 3 ends inside the reveal dialog, and step 10's card
-  // lives in the reference list UNDERNEATH it.
+  // Step side effects. Act 3 ends inside the reveal dialog with a WI open on
+  // top of the item list, so the last step has to peel both layers off before
+  // it can point at the «+» underneath. Done here rather than as a step the
+  // user clicks through: navigating BACK is not a thing worth teaching.
   useEffect(() => {
-    if (step?.onEnter === "close-source-dialog") dismissSourceDialog();
-  }, [step]);
+    if (!step?.onEnter) return;
+    if (step.onEnter === "close-source-dialog") {
+      dismissSourceDialog();
+      return;
+    }
+    // "return-to-item-list": dialog FIRST, then the item — and never in the
+    // same tick. The reveal dialog is a modal Radix layer that owns the body
+    // scroll lock; unmounting it by yanking its parent out mid-close is the
+    // classic way to strand `pointer-events: none` on <body> and freeze the
+    // app. One dismissal + one settle beat, then the WI.
+    dismissSourceDialog();
+    const timerId = window.setTimeout(() => {
+      if (conversationId) {
+        useChatStore.getState().closeWorkspaceItem(conversationId);
+      }
+    }, DIALOG_SETTLE_MS);
+    return () => window.clearTimeout(timerId);
+  }, [step, conversationId]);
 
   // --- advance --------------------------------------------------------------
   const satisfied =

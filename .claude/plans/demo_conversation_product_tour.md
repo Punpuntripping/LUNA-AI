@@ -1,6 +1,7 @@
 # محادثة تجريبية + جولة المخرجات — Product Tour Plan
 
-**Status:** planned, not built · **Authored:** 2026-08-10
+**Status:** built · **Authored:** 2026-08-10 · **Amended:** 2026-08-15 — the script was cut
+from 13 steps to **5** (see §6 · Amendment). Everything else below shipped as written.
 
 A guided, click-through product tour that teaches the one thing a ChatGPT/Claude-fluent
 user has never seen: **the workspace, the WI, and the reference layer.** It runs on a
@@ -269,6 +270,32 @@ spotlight lands on a stale rect. `ReferencePanel` already scrolls a focused card
 Anchors are `data-tour` attributes to be added. Copy below is the intent; final Arabic
 wording lives in **`components/tour/tour-content.ts`** — one file, like
 `onboarding-content.ts`. Never edit copy in components.
+
+> ### Amendment 2026-08-15 — the script is 5 steps, not 13
+>
+> Thirteen coach marks was a manual, not a tour. The shipped script keeps one step per
+> genuinely new idea and nothing else:
+>
+> | # | anchor | idea | advance |
+> |---|---|---|---|
+> | 1 | `artifact-chip` | the reply is a snippet — the full analysis is a «مخرج» | click → `wi-open` |
+> | 2 | `wi-body` | this is the مخرج; every `[n]` is a real reference; it is named WI-1 | التالي |
+> | 3 | `citation-6` | a number opens the source | click → `reference-6` \| `source-dialog-open` |
+> | 4 | `source-dialog` | the source text verbatim; الإحالات + both exits described here | التالي |
+> | 5 | `workspace-add` | everything collects in مساحة العمل; «+» adds notes/files | تمام، فهمت |
+>
+> **Cut, and where their content went:** `chat-thread` (dropped — a step to say the thread
+> is a thread) · `wi-badge` (one line inside step 2) · `pane-exits` and `back-to-list`
+> (dropped; step 5 returns to the list itself via a new `onEnter: "return-to-item-list"`
+> action, which dismisses the reveal dialog then calls `closeWorkspaceItem`) ·
+> `ref-crossrefs`, `source-exits`, `ref-domains` (one sentence each inside step 4) ·
+> `publish` (dropped — both buttons are disabled in the demo, so it could only describe
+> them).
+>
+> The engine, the acts table below, and every `data-tour` attribute are unchanged: the
+> retired anchors are still emitted and still in `TOUR_ANCHOR_IDS`, so restoring any step
+> is a copy-only edit in `tour-content.ts`. The Act tables that follow are the ORIGINAL
+> 13-step script, kept as the restore source.
 
 ### Act 1 — طبقة المحادثة (2 steps, deliberately the shortest)
 

@@ -132,7 +132,9 @@ function PaneHeader({
         <Button
           variant="ghost"
           size="icon"
-          // Tour anchors (Act 2 step 5, Act 5 step 12). Inert attributes.
+          // Tour anchor `pane-back` — both steps that used it are RETIRED; the
+          // five-step script returns to the list itself, via the last step's
+          // `onEnter`. Inert attribute.
           data-tour="pane-back"
           className="h-8 w-8 max-md:h-10 max-md:w-10 shrink-0"
           onClick={onBack}
@@ -146,7 +148,9 @@ function PaneHeader({
         {inDetailMode ? item?.title ?? "..." : "العناصر"}
       </h2>
       {/* Detail mode only: the alias the agents cite in chat, beside the title
-          of the item the user just opened. */}
+          of the item the user just opened. Its dedicated tour step is RETIRED —
+          the five-step script explains WI-1 in a line of the مخرج step — but the
+          `wi-badge` anchor is still emitted. */}
       {inDetailMode && (
         <WiBadge seq={item?.wi_seq} className="me-1" dataTour="wi-badge" />
       )}

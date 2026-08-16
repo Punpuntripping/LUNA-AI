@@ -191,7 +191,9 @@ export function WorkspaceItemActionBar({
       <div
         ref={barRef}
         dir="rtl"
-        // Tour anchor (Act 4, step 11) — مشاركة + حفظ كمدونة. Inert attribute.
+        // Tour anchor `wi-action-bar` — مشاركة + حفظ كمدونة. RETIRED from the
+        // five-step script: both buttons are disabled in the demo conversation,
+        // so the step could only describe them. Inert attribute.
         data-tour="wi-action-bar"
         className={cn(
           dockedBar

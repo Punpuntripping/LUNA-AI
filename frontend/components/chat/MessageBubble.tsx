@@ -428,9 +428,11 @@ export const MessageBubble = memo(function MessageBubble({
       <div
         dir="rtl"
         lang="ar"
-        // Tour anchor (Act 1, step 1) — «محادثتك والردود، تمامًا كما تتوقع».
-        // Inert: an attribute the tour engine resolves with
-        // `[data-tour="chat-thread"]`; it changes no behaviour and no layout.
+        // Tour anchor `chat-thread` — RETIRED from the script when the tour was
+        // cut to five steps (a whole step spent saying the thread is a thread).
+        // Kept: still declared in TOUR_ANCHOR_IDS, so restoring that step is a
+        // copy-only change. Inert either way — an attribute the tour engine
+        // resolves with `[data-tour="chat-thread"]`, no behaviour, no layout.
         data-tour="chat-thread"
         className={cn(
           "w-full group/bubble",
@@ -768,7 +770,8 @@ function ArtifactChip({
     return (
       <Button
         size="sm"
-        // Tour anchor (Act 1, step 2) — the «افتح التحليل القانوني WI-1» CTA
+        // Tour anchor `artifact-chip` (step 1) — the «افتح التحليل القانوني
+        // WI-1» CTA
         // the user is asked to click. Inert attribute; both branches of this
         // chip carry it, and only one ever renders per message.
         data-tour="artifact-chip"

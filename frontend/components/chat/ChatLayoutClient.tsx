@@ -189,7 +189,7 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
       {/* first-run «اتعرف على ريحان» tour — self-gating, renders nothing once seen */}
       <OnboardingDialog />
 
-      {/* «جولة المخرجات» — the 13-step coach-mark tour over the shared demo
+      {/* «جولة المخرجات» — the 5-step coach-mark tour over the shared demo
           conversation. Also self-gating and also renders null when closed, so
           it mounts unconditionally beside its sibling above.
 

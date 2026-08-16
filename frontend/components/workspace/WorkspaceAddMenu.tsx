@@ -119,7 +119,9 @@ export function WorkspaceAddMenu({
             <Button
               variant="outline"
               size="sm"
-              // Tour anchor (Act 5, step 13) — «كل مخرجات المحادثة تتجمّع هنا».
+              // Tour anchor `workspace-add` (last step) — «كل مخرجات المحادثة
+              // تتجمّع هنا». The step's `onEnter` closes the open WI first, so
+              // this button is on screen by the time it is spotlighted.
               data-tour="workspace-add"
               className="w-full justify-center gap-2 h-9 rounded-full"
               aria-label="إضافة عنصر"

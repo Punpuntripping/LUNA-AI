@@ -7,44 +7,56 @@
  * REGISTER (deliberate): the reader already uses ChatGPT/Claude fluently. The
  * composer, the bubbles, copy and regenerate are NOT explained anywhere here.
  * The only genuinely new machinery is the WI — the workspace item, its
- * references, and the library behind them — so Act 1 is two steps and Act 3 is
- * five.
+ * references, and the library behind them.
  *
- * DATA COUPLING (plan §10 trap 2): steps 6–10 assume the demo conversation's
+ * SCOPE — FIVE steps, one per idea (owner decision 2026-08-15; cut down from
+ * thirteen). What survived is the chain a ChatGPT user has never seen: the
+ * answer is a snippet of a bigger مخرج · the مخرج itself · its numbers are real
+ * references · the source text behind a number · the workspace they collect in.
+ * What was cut is either self-evident on screen or folded into one line of a
+ * surviving step — the chat thread, the WI badge, the two pane exits, الإحالات,
+ * the source-card exits, the four reference domains, مشاركة/حفظ كمدونة. Their
+ * anchors are still emitted by the components and still listed below, so
+ * restoring any of them is a copy-only change inside this file.
+ *
+ * DATA COUPLING (plan §10 trap 2): steps 3–4 assume the demo conversation's
  * trimmed reference set, as left by migration 128 — **[6]** is an in-force
- * دليل with a library page and 5 إحالات (the Act 3 anchor), and **[9]** is the
- * compliance card that deliberately lacks the library button. Re-trim the
+ * دليل with a library page and 5 إحالات (the Act 3 anchor). Re-trim the
  * reference set and this copy starts lying.
  *
- * ⚠ THOSE TWO NUMBERS ARE HARDCODED IN EIGHT PLACES. Migration 128 renumbered
- * the set (it dropped a draft-status نظام that migration 127 had left at [3]),
- * and every one of these had to move together:
+ * ⚠ THAT NUMBER IS HARDCODED IN FIVE PLACES. Migration 128 renumbered the set
+ * (it dropped a draft-status نظام that migration 127 had left at [3]), and
+ * every one of these has to move together:
  *   this file  — TOUR_ANCHOR_IDS · the step `key` · `anchors` · `cta` text ·
  *                `fallbackClick` · the `TourStoreBeat` union member
  *   TourOverlay — the `case` label and the `focusedReferenceN === N` compare
  * The SQL side is what actually catches a mismatch: 128's verification block
- * asserts [6] is `regulations` and [9] is `compliance` and aborts otherwise.
- * If these move a third time, collapse them into one exported constant first.
+ * asserts [6] is `regulations` and aborts otherwise. If it moves a third time,
+ * collapse it into one exported constant first.
  */
 
 // ---------------------------------------------------------------------------
 // Anchors — the `data-tour="…"` contract with the real components.
+//
+// The five-step script uses only the ones marked LIVE. The rest are kept both
+// because the components still emit them and because they are what a restored
+// step would point at; an unused id costs nothing at runtime.
 // ---------------------------------------------------------------------------
 
 export const TOUR_ANCHOR_IDS = [
   "chat-thread",
-  "artifact-chip",
-  "citation-6",
-  "wi-body",
+  "artifact-chip", // LIVE — step 1
+  "citation-6", // LIVE — step 3
+  "wi-body", // LIVE — step 2
   "wi-badge",
   "pane-close",
   "pane-back",
   "ref-card-9",
-  "source-dialog",
+  "source-dialog", // LIVE — step 4
   "ref-crossrefs",
   "ref-exits",
   "wi-action-bar",
-  "workspace-add",
+  "workspace-add", // LIVE — step 5
 ] as const;
 
 export type TourAnchorId = (typeof TOUR_ANCHOR_IDS)[number];
@@ -62,7 +74,11 @@ export type TourAnchorId = (typeof TOUR_ANCHOR_IDS)[number];
 export type TourStoreBeat =
   /** `workspaceByConversation[id].openItemId` became non-null. */
   | "wi-open"
-  /** `openItemId` became null again (back to the item list). */
+  /**
+   * `openItemId` became null again (back to the item list). Unused by the
+   * five-step script — the last step performs that transition itself through
+   * `onEnter: "return-to-item-list"` instead of asking for the click.
+   */
   | "wi-closed"
   /** `focusedReferenceN === 6` — the Act 3 anchor (migration 128). */
   | "reference-6"
@@ -83,8 +99,14 @@ export type TourCondition =
   | { readonly kind: "store"; readonly beat: TourStoreBeat }
   | { readonly kind: "dom"; readonly beat: TourDomBeat };
 
-/** Side effect performed once, when a step becomes the active one. */
-export type TourEnterAction = "close-source-dialog";
+/**
+ * Side effect performed once, when a step becomes the active one.
+ *
+ * `return-to-item-list` dismisses the reveal dialog AND closes the open WI, so
+ * the workspace step can land on the item list without spending a whole step
+ * asking the user to click «←» twice.
+ */
+export type TourEnterAction = "close-source-dialog" | "return-to-item-list";
 
 /**
  * Which surface the step's anchors live on. Below `md` the workspace is a
@@ -127,64 +149,49 @@ export interface TourStep {
 }
 
 // ---------------------------------------------------------------------------
-// The script — 13 steps across 5 acts
+// The script — 5 steps across 4 acts
+//
+// Two of the five ask for a click (open the مخرج · open a reference); the rest
+// read and advance on «التالي». Anything a step could only *say* rather than
+// *show* was folded into the body of a step that shows something.
 // ---------------------------------------------------------------------------
 
 const ACT_CHAT = "طبقة المحادثة";
 const ACT_WI = "طبقة المخرج";
 const ACT_REFS = "المراجع";
-const ACT_PUBLISH = "النشر";
 const ACT_WORKSPACE = "مساحة العمل";
 
 export const TOUR_STEPS: readonly TourStep[] = [
-  // --- Act 1 — طبقة المحادثة (2) ------------------------------------------
-  {
-    key: "chat-thread",
-    act: ACT_CHAT,
-    anchors: ["chat-thread"],
-    stage: "chat",
-    title: "المحادثة كما تتوقعها",
-    body: "تسأل ويجيب — لا جديد هنا. الجديد يبدأ من السطر الذي تحت الرد مباشرة.",
-  },
+  // --- Act 1 — طبقة المحادثة (1) ------------------------------------------
+  // The old opener spotlighted the thread itself to say «لا جديد هنا» — a whole
+  // step spent on the one surface the reader already knows. Cut; this step now
+  // carries its point in its first sentence.
   {
     key: "artifact-chip",
     act: ACT_CHAT,
     anchors: ["artifact-chip"],
     stage: "chat",
     title: "الرد مقتطف — والتحليل كامل هنا",
-    body: "ما قرأته بالأعلى ملخص مختصر. التحليل الكامل، بمصادره ومراجعه، محفوظ كبطاقة مستقلة نسمّيها «مخرج».",
+    body: "المحادثة تعرف كيف تستخدمها. الجديد يبدأ من هنا: ما قرأته بالأعلى ملخص مختصر، والتحليل الكامل بمصادره ومراجعه محفوظ كبطاقة مستقلة نسمّيها «مخرج».",
     cta: "جرّب اضغط الزر.",
     advanceWhen: [{ kind: "store", beat: "wi-open" }],
     fallbackClick: "artifact-chip",
   },
 
-  // --- Act 2 — طبقة المخرج (3) --------------------------------------------
+  // --- Act 2 — طبقة المخرج (1) --------------------------------------------
+  // Absorbed here: the WI-1 badge step (one sentence) and the two-pane-exits
+  // step (dropped — «←» and «X» are self-evident, and the last step returns to
+  // the list by itself).
   {
     key: "wi-body",
     act: ACT_WI,
     anchors: ["wi-body"],
     stage: "workspace",
     title: "هذا هو المخرج",
-    body: "أطول من الرد، ومقسوم بعناوين، وكل رقم بين قوسين داخل النص مرجع حقيقي تستطيع فتحه.",
-  },
-  {
-    key: "wi-badge",
-    act: ACT_WI,
-    anchors: ["wi-badge"],
-    stage: "workspace",
-    title: "لكل مخرج اسم: WI-1",
-    body: "هذا اسم البطاقة، وريحان ينادي عليها بنفس الاسم داخل المحادثة. قل له «اختصر WI-1» وهو يعرف أي بطاقة تقصد.",
-  },
-  {
-    key: "pane-exits",
-    act: ACT_WI,
-    anchors: ["pane-back", "pane-close"],
-    stage: "workspace",
-    title: "طريقتان للرجوع",
-    body: "«←» يرجّعك لقائمة المخرجات · «X» يقفل اللوحة ويعيدك إلى المحادثة.",
+    body: "أطول من الرد، ومقسوم بعناوين، وكل رقم بين قوسين داخل النص مرجع حقيقي تستطيع فتحه. ولكل مخرج اسم — WI-1 — وريحان ينادي عليه بنفس الاسم داخل المحادثة.",
   },
 
-  // --- Act 3 — المراجع (5) ------------------------------------------------
+  // --- Act 3 — المراجع (2) ------------------------------------------------
   {
     key: "citation-6",
     act: ACT_REFS,
@@ -209,68 +216,18 @@ export const TOUR_STEPS: readonly TourStep[] = [
     anchors: ["source-dialog"],
     stage: "workspace",
     title: "المصدر نفسه، بلا إعادة صياغة",
-    body: "هنا يظهر القسم الذي استرجعه ريحان من النظام كما هو. وإذا كان المرجع حكمًا قضائيًا، يظهر ملخّص الحكم.",
-  },
-  {
-    key: "crossrefs",
-    act: ACT_REFS,
-    anchors: ["ref-crossrefs"],
-    stage: "workspace",
-    title: "الإحالات",
-    body: "المواد الأخرى التي يشير إليها هذا النص، مجموعة لك دون بحث إضافي.",
-    cta: "جرّب افتحها.",
-    advanceWhen: [{ kind: "dom", beat: "crossrefs-expanded" }],
-    fallbackClick: "ref-crossrefs",
-  },
-  {
-    key: "source-exits",
-    act: ACT_REFS,
-    anchors: ["ref-exits"],
-    stage: "workspace",
-    title: "من أين تكمل القراءة",
-    // The in-app button's label is derived from the document type
-    // (referenceDefiniteType in ReferencePanel: النظام / اللائحة / الدليل /
-    // الحكم …), so this line must NOT name one — the Act 3 anchor is a دليل and
-    // the old copy said «فتح النظام في ريحان», which the screen contradicted.
-    // The blanket «كل مرجع موثّق بمصدره الرسمي» is gone too: one case card in
-    // the fixture has no details_url, so it renders the library button alone.
-    body: "«فتح المصدر الرسمي» يأخذك لموقع الجهة المُصدِرة · وزر «فتح … في ريحان» يفتح الوثيقة كاملة داخل مكتبتنا — واسم الزر يتغيّر حسب نوع المرجع: نظام أو لائحة أو دليل أو حكم.",
-  },
-  {
-    key: "ref-domains",
-    act: ACT_REFS,
-    anchors: ["ref-card-9"],
-    stage: "workspace",
-    title: "أربعة أنواع من المصادر",
-    body: "نظام · قضية · تعميم · خدمة حكومية. كلها تُفتح داخل مكتبة ريحان، ما عدا الخدمات الحكومية — تبقى عند جهتها، ولهذا هذه البطاقة وحدها بلا زر المكتبة.",
-    // The card lives in the reference list UNDER the reveal dialog. Entering
-    // this step with the dialog still open would spotlight a covered node.
-    onEnter: "close-source-dialog",
+    // Absorbed here: الإحالات, the two exits, and the four source domains — as
+    // one sentence each, and deliberately WITHOUT naming a document type. The
+    // in-app button's label is derived from the document type (النظام /
+    // اللائحة / الدليل / الحكم — `referenceDefiniteType` in ReferencePanel), so
+    // naming one here would be contradicted by the screen.
+    body: "هنا يظهر القسم الذي استرجعه ريحان من النظام كما هو — وإذا كان المرجع حكمًا قضائيًا يظهر ملخّص الحكم. ومن البطاقة نفسها تفتح «الإحالات» — المواد الأخرى التي يشير إليها النص — أو تنتقل إلى المصدر الرسمي عند الجهة المُصدِرة، أو إلى الوثيقة كاملة داخل مكتبة ريحان.",
   },
 
-  // --- Act 4 — النشر (1) --------------------------------------------------
-  {
-    key: "publish",
-    act: ACT_PUBLISH,
-    anchors: ["wi-action-bar"],
-    stage: "workspace",
-    title: "شارك التحليل أو انشره",
-    body: "«مشاركة» تعطيك رابطًا يفتح هذا التحليل · «حفظ كمدونة» يحفظه في مدوناتك.",
-    note: "الزرّان معطّلان في المحادثة التجريبية — هنا نشرحهما فقط.",
-  },
-
-  // --- Act 5 — مساحة العمل (2) --------------------------------------------
-  {
-    key: "back-to-list",
-    act: ACT_WORKSPACE,
-    anchors: ["pane-back"],
-    stage: "workspace",
-    title: "ارجع لقائمة المخرجات",
-    body: "كل مخرجات المحادثة مجموعة في قائمة واحدة.",
-    cta: "جرّب اضغط «←».",
-    advanceWhen: [{ kind: "store", beat: "wi-closed" }],
-    fallbackClick: "pane-back",
-  },
+  // --- Act 4 — مساحة العمل (1) --------------------------------------------
+  // The old script spent a step asking the user to press «←» just to reach this
+  // one, and another on مشاركة/حفظ كمدونة — both disabled in the demo. The back
+  // trip is now an onEnter side effect and the publish step is gone.
   {
     key: "workspace-add",
     act: ACT_WORKSPACE,
@@ -278,6 +235,10 @@ export const TOUR_STEPS: readonly TourStep[] = [
     stage: "workspace",
     title: "مساحة العمل",
     body: "هنا تتجمّع مخرجات المحادثة كلها — نتائج البحث، المسودات، الملفات. ومن «+» تضيف ملاحظة أو ترفع ملفًا ليعمل عليه ريحان معك.",
+    // The «+» lives in the item LIST, under the open WI and under the reveal
+    // dialog Act 3 ended in. Entering this step has to undo both, or it
+    // spotlights a covered node.
+    onEnter: "return-to-item-list",
   },
 ] as const;
 
@@ -293,7 +254,7 @@ export const TOUR_UI = {
   skip: "تخطّي الجولة",
   next: "التالي",
   finish: "تمام، فهمت",
-  /** Rendered as «٣ / ١٣» style progress — Western digits, tabular. */
+  /** Rendered as «٣ / ٥» style progress — Western digits, tabular. */
   progress: (current: number, total: number) => `${current} / ${total}`,
   /**
    * Shown instead of a spotlight when the step's anchor is nowhere on screen
