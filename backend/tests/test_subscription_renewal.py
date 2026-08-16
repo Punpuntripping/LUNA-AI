@@ -409,7 +409,10 @@ class FakeSupabase:
                           "expires_at": new_expires}])
 
         if name == "stamp_usage_reset":
-            return _Rpc([{"action": "not_an_upgrade"}])
+            # 137: a renewal charge resets like any other paid purchase. This
+            # suite asserts on the renewal's plan/expiry bookkeeping, not on the
+            # meters, so the fake reports the branch without mutating anything.
+            return _Rpc([{"action": "reset"}])
 
         if name == "revoke_plan_grant":
             return _Rpc([{"action": "subtracted"}])

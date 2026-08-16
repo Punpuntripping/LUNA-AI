@@ -17,6 +17,11 @@ One call returns the whole quota picture, computed server-side:
     (never materialized — stored counters drift; that was the pre-079 Redis
     bug), so the gate, the dialog, and the operator view always agree. Redis
     is no longer on the quota path.
+  * RESET     → ``user_subscriptions.usage_reset_at``, stamped by any paid
+    purchase (137). Points and OCR windows count only calls after it; the
+    library period is anchored at GREATEST(started_at, usage_reset_at) so a new
+    ``period_key`` is minted and the spent unlocks stop matching. The clocks are
+    never moved — a purchase buys back the allowance, not a fresh calendar.
 
 Meters and windows:
 

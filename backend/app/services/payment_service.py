@@ -933,27 +933,29 @@ def _stamp_prior_snapshot(supabase: SupabaseClient, payment_id: str) -> Optional
 
 
 def _stamp_usage_reset(supabase: SupabaseClient, payment_id: str) -> None:
-    """``stamp_usage_reset(payment_id)`` (migration 131).
+    """``stamp_usage_reset(payment_id)`` (migration 131, widened by 137).
 
-    Zeroes the points already spent this cycle when a payment moved the user UP
-    the ladder, by stamping ``user_subscriptions.usage_reset_at`` — the windows
-    then sum only calls made after it. The clocks are untouched: the session
-    still expires at its original boundary, the user just walks in with 0 spent.
+    Zeroes everything the user has already consumed this cycle — points, OCR
+    pages AND library unlocks — by stamping ``user_subscriptions.usage_reset_at``
+    from the payment's ``paid_at``. The windows then count only what happened
+    after it. The clocks are untouched: the session still expires at its original
+    boundary, the user just walks in with 0 spent.
 
     **Runs AFTER ``grant_plan``**, deliberately: a reset that fails must never
     cost the customer the plan they paid for. The reverse order would put a
     convenience feature in front of the money path.
 
-    The RPC decides FOR ITSELF whether this was a rank increase (it compares
-    ``plans.price_sar`` of the new and prior plans, and stamps ``paid_at`` rather
-    than ``now()`` so a webhook + client-confirm double-run writes the identical
-    value). Python deliberately does NOT re-check ``PLAN_RANK`` here — two copies
-    of that decision would be one too many, and the SQL side is the one holding
-    the row.
+    **ANY paid purchase resets** — upgrade, renewal, or re-purchase after a
+    lapse. 131 originally fired only on a rank increase; on 2026-08-16 that left
+    a customer who paid twice in eight minutes still blocked, because a lapsed
+    subscription made her purchase read as a downgrade and a plain renewal never
+    qualified at all. 137 removed the price comparison, so there is no longer any
+    decision for Python to duplicate — this call is unconditional and the RPC
+    self-guards on ``paid_at``.
 
-    Never raises into the caller, and tolerates the RPC not existing yet (131 is
-    unapplied): the worst case is a user who keeps their pre-upgrade usage until
-    the window rolls off on its own, which is simply today's behaviour.
+    Never raises into the caller, and tolerates the RPC not existing yet: the
+    worst case is a user who keeps their pre-purchase usage until the window
+    rolls off on its own, which is simply the pre-131 behaviour.
     """
     try:
         supabase.rpc("stamp_usage_reset", {"p_payment_id": payment_id}).execute()
@@ -1755,10 +1757,10 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         _grant_plan, supabase, row["user_id"], row["plan_id"], payment_id
     )
 
-    # …and LAST: an upgrade zeroes the points already spent this cycle, so the
-    # user is unblocked the moment they pay instead of buying a bigger cap they
-    # are still sitting on top of. Non-fatal by design and self-guarding inside
-    # the RPC (no-op unless the new plan is priced above the prior one) — see
+    # …and LAST: the purchase zeroes points, OCR pages and library unlocks (137),
+    # so the user is unblocked the moment they pay instead of buying a bigger cap
+    # they are still sitting on top of. Fires on EVERY paid purchase, renewals
+    # included. Non-fatal by design and self-guarding inside the RPC — see
     # _stamp_usage_reset.
     await run_db(_stamp_usage_reset, supabase, payment_id)
 

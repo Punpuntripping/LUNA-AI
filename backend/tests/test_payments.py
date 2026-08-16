@@ -288,11 +288,12 @@ class FakeSupabase:
                           "expires_at": None, "action": action}])
 
         if name == "stamp_usage_reset":
-            # Mirrors migration 131. Three things the real RPC does that this
+            # Mirrors migration 137. Three things the real RPC does that this
             # fake must too, or a test here will pass over a bug there:
-            #   * rank is `plans.price_sar` — a NULL price on EITHER side is
-            #     rank-less (free / marketing_* / dev) and never resets, which
-            #     is why a free→basic purchase leaves usage_reset_at alone.
+            #   * EVERY paid purchase resets — upgrade, renewal, or re-purchase
+            #     after a lapse. 131 gated this on a price increase and that is
+            #     what left a renewing customer blocked on 2026-08-16; there is
+            #     no price comparison left to mirror.
             #   * the stamp is the payment's `paid_at`, never `now()`, so the
             #     replayed paid path (webhook + /verify) writes the identical
             #     value instead of silently erasing points spent in between.
@@ -300,25 +301,15 @@ class FakeSupabase:
             #     older payment cannot rewind a newer reset.
             if row is None:
                 return _Rpc([{"action": "payment_not_found"}])
-
-            def _price(plan_id):
-                plan = next(
-                    (p for p in self.tables["plans"] if p.get("plan_id") == plan_id),
-                    None,
-                )
-                raw = plan.get("price_sar") if plan else None
-                return float(raw) if raw is not None else None
-
-            new_price = _price(row.get("plan_id"))
-            prior_price = _price(row.get("prior_plan_id"))
-            if new_price is None or prior_price is None or new_price <= prior_price:
-                return _Rpc([{"action": "not_an_upgrade"}])
-            subs = self.tables.get("user_subscriptions") or []
             stamp = row.get("paid_at")
-            if subs and stamp:
-                prev = subs[0].get("usage_reset_at")
-                if prev is None or stamp > prev:
-                    subs[0]["usage_reset_at"] = stamp
+            if not stamp:
+                return _Rpc([{"action": "not_paid"}])
+            subs = self.tables.get("user_subscriptions") or []
+            if not subs:
+                return _Rpc([{"action": "no_subscription"}])
+            prev = subs[0].get("usage_reset_at")
+            if prev is None or stamp > prev:
+                subs[0]["usage_reset_at"] = stamp
             return _Rpc([{"action": "reset"}])
 
         raise AssertionError(f"unexpected rpc {name}")
@@ -657,6 +648,62 @@ def test_paid_path_stamps_snapshot_before_grant(keys, monkeypatch):
     assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
     row = db.tables["payment_transactions"][0]
     assert row["prior_plan_id"] == "pro"      # what a refund would restore
+
+
+def test_renewal_of_the_same_plan_resets_usage(keys, monkeypatch):
+    """137's headline change, and the one 131 got wrong.
+
+    A renewal is the most common paid event in the product, and under 131 it was
+    the one that never reset: 113 writes prior_plan_id NULL for a same-plan
+    restack, NULL prior price read as `not_an_upgrade`, and the customer walked
+    into their new cycle still carrying last cycle's spend. `usage_reset_at` MUST
+    move to paid_at here.
+    """
+    db = FakeSupabase(sub("pro", source="payment", days_left=3))
+    pid = checkout(db, "pro")["payment_id"]
+    patch_fetch(monkeypatch, moyasar_payment(pid))
+
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+    paid_at = db.tables["payment_transactions"][0]["paid_at"]
+    assert db.tables["user_subscriptions"][0]["usage_reset_at"] == paid_at
+
+
+def test_purchase_after_a_lapsed_higher_plan_resets_usage(keys, monkeypatch):
+    """The 2026-08-16 incident, as a test.
+
+    Her subscription row still said `max` — expired, so she was being enforced as
+    `free` — and 113 snapshots plan_id RAW, with no expiry check. Under 131's rank
+    gate her `basic` purchase therefore read as max→basic, a downgrade, and reset
+    nothing: she paid 49.90 and was blocked again four minutes later on the same
+    window. 137 removed the comparison, so the raw-vs-effective mismatch in the
+    snapshot can no longer reach the meters.
+    """
+    db = FakeSupabase(sub("max", source="payment", days_left=-5))   # lapsed
+    pid = checkout(db, "basic")["payment_id"]
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=4990))
+
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+    row = db.tables["payment_transactions"][0]
+    assert row["prior_plan_id"] == "max"        # the snapshot still reads raw…
+    assert db.tables["user_subscriptions"][0]["usage_reset_at"] == row["paid_at"]
+
+
+def test_usage_reset_is_idempotent_by_value_across_both_paths(keys, monkeypatch):
+    """The trap 131 named and 137 keeps: the stamp is `paid_at`, never `now()`.
+
+    Webhook and /verify both drive the paid path by design. A `now()` stamp would
+    write a LATER floor on the replay and silently erase every point spent between
+    the two runs — usage the customer legitimately consumed on the plan they just
+    bought. Two runs, one value.
+    """
+    db = FakeSupabase(sub("free"))
+    pid = checkout(db, "pro")["payment_id"]
+    patch_fetch(monkeypatch, moyasar_payment(pid))
+
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+    first = db.tables["user_subscriptions"][0]["usage_reset_at"]
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+    assert db.tables["user_subscriptions"][0]["usage_reset_at"] == first
 
 
 def test_verify_is_idempotent(keys, monkeypatch):
