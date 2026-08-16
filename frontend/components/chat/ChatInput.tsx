@@ -19,6 +19,7 @@ import { useSidebarStore } from "@/stores/sidebar-store";
 import {
   DEMO_COMPOSER_CTA,
   DEMO_COMPOSER_HINT,
+  DEMO_DISABLED_HINT,
   useIsDemoConversation,
 } from "@/hooks/use-demo-conversation";
 import { FilePreview } from "@/components/chat/FilePreview";
@@ -665,10 +666,38 @@ export function ChatInput({
             column doesn't jump when the user opens the demo. */}
         <div className="mx-auto w-full max-w-3xl">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-border bg-muted/40 px-4 py-3">
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Sparkles className="h-4 w-4 shrink-0 text-primary" />
-              {DEMO_COMPOSER_HINT}
-            </p>
+            <div className="flex items-center gap-2">
+              {/* The composer «+», rendered here DISABLED and nowhere else on
+                  this screen.
+
+                  The demo replaces the whole composer with this bar, so the
+                  attachment «+» — the last step of «جولة المخرجات» and the one
+                  control that explains OCR — had nothing to point at. A twin of
+                  ComposerPlusMenu's trigger (same ghost/icon/h-10 shape, same
+                  aria-label) keeps the tour's finger on a real «+» in the real
+                  place, and reads as "greyed out here" rather than as a control
+                  the demo forgot to wire.
+
+                  `title` sits on the WRAPPER, not the button: browsers suppress
+                  pointer events on a disabled control, so its own tooltip would
+                  never surface — same trick as WorkspaceAddMenu. */}
+              <span title={DEMO_DISABLED_HINT} className="inline-flex">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  data-tour="composer-add"
+                  className="h-10 w-10 shrink-0"
+                  aria-label="إضافة إلى الرسالة"
+                  disabled
+                >
+                  <Plus className="h-5 w-5" />
+                </Button>
+              </span>
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+                {DEMO_COMPOSER_HINT}
+              </p>
+            </div>
             <Button
               size="sm"
               className="gap-1.5"

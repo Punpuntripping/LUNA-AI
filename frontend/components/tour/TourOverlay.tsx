@@ -65,10 +65,10 @@ const AUTO_START_ATTEMPTS = 14;
 const AUTO_START_INTERVAL_MS = 700;
 
 /**
- * Grace between dismissing the reveal dialog and closing the WI underneath it
- * (`onEnter: "return-to-item-list"`). Comfortably longer than the Radix close
- * animation, short enough that the last step's anchor is found well inside the
- * missing-anchor fuse.
+ * Grace between dismissing the reveal dialog and closing the workspace pane
+ * underneath it (`onEnter: "return-to-chat"`). Comfortably longer than the
+ * Radix close animation, short enough that the last step's anchor is found well
+ * inside the missing-anchor fuse.
  */
 const DIALOG_SETTLE_MS = 220;
 
@@ -264,25 +264,28 @@ function TourRunner() {
     step?.advanceWhen?.some((condition) => condition.kind === "dom") ?? false;
   const beats = useTourDomBeats(needsDomBeats);
 
-  // Step side effects. Act 3 ends inside the reveal dialog with a WI open on
-  // top of the item list, so the last step has to peel both layers off before
-  // it can point at the «+» underneath. Done here rather than as a step the
-  // user clicks through: navigating BACK is not a thing worth teaching.
+  // Step side effects. Act 3 ends inside the reveal dialog, inside an open WI,
+  // inside the workspace pane — and the last step points at the composer, which
+  // is behind all three. So it peels them off itself. Done here rather than as
+  // steps the user clicks through: navigating BACK is not worth teaching.
   useEffect(() => {
     if (!step?.onEnter) return;
     if (step.onEnter === "close-source-dialog") {
       dismissSourceDialog();
       return;
     }
-    // "return-to-item-list": dialog FIRST, then the item — and never in the
-    // same tick. The reveal dialog is a modal Radix layer that owns the body
-    // scroll lock; unmounting it by yanking its parent out mid-close is the
-    // classic way to strand `pointer-events: none` on <body> and freeze the
-    // app. One dismissal + one settle beat, then the WI.
+    // "return-to-chat": dialog FIRST, then the pane — and never in the same
+    // tick. The reveal dialog is a modal Radix layer that owns the body scroll
+    // lock; unmounting it by yanking its parent out mid-close is the classic
+    // way to strand `pointer-events: none` on <body> and freeze the app. One
+    // dismissal + one settle beat, then the workspace.
     dismissSourceDialog();
     const timerId = window.setTimeout(() => {
+      // `closeWorkspace`, not `closeWorkspaceItem`: the last step points at the
+      // composer, and below `md` the pane is a full-viewport overlay — closing
+      // only the open item would leave the item LIST covering the anchor.
       if (conversationId) {
-        useChatStore.getState().closeWorkspaceItem(conversationId);
+        useChatStore.getState().closeWorkspace(conversationId);
       }
     }, DIALOG_SETTLE_MS);
     return () => window.clearTimeout(timerId);

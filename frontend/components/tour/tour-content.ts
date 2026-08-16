@@ -12,12 +12,14 @@
  * SCOPE — FIVE steps, one per idea (owner decision 2026-08-15; cut down from
  * thirteen). What survived is the chain a ChatGPT user has never seen: the
  * answer is a snippet of a bigger مخرج · the مخرج itself · its numbers are real
- * references · the source text behind a number · the workspace they collect in.
+ * references · the source text behind a number · and — the step that closes the
+ * tour — that he can hand ريحان a scanned document and be read accurately.
  * What was cut is either self-evident on screen or folded into one line of a
  * surviving step — the chat thread, the WI badge, the two pane exits, الإحالات,
- * the source-card exits, the four reference domains, مشاركة/حفظ كمدونة. Their
- * anchors are still emitted by the components and still listed below, so
- * restoring any of them is a copy-only change inside this file.
+ * the source-card exits, the four reference domains, مشاركة/حفظ كمدونة, and
+ * مساحة العمل (visible throughout; it needs no step of its own). Their anchors
+ * are still emitted by the components and still listed below, so restoring any
+ * of them is a copy-only change inside this file.
  *
  * DATA COUPLING (plan §10 trap 2): steps 3–4 assume the demo conversation's
  * trimmed reference set, as left by migration 128 — **[6]** is an in-force
@@ -56,7 +58,17 @@ export const TOUR_ANCHOR_IDS = [
   "ref-crossrefs",
   "ref-exits",
   "wi-action-bar",
-  "workspace-add", // LIVE — step 5
+  "workspace-add",
+  /**
+   * LIVE — step 5. The composer's «+».
+   *
+   * On the demo conversation this resolves to the DISABLED twin that
+   * `ChatInput`'s demo branch renders in place of the real composer (the real
+   * `ComposerPlusMenu` trigger is not on this screen at all). Both carry the
+   * attribute, so the step also works if the tour is reopened from the sidebar
+   * inside an ordinary conversation.
+   */
+  "composer-add",
 ] as const;
 
 export type TourAnchorId = (typeof TOUR_ANCHOR_IDS)[number];
@@ -76,8 +88,8 @@ export type TourStoreBeat =
   | "wi-open"
   /**
    * `openItemId` became null again (back to the item list). Unused by the
-   * five-step script — the last step performs that transition itself through
-   * `onEnter: "return-to-item-list"` instead of asking for the click.
+   * five-step script — the last step leaves the workspace entirely, through
+   * `onEnter: "return-to-chat"`, instead of asking for the click.
    */
   | "wi-closed"
   /** `focusedReferenceN === 6` — the Act 3 anchor (migration 128). */
@@ -102,11 +114,12 @@ export type TourCondition =
 /**
  * Side effect performed once, when a step becomes the active one.
  *
- * `return-to-item-list` dismisses the reveal dialog AND closes the open WI, so
- * the workspace step can land on the item list without spending a whole step
- * asking the user to click «←» twice.
+ * `return-to-chat` dismisses the reveal dialog AND closes the whole workspace
+ * pane, so the last step lands on the composer without spending steps asking
+ * the user to click «←» then «X». The pane, not just the open item: the
+ * composer is a chat-surface anchor and the pane covers the chat below `md`.
  */
-export type TourEnterAction = "close-source-dialog" | "return-to-item-list";
+export type TourEnterAction = "close-source-dialog" | "return-to-chat";
 
 /**
  * Which surface the step's anchors live on. Below `md` the workspace is a
@@ -159,7 +172,7 @@ export interface TourStep {
 const ACT_CHAT = "طبقة المحادثة";
 const ACT_WI = "طبقة المخرج";
 const ACT_REFS = "المراجع";
-const ACT_WORKSPACE = "مساحة العمل";
+const ACT_ATTACHMENTS = "المرفقات";
 
 export const TOUR_STEPS: readonly TourStep[] = [
   // --- Act 1 — طبقة المحادثة (1) ------------------------------------------
@@ -224,21 +237,24 @@ export const TOUR_STEPS: readonly TourStep[] = [
     body: "هنا يظهر القسم الذي استرجعه ريحان من النظام كما هو — وإذا كان المرجع حكمًا قضائيًا يظهر ملخّص الحكم. ومن البطاقة نفسها تفتح «الإحالات» — المواد الأخرى التي يشير إليها النص — أو تنتقل إلى المصدر الرسمي عند الجهة المُصدِرة، أو إلى الوثيقة كاملة داخل مكتبة ريحان.",
   },
 
-  // --- Act 4 — مساحة العمل (1) --------------------------------------------
-  // The old script spent a step asking the user to press «←» just to reach this
-  // one, and another on مشاركة/حفظ كمدونة — both disabled in the demo. The back
-  // trip is now an onEnter side effect and the publish step is gone.
+  // --- Act 4 — المرفقات (1) -----------------------------------------------
+  // The tour ends on the composer, not on مساحة العمل (owner decision
+  // 2026-08-16): what a lawyer needs to know is that he can hand ريحان a
+  // scanned contract and be read accurately. The workspace collects the output
+  // and is visible the whole time; extraction quality is invisible until said.
   {
-    key: "workspace-add",
-    act: ACT_WORKSPACE,
-    anchors: ["workspace-add"],
-    stage: "workspace",
-    title: "مساحة العمل",
-    body: "هنا تتجمّع مخرجات المحادثة كلها — نتائج البحث، المسودات، الملفات. ومن «+» تضيف ملاحظة أو ترفع ملفًا ليعمل عليه ريحان معك.",
-    // The «+» lives in the item LIST, under the open WI and under the reveal
-    // dialog Act 3 ended in. Entering this step has to undo both, or it
-    // spotlights a covered node.
-    onEnter: "return-to-item-list",
+    key: "composer-add",
+    act: ACT_ATTACHMENTS,
+    anchors: ["composer-add"],
+    // The composer is a CHAT-surface anchor, which is why this step's onEnter
+    // closes the workspace pane rather than just the open item: below `md` the
+    // pane is a full-viewport overlay and would hide the very thing being
+    // spotlighted.
+    stage: "chat",
+    title: "أرفق ملفًا — وريحان يقرأه",
+    body: "من «+» ترفق عقدًا أو مستندًا أو صورة. المرفق يمرّ على تقنية استخراج تستخرج النصوص بدقة عالية — حتى من المستندات الممسوحة ضوئيًا — فيقرأ ريحان محتواه ويعمل عليه معك داخل المحادثة.",
+    note: "معطّل في المحادثة التجريبية — متاح في محادثاتك.",
+    onEnter: "return-to-chat",
   },
 ] as const;
 

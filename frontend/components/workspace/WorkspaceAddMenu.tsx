@@ -119,9 +119,11 @@ export function WorkspaceAddMenu({
             <Button
               variant="outline"
               size="sm"
-              // Tour anchor `workspace-add` (last step) — «كل مخرجات المحادثة
-              // تتجمّع هنا». The step's `onEnter` closes the open WI first, so
-              // this button is on screen by the time it is spotlighted.
+              // Tour anchor `workspace-add` — RETIRED. The tour's last step now
+              // points at the COMPOSER's «+» (`composer-add`) and talks about
+              // attachments + extraction accuracy instead. Attribute kept: it is
+              // still in TOUR_ANCHOR_IDS and still what a restored مساحة العمل
+              // step would frame.
               data-tour="workspace-add"
               className="w-full justify-center gap-2 h-9 rounded-full"
               aria-label="إضافة عنصر"
