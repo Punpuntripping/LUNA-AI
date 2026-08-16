@@ -1,7 +1,8 @@
 # محادثة تجريبية + جولة المخرجات — Product Tour Plan
 
-**Status:** built · **Authored:** 2026-08-10 · **Amended:** 2026-08-15 — the script was cut
-from 13 steps to **5** (see §6 · Amendment). Everything else below shipped as written.
+**Status:** built · **Authored:** 2026-08-10 · **Amended:** 2026-08-16 — the script was cut
+from 13 steps to **5**, and now ends on the attachment «+» rather than مساحة العمل (see
+§6 · Amendment). Everything else below shipped as written.
 
 A guided, click-through product tour that teaches the one thing a ChatGPT/Claude-fluent
 user has never seen: **the workspace, the WI, and the reference layer.** It runs on a
@@ -282,15 +283,26 @@ wording lives in **`components/tour/tour-content.ts`** — one file, like
 > | 2 | `wi-body` | this is the مخرج; every `[n]` is a real reference; it is named WI-1 | التالي |
 > | 3 | `citation-6` | a number opens the source | click → `reference-6` \| `source-dialog-open` |
 > | 4 | `source-dialog` | the source text verbatim; الإحالات + both exits described here | التالي |
-> | 5 | `workspace-add` | everything collects in مساحة العمل; «+» adds notes/files | تمام، فهمت |
+> | 5 | `composer-add` | attach a file — high-accuracy extraction reads it, scans included | تمام، فهمت |
 >
 > **Cut, and where their content went:** `chat-thread` (dropped — a step to say the thread
 > is a thread) · `wi-badge` (one line inside step 2) · `pane-exits` and `back-to-list`
-> (dropped; step 5 returns to the list itself via a new `onEnter: "return-to-item-list"`
-> action, which dismisses the reveal dialog then calls `closeWorkspaceItem`) ·
+> (dropped; step 5 leaves the workspace itself via a new `onEnter: "return-to-chat"`
+> action, which dismisses the reveal dialog then calls `closeWorkspace` 220 ms later) ·
 > `ref-crossrefs`, `source-exits`, `ref-domains` (one sentence each inside step 4) ·
 > `publish` (dropped — both buttons are disabled in the demo, so it could only describe
-> them).
+> them) · `workspace-add` / مساحة العمل (dropped — it is on screen for four of the five
+> steps and needs no step of its own).
+>
+> **Step 5 needed a new control (2026-08-16).** §4.2's demo treatment replaces the whole
+> composer with the read-only hint bar, so `ComposerPlusMenu` — the «+» this step is
+> about — is not on the demo screen at all. The bar now renders a **disabled twin** of
+> that trigger carrying `data-tour="composer-add"`: same `variant="ghost" size="icon"
+> h-10 w-10` shape, same `aria-label="إضافة إلى الرسالة"`, `title={DEMO_DISABLED_HINT}`
+> on the wrapper `<span>` (a disabled button suppresses its own pointer events, so its
+> tooltip never fires — same trick as `WorkspaceAddMenu`). The real trigger keeps the
+> attribute too, so the step survives the tour being reopened from the sidebar inside an
+> ordinary conversation.
 >
 > The engine, the acts table below, and every `data-tour` attribute are unchanged: the
 > retired anchors are still emitted and still in `TOUR_ANCHOR_IDS`, so restoring any step
