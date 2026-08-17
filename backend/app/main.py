@@ -41,6 +41,7 @@ from shared.observability import (
     configure_logfire,
     instrument_fastapi_app,
     observability_status,
+    run_logfire_token_probe_once,
 )
 from backend.app.services.account_purge_service import purge_expired_accounts
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
@@ -124,6 +125,16 @@ async def lifespan(app: FastAPI):
     #     swallows everything internally and no-ops when unconfigured; the task
     #     reference is kept only to prevent GC.
     app.state.smtp_probe_task = asyncio.create_task(run_smtp_probe_once())
+
+    # 1e. LOGFIRE_TOKEN validity probe — one-shot, fire-and-forget, ≤5s. Span
+    #     export is async and non-fatal, so a revoked token looks IDENTICAL to
+    #     a healthy deploy from the outside: configure() succeeds, the boot
+    #     span "emits", and the 401 only ever appears on the exporter's
+    #     background thread. That is how telemetry stayed dark for six days.
+    #     This authenticates once per boot so /api/v1/_meta/observability can
+    #     report `telemetry_ok` honestly. Same fire-and-forget contract as the
+    #     probes above: never blocks readiness, never raises.
+    app.state.logfire_probe_task = asyncio.create_task(run_logfire_token_probe_once())
 
     # 2. Redis — supervised. app.state.redis is the singleton client when
     #    healthy, None when down. A background task owns the transitions, so
@@ -634,6 +645,18 @@ def create_app() -> FastAPI:
         blog_router,
         prefix="/api/v1",
         tags=["blog"],
+    )
+
+    # Case-B library carrier (simple_search_family.md §8 / §12a C3) — carries a
+    # public library page into a conversation as a kind='references' item.
+    # AUTHED; the router declares no prefix of its own, so it is mounted under
+    # /api/v1 the same way blog/workspace are.
+    from backend.app.api.library_items import router as library_items_router
+
+    application.include_router(
+        library_items_router,
+        prefix="/api/v1",
+        tags=["library-items"],
     )
 
     # Public SEO library router (sitemap feed — Phase 0). The public GET

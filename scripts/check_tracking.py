@@ -71,6 +71,18 @@ def _check_observability(base: str) -> tuple[bool, str]:
     token = body.get("token_present")
     if env.lower() in {"production", "prod"} and not token:
         problems.append("PROD without LOGFIRE_TOKEN")
+    # A PRESENT token is not an ACCEPTED token. The backend probes /v1/info
+    # once per boot; `rejected` means Logfire refused it, so every span is
+    # being dropped even though everything above reads healthy. This is the
+    # check that would have caught the 2026-08-11 blackout on day one.
+    probe = body.get("token_probe") or {}
+    if probe.get("reason") == "rejected":
+        problems.append(
+            f"LOGFIRE_TOKEN REJECTED by {probe.get('base_url')} "
+            f"({probe.get('status_code')}) — telemetry is DARK, reissue the token"
+        )
+    elif token and probe.get("attempted") and not probe.get("ok"):
+        problems.append(f"LOGFIRE_TOKEN unverified ({probe.get('reason')})")
     instrumented = body.get("instrumented") or {}
     if not instrumented.get("httpx"):
         problems.append("httpx not instrumented (LLM call spans will be missing)")
@@ -78,6 +90,7 @@ def _check_observability(base: str) -> tuple[bool, str]:
         problems.append("pydantic_ai not instrumented (agent spans will be missing)")
     summary = (
         f"env={env} token={'yes' if token else 'no'} "
+        f"telemetry_ok={body.get('telemetry_ok')} "
         f"instrumented={','.join(k for k,v in instrumented.items() if v) or 'none'}"
     )
     if problems:

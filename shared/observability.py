@@ -120,6 +120,127 @@ def smtp_probe_result() -> dict[str, Any]:
     return dict(_SMTP_PROBE)
 
 
+# ── LOGFIRE_TOKEN validity probe ──────────────────────────────────────────
+# Why this exists: span export is asynchronous and non-fatal. When the token
+# is revoked, `logfire.configure()` still succeeds, `logfire.info()` still
+# returns cleanly, and the batch exporter fails in a background thread with
+# `Failed to export span batch code: 401`. So `configured`, `token_present`
+# and `boot_span_emitted` are ALL true while not a single span reaches
+# Logfire — which is exactly how prod ran dark from 2026-08-11 to 08-17
+# without this endpoint noticing. Presence of a token is not validity of a
+# token; only an authenticated round-trip can tell them apart.
+#
+# Same one-shot, fire-and-forget, cached shape as the SMTP probe above, and
+# for the same reason: /api/v1/_meta/observability is public, so the endpoint
+# must only ever READ this. See run_logfire_token_probe_once().
+_TOKEN_PROBE: dict[str, Any] = {"attempted": False, "reason": "not_run"}
+
+_PROBE_TIMEOUT_S = 5.0
+
+# Region is encoded in the write-token prefix; the SDK routes on it the same
+# way. An explicit LOGFIRE_BASE_URL (self-hosted) always wins.
+_REGION_BASE_URLS = {
+    "eu": "https://logfire-eu.pydantic.dev",
+    "us": "https://logfire-us.pydantic.dev",
+}
+_DEFAULT_BASE_URL = "https://logfire-api.pydantic.dev"
+
+
+def _logfire_base_url(token: str) -> str:
+    explicit = (os.getenv("LOGFIRE_BASE_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    for region, url in _REGION_BASE_URLS.items():
+        if token.startswith(f"pylf_v1_{region}_"):
+            return url
+    return _DEFAULT_BASE_URL
+
+
+def token_probe_result() -> dict[str, Any]:
+    """Current LOGFIRE_TOKEN probe outcome. A copy — callers cannot mutate."""
+    return dict(_TOKEN_PROBE)
+
+
+async def run_logfire_token_probe_once() -> dict[str, Any]:
+    """One-shot check that LOGFIRE_TOKEN is actually accepted. Never raises.
+
+    Fire-and-forget from the lifespan in ``backend/app/main.py``; the result
+    surfaces at ``/api/v1/_meta/observability`` under ``token_probe`` and
+    collapses into the top-level ``telemetry_ok``.
+
+    ``rejected`` (401/403) is the load-bearing outcome: it is definitive proof
+    the token is revoked/wrong, as opposed to ``unreachable``, which may just
+    be a transient network fault and must not be read as a bad token.
+
+    Deliberately does NOT raise or block boot. A revoked observability token
+    must never take the API down — the escalation path is the loud ERROR log
+    plus ``scripts/check_tracking.py``, not a crash loop on every redeploy.
+    """
+    global _TOKEN_PROBE
+    if _TOKEN_PROBE.get("attempted"):
+        return token_probe_result()
+
+    token = (os.getenv("LOGFIRE_TOKEN") or "").strip()
+    if not token:
+        _TOKEN_PROBE = {"attempted": False, "reason": "no_token"}
+        return token_probe_result()
+
+    base = _logfire_base_url(token)
+    result: dict[str, Any]
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S) as client:
+            resp = await client.get(f"{base}/v1/info", headers={"Authorization": token})
+        if resp.status_code == 200:
+            result = {"attempted": True, "ok": True, "status_code": 200, "base_url": base}
+        elif resp.status_code in (401, 403):
+            result = {
+                "attempted": True,
+                "ok": False,
+                "reason": "rejected",
+                "status_code": resp.status_code,
+                "base_url": base,
+            }
+        else:
+            result = {
+                "attempted": True,
+                "ok": False,
+                "reason": f"http_{resp.status_code}",
+                "status_code": resp.status_code,
+                "base_url": base,
+            }
+    except Exception as exc:  # noqa: BLE001 — probe must never break startup
+        result = {
+            "attempted": True,
+            "ok": False,
+            "reason": "unreachable",
+            "error_class": type(exc).__name__,
+            "base_url": base,
+        }
+
+    _TOKEN_PROBE = result
+
+    if result.get("ok"):
+        logger.info("LOGFIRE_TOKEN accepted by %s — telemetry is live", base)
+    elif result.get("reason") == "rejected":
+        # ERROR, not warning, and spelled out: the whole point is that this
+        # failure is otherwise invisible from the outside.
+        logger.error(
+            "LOGFIRE_TOKEN REJECTED (%s %s) — telemetry is DARK. Spans are being "
+            "created and dropped; every trace-based report is reading an empty "
+            "dataset. Reissue a write token for the Logfire project and set "
+            "LOGFIRE_TOKEN on this service.",
+            result.get("status_code"), base,
+        )
+    else:
+        logger.warning(
+            "LOGFIRE_TOKEN probe inconclusive (%s, base=%s) — cannot confirm "
+            "telemetry is reaching Logfire.", result.get("reason"), base,
+        )
+    return token_probe_result()
+
+
 def _key_mode(value: str | None, prefix: str) -> str | None:
     """``sk_test_…`` → ``'test'``, ``sk_live_…`` → ``'live'``. Never the value."""
     v = (value or "").strip()
@@ -187,11 +308,32 @@ def observability_status() -> dict[str, Any]:
     anywhere (curl, smoke test, browser DevTools) without trusting deployment
     config alone. Safe to expose — contains no secrets, only booleans and
     short labels.
+
+    Read ``telemetry_ok`` first — it is the only field that answers "are spans
+    actually landing in Logfire?". ``configured`` / ``token_present`` /
+    ``boot_span_emitted`` describe THIS PROCESS only and stay true even when
+    every export is being rejected; see the token-probe note above.
     """
+    probe = token_probe_result()
+    # Tri-state on purpose. False = proven broken, None = not yet known (probe
+    # hasn't run, or the network was down). Never claim health we can't show.
+    telemetry_ok: bool | None
+    if not _CONFIGURED or not _LOGFIRE_AVAILABLE or not os.getenv("LOGFIRE_TOKEN"):
+        telemetry_ok = False
+    elif probe.get("ok"):
+        telemetry_ok = True
+    elif probe.get("reason") == "rejected":
+        telemetry_ok = False
+    else:
+        telemetry_ok = None
+
     return {
+        "telemetry_ok": telemetry_ok,
         "configured": _CONFIGURED,
         "sdk_installed": _LOGFIRE_AVAILABLE,
         "token_present": bool(os.getenv("LOGFIRE_TOKEN")),
+        # Whether the token is ACCEPTED, which token_present cannot tell you.
+        "token_probe": probe,
         "environment": _resolve_environment(),
         "service_name": os.getenv("LOGFIRE_SERVICE_NAME", "luna-backend"),
         "service_version": _SERVICE_VERSION,
@@ -294,6 +436,10 @@ def configure_logfire(service_version: str | None = None) -> bool:
             railway_git_sha=os.getenv("RAILWAY_GIT_COMMIT_SHA"),
             instrumented=dict(_INSTRUMENTED),
         )
+        # NOTE: this flag means the span was CREATED locally, not that it was
+        # accepted by Logfire — export happens later, on a background thread,
+        # and a 401 there is silent. `telemetry_ok` is the field that answers
+        # delivery; see run_logfire_token_probe_once().
         _BOOT_SPAN_EMITTED = True
     except Exception as exc:
         logger.warning("luna.boot sentinel span failed: %s", exc)
@@ -381,6 +527,8 @@ __all__ = [
     "observability_status",
     "record_smtp_probe",
     "smtp_probe_result",
+    "run_logfire_token_probe_once",
+    "token_probe_result",
 ]
 
 
