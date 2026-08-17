@@ -28,7 +28,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from supabase import Client as SupabaseClient
@@ -36,12 +36,11 @@ from supabase import Client as SupabaseClient
 # Reuse the exact message-row insert/update helpers message_service uses, so the
 # throwaway conversation is byte-identical in shape to an organic one.
 from backend.app.services.message_service import (
-    _insert_assistant_placeholder,
-    _insert_user_message,
+    _insert_turn_rows,
     _update_message_content,
 )
 from shared.config import get_settings
-from shared.db.run import run_db
+from shared.db.run import run_db, run_db_retry
 from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
@@ -110,14 +109,24 @@ async def generate_answer_headless(
     # 2. Save the user message BEFORE the AI call (Absolute Rule #7). If the
     #    process crashes mid-generation the question is not lost and the job's
     #    catch-up sweep can safely re-drive it.
+    #
+    #    The assistant placeholder — the row the produced workspace_item links to
+    #    via workspace_items.message_id (the publishers thread it through) — goes
+    #    in the SAME atomic insert. Sequentially, a transport failure between the
+    #    two left a question with no answerable row here too; see
+    #    _insert_turn_rows.
     user_message_id = str(uuid.uuid4())
-    await run_db(_insert_user_message, supabase, user_message_id, conversation_id, question)
-
-    # 3. Assistant placeholder — the row the produced workspace_item links to
-    #    via workspace_items.message_id (the publishers thread it through).
     assistant_message_id = str(uuid.uuid4())
-    await run_db(
-        _insert_assistant_placeholder, supabase, assistant_message_id, conversation_id
+    _turn_at = datetime.now(timezone.utc)
+    await run_db_retry(
+        _insert_turn_rows,
+        supabase,
+        user_message_id,
+        assistant_message_id,
+        conversation_id,
+        question,
+        _turn_at.isoformat(),
+        (_turn_at + timedelta(milliseconds=1)).isoformat(),
     )
 
     # 4. Consume the pipeline to completion. Capture the workspace_item_created

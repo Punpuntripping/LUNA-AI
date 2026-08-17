@@ -10,6 +10,25 @@ two completely different identifiers. The metering ledger
     ``case:<case_ref>``   → ``('judgment', cases.id)``
     ``circular:<uuid>``   → ``('circular', circulars.id)``
     ``compliance:<sha1>`` → ``('service', services.id)``  — never gated, never charged
+    ``article:<uuid>``    → ``('article', '{regulation_id}#{n}')`` | ``('regulation', regulation_id)``
+    ``regdoc:<uuid>``     → ``('regulation', regulations_v2.id)``
+
+THE TWO simple_search PREFIXES ADD NO METERING VOCABULARY
+---------------------------------------------------------
+``article:`` and ``regdoc:`` (plan §6.1a) name an ``articles_v2`` row and a
+``regulations_v2`` row directly — no chunk in between — so they SHORT-CIRCUIT to
+the two content types the ledger already speaks (``library_items_service``'s
+``SHELF_CONTENT_TYPES``). No new content_type is minted, and none is needed: a
+مادة reached by lookup and a مادة reached by chunk are the same مادة, must cost
+the same unlock, and must be covered by the same D5 نظام grant. Inventing a third
+type would double-charge a user who already opened the نظام.
+
+They are also NOT ``always_free``. D12's "regulations are not metered" governs
+what the AGENT may read while composing an answer (it reads full content
+unconditionally); this module governs the USER-facing «عرض المصدر» reveal, where
+a نظام has always cost exactly what a ``reg:`` chunk of that same نظام costs.
+Keeping them identical is the point — the two paths are two doors onto one
+document.
 
 WHY ``reg:`` IS NOT A REGULATION ID (the trap this module exists for)
 ---------------------------------------------------------------------
@@ -152,13 +171,15 @@ async def resolve_ref(
     Args:
         ref_id: the URA-emitted identifier stored on the row.
         domain: the row's ``domain`` column (``regulations`` | ``cases`` |
-            ``compliance`` | ``circulars``). Used only to disambiguate a
-            prefix-less ``ref_id``; an explicit prefix always wins, because the
-            prefix and the id were minted together by the same adapter.
+            ``compliance`` | ``circulars`` | ``articles`` | ``regulation_docs``).
+            Used only to disambiguate a prefix-less ``ref_id``; an explicit
+            prefix always wins, because the prefix and the id were minted
+            together by the same adapter.
         item_id: the row's ``item_id`` column — the source-row PK
             (``chunks_v2.id`` / ``cases.id`` / ``services.id`` /
-            ``circulars.id``) when the publisher managed to resolve it. Where it
-            is authoritative it is preferred, since it skips a lookup.
+            ``circulars.id`` / ``articles_v2.id`` / ``regulations_v2.id``) when
+            the publisher managed to resolve it. Where it is authoritative it is
+            preferred, since it skips a lookup.
 
     Returns:
         ``ResolvedRef`` or ``None``. ``None`` means REFUSE — never "allow".
@@ -177,6 +198,13 @@ async def resolve_ref(
     # prefix-less / legacy row.
     if prefix == "reg" or (not prefix and dom == "regulations"):
         return await _resolve_regulation(supabase, tail, iid)
+    # simple_search — checked BEFORE the generic branches below purely for
+    # readability; the prefixes are disjoint, and `regdoc` is not a `reg` match
+    # because the comparison is on the whole prefix token, not a startswith.
+    if prefix == "article" or (not prefix and dom == "articles"):
+        return await _resolve_article_row(supabase, tail, iid)
+    if prefix == "regdoc" or (not prefix and dom == "regulation_docs"):
+        return await _resolve_regulation_doc(supabase, tail, iid)
     if prefix == "case" or (not prefix and dom == "cases"):
         return await _resolve_case(supabase, tail, iid)
     if prefix == "circular" or (not prefix and dom == "circulars"):
@@ -236,6 +264,95 @@ async def _resolve_regulation(
         content_type="regulation",
         content_id=regulation_id,
         parent_regulation_id=regulation_id,
+    )
+
+
+async def _resolve_article_row(
+    supabase: SupabaseClient, tail: str, item_id: str
+) -> Optional[ResolvedRef]:
+    """``article:<articles_v2.id>`` → the مادة, or its نظام when unpublishable.
+
+    One lookup, because the sidecar key is ``'{regulation_id}#{article_no}'`` and
+    an ``articles_v2.id`` carries neither half. The row gives both.
+
+    The int() gate is the SAME policy ``_owned_article_numbers`` applies to a
+    chunk's ``owns`` map: a compound number («7-4», «1-1» — they exist in the
+    corpus) has no published مادة page, so no sidecar key can be minted for it
+    and the ref must lift to the نظام. Never dropped — a citation the reader can
+    see must always resolve to something they can unlock.
+
+    ``parent_regulation_id`` is set on BOTH branches so ``resolve_access`` can
+    apply D5 (a نظام unlock covers every مادة under it) without re-deriving it.
+    """
+    article_id = tail if _UUID_RE.match(tail or "") else ""
+    if not article_id and _UUID_RE.match(item_id or ""):
+        article_id = item_id
+    if not article_id:
+        logger.info("reference_resolver: article ref without a uuid (%r)", tail)
+        return None
+
+    row = await run_db(_fetch_article, supabase, article_id)
+    if not row:
+        logger.info("reference_resolver: articles_v2 %s not found — refusing", article_id)
+        return None
+
+    regulation_id = str(row.get("regulation_id") or "").strip()
+    if not regulation_id:
+        logger.info("reference_resolver: article %s has no regulation_id", article_id)
+        return None
+
+    raw_number = str(row.get("article_number") or "").strip()
+    try:
+        article_no: Optional[int] = int(raw_number)
+    except (TypeError, ValueError):
+        article_no = None
+
+    if article_no is not None:
+        return ResolvedRef(
+            content_type="article",
+            content_id=f"{regulation_id}#{article_no}",
+            parent_regulation_id=regulation_id,
+            article_no=article_no,
+        )
+
+    return ResolvedRef(
+        content_type="regulation",
+        content_id=regulation_id,
+        parent_regulation_id=regulation_id,
+    )
+
+
+async def _resolve_regulation_doc(
+    supabase: SupabaseClient, tail: str, item_id: str
+) -> Optional[ResolvedRef]:
+    """``regdoc:<regulations_v2.id>`` → ``('regulation', id)``.
+
+    The id IS the answer, so the lookup exists for two other reasons: to FAIL
+    CLOSED on a vanished / fabricated uuid (a resolver that trusted the id would
+    let a caller mint a ledger row for a نظام that does not exist), and to carry
+    the نظام's title into the reveal's «unlocked» payload so the toast names the
+    document rather than a uuid.
+
+    ``item_id`` is preferred over the ref_id tail — it is the same
+    ``regulations_v2.id`` the write path validated — matching ``_resolve_circular``.
+    """
+    reg_id = item_id if _UUID_RE.match(item_id or "") else ""
+    if not reg_id and _UUID_RE.match(tail or ""):
+        reg_id = tail
+    if not reg_id:
+        logger.info("reference_resolver: regdoc ref without a uuid (%r)", tail)
+        return None
+
+    row = await run_db(_fetch_regulation, supabase, reg_id)
+    if not row:
+        logger.info("reference_resolver: regulations_v2 %s not found — refusing", reg_id)
+        return None
+
+    return ResolvedRef(
+        content_type="regulation",
+        content_id=reg_id,
+        title=((row.get("clean_title") or row.get("title") or "") or "").strip(),
+        parent_regulation_id=reg_id,
     )
 
 
@@ -399,6 +516,48 @@ def _fetch_chunk(supabase: SupabaseClient, chunk_id: str) -> Optional[dict[str, 
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("reference_resolver: chunks_v2 lookup failed (%s): %s", chunk_id, e)
+        return None
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+def _fetch_article(supabase: SupabaseClient, article_id: str) -> Optional[dict[str, Any]]:
+    """``articles_v2`` → ``regulation_id`` + ``article_number``. Read-only.
+
+    A query FAILURE returns ``None`` → the caller REFUSES. Same safe direction as
+    ``_fetch_chunk``: a DB blip must never mint free corpus access.
+    """
+    try:
+        res = (
+            supabase.table("articles_v2")
+            .select("id, regulation_id, article_number")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "reference_resolver: articles_v2 lookup failed (%s): %s", article_id, e
+        )
+        return None
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+def _fetch_regulation(supabase: SupabaseClient, reg_id: str) -> Optional[dict[str, Any]]:
+    """``regulations_v2`` → existence proof + the title for the unlock toast."""
+    try:
+        res = (
+            supabase.table("regulations_v2")
+            .select("id, title, clean_title")
+            .eq("id", reg_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "reference_resolver: regulations_v2 lookup failed (%s): %s", reg_id, e
+        )
         return None
     rows = res.data or []
     return rows[0] if rows else None

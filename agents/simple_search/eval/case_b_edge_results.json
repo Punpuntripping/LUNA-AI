@@ -1,0 +1,75 @@
+{
+  "conversation_id": "a64aaabf-414e-48bc-83fb-32d35b95e081",
+  "shapes": [
+    {
+      "label": "article · composite slug (what the مادة page sends)",
+      "page_type": "article",
+      "page_id": "نظام-العمل/المادة-5",
+      "expected_ref_id": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+      "carried": true,
+      "already_attached": true,
+      "item_id": "575b025d-7035-41b0-9f04-2a7638284c56",
+      "title": "المادة 5 — نظام العمل",
+      "has_ss_object": true,
+      "ref_id": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+      "public_path": "/regulations/نظام-العمل/المادة-5",
+      "ok": true
+    },
+    {
+      "label": "article · seo_articles uuid",
+      "page_type": "article",
+      "page_id": "f5c507dc-be22-4259-958a-adc759bb902b",
+      "expected_ref_id": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+      "carried": true,
+      "already_attached": false,
+      "item_id": "a824cda6-081b-49fe-a70c-d91a4f9fa993",
+      "title": "المادة 5 — نظام العمل",
+      "has_ss_object": false,
+      "ref_id": null,
+      "public_path": null,
+      "ok": false
+    },
+    {
+      "label": "article · '{regulation_id}#{article_no}' gate-key shape",
+      "page_type": "article",
+      "page_id": "da51024f-a713-48e7-af87-b6a541f055e4#5",
+      "expected_ref_id": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+      "carried": true,
+      "already_attached": false,
+      "item_id": "1ca924dd-729c-417b-88da-426a248f4e17",
+      "title": "المادة 5 — نظام العمل",
+      "has_ss_object": false,
+      "ref_id": null,
+      "public_path": null,
+      "ok": false
+    },
+    {
+      "label": "regulation · raw regulations_v2 uuid",
+      "page_type": "regulation",
+      "page_id": "da51024f-a713-48e7-af87-b6a541f055e4",
+      "expected_ref_id": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+      "carried": true,
+      "already_attached": false,
+      "item_id": "ebc3be37-dbc6-4a46-bb90-b77103b51304",
+      "title": "نظام العمل",
+      "has_ss_object": true,
+      "ref_id": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+      "public_path": null,
+      "ok": true
+    },
+    {
+      "label": "judgment · raw cases uuid",
+      "page_type": "judgment",
+      "page_id": "cea98fd5-b256-4a0e-9675-b550ef920c7e",
+      "expected_ref_id": "case:17642_fi_4470682912",
+      "carried": true,
+      "already_attached": false,
+      "item_id": "f3985253-9b34-4428-b538-f6cc4110af6a",
+      "title": "نزاع بين شريكين في شركة ذات مسؤولية محدودة حول طلب تصفية الشركة — التجارية 1444هـ",
+      "has_ss_object": true,
+      "ref_id": "case:17642_fi_4470682912",
+      "public_path": null,
+      "ok": true
+    }
+  ]
+}

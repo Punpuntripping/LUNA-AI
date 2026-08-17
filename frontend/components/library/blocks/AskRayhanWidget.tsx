@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { MessageCircle, Send, Sparkles, X, Lock, Loader2 } from "lucide-react";
+import { Send, Sparkles, X, Lock, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
@@ -27,6 +27,7 @@ import {
   resolveTurnstileToken,
   type TurnstileState,
 } from "./TurnstileGate";
+import { ChatWithPageCta, isCarryablePageType } from "./ChatWithPageCta";
 import type { AskRayhanWidgetProps } from "@/types/library";
 
 const MIN_LEN = 3;
@@ -51,8 +52,11 @@ interface QuestionRef {
  *          503 (kill switch) shows the login stub; 429 (session cap) shows a CTA.
  *          A refresh re-shows the teaser from localStorage without spending a
  *          new question.
- *   Authed: «افتح محادثة مع ريحان» → /chat. After a post-signup claim, the full
- *          answer is auto-revealed here once (the continuity moment).
+ *   Authed: «تحدّث مع ريحان عن هذه الصفحة» → `ChatWithPageCta`, which CARRIES the
+ *          page into the conversation (simple_search_family §8 — it used to be a
+ *          bare `/chat` link that lost the object at the door). After a
+ *          post-signup claim, the full answer is auto-revealed here once (the
+ *          continuity moment) with the same carrying CTA beneath it.
  */
 export function AskRayhanWidget({
   pageType,
@@ -232,9 +236,21 @@ export function AskRayhanWidget({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {claimed ? (
-            <FullAnswer question={claimed.question} answerMd={claimed.answer_md} />
+            <FullAnswer
+              question={claimed.question}
+              answerMd={claimed.answer_md}
+              pageType={pageType}
+              pageId={pageId}
+              pageTitle={pageTitle}
+              loginHref={loginHref}
+            />
           ) : isAuthenticated || alreadyClaimed ? (
-            <AuthedCta />
+            <AuthedCta
+              pageType={pageType}
+              pageId={pageId}
+              pageTitle={pageTitle}
+              loginHref={loginHref}
+            />
           ) : errorKind === "disabled" ? (
             <DisabledStub loginHref={loginHref} />
           ) : errorKind === "rate_limited" ? (
@@ -384,13 +400,25 @@ function Teaser({
   );
 }
 
+/** The page context both continue-in-chat CTAs need to carry the object. */
+interface PageContext {
+  pageType: AskRayhanWidgetProps["pageType"];
+  pageId: string;
+  pageTitle: string;
+  loginHref: string;
+}
+
 function FullAnswer({
   question,
   answerMd,
+  pageType,
+  pageId,
+  pageTitle,
+  loginHref,
 }: {
   question: string;
   answerMd: string;
-}) {
+} & PageContext) {
   return (
     <div className="space-y-3">
       <p className="rounded-lg bg-muted/50 px-3 py-2 text-xs font-medium text-foreground">
@@ -399,18 +427,17 @@ function FullAnswer({
       <div className="text-sm leading-relaxed text-foreground">
         <MarkdownRenderer content={answerMd} />
       </div>
-      <Link
-        href="/chat"
-        className={cn(buttonVariants({ size: "sm", variant: "outline" }), "w-full")}
-      >
-        <MessageCircle aria-hidden="true" className="h-4 w-4" />
-        افتح محادثة مع ريحان
-      </Link>
+      <ChatWithPageCta
+        pageType={pageType}
+        pageId={pageId}
+        pageTitle={pageTitle}
+        loginHref={loginHref}
+      />
     </div>
   );
 }
 
-function AuthedCta() {
+function AuthedCta({ pageType, pageId, pageTitle, loginHref }: PageContext) {
   return (
     <div className="space-y-3 text-center">
       <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -419,16 +446,19 @@ function AuthedCta() {
       <p className="text-sm font-bold text-foreground">
         تحدّث مع ريحان عن هذه الصفحة
       </p>
+      {/* The promise has to match what the button actually does: only a
+          carryable page type is added to the workspace (§8 coverage). */}
       <p className="mx-auto max-w-xs text-xs leading-relaxed text-muted-foreground">
-        افتح محادثة جديدة واحصل على إجابات موثّقة مع المراجع النظامية.
+        {isCarryablePageType(pageType)
+          ? "تُضاف هذه الصفحة إلى مساحة عمل المحادثة، فيجيبك ريحان معتمداً عليها مع المراجع النظامية."
+          : "افتح محادثة جديدة واحصل على إجابات موثّقة مع المراجع النظامية."}
       </p>
-      <Link
-        href="/chat"
-        className={cn(buttonVariants({ size: "default" }), "w-full")}
-      >
-        <MessageCircle aria-hidden="true" className="h-4 w-4" />
-        افتح محادثة مع ريحان
-      </Link>
+      <ChatWithPageCta
+        pageType={pageType}
+        pageId={pageId}
+        pageTitle={pageTitle}
+        loginHref={loginHref}
+      />
     </div>
   );
 }

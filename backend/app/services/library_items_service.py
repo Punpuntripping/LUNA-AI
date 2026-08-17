@@ -928,10 +928,54 @@ def _chunk_regulation_ids(
     return out
 
 
+def _article_regulation_ids(
+    supabase: SupabaseClient, article_ids: list[str]
+) -> dict[str, str]:
+    """``{articles_v2.id: regulation_id}`` — ONE batched select. SYNC, fail-soft.
+
+    The ``articles`` twin of :func:`_chunk_regulation_ids`, and it exists for the
+    same reason: a مادة has no page of its own that this button may open. A مادة
+    **resolves to its نظام** (user decision 2026-08-01, the collapse
+    :func:`_public_page_url` already applies at ``ct == "article"``), so the only
+    thing worth reading off the row is its parent.
+
+    That function cannot simply be called here: it keys on the SIDECAR key
+    ``'{regulation_id}#{article_no}'`` (which carries its parent in the string),
+    whereas an ``articles`` reference row carries a bare ``articles_v2.id`` uuid
+    that carries neither half. Hence the lookup — one, batched, for the panel.
+
+    ``articles_v2`` is a VIEW, so there is no FK to embed the parent through;
+    a second select is the only shape available (same finding as
+    ``references_service._build_article_shells``).
+    """
+    ids = list(dict.fromkeys(a for a in article_ids if a))
+    if not ids:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(ids), 150):
+        batch = ids[i : i + 150]
+        try:
+            res = (
+                supabase.table("articles_v2")
+                .select("id, regulation_id")
+                .in_("id", batch)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("library_items: article→regulation lookup failed: %s", e)
+            continue
+        for r in res.data or []:
+            aid = r.get("id")
+            rid = r.get("regulation_id")
+            if aid and rid:
+                out[str(aid)] = str(rid)
+    return out
+
+
 def _public_page_urls_for_reference_rows(
     supabase: SupabaseClient, rows: list[dict[str, Any]]
 ) -> dict[int, str]:
-    """``{n: url}`` for a whole المراجع panel, in ≤ 4 round-trips. SYNC.
+    """``{n: url}`` for a whole المراجع panel, in ≤ 5 round-trips. SYNC.
 
     ``rows`` are ``workspace_item_references`` rows — ``n``, ``domain``,
     ``item_id``, ``ref_id``. The write path (``persist_item_references``) already
@@ -943,13 +987,23 @@ def _public_page_urls_for_reference_rows(
     ``cases``             ``item_id`` **IS** ``cases.id``              0
     ``circulars``         ``item_id`` **IS** ``circulars.id``          0
     ``regulations``       ``chunks_v2.regulation_id``                  1
+    ``regulation_docs``   ``item_id`` **IS** ``regulations_v2.id``     0
+    ``articles``          ``articles_v2.regulation_id``                1
     ``compliance``        — no wing —                                  0
     ====================  ==========================================  ======
 
     then at most three ``ls._slug_map`` calls (judgment / circular / regulation).
-    **Total ≤ 4 round-trips per panel load, independent of reference count.** A
+    **Total ≤ 5 round-trips per panel load, independent of reference count.** A
     legacy row with a NULL ``item_id`` adds at most ONE more (the batched
     ``case_ref → cases.id`` lookup below) — still bounded, still batched.
+
+    THE TWO simple_search DOMAINS LAND IN THE ``regulation`` BUCKET (plan §6.1a).
+    ``regulation_docs`` **is** a نظام, and an ``articles`` مادة **collapses** to
+    its نظام — the same collapse :func:`_public_page_url` applies, deliberately
+    reused rather than re-invented as an ``/regulations/{reg}/{article}`` scheme
+    the reveal path does not use either. Neither gets a ``_URL_PREFIX`` key of its
+    own, and none is needed: both end up asking the sidecar for a ``regulation``
+    slug, so they share the wing's single existing lookup.
 
     COMPLIANCE NEVER GETS A URL. ``_URL_PREFIX`` has no ``service`` key: the
     compliance wing was retired, so a government service has no page in our
@@ -970,7 +1024,11 @@ def _public_page_urls_for_reference_rows(
     judgment_by_n: dict[int, str] = {}
     circular_by_n: dict[int, str] = {}
     chunk_by_n: dict[int, str] = {}
+    article_by_n: dict[int, str] = {}    # simple_search: articles_v2.id
     case_ref_by_n: dict[int, str] = {}   # legacy fallback: NULL item_id
+    # Seeded directly by ``regulation_docs`` (item_id IS the نظام), then filled
+    # in for chunks and مواد once their parent lookups return.
+    regulation_by_n: dict[int, str] = {}
 
     for row in rows:
         try:
@@ -1003,6 +1061,24 @@ def _public_page_urls_for_reference_rows(
             )
             if chunk_id:
                 chunk_by_n[n] = chunk_id
+        elif domain == "regulation_docs":
+            # ``regdoc:<regulations_v2.id>`` — the نظام itself, zero lookups.
+            # NEVER accept a ``reg:`` prefix here: that one carries a
+            # chunks_v2.id, and the sidecar would answer for a different (or
+            # no) document while validating perfectly (§6.2).
+            reg_id = item_id or _uuid_or_empty(
+                ref_id[len("regdoc:"):] if ref_id.startswith("regdoc:") else ""
+            )
+            if reg_id:
+                regulation_by_n[n] = reg_id
+        elif domain == "articles":
+            # ``article:<articles_v2.id>`` — one batched parent lookup below,
+            # then the نظام page (the 2026-08-01 collapse).
+            article_id = item_id or _uuid_or_empty(
+                ref_id[len("article:"):] if ref_id.startswith("article:") else ""
+            )
+            if article_id:
+                article_by_n[n] = article_id
         # compliance → no wing, no URL. Deliberately not an else-branch: an
         # unknown future domain must fall through to "no button" as well.
 
@@ -1023,11 +1099,20 @@ def _public_page_urls_for_reference_rows(
             logger.warning("library_items: legacy case_ref resolution failed: %s", e)
 
     # Regulations: chunk → its نظام. One batched select.
-    regulation_by_n: dict[int, str] = {}
     if chunk_by_n:
         reg_by_chunk = _chunk_regulation_ids(supabase, list(chunk_by_n.values()))
         for n, chunk_id in chunk_by_n.items():
             reg_id = reg_by_chunk.get(chunk_id)
+            if reg_id:
+                regulation_by_n[n] = reg_id
+
+    # Articles: مادة → its نظام. One more batched select, and it merges into the
+    # SAME bucket — so a panel mixing chunks, مواد and whole أنظمة still costs one
+    # sidecar lookup for the whole wing.
+    if article_by_n:
+        reg_by_article = _article_regulation_ids(supabase, list(article_by_n.values()))
+        for n, article_id in article_by_n.items():
+            reg_id = reg_by_article.get(article_id)
             if reg_id:
                 regulation_by_n[n] = reg_id
 

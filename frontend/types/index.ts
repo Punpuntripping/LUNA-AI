@@ -345,6 +345,64 @@ export interface PendingBlog {
   errorMessage: string | null;
 }
 
+/**
+ * The library page types that can be CARRIED into a conversation
+ * (`.claude/plans/simple_search_family.md` §8 / §12a C3).
+ *
+ * A strict subset of `LibraryPageType` (`@/types/library`): `fetch_grounding`
+ * has no grounder for `circular` / `form` / `calculator` / `topic`, so the
+ * backend answers those with an Arabic error. The UI must therefore never
+ * offer the carry button on them — see `isCarryablePageType` in
+ * `components/library/blocks/AskRayhanWidget.tsx`, whose type predicate is
+ * what pins this subset relation at compile time.
+ */
+export type LibraryItemPageType =
+  | "regulation"
+  | "article"
+  | "judgment"
+  | "blog";
+
+/**
+ * A library page the user asked to bring into the chat, before a conversation
+ * exists to hold it — the `pendingBlogTokens` twin (§8 "New-chat carry").
+ * `pageId` is the public slug; for an `article` it is the composite
+ * `{reg_slug}/{article_slug}` shape `fetch_grounding` already parses.
+ */
+export interface LibraryItemRef {
+  pageType: LibraryItemPageType;
+  pageId: string;
+  /** Page heading, known client-side — shown on the chip before the POST lands. */
+  title: string | null;
+}
+
+/**
+ * A library object attached to the composer, rendered as a chip beside file
+ * attachments — the `PendingBlog` twin for «تحدّث مع ريحان عن هذه الصفحة»
+ * (`.claude/plans/simple_search_family.md` §8).
+ *
+ * Created at attach time via `POST /conversations/{id}/library-items` as a
+ * `kind='references'` workspace item (uncapped — it never crowds the 15-item
+ * workspace); on send the `itemId` joins the existing `attachment_ids` array,
+ * so nothing about the send payload changes.
+ */
+export interface PendingLibraryItem extends LibraryItemRef {
+  /** Chip id (client-generated). */
+  id: string;
+  /** ``loading`` = the POST is in flight; ``failed`` chips never block send. */
+  status: "loading" | "ready" | "failed";
+  /** workspace_items.item_id once the POST returns; null before that. */
+  itemId: string | null;
+  /**
+   * True only when the server explicitly reported that THIS attach created the
+   * item (`already_attached === false`). Removing the chip deletes the item
+   * only then — an unknown/absent flag stays `false` so we can never delete a
+   * card the user had already put in the conversation.
+   */
+  createdByChip: boolean;
+  /** Arabic-language error message when status === 'failed'. */
+  errorMessage: string | null;
+}
+
 // ==========================================
 // RESUMABLE UPLOADS
 // ==========================================
@@ -607,7 +665,33 @@ export interface WorkspaceItemListResponse {
 // frontend fetches via `useWorkspaceItemReferences(item_id)` and the
 // workspace ReferencePanel renders the response.
 
-export type ReferenceDomain = 'regulations' | 'compliance' | 'cases' | 'circulars';
+/**
+ * The cited object's WING — the read path keys every shell builder off this.
+ *
+ * `regulations` means **a chunk** of a نظام (`chunks_v2.id`), which is why the
+ * two `simple_search` additions could not reuse it:
+ *
+ * - `articles`         — one مادة (`articles_v2.id`), `ref_id` = `article:<uuid>`
+ * - `regulation_docs`  — a WHOLE نظام (`regulations_v2.id`), `ref_id` =
+ *                        `regdoc:<uuid>`
+ *
+ * ⚠ NEVER give either of them the `reg:` prefix. `domain='regulations'` hard-
+ * assumes the id is a `chunks_v2.id`; a regulation/article uuid passes the uuid
+ * check, inserts cleanly, then resolves to nothing on read and renders a dead
+ * stub with no «عرض المصدر» — zero errors anywhere in the chain.
+ *
+ * Mirrors the DB CHECK on `workspace_item_references.domain` and the Literal on
+ * `agents/deep_search_v4/aggregator/models.py::Reference.domain`. The
+ * `Record<ReferenceDomain, …>` tables in `ReferencePanel` are exhaustive on
+ * purpose: adding a member here must not compile until the panel knows it.
+ */
+export type ReferenceDomain =
+  | 'regulations'
+  | 'compliance'
+  | 'cases'
+  | 'circulars'
+  | 'articles'
+  | 'regulation_docs';
 
 export type ReferenceSourceType =
   | 'article'
@@ -617,7 +701,13 @@ export type ReferenceSourceType =
   | 'gov_service'
   | 'form'
   | 'case'
-  | 'circular';
+  | 'circular'
+  // simple_search (§6.1). Deliberately NOT `article` / `regulation` — those two
+  // names are already taken by the legacy views below, and reusing them gives
+  // the backend's Pydantic discriminated union duplicate discriminator values
+  // (an import-time crash) and the frontend union a silent wrong-arm match.
+  | 'article_full'
+  | 'regulation_summary';
 
 /** One resolved cross-reference from a regulation chunk to a target unit. */
 export interface CrossRef {
@@ -697,6 +787,58 @@ export type SourceView =
       /** Optional external source link (``circulars.source``); may be "". */
       url: string;
     }
+  // ---- simple_search (§6.1a) ----------------------------------------------
+  // ⚠ These MUST stay ABOVE the legacy arm. That arm is a permissive
+  // ``[k: string]: unknown`` bag, so a variant whose ``source_type`` overlapped
+  // it would be absorbed with NO compile error and would render through
+  // ``SourceViewContent``'s fall-through as bare markdown — looking like it
+  // works. The distinct ``article_full`` / ``regulation_summary`` discriminators
+  // are what keep the narrowing honest; never rename them to
+  // ``article`` / ``regulation``.
+  | {
+      /**
+       * ONE مادة, served whole — ``articles_v2.content`` verbatim, never a chunk
+       * slice. This is simple_search's L3 leg, and the one behavioural
+       * difference from deep_search, where a fetched article is text-only and
+       * never becomes a citation.
+       */
+      source_type: 'article_full';
+      /** «المادة 81 من نظام العمل». */
+      title: string;
+      /**
+       * ``articles_v2.article_number`` — **text**, not a number: the corpus
+       * carries forms like «81 مكرر» that no integer column can hold. Rendered
+       * verbatim, in Western digits (§6.4's digit rule).
+       */
+      article_num: string | null;
+      /**
+       * The FULL article body (markdown). Named ``content`` on purpose:
+       * ``extractSourceContent`` does ``"content" in view ? view.content : ""``,
+       * so any other field name silently yields a blank dialog with no copy
+       * button.
+       */
+      content: string;
+      /** Parent نظام's title, for the dialog's «نص المادة … — …» header line. */
+      regulation_title: string;
+      /** Parent ``regulations_v2.landing_url`` — the ONE external exit. */
+      regulation_source_url: string;
+    }
+  | {
+      /**
+       * A WHOLE نظام, represented by its SUMMARY. The body here is
+       * ``regulations_v2.llm_summary`` (falling back to ``summary``) —
+       * deliberately NOT the statute's full text, which runs past 1.1M chars for
+       * outliers and belongs on the library page this dialog links to. The popup
+       * frames it as a ملخص so it is never mistaken for the نظام itself.
+       */
+      source_type: 'regulation_summary';
+      /** ``clean_title`` or ``title``. */
+      title: string;
+      /** The regulation's summary (markdown). See ``article_full.content``. */
+      content: string;
+      /** ``regulations_v2.landing_url`` — the ONE external exit. */
+      regulation_source_url: string;
+    }
   // Legacy variants — retained for reload of pre-URA-v3.0 artifacts.
   | {
       source_type: 'article' | 'section' | 'regulation';
@@ -727,8 +869,12 @@ export interface Reference {
    * (لائحة / تنظيم / دليل / مواصفة قياسية / …). Rendered as the card's type
    * chip in place of the blanket نظام label. Empty string (or absent, on
    * pre-existing snapshots) when the corpus has no determined type — the
-   * panel then falls back to `DOMAIN_META.regulations.label`. Regulations
-   * domain only.
+   * panel then falls back to the domain's own label. «غير محدد» is the
+   * corpus's "could not determine" sentinel and is treated as absent.
+   *
+   * Carried by the two regulation-backed domains only: `regulations` (a chunk
+   * of the document) and `regulation_docs` (the whole document). NOT by
+   * `articles` — a مادة is «المادة» whatever its parent's doc type is.
    */
   doc_type?: string;
   /**
@@ -991,6 +1137,21 @@ export interface BlogItemResponse {
 }
 
 /**
+ * Response of ``POST /api/v1/conversations/{id}/library-items`` — the pinned
+ * Case-B route (`.claude/plans/simple_search_family.md` §12a C3).
+ *
+ * Body in: ``{ page_type, page_id }``. Body out: the created (or deduped)
+ * ``kind='references'`` workspace item. The contract pins only ``item``;
+ * ``already_attached`` is the blog twin's dedup flag and is treated as
+ * OPTIONAL here so a backend that omits it still typechecks — its absence is
+ * read as "unknown", which keeps chip removal from deleting anything.
+ */
+export interface LibraryItemResponse {
+  item: WorkspaceItem;
+  already_attached?: boolean;
+}
+
+/**
  * Response of ``GET /api/v1/blogs/mine`` — the owner-scoped مدوناتي listing.
  * ``can_publish_public`` reflects ``users.can_access_blog`` (the curate gate);
  * the management page shows the نشر في المدونة العامة toggle only when true.
@@ -1030,7 +1191,7 @@ export interface UserPreferencesData {
    */
   onboarding_seen?: boolean;
   /**
-   * «جولة المخرجات» — the 13-step coach-mark tour over the shared demo
+   * «جولة المخرجات» — the 5-step coach-mark tour over the shared demo
    * conversation. Absent/false → the tour auto-starts once, AFTER «اتعرف على
    * ريحان» is dismissed; finishing or skipping PATCHes it to true.
    */
@@ -1042,9 +1203,24 @@ export interface UserPreferencesData {
    */
   demo_conversation_hidden?: boolean;
   /**
+   * «سلسلة تعلّم ريحان» — lifetime count of user messages that completed a turn
+   * (bumped on the `done` SSE event). Drives the every-4-messages lesson
+   * cadence; see `stores/edu-store.ts` and `.claude/plans/edu_series.md`.
+   */
+  edu_turns?: number;
+  /** ISO instant of the last delivered lesson — the one-per-day spacing anchor. */
+  edu_last_shown_at?: string;
+  /**
+   * Per-lesson «seen» flags are written as `edu_<lesson_id>: true` and covered
+   * by the index signature below rather than enumerated here — the syllabus is
+   * data (`components/edu/edu-syllabus.tsx`), and adding a lesson must not
+   * require a type change.
+   *
    * ⚠ Every key in here is FLAT and stays flat. `merge_preferences` is a
    * SHALLOW merge server-side, so a nested object written by one tab clobbers
-   * the sibling keys another tab wrote (see [[project_edu_popups]]).
+   * the sibling keys another tab wrote (see [[project_edu_popups]]). This is
+   * exactly why the lesson flags are `edu_usage_limits: true` and not
+   * `edu: { seen: {...} }`.
    */
   [key: string]: unknown;
 }
@@ -1307,8 +1483,17 @@ export interface ReferenceUnlockInfo {
   content_id: string;
   /** Human title of the unlocked item — the نظام, never the chunk. */
   title: string;
-  /** Non-null only when the chunk owned exactly one مادة. */
-  article_no: number | null;
+  /**
+   * Non-null only when the chunk owned exactly one مادة.
+   *
+   * ⚠ STRING, not number (§12a C4). `articles_v2.article_number` is TEXT and
+   * carries «1-1» and «81 مكرر» — 487 of 51,792 rows. Typed `number` the
+   * backend had to send `null` for exactly those, and the notice silently fell
+   * back to naming the whole نظام *after* the reader spent an unlock. Pinned
+   * `string | null` at every hop; render it with `arDigits`, never `arNumber`
+   * (which rounds).
+   */
+  article_no: string | null;
   charged: boolean;
   /** Weighted cost (§1.2.1): 1 for most items, up to 8 for a large نظام. */
   cost: number;

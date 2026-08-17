@@ -1,0 +1,289 @@
+{
+  "conversation_id": "a64aaabf-414e-48bc-83fb-32d35b95e081",
+  "attached_item_id": "0dc75cf9-1e9e-478d-8678-0134c53aa19d",
+  "question": "اش هي المادة 5 من نظام التنفيذ؟",
+  "searcher_runs": 1,
+  "candidate_lines": [
+    "C1 — نظام: نظام العمل — أحضرها المستخدم من المكتبة"
+  ],
+  "decisions": [
+    {
+      "data_type": "article",
+      "selected": [
+        "C2"
+      ],
+      "aborted": false,
+      "rationale": "المستخدم يسأل عن المادة 5 من نظام التنفيذ، وتم حلها مباشرة عبر resolve_article وأعطت C2.",
+      "resolved": [
+        {
+          "level": "article",
+          "ref_id": "article:620c25d3-111a-56f5-8553-fc59a4c41987",
+          "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+          "article_id": "620c25d3-111a-56f5-8553-fc59a4c41987",
+          "article_number": "5",
+          "title": "المادة 5",
+          "subtitle": "نظام التنفيذ"
+        }
+      ]
+    }
+  ],
+  "answer": "نص المادة الخامسة من **نظام التنفيذ**:\n\n> إذا تعددت الدوائر المختصة بالتنفيذ؛ فيكون لقاضي التنفيذ - الذي قام بأول إجراء تنفيذي - الإشراف على التنفيذ وتوزيع حصيلته، وله أن ينيب قاضي تنفيذ في دائرة أخرى للتنفيذ على مال المدين، وتحدد اللائحة الأحكام اللازمة لذلك.\n\nتحدد هذه المادة قاعدة الاختصاص عند تعدد دوائر التنفيذ: قاضي التنفيذ الذي بادر بأول إجراء هو الذي يشرف على التنفيذ ويوزع حصيلته، وله تفويض قاضٍ آخر في دائرة مختلفة للتنفيذ على أموال المدين [1].",
+  "extra": [
+    {
+      "kind": "hijack",
+      "question": "ابغى المادة 2 من نظام التنفيذ",
+      "expected_regulation": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+      "resolved": [
+        {
+          "level": "article",
+          "ref_id": "article:f4229737-8a1f-5bf0-a83e-889212d84283",
+          "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+          "article_id": "f4229737-8a1f-5bf0-a83e-889212d84283",
+          "article_number": "2",
+          "title": "المادة 2",
+          "subtitle": "نظام التنفيذ"
+        }
+      ],
+      "selected": [
+        "C2"
+      ],
+      "searcher_runs": 1,
+      "answer_head": "**المادة 2 من نظام التنفيذ**\n\nعدا الأحكام والقرارات الصادرة في القضايا الإدارية والجنائية، يختص قاضي التنفيذ بسلطة التنفيذ الجبري والإشراف عليه، ويعاونه في ذلك من يكفي من مأموري التنفيذ، وتتبع أمامه الأحكام الواردة في نظام المرافعات الشرعية ما لم ينص هذا النظام على خلاف ذلك [1].",
+      "created": [
+        "afe1c853-925a-487a-9cc5-f8e0c33cf401"
+      ]
+    },
+    {
+      "kind": "hijack",
+      "question": "وش تقول المادة 7 من نظام التنفيذ؟",
+      "expected_regulation": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+      "resolved": [
+        {
+          "level": "article",
+          "ref_id": "article:83da3651-ef7c-5caa-aa53-2f6fc3ee912d",
+          "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+          "article_id": "83da3651-ef7c-5caa-aa53-2f6fc3ee912d",
+          "article_number": "7",
+          "title": "المادة 7",
+          "subtitle": "نظام التنفيذ"
+        }
+      ],
+      "selected": [
+        "C2"
+      ],
+      "searcher_runs": 1,
+      "answer_head": "**المادة السابعة من نظام التنفيذ**\n\nإذا وقع تعدٍّ، أو مقاومة، أو محاولة لتعطيل التنفيذ، وجب على قاضي التنفيذ اتخاذ جميع الإجراءات التحفظية، وله الأمر على الجهات المختصة بتقديم المعونة المطلوبة، ولا يجوز لمأموري التنفيذ كسر الأبواب، أو فتح الأقفال بالقوة لإجراء التنفيذ، إلا بعد استئذان قاضي التنفيذ، وتوقيع محضر بذلك [1].\n\nتوجز المادة واجب قاضي التنفيذ عند حدوث أي تعدٍّ أو مقاومة أو تعطيل للتنفيذ، م",
+      "created": [
+        "d97f4070-aec5-4da5-ba51-500011d87497"
+      ]
+    },
+    {
+      "kind": "control",
+      "question": "اش يقول نظام العمل؟",
+      "expected_regulation": "da51024f-a713-48e7-af87-b6a541f055e4",
+      "resolved": [
+        {
+          "level": "regulation_doc",
+          "ref_id": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+          "regulation_id": "da51024f-a713-48e7-af87-b6a541f055e4",
+          "article_id": "",
+          "article_number": "",
+          "title": "نظام العمل",
+          "subtitle": ""
+        }
+      ],
+      "selected": [
+        "C1"
+      ],
+      "searcher_runs": 1,
+      "answer_head": "نظام العمل السعودي هو النظام الأساسي الذي ينظم علاقات العمل في المملكة، صادر بالمرسوم الملكي رقم (م/51) بتاريخ 1426/8/23 هـ وآخر تعديلاته بالمرسوم الملكي رقم (م/44) بتاريخ 1446/2/8 هـ [1]. يخضع له كل عقد عمل يُؤدَّى في المملكة — بما في ذلك عقود عمال الحكومة والمؤسسات العامة والمؤسسات الخيرية وعقود التأهيل والتدريب والعاملين لبعض الوقت — مع استثناء أفراد أسرة صاحب العمل واللاعبين والمدربين والعمالة",
+      "created": [
+        "2aaf0b09-5ec6-4aea-9006-fedc440f7f13"
+      ]
+    }
+  ],
+  "created_item_ids": [
+    "075685cf-a6f0-4c94-b27c-71b2bab5d7e0"
+  ],
+  "results": [
+    {
+      "check": "the searcher RAN (Case B does not skip it)",
+      "ok": true,
+      "detail": 1
+    },
+    {
+      "check": "the carried page is registered as handle C1",
+      "ok": true,
+      "detail": {
+        "handles": [
+          "C1",
+          "C2"
+        ],
+        "C1": {
+          "level": "regulation_doc",
+          "regulation_id": "da51024f-a713-48e7-af87-b6a541f055e4",
+          "chunk_id": "",
+          "article_id": "",
+          "article_number": "",
+          "case_id": "",
+          "case_ref": "",
+          "circular_id": "",
+          "service_id": "",
+          "title": "نظام العمل",
+          "subtitle": "",
+          "doc_type": "",
+          "source_url": ""
+        }
+      }
+    },
+    {
+      "check": "C1 carries a preview line",
+      "ok": true,
+      "detail": [
+        "C1 — نظام: نظام العمل — أحضرها المستخدم من المكتبة"
+      ]
+    },
+    {
+      "check": "the preview line reaches the searcher's instructions",
+      "ok": true,
+      "detail": {
+        "lines": [
+          "C1 — نظام: نظام العمل — أحضرها المستخدم من المكتبة"
+        ],
+        "instructions_chars": 764
+      }
+    },
+    {
+      "check": "the searcher resolved at least one object",
+      "ok": true,
+      "detail": [
+        {
+          "data_type": "article",
+          "selected": [
+            "C2"
+          ],
+          "aborted": false,
+          "rationale": "المستخدم يسأل عن المادة 5 من نظام التنفيذ، وتم حلها مباشرة عبر resolve_article وأعطت C2.",
+          "resolved": [
+            {
+              "level": "article",
+              "ref_id": "article:620c25d3-111a-56f5-8553-fc59a4c41987",
+              "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+              "article_id": "620c25d3-111a-56f5-8553-fc59a4c41987",
+              "article_number": "5",
+              "title": "المادة 5",
+              "subtitle": "نظام التنفيذ"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check": "the winning object belongs to نظام التنفيذ (NOT نظام العمل)",
+      "ok": true,
+      "detail": {
+        "resolved": [
+          {
+            "level": "article",
+            "ref_id": "article:620c25d3-111a-56f5-8553-fc59a4c41987",
+            "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+            "article_id": "620c25d3-111a-56f5-8553-fc59a4c41987",
+            "article_number": "5",
+            "title": "المادة 5",
+            "subtitle": "نظام التنفيذ"
+          }
+        ],
+        "enforcement_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+        "labor_id": "da51024f-a713-48e7-af87-b6a541f055e4"
+      }
+    },
+    {
+      "check": "the carried C1 handle was NOT selected",
+      "ok": true,
+      "detail": [
+        "C2"
+      ]
+    },
+    {
+      "check": "the answer mentions نظام التنفيذ",
+      "ok": true,
+      "detail": "نص المادة الخامسة من **نظام التنفيذ**:\n\n> إذا تعددت الدوائر المختصة بالتنفيذ؛ فيكون لقاضي التنفيذ - الذي قام بأول إجراء تنفيذي - الإشراف على التنفيذ وتوزيع حصيلته، وله أن ينيب قاضي تنفيذ في دائرة أخرى للتنفيذ على مال المدين، وتحدد اللائحة الأحكام اللازمة لذلك.\n\nتحدد هذه المادة قاعدة الاختصاص عند تعد"
+    },
+    {
+      "check": "the answer is NOT about نظام العمل",
+      "ok": true,
+      "detail": "نص المادة الخامسة من **نظام التنفيذ**:\n\n> إذا تعددت الدوائر المختصة بالتنفيذ؛ فيكون لقاضي التنفيذ - الذي قام بأول إجراء تنفيذي - الإشراف على التنفيذ وتوزيع حصيلته، وله أن ينيب قاضي تنفيذ في دائرة أخرى للتنفيذ على مال المدين، وتحدد اللائحة الأحكام اللازمة لذلك.\n\nتحدد هذه المادة قاعدة الاختصاص عند تعدد دوائر التنفيذ: قاضي التنفيذ الذي بادر بأول إجراء هو الذي يشرف على التنفيذ ويوزع حصيلته، وله تفويض "
+    },
+    {
+      "check": "the turn did not pause / abort",
+      "ok": true,
+      "detail": {
+        "paused": false,
+        "aborted": false
+      }
+    },
+    {
+      "check": "[hijack] «ابغى المادة 2 من نظام التنفيذ» → the right document",
+      "ok": true,
+      "detail": {
+        "resolved": [
+          {
+            "level": "article",
+            "ref_id": "article:f4229737-8a1f-5bf0-a83e-889212d84283",
+            "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+            "article_id": "f4229737-8a1f-5bf0-a83e-889212d84283",
+            "article_number": "2",
+            "title": "المادة 2",
+            "subtitle": "نظام التنفيذ"
+          }
+        ],
+        "expected": "a49cc765-8023-4d21-88dd-27b6e720efe8"
+      }
+    },
+    {
+      "check": "[hijack] «وش تقول المادة 7 من نظام التنفيذ؟» → the right document",
+      "ok": true,
+      "detail": {
+        "resolved": [
+          {
+            "level": "article",
+            "ref_id": "article:83da3651-ef7c-5caa-aa53-2f6fc3ee912d",
+            "regulation_id": "a49cc765-8023-4d21-88dd-27b6e720efe8",
+            "article_id": "83da3651-ef7c-5caa-aa53-2f6fc3ee912d",
+            "article_number": "7",
+            "title": "المادة 7",
+            "subtitle": "نظام التنفيذ"
+          }
+        ],
+        "expected": "a49cc765-8023-4d21-88dd-27b6e720efe8"
+      }
+    },
+    {
+      "check": "[control] «اش يقول نظام العمل؟» → the right document",
+      "ok": true,
+      "detail": {
+        "resolved": [
+          {
+            "level": "regulation_doc",
+            "ref_id": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+            "regulation_id": "da51024f-a713-48e7-af87-b6a541f055e4",
+            "article_id": "",
+            "article_number": "",
+            "title": "نظام العمل",
+            "subtitle": ""
+          }
+        ],
+        "expected": "da51024f-a713-48e7-af87-b6a541f055e4"
+      }
+    },
+    {
+      "check": "[control] the carried handle C1 WAS selected (round-trip saved)",
+      "ok": true,
+      "detail": [
+        "C1"
+      ]
+    }
+  ],
+  "passed": 14,
+  "failed": 0
+}

@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 
 from fastapi import HTTPException, Request
@@ -30,7 +30,7 @@ from backend.app.services.masking_service import (
 from agents.orchestrator import handle_message
 from shared import quota
 from shared.config import get_settings
-from shared.db.run import run_db
+from shared.db.run import run_db, run_db_retry
 from shared.observability import get_logfire
 from shared.privacy import StreamDecoder
 
@@ -336,18 +336,74 @@ def list_messages(
 # functions (rather than lambdas) makes stack traces readable and satisfies
 # the run_db pattern that passes fn + args.
 
-def _insert_user_message(
+def _is_duplicate_key(exc: Exception) -> bool:
+    """Did this insert already land on an earlier, timed-out attempt?
+
+    Message ids are generated client-side, so retrying a write that actually
+    succeeded (only its response was lost) collides with ``messages_pkey``. That
+    collision is proof of success, not a failure.
+
+    Matched on text because postgrest-py raises a generic APIError whose shape
+    has changed between versions — same reasoning as
+    ``payment_service._is_unique_violation``.
+    """
+    text = str(exc).lower()
+    return "23505" in text or "duplicate key" in text or "already exists" in text
+
+
+def _insert_turn_rows(
     supabase: SupabaseClient,
     user_msg_id: str,
+    assistant_msg_id: str,
     conversation_id: str,
     content: str,
+    user_created_at: str,
+    assistant_created_at: str,
 ) -> None:
-    supabase.table("messages").insert({
-        "message_id": user_msg_id,
-        "conversation_id": conversation_id,
-        "role": "user",
-        "content": content,
-    }).execute()
+    """Insert the user message AND the assistant placeholder in ONE statement.
+
+    Why not two inserts: as a sequential pair, a transport failure on the second
+    left the user row committed with no assistant row — a turn no pipeline ever
+    ran and nothing could ever retry. Forensics found 31 such orphans between
+    2026-03-13 and 2026-08-10 (~3.7% of all user messages, hitting brand-new
+    conversations and follow-ups at the same rate, so not user-triggered). Each
+    one stranded a question in the thread forever and then reached the NEXT
+    request's history as a second consecutive user message — precisely the
+    failure the quota gate above was restructured to prevent.
+
+    A multi-row PostgREST insert is a single statement, so it is all-or-nothing:
+    either the turn exists or nothing was written and the send can be retried
+    cleanly. That atomicity is also what makes this safe to hand to
+    ``run_db_retry`` — there is no partial state for a second attempt to trip on,
+    and the only way a retry can fail is the duplicate-key that means it worked.
+
+    Timestamps are explicit and derived from ONE clock read because both rows
+    would otherwise share the statement's ``now()`` and tie. Every reader here
+    orders by ``created_at`` (history builder, list_messages, the memory agents),
+    and a tie lets the placeholder sort ahead of the question it answers.
+    """
+    try:
+        supabase.table("messages").insert([
+            {
+                "message_id": user_msg_id,
+                "conversation_id": conversation_id,
+                "role": "user",
+                "content": content,
+                "created_at": user_created_at,
+            },
+            {
+                "message_id": assistant_msg_id,
+                "conversation_id": conversation_id,
+                "role": "assistant",
+                "content": "",
+                "model": "ريحان",
+                "created_at": assistant_created_at,
+            },
+        ]).execute()
+    except Exception as e:  # noqa: BLE001
+        if _is_duplicate_key(e):
+            return  # a prior attempt landed; only its response was lost
+        raise
 
 
 def _insert_unsent_message(
@@ -487,20 +543,6 @@ def _estimate_ocr_pages(supabase: SupabaseClient, attachment_ids: list) -> int:
     return total
 
 
-def _insert_assistant_placeholder(
-    supabase: SupabaseClient,
-    assistant_msg_id: str,
-    conversation_id: str,
-) -> None:
-    supabase.table("messages").insert({
-        "message_id": assistant_msg_id,
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": "",
-        "model": "ريحان",
-    }).execute()
-
-
 def _delete_message_row(supabase: SupabaseClient, message_id: str) -> None:
     supabase.table("messages").delete().eq("message_id", message_id).execute()
 
@@ -541,8 +583,8 @@ async def send_message_stream(
 
     Ownership is verified by the caller BEFORE this generator runs.
 
-    1. Save user message to DB (BEFORE AI call — crash-safe)
-    2. Create assistant message placeholder
+    1. Save user message + assistant placeholder in ONE atomic insert
+       (BEFORE AI call — crash-safe)
     3. Yield message_start event
     4. Call RAG pipeline → yield token events
     5. Yield citations event
@@ -721,29 +763,58 @@ async def send_message_stream(
         })
         return
 
-    # 1. Save user message BEFORE AI call (Absolute Rule #7)
+    # 1. Persist the turn BEFORE the AI call (Absolute Rule #7).
+    #
+    # Both rows go in ONE atomic statement, retried on transport failure — see
+    # _insert_turn_rows for why this is not two sequential inserts. The failure
+    # mode it removes: user row committed, assistant row missing, no pipeline
+    # ever spawned, and nothing in the system able to retry it.
     user_msg_id = str(uuid.uuid4())
+    assistant_msg_id = str(uuid.uuid4())
+    _turn_at = datetime.now(timezone.utc)
     try:
-        await run_db(
-            _insert_user_message,
-            supabase, user_msg_id, conversation_id, content,
+        await run_db_retry(
+            _insert_turn_rows,
+            supabase,
+            user_msg_id,
+            assistant_msg_id,
+            conversation_id,
+            content,
+            _turn_at.isoformat(),
+            (_turn_at + timedelta(milliseconds=1)).isoformat(),
         )
     except Exception as e:
-        logger.exception("Error saving user message: %s", e)
+        logger.exception("Error saving turn rows: %s", e)
         _active_runs.pop(conversation_id, None)  # release slot — task never created
-        yield _sse_event("error", {"detail": "حدث خطأ أثناء حفظ الرسالة"})
+        # The insert is all-or-nothing, so nothing was persisted: the client can
+        # re-send this exact text instead of stranding a half-turn in the thread.
+        yield _sse_event("error", {
+            "detail": "تعذّر إرسال رسالتك. يرجى المحاولة مرة أخرى.",
+        })
         return
 
-    await run_db(
-        write_audit_log,
-        supabase,
-        user_id=user_id,
-        action="create",
-        resource_type="message",
-        resource_id=user_msg_id,
-    )
+    # 1b. Bind the reserved slot to the real assistant_msg_id now that the rows
+    # exist. No await between here and the insert above, so the slot is coherent
+    # before any concurrent path can re-inspect it.
+    _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=assistant_msg_id)
 
-    # 1b. Link attachments to user message (if any)
+    # 1c. Audit is a side-effect, not part of the turn. Unguarded, a failure here
+    # escaped the generator with both rows already committed — leaving an empty
+    # assistant placeholder that no pipeline would ever fill, i.e. the same dead
+    # turn by a different door.
+    try:
+        await run_db(
+            write_audit_log,
+            supabase,
+            user_id=user_id,
+            action="create",
+            resource_type="message",
+            resource_id=user_msg_id,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Audit log write failed for message %s: %s", user_msg_id, e)
+
+    # 1d. Link attachments to user message (if any)
     if attachment_ids:
         try:
             await run_db(
@@ -753,25 +824,7 @@ async def send_message_stream(
         except Exception as e:
             logger.warning("Error linking attachments: %s", e)
 
-    # 2. Create assistant message placeholder
-    assistant_msg_id = str(uuid.uuid4())
-    try:
-        await run_db(
-            _insert_assistant_placeholder,
-            supabase, assistant_msg_id, conversation_id,
-        )
-    except Exception as e:
-        logger.exception("Error creating assistant placeholder: %s", e)
-        _active_runs.pop(conversation_id, None)  # release slot — task never created
-        yield _sse_event("error", {"detail": "حدث خطأ داخلي"})
-        return
-
-    # 2b. Update the reserved slot with the real assistant_msg_id now that the
-    # placeholder row exists. No await between here and the task spawn below, so
-    # the slot is fully coherent before any concurrent path can re-inspect it.
-    _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=assistant_msg_id)
-
-    # 2c. Build the turn's identifier-masking codec (وضع السرية) ONCE. This single
+    # 2. Build the turn's identifier-masking codec (وضع السرية) ONCE. This single
     # instance serves BOTH the pipeline (passed to handle_message, which publishes
     # it on a ContextVar for history-encode + workspace_items publisher-decode)
     # AND this relay's SSE stream-decode + persist-decode below. build_turn_codec

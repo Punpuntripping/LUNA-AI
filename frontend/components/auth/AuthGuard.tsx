@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
+import { useChatStore } from "@/stores/chat-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { api, conversationsApi, formsApi } from "@/lib/api";
 import { consumePendingIntent } from "@/lib/post-login-intent";
@@ -143,6 +144,13 @@ export function AuthGuard({ children }: Props) {
   //   claim_anon_answer   → claim the full اسأل ريحان answer, stash it for the
   //                         widget, return to the source page (continuity moment).
   //   open_form_in_writer → copy the form into قوالبي, open the writer.
+  //   chat_with_library_item
+  //                       → create a conversation, stash the library page in the
+  //                         chat-store carry slot, land in chat. The POST itself
+  //                         happens in the destination ChatInput's drain effect so
+  //                         the page arrives as a composer CHIP — which is what
+  //                         makes it ride `attachment_ids` on the first message
+  //                         (simple_search_family §8).
   useEffect(() => {
     if (isLoading || !isAuthenticated) return;
     const intent = consumePendingIntent();
@@ -165,6 +173,18 @@ export function AuthGuard({ children }: Props) {
         } else if (intent.type === "open_form_in_writer") {
           const template = await formsApi.openInWriter(intent.slug);
           router.replace(`/templates/${template.template_id}`);
+        } else if (intent.type === "chat_with_library_item") {
+          const created = await conversationsApi.create({ case_id: null });
+          const newId = created.conversation.conversation_id;
+          useChatStore.getState().setPendingLibraryRefs([
+            {
+              pageType: intent.page_type,
+              pageId: intent.page_id,
+              title: intent.title,
+            },
+          ]);
+          useSidebarStore.getState().setSelectedConversation(newId);
+          router.replace(`/chat/${newId}`);
         }
       } catch {
         // Dropped silently — the default post-login landing takes over.

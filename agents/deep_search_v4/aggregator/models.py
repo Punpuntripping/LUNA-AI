@@ -42,6 +42,13 @@ class Reference(BaseModel):
         "form",
         "circular",
         "case",
+        # simple_search (plan §6.1a). NOT "article"/"regulation" — those two are
+        # already taken by the legacy pre-URA-v3.0 members above, and reusing
+        # them would give the SourceView discriminated union duplicate
+        # discriminator values (an IMPORT-time failure) while typechecking
+        # against the wrong arm of the frontend union (a SILENT one).
+        "article_full",        # one مادة, domain='articles'
+        "regulation_summary",  # a whole نظام, domain='regulation_docs'
     ] = Field(description='Type of source')
     regulation_title: str = Field(description="Parent regulation name (Arabic)")
     article_num: Optional[str] = Field(
@@ -64,11 +71,26 @@ class Reference(BaseModel):
     relevance: Literal["high", "medium"] = Field(description="Upstream reranker tag")
     ref_id: str = Field(
         default="",
-        description="URA ref_id -- reg:{uuid} | compliance:{hash} | case:{uuid}",
+        description=(
+            "Ref id -- reg:{chunks_v2.id} | compliance:{sha1} | case:{case_ref} "
+            "| circular:{circulars.id} | article:{articles_v2.id} "
+            "| regdoc:{regulations_v2.id}"
+        ),
     )
-    domain: Literal["regulations", "compliance", "circulars", "cases"] = Field(
+    domain: Literal[
+        "regulations",
+        "compliance",
+        "circulars",
+        "cases",
+        # simple_search (plan §6.1a). Each pins ONE backing table, and the
+        # ref_id prefix is distinct per domain because `reg:` hard-assumes a
+        # chunks_v2.id: a regulations_v2/articles_v2 uuid smuggled in under it
+        # inserts cleanly and then renders a dead stub, with zero errors.
+        "articles",          # articles_v2 — ONE مادة
+        "regulation_docs",   # regulations_v2 — the WHOLE نظام ('regulations' is a CHUNK)
+    ] = Field(
         default="regulations",
-        description="Which executor produced this reference",
+        description="Which executor / family produced this reference",
     )
     # -- Reference-view link/metadata fields (URA v3.0 two-view reframe) -----
     # Populated from ``URAResult.for_reference()`` -> ``ReferenceView``.
@@ -127,8 +149,20 @@ class Reference(BaseModel):
         distinction is gone, so reg degrades to a bare ``regulation_title``.
         The legacy ``article``/``section`` types (pre-URA reranker path)
         still render the richer label.
+
+        ``article_full`` (simple_search, plan §6.1a) renders the SAME
+        «{نظام} — مادة {n}» shape as the legacy ``article``: unlike a chunk, it
+        IS one مادة and knows exactly which, so degrading it to the bare نظام
+        would print an end-of-document list where several distinct مواد of one
+        statute are the same line. ``article_num`` is TEXT here — the corpus
+        carries «1-1» / «81 مكرر» — so it is interpolated as-is, never coerced.
+
+        ``regulation_summary`` needs no branch and must not grow one: its
+        ``regulation_title`` already IS the نظام's own name (there is no parent
+        above a whole document -- see ``_reference_from_regdoc_shell``), so the
+        fall-through returns precisely the right label.
         """
-        if self.source_type == "article" and self.article_num:
+        if self.source_type in ("article", "article_full") and self.article_num:
             return f"{self.regulation_title} — مادة {self.article_num}"
         if self.source_type == "section" and self.section_title:
             return f"{self.regulation_title} — {self.section_title}"

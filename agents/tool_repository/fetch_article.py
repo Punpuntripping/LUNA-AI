@@ -53,6 +53,11 @@ from typing import Protocol, runtime_checkable
 
 from pydantic_ai import Agent, RunContext
 
+# Arabic-Indic → ASCII digits. Already existed for the PDPL masking codec and
+# was imported by neither resolver, which is why «٨١» missed (eval §4.3). Pure
+# stdlib underneath — no I/O, no config, no circular import back into agents/.
+from shared.privacy.codec import normalize_digits
+
 logger = logging.getLogger(__name__)
 
 
@@ -133,15 +138,36 @@ _TATWEEL = "ـ"  # kashida / tatweel — decorative letter-stretch, dropped.
 _WS_RE = re.compile(r"\s+")
 # A leading definite article «ال» that prefixes the whole title.
 _LEADING_AL_RE = re.compile(r"^ال")
+# A DETACHED «و» conjunction — «نظام المنافسات و المشتريات» — which Arabic
+# orthography always writes attached («والمشتريات»). The ``\b`` keeps it from
+# firing on a word that merely ENDS in waw («ذو المال»): both sides of that
+# pair are word characters, so there is no boundary to match.
+_DETACHED_WAW_RE = re.compile(r"\bو\s+")
+# The same conjunction the other way round — used ONLY to build an ILIKE
+# pattern that matches a corpus row spelling it detached. Never used to
+# normalize, where it would split «وزارة» into a word that means nothing.
+_ATTACHED_WAW_RE = re.compile(r"\bو(?=\S)")
 
 
 def _normalize_title(text: str) -> str:
     """Normalize an Arabic regulation title for comparison.
 
     Strips tashkeel + tatweel, unifies alef forms (أ/إ/آ/ٱ → ا), ة → ه,
-    ى → ي, ؤ → و, ئ → ي, collapses whitespace, and drops a single leading
-    «ال». Returns the normalized lowercase string (lowercasing is a no-op on
-    Arabic letters but harmlessly normalizes any embedded Latin).
+    ى → ي, ؤ → و, ئ → ي, collapses whitespace, **re-attaches a detached «و»
+    conjunction**, and drops a single leading «ال». Returns the normalized
+    lowercase string (lowercasing is a no-op on Arabic letters but harmlessly
+    normalizes any embedded Latin).
+
+    The waw fold is not cosmetic. The corpus title of the flagship procurement
+    law is «نظام المنافسات و المشتريات الحكومية» — with a space no user can
+    see or type. Without the fold, «نظام المنافسات والمشتريات الحكومية» is not
+    an exact match, so neither this resolver's ``exact`` win nor manual_search's
+    1000-point pin fires, and the law ranks SIXTH behind five لوائح that merely
+    cite it (eval report §4.2). Measured live 2026-08-16: only **13 of 3,951**
+    titles (and 5 clean_titles) carry a detached waw, every one a typography
+    artifact, and collapsing it creates **zero** new duplicate-normalized-title
+    groups (32 before, 32 after) — it recovers the pin without widening any
+    collision.
 
     Pure: no DB, no I/O — the comparison key for both the query title and each
     candidate ``title``/``clean_title``.
@@ -160,6 +186,7 @@ def _normalize_title(text: str) -> str:
     # Common letter-shape unifications.
     s = s.replace("ة", "ه").replace("ى", "ي").replace("ؤ", "و").replace("ئ", "ي")
     s = _WS_RE.sub(" ", s).strip()
+    s = _DETACHED_WAW_RE.sub("و", s)
     s = _LEADING_AL_RE.sub("", s).strip()
     return s.lower()
 
@@ -175,6 +202,152 @@ def _distinctive_token(title: str) -> str:
     if not tokens:
         return title.strip()
     return max(tokens, key=len)
+
+
+# --------------------------------------------------------------------------- #
+# Article-number keys — Arabic-Indic digits and Arabic ordinals. Pure.
+#
+# ``articles_v2.article_number`` is TEXT and the corpus writes it in Western
+# digits («81», «1-1», «25 مكرر»). A user — and the article's own heading —
+# writes «٨١» or «الحادية والثمانون». Both tool docstrings ask the model to
+# convert first; eval §4.3 measured what happens when it does not: art-02 (٨١)
+# and art-03 (الحادية والثمانون) FAILED on BOTH resolver legs, with the parent
+# نظام resolving correctly and only the article key missing. This is the
+# deterministic safety net for a responsibility that was delegated with none.
+# --------------------------------------------------------------------------- #
+
+# Ordinal words as a lawyer writes them. The lookup keys are their
+# ``_normalize_title`` folds, built once at import, so this module keeps ONE
+# spelling convention instead of a second hand-folded table that can drift.
+_ORD_UNIT_WORDS: dict[str, int] = {
+    "الأولى": 1, "الحادية": 1, "الواحدة": 1, "الأول": 1, "الحادي": 1,
+    "الثانية": 2, "الثاني": 2,
+    "الثالثة": 3, "الثالث": 3,
+    "الرابعة": 4, "الرابع": 4,
+    "الخامسة": 5, "الخامس": 5,
+    "السادسة": 6, "السادس": 6,
+    "السابعة": 7, "السابع": 7,
+    "الثامنة": 8, "الثامن": 8,
+    "التاسعة": 9, "التاسع": 9,
+    "العاشرة": 10, "العاشر": 10,
+}
+# The teen marker: «الحادية عشرة» = 1 + 10. Distinct from «العاشرة» = 10.
+_ORD_TEEN_WORDS: tuple[str, ...] = ("عشرة", "عشر")
+_ORD_TENS_WORDS: dict[str, int] = {
+    "العشرون": 20, "العشرين": 20,
+    "الثلاثون": 30, "الثلاثين": 30,
+    "الأربعون": 40, "الأربعين": 40,
+    "الخمسون": 50, "الخمسين": 50,
+    "الستون": 60, "الستين": 60,
+    "السبعون": 70, "السبعين": 70,
+    "الثمانون": 80, "الثمانين": 80,
+    "التسعون": 90, "التسعين": 90,
+}
+_ORD_HUNDREDS_WORDS: dict[str, int] = {
+    "المائة": 100, "المئة": 100,
+    "المائتان": 200, "المائتين": 200, "المئتان": 200, "المئتين": 200,
+    "الثلاثمائة": 300, "الثلاثمئة": 300,
+    "الأربعمائة": 400, "الأربعمئة": 400,
+    "الخمسمائة": 500, "الخمسمئة": 500,
+    "الستمائة": 600, "الستمئة": 600,
+    "السبعمائة": 700, "السبعمئة": 700,
+    "الثمانمائة": 800, "الثمانمئة": 800,
+    "التسعمائة": 900, "التسعمئة": 900,
+}
+# Structural words carrying no value: «المادة السابعة عشرة بعد المائة».
+_ORD_SKIP_WORDS: tuple[str, ...] = ("المادة", "بعد")
+
+_ORD_UNITS: dict[str, int] = {_normalize_title(w): v for w, v in _ORD_UNIT_WORDS.items()}
+_ORD_TENS: dict[str, int] = {_normalize_title(w): v for w, v in _ORD_TENS_WORDS.items()}
+_ORD_HUNDREDS: dict[str, int] = {
+    _normalize_title(w): v for w, v in _ORD_HUNDREDS_WORDS.items()
+}
+_ORD_TEENS: frozenset[str] = frozenset(_normalize_title(w) for w in _ORD_TEEN_WORDS)
+_ORD_SKIP: frozenset[str] = frozenset(_normalize_title(w) for w in _ORD_SKIP_WORDS)
+
+# Recognized, contributes nothing. No real ordinal value is negative.
+_ORD_SKIP_VALUE = -1
+
+
+def _ordinal_token_variants(token: str) -> tuple[str, ...]:
+    """The folded token, plus its form without a leading «و» conjunction.
+
+    Order matters: «الواحدة» must resolve as ITSELF (1) before anything strips
+    its first letter, while «والثمانون» only resolves once the conjunction is
+    gone. Trying the whole token first gets both right.
+    """
+    folded = _normalize_title(token)
+    if not folded:
+        return ()
+    if len(folded) > 1 and folded.startswith("و"):
+        return (folded, _LEADING_AL_RE.sub("", folded[1:]).strip())
+    return (folded,)
+
+
+def _ordinal_token_value(token: str) -> int | None:
+    """One token's contribution, :data:`_ORD_SKIP_VALUE`, or ``None`` if unknown."""
+    for variant in _ordinal_token_variants(token):
+        if variant in _ORD_SKIP:
+            return _ORD_SKIP_VALUE
+        for table in (_ORD_UNITS, _ORD_TENS, _ORD_HUNDREDS):
+            if variant in table:
+                return table[variant]
+        if variant in _ORD_TEENS:
+            return 10
+    return None
+
+
+def _arabic_ordinal_to_int(text: str) -> int | None:
+    """«الحادية والثمانون» → 81. ``None`` when the string is not an ordinal.
+
+    Purely additive across units, the «عشرة» teen marker, tens and hundreds —
+    which is exactly how the corpus writes an article heading: «المادة السابعة
+    عشرة بعد المائة» = 7 + 10 + 100 = 117. Covers 1–999, and the corpus tops out
+    at 716 مادة (نظام المعاملات المدنية).
+
+    **Any** unrecognized token aborts the whole parse. A partial reading would
+    invent an article number and hand back a real article of the wrong مادة,
+    which is strictly worse than not folding at all — so «25 مكرر» returns
+    ``None`` here and keeps resolving on its raw key.
+    """
+    total = 0
+    seen_value = False
+    for token in _WS_RE.split((text or "").strip()):
+        if not token:
+            continue
+        value = _ordinal_token_value(token)
+        if value is None:
+            return None
+        if value == _ORD_SKIP_VALUE:
+            continue
+        total += value
+        seen_value = True
+    return total if seen_value and total > 0 else None
+
+
+def article_number_keys(article_number: str) -> list[str]:
+    """Every exact-text key one article number could be stored under, best first.
+
+    The RAW string always comes first, so compound keys («1-1», «25 مكرر») still
+    resolve on the first round trip and nothing that already worked changes
+    shape. The folds are additive: Arabic-Indic digits via
+    ``shared.privacy.codec.normalize_digits`` (which already existed and was
+    imported by neither resolver), then the Arabic ordinal.
+    """
+    keys: list[str] = []
+
+    def _add(candidate: str) -> None:
+        candidate = (candidate or "").strip()
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+
+    raw = (article_number or "").strip()
+    _add(raw)
+    _add(normalize_digits(raw))
+    ordinal = _arabic_ordinal_to_int(raw)
+    if ordinal is not None:
+        _add(str(ordinal))
+    return keys
 
 
 # --------------------------------------------------------------------------- #
@@ -258,80 +431,206 @@ def _rank_candidates(query_title: str, rows: list[dict]) -> list[RegCandidate]:
 # --------------------------------------------------------------------------- #
 
 
-def _fetch_reg_candidates(supabase, query_title: str) -> list[dict]:
-    """Candidate-fetch regulations whose title/clean_title ILIKE the query.
+# The candidate-fetch stages, weakest last. ``full`` means a title CONTAINS the
+# user's whole phrase; ``token`` means it merely shares one word with it. The
+# difference is the whole of eval bug #1 — see :func:`_fetch_reg_candidates_staged`.
+STAGE_FULL = "full"
+STAGE_TOKEN = "token"
 
-    PostgREST ILIKE is exact-char, so the RAW (un-normalized) query string is
-    used as the ``%token%`` pattern. Runs the full-string pattern on both
-    ``title`` and ``clean_title``, merges + de-dupes by ``id``; if that yields
-    nothing, retries with the single most distinctive raw token. Never raises —
-    a failed query logs and contributes nothing.
+
+def _reg_ilike_patterns(raw: str) -> list[str]:
+    """Every full-string ILIKE pattern worth trying. All exact-char safe.
+
+    PostgREST ILIKE compares characters, so a pattern may only be transformed
+    in ways that keep it spelled the way the CORPUS spells it. Three do:
+    dropping a leading «ال», and attaching or detaching a «و» conjunction. The
+    rest of ``_normalize_title``'s folds — ة→ه, ى→ي, alef unification — do NOT,
+    because they rewrite the string into an orthography no row contains.
+
+    This is eval bug #3, and it has two instances, both the same shape: the
+    resolver normalized before RANKING but not before FETCHING, so the
+    candidate pool could not contain the answer and ``difflib`` confidently
+    picked the best of what was left.
+
+    * **Leading «ال».** «النظام العمل» matches no title verbatim, so the old
+      code fell straight to the distinctive-token retry on «النظام» — 117 rows
+      of every title containing it, and «نظام العمل» is not among them because
+      that title does not contain the substring «النظام». Result: **«النظام
+      العمل» → «النظام الصحي»**. Measured live 2026-08-16, the al-stripped
+      pattern returns 9 rows with «نظام العمل» among them, which then wins as an
+      exact normalized match.
+    * **Detached «و».** «نظام المنافسات والمشتريات الحكومية» DOES return 5 rows
+      — five لوائح that cite the law — and the law itself is in none of them,
+      because its corpus title spells the conjunction detached («نظام المنافسات
+      و المشتريات الحكومية»). Returning early on those 5 is what made the
+      resolver commit to «نطاق تطبيق نظام المنافسات والمشتريات الحكومية
+      ولائحته التنفيذية» (eval R7). Hence the caller MERGES every pattern's
+      rows instead of stopping at the first non-empty one: a hit on the raw
+      string is no evidence that a variant has nothing better.
+
+    Cost, measured live 2026-08-16 (no trigram index exists on this table, so
+    each pattern is a sequential scan over 3,951 rows × 2 columns): **~370 ms
+    per pattern**. Most queries generate exactly one and are unchanged; a
+    leading «ال» or a «و»-initial token adds a second (~760 ms total). Worth
+    knowing before adding a third fold — and the durable fix is a normalized,
+    indexed title column, not more patterns.
+    """
+    out = [raw]
+    for variant in (
+        _LEADING_AL_RE.sub("", raw).strip(),
+        _DETACHED_WAW_RE.sub("و", raw).strip(),
+        _ATTACHED_WAW_RE.sub("و ", raw).strip(),
+    ):
+        if variant and variant not in out:
+            out.append(variant)
+    return out
+
+
+def _reg_ilike(supabase, col: str, token: str) -> list[dict]:
+    """One ``%token%`` ILIKE over one column. Never raises."""
+    try:
+        resp = (
+            supabase.table(_REGS_TABLE)
+            .select(_REG_COLUMNS)
+            .ilike(col, f"%{token}%")
+            .execute()
+        )
+        return list(getattr(resp, "data", None) or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_article: reg ILIKE %s ~ %r failed: %s", col, token, exc)
+        return []
+
+
+def _merge_rows(*lists: list[dict]) -> list[dict]:
+    """Concatenate row lists, de-duplicating by ``id``, first occurrence wins."""
+    by_id: dict[str, dict] = {}
+    for rows in lists:
+        for row in rows:
+            rid = str(row.get("id") or "")
+            if rid and rid not in by_id:
+                by_id[rid] = row
+    return list(by_id.values())
+
+
+def _fetch_reg_candidates_full(supabase, query_title: str) -> list[dict]:
+    """Rows whose title/clean_title contains the user's WHOLE phrase.
+
+    The strong stage: every row here shares the entire query string with the
+    user, in one of the orthographic variants :func:`_reg_ilike_patterns`
+    enumerates. Merged across all patterns and both columns.
     """
     raw = (query_title or "").strip()
     if not raw:
         return []
+    lists: list[list[dict]] = []
+    for pattern in _reg_ilike_patterns(raw):
+        lists.append(_reg_ilike(supabase, "title", pattern))
+        lists.append(_reg_ilike(supabase, "clean_title", pattern))
+    return _merge_rows(*lists)
 
-    def _ilike(col: str, token: str) -> list[dict]:
-        try:
-            resp = (
-                supabase.table(_REGS_TABLE)
-                .select(_REG_COLUMNS)
-                .ilike(col, f"%{token}%")
-                .execute()
-            )
-            return list(getattr(resp, "data", None) or [])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("fetch_article: reg ILIKE %s ~ %r failed: %s", col, token, exc)
-            return []
 
-    def _merge(*lists: list[dict]) -> list[dict]:
-        by_id: dict[str, dict] = {}
-        for lst in lists:
-            for r in lst:
-                rid = str(r.get("id") or "")
-                if rid and rid not in by_id:
-                    by_id[rid] = r
-        return list(by_id.values())
+def _fetch_reg_candidates_token(supabase, query_title: str) -> list[dict]:
+    """Rows sharing only the single most distinctive WORD with the query.
 
-    rows = _merge(_ilike("title", raw), _ilike("clean_title", raw))
+    The weak stage, and a genuinely last resort: «السيبراني» alone returns 29
+    rows, «النظام» returns 117. It exists so a mistyped or over-qualified name
+    still reaches a candidate list, and callers must treat what it returns as
+    recall, never as evidence of identity — see the ``manual_search`` rung
+    ``ilike_token`` and its ``_RECALL_ONLY_RUNGS`` membership.
+    """
+    raw = (query_title or "").strip()
+    token = _distinctive_token(raw) if raw else ""
+    if not token or token == raw:
+        return []
+    return _merge_rows(
+        _reg_ilike(supabase, "title", token),
+        _reg_ilike(supabase, "clean_title", token),
+    )
+
+
+def _fetch_reg_candidates_staged(supabase, query_title: str) -> tuple[list[dict], str]:
+    """:func:`_fetch_reg_candidates` plus WHICH stage produced the rows.
+
+    Returns ``(rows, stage)`` where stage is :data:`STAGE_FULL` (some title
+    contains the user's whole phrase) or :data:`STAGE_TOKEN` (nothing did, so
+    these rows share only the single most distinctive word). Empty rows carry
+    an empty stage.
+
+    Callers that rank with ``difflib`` can ignore the stage — the score already
+    reflects the weakness. ``manual_search`` cannot: its Gate 2 reads title-term
+    COVERAGE, which a one-word-in-common row can clear without ever being a
+    plausible answer. Measured live, all three of the eval's wrong-document
+    ILIKE wins came from this stage and the full-string stage returned **zero**
+    rows for each of them:
+
+    ===================================  ===========  ==========================
+    query (absent from the corpus)       full-string  token retry
+    ===================================  ===========  ==========================
+    «نظام الفساد المالي والإداري»          0 rows       «والإداري» → 2 rows
+    «نظام حماية الفضاء السيبراني الوطني»   0 rows       «السيبراني» → 29 rows
+    «تطبيقات نظام العمل»                  0 rows       «تطبيقات» → 9 rows
+    ===================================  ===========  ==========================
+
+    ``manual_search`` calls :func:`_fetch_reg_candidates_full` and
+    :func:`_fetch_reg_candidates_token` separately rather than using this
+    composition, because it runs them at different points on its ladder: the
+    strong stage unconditionally, the weak one only if nothing has resolved.
+    """
+    rows = _fetch_reg_candidates_full(supabase, query_title)
     if rows:
-        return rows
+        return rows, STAGE_FULL
+    rows = _fetch_reg_candidates_token(supabase, query_title)
+    return (rows, STAGE_TOKEN) if rows else ([], "")
 
-    token = _distinctive_token(raw)
-    if token and token != raw:
-        rows = _merge(_ilike("title", token), _ilike("clean_title", token))
-    return rows
+
+def _fetch_reg_candidates(supabase, query_title: str) -> list[dict]:
+    """Candidate-fetch regulations whose title/clean_title ILIKE the query.
+
+    The rows of :func:`_fetch_reg_candidates_staged`, without the stage — the
+    shape every existing caller (``resolve_regulation_id``, the eval harness)
+    already expects. Never raises: a failed query logs and contributes nothing.
+    """
+    return _fetch_reg_candidates_staged(supabase, query_title)[0]
 
 
 def _fetch_article_content(supabase, regulation_id: str, article_number: str) -> str | None:
     """Fetch ``articles_v2.content`` for ``(regulation_id, article_number)``.
 
     ``article_number`` is matched by exact TEXT equality (the corpus stores
-    compound values like ``"1-1"`` as strings). Returns the content string, or
+    compound values like ``"1-1"`` as strings), tried across every key
+    :func:`article_number_keys` derives — the raw string first, then its
+    Arabic-Indic-digit and Arabic-ordinal folds. Returns the content string, or
     ``None`` when no such article row exists. Never raises.
+
+    The extra round trips only ever happen on a MISS, which used to be the end
+    of the road anyway: «٨١» and «الحادية والثمانون» both resolved the right
+    نظام and then failed on the key alone.
     """
-    try:
-        resp = (
-            supabase.table(_ARTICLES_TABLE)
-            .select(_ARTICLE_COLUMNS)
-            .eq("regulation_id", regulation_id)
-            .eq("article_number", article_number)
-            .limit(1)
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "fetch_article: article fetch failed for reg=%s art=%r: %s",
-            regulation_id, article_number, exc,
-        )
-        return None
-    data = getattr(resp, "data", None)
-    if not data:
-        return None
-    # ``.limit(1)`` returns a list; some fakes may return a single dict.
-    row = data[0] if isinstance(data, list) else data
-    content = (row or {}).get("content")
-    return content if content else None
+    for key in article_number_keys(article_number):
+        try:
+            resp = (
+                supabase.table(_ARTICLES_TABLE)
+                .select(_ARTICLE_COLUMNS)
+                .eq("regulation_id", regulation_id)
+                .eq("article_number", key)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "fetch_article: article fetch failed for reg=%s art=%r: %s",
+                regulation_id, key, exc,
+            )
+            return None
+        data = getattr(resp, "data", None)
+        if not data:
+            continue
+        # ``.limit(1)`` returns a list; some fakes may return a single dict.
+        row = data[0] if isinstance(data, list) else data
+        content = (row or {}).get("content")
+        if content:
+            return content
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -741,8 +1040,15 @@ __all__ = [
     "accumulate_fetched_article",
     "flush_statute_package",
     "build_statute_package_md",
+    "article_number_keys",
     "_fetch_article_content",
+    "_fetch_reg_candidates",
+    "_fetch_reg_candidates_full",
+    "_fetch_reg_candidates_staged",
+    "_fetch_reg_candidates_token",
     "_normalize_title",
+    "STAGE_FULL",
+    "STAGE_TOKEN",
     "FetchArticleResult",
     "RegCandidate",
     "ResolveResult",

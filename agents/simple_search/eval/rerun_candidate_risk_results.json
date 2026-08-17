@@ -1,0 +1,236 @@
+[
+  {
+    "fid": "fp-01",
+    "rep": 1,
+    "query": "نظام الفساد المالي والإداري",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-01",
+    "rep": 2,
+    "query": "نظام الفساد المالي والإداري",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-01",
+    "rep": 3,
+    "query": "نظام الفساد المالي والإداري",
+    "kind": "must_refuse",
+    "outcome": "committed_junk",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [
+      "C1"
+    ],
+    "resolved_titles": [
+      "الترتيبات التنظيمية والهيكلية المتصلة بمكافحة الفساد المالي والإداري"
+    ],
+    "resolved_ids": [
+      "7ee43cf7-73e9-4e58-b5e3-cd738d5872b9"
+    ],
+    "rationale": "المستخدم طلب «نظام الفساد المالي والإداري»، وأقرب تطابق في السجل هو «الترتيبات التنظيمية والهيكلية المتصلة بمكافحة الفساد المالي والإداري» (تطابق تقريبي).",
+    "note": ""
+  },
+  {
+    "fid": "fp-02",
+    "rep": 1,
+    "query": "نظام حماية الفضاء السيبراني الوطني",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-02",
+    "rep": 2,
+    "query": "نظام حماية الفضاء السيبراني الوطني",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-02",
+    "rep": 3,
+    "query": "نظام حماية الفضاء السيبراني الوطني",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "desc-03",
+    "rep": 1,
+    "query": "تطبيقات نظام العمل",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "desc-03",
+    "rep": 2,
+    "query": "تطبيقات نظام العمل",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "desc-03",
+    "rep": 3,
+    "query": "تطبيقات نظام العمل",
+    "kind": "must_refuse",
+    "outcome": "aborted",
+    "aborted": true,
+    "abort_reason": "السؤال عن \"تطبيقات نظام العمل\" يبدو استفساراً عن كيفية تطبيق النظام عملياً، وليس طلباً لفتح وثيقة قانونية محددة (مادة، نظام، حكم، تعميم، أو خدمة). هذا سؤال تطبيقي تكاملي وليس من اختصاص البحث عن هوية وثيقة.",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": ""
+  },
+  {
+    "fid": "fp-05",
+    "rep": 1,
+    "query": "نظام الذكاء الاصطناعي السعودي",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-05",
+    "rep": 2,
+    "query": "نظام الذكاء الاصطناعي السعودي",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "fp-05",
+    "rep": 3,
+    "query": "نظام الذكاء الاصطناعي السعودي",
+    "kind": "must_refuse",
+    "outcome": "asked",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [],
+    "resolved_titles": [],
+    "resolved_ids": [],
+    "rationale": "",
+    "note": "DeferredToolRequests"
+  },
+  {
+    "fid": "reg-10",
+    "rep": 1,
+    "query": "نظام العمل التطوعي السعودي",
+    "kind": "control",
+    "outcome": "committed_other",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [
+      "C1"
+    ],
+    "resolved_titles": [
+      "نظام العمل التطوعي"
+    ],
+    "resolved_ids": [
+      "271b646f-42ce-472d-80a9-4248209e57b1"
+    ],
+    "rationale": "المستخدم طلب \"نظام العمل التطوعي السعودي\" وتم حلّه إلى نظام العمل التطوعي عبر resolver.",
+    "note": ""
+  },
+  {
+    "fid": "reg-10",
+    "rep": 2,
+    "query": "نظام العمل التطوعي السعودي",
+    "kind": "control",
+    "outcome": "committed_other",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [
+      "C1"
+    ],
+    "resolved_titles": [
+      "نظام العمل التطوعي"
+    ],
+    "resolved_ids": [
+      "271b646f-42ce-472d-80a9-4248209e57b1"
+    ],
+    "rationale": "المستخدم يطلب نظام العمل التطوعي السعودي، وتم العثور على \"نظام العمل التطوعي\" بتطابق تقريبي. الوصف \"السعودي\" يؤكد أنه النظام المقصود.",
+    "note": ""
+  },
+  {
+    "fid": "reg-10",
+    "rep": 3,
+    "query": "نظام العمل التطوعي السعودي",
+    "kind": "control",
+    "outcome": "committed_other",
+    "aborted": false,
+    "abort_reason": "",
+    "selected": [
+      "C1"
+    ],
+    "resolved_titles": [
+      "نظام العمل التطوعي"
+    ],
+    "resolved_ids": [
+      "271b646f-42ce-472d-80a9-4248209e57b1"
+    ],
+    "rationale": "تطابق تقريبي مع \"نظام العمل التطوعي\" — المستخدم أضاف \"السعودي\" توضيحاً.",
+    "note": ""
+  }
+]

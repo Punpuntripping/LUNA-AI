@@ -50,6 +50,10 @@ CASE_ID = "dddd4444-4444-4444-8444-444444444444"
 CASE_ID_2 = "dddd5555-5555-4555-8555-555555555555"
 CIRC_ID = "eeee5555-5555-4555-8555-555555555555"
 SVC_ID = "ffff6666-6666-4666-8666-666666666666"
+# simple_search (plan §6.1a): ONE مادة and a WHOLE نظام, each with its own
+# domain + ref_id prefix. ``regdoc:`` points at the SAME نظام the chunk above
+# belongs to — that shared destination is the point (§6.2).
+ART_ID = "aaaa9999-9999-4999-8999-999999999999"
 
 CASE_SUBJECT = "نزاع عمالي حول مطالبة موظفة سابقة بمكافأة أعمال التفتيش الميداني"
 
@@ -148,6 +152,23 @@ def corpus(**tables: Any) -> CountingSupabase:
             },
         ],
         "circulars": [{"id": CIRC_ID, "title": "تعميم مهم", "content": "ن" * 5000}],
+        "articles_v2": [
+            {
+                "id": ART_ID,
+                "regulation_id": REG_ID,
+                "article_number": "81",
+                "content": "نص المادة.",
+            }
+        ],
+        "regulations_v2": [
+            {
+                "id": REG_ID,
+                "title": "نظام العمل الصادر بالمرسوم",
+                "clean_title": "نظام العمل",
+                "landing_url": "https://laws.gov.sa/x",
+                "llm_summary": "ملخص النظام.",
+            }
+        ],
         "services": [
             {
                 "id": SVC_ID,
@@ -235,6 +256,174 @@ def test_regulation_chunk_lifts_to_its_nizam_page() -> None:
         )
     )
     assert urls == {3: "/regulations/nizam-al-amal"}
+
+
+# --- the two simple_search domains (plan §6.1a / §13 follow-up 1) ----------
+#
+# Wave 1 shipped both domains through the RESOLVER (so the reveal dialog's
+# button worked) but not through this batched LIST path, which branched on
+# cases/circulars/regulations only and fell through to "no button" by design.
+# «فتح النظام في ريحان» was therefore missing from the CARD — the one place a
+# reader sees it before spending an unlock.
+
+
+def test_regulation_doc_reference_links_to_its_nizam_page() -> None:
+    """``regdoc:<regulations_v2.id>`` — the id IS the نظام, so the only query is
+    the sidecar. No chunk hop, no article hop."""
+    supabase = corpus(seo_item_meta=[meta("regulation", REG_ID, "nizam-al-amal")])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [ref_row(n=1, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}",
+                     item_id=REG_ID)],
+        )
+    )
+    assert urls == {1: "/regulations/nizam-al-amal"}
+    assert supabase.queries == ["seo_item_meta"]
+
+
+def test_article_reference_lifts_to_its_nizam_page() -> None:
+    """A مادة resolves to its نظام page — the SAME collapse ``_public_page_url``
+    applies at ``ct == 'article'`` (user decision 2026-08-01), not a new
+    ``/regulations/{reg}/{article}`` scheme. ``_URL_PREFIX`` still has no
+    ``article`` key, deliberately."""
+    supabase = corpus(seo_item_meta=[meta("regulation", REG_ID, "nizam-al-amal")])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [ref_row(n=1, domain="articles", ref_id=f"article:{ART_ID}", item_id=ART_ID)],
+        )
+    )
+    assert urls == {1: "/regulations/nizam-al-amal"}
+    # One parent lookup (articles_v2 is a VIEW — no FK to embed through), then
+    # the wing's single sidecar call.
+    assert supabase.queries == ["articles_v2", "seo_item_meta"]
+
+
+def test_the_new_domains_fall_back_to_their_ref_id_tails() -> None:
+    """A row whose write-time ``item_id`` resolution failed still links, from the
+    prefix alone — the same fallback the other three wings have."""
+    supabase = corpus(seo_item_meta=[meta("regulation", REG_ID, "nizam-al-amal")])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [
+                ref_row(n=1, domain="articles", ref_id=f"article:{ART_ID}", item_id=None),
+                ref_row(n=2, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}",
+                        item_id=None),
+            ],
+        )
+    )
+    assert urls == {1: "/regulations/nizam-al-amal", 2: "/regulations/nizam-al-amal"}
+
+
+def test_a_regdoc_row_never_reads_a_reg_prefix() -> None:
+    """§6.2, from this side. ``reg:`` carries a **chunks_v2.id**; accepting one as
+    a ``regulations_v2.id`` here would hand the sidecar the wrong key and link the
+    card at whatever document happens to share that uuid — a wrong page is worse
+    than no page. With no ``item_id`` to fall back on, the row gets no button."""
+    supabase = corpus(seo_item_meta=[meta("regulation", CHUNK_ID, "wrong-page")])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [ref_row(n=1, domain="regulation_docs", ref_id=f"reg:{CHUNK_ID}",
+                     item_id=None)],
+        )
+    )
+    assert urls == {}
+    assert supabase.queries == []
+
+
+def test_an_unpublished_nizam_gives_the_new_domains_no_button_either() -> None:
+    """No slug ⇒ no page ⇒ no key. Never a hub fallback for these two either."""
+    supabase = corpus(seo_item_meta=[])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [
+                ref_row(n=1, domain="articles", ref_id=f"article:{ART_ID}", item_id=ART_ID),
+                ref_row(n=2, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}",
+                        item_id=REG_ID),
+            ],
+        )
+    )
+    assert urls == {}
+
+
+def test_an_article_lookup_failure_only_costs_the_madda_cards() -> None:
+    """Fail-soft per wing: an ``articles_v2`` blip must not take the نظام, the
+    ruling or the تعميم buttons down with it."""
+    supabase = corpus(
+        seo_item_meta=[
+            meta("regulation", REG_ID, "nizam-al-amal"),
+            meta("judgment", CASE_ID, "hukm-ummali-123"),
+        ]
+    )
+    supabase.fail_tables.add("articles_v2")
+
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase,
+            [
+                ref_row(n=1, domain="articles", ref_id=f"article:{ART_ID}", item_id=ART_ID),
+                ref_row(n=2, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}",
+                        item_id=REG_ID),
+                ref_row(n=3, domain="cases", ref_id="case:case-ref-1", item_id=CASE_ID),
+            ],
+        )
+    )
+    assert urls == {2: "/regulations/nizam-al-amal", 3: "/judgments/hukm-ummali-123"}
+
+
+def test_all_six_domains_share_one_sidecar_call_per_wing() -> None:
+    """THE cost assertion, re-stated with the two new domains on the panel.
+
+    Chunks, مواد and whole أنظمة all land in the ``regulation`` bucket, so they
+    share ONE ``seo_item_meta`` call — the bound only moves from ≤4 to ≤5, and
+    only because ``articles_v2`` needs its own parent hop."""
+    rows: list[dict[str, Any]] = []
+    n = 0
+    for _ in range(5):
+        n += 1
+        rows.append(ref_row(n=n, domain="cases", ref_id="case:case-ref-1", item_id=CASE_ID))
+        n += 1
+        rows.append(
+            ref_row(n=n, domain="regulations", ref_id=f"reg:{CHUNK_ID}", item_id=CHUNK_ID)
+        )
+        n += 1
+        rows.append(
+            ref_row(n=n, domain="circulars", ref_id=f"circular:{CIRC_ID}", item_id=CIRC_ID)
+        )
+        n += 1
+        rows.append(
+            ref_row(n=n, domain="articles", ref_id=f"article:{ART_ID}", item_id=ART_ID)
+        )
+        n += 1
+        rows.append(
+            ref_row(n=n, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}", item_id=REG_ID)
+        )
+        n += 1
+        rows.append(
+            ref_row(n=n, domain="compliance", ref_id="compliance:deadbeefcafebabe",
+                    item_id=SVC_ID)
+        )
+
+    supabase = corpus(
+        seo_item_meta=[
+            meta("judgment", CASE_ID, "hukm-ummali-123"),
+            meta("regulation", REG_ID, "nizam-al-amal"),
+            meta("circular", CIRC_ID, "taamim-muhim"),
+        ]
+    )
+    urls = run(lis.public_page_urls_for_reference_rows(supabase, rows))
+
+    assert len(rows) == 30
+    assert len(urls) == 25          # every ref except the 5 compliance ones
+    assert len(supabase.queries) <= 5, supabase.queries
+    assert supabase.queries.count("chunks_v2") == 1
+    assert supabase.queries.count("articles_v2") == 1
+    # The headline: مواد + chunks + whole أنظمة = ONE regulation sidecar call.
+    assert supabase.queries.count("seo_item_meta") == 3
 
 
 def test_circular_uses_its_item_id_with_no_lookup() -> None:
@@ -421,6 +610,34 @@ def test_payload_carries_library_url_per_wing() -> None:
     # The key is present on EVERY entry (never absent), so the client can treat
     # ``null`` as "no page" rather than "old payload".
     assert all("library_url" in e for e in entries)
+
+
+def test_payload_carries_library_url_for_the_simple_search_domains() -> None:
+    """End to end, through the real card builder: «فتح النظام في ريحان» now
+    renders on a مادة card and a whole-نظام card, not only inside the reveal
+    dialog the reader reaches by SPENDING an unlock. That asymmetry — the button
+    existing only after payment — is the wave-1 gap this closes."""
+    supabase = corpus(
+        workspace_item_references=[
+            ref_row(n=1, domain="articles", ref_id=f"article:{ART_ID}", item_id=ART_ID),
+            ref_row(n=2, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}",
+                    item_id=REG_ID),
+        ],
+        seo_item_meta=[meta("regulation", REG_ID, "nizam-al-amal")],
+    )
+    entries = panel(supabase)
+
+    by_n = {e["n"]: e for e in entries}
+    assert by_n[1]["library_url"] == "/regulations/nizam-al-amal"
+    assert by_n[2]["library_url"] == "/regulations/nizam-al-amal"
+    # The mesh is untouched — distinct domains and prefixes, per §6.1a / §6.2.
+    assert by_n[1]["domain"] == "articles"
+    assert by_n[1]["ref_id"] == f"article:{ART_ID}"
+    assert by_n[2]["domain"] == "regulation_docs"
+    assert by_n[2]["ref_id"] == f"regdoc:{REG_ID}"
+    # …and it stayed NAVIGATION: no charge, no ledger row, no quota RPC.
+    assert supabase.tables["library_unlocks"] == []
+    assert supabase.rpc_calls == []
 
 
 def test_payload_library_url_is_null_when_nothing_is_published() -> None:

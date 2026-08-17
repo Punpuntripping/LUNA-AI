@@ -30,6 +30,9 @@ export default function ChatEmptyPage() {
           },
           onError: () => {
             useChatStore.getState().clearPendingMessage();
+            // Nothing can consume a carried library page once the create
+            // failed — drop it rather than leak it into the next conversation.
+            useChatStore.getState().clearPendingLibraryRefs();
             setIsCreating(false);
           },
         }
@@ -62,6 +65,7 @@ export default function ChatEmptyPage() {
           onError: () => {
             useChatStore.getState().clearPendingAttachFiles();
             useChatStore.getState().clearPendingBlogTokens();
+            useChatStore.getState().clearPendingLibraryRefs();
             useChatStore.getState().setPendingComposerDraft(null);
             useChatStore.getState().setPendingTemplateCarry(null);
             setIsCreating(false);

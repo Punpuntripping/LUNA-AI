@@ -7,6 +7,8 @@ import {
   Gavel,
   Building2,
   Megaphone,
+  ScrollText,
+  BookText,
   ExternalLink,
   ChevronDown,
   FileText,
@@ -116,6 +118,27 @@ interface ReferencePanelProps {
   canOpenSourceWi?: (seq: number) => boolean;
 }
 
+/**
+ * Per-domain chip: Arabic label, icon, tint.
+ *
+ * EXHAUSTIVE ON PURPOSE. `Record<ReferenceDomain, …>` means a new member of the
+ * union does not compile until it has a chip here — the alternative (a lookup
+ * with a `?? DOMAIN_META.regulations` fallback, which the card also keeps as a
+ * runtime guard against an unknown domain off the wire) would silently paint a
+ * مادة with the ميزان and call it «نظام».
+ *
+ * The palette is one hue per WING, so the three regulation-backed domains share
+ * sky and separate on icon + shade:
+ *
+ * - `regulations`      — a chunk of a نظام            · ميزان   · sky-600/400
+ * - `regulation_docs`  — the WHOLE نظام               · كتاب    · sky-600/400
+ * - `articles`         — one مادة inside a نظام       · مخطوطة · sky-700/300
+ *
+ * «مادة» is deliberately the same hue as «نظام» (it IS part of one) at a deeper
+ * shade, so it reads as a narrower slice of the same wing rather than a fifth
+ * unrelated colour. cases amber / compliance emerald / circulars violet are
+ * untouched.
+ */
 const DOMAIN_META: Record<
   ReferenceDomain,
   { label: string; icon: typeof Scale; tint: string }
@@ -132,7 +155,41 @@ const DOMAIN_META: Record<
     icon: Megaphone,
     tint: "text-violet-600 dark:text-violet-400",
   },
+  // simple_search (§6.1a). The labels are PINNED by the wire contract — «مادة»
+  // and «نظام» — so they match the backend Literals and the DB CHECK byte for
+  // byte. `regulation_docs` shares `regulations`' label because both are the
+  // document's blanket type; both are overridden by `doc_type` when the corpus
+  // knows the real one (لائحة / تنظيم / دليل / …).
+  articles: {
+    label: "مادة",
+    icon: ScrollText,
+    tint: "text-sky-700 dark:text-sky-300",
+  },
+  regulation_docs: {
+    label: "نظام",
+    icon: BookText,
+    tint: "text-sky-600 dark:text-sky-400",
+  },
 };
+
+/** Domains whose rows carry `regulations_v2.doc_type_raw`. */
+const DOC_TYPE_DOMAINS: ReadonlySet<ReferenceDomain> = new Set<ReferenceDomain>([
+  "regulations",
+  "regulation_docs",
+]);
+
+/**
+ * The corpus's "we could not determine a type" bucket. A sentinel, not a
+ * document type — printing it as the card's chip reads as a broken row.
+ */
+const DOC_TYPE_UNKNOWN = "غير محدد";
+
+/** `doc_type_raw` when it is a real type, else "" (absent, blank, sentinel). */
+function usableDocType(ref: Reference): string {
+  if (!DOC_TYPE_DOMAINS.has(ref.domain)) return "";
+  const raw = (ref.doc_type ?? "").trim();
+  return raw && raw !== DOC_TYPE_UNKNOWN ? raw : "";
+}
 
 /**
  * JSON-driven reference list for a deep_search ``agent_search`` artifact.
@@ -374,14 +431,24 @@ function ReferenceCard({
 }) {
   const meta = DOMAIN_META[reference.domain] ?? DOMAIN_META.regulations;
   const Icon = meta.icon;
-  // Regulations carry their own Arabic document type (regulations_v2.doc_type_raw
-  // — لائحة / تنظيم / دليل / مواصفة قياسية / …), which is far more informative
-  // than the blanket نظام. Fall back to the domain label when the corpus has no
-  // determined type, and for every other domain (whose meta label is already the
-  // real thing: قضية / تعميم / خدمة حكومية).
+  // The regulation-backed domains carry their own Arabic document type
+  // (regulations_v2.doc_type_raw — لائحة / تنظيم / دليل / مواصفة قياسية / …),
+  // which is far more informative than the blanket نظام. BOTH of them: a
+  // `regulation_docs` ref IS that document, so it gets the same treatment the
+  // chunk-level `regulations` ref has always had.
+  //
+  // Falls back to the domain label when the corpus has no determined type, and
+  // for every other domain — whose meta label is already the real thing
+  // (قضية / تعميم / خدمة حكومية / مادة).
+  //
+  // `articles` is NOT in that set on purpose: a مادة is «مادة» whatever its
+  // parent's doc type is. It gets its number instead, when the row has one —
+  // «مادة 81» is what tells two refs from the same نظام apart at a glance.
+  const docType = usableDocType(reference);
+  const articleNum =
+    reference.domain === "articles" ? (reference.article_num ?? "").trim() : "";
   const typeLabel =
-    (reference.domain === "regulations" && reference.doc_type?.trim()) ||
-    meta.label;
+    docType || (articleNum ? `${meta.label} ${articleNum}` : meta.label);
 
   const primaryUrl = referencePrimaryUrl(reference);
   const label = referenceLabel(reference);
@@ -409,9 +476,9 @@ function ReferenceCard({
     <li
       ref={registerRef}
       id={`ref-${reference.n}`}
-      // Tour anchor (Act 3, step 10 resolves `ref-card-10` — the compliance
-      // card, the one that visibly lacks a «في ريحان» button). Emitted for
-      // every card; inert, and distinct from the `id` the flash path uses.
+      // Tour anchor `ref-card-<n>` — the four-source-domains step that resolved
+      // `ref-card-9` is RETIRED from the five-step script. Emitted for every
+      // card anyway; inert, and distinct from the `id` the flash path uses.
       data-tour={`ref-card-${reference.n}`}
       onAnimationEnd={onAnimationEnd}
       className="rounded-lg border bg-card px-3 py-2.5 ref-flash-target"
@@ -712,6 +779,7 @@ function RevealedSource({
           view={view}
           sourceContent={sourceContent}
           hasFullTextExit={!!(libraryUrl || externalUrl)}
+          definiteType={definiteType}
         />
         <CrossRefsSection crossRefs={reference.cross_refs ?? []} />
       </div>
@@ -745,8 +813,10 @@ function RevealedSource({
         </p>
       )}
 
-      {/* Tour anchor (Act 3, step 9) — the dialog's two exits: «فتح المصدر
-          الرسمي» (the issuing body) + «فتح ال… في ريحان» (our library). */}
+      {/* Tour anchor `ref-exits` — the dialog's two exits: «فتح المصدر الرسمي»
+          (the issuing body) + «فتح ال… في ريحان» (our library). Its own step is
+          RETIRED; the five-step script describes both in the source-card step
+          instead of spotlighting them. */}
       <div className="mt-1 flex flex-wrap items-center gap-2" data-tour="ref-exits">
         {externalUrl && (
           <a
@@ -803,6 +873,20 @@ function RevealedSource({
  * Both domains reach here — regulations from `cross_references_v2`, cases from a
  * ruling's `referenced_regulations` — because the backend normalises them onto
  * one `CrossRef` shape. Compliance and circulars have no mesh and render nothing.
+ *
+ * simple_search (§6.1a) — DECISION, recorded because the answer differs per
+ * domain and this renderer asks nothing of the caller:
+ *
+ * - `articles` (`article_full`) **DOES** carry إحالات, and is in fact the mesh's
+ *   natural unit: every one of the 34,537 `cross_references_v2` rows is keyed on
+ *   a مادة (`target_type = "madda"`), which is exactly what a chunk-level
+ *   citation has to approximate today. The backend populates `cross_refs` on the
+ *   article shell and this section renders it with NO change here — the panel
+ *   reads `reference.cross_refs`, never the source view.
+ * - `regulation_docs` (`regulation_summary`) does **not**. A whole نظام has no
+ *   single مادة to project إحالات from, and flattening every مادة's mesh into
+ *   one list would produce hundreds of entries under a summary. Empty array ⇒
+ *   this component returns null, so no guard is needed for it either.
  */
 function CrossRefsSection({ crossRefs }: { crossRefs: CrossRef[] }) {
   const [expanded, setExpanded] = useState(false);
@@ -830,8 +914,9 @@ function CrossRefsSection({ crossRefs }: { crossRefs: CrossRef[] }) {
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
-        // Tour anchor (Act 3, step 8) — «الإحالات … جرّب افتحها». The step
-        // advances on `aria-expanded`, which this button already published.
+        // Tour anchor `ref-crossrefs` — «الإحالات … جرّب افتحها». RETIRED from
+        // the five-step script (its `crossrefs-expanded` DOM beat still exists
+        // in the engine). `aria-expanded` is published regardless.
         data-tour="ref-crossrefs"
         className="flex w-full items-center gap-1.5 rounded-md py-1 text-start text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
@@ -1016,6 +1101,10 @@ function extractSourceContent(view: SourceView): string {
   // A ruling's rendered body is its ملخص — `content` is only ever populated for
   // the few rulings that have no summary at all. Copy what is on screen.
   if (view.source_type === "case") return view.summary || view.content || "";
+  // Everything else keys off ONE field name. This is why §6.1a pins the body of
+  // both simple_search views to `content` (article_full = the full مادة,
+  // regulation_summary = the نظام's summary): they get the body, the dialog's
+  // markdown render and the «نسخ المحتوى» button for free, with no branch here.
   if ("content" in view && typeof view.content === "string") return view.content;
   return "";
 }
@@ -1024,11 +1113,18 @@ function SourceViewContent({
   view,
   sourceContent,
   hasFullTextExit = false,
+  definiteType = "النظام",
 }: {
   view: SourceView;
   sourceContent: string;
   /** Does the dialog's action bar actually offer a way to the full document? */
   hasFullTextExit?: boolean;
+  /**
+   * «النظام» / «اللائحة» / «الدليل» — the reference row's own doc type with the
+   * definite article, so a ملخص label names what the reader is actually looking
+   * at instead of calling every regulation-backed document a نظام.
+   */
+  definiteType?: string;
 }) {
   // NOTE (2026-08-01): no per-domain link lists in here any more. Every exit
   // lives in the dialog's single action bar — «فتح المصدر الرسمي» + «فتح ال… في ريحان»
@@ -1097,7 +1193,46 @@ function SourceViewContent({
       </div>
     );
   }
-  // Legacy variants (article / section / regulation).
+  if (view.source_type === "article_full") {
+    // simple_search L3 — ONE مادة, served whole and VERBATIM. It must read as
+    // statutory text, not as a digest: no «ملخص» framing, no truncation notice,
+    // and a header line naming the unit and its parent نظام the way the statute
+    // itself does («المادة 81 — نظام العمل»). That line is also what stops the
+    // reader mistaking a مادة for the whole document when both kinds of card sit
+    // in the same المراجع list under the same sky chip.
+    const heading = [
+      view.article_num?.trim() ? `المادة ${view.article_num.trim()}` : "نص المادة",
+      view.regulation_title?.trim(),
+    ]
+      .filter(Boolean)
+      .join(" — ");
+    return (
+      <div className="space-y-3">
+        <p className="text-xs font-medium text-muted-foreground">{heading}</p>
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
+      </div>
+    );
+  }
+  if (view.source_type === "regulation_summary") {
+    // simple_search L2 — the WHOLE نظام, represented by its ملخص. Labelled for
+    // the same reason the ruling's ملخص is: an unlabelled body of prose under a
+    // نظام's title reads as the نظام. It is not — the statute runs to hundreds
+    // of thousands of chars and lives on the library page the action bar links
+    // to, so the label points there whenever that exit is actually on screen.
+    return (
+      <div className="space-y-3">
+        <p className="text-xs font-medium text-muted-foreground">
+          {hasFullTextExit
+            ? `ملخص ${definiteType} — النص الكامل بالأسفل`
+            : `ملخص ${definiteType}`}
+        </p>
+        {sourceContent && <MarkdownRenderer content={sourceContent} />}
+      </div>
+    );
+  }
+  // Legacy variants (article / section / regulation) ONLY. ⚠ Nothing new may
+  // land here: this branch renders bare markdown with no label and no header,
+  // which looks like it works — it is how a mis-discriminated variant hides.
   return (
     <div className="space-y-3">
       {sourceContent && <MarkdownRenderer content={sourceContent} />}
@@ -1131,6 +1266,15 @@ export function referenceLabel(ref: Reference): string {
   if (ref.domain === "cases") {
     return [ref.entity_name, ref.regulation_title].filter(Boolean).join(" — ") || "قضية";
   }
+  if (ref.domain === "articles") {
+    // A titleless مادة would otherwise fall through to its PARENT نظام's name
+    // and render as if the card were the whole document. Rebuild the unit —
+    // «المادة 81 من نظام العمل» — from the two columns that carry it.
+    const num = (ref.article_num ?? "").trim();
+    const parent = (ref.regulation_title ?? "").trim();
+    if (num) return parent ? `المادة ${num} من ${parent}` : `المادة ${num}`;
+    return parent || ref.ref_id || "مادة";
+  }
   return ref.regulation_title || ref.ref_id || "مرجع";
 }
 
@@ -1152,7 +1296,16 @@ function sourceViewExternalUrl(view: SourceView): string {
       return view.service_url || "";
     case "circular":
       return view.url || "";
+    case "article_full":
+      // A مادة has no official page of its own — the issuing body publishes the
+      // نظام. The parent's landing page IS the مادة's official source.
+      return view.regulation_source_url || "";
+    case "regulation_summary":
+      return view.regulation_source_url || "";
     default:
+      // Legacy views only (article / section / regulation). ⚠ Falling here is
+      // how a new variant silently loses its «فتح المصدر الرسمي» button — no
+      // error, just a missing exit.
       return "";
   }
 }
@@ -1190,20 +1343,30 @@ const DEFINITE_DOC_TYPE: Record<string, string> = {
   "قرار/مرسوم": "القرار/المرسوم",
 };
 
-/** Per-domain default when the row carries no usable `doc_type`. */
+/**
+ * Per-domain default when the row carries no usable `doc_type`. EXHAUSTIVE —
+ * an omission here would silently render «فتح  في ريحان» with a hole in it.
+ *
+ * `articles` is «المادة», PINNED by §6.1a: «فتح المادة في ريحان» — and the
+ * button lands on the مادة's own `/regulations/{reg}/{article}` page, which the
+ * library wing already publishes.
+ */
 const DEFINITE_DOMAIN_TYPE: Record<ReferenceDomain, string> = {
   regulations: "النظام",
   cases: "الحكم",
   compliance: "الخدمة",
   circulars: "التعميم",
+  articles: "المادة",
+  regulation_docs: "النظام",
 };
 
 export function referenceDefiniteType(ref: Reference): string {
-  // `doc_type` is a regulations-only column, and «غير محدد» is the corpus's
-  // "we could not determine one" bucket — a sentinel, not a document type.
-  const raw =
-    ref.domain === "regulations" ? (ref.doc_type ?? "").trim() : "";
-  if (!raw || raw === "غير محدد") return DEFINITE_DOMAIN_TYPE[ref.domain];
+  // `doc_type` belongs to the two regulation-backed domains (a chunk of a
+  // document, and the document itself); «غير محدد» is the corpus's "we could
+  // not determine one" bucket — a sentinel, not a document type. `articles` is
+  // excluded: «فتح المادة في ريحان» stays المادة even under a لائحة.
+  const raw = usableDocType(ref);
+  if (!raw) return DEFINITE_DOMAIN_TYPE[ref.domain] ?? DEFINITE_DOMAIN_TYPE.regulations;
   const known = DEFINITE_DOC_TYPE[raw];
   if (known) return known;
   return raw.startsWith("ال") ? raw : `ال${raw}`;
@@ -1223,7 +1386,16 @@ function referencePrimaryUrl(ref: Reference): string {
       return ref.url || "";
     case "cases":
       return ref.details_url || "";
+    case "regulation_docs":
+      // Same column as a chunk ref: `landing_url` is the نظام's page on the
+      // issuing body's site, and a `regulation_docs` ref IS that نظام.
+      return ref.landing_url || "";
+    case "articles":
+      // The parent نظام's landing page — a مادة is not published standalone by
+      // any issuing body, so this is the honest official exit for it.
+      return ref.landing_url || "";
     default:
+      // ⚠ A domain that lands here loses «فتح المصدر الرسمي» with no error.
       return "";
   }
 }

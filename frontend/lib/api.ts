@@ -43,6 +43,8 @@ import type {
   ImportBlogResponse,
   BlogItemResponse,
   BlogPostPublic,
+  LibraryItemPageType,
+  LibraryItemResponse,
   ReferenceSourceResponse,
   ReferenceSourceError,
   PaymentCheckoutResponse,
@@ -403,6 +405,40 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ token: tokenOrUrl }),
     }),
+
+  // -----------------------------------------------
+  // Library carrier (.claude/plans/simple_search_family.md §8 / §12a C3)
+  // -----------------------------------------------
+
+  /**
+   * Carry a public library page INTO a conversation as a ``kind='references'``
+   * workspace item — «تحدّث مع ريحان عن هذه الصفحة». The twin of
+   * ``createBlogItem``; deduped server-side per conversation on
+   * ``metadata.source_page_type`` + ``source_page_id``.
+   *
+   * ``pageId`` is the public slug, and for an ``article`` the composite
+   * ``{reg_slug}/{article_slug}`` shape — the same pair the اسأل ريحان widget
+   * already sends to ``fetch_grounding``, so no new identity is invented here.
+   *
+   * COVERAGE IS FOUR TYPES (`LibraryItemPageType`). ``circular`` / ``form`` /
+   * ``calculator`` / ``topic`` have no grounder and the backend answers them
+   * with an Arabic error — the type keeps that call from being written at all.
+   *
+   * The returned ``item_id`` rides the EXISTING ``attachment_ids`` array on
+   * send; there is no send-payload change anywhere in this path.
+   */
+  createLibraryItem: (
+    conversationId: string,
+    pageType: LibraryItemPageType,
+    pageId: string,
+  ) =>
+    apiFetch<LibraryItemResponse>(
+      `/conversations/${conversationId}/library-items`,
+      {
+        method: "POST",
+        body: JSON.stringify({ page_type: pageType, page_id: pageId }),
+      },
+    ),
 
   /**
    * Client-side read of a public post (anonymous endpoint) — used by the

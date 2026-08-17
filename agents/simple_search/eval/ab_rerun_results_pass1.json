@@ -1,0 +1,207 @@
+{
+  "conversation_id": "b5a93685-1540-479f-bf30-512c55fa207d",
+  "cells": [
+    {
+      "cell": "B-E",
+      "mode": "b_attached",
+      "expected": "simple_search",
+      "label": "نظام NAMED, page ATTACHED",
+      "ok": 3,
+      "n": 3,
+      "got": {
+        "simple_search": 3
+      }
+    },
+    {
+      "cell": "B-E2",
+      "mode": "b_attached",
+      "expected": "deep_search",
+      "label": "NAMED + qualifier, page ATTACHED",
+      "ok": 3,
+      "n": 3,
+      "got": {
+        "deep_search": 3
+      }
+    },
+    {
+      "cell": "B-E3",
+      "mode": "b_attached",
+      "expected": "writing",
+      "label": "NAMED + writing, page ATTACHED",
+      "ok": 0,
+      "n": 3,
+      "got": {
+        "chat_response": 3
+      }
+    }
+  ],
+  "results": [
+    {
+      "got": "simple_search",
+      "task_label": "نظام العمل السعودي",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 5.5,
+      "n": 0,
+      "cell": "B-E",
+      "label": "نظام NAMED, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "simple_search",
+      "question": "اش يقول نظام العمل؟",
+      "ok": true
+    },
+    {
+      "got": "simple_search",
+      "task_label": "نظرة عامة على نظام العمل السعودي",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 5.9,
+      "n": 1,
+      "cell": "B-E",
+      "label": "نظام NAMED, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "simple_search",
+      "question": "أعطني نظرة عامة على نظام العمل",
+      "ok": true
+    },
+    {
+      "got": "simple_search",
+      "task_label": "نظام العمل السعودي",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 5.5,
+      "n": 2,
+      "cell": "B-E",
+      "label": "نظام NAMED, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "simple_search",
+      "question": "وش محتوى نظام العمل باختصار؟",
+      "ok": true
+    },
+    {
+      "got": "deep_search",
+      "task_label": "الإجازات السنوية في نظام العمل",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 4.9,
+      "n": 3,
+      "cell": "B-E2",
+      "label": "NAMED + qualifier, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "deep_search",
+      "question": "اش يقول نظام العمل عن الإجازات السنوية؟",
+      "ok": true
+    },
+    {
+      "got": "deep_search",
+      "task_label": "ساعات العمل في نظام العمل السعودي",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 4.0,
+      "n": 4,
+      "cell": "B-E2",
+      "label": "NAMED + qualifier, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "deep_search",
+      "question": "وش الأحكام المتعلقة بساعات العمل في نظام العمل؟",
+      "ok": true
+    },
+    {
+      "got": "deep_search",
+      "task_label": "مكافأة نهاية الخدمة في نظام العمل السعودي",
+      "target_wi": null,
+      "attached_wis": [
+        "WI-1"
+      ],
+      "subtype": null,
+      "message": "",
+      "message_chars": 0,
+      "secs": 4.1,
+      "n": 5,
+      "cell": "B-E2",
+      "label": "NAMED + qualifier, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "deep_search",
+      "question": "اش يقول نظام العمل عن مكافأة نهاية الخدمة؟",
+      "ok": true
+    },
+    {
+      "got": "chat_response",
+      "task_label": null,
+      "target_wi": null,
+      "attached_wis": [],
+      "subtype": null,
+      "message": "وعليكم السلام Punpun،\n\nلكي يكون العقد دقيقاً ومؤسَّساً على النصوص النظامية الصحيحة، أقترح أن أبحث أولاً في نظام العمل عن الأحكام المتعلقة بعقود العمل (مثل المواد الخاصة بالعقود محددة المدة وغير محددة المدة، فترة التجربة، الإجازات، الإنهاء، والتعويضات)، ثم أصوغ العقد بناءً على النتائج.\n\nهل تفضل أن أبدأ بالبحث أولاً؟",
+      "message_chars": 316,
+      "secs": 6.3,
+      "n": 6,
+      "cell": "B-E3",
+      "label": "NAMED + writing, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "writing",
+      "question": "اكتب لي عقد عمل بناءً على نظام العمل",
+      "ok": false
+    },
+    {
+      "got": "chat_response",
+      "task_label": null,
+      "target_wi": null,
+      "attached_wis": [],
+      "subtype": null,
+      "message": "وعليكم السلام ورحمة الله يا Punpun،\n\nأهلاً بك في ريحان. 🙏\n\nلصياغة عقد عمل متقن ومؤسَّس على نصوص نظام العمل السعودي، أقترح أن أبدأ أولاً بالبحث في النظام واللوائح والسوابق المتعلقة بعقود العمل (مثل المواد المتعلقة بالحقوق والواجبات، مدة العقد، الإجازات، الإنهاء، وغيرها)، ثم أصوغ العقد بناءً على النتائج بشكل دقيق.\n\nهل تفضل أن أبدأ بالبحث أولاً؟ وإن كان لديك أي تفاصيل محددة تود إضافتها في العقد (مثل نوع العقد — محدد المدة أو غير محدد، المسمى الوظيفي، الراتب، جهة العمل، وغيرها)، فأخبرني بها لأضعها في الاعتبار أثناء البحث.",
+      "message_chars": 523,
+      "secs": 7.2,
+      "n": 7,
+      "cell": "B-E3",
+      "label": "NAMED + writing, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "writing",
+      "question": "صيغ لي عقد عمل وفق نظام العمل",
+      "ok": false
+    },
+    {
+      "got": "chat_response",
+      "task_label": null,
+      "target_wi": null,
+      "attached_wis": [],
+      "subtype": null,
+      "message": "وعليكم السلام Punpun،\n\nلكي تكون مسودة عقد العمل مؤسَّسة على نصوص نظام العمل بدقة، أقترح أن أبحث أولاً في النظام عن المواد المنظمة لعقود العمل (مثل المواد المتعلقة بالشروط الأساسية، المدة، الأجر، الإجازات، والإنهاء) ثم أصيغ المستند بناءً على النتائج.\n\nهل أبدأ بالبحث؟",
+      "message_chars": 266,
+      "secs": 5.3,
+      "n": 8,
+      "cell": "B-E3",
+      "label": "NAMED + writing, page ATTACHED",
+      "mode": "b_attached",
+      "expected": "writing",
+      "question": "أبغاك تجهز مسودة عقد عمل حسب نظام العمل",
+      "ok": false
+    }
+  ],
+  "passed": 6,
+  "total": 9
+}

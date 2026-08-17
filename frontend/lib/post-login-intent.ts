@@ -12,7 +12,17 @@
  * intent is always best-effort.
  */
 
+import type { LibraryItemPageType } from "@/types";
+
 const KEY = "luna_pending_intent";
+
+/** The four page types the Case-B carrier accepts (§12a C3). */
+const LIBRARY_ITEM_PAGE_TYPES: readonly LibraryItemPageType[] = [
+  "regulation",
+  "article",
+  "judgment",
+  "blog",
+];
 
 /** Intents older than this are silently dropped (stale tab, abandoned login). */
 const MAX_AGE_MS = 30 * 60 * 1000;
@@ -50,10 +60,32 @@ export interface OpenFormInWriterIntent {
   at: number;
 }
 
+/**
+ * An anonymous visitor clicked «تحدّث مع ريحان عن هذه الصفحة» on a public
+ * library page (`.claude/plans/simple_search_family.md` §8 — "Anon return
+ * path"). After login the AuthGuard consumer creates a conversation, stashes
+ * the page in the chat-store carry slot, and lands the visitor in the chat —
+ * where the destination `ChatInput` performs the `library-items` POST and
+ * shows the chip, so the object rides `attachment_ids` on their first message.
+ *
+ * The `chat_with_blog` twin, one level up: a blog is addressed by an opaque
+ * share token, a library page by its `(page_type, page_id)` pair.
+ */
+export interface ChatWithLibraryItemIntent {
+  type: "chat_with_library_item";
+  page_type: LibraryItemPageType;
+  /** Public slug; for an `article` the composite `{reg_slug}/{article_slug}`. */
+  page_id: string;
+  /** Page heading — the chip label until the POST returns the real title. */
+  title: string | null;
+  at: number;
+}
+
 export type PendingIntent =
   | ChatWithBlogIntent
   | ClaimAnonAnswerIntent
-  | OpenFormInWriterIntent;
+  | OpenFormInWriterIntent
+  | ChatWithLibraryItemIntent;
 
 /**
  * `Omit` does not distribute over unions (it collapses to the common keys, i.e.
@@ -98,6 +130,18 @@ export function consumePendingIntent(): PendingIntent | null {
       case "open_form_in_writer":
         return typeof parsed.slug === "string"
           ? (parsed as unknown as OpenFormInWriterIntent)
+          : null;
+      case "chat_with_library_item":
+        // The page type is re-validated on the way OUT, not just on the way in:
+        // a stale tab could hold an intent written before the carryable set
+        // changed, and an unsupported type only fails at the backend with an
+        // Arabic error the user never asked for.
+        return typeof parsed.page_id === "string" &&
+          parsed.page_id.length > 0 &&
+          LIBRARY_ITEM_PAGE_TYPES.includes(
+            parsed.page_type as LibraryItemPageType,
+          )
+          ? (parsed as unknown as ChatWithLibraryItemIntent)
           : null;
       default:
         return null;

@@ -647,6 +647,18 @@ def create_app() -> FastAPI:
         tags=["blog"],
     )
 
+    # Case-B library carrier (simple_search_family.md §8 / §12a C3) — carries a
+    # public library page into a conversation as a kind='references' item.
+    # AUTHED; the router declares no prefix of its own, so it is mounted under
+    # /api/v1 the same way blog/workspace are.
+    from backend.app.api.library_items import router as library_items_router
+
+    application.include_router(
+        library_items_router,
+        prefix="/api/v1",
+        tags=["library-items"],
+    )
+
     # Public SEO library router (sitemap feed — Phase 0). The public GET
     # /public/library/sitemap/{section} has no auth dependency by design. The
     # router already declares prefix="/api/v1" itself, so it is mounted WITHOUT

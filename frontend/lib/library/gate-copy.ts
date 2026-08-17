@@ -24,6 +24,24 @@ export function arNumber(value: number): string {
   return Math.round(value).toLocaleString("ar-EG");
 }
 
+/** ASCII 0-9 → ٠-٩, by code point. Everything else is passed through. */
+const ARABIC_INDIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+
+/**
+ * Arabic-Indic digits for a value that is NOT a number — an article "number"
+ * (§12a C4). `articles_v2.article_number` is TEXT: «81», but also «1-1» and
+ * «81 مكرر». `arNumber` would `Math.round` those into `NaN`, so anything
+ * carrying a compound article number must come through here instead.
+ *
+ * Digits are mapped one by one and every other character — the hyphen in
+ * «1-1», the word in «81 مكرر», any Arabic-Indic digits the source already
+ * used — is preserved verbatim. No rounding, no grouping separators (a
+ * grouped «1٬234» would misread as a different article).
+ */
+export function arDigits(value: string): string {
+  return value.replace(/[0-9]/g, (d) => ARABIC_INDIC_DIGITS[Number(d)]);
+}
+
 /**
  * An ISO instant → «١ أغسطس ٢٠٢٦», or "" when absent/unparsable. Callers must
  * treat "" as "no date to show" and fall back to the date-free copy variant.
@@ -383,8 +401,14 @@ export const sourceUnavailableCopy: RefusalCardCopy = {
 export interface UnlockedNoticeInput {
   /** `unlocked.title` — WHAT was unlocked, not what was clicked (D15.1). */
   title: string;
-  /** Non-null only when the cited chunk owned exactly one مادة. */
-  articleNo: number | null;
+  /**
+   * Non-null only when the cited chunk owned exactly one مادة.
+   *
+   * ⚠ STRING, not number (§12a C4) — `articles_v2.article_number` is TEXT and
+   * carries «1-1» / «81 مكرر». Rendered with `arDigits`; `arNumber` would
+   * round those to `NaN`.
+   */
+  articleNo: string | null;
   /** `unlocked.content_type` — drives the «بجميع مواده» clause. */
   contentType: string;
   /** Weighted cost (§1.2.1). Surfaced only when it is more than one. */
@@ -426,11 +450,19 @@ export function unlockedNotice({
   // reason === "granted" — the one case that actually spent something.
   const costNote = cost > 1 ? ` (احتُسب ${arNumber(cost)} من رصيدك)` : "";
 
+  // The مادة branch runs BEFORE the no-name fallback on purpose. A مادة whose
+  // parent نظام has no title used to fall through to «هذا المصدر», throwing away
+  // the one thing the reader actually opened — right after it was metered. And
+  // «المادة» is feminine, so its own no-name line has to say «أُضيفت»; only the
+  // «هذا المصدر» line below (masculine) may say «أُضيف».
+  const article = (articleNo ?? "").trim();
+  if (article) {
+    return name
+      ? `تم فتح المادة ${arDigits(article)} من «${name}» وأُضيفت إلى مكتبتك.${costNote}`
+      : `تم فتح المادة ${arDigits(article)} وأُضيفت إلى مكتبتك.${costNote}`;
+  }
   if (!name) {
     return `تم فتح هذا المصدر وأُضيف إلى مكتبتك.${costNote}`;
-  }
-  if (articleNo !== null) {
-    return `تم فتح المادة ${arNumber(articleNo)} من «${name}» وأُضيفت إلى مكتبتك.${costNote}`;
   }
   if (contentType === "regulation") {
     // The clause that stops the D15.1 misread: a نظام, not the cited paragraph.

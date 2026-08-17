@@ -64,7 +64,7 @@ class DispatchAgent(BaseModel):
     """
     type: Literal["dispatch"] = "dispatch"
     agent_family: Literal[
-        "deep_search", "writing", "memory"
+        "deep_search", "simple_search", "writing", "memory"
     ] = Field(
         description="Which specialist family to dispatch."
     )

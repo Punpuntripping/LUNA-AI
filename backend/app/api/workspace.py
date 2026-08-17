@@ -315,6 +315,44 @@ async def _library_page_url(supabase: SupabaseClient, resolved: ResolvedRef) -> 
         return None
 
 
+def _unlocked_article_no(resolved: ResolvedRef, view: object) -> Optional[str]:
+    """The مادة number for the ``unlocked`` payload — a STRING, or ``None``.
+
+    Plan §12a C4 pins this field to ``str | None`` at every hop, because
+    ``articles_v2.article_number`` is **TEXT**: 487 of 51,792 مواد (0.94%, across
+    7 أنظمة) carry a compound number — «1-1», «1-1-2», «81 مكرر». A ``number``
+    typing cannot represent those, so they arrived as ``null`` and
+    ``unlockedNotice`` fell through to its generic branch, telling the reader they
+    unlocked the whole نظام while they were looking at one مادة — **after the
+    unlock was spent.** Silent, and on a metered action.
+
+    Two sources, in this order, mirroring the ``title`` line right below:
+
+    1. ``ResolvedRef.article_no``, which is what the CHARGE was keyed on. It is
+       still an ``int`` (the resolver derives the sidecar key
+       ``'{regulation_id}#{article_no}'``, which only exists for integer مواد), so
+       it is stringified here rather than coerced the other way.
+    2. the built ``SourceView``'s own ``article_num`` — ``articles_v2.article_number``
+       verbatim, TEXT, uncoerced. This is the branch that rescues «1-1»: the
+       resolver's int gate legitimately lifts a compound مادة to its نظام for
+       METERING (there is no published مادة page to key on), but the reader still
+       clicked one مادة and must be told which.
+
+    Only ``ArticleFullSourceView`` (and the legacy ``ArticleSourceView`` kept for
+    persisted-payload reload) declares ``article_num``. ``ChunkSourceView`` /
+    ``RegulationSummarySourceView`` / case / circular views do NOT, so the
+    ``getattr`` cannot invent a مادة for a citation that never named one — a
+    chunk owning 0 or 2+ مواد still correctly yields ``None`` and the notice still
+    correctly says «بجميع مواده».
+    """
+    if resolved.article_no is not None:
+        return str(resolved.article_no).strip() or None
+    raw = getattr(view, "article_num", None)
+    if raw is None:
+        return None
+    return str(raw).strip() or None
+
+
 class _UnresolvableRef:
     """Duck-typed stand-in for an ``AccessDecision`` that never happened.
 
@@ -361,7 +399,11 @@ async def get_reference_source(
     2. **Row lookup**, scoped to that WI. Unknown ``n`` → 404, no charge.
     3. **Resolve** ``ref_id`` → ``(content_type, content_id)`` (D15). Anything
        unresolvable FAILS CLOSED: 402 ``reason='unresolvable'``, never content.
-    4. **Entitlement** via ``resolve_access(..., surface='reference')``.
+    4. **Build the source view — BEFORE any charge.** An unbuildable source is a
+       corpus gap, so it 404s having cost nothing. Charging first (what this did
+       until 2026-08-15) meant a failed build spent a permanent unlock and
+       returned a 404 — paying for a document that was never delivered.
+    5. **Entitlement** via ``resolve_access(..., surface='reference')``.
        ``surface`` is analytics ONLY — it must never change the charge, or this
        endpoint becomes the bypass it was built to close (migration 104).
        The one exemption above ``resolve_access`` is the shared demo item, and
@@ -369,8 +411,9 @@ async def get_reference_source(
        never on caller-supplied input — no query param, no header, no body
        flag. That is precisely why it is not the migration-104 bypass: the
        caller cannot name the thing that goes free.
-    5. **Build + shelf.** One ``record_use`` call, here (D16.2) — skipped for
-       the demo item, so a tutorial never writes into the user's «مكتبتي» or
+       On refusal the already-built view is discarded unread.
+    6. **Shelf.** One ``record_use`` call, here (D16.2) — skipped for the demo
+       item, so a tutorial never writes into the user's «مكتبتي» or
        «استُخدم مؤخرًا».
 
     Returns 200 with ``source_view``, ``unlocked`` (what was unlocked — the نظام,
@@ -405,7 +448,34 @@ async def get_reference_source(
     if resolved is None:
         return library_refusal_response(_UnresolvableRef())
 
-    # 4. ENTITLEMENT. user_id is a users.user_id — NEVER an auth_id.
+    # 4. BUILD — BEFORE the charge, deliberately (plan §7.3 / §9 trap 6).
+    #
+    #    This ran at step 5 until 2026-08-15, AFTER ``resolve_access`` had
+    #    already written the ledger row. A source that failed to build therefore
+    #    cost the reader a real, permanent unlock and answered 404: they paid for
+    #    a document they never received. Rulings are the metered thing and the two
+    #    simple_search domains land straight in this path, so the ordering is
+    #    fixed here rather than papered over with a refund.
+    #
+    #    A ``None`` is a corpus gap (the same condition the list reports as
+    #    ``has_source=False``), NOT an entitlement outcome — never a 402.
+    #
+    #    CONTRACT NOTE: for the intersection "source is unbuildable AND caller is
+    #    out of quota", the answer is now the 404 «تعذّر عرض هذا المصدر» where it
+    #    used to be the 402 refusal body. That is the right precedence — we must
+    #    not offer to
+    #    sell what we cannot deliver — and it leaks nothing new: ``has_source``
+    #    already tells the OWNER of this item, for free, on the list.
+    view = await build_reference_source_view(supabase, row)
+    if view is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="تعذّر عرض هذا المصدر",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+
+    # 5. ENTITLEMENT. user_id is a users.user_id — NEVER an auth_id.
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
 
     # The product tour reveals sources to teach what a reference IS. Charging
@@ -440,21 +510,9 @@ async def get_reference_source(
         )
 
     if not decision.may_unlock:
-        # NOTHING is built, let alone returned. The refusal sets its own
-        # private/no-store header.
+        # The view was built but is DISCARDED unread — not one byte of it is
+        # serialized. The refusal sets its own private/no-store header.
         return library_refusal_response(decision)
-
-    # 5. Build the one source view. A None here is a corpus gap (the same
-    #    condition the list reports as has_source=False), not a refusal — the
-    #    unlock is permanent, so a later retry costs nothing.
-    view = await build_reference_source_view(supabase, row)
-    if view is None:
-        raise LunaHTTPException(
-            status_code=404,
-            code=ErrorCode.ARTIFACT_NOT_FOUND,
-            detail="تعذّر عرض هذا المصدر",
-            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
-        )
 
     # 6. Shelf the use — once, here, charged or not (D16.2). The demo is the
     # single exception: a tutorial must not push rows onto the user's library
@@ -482,7 +540,8 @@ async def get_reference_source(
             # when it has one; otherwise the source view's own title is already
             # the parent regulation / case / circular title.
             "title": resolved.title or getattr(view, "title", "") or "",
-            "article_no": resolved.article_no,
+            # §12a C4: a STRING (or null) — never a number. See the helper.
+            "article_no": _unlocked_article_no(resolved, view),
             "charged": bool(decision.charged),
             "cost": int(decision.cost or 0),
             "reason": decision.reason,

@@ -9,12 +9,20 @@ existing source tables via the URA-enrichment helpers and ``source_viewer``.
 Migration 050: two-key design.
 
 - ``item_id`` (UUID, nullable) — source row PK. ``chunks_v2.id``,
-  ``cases.id``, ``services.id``, or ``circulars.id``. The preferred join key
-  for cross-WI queries ("which WIs cite this chunk?").
-- ``ref_id`` (TEXT, always set) — the URA-emitted identifier
+  ``cases.id``, ``services.id``, ``circulars.id``, ``articles_v2.id`` or
+  ``regulations_v2.id``. The preferred join key for cross-WI queries ("which
+  WIs cite this chunk?").
+- ``ref_id`` (TEXT, always set) — the emitted identifier
   (``reg:<uuid>`` | ``case:<case_ref>`` | ``compliance:<sha1[:16]>`` |
-  ``circular:<uuid>``). The durable fallback when item_id failed to resolve,
-  and the forensic-traceability key into ``retrieval_artifacts``.
+  ``circular:<uuid>`` | ``article:<uuid>`` | ``regdoc:<uuid>``). The durable
+  fallback when item_id failed to resolve, and the forensic-traceability key
+  into ``retrieval_artifacts``.
+
+Migration 136 (simple_search, plan §6.1a) added the last two: ``articles`` (ONE
+مادة, ``article:<articles_v2.id>``) and ``regulation_docs`` (a WHOLE نظام,
+``regdoc:<regulations_v2.id>``). Both carry their OWN prefix because ``reg:``
+hard-assumes a ``chunks_v2.id`` — reusing it inserts cleanly and then renders a
+dead stub, silently (§9 trap 4).
 
 Public surface:
     fetch_item_references(supabase, wi_id, *, used_only=False,
@@ -56,7 +64,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Sequence, Union
 
 from supabase import Client as SupabaseClient
 
@@ -67,7 +76,13 @@ from agents.deep_search_v4.aggregator.preprocessor import (
     build_snippet,
     render_aggregator_content,
 )
-from agents.deep_search_v4.source_viewer import SourceView, build_source_view
+from agents.deep_search_v4.source_viewer import (
+    SourceView,
+    article_full_title,
+    build_article_full_view,
+    build_regulation_summary_view,
+    build_source_view,
+)
 from agents.deep_search_v4.ura.enrich import (
     _enrich_cases,
     _enrich_regulations,
@@ -99,6 +114,83 @@ _STUB_TITLE = "[المصدر غير متوفر]"
 
 # Max concurrent build_source_view lookups per fetch_item_references call.
 _SOURCE_VIEW_CONCURRENCY = 5
+
+# How much of an article body the LIST-path shell keeps. The panel only ever
+# renders a 500-char snippet off it (``build_snippet``), and Phase C forbids
+# shipping bodies in the list at all — so the shell keeps a small working margin
+# and the FULL body is re-read by ``source_viewer.build_article_full_view`` at
+# reveal time. Measured 2026-08-15 over 51,792 مواد: p50 = 325 chars,
+# p90 = 1,334, max = 244,419 — this cap exists for that tail.
+_ARTICLE_SHELL_CONTENT_CHARS = 2_000
+
+# ref_id prefixes, in one place so the read parsers, the write path and the
+# resolver cannot drift. `reg:` is deliberately NOT reusable for either of these
+# two: it hard-assumes a chunks_v2.id (plan §6.2 / §9 trap 4).
+_ARTICLE_PREFIX = "article:"
+_REGDOC_PREFIX = "regdoc:"
+
+
+# ---------------------------------------------------------------------------
+# simple_search shells (plan §6.1a)
+# ---------------------------------------------------------------------------
+#
+# The four deep_search domains rebuild a typed URA result and project it through
+# ``preprocessor._reference_from_ura``. The two simple_search domains have NO URA
+# member — deep_search never produces an article or a whole-نظام result — and
+# ``agents/deep_search_v4/ura/schema.py`` is not this layer's to extend. So they
+# carry their own row-backed shells, deliberately shaped to be drop-in:
+#
+#   * ``.ref_id`` / ``.relevance``  — what every shell consumer reads generically.
+#   * ``.content``                  — makes ``preprocessor.build_snippet`` work
+#     unchanged: its legacy fall-through branch reads ``.content`` first, so both
+#     domains get the same sentence-boundary-aware 500-char snippet every other
+#     domain gets, with no per-domain snippet code.
+#
+# ``appears_in_sub_queries`` exists because callers iterate it defensively on any
+# shell; a lookup has no sub-queries, so it is always empty.
+
+
+@dataclass
+class ArticleRefShell:
+    """Read-path shell for ``domain='articles'`` — ONE مادة (``articles_v2``)."""
+
+    ref_id: str
+    relevance: str = "medium"
+    article_id: str = ""
+    article_number: str = ""
+    content: str = ""
+    """Body TRUNCATED to :data:`_ARTICLE_SHELL_CONTENT_CHARS` — snippet fuel
+    only. The full body is re-read at reveal time; see the constant."""
+    regulation_id: str = ""
+    regulation_title: str = ""
+    landing_url: str = ""
+    doc_type: str = ""
+    appears_in_sub_queries: list[int] = field(default_factory=list)
+
+
+@dataclass
+class RegulationDocRefShell:
+    """Read-path shell for ``domain='regulation_docs'`` — a WHOLE نظام.
+
+    ``domain='regulations'`` is a CHUNK of one. Keeping these apart is the entire
+    point of the new domain (plan §6.2).
+    """
+
+    ref_id: str
+    relevance: str = "medium"
+    regulation_id: str = ""
+    title: str = ""
+    content: str = ""
+    """``llm_summary`` (all 3,951 rows carry one; max 2,415 chars) falling back
+    to ``summary``. Uncapped — it IS the abstract, never the statute."""
+    landing_url: str = ""
+    doc_type: str = ""
+    appears_in_sub_queries: list[int] = field(default_factory=list)
+
+
+# Every shape ``shells_by_n`` can hold. ``URAResultBase`` covers the four
+# deep_search domains; the two dataclasses above cover simple_search.
+RefShell = Union[URAResultBase, ArticleRefShell, RegulationDocRefShell]
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +323,14 @@ async def _load_references(
         return [], set(), []
 
     # Group rows by domain so each source-table fetch can be batched.
+    #
+    # ⚠ A domain missing from this dict is DROPPED ENTIRELY (§9 trap 5): the [n]
+    # card never renders and the inline [n] marker in the body goes dead. That is
+    # why a new domain lands here, in the CHECK constraint, and in
+    # ``_stub_reference`` in the same change — never in one of the three.
     by_domain: dict[str, list[dict]] = {
         "regulations": [], "compliance": [], "cases": [], "circulars": [],
+        "articles": [], "regulation_docs": [],
     }
     for row in rows:
         domain = row.get("domain")
@@ -241,9 +339,10 @@ async def _load_references(
         else:
             logger.warning("fetch_item_references: unknown domain %r — skipping row", domain)
 
-    # Build a URA result shell per row, keyed by ``n`` so we can pair the
-    # reconstructed Reference back to its row.
-    shells_by_n: dict[int, URAResultBase] = {}
+    # Build a shell per row, keyed by ``n`` so we can pair the reconstructed
+    # Reference back to its row. Four domains rebuild a typed URA result; the two
+    # simple_search domains carry their own row-backed shells (see ``RefShell``).
+    shells_by_n: dict[int, RefShell] = {}
 
     if by_domain["regulations"]:
         reg_shells = await _build_reg_shells(supabase, by_domain["regulations"])
@@ -261,11 +360,21 @@ async def _load_references(
             supabase, by_domain["circulars"]
         )
         shells_by_n.update(circular_shells)
+    if by_domain["articles"]:
+        article_shells = await _build_article_shells(
+            supabase, by_domain["articles"]
+        )
+        shells_by_n.update(article_shells)
+    if by_domain["regulation_docs"]:
+        regdoc_shells = await _build_regdoc_shells(
+            supabase, by_domain["regulation_docs"]
+        )
+        shells_by_n.update(regdoc_shells)
 
     # Walk rows in order and build one Reference per shell.
     ordered_rows = sorted(rows, key=lambda r: int(r["n"]))
     references: list[Reference] = []
-    pending_views: list[tuple[Reference, URAResultBase]] = []
+    pending_views: list[tuple[Reference, RefShell]] = []
 
     for row in ordered_rows:
         n = int(row["n"])
@@ -278,10 +387,17 @@ async def _load_references(
             references.append(_stub_reference(row))
             continue
 
-        ref = _reference_from_ura(n, shell)
+        ref = _reference_from_shell(n, shell)
         # Snippet derives from the aggregator-view content (same call the
         # aggregator preprocessor makes at publish time) — except for
         # government services, which carry NO snippet at all.
+        #
+        # The two simple_search domains ride this SAME call: their shells expose
+        # ``.content``, which is the first thing ``build_snippet``'s legacy
+        # fall-through branch reads. An ``article_full`` snippet is therefore the
+        # head of the مادة body (sentence-boundary-cut at 500 chars) and a
+        # ``regulation_summary`` snippet is the head of the abstract — both
+        # correct, with no per-domain snippet code to keep in sync.
         #
         # A service card is the service name and the issuing entity, nothing
         # else: ``services.service_name_ar`` is «{الجهة} - {اسم الخدمة}» on all
@@ -423,13 +539,17 @@ async def build_reference_source_view(
     n = int(row.get("n") or 0)
 
     if domain == "regulations":
-        shells: dict[int, URAResultBase] = await _build_reg_shells(supabase, [row])  # type: ignore[assignment]
+        shells: dict[int, RefShell] = await _build_reg_shells(supabase, [row])  # type: ignore[assignment]
     elif domain == "cases":
         shells = await _build_case_shells(supabase, [row])  # type: ignore[assignment]
     elif domain == "compliance":
         shells = await _build_compliance_shells(supabase, [row])  # type: ignore[assignment]
     elif domain == "circulars":
         shells = await _build_circular_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "articles":
+        shells = await _build_article_shells(supabase, [row])  # type: ignore[assignment]
+    elif domain == "regulation_docs":
+        shells = await _build_regdoc_shells(supabase, [row])  # type: ignore[assignment]
     else:
         logger.warning("build_reference_source_view: unknown domain %r", domain)
         return None
@@ -438,6 +558,73 @@ async def build_reference_source_view(
     if shell is None:
         return None
     return await _safe_build_source_view(supabase, shell)
+
+
+# ---------------------------------------------------------------------------
+# Shell -> Reference projection
+# ---------------------------------------------------------------------------
+
+
+def _reference_from_shell(n: int, shell: RefShell) -> Reference:
+    """Project ANY read-path shell onto a numbered ``Reference``.
+
+    The four deep_search domains go through ``preprocessor._reference_from_ura``
+    (the load-bearing ``ReferenceView -> Reference`` mapping, untouched). The two
+    simple_search domains are projected here because they have no URA member to
+    project FROM — see ``RefShell``.
+    """
+    if isinstance(shell, ArticleRefShell):
+        return _reference_from_article_shell(n, shell)
+    if isinstance(shell, RegulationDocRefShell):
+        return _reference_from_regdoc_shell(n, shell)
+    return _reference_from_ura(n, shell)
+
+
+def _reference_from_article_shell(n: int, shell: ArticleRefShell) -> Reference:
+    """``domain='articles'`` -> a card that reads «المادة 81 من نظام العمل».
+
+    ``title`` is built by ``source_viewer.article_full_title`` — the SAME pure
+    helper the popup header uses — so the card and the dialog it opens can never
+    disagree about what the citation is called.
+
+    ``regulation_title`` carries the parent نظام (the panel's "parent label" slot,
+    exactly as the reg domain uses it), ``landing_url`` is the external exit and
+    ``doc_type`` drives the type chip (لائحة / تنظيم / … rather than a blanket
+    نظام). ``snippet`` is stamped by the caller.
+    """
+    return Reference(
+        n=n,
+        source_type="article_full",
+        regulation_title=shell.regulation_title,
+        article_num=shell.article_number or None,
+        title=article_full_title(shell.article_number, shell.regulation_title),
+        snippet="",
+        relevance=shell.relevance,  # type: ignore[arg-type]
+        ref_id=shell.ref_id,
+        domain="articles",
+        landing_url=shell.landing_url,
+        doc_type=shell.doc_type,
+    )
+
+
+def _reference_from_regdoc_shell(n: int, shell: RegulationDocRefShell) -> Reference:
+    """``domain='regulation_docs'`` -> a card for the WHOLE نظام.
+
+    Both title slots carry the نظام's own name: unlike a chunk or a مادة, the
+    document has no parent to name above it.
+    """
+    return Reference(
+        n=n,
+        source_type="regulation_summary",
+        regulation_title=shell.title,
+        title=shell.title,
+        snippet="",
+        relevance=shell.relevance,  # type: ignore[arg-type]
+        ref_id=shell.ref_id,
+        domain="regulation_docs",
+        landing_url=shell.landing_url,
+        doc_type=shell.doc_type,
+    )
 
 
 def _reg_chunk_id_from_row(row: dict) -> str:
@@ -777,17 +964,258 @@ def _fetch_circulars_by_id(
     return out
 
 
+def _article_id_from_row(row: dict) -> str:
+    """Return ``articles_v2.id`` (uuid text) for an ``articles`` row.
+
+    Prefers ``item_id`` (persist mints it from the ``article:<uuid>`` ref_id);
+    falls back to parsing that ref_id. Mirrors ``_circular_id_from_row``.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    ref_id = (row.get("ref_id") or "").strip()
+    if ref_id.startswith(_ARTICLE_PREFIX):
+        return ref_id[len(_ARTICLE_PREFIX):]
+    return ""
+
+
+def _regdoc_id_from_row(row: dict) -> str:
+    """Return ``regulations_v2.id`` (uuid text) for a ``regulation_docs`` row.
+
+    Prefers ``item_id``; falls back to the ``regdoc:<uuid>`` ref_id. Mirrors
+    ``_circular_id_from_row``.
+
+    ⚠ NEVER accept a ``reg:`` prefix here. ``reg:`` carries a **chunks_v2.id**,
+    and treating one as a regulations_v2.id is precisely the silent failure §6.2
+    documents: the uuid validates, the row inserts, the read finds nothing, the
+    shell is pruned, and the card renders as a dead stub with no errors anywhere.
+    """
+    item_id = row.get("item_id")
+    if item_id:
+        return str(item_id)
+    ref_id = (row.get("ref_id") or "").strip()
+    if ref_id.startswith(_REGDOC_PREFIX):
+        return ref_id[len(_REGDOC_PREFIX):]
+    return ""
+
+
+async def _build_article_shells(
+    supabase: SupabaseClient,
+    rows: list[dict],
+) -> dict[int, ArticleRefShell]:
+    """Build :class:`ArticleRefShell` shells from ``articles_v2`` rows.
+
+    Two batched round-trips, both fail-soft per batch: the مواد by id, then their
+    parent أنظمة by ``regulation_id`` (``articles_v2`` is a VIEW, so there is no
+    FK for a PostgREST embed to walk). Mirrors ``_build_circular_shells``.
+
+    Like ``_build_reg_shells``, shells whose source row came back empty are
+    PRUNED so the caller falls back to a stub card rather than rendering a
+    misleading blank one.
+
+    The shell body is truncated to :data:`_ARTICLE_SHELL_CONTENT_CHARS` — the
+    panel only needs snippet fuel, and Phase C keeps bodies out of the list
+    response entirely. ``source_viewer.build_article_full_view`` re-reads the
+    FULL body when a reveal is actually requested, exactly as the circular /
+    case views re-read theirs.
+    """
+    rows_by_id: dict[str, list[dict]] = {}
+    for row in rows:
+        article_id = _article_id_from_row(row)
+        if not article_id:
+            continue
+        rows_by_id.setdefault(article_id, []).append(row)
+
+    if not rows_by_id:
+        return {}
+
+    articles = await asyncio.to_thread(
+        _fetch_articles_by_id, supabase, list(rows_by_id.keys())
+    )
+
+    reg_ids = sorted({
+        str(a.get("regulation_id") or "")
+        for a in articles.values()
+        if a.get("regulation_id")
+    })
+    regulations = (
+        await asyncio.to_thread(_fetch_regulations_by_id, supabase, reg_ids)
+        if reg_ids
+        else {}
+    )
+
+    shells_by_n: dict[int, ArticleRefShell] = {}
+    for article_id, related_rows in rows_by_id.items():
+        art = articles.get(article_id) or {}
+        body = (art.get("content") or "").strip()
+        number = str(art.get("article_number") or "").strip()
+        reg_id = str(art.get("regulation_id") or "").strip()
+        reg = regulations.get(reg_id) or {}
+        reg_title = (reg.get("clean_title") or reg.get("title") or "").strip()
+
+        # Prune: nothing to show, nothing to name → stub card (see docstring).
+        if not body and not number and not reg_title:
+            continue
+
+        for row in related_rows:
+            n = int(row["n"])
+            shells_by_n[n] = ArticleRefShell(
+                # Prefer the row's own ref_id; re-mint from the id otherwise so
+                # downstream code can re-parse ``article:<uuid>``.
+                ref_id=(row.get("ref_id") or f"{_ARTICLE_PREFIX}{article_id}"),
+                relevance=row.get("relevance", "medium"),
+                article_id=article_id,
+                article_number=number,
+                content=body[:_ARTICLE_SHELL_CONTENT_CHARS],
+                regulation_id=reg_id,
+                regulation_title=reg_title,
+                landing_url=(reg.get("landing_url") or "").strip(),
+                doc_type=(reg.get("doc_type_raw") or "").strip(),
+            )
+
+    return shells_by_n
+
+
+async def _build_regdoc_shells(
+    supabase: SupabaseClient,
+    rows: list[dict],
+) -> dict[int, RegulationDocRefShell]:
+    """Build :class:`RegulationDocRefShell` shells from ``regulations_v2`` rows.
+
+    ONE batched, fail-soft fetch — the ref IS the document, so there is no parent
+    to resolve. Shells whose regulation row is gone are pruned to a stub.
+    """
+    rows_by_id: dict[str, list[dict]] = {}
+    for row in rows:
+        reg_id = _regdoc_id_from_row(row)
+        if not reg_id:
+            continue
+        rows_by_id.setdefault(reg_id, []).append(row)
+
+    if not rows_by_id:
+        return {}
+
+    regulations = await asyncio.to_thread(
+        _fetch_regulations_by_id, supabase, list(rows_by_id.keys())
+    )
+
+    shells_by_n: dict[int, RegulationDocRefShell] = {}
+    for reg_id, related_rows in rows_by_id.items():
+        reg = regulations.get(reg_id) or {}
+        title = (reg.get("clean_title") or reg.get("title") or "").strip()
+        summary = ((reg.get("llm_summary") or reg.get("summary") or "") or "").strip()
+        if not title and not summary:
+            continue
+
+        for row in related_rows:
+            n = int(row["n"])
+            shells_by_n[n] = RegulationDocRefShell(
+                ref_id=(row.get("ref_id") or f"{_REGDOC_PREFIX}{reg_id}"),
+                relevance=row.get("relevance", "medium"),
+                regulation_id=reg_id,
+                title=title,
+                content=summary,
+                landing_url=(reg.get("landing_url") or "").strip(),
+                doc_type=(reg.get("doc_type_raw") or "").strip(),
+            )
+
+    return shells_by_n
+
+
+def _fetch_articles_by_id(
+    supabase: SupabaseClient,
+    article_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Batched ``articles_v2`` fetch keyed by ``articles_v2.id``.
+
+    Batched by :data:`_ID_BATCH` and fail-soft PER BATCH (a failing batch
+    contributes nothing; the others still render) — the ``_fetch_circulars_by_id``
+    envelope verbatim.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    ids = sorted({aid for aid in article_ids if aid})
+    for i in range(0, len(ids), _ID_BATCH):
+        batch = ids[i:i + _ID_BATCH]
+        try:
+            resp = (
+                supabase.table("articles_v2")
+                .select("id, regulation_id, article_number, content")
+                .in_("id", batch)
+                .execute()
+            )
+            for r in resp.data or []:
+                rid = r.get("id")
+                if rid:
+                    out[str(rid)] = r
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "references_service: _fetch_articles_by_id batch failed: %s", exc,
+            )
+    return out
+
+
+def _fetch_regulations_by_id(
+    supabase: SupabaseClient,
+    regulation_ids: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """Batched ``regulations_v2`` fetch keyed by ``regulations_v2.id``.
+
+    Serves both simple_search shells: the whole-نظام card needs the summary, the
+    مادة card needs its parent's title / link / doc_type. Fail-soft per batch.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    ids = sorted({rid for rid in regulation_ids if rid})
+    for i in range(0, len(ids), _ID_BATCH):
+        batch = ids[i:i + _ID_BATCH]
+        try:
+            resp = (
+                supabase.table("regulations_v2")
+                .select(
+                    "id, title, clean_title, llm_summary, summary, "
+                    "landing_url, doc_type_raw"
+                )
+                .in_("id", batch)
+                .execute()
+            )
+            for r in resp.data or []:
+                rid = r.get("id")
+                if rid:
+                    out[str(rid)] = r
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "references_service: _fetch_regulations_by_id batch failed: %s", exc,
+            )
+    return out
+
+
 async def _safe_build_source_view(
     supabase: SupabaseClient,
-    shell: URAResultBase,
+    shell: RefShell,
 ) -> SourceView | None:
-    """``build_source_view`` with the failure envelope, for ONE shell.
+    """Build the ONE ``SourceView`` for a shell, with the failure envelope.
 
     Shared by the bulk attach path and the per-item reveal endpoint so both
     behave identically when a source table hiccups: log, return ``None``, never
     raise into the caller's response.
+
+    The two simple_search shells dispatch to their own id-keyed builders because
+    ``build_source_view`` is a URA-type dispatch and neither has a URA member.
+    Both re-read the source fresh, which is what keeps the revealed body full
+    while the list stays a mesh.
     """
     try:
+        if isinstance(shell, ArticleRefShell):
+            return await build_article_full_view(
+                supabase,
+                shell.article_id,
+                # Used only if the parent lookup misses on the reveal: better a
+                # labelled article than a bare body.
+                article_number=shell.article_number,
+                regulation_title=shell.regulation_title,
+                regulation_source_url=shell.landing_url,
+            )
+        if isinstance(shell, RegulationDocRefShell):
+            return await build_regulation_summary_view(supabase, shell.regulation_id)
         return await build_source_view(supabase, shell)  # type: ignore[arg-type]
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -800,7 +1228,7 @@ async def _safe_build_source_view(
 
 async def _attach_source_views(
     supabase: SupabaseClient,
-    pending: list[tuple[Reference, URAResultBase]],
+    pending: list[tuple[Reference, RefShell]],
 ) -> None:
     """Parallel ``build_source_view`` resolution; failures leave source_view=None.
 
@@ -820,7 +1248,7 @@ async def _attach_source_views(
 
     sem = asyncio.Semaphore(_SOURCE_VIEW_CONCURRENCY)
 
-    async def _one(shell: URAResultBase) -> Any:
+    async def _one(shell: RefShell) -> Any:
         async with sem:
             return await _safe_build_source_view(supabase, shell)
 
@@ -842,11 +1270,18 @@ def _stub_reference(row: dict) -> Reference:
     didn't resolve.
     """
     domain = row.get("domain") or "regulations"
+    # domain -> the ``Reference.source_type`` Literal that belongs with it. The
+    # two simple_search entries are ``article_full`` / ``regulation_summary``,
+    # NEVER the legacy ``article`` / ``regulation`` values above them — a stub
+    # that mislabels itself renders through the frontend's permissive legacy
+    # union arm as bare markdown, with no error (§9 trap 3).
     _stub_source_type = {
         "regulations": "regulation",
         "cases": "case",
         "compliance": "gov_service",
         "circulars": "circular",
+        "articles": "article_full",
+        "regulation_docs": "regulation_summary",
     }.get(domain, "regulation")
     return Reference(
         n=int(row["n"]),
@@ -982,6 +1417,36 @@ def persist_item_references(
                 else ref.ref_id
             )
             item_uuid = candidate if _looks_like_uuid(candidate) else None
+        elif ref.domain == "articles":
+            # ref_id = "article:<articles_v2.id>" — the PK rides in directly.
+            candidate = (
+                ref.ref_id[len(_ARTICLE_PREFIX):]
+                if ref.ref_id.startswith(_ARTICLE_PREFIX)
+                else ref.ref_id
+            )
+            item_uuid = candidate if _looks_like_uuid(candidate) else None
+        elif ref.domain == "regulation_docs":
+            # ref_id = "regdoc:<regulations_v2.id>". Distinct prefix on purpose:
+            # a regulations_v2 uuid written under ``reg:`` passes every check
+            # here and renders a dead stub on read (§6.2 / §9 trap 4).
+            candidate = (
+                ref.ref_id[len(_REGDOC_PREFIX):]
+                if ref.ref_id.startswith(_REGDOC_PREFIX)
+                else ref.ref_id
+            )
+            item_uuid = candidate if _looks_like_uuid(candidate) else None
+        else:
+            # EXPLICIT. This chain had no ``else`` until 2026-08-15, so a ref
+            # carrying a domain nobody had wired up was written with a NULL
+            # item_id and no trace of why — the row inserted, the read pruned it,
+            # and the card rendered as a stub. It still writes (``ref_id`` alone
+            # satisfies ``workspace_item_references_has_key``, and a degraded card
+            # beats a dropped citation), but it says so.
+            logger.warning(
+                "persist_item_references: no item_id resolver for domain=%r "
+                "(ref n=%d, ref_id=%s) — writing with item_id=NULL",
+                ref.domain, ref.n, ref.ref_id,
+            )
 
         # Migration 051: per-ref word count of the aggregator-view content
         # (exactly what the LLM grounded against). Derived from the URA

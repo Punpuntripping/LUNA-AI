@@ -1,0 +1,1083 @@
+{
+  "lane": "adv_money_state",
+  "fixtures": [
+    "unlock-01",
+    "unlock-02",
+    "unlock-03",
+    "state-01",
+    "state-02"
+  ],
+  "scratch_conversation_id": "aa58827c-9afd-4d5f-b470-0afadf6a1948",
+  "baseline": {
+    "ledger": {
+      "total": 53,
+      "by_content_type": {
+        "regulation": {
+          "count": 35,
+          "newest": "2026-08-14T21:35:27.772535+00:00"
+        },
+        "judgment": {
+          "count": 17,
+          "newest": "2026-08-14T14:28:41.969884+00:00"
+        },
+        "article": {
+          "count": 1,
+          "newest": "2026-08-08T16:55:43.593757+00:00"
+        }
+      },
+      "ids": [
+        "10dc60ae-6b32-4453-b8e0-fa23a4e19124",
+        "14802cc9-eee9-4c41-8a02-998c5c76b781",
+        "1d9a954c-beb8-4bc9-b28f-8998036ad376",
+        "225aca96-2f0a-481e-b218-93525808cae3",
+        "28744a5a-b5c7-4d73-98e2-b2dace04eca5",
+        "2fd154f4-d443-4c4f-a89e-90a87163923b",
+        "3985ab0d-01e8-4307-8ea2-7c0ee60ee055",
+        "3bd52a5c-a041-4a50-b26b-be8956322a89",
+        "3cfda9f5-1cf9-4ac0-8ce7-bb79a74bbe66",
+        "3efcf95f-830e-4d53-9504-8c31666111b8",
+        "3f615e53-874d-4e9b-afda-1523906cbb6c",
+        "3f85dfaa-3eb0-4fbe-b914-f79dca388177",
+        "432f594f-e833-49eb-b1b3-e5112094da49",
+        "46c893bf-4ad9-4922-9307-0d23f539134b",
+        "4760b2f4-f46c-481f-a123-ba3109b42473",
+        "47e43651-446b-48bd-b052-2965cca9b353",
+        "4a658744-0896-482d-9c4a-5c8bdaafff2d",
+        "4b221fbc-a6d8-4b9b-9868-53b4dd680cae",
+        "4e92b3cf-4960-4bd5-8a6b-9699d517bf01",
+        "53a9650b-a155-46f1-aadc-90c301683179",
+        "5b8a9d1b-2036-4b4d-9a7c-187d890d5aba",
+        "5fbf85ad-6e3d-47b1-ac70-540f6466b746",
+        "66501a5a-e133-4079-ba9f-33a7b5856da5",
+        "691faa68-5143-4476-9710-7ff03ef56925",
+        "6b77530f-ac9f-482c-b4b8-9a92fd86b01c",
+        "6bef10a8-e602-4893-99e2-4a6d5ef503fd",
+        "737b6b1f-a67c-4cc5-bec1-d6ec3c0aa054",
+        "750b7704-1533-4d75-ab7d-6b317e293567",
+        "865b3d11-5215-44f9-8ec6-165eed8add11",
+        "8689ad4c-97e6-4775-b72c-ee5170942816",
+        "8bb6e78e-b887-4c5a-85aa-cf1ac4578e76",
+        "91b3c07b-b057-4e82-a73c-77d622c424dd",
+        "934c42b7-0496-40a9-9c01-255668d55eb9",
+        "95bd8110-6ce1-4013-87ba-5f3d9be64780",
+        "9f29b8e5-2e50-4a06-a1b2-dc93572b79bc",
+        "a56e3e34-2570-4f2a-8d91-b51bdadc21f0",
+        "a6dcf3bd-cc13-4b0c-94e9-150483d192a3",
+        "adb73d3c-dba9-4cfa-9f10-0426ee23f9b3",
+        "b1a8b2fb-0956-4756-aa2d-dc82bf349478",
+        "b27957cb-f527-403d-baac-fd2e635cc878",
+        "b3cdb978-707f-4e78-b98e-f3dbc979dccb",
+        "b5e18391-e331-4646-bc5e-a08147e2210c",
+        "bf7a88a6-e56d-431b-bb5f-a8897d462341",
+        "c1fe9797-df0e-4091-9247-48d3ef422753",
+        "dcaab11a-9e78-4096-9bd4-e85f3395512c",
+        "e4edbbe8-096b-424f-905f-add18c304921",
+        "e5898a18-b25b-4ffd-910e-5ab0a9675c46",
+        "ea9a5a74-02f6-4a71-a8e1-603b46daa66d",
+        "f2d0779d-ca97-4ea8-98ab-4876eb7224d5",
+        "f7fb9c89-7280-49a7-be0d-d435edad344e",
+        "fa34b54e-b908-4f99-885a-a031a2f1a765",
+        "fb31ed37-9103-45f4-a8e5-728fa8b1a7af",
+        "fc2452a4-7468-4b82-9e61-cf23c0bf5316"
+      ]
+    },
+    "open_pauses": [
+      {
+        "run_id": "6e1d3707-cf9c-4f6b-8a2e-7635c9e41113",
+        "conversation_id": "fcb965fb-78fa-408a-ab1c-0cb29007a89c",
+        "agent_family": "deep_search",
+        "pause_reason": "clarify",
+        "question_text": "حتى أفيدك بدقة: هل أنتِ المنفَذ ضدها (يعني طليقك هو اللي رفع التنفيذ ضدك)؟ وهل قرار ٣٤ هو الحكم بالزيارة القديم اللي يحاول طليقك تنفيذه؟ وهل تقديمك طلب تعديل الزيارة كان قبل أو بعد رفع التنفيذ؟",
+        "asked_at": "2026-06-04T09:58:30.786702+00:00",
+        "expires_at": "2026-06-05T09:58:30.786702+00:00"
+      }
+    ],
+    "scratch_pauses_at_start": 0,
+    "expected_by_brief": {
+      "judgment": 17,
+      "total": 53,
+      "newest": "2026-08-14"
+    }
+  },
+  "protected": {
+    "pause_run_id": "6e1d3707-cf9c-4f6b-8a2e-7635c9e41113",
+    "pause_conversation_id": "fcb965fb-78fa-408a-ab1c-0cb29007a89c",
+    "note": "pre-existing REAL planner pause — never deleted by this lane"
+  },
+  "ledger_rows_created": [
+    {
+      "unlock_id": "5842b725-5600-41d9-8d16-5d3d06f39e6e",
+      "content_id": "9a390ee2-819b-42a5-8f9d-8ba0a3b78d11",
+      "content_type": "judgment",
+      "fixture": "unlock-01",
+      "observed_at": "2026-08-16T19:02:40.028944+00:00",
+      "deleted": true,
+      "surface": "reference",
+      "unlocked_at": "2026-08-16T19:02:38.658212+00:00"
+    },
+    {
+      "unlock_id": "962dbbe6-3ddf-4fa1-b64a-856b50c78da8",
+      "content_id": "1fe98851-1856-4b82-87b5-3b498d61dd8d",
+      "content_type": "judgment",
+      "fixture": "unlock-01",
+      "observed_at": "2026-08-16T19:02:41.840873+00:00",
+      "deleted": true,
+      "surface": "reference",
+      "unlocked_at": "2026-08-16T19:02:40.718339+00:00"
+    },
+    {
+      "unlock_id": "259d273b-5907-4e15-a3f1-8075a48928d3",
+      "content_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+      "content_type": "judgment",
+      "fixture": "unlock-02",
+      "observed_at": "2026-08-16T19:09:58.716451+00:00",
+      "deleted": true,
+      "surface": "reference",
+      "unlocked_at": "2026-08-16T19:09:57.256257+00:00"
+    },
+    {
+      "unlock_id": "d805a390-522b-445d-8c1a-fc9929d469c2",
+      "content_id": "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+      "content_type": "judgment",
+      "fixture": "unlock-02",
+      "observed_at": "2026-08-16T19:09:58.736799+00:00",
+      "deleted": true,
+      "surface": "reference",
+      "unlocked_at": "2026-08-16T19:09:57.291665+00:00"
+    },
+    {
+      "unlock_id": "b7df89e3-c659-4c11-902e-4a6f0a00f72c",
+      "content_id": "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d",
+      "content_type": "judgment",
+      "fixture": "unlock-02",
+      "observed_at": "2026-08-16T19:09:58.759025+00:00",
+      "deleted": true,
+      "surface": "reference",
+      "unlocked_at": "2026-08-16T19:09:57.400371+00:00"
+    }
+  ],
+  "pause_rows_created": [
+    {
+      "run_id": "76a293b8-b8b2-4b0b-ac68-0f2059562a92",
+      "conversation_id": "aa58827c-9afd-4d5f-b470-0afadf6a1948",
+      "agent_family": "simple_search",
+      "fixture": "unlock-02(incidental searcher pause)",
+      "observed_at": "2026-08-16T19:07:54.132030+00:00",
+      "deleted": true,
+      "note": "real searcher ask_user pause: could not resolve the alias WI-2"
+    },
+    {
+      "run_id": "1f62c1e0-fe80-4289-b7a2-9675017d07b8",
+      "conversation_id": "aa58827c-9afd-4d5f-b470-0afadf6a1948",
+      "agent_family": "simple_search",
+      "fixture": "unlock-02(late pause AFTER 3 charges)",
+      "observed_at": "2026-08-16T19:11:42.204509+00:00",
+      "deleted": true,
+      "note": "turn paused on cycle 2 after 3 unlocks were already spent; question_text is a raw JSON blob"
+    },
+    {
+      "run_id": "c94a9900-669d-4955-b3cb-a72a489a57e6",
+      "conversation_id": "aa58827c-9afd-4d5f-b470-0afadf6a1948",
+      "agent_family": "deep_search",
+      "fixture": "state-01",
+      "observed_at": "2026-08-16T19:19:11.858705+00:00",
+      "deleted": true,
+      "note": "SYNTHETIC planner-shaped pause written by this probe"
+    },
+    {
+      "run_id": "50f31bd9-5fb1-4732-8c4a-17b42235cb09",
+      "conversation_id": "aa58827c-9afd-4d5f-b470-0afadf6a1948",
+      "agent_family": "simple_search",
+      "fixture": "state-02",
+      "observed_at": "2026-08-16T19:20:49.442032+00:00",
+      "deleted": true,
+      "note": "REAL searcher ask_user pause, written by run_simple_search"
+    }
+  ],
+  "workspace_items_created": [
+    {
+      "item_id": "0d901d6d-3d5e-474a-8b8c-16b963abefc7",
+      "fixture": "unlock-01",
+      "observed_at": "2026-08-16T19:02:42.607390+00:00"
+    },
+    {
+      "item_id": "7b35181f-856d-4338-a45d-9280ab0b4ded",
+      "fixture": "unlock-03",
+      "observed_at": "2026-08-16T19:16:37.326984+00:00"
+    },
+    {
+      "item_id": "d5e7decf-18a3-4bf1-b5bc-6fc999a02aa4",
+      "fixture": "state-02",
+      "observed_at": "2026-08-16T19:21:34.152794+00:00"
+    }
+  ],
+  "probes": [
+    {
+      "fixture": "unlock-01",
+      "verdict": "CONFIRMED — 2 unlocks charged, the rejected one is unrefunded and unmentioned",
+      "ran_at": "2026-08-16T19:02:42.875416+00:00",
+      "question": "اعطيني تفاصيل حكم تعيين حارس قضائي على مؤسسة المورث",
+      "scripted": [
+        "searcher (2 rounds)",
+        "synthesizer (reject, accept)"
+      ],
+      "real": [
+        "unfold",
+        "judgment_access_resolver",
+        "library_unlocks",
+        "publisher"
+      ],
+      "searcher_rounds": 2,
+      "synthesizer_runs": 2,
+      "unfolds": [
+        {
+          "level": "judgment",
+          "case_id": "9a390ee2-819b-42a5-8f9d-8ba0a3b78d11",
+          "case_ref": "17642_fi_4471232662",
+          "ok": true,
+          "chars": 6167,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "ledger_delta": 1,
+          "new_unlock_ids": [
+            "5842b725-5600-41d9-8d16-5d3d06f39e6e"
+          ],
+          "new_content_ids": [
+            "9a390ee2-819b-42a5-8f9d-8ba0a3b78d11"
+          ],
+          "body_served": true
+        },
+        {
+          "level": "judgment",
+          "case_id": "1fe98851-1856-4b82-87b5-3b498d61dd8d",
+          "case_ref": "17642_fi_4470045059",
+          "ok": true,
+          "chars": 9471,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "ledger_delta": 1,
+          "new_unlock_ids": [
+            "962dbbe6-3ddf-4fa1-b64a-856b50c78da8"
+          ],
+          "new_content_ids": [
+            "1fe98851-1856-4b82-87b5-3b498d61dd8d"
+          ],
+          "body_served": true
+        }
+      ],
+      "ledger_before_judgment": 17,
+      "ledger_after_judgment": 19,
+      "ledger_delta": 2,
+      "charged_case_ids": [
+        "1fe98851-1856-4b82-87b5-3b498d61dd8d",
+        "9a390ee2-819b-42a5-8f9d-8ba0a3b78d11"
+      ],
+      "X": {
+        "case_id": "9a390ee2-819b-42a5-8f9d-8ba0a3b78d11",
+        "case_ref": "17642_fi_4471232662",
+        "charged": true,
+        "outcome": "REJECTED"
+      },
+      "Y": {
+        "case_id": "1fe98851-1856-4b82-87b5-3b498d61dd8d",
+        "case_ref": "17642_fi_4470045059",
+        "charged": true,
+        "outcome": "ANSWERED"
+      },
+      "chat_messages": [
+        "هذا هو الحكم المطلوب وتفاصيله [1]."
+      ],
+      "synthesizer_inputs": [
+        {
+          "n_objects": 1,
+          "ref_ids": [
+            "case:17642_fi_4471232662"
+          ],
+          "ref_titles": [
+            "الحكم المرشَّح الأول"
+          ],
+          "message_chars": 6390,
+          "mentions_X_caseid": false,
+          "mentions_X_caseref": false,
+          "mentions_Y_caseref": false,
+          "mentions_charge_word": false
+        },
+        {
+          "n_objects": 1,
+          "ref_ids": [
+            "case:17642_fi_4470045059"
+          ],
+          "ref_titles": [
+            "الحكم المرشَّح الثاني"
+          ],
+          "message_chars": 9695,
+          "mentions_X_caseid": false,
+          "mentions_X_caseref": false,
+          "mentions_Y_caseref": false,
+          "mentions_charge_word": false
+        }
+      ],
+      "result_dataclass_fields": [
+        "chat_messages",
+        "created_item_ids",
+        "sse_events",
+        "paused",
+        "question_text",
+        "aborted",
+        "abort_reason"
+      ],
+      "unlock_accounting_fields": [],
+      "checks": [
+        {
+          "id": "two_unlocks_charged",
+          "want": "ledger Δ == 2 (X at its unfold, Y at its)",
+          "ok": true
+        },
+        {
+          "id": "rejected_ruling_paid",
+          "want": "X — the REJECTED ruling — has a ledger row",
+          "ok": true
+        },
+        {
+          "id": "no_refund_path",
+          "want": "X's row still present after the turn completed",
+          "ok": true
+        },
+        {
+          "id": "reply_silent_on_X",
+          "want": "no reply text names X or the spend",
+          "ok": true
+        },
+        {
+          "id": "surviving_synth_cannot_know",
+          "want": "the accepted synthesizer's input contains no trace of X's charge",
+          "ok": true
+        },
+        {
+          "id": "result_has_no_unlock_field",
+          "want": "SimpleSearchRunResult exposes nothing an SSE/UI layer could surface",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "rows_deleted": [
+          "5842b725-5600-41d9-8d16-5d3d06f39e6e",
+          "962dbbe6-3ddf-4fa1-b64a-856b50c78da8"
+        ],
+        "ledger_restored": true,
+        "final_total": 53,
+        "final_judgment_count": 17,
+        "final_newest_judgment": "2026-08-14T14:28:41.969884+00:00"
+      }
+    },
+    {
+      "fixture": "unlock-02",
+      "verdict": "CONFIRMED — 3 unlocks spent by one sentence, no reply mentions it",
+      "ran_at": "2026-08-16T19:10:48.573509+00:00",
+      "question": "اعطيني تفاصيل الأحكام الثلاثة المذكورة في التقرير المرفق",
+      "question_verbatim_attempt_1": "اعطيني تفاصيل الأحكام الثلاثة اللي في WI-2",
+      "attempt_1_outcome": "PAUSED — the searcher could not resolve the alias «WI-2» and called ask_user: «ما المقصود بـ WI-2؟ ... لم أجد هذا المرجع في المصادر المرفقة الحالية.» Zero ledger writes. Pause row 76a293b8-b8b2-4b0b-ac68-0f2059562a92, deleted.",
+      "models": "REAL (searcher + 3 synthesizers)",
+      "attached_wi": "b592d479-ce19-4a36-895f-190c8827c188",
+      "attached_wi_title": "السند النظامي لرفض نقل العامل لشركة أخرى",
+      "wi_ref_mix": {
+        "regulations": 5,
+        "cases": 3,
+        "compliance": 2
+      },
+      "unfolds": [
+        {
+          "level": "judgment",
+          "case_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+          "case_ref": "17642_fi_4470749941",
+          "ok": true,
+          "chars": 2725,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "ledger_delta": 3,
+          "new_unlock_ids": [
+            "259d273b-5907-4e15-a3f1-8075a48928d3",
+            "d805a390-522b-445d-8c1a-fc9929d469c2",
+            "b7df89e3-c659-4c11-902e-4a6f0a00f72c"
+          ],
+          "new_content_ids": [
+            "c77d4a35-c786-4c5e-b67a-1420f707359a",
+            "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+            "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d"
+          ]
+        },
+        {
+          "level": "judgment",
+          "case_id": "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d",
+          "case_ref": "17642_ap_4630228183",
+          "ok": true,
+          "chars": 21396,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "ledger_delta": 3,
+          "new_unlock_ids": [
+            "259d273b-5907-4e15-a3f1-8075a48928d3",
+            "d805a390-522b-445d-8c1a-fc9929d469c2",
+            "b7df89e3-c659-4c11-902e-4a6f0a00f72c"
+          ],
+          "new_content_ids": [
+            "c77d4a35-c786-4c5e-b67a-1420f707359a",
+            "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+            "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d"
+          ]
+        },
+        {
+          "level": "judgment",
+          "case_id": "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+          "case_ref": "17642_fi_5533",
+          "ok": true,
+          "chars": 2590,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "ledger_delta": 3,
+          "new_unlock_ids": [
+            "259d273b-5907-4e15-a3f1-8075a48928d3",
+            "d805a390-522b-445d-8c1a-fc9929d469c2",
+            "b7df89e3-c659-4c11-902e-4a6f0a00f72c"
+          ],
+          "new_content_ids": [
+            "c77d4a35-c786-4c5e-b67a-1420f707359a",
+            "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+            "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d"
+          ]
+        }
+      ],
+      "ledger_before_judgment": 17,
+      "ledger_after_judgment": 20,
+      "ledger_delta": 3,
+      "charged_case_ids": [
+        "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+        "c77d4a35-c786-4c5e-b67a-1420f707359a",
+        "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d"
+      ],
+      "expected_case_ids": [
+        "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+        "c77d4a35-c786-4c5e-b67a-1420f707359a",
+        "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d"
+      ],
+      "paused": true,
+      "aborted": false,
+      "abort_reason": "",
+      "chat_messages": [],
+      "created_item_ids": [],
+      "acknowledgment": {
+        "spend_words_found": [],
+        "open_words_found": [],
+        "says_three_rulings": false,
+        "acknowledged_spend": false
+      },
+      "checks": [
+        {
+          "id": "three_unlocks",
+          "want": "exactly 3 new ledger rows",
+          "ok": true
+        },
+        {
+          "id": "correct_rulings",
+          "want": "the 3 rows are the WI's 3 rulings",
+          "ok": true
+        },
+        {
+          "id": "one_message_spent_three",
+          "want": "a single user sentence caused all 3",
+          "ok": true
+        },
+        {
+          "id": "silence_confirmed",
+          "want": "NO reply text acknowledges the spend (the finding)",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "rows_deleted": [
+          "259d273b-5907-4e15-a3f1-8075a48928d3",
+          "d805a390-522b-445d-8c1a-fc9929d469c2",
+          "b7df89e3-c659-4c11-902e-4a6f0a00f72c"
+        ],
+        "ledger_restored": true,
+        "final_total": 53,
+        "final_judgment": {
+          "count": 17,
+          "newest": "2026-08-14T14:28:41.969884+00:00"
+        }
+      }
+    },
+    {
+      "fixture": "unlock-02b",
+      "verdict": "CONFIRMED — a late ask_user discards answers already produced (and, for rulings, already paid for)",
+      "ran_at": "2026-08-16T19:12:45.351593+00:00",
+      "origin": "discovered by the live unlock-02 run, isolated here at zero cost",
+      "question": "اعطيني تفاصيل النظامين المذكورين",
+      "objects": "chunk level — D12 unmetered, so the ledger cannot move",
+      "searcher_rounds": 2,
+      "synthesizer_runs": 2,
+      "objects_unfolded": [
+        "chunk-A",
+        "chunk-B"
+      ],
+      "publishes_attempted": 0,
+      "result": {
+        "paused": true,
+        "question_text": "أي نظام تقصد بالضبط؟",
+        "chat_messages": [],
+        "created_item_ids": []
+      },
+      "mechanism": "runner.run_simple_search's pause branch returns _empty(paused=True), which discards the `answers` dict accumulated by earlier cycles. The unlock charged during those cycles is permanent.",
+      "live_consequence": "unlock-02 live: 3 rulings charged, then paused with 0 replies and 0 cards — «لم يظهر لي أي تقرير مرفق مع الرسالة»",
+      "ledger_untouched": true,
+      "checks": [
+        {
+          "id": "cycle2_pause",
+          "want": "the turn ends paused from a LATER cycle",
+          "ok": true
+        },
+        {
+          "id": "work_was_done",
+          "want": "objects were unfolded before the pause (the charge point)",
+          "ok": true
+        },
+        {
+          "id": "accepted_answer_discarded",
+          "want": "an ACCEPTED synthesis is dropped — chat_messages is empty",
+          "ok": true
+        },
+        {
+          "id": "no_card_published",
+          "want": "the accepted answer's card is never published either",
+          "ok": true
+        },
+        {
+          "id": "zero_cost_probe",
+          "want": "ledger byte-identical (chunks unmetered)",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "fixture": "unlock-03",
+      "verdict": "SEE CHECKS — partial fan-out does not render cleanly",
+      "ran_at": "2026-08-16T19:16:37.506667+00:00",
+      "question": "اعطيني تفاصيل الأحكام الثلاثة المذكورة في التقرير المرفق",
+      "setup": "resolver grants 2 then refuses with quota_exhausted",
+      "models": "scripted searcher · REAL synthesizers",
+      "ledger_writes": 0,
+      "ledger_untouched": true,
+      "access_calls": [
+        {
+          "order": 1,
+          "case_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+          "granted": true,
+          "reason": "granted"
+        },
+        {
+          "order": 2,
+          "case_id": "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+          "granted": true,
+          "reason": "granted"
+        },
+        {
+          "order": 3,
+          "case_id": "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d",
+          "granted": false,
+          "reason": "quota_exhausted"
+        },
+        {
+          "order": 4,
+          "case_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+          "granted": false,
+          "reason": "quota_exhausted"
+        }
+      ],
+      "unfolds": [
+        {
+          "seq": 1,
+          "case_id": "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d",
+          "case_ref": "17642_ap_4630228183",
+          "ok": false,
+          "chars": 0,
+          "notes": [
+            "judgment_access_denied",
+            "access_reason_quota_exhausted"
+          ],
+          "text_head": "تعذّر فتح نص هذا الحكم كاملًا: انتهى رصيد فتح المصادر في هذه الفترة. يتجدّد الرصيد تلقائي…"
+        },
+        {
+          "seq": 2,
+          "case_id": "a90da1ca-e535-4e78-8c9d-a5f9f6d42582",
+          "case_ref": "17642_fi_5533",
+          "ok": true,
+          "chars": 2590,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "text_head": "## حكم التجارية **درجة المحكمة:** ابتدائي **المدينة:** الرياض **رقم القضية:** 5533 **رقم …"
+        },
+        {
+          "seq": 3,
+          "case_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+          "case_ref": "17642_fi_4470749941",
+          "ok": true,
+          "chars": 2725,
+          "notes": [
+            "judgment_access_charged"
+          ],
+          "text_head": "## حكم التجارية **درجة المحكمة:** ابتدائي **المدينة:** جدة **رقم القضية:** 4470749941 **ر…"
+        },
+        {
+          "seq": 4,
+          "case_id": "c77d4a35-c786-4c5e-b67a-1420f707359a",
+          "case_ref": "17642_fi_4470749941",
+          "ok": false,
+          "chars": 0,
+          "notes": [
+            "judgment_access_denied",
+            "access_reason_quota_exhausted"
+          ],
+          "text_head": "تعذّر فتح نص هذا الحكم كاملًا: انتهى رصيد فتح المصادر في هذه الفترة. يتجدّد الرصيد تلقائي…"
+        }
+      ],
+      "unfold_rounds": 1,
+      "granted_case_ids": [
+        "c77d4a35-c786-4c5e-b67a-1420f707359a",
+        "a90da1ca-e535-4e78-8c9d-a5f9f6d42582"
+      ],
+      "refused_case_ids": [
+        "ff8e7de6-9dcb-4eaf-a33f-35a5c3064a1d",
+        "c77d4a35-c786-4c5e-b67a-1420f707359a"
+      ],
+      "refused_courts": [
+        "العمالية",
+        "التجارية"
+      ],
+      "n_replies": 3,
+      "n_cards": 1,
+      "chat_messages": [
+        "تعذّر فتح نص الحكم المطلوب كاملًا لانتهاء رصيد فتح المصادر في هذه الفترة. يحتوي الملف على حكم واحد فقط من المحكمة العمالية، بينما طلبت تفاصيل ثلاثة أحكام مذكورة في تقرير — ولا يتوفر لدي أي تقرير مرفق أو أحكام أخرى لعرضها. يمكنك ترقية الخطة أو إعادة المحاولة لاحقًا لتتمكن من فتح النص الكامل.",
+        "الموجود لدي حكم واحد فقط، وهو حكم الدائرة التجارية الرابعة عشر بالرياض رقم 5533، ولا يتوفر لدي التقرير الذي تشير إليه ولا الأحكام الثلاثة المذكورة فيه. إليك تفاصيل الحكم الوحيد المتاح:\n\n**المحكمة:** الدائرة التجارية الرابعة عشر — محكمة ابتدائية بالرياض\n**رقم القضية:** 5533 عام 1442 هـ\n**تاريخ الحكم:** 2 محرم 1443 هـ\n\n**الوقائع:** أقامت شركة دعوى مطالبة بمبلغ (100,741) ريال قيمة بضاعة (منتجات غذائية) زعمت أنها سلمتها للمدعى عليه، لكن تبين أن العقد مبرم مع شركة أخرى وليس مع الشخص الطبيعي المُدعى عليه.\n\n**الدفع:** سئل وكيل المدعية عن سبب رفع الدعوى على الشخص الطبيعي مع أن العقد مبرم مع شركة، فأجاب أنه رفعها عليه «بطريق الخطأ» وأن المدعى عليها الصحيحة هي الشركة.\n\n**الأسباب (الحيثيات):** استقرت المحكمة على أن لكل شركة ذات سجل تجاري شخصية اعتبارية مستقلة، وأن من يطالب الشركة بشيء يجب أن يرفع دعواه في مواجهتها هي، لا في مواجهة الشركاء بصفتهم الشخصية.\n\n**المنطوق:** حكمت المحكمة بعدم قبول الدعوى لرفعها على غير ذي صفة، مع بقاء الحق للمدعية في رفع دعواها ضد الشركة المذكورة في العقد.\n\nأما بخصوص الأحكام الثلاثة التي ذكرتها، فلم يرد مع طلبك أي تقرير أو أحكام أخرى غير هذا الحكم الواحد، فلا يمكنني إعطاء تفاصيلها.",
+        "تعذّر فتح نصوص الأحكام المطلوبة. يشير النظام إلى أن رصيد فتح المصادر قد استُنفد في هذه الفترة، ويتجدّد تلقائيًا، أو يمكن ترقية الخطة لفتحها. لا يتوفر أي نص أو تفصيل عن الأحكام الثلاثة المذكورة في التقرير حاليًا."
+      ],
+      "quota_line_in_replies": [],
+      "reply_names_refused_ruling": false,
+      "checks": [
+        {
+          "id": "no_ledger_writes",
+          "want": "ledger byte-identical (brief's hard rule)",
+          "ok": true
+        },
+        {
+          "id": "two_granted_one_refused",
+          "want": "resolver asked 3×, granted 2, refused 1",
+          "ok": false
+        },
+        {
+          "id": "three_replies",
+          "want": "one reply per ruling — served AND refused",
+          "ok": true
+        },
+        {
+          "id": "refusal_surfaced",
+          "want": "the quota refusal reaches the user in Arabic",
+          "ok": false
+        },
+        {
+          "id": "refusal_attributable",
+          "want": "the user can tell WHICH ruling was withheld",
+          "ok": false
+        }
+      ],
+      "rescored": {
+        "why": "the live check tested for the canonical quota sentence verbatim; the synthesizer paraphrases it. Re-scored on the SAME captured replies — no new model run.",
+        "per_reply": [
+          {
+            "n": 1,
+            "chars": 291,
+            "conveys_quota": true,
+            "quota_markers": [
+              "ترقية الخطة",
+              "رصيد فتح المصادر",
+              "لانتهاء رصيد"
+            ],
+            "denies_other_documents": true,
+            "denial_markers": [
+              "حكم واحد فقط",
+              "لا يتوفر لدي أي تقرير"
+            ],
+            "appears_to_serve_a_ruling": false,
+            "head": "تعذّر فتح نص الحكم المطلوب كاملًا لانتهاء رصيد فتح المصادر في هذه الفترة. يحتوي الملف على حكم واحد فقط من المحكمة العمالية، بينما طلبت تفاص…"
+          },
+          {
+            "n": 2,
+            "chars": 1114,
+            "conveys_quota": false,
+            "quota_markers": [],
+            "denies_other_documents": true,
+            "denial_markers": [
+              "الموجود لدي حكم واحد",
+              "حكم واحد فقط",
+              "لا يتوفر لدي التقرير",
+              "لم يرد مع طلبك أي تقرير",
+              "ولا الأحكام الثلاثة"
+            ],
+            "appears_to_serve_a_ruling": true,
+            "head": "الموجود لدي حكم واحد فقط، وهو حكم الدائرة التجارية الرابعة عشر بالرياض رقم 5533، ولا يتوفر لدي التقرير الذي تشير إليه ولا الأحكام الثلاثة ا…"
+          },
+          {
+            "n": 3,
+            "chars": 211,
+            "conveys_quota": true,
+            "quota_markers": [
+              "استُنفد",
+              "ترقية الخطة",
+              "رصيد فتح المصادر"
+            ],
+            "denies_other_documents": true,
+            "denial_markers": [
+              "لا يتوفر أي نص أو تفصيل"
+            ],
+            "appears_to_serve_a_ruling": false,
+            "head": "تعذّر فتح نصوص الأحكام المطلوبة. يشير النظام إلى أن رصيد فتح المصادر قد استُنفد في هذه الفترة، ويتجدّد تلقائيًا، أو يمكن ترقية الخطة لفتحها…"
+          }
+        ],
+        "replies_conveying_quota": 2,
+        "replies_denying_other_documents": 3,
+        "replies_serving_a_ruling": 1,
+        "corrected_checks": [
+          {
+            "id": "refusal_surfaced_paraphrased",
+            "want": "the quota state does reach the user, in paraphrase",
+            "ok": true,
+            "note": "original check demanded the canonical sentence verbatim; the synthesizer paraphrases it, so the original FAIL was a scoring artifact"
+          },
+          {
+            "id": "refusal_attributable",
+            "want": "the user can tell WHICH ruling was withheld",
+            "ok": false,
+            "note": "no reply names a case number, court, or ref for the withheld ruling. Reply 1 says «حكم واحد فقط من المحكمة العمالية» — which names the court of the ruling it FAILED to open, while simultaneously denying the other two exist."
+          },
+          {
+            "id": "cross_reply_contradiction",
+            "want": "replies must not contradict each other (THE finding)",
+            "ok": false,
+            "note": "3/3 replies assert that the other rulings / the attached report do not exist. Each synthesizer sees ONE document (§2.2) and answers as though it were the whole request, so a 3-ruling fan-out produces replies that each deny the premise of the other two."
+          }
+        ],
+        "verdict": "FAIL (user-hostile) — the partial fan-out is not merely indistinguishable, it is self-contradictory: two of three replies tell the user there is no attached report and no other ruling, while a third serves one and a card is published."
+      },
+      "fake_resolver_artifact": {
+        "what": "a 4th access call appeared — c77d4a35 was re-resolved on the loop-back and the counter-based fake, having spent its 2 grants, refused a ruling it had already granted.",
+        "is_production_behaviour": false,
+        "why_not": "a real resolve_access returns already_unlocked/granted/free for a ruling opened earlier in the same turn (UNIQUE (user_id, content_type, content_id) + ON CONFLICT DO NOTHING), so production cannot refuse what it just granted.",
+        "what_IS_production_behaviour": "the loop-back really does re-unfold and therefore re-resolve access for a ruling already opened this turn — free, but a second ledger round-trip per retry."
+      }
+    },
+    {
+      "fixture": "state-01",
+      "verdict": "CONFIRMED — no second row and no clobber, but the searcher's question is silently replaced by the planner's and the reply resumes the wrong agent",
+      "ran_at": "2026-08-16T19:19:12.794414+00:00",
+      "question": "اش هي المادة 5؟",
+      "searcher_question": "أي نظام تقصد بالمادة 5؟ نظام العمل أم نظام التنفيذ؟",
+      "planner_question": "هل أنتِ المنفَذ ضدها في هذا الطلب؟ ومتى قُدّم طلب التنفيذ؟",
+      "planner_run_id": "c94a9900-669d-4955-b3cb-a72a489a57e6",
+      "pause_rows_before": 0,
+      "pause_rows_after": 1,
+      "planner_row_intact": true,
+      "searcher_row_written": false,
+      "runner_result": {
+        "paused": true,
+        "question_text": "أي نظام تقصد بالمادة 5؟ نظام العمل أم نظام التنفيذ؟",
+        "chat_messages": []
+      },
+      "find_open_pause_returns": {
+        "run_id": "c94a9900-669d-4955-b3cb-a72a489a57e6",
+        "agent_family": "deep_search",
+        "question_text": "هل أنتِ المنفَذ ضدها في هذا الطلب؟ ومتى قُدّم طلب التنفيذ؟"
+      },
+      "question_shown_to_user": "هل أنتِ المنفَذ ضدها في هذا الطلب؟ ومتى قُدّم طلب التنفيذ؟",
+      "question_actually_asked": "أي نظام تقصد بالمادة 5؟ نظام العمل أم نظام التنفيذ؟",
+      "question_swapped": true,
+      "mechanism": "runner._record_searcher_pause refuses to write when find_open_pause is non-empty (§9 trap 10) and returns None — but run_simple_search still returns paused=True. orchestrator's _SkipRunRecord handler then RE-QUERIES _find_awaiting_user for the question to emit (orchestrator.py:2269-2276) and never reads ss_outcome.question_text, so the row it finds — the planner's — supplies the question the user sees.",
+      "consequence": "The user is asked a question no agent asked this turn, and their answer is delivered to a different agent's ask_user. The searcher's run is dropped with no row and no trace.",
+      "checks": [
+        {
+          "id": "no_second_row",
+          "want": "the searcher does NOT write a 2nd pause row",
+          "ok": true
+        },
+        {
+          "id": "planner_not_clobbered",
+          "want": "the planner row is byte-identical",
+          "ok": true
+        },
+        {
+          "id": "turn_still_reports_paused",
+          "want": "run_simple_search returns paused=True with the searcher's question",
+          "ok": true
+        },
+        {
+          "id": "question_swapped",
+          "want": "BUT the orchestrator shows the PLANNER's question instead (the finding)",
+          "ok": true
+        },
+        {
+          "id": "resume_goes_to_planner",
+          "want": "a user reply resumes deep_search, not the searcher",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "planner_row_deleted": "c94a9900-669d-4955-b3cb-a72a489a57e6",
+        "scratch_pauses_remaining": 0,
+        "protected_row_intact": true,
+        "ledger_untouched": true
+      }
+    },
+    {
+      "fixture": "state-02",
+      "verdict": "PASS on the fixture's own question — the redirect is served — but ONLY because simple_search pauses cannot resume at all: the row is deleted and the reply re-routed fresh",
+      "ran_at": "2026-08-16T19:21:34.332205+00:00",
+      "first_question": "اعطيني تفاصيل الحكم",
+      "searcher_question": "أي حكم تقصد؟ لديك أكثر من حكم في المحادثة.",
+      "user_reply": "خلاص، افتح نظام العمل",
+      "pause_run_id": "50f31bd9-5fb1-4732-8c4a-17b42235cb09",
+      "pause_agent_family": "simple_search",
+      "pause_question_text_stored": "أي حكم تقصد؟ لديك أكثر من حكم في المحادثة.",
+      "pause_question_text_is_json_blob": false,
+      "pause_has_deferred_payload": false,
+      "resume_event_kinds": [
+        "agent_resumed",
+        "agent_selected",
+        "agent_run_started",
+        "workspace_item_created",
+        "token",
+        "done",
+        "agent_run_finished"
+      ],
+      "agent_resumed_family": "simple_search",
+      "families_run_on_reply": [
+        "simple_search"
+      ],
+      "pause_row_deleted": true,
+      "answer": "أهلين Punpun، شكرًا لتجربتك ريحان وإن شاء الله نكون عند حسن ظنك. بالنسبة لسؤالك… هذا هو **نظام العمل** السعودي، الصادر بالمرسوم الملكي رقم (م/51) بتاريخ 1426/8/23هـ، وآخر تعديلاته بالمرسوم الملكي رقم (م/44) بتاريخ 1446/2/8هـ [1].\n\nالنظام هو التشريع الأساسي الذي ينظم علاقات العمل في المملكة. يسري على كل عقد عمل يُؤدَّى في المملكة، بما في ذلك عقود عمال الحكومة والمؤسسات العامة والمؤسسات الخيرية وعقود التأهيل والتدريب والعاملين بعض الوقت. يستثني النظام أفراد أسرة صاحب العمل واللاعبين والمدربين والعمالة المنزلية وعمال الزراعة والرعاة والعاملين غير السعوديين لمهمة لا تتجاوز شهرين.\n\n## هيكل النظام (16 باباً)\n\n**الباب الأول — التعريفات والأحكام العامة:** يُعرِّف المصطلحات الأساسية (العامل، صاحب العمل، الأجر الأساسي والفعلي، الخدمة المستمرة، العمل المؤقت، الاستقالة)، ويُقرّ حق العمل للمواطنين دون تمييز، ويلزم باستعمال اللغة العربية في العقود والسجلات، وبإعداد لائحة تنظيم العمل وفق نموذج الوزارة.\n\n**الباب الثاني — تنظيم عمليات التوظيف:** يوجب على صاحب العمل الذي يستخدم 25 عاملاً فأكثر تشغيل 4% من ذوي الإعاقة، وألا تقل نسبة السعوديين عن 75% من إجمالي العمال، ويلزم بإرسال بيانات الشواغر والعمال.\n\n**الباب الثالث — توظيف غير السعوديين:** لا يجوز الاستقدام إلا بعد موافقة الوزارة، ويشترط رخصة عمل بعقد مكتوب ومحدد المدة، ويتحمل صاحب العمل رسوم الاستقدام والإقامة ورخصة العمل وتذكرة العودة.\n\n**الباب الرابع — التدريب والتأهيل:** يلزم بوضع سياسة تدريب للعمال السعوديين وتدريب نسبة تحدد بقرار من الوزير.\n\n**الباب الخامس — علاقات العمل:** قلبُ النظام. يشمل عقد العمل (يجب أن يكون مكتوباً وموثقاً، ومدة التجربة 180 يوماً كحد أقصى)، والواجبات وقواعد التأديب، وانتهاء عقد العمل (الإشعار 30-60 يوماً)، ومكافأة نهاية الخدمة (نصف أجر شهري عن كل سنة من الخمس الأولى، وأجر شهري عن كل سنة تالية).\n\n**الباب السادس — شروط العمل وظروفه:** الأجور (تحدد أسبوعياً أو شهرياً)، ساعات العمل (8 ساعات يومياً، 6 في رمضان)، فترات الراحة، الإجازات (سنوية 21 يوماً تزداد إلى 30، مرضية 120 يوماً، وضع 12 أسبوعاً، وغيرها).\n\n**الباب السابع — العمل لبعض الوقت:** ينظم تشغيل من تقل ساعات عملهم عن نصف ساعات العمل اليومية المعتادة.\n\n**الباب الثامن — الوقاية من مخاطر العمل وإصابات العمل والخدمات الصحية:** يوجب على صاحب العمل اتخاذ احتياطات السلامة، ويعرّف إصابة العمل، ويحدد تعويض العجز الكلي أو الوفاة بأجر 3 سنوات بحد أدنى 54,000 ريال.\n\n**الباب التاسع — تشغيل النساء:** إجازة وضع 12 أسبوعاً بأجر كامل، إجازة رضاعة ساعة يومياً، حظر الفصل أثناء الحمل، وإلزام بتوفير حضانة للأطفال عند وجود 50 عاملة فأكثر.\n\n**الباب العاشر — تشغيل الأحداث:** حظر تشغيل من لم يبلغ 15 سنة، وساعات عمل 6 ساعات يومياً، وحظر التشغيل الليلي والأعمال الخطرة.\n\n**الباب الحادي عشر — عقد العمل البحري:** أحكام خاصة بالبحارة ومجهزي السفن، وتفويض الوزير بإصدار لائحة تنظيمية.\n\n**الباب الثاني عشر — العمل في المناجم والمحاجر:** حظر تشغيل من لم يبلغ 18 سنة، وساعات عمل 7 ساعات يومياً تحت الأرض، واشتراط الفحص الطبي.\n\n**الباب الثالث عشر — تفتيش العمل:** ينشئ جهاز تفتيش العمل ويمنح المفتشين صلاحية دخول المنشآت دون إشعار وضبط المخالفات.\n\n**الباب الرابع عشر — هيئات تسوية الخلافات العمالية:** جميع مواده (210-219) ملغاة — يُرجع في الإجراءات إلى نظام المرافعات الشرعية ولائحة المرافعات أمام المحاكم العمالية.\n\n**الباب الخامس عشر — العقوبات:** غرامات تصل إلى 500,000 ريال لمخالفة أحكام توظيف غير السعوديين، وإغلاق المنشأة، ومكافأة تصل إلى 25% من الغرامة للمبلغين.\n\n**الباب السادس عشر — أحكام ختامية:** مهلة 180 يوماً للوزير لإصدار اللوائح التنفيذية، وإلغاء نظام العمل والعمال السابق.\n\n---\n\n> ⚠️ هذا النظام طويل جداً، وما عرضته أعلاه ملخصات لأبوابه بترتيب الوثيقة. النص الكامل لكل باب يُقرأ من الرابط المذكور. إذا تبي تطلب مادة معينة أو باب بعينه، قلي وأفتحه لك بكامل نصّه.",
+      "answer_chars": 3507,
+      "serves_regulation": true,
+      "forced_ruling_match": false,
+      "workspace_items_created": 1,
+      "ledger_untouched": true,
+      "mechanism": "orchestrator._resume_major_agent_inner:764-781 — `if agent_family not in ('deep_search','writing')` → log, _resolve_pause_loud(DELETE), then re-route the reply through _route. A SECOND, independent blocker sits behind it: runner._record_searcher_pause never writes `deferred_payload`, so even if the family were allow-listed the rehydrate would raise ValueError('deferred_payload missing tool_call_id') and abandon anyway.",
+      "why_it_matters": "This query redirects, so discarding the pause happens to be right. A COOPERATIVE reply is the damaging case: «الحكم الأول» or «الثاني» is re-routed with the candidate list destroyed, and the router must reconstruct the referent from recent_messages alone. The searcher's ask_user is therefore a question the system cannot act on.",
+      "checks": [
+        {
+          "id": "real_pause_written",
+          "want": "a real simple_search pause row exists before the reply",
+          "ok": true
+        },
+        {
+          "id": "no_resume_support",
+          "want": "simple_search is NOT in the resume allow-list — the run is abandoned",
+          "ok": true
+        },
+        {
+          "id": "reply_rerouted_fresh",
+          "want": "the reply is re-routed through the router as a new turn",
+          "ok": true
+        },
+        {
+          "id": "redirect_served",
+          "want": "the user's new request (نظام العمل) is answered",
+          "ok": true
+        },
+        {
+          "id": "no_forced_candidate_match",
+          "want": "no «لم أجد حكماً بهذا الاسم» — the stale candidate list is gone",
+          "ok": true
+        },
+        {
+          "id": "no_ledger_writes",
+          "want": "regulations are unmetered (D12)",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "pause_row_deleted_by_orchestrator": true,
+        "leftovers_removed": [],
+        "scratch_pauses_remaining": 0,
+        "protected_row_intact": true,
+        "ledger_untouched": true
+      }
+    }
+  ],
+  "cleanup": {
+    "scratch_conversation_deleted": true,
+    "workspace_items_removed": true,
+    "ledger_byte_identical": true,
+    "ledger_final": {
+      "total": 53,
+      "by_content_type": {
+        "regulation": {
+          "count": 35,
+          "newest": "2026-08-14T21:35:27.772535+00:00"
+        },
+        "judgment": {
+          "count": 17,
+          "newest": "2026-08-14T14:28:41.969884+00:00"
+        },
+        "article": {
+          "count": 1,
+          "newest": "2026-08-08T16:55:43.593757+00:00"
+        }
+      },
+      "ids": [
+        "10dc60ae-6b32-4453-b8e0-fa23a4e19124",
+        "14802cc9-eee9-4c41-8a02-998c5c76b781",
+        "1d9a954c-beb8-4bc9-b28f-8998036ad376",
+        "225aca96-2f0a-481e-b218-93525808cae3",
+        "28744a5a-b5c7-4d73-98e2-b2dace04eca5",
+        "2fd154f4-d443-4c4f-a89e-90a87163923b",
+        "3985ab0d-01e8-4307-8ea2-7c0ee60ee055",
+        "3bd52a5c-a041-4a50-b26b-be8956322a89",
+        "3cfda9f5-1cf9-4ac0-8ce7-bb79a74bbe66",
+        "3efcf95f-830e-4d53-9504-8c31666111b8",
+        "3f615e53-874d-4e9b-afda-1523906cbb6c",
+        "3f85dfaa-3eb0-4fbe-b914-f79dca388177",
+        "432f594f-e833-49eb-b1b3-e5112094da49",
+        "46c893bf-4ad9-4922-9307-0d23f539134b",
+        "4760b2f4-f46c-481f-a123-ba3109b42473",
+        "47e43651-446b-48bd-b052-2965cca9b353",
+        "4a658744-0896-482d-9c4a-5c8bdaafff2d",
+        "4b221fbc-a6d8-4b9b-9868-53b4dd680cae",
+        "4e92b3cf-4960-4bd5-8a6b-9699d517bf01",
+        "53a9650b-a155-46f1-aadc-90c301683179",
+        "5b8a9d1b-2036-4b4d-9a7c-187d890d5aba",
+        "5fbf85ad-6e3d-47b1-ac70-540f6466b746",
+        "66501a5a-e133-4079-ba9f-33a7b5856da5",
+        "691faa68-5143-4476-9710-7ff03ef56925",
+        "6b77530f-ac9f-482c-b4b8-9a92fd86b01c",
+        "6bef10a8-e602-4893-99e2-4a6d5ef503fd",
+        "737b6b1f-a67c-4cc5-bec1-d6ec3c0aa054",
+        "750b7704-1533-4d75-ab7d-6b317e293567",
+        "865b3d11-5215-44f9-8ec6-165eed8add11",
+        "8689ad4c-97e6-4775-b72c-ee5170942816",
+        "8bb6e78e-b887-4c5a-85aa-cf1ac4578e76",
+        "91b3c07b-b057-4e82-a73c-77d622c424dd",
+        "934c42b7-0496-40a9-9c01-255668d55eb9",
+        "95bd8110-6ce1-4013-87ba-5f3d9be64780",
+        "9f29b8e5-2e50-4a06-a1b2-dc93572b79bc",
+        "a56e3e34-2570-4f2a-8d91-b51bdadc21f0",
+        "a6dcf3bd-cc13-4b0c-94e9-150483d192a3",
+        "adb73d3c-dba9-4cfa-9f10-0426ee23f9b3",
+        "b1a8b2fb-0956-4756-aa2d-dc82bf349478",
+        "b27957cb-f527-403d-baac-fd2e635cc878",
+        "b3cdb978-707f-4e78-b98e-f3dbc979dccb",
+        "b5e18391-e331-4646-bc5e-a08147e2210c",
+        "bf7a88a6-e56d-431b-bb5f-a8897d462341",
+        "c1fe9797-df0e-4091-9247-48d3ef422753",
+        "dcaab11a-9e78-4096-9bd4-e85f3395512c",
+        "e4edbbe8-096b-424f-905f-add18c304921",
+        "e5898a18-b25b-4ffd-910e-5ab0a9675c46",
+        "ea9a5a74-02f6-4a71-a8e1-603b46daa66d",
+        "f2d0779d-ca97-4ea8-98ab-4876eb7224d5",
+        "f7fb9c89-7280-49a7-be0d-d435edad344e",
+        "fa34b54e-b908-4f99-885a-a031a2f1a765",
+        "fb31ed37-9103-45f4-a8e5-728fa8b1a7af",
+        "fc2452a4-7468-4b82-9e61-cf23c0bf5316"
+      ]
+    },
+    "ledger_baseline": {
+      "total": 53,
+      "by_content_type": {
+        "regulation": {
+          "count": 35,
+          "newest": "2026-08-14T21:35:27.772535+00:00"
+        },
+        "judgment": {
+          "count": 17,
+          "newest": "2026-08-14T14:28:41.969884+00:00"
+        },
+        "article": {
+          "count": 1,
+          "newest": "2026-08-08T16:55:43.593757+00:00"
+        }
+      },
+      "ids": [
+        "10dc60ae-6b32-4453-b8e0-fa23a4e19124",
+        "14802cc9-eee9-4c41-8a02-998c5c76b781",
+        "1d9a954c-beb8-4bc9-b28f-8998036ad376",
+        "225aca96-2f0a-481e-b218-93525808cae3",
+        "28744a5a-b5c7-4d73-98e2-b2dace04eca5",
+        "2fd154f4-d443-4c4f-a89e-90a87163923b",
+        "3985ab0d-01e8-4307-8ea2-7c0ee60ee055",
+        "3bd52a5c-a041-4a50-b26b-be8956322a89",
+        "3cfda9f5-1cf9-4ac0-8ce7-bb79a74bbe66",
+        "3efcf95f-830e-4d53-9504-8c31666111b8",
+        "3f615e53-874d-4e9b-afda-1523906cbb6c",
+        "3f85dfaa-3eb0-4fbe-b914-f79dca388177",
+        "432f594f-e833-49eb-b1b3-e5112094da49",
+        "46c893bf-4ad9-4922-9307-0d23f539134b",
+        "4760b2f4-f46c-481f-a123-ba3109b42473",
+        "47e43651-446b-48bd-b052-2965cca9b353",
+        "4a658744-0896-482d-9c4a-5c8bdaafff2d",
+        "4b221fbc-a6d8-4b9b-9868-53b4dd680cae",
+        "4e92b3cf-4960-4bd5-8a6b-9699d517bf01",
+        "53a9650b-a155-46f1-aadc-90c301683179",
+        "5b8a9d1b-2036-4b4d-9a7c-187d890d5aba",
+        "5fbf85ad-6e3d-47b1-ac70-540f6466b746",
+        "66501a5a-e133-4079-ba9f-33a7b5856da5",
+        "691faa68-5143-4476-9710-7ff03ef56925",
+        "6b77530f-ac9f-482c-b4b8-9a92fd86b01c",
+        "6bef10a8-e602-4893-99e2-4a6d5ef503fd",
+        "737b6b1f-a67c-4cc5-bec1-d6ec3c0aa054",
+        "750b7704-1533-4d75-ab7d-6b317e293567",
+        "865b3d11-5215-44f9-8ec6-165eed8add11",
+        "8689ad4c-97e6-4775-b72c-ee5170942816",
+        "8bb6e78e-b887-4c5a-85aa-cf1ac4578e76",
+        "91b3c07b-b057-4e82-a73c-77d622c424dd",
+        "934c42b7-0496-40a9-9c01-255668d55eb9",
+        "95bd8110-6ce1-4013-87ba-5f3d9be64780",
+        "9f29b8e5-2e50-4a06-a1b2-dc93572b79bc",
+        "a56e3e34-2570-4f2a-8d91-b51bdadc21f0",
+        "a6dcf3bd-cc13-4b0c-94e9-150483d192a3",
+        "adb73d3c-dba9-4cfa-9f10-0426ee23f9b3",
+        "b1a8b2fb-0956-4756-aa2d-dc82bf349478",
+        "b27957cb-f527-403d-baac-fd2e635cc878",
+        "b3cdb978-707f-4e78-b98e-f3dbc979dccb",
+        "b5e18391-e331-4646-bc5e-a08147e2210c",
+        "bf7a88a6-e56d-431b-bb5f-a8897d462341",
+        "c1fe9797-df0e-4091-9247-48d3ef422753",
+        "dcaab11a-9e78-4096-9bd4-e85f3395512c",
+        "e4edbbe8-096b-424f-905f-add18c304921",
+        "e5898a18-b25b-4ffd-910e-5ab0a9675c46",
+        "ea9a5a74-02f6-4a71-a8e1-603b46daa66d",
+        "f2d0779d-ca97-4ea8-98ab-4876eb7224d5",
+        "f7fb9c89-7280-49a7-be0d-d435edad344e",
+        "fa34b54e-b908-4f99-885a-a031a2f1a765",
+        "fb31ed37-9103-45f4-a8e5-728fa8b1a7af",
+        "fc2452a4-7468-4b82-9e61-cf23c0bf5316"
+      ]
+    },
+    "missing_vs_baseline": [],
+    "extra_vs_baseline": [],
+    "ledger_rows_created_total": 5,
+    "ledger_rows_all_deleted": true,
+    "pause_rows_created_total": 4,
+    "pause_rows_all_deleted": true,
+    "scratch_pause_rows_remaining": 0,
+    "protected_pause_intact": true,
+    "protected_pause": {
+      "run_id": "6e1d3707-cf9c-4f6b-8a2e-7635c9e41113",
+      "conversation_id": "fcb965fb-78fa-408a-ab1c-0cb29007a89c"
+    },
+    "live_conversations_after": 137,
+    "all_clear": true
+  },
+  "updated_at": "2026-08-16T19:22:26.044208+00:00"
+}

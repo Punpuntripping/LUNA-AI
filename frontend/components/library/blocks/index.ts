@@ -26,5 +26,6 @@ export { OfficialSources } from "./OfficialSources";
 export { ReadAfter } from "./ReadAfter";
 export { MediaBlock } from "./MediaBlock";
 export { AskRayhanWidget } from "./AskRayhanWidget";
+export { ChatWithPageCta, isCarryablePageType } from "./ChatWithPageCta";
 export { OpenInRayhanCta } from "./OpenInRayhanCta";
 export { LibraryPageShell } from "./LibraryPageShell";

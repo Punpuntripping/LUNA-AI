@@ -1,0 +1,92 @@
+{
+  "baseline_rows": 53,
+  "checks": [
+    {
+      "id": "struct",
+      "want": "kwonly & no default",
+      "ok": true
+    },
+    {
+      "id": "A_refuses",
+      "want": "no body, Δ0",
+      "ok": true,
+      "detail": {
+        "ok": false,
+        "notes": [
+          "judgment_access_denied",
+          "access_reason_unresolved"
+        ],
+        "chars": 0
+      }
+    },
+    {
+      "id": "B_charges",
+      "want": "body + exactly +1 row",
+      "ok": true,
+      "detail": {
+        "new_rows": [
+          {
+            "unlock_id": "3907a82d-3810-44f0-be9d-7022532e3e72",
+            "content_type": "judgment",
+            "content_id": "7595673f-8d5b-4bbe-acdc-f0e30a5de36e",
+            "surface": "reference",
+            "cost": 1,
+            "unlocked_at": "2026-08-16T17:46:32.177409+00:00"
+          }
+        ],
+        "notes": [
+          "judgment_access_charged"
+        ]
+      }
+    },
+    {
+      "id": "C_no_double",
+      "want": "body + Δ0",
+      "ok": true,
+      "detail": {
+        "notes": [
+          "judgment_access_free"
+        ]
+      }
+    },
+    {
+      "id": "D_free_reuse",
+      "want": "body, Δ0, row untouched",
+      "ok": true,
+      "detail": {
+        "notes": [
+          "judgment_access_free"
+        ],
+        "row": {
+          "unlock_id": "432f594f-e833-49eb-b1b3-e5112094da49",
+          "content_type": "judgment",
+          "content_id": "f02fdba7-503d-4c16-9dfd-ffbf49ec7b70",
+          "surface": "library",
+          "cost": 1,
+          "unlocked_at": "2026-08-02T13:22:22.580933+00:00"
+        }
+      }
+    },
+    {
+      "id": "E_reg_unmetered",
+      "want": "body + Δ0 anywhere",
+      "ok": true,
+      "detail": {
+        "chars": 7934,
+        "new_rows": []
+      }
+    },
+    {
+      "id": "cleanup",
+      "want": "ledger == baseline",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "extra": []
+      }
+    }
+  ],
+  "rows_written_then_deleted": [
+    "3907a82d-3810-44f0-be9d-7022532e3e72"
+  ]
+}

@@ -24,6 +24,7 @@ import {
 } from "@/hooks/use-demo-conversation";
 import { FilePreview } from "@/components/chat/FilePreview";
 import { BlogChips } from "@/components/chat/BlogChip";
+import { LibraryItemChips } from "@/components/chat/LibraryItemChip";
 import { TemplateChip } from "@/components/chat/TemplateChip";
 import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
 import { api, workspaceApi, ApiClientError } from "@/lib/api";
@@ -33,7 +34,13 @@ import {
   runResumableUpload,
   type ImperativeUploadHandle,
 } from "@/hooks/use-resumable-upload";
-import type { PendingBlog, PendingFile, PendingTemplate } from "@/types";
+import type {
+  LibraryItemRef,
+  PendingBlog,
+  PendingFile,
+  PendingLibraryItem,
+  PendingTemplate,
+} from "@/types";
 
 interface ChatInputProps {
   onSend: (content: string) => void;
@@ -71,6 +78,12 @@ const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 // Blog paste-chips (blog_import plan §D4): max pasted blogs held in the
 // composer at once. A blog token is 32 lowercase hex chars.
 const MAX_BLOG_CHIPS = 3;
+// Library carry-chips (simple_search_family §8): max library pages held in the
+// composer at once. Same budget as blogs — each one costs a `references`
+// workspace item and a slice of the turn's context, and a lookup question is
+// about ONE object by definition (D5). Excess refs in the carry slot are
+// dropped rather than queued.
+const MAX_LIBRARY_CHIPS = 3;
 
 export function ChatInput({
   onSend,
@@ -119,6 +132,17 @@ export function ChatInput({
   const removePendingBlog = useChatStore((s) => s.removePendingBlog);
   const updatePendingBlog = useChatStore((s) => s.updatePendingBlog);
   const clearPendingBlogs = useChatStore((s) => s.clearPendingBlogs);
+  const pendingLibraryItems = useChatStore((s) => s.pendingLibraryItems);
+  const addPendingLibraryItem = useChatStore((s) => s.addPendingLibraryItem);
+  const removePendingLibraryItem = useChatStore(
+    (s) => s.removePendingLibraryItem,
+  );
+  const updatePendingLibraryItem = useChatStore(
+    (s) => s.updatePendingLibraryItem,
+  );
+  const clearPendingLibraryItems = useChatStore(
+    (s) => s.clearPendingLibraryItems,
+  );
   const pendingTemplate = useChatStore((s) => s.pendingTemplate);
   const setPendingTemplate = useChatStore((s) => s.setPendingTemplate);
 
@@ -129,7 +153,9 @@ export function ChatInput({
   const hasInFlightUpload =
     pendingFiles.some(
       (f) => f.uploadStatus === "queued" || f.uploadStatus === "uploading",
-    ) || pendingBlogs.some((b) => b.status === "loading");
+    ) ||
+    pendingBlogs.some((b) => b.status === "loading") ||
+    pendingLibraryItems.some((i) => i.status === "loading");
 
   // Only count files the user can actually send. Failed/cancelled files in
   // the queue would otherwise let the send button activate with an empty
@@ -145,10 +171,17 @@ export function ChatInput({
     (b) => b.status === "ready" && b.itemId,
   ).length;
 
+  // Ready library chips likewise — «تحدّث مع ريحان عن هذه الصفحة» has to be able
+  // to send with the page alone and no typed text.
+  const sendableLibraryCount = pendingLibraryItems.filter(
+    (i) => i.status === "ready" && i.itemId,
+  ).length;
+
   const canSend =
     (content.trim().length > 0 ||
       sendableFileCount > 0 ||
       sendableBlogCount > 0 ||
+      sendableLibraryCount > 0 ||
       pendingTemplate !== null) &&
     !isStreaming &&
     !disabled &&
@@ -167,8 +200,15 @@ export function ChatInput({
     handles.clear();
     clearPendingFiles();
     clearPendingBlogs();
+    clearPendingLibraryItems();
     setPendingTemplate(null);
-  }, [conversationId, clearPendingFiles, clearPendingBlogs, setPendingTemplate]);
+  }, [
+    conversationId,
+    clearPendingFiles,
+    clearPendingBlogs,
+    clearPendingLibraryItems,
+    setPendingTemplate,
+  ]);
 
   // Abort any live tus uploads on unmount (e.g. user navigates away
   // mid-upload). Cancel handles also call the backend cancel endpoint
@@ -227,6 +267,7 @@ export function ChatInput({
       !trimmed &&
       pendingFiles.length === 0 &&
       pendingBlogs.length === 0 &&
+      pendingLibraryItems.length === 0 &&
       !template
     ) {
       return;
@@ -252,7 +293,14 @@ export function ChatInput({
     onSend(outgoing);
     setContent("");
     if (template) setPendingTemplate(null);
-  }, [content, onSend, pendingFiles.length, pendingBlogs.length, setPendingTemplate]);
+  }, [
+    content,
+    onSend,
+    pendingFiles.length,
+    pendingBlogs.length,
+    pendingLibraryItems.length,
+    setPendingTemplate,
+  ]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -450,6 +498,90 @@ export function ChatInput({
     importBlogTokens(carried);
   }, [conversationId, importBlogTokens]);
 
+  // Carry a library page into this conversation as a ``kind='references'``
+  // workspace item (simple_search_family §8 / §12a C3) — the library twin of
+  // ``importBlogTokens``: fire on arrival (pre-send), track per-chip status in
+  // the store, and let the send path collect the itemIds into the EXISTING
+  // ``attachment_ids`` array. ``createdByChip`` is set only when the server
+  // says this call created the item, so removing a chip never deletes a card
+  // that was already in the conversation.
+  const importLibraryRefs = useCallback(
+    (refs: LibraryItemRef[]) => {
+      if (!conversationId || refs.length === 0) return;
+
+      for (const ref of refs) {
+        const chipId = `lib-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const chip: PendingLibraryItem = {
+          id: chipId,
+          pageType: ref.pageType,
+          pageId: ref.pageId,
+          title: ref.title,
+          status: "loading",
+          itemId: null,
+          createdByChip: false,
+          errorMessage: null,
+        };
+        addPendingLibraryItem(chip);
+
+        api
+          .createLibraryItem(conversationId, ref.pageType, ref.pageId)
+          .then((res) => {
+            updatePendingLibraryItem(chipId, {
+              status: "ready",
+              itemId: res.item.item_id,
+              // Prefer the server's title — it is the canonical document name;
+              // the page heading we carried was only a placeholder.
+              title: (res.item.title ?? "").trim() || ref.title,
+              createdByChip: res.already_attached === false,
+            });
+            void qc.invalidateQueries({
+              queryKey: workspaceKeys.byConversation(conversationId),
+            });
+            // The carry may have retitled a fresh «محادثة جديدة» after the
+            // page — refresh the sidebar so the new title shows.
+            void qc.invalidateQueries({ queryKey: conversationKeys.all });
+          })
+          .catch((err) => {
+            updatePendingLibraryItem(chipId, {
+              status: "failed",
+              errorMessage:
+                err instanceof ApiClientError
+                  ? err.message
+                  : "تعذّر إضافة الصفحة إلى المحادثة",
+            });
+          });
+      }
+    },
+    [conversationId, addPendingLibraryItem, updatePendingLibraryItem, qc],
+  );
+
+  // New-chat handoff for carried library pages: «تحدّث مع ريحان عن هذه الصفحة»
+  // stashes the page in ``pendingLibraryRefs`` (the pendingBlogTokens twin) and
+  // navigates — from the library page for a brand-new chat, from the
+  // destination picker for an existing one, and from the AuthGuard intent after
+  // an anonymous visitor signs in. All three land here. Declared AFTER the
+  // conversationId-change clear effect so the fresh chips aren't wiped, and the
+  // slot is cleared BEFORE the import so a re-run is a no-op.
+  useEffect(() => {
+    if (!conversationId) return;
+    const carried = useChatStore.getState().pendingLibraryRefs;
+    if (carried.length === 0) return;
+    useChatStore.getState().clearPendingLibraryRefs();
+    // Dedup by (pageType, pageId) against the live chips, then cap. Two carries
+    // of the same page would otherwise send the same item_id twice.
+    const liveItems = useChatStore.getState().pendingLibraryItems;
+    const seen = new Set(liveItems.map((i) => `${i.pageType}:${i.pageId}`));
+    const fresh = carried.filter((ref) => {
+      const key = `${ref.pageType}:${ref.pageId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const room = MAX_LIBRARY_CHIPS - liveItems.length;
+    if (room <= 0 || fresh.length === 0) return;
+    importLibraryRefs(fresh.slice(0, room));
+  }, [conversationId, importLibraryRefs]);
+
   // Queue blog tokens as composer chips — the single entry point shared by
   // the paste handler, the «مدونة → من مدوناتي» menu list, and the «إضافة
   // رابط» dialog. Dedups against live chips AND the new-chat carry slot,
@@ -559,6 +691,29 @@ export function ChatInput({
       }
     },
     [removePendingBlog, conversationId, qc],
+  );
+
+  // Remove a library chip. Deletes the underlying ``references`` item only when
+  // THIS chip's carry created it (the server said ``already_attached: false``) —
+  // never one the conversation already held, and never on an unknown flag.
+  const handleRemoveLibraryItem = useCallback(
+    (id: string) => {
+      const item = useChatStore
+        .getState()
+        .pendingLibraryItems.find((i) => i.id === id);
+      removePendingLibraryItem(id);
+      if (item?.itemId && item.createdByChip && conversationId) {
+        workspaceApi
+          .delete(item.itemId)
+          .then(() => {
+            void qc.invalidateQueries({
+              queryKey: workspaceKeys.byConversation(conversationId),
+            });
+          })
+          .catch(() => {});
+      }
+    },
+    [removePendingLibraryItem, conversationId, qc],
   );
 
   const handleFileSelect = useCallback(
@@ -737,6 +892,14 @@ export function ChatInput({
         <BlogChips
           blogs={pendingBlogs}
           onRemove={handleRemoveBlog}
+          className="mb-2"
+        />
+      )}
+
+      {pendingLibraryItems.length > 0 && (
+        <LibraryItemChips
+          items={pendingLibraryItems}
+          onRemove={handleRemoveLibraryItem}
           className="mb-2"
         />
       )}

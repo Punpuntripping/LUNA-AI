@@ -234,6 +234,70 @@ class CircularSourceView(BaseModel):
     """``circulars.source`` — the official source link (may be "")."""
 
 
+class ArticleFullSourceView(BaseModel):
+    """Click-ready payload for ONE مادة — the FULL ``articles_v2.content``.
+
+    New with the ``simple_search`` lookup family (plan §6.1a). deep_search never
+    cites an article as an object: ``fetch_article`` hands the planner text only,
+    and the reg domain is chunk-shaped. simple_search opens a مادة *as* the
+    answer, so it becomes a first-class reference — ``domain='articles'``,
+    ``ref_id='article:<articles_v2.id>'``.
+
+    ``article_full``, NOT ``article``. The legacy :class:`ArticleSourceView`
+    already owns the ``article`` discriminator (and the frontend's legacy union
+    arm is a permissive ``[k: string]: unknown`` bag that would absorb a second
+    ``article`` variant with NO compile error and render it as bare markdown).
+    Reusing the name also gives the Pydantic union below duplicate discriminator
+    values, which fails at IMPORT time.
+
+    The body field MUST be named ``content``: ``extractSourceContent``
+    (``ReferencePanel.tsx``) does ``"content" in view ? view.content : ""``, so
+    any other name silently renders a blank dialog with no copy button.
+    """
+
+    source_type: Literal["article_full"] = "article_full"
+    title: str = ""
+    """Composite label — «المادة 81 من نظام العمل»."""
+    article_num: str | None = None
+    """``articles_v2.article_number`` — TEXT, not an int: the corpus carries
+    compound numbers («7-4», «1-1») alongside plain ones."""
+    content: str = ""
+    """FULL ``articles_v2.content``, uncapped (p50 = 325 chars, p90 = 1,334;
+    one 244k outlier — the panel scrolls it, we never truncate)."""
+    regulation_title: str = ""
+    regulation_source_url: str = ""
+    """Parent regulation's ``landing_url`` — the ONE external exit, exactly like
+    :class:`ChunkSourceView`. No PDF companion."""
+
+
+class RegulationSummarySourceView(BaseModel):
+    """Click-ready payload for a WHOLE نظام — its summary, not its text.
+
+    New with the ``simple_search`` lookup family (plan §6.1a);
+    ``domain='regulation_docs'``, ``ref_id='regdoc:<regulations_v2.id>'``.
+
+    The popup shows ``llm_summary`` (the abstract — present on all 3,951 rows,
+    max 2,415 chars), falling back to ``summary``. It deliberately does NOT show
+    the assembled body: a citation preview answers "is this the نظام I need?",
+    and the whole statute answers that worse than the abstract does — while
+    costing megabytes. The full document has its own home, ``/regulations/{slug}``,
+    reached by the same «فتح النظام في ريحان» exit the reveal already resolves.
+
+    ``regulation_summary``, NOT ``regulation`` — the legacy
+    :class:`RegulationSourceView` owns that discriminator (see
+    :class:`ArticleFullSourceView` for why a duplicate is fatal).
+    """
+
+    source_type: Literal["regulation_summary"] = "regulation_summary"
+    title: str = ""
+    """``clean_title`` when present, else ``title``."""
+    content: str = ""
+    """``regulations_v2.llm_summary``, falling back to ``summary``. Named
+    ``content`` because the frontend extractor keys on that name."""
+    regulation_source_url: str = ""
+    """``regulations_v2.landing_url``."""
+
+
 SourceView = Annotated[
     Union[
         ChunkSourceView,
@@ -243,6 +307,8 @@ SourceView = Annotated[
         CaseSourceView,
         ServiceSourceView,
         CircularSourceView,
+        ArticleFullSourceView,
+        RegulationSummarySourceView,
     ],
     Field(discriminator="source_type"),
 ]
@@ -383,6 +449,70 @@ async def _fetch_circular_by_id(
         except Exception as e:
             logger.debug(
                 "source_viewer: fetch circular %s failed: %s", circular_id, e
+            )
+            return None
+
+    return await asyncio.to_thread(_call)
+
+
+async def _fetch_article_by_id(
+    supabase: SupabaseClient, article_id: str
+) -> dict | None:
+    """Fetch one ``articles_v2`` row by its uuid.
+
+    Pulls the FULL ``content`` (uncapped — the popup IS the article) plus the
+    parent ``regulation_id`` so the caller can resolve the نظام's title and
+    landing link. Fail-soft like every sibling fetcher: a miss or a PostgREST
+    error returns ``None`` and the caller degrades to "no source", never raises
+    into a response.
+
+    ``articles_v2`` is a VIEW over the pipeline-owned schema, so it carries no
+    FK metadata for a PostgREST embed — the parent regulation is a SECOND
+    round-trip (:func:`_fetch_regulation_by_id`), not a join.
+    """
+    def _call() -> dict | None:
+        try:
+            resp = (
+                supabase.table("articles_v2")
+                .select("id, regulation_id, article_number, content")
+                .eq("id", article_id)
+                .maybe_single()
+                .execute()
+            )
+            return resp.data if resp else None
+        except Exception as e:
+            logger.debug(
+                "source_viewer: fetch article %s failed: %s", article_id, e
+            )
+            return None
+
+    return await asyncio.to_thread(_call)
+
+
+async def _fetch_regulation_by_id(
+    supabase: SupabaseClient, regulation_id: str
+) -> dict | None:
+    """Fetch one ``regulations_v2`` row by its uuid.
+
+    Serves two callers: the whole-نظام view (``llm_summary`` / ``summary``) and
+    the article view (which needs only ``title`` / ``clean_title`` /
+    ``landing_url`` for its header + exit). One select covers both — the summary
+    columns are ≤ 2.4k chars, so projecting them unconditionally costs nothing.
+    Fail-soft to ``None``.
+    """
+    def _call() -> dict | None:
+        try:
+            resp = (
+                supabase.table("regulations_v2")
+                .select("id, title, clean_title, llm_summary, summary, landing_url")
+                .eq("id", regulation_id)
+                .maybe_single()
+                .execute()
+            )
+            return resp.data if resp else None
+        except Exception as e:
+            logger.debug(
+                "source_viewer: fetch regulation %s failed: %s", regulation_id, e
             )
             return None
 
@@ -553,6 +683,100 @@ async def _build_circular_view(
     )
 
 
+def _regulation_display_title(row: dict | None) -> str:
+    """``clean_title`` when present, else ``title``. Empty when the row is gone."""
+    r = row or {}
+    return ((r.get("clean_title") or r.get("title") or "") or "").strip()
+
+
+def article_full_title(article_number: str, regulation_title: str) -> str:
+    """«المادة 81 من نظام العمل» — degrading gracefully when a part is missing.
+
+    Pure, so the reference card and the popup header can be proven identical
+    without a DB. Western digits are NOT enforced here: ``article_number`` is
+    whatever ``articles_v2`` stores (compound «7-4» included) and it is prose, not
+    an ``[n]`` citation marker — the digit rule in §6.4 governs ``[n]`` only.
+    """
+    num = (article_number or "").strip()
+    reg = (regulation_title or "").strip()
+    if num and reg:
+        return f"المادة {num} من {reg}"
+    if num:
+        return f"المادة {num}"
+    return reg or "مادة"
+
+
+async def build_article_full_view(
+    supabase: SupabaseClient,
+    article_id: str,
+    *,
+    article_number: str = "",
+    regulation_title: str = "",
+    regulation_source_url: str = "",
+) -> ArticleFullSourceView | None:
+    """``articles_v2.id`` -> :class:`ArticleFullSourceView`, or ``None``.
+
+    Keyed on an ID rather than a URA result because there is no article member of
+    the URA union — deep_search never produces one (§4 L3). ``None`` means the row
+    is gone, which the caller reports exactly like any other unreconstructable
+    source (``has_source=False`` on the list, 404 «تعذّر عرض هذا المصدر» on the
+    reveal) — never as a refusal.
+
+    Two round-trips by construction (see :func:`_fetch_article_by_id`). The
+    keyword fallbacks let a caller that already holds the parent's title/link skip
+    nothing — they are used only when the regulation lookup itself misses, so the
+    popup still renders a labelled article instead of a bare body.
+
+    ``_strip_line_indent`` on the body is load-bearing, not cosmetic: مواد are
+    PDF-extracted Arabic and the extractor preserves stray indentation with no
+    semantic meaning, which trips CommonMark's 4-space "indented code block" rule
+    and renders the whole مادة inside a ``<pre><code>`` box.
+    """
+    row = await _fetch_article_by_id(supabase, article_id)
+    if row is None:
+        return None
+
+    reg_row: dict | None = None
+    reg_id = str(row.get("regulation_id") or "").strip()
+    if reg_id:
+        reg_row = await _fetch_regulation_by_id(supabase, reg_id)
+
+    num = (str(row.get("article_number") or "") or article_number).strip()
+    reg_title = _regulation_display_title(reg_row) or (regulation_title or "").strip()
+    landing = (
+        ((reg_row or {}).get("landing_url") or "") or regulation_source_url or ""
+    ).strip()
+
+    return ArticleFullSourceView(
+        title=article_full_title(num, reg_title),
+        article_num=num or None,
+        content=_strip_line_indent((row.get("content") or "").strip()),
+        regulation_title=reg_title,
+        regulation_source_url=landing,
+    )
+
+
+async def build_regulation_summary_view(
+    supabase: SupabaseClient,
+    regulation_id: str,
+) -> RegulationSummarySourceView | None:
+    """``regulations_v2.id`` -> :class:`RegulationSummarySourceView`, or ``None``.
+
+    ONE round-trip. The body is ``llm_summary`` (populated on all 3,951 rows)
+    falling back to ``summary`` — never the assembled statute; see the class
+    docstring for why the popup is an abstract and not a document.
+    """
+    row = await _fetch_regulation_by_id(supabase, regulation_id)
+    if row is None:
+        return None
+
+    return RegulationSummarySourceView(
+        title=_regulation_display_title(row),
+        content=((row.get("llm_summary") or row.get("summary") or "") or "").strip(),
+        regulation_source_url=(row.get("landing_url") or "").strip(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
@@ -596,8 +820,13 @@ __all__ = [
     "CaseSourceView",
     "ServiceSourceView",
     "CircularSourceView",
+    "ArticleFullSourceView",
+    "RegulationSummarySourceView",
     "SourceView",
     "build_source_view",
+    "build_article_full_view",
+    "build_regulation_summary_view",
+    "article_full_title",
 ]
 
 
@@ -667,6 +896,22 @@ def _self_test() -> None:
             "source": "https://gov.sa/circular/123",
             "entities": {"entity_name": "وزارة التجارة"},
         },
+        "articles_v2": {
+            "id": "art-1",
+            "regulation_id": "reg-1",
+            "article_number": "81",
+            # Leading spaces on the 2nd line: the PDF-extractor artefact that
+            # renders the whole مادة as a <pre><code> block if not stripped.
+            "content": "المادة الحادية والثمانون\n    يجوز لصاحب العمل ...",
+        },
+        "regulations_v2": {
+            "id": "reg-1",
+            "title": "نظام العمل الصادر بالمرسوم الملكي",
+            "clean_title": "نظام العمل",
+            "llm_summary": "ملخص النظام: ينظم العلاقة بين العامل وصاحب العمل.",
+            "summary": "ملخص احتياطي",
+            "landing_url": "https://laws.boe.gov.sa/nizam-al-amal",
+        },
     }
     stub = _StubChain(fixtures)
 
@@ -685,7 +930,13 @@ def _self_test() -> None:
         v = await build_source_view(stub, chunk)
         assert isinstance(v, ChunkSourceView), v
         assert v.regulation_source_url.startswith("https://")
-        assert "نص المقطع الكامل" in v.content and "سياق المقطع" in v.content
+        # STALE UNTIL 2026-08-15: this asserted `chunk_context` was concatenated
+        # into the body. `_build_reg_view` stopped doing that on 2026-08-08 (it
+        # is pipeline-written commentary a reader would end up quoting as if it
+        # were the نظام), so the assertion had been failing on every run since.
+        # Now it asserts the CURRENT contract in both directions.
+        assert v.content == "نص المقطع الكامل", v.content
+        assert "سياق المقطع" not in v.content
         # The URA still CARRIES pdf_url (it is corpus metadata); the view must
         # not project it — the popup has no PDF exit any more.
         assert not hasattr(v, "regulation_pdf_link")
@@ -738,14 +989,67 @@ def _self_test() -> None:
         assert v.circ_ref == "ت/123"
         assert v.url == "https://gov.sa/circular/123"
 
+        # 5) article_full (simple_search) — FULL body + parent نظام header/exit
+        v = await build_article_full_view(stub, "art-1")
+        assert isinstance(v, ArticleFullSourceView), v
+        assert v.source_type == "article_full"
+        assert v.title == "المادة 81 من نظام العمل", v.title
+        assert v.article_num == "81"
+        assert v.regulation_title == "نظام العمل"      # clean_title wins
+        assert v.regulation_source_url.endswith("/nizam-al-amal")
+        assert "يجوز لصاحب العمل" in v.content
+        # _strip_line_indent ran: no 4-space indent survives to trip CommonMark's
+        # indented-code-block rule.
+        assert not any(
+            line.startswith(" ") for line in v.content.splitlines()
+        ), v.content
+        # The body field MUST be `content` — ReferencePanel keys on that name.
+        assert "content" in v.model_dump()
+
+        # 6) regulation_summary (simple_search) — the abstract, NOT the statute
+        v = await build_regulation_summary_view(stub, "reg-1")
+        assert isinstance(v, RegulationSummarySourceView), v
+        assert v.source_type == "regulation_summary"
+        assert v.title == "نظام العمل"
+        assert v.content.startswith("ملخص النظام:")   # llm_summary, not summary
+        assert v.regulation_source_url.endswith("/nizam-al-amal")
+
+        # Both new variants must round-trip through the discriminated union —
+        # this is what a duplicate `source_type` value would break.
+        from pydantic import TypeAdapter as _TA
+
+        adapter = _TA(SourceView)
+        for variant in (
+            ArticleFullSourceView(title="م", content="ن"),
+            RegulationSummarySourceView(title="ن", content="م"),
+        ):
+            round_tripped = adapter.validate_python(variant.model_dump())
+            assert type(round_tripped) is type(variant), round_tripped
+
+        # A vanished row is "no source", never an exception.
+        empty = _StubChain({})
+        assert await build_article_full_view(empty, "nope") is None
+        assert await build_regulation_summary_view(empty, "nope") is None
+
+        # Pure title helper degrades part by part.
+        assert article_full_title("7-4", "لائحة") == "المادة 7-4 من لائحة"
+        assert article_full_title("81", "") == "المادة 81"
+        assert article_full_title("", "نظام العمل") == "نظام العمل"
+        assert article_full_title("", "") == "مادة"
+
         # ref_id parser edge cases
         assert _parse_reg_ref_id("") == ("", "")
         assert _parse_reg_ref_id("reg:abc") == ("", "abc")
         assert _parse_reg_ref_id("reg:section:sec-1") == ("section", "sec-1")
         assert _parse_simple_ref_id("case", "case:xyz") == "xyz"
         assert _parse_simple_ref_id("case", "reg:xyz") == ""
+        # The two simple_search prefixes go through the SAME generic parser
+        # (plan §6.2) — no third parser was invented.
+        assert _parse_simple_ref_id("article", "article:art-1") == "art-1"
+        assert _parse_simple_ref_id("regdoc", "regdoc:reg-1") == "reg-1"
+        assert _parse_simple_ref_id("article", "reg:art-1") == ""
 
-        print("source_viewer self-test: OK (4 variants + ref_id parsers)")
+        print("source_viewer self-test: OK (6 variants + ref_id parsers)")
 
     _asyncio.run(_run())
 

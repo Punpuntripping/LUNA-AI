@@ -1,0 +1,63 @@
+[
+  {
+    "id": "ctrl_a",
+    "with_context": true,
+    "q": "اش يقول نظام العمل؟",
+    "expected": "simple_search",
+    "got": "simple_search",
+    "ok": true,
+    "detail": {
+      "task_label": "نظام العمل السعودي — نصوصه وأحكامه",
+      "attached_wis": []
+    }
+  },
+  {
+    "id": "ctrl_b",
+    "with_context": true,
+    "q": "اش هي المادة 77 من نظام المحاكم التجارية؟",
+    "expected": "simple_search",
+    "got": "simple_search",
+    "ok": true,
+    "detail": {
+      "task_label": "المادة 77 من نظام المحاكم التجارية",
+      "attached_wis": []
+    }
+  },
+  {
+    "id": "ctrl_c",
+    "with_context": true,
+    "q": "اش يقول نظام المعاملات المدنية عن علاقة الإيجار؟",
+    "expected": "deep_search",
+    "got": "deep_search",
+    "ok": true,
+    "detail": {
+      "task_label": "أحكام الإيجار في نظام المعاملات المدنية",
+      "attached_wis": []
+    }
+  },
+  {
+    "id": "ctrl_d",
+    "with_context": false,
+    "q": "اش الحكم اللي في WI-2 وعن نزاع تاجرين؟ اعطيني تفاصيله",
+    "expected": "simple_search",
+    "got": "chat_response",
+    "ok": false,
+    "detail": {
+      "message": "وعليكم السلام، Punpun. يبدو أن مساحة العمل الحالية لا تحتوي على أي عناصر — لا يوجد عنصر برقم WI-2 أو غيره. ربما تكون هذه إشارة إلى محادثة سابقة أو أن العنصر لم يُنشأ بعد في هذه الجلسة. إذا كان لديك تفاصيل عن الحكم الذي تقصده (مثل رقمه، أو موضوع النزاع التجاري…"
+    }
+  },
+  {
+    "id": "ctrl_e",
+    "with_context": true,
+    "q": "افتح لي الحكم رقم 439185965 كامل، ابغى نص الحكم نفسه مو الملخص",
+    "expected": "simple_search",
+    "got": "simple_search",
+    "ok": true,
+    "detail": {
+      "task_label": "نص الحكم رقم 439185965 — كامل",
+      "attached_wis": [
+        "WI-2"
+      ]
+    }
+  }
+]

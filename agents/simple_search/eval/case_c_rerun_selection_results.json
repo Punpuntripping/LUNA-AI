@@ -1,0 +1,701 @@
+{
+  "conversation_id": "6e88c793-e6c2-48f1-93e7-84f9e88ed91e",
+  "selection": [
+    {
+      "id": "c1",
+      "domain": "cases",
+      "q": "اش الحكم اللي في المراجع عن نزاع شريكين في شركة محاصة مغاسل عبر تطبيق إلكتروني؟ اعطيني تفاصيله",
+      "want": 11,
+      "got": [
+        11
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C9"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم يسأل عن الحكم المتعلق بنزاع شريكين في شركة محاصة مغاسل عبر تطبيق إلكتروني، وهو موجود في المرفق C9.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "f5191fc8-92d1-45be-876d-b7285e25a238",
+            "case_ref": "17642_ap_439185965",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نزاع بين شريكين في شركة محاصة (مغاسل عبر تطبيق إلكتروني) حيث يطالب المدعي بإعادة رأس ماله",
+            "subtitle": "التجارية",
+            "doc_type": "",
+            "source_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/2/lE3oI7MHuBRaMTUJcZ5eNCWXMBkplg0I5jOJPXPBu1J5yhyGaLzve_8tCQt84kOT"
+          }
+        ],
+        "ns": [
+          11
+        ]
+      }
+    },
+    {
+      "id": "c2",
+      "domain": "cases",
+      "q": "ابغى تفاصيل الحكم اللي عن شراكة مكب النفايات",
+      "want": 14,
+      "got": [
+        14
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C12"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب «الحكم اللي عن شراكة مكب النفايات» وهو مطابق للقضية C12 المرفقة في المصادر.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "71db1b23-91a8-4051-a4a8-d0439dcbf752",
+            "case_ref": "17642_fi_2448",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نزاع شراكة (شركة محاصة) تأسست لإدارة وتشغيل مكب نفايات لمدة ثلاث سنوات",
+            "subtitle": "التجارية",
+            "doc_type": "",
+            "source_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/1/C766vYgMhBbeM3HraFuTePzrX9KcUOPWwfPiXhnCf0Wq3t4tLHjxdTJ1ruOsav_Y"
+          }
+        ],
+        "ns": [
+          14
+        ]
+      }
+    },
+    {
+      "id": "c3",
+      "domain": "cases",
+      "q": "الحكم اللي عن نزاع الشراكة في العيادات الطبية — ورّني تفاصيله",
+      "want": 22,
+      "got": [
+        22
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C19"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب الحكم اللي عن نزاع شراكة في العيادات الطبية، والموجود في المصادر المرفقة (C19) يطابق تماماً: \"نزاع شراكة في عيادات طبية بين شريكين حول الإدارة والتحويلات المالية\".",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "afdae6ce-b44b-4d8a-86f6-c87b9bcc6ff1",
+            "case_ref": "17642_fi_7491",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نزاع شراكة في عيادات طبية بين شريكين حول الإدارة والتحويلات المالية",
+            "subtitle": "التجارية",
+            "doc_type": "",
+            "source_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/1/DqOk7TiBeK6z1wG-PHUPphGlBf3YlKry3o_xVALQa5-glAjUntmMYM6bGF06GweH"
+          }
+        ],
+        "ns": [
+          22
+        ]
+      }
+    },
+    {
+      "id": "c4",
+      "domain": "cases",
+      "q": "افتح لي الحكم اللي عن أرباح شراكة تصنيع وبيع المنظفات",
+      "want": 36,
+      "got": [
+        36
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C27"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب الحكم عن أرباح شراكة تصنيع وبيع المنظفات، وهو موجود مسبقاً في المرفقات كـ C27.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "68466818-8f20-4bce-b592-6bf261c7f874",
+            "case_ref": "17642_fi_4470830465",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نزاع حول أرباح شراكة في تصنيع وبيع المنظفات",
+            "subtitle": "التجارية",
+            "doc_type": "",
+            "source_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/1/APYuQLoyMkhItjVgOLhl-HpenZAz-QP0n_NGsj6hTnIsod_w1tJAKAy-lI_U8iS1"
+          }
+        ],
+        "ns": [
+          36
+        ]
+      }
+    },
+    {
+      "id": "c5",
+      "domain": "cases",
+      "q": "الحكم اللي عن أمانة العاصمة المقدسة والحجز التنفيذي، اعطيني تفاصيله",
+      "want": 32,
+      "got": [
+        32
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C11"
+        ],
+        "data_type": "judgments",
+        "rationale": "الحكم موجود ضمن المصادر المرفقة (C11) ويتطابق مع وصف المستخدم: أمانة العاصمة المقدسة والحجز التنفيذي.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "7448177b-91c1-4440-bc86-4dbb1b083bd3",
+            "case_ref": "17486_الأحكام_الإدارية_1440هـ_Volume_7_6218_1433",
+            "circular_id": "",
+            "service_id": "",
+            "title": "ثبتت مخالفة المدعى عليها (أمانة العاصمة المقدسة) للنظام عندما أقدمت على الحجز التنفيذي",
+            "subtitle": "ديوان المظالم — الدائرة الإدارية",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          32
+        ]
+      }
+    },
+    {
+      "id": "r1",
+      "domain": "regulations",
+      "q": "ورّني الدليل اللي في المراجع عن أعمال مصفي الأموال المشتركة",
+      "want": 3,
+      "got": [
+        3
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C3"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب دليل أعمال مصفي الأموال المشتركة، وهو موجود في المراجع المرفقة كـ C3.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "214ad3c2-59a3-4615-9c85-90505afb698b",
+            "chunk_id": "7fe69e02-154e-5444-bffc-3384259ebe05",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "الفصل الثالث: أعمال الحصر",
+            "subtitle": "دليل أعمال مصفي الأموال المشتركة",
+            "doc_type": "دليل",
+            "source_url": "https://istitlaa.ncc.gov.sa/ar/Judgment/infath/JFLOG"
+          }
+        ],
+        "ns": [
+          3
+        ]
+      }
+    },
+    {
+      "id": "r2",
+      "domain": "regulations",
+      "q": "افتح لي التنظيم اللي عن صندوق النفقة",
+      "want": 10,
+      "got": [
+        10
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C7"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب «التنظيم اللي عن صندوق النفقة» وهو موجود في المصادر المرفقة كـ C7 — تنظيم صندوق النفقة.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "fec35688-5ab6-402f-8ea9-0367fbfbba20",
+            "chunk_id": "3c00e8a0-17af-5d04-91e1-5a6acd085da6",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "المادة الأولى – المادة السابعة",
+            "subtitle": "تنظيم صندوق النفقة",
+            "doc_type": "تنظيم",
+            "source_url": "https://laws.moj.gov.sa/ar/legislation/67uch7WWWr6P-lA0jHckjA"
+          }
+        ],
+        "ns": [
+          10
+        ]
+      }
+    },
+    {
+      "id": "r3",
+      "domain": "regulations",
+      "q": "ابغى اللائحة التنفيذية لنظام حماية البيانات الشخصية اللي في المراجع",
+      "want": 20,
+      "got": [
+        20
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C19"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب اللائحة التنفيذية لنظام حماية البيانات الشخصية وأشار أنها في المراجع المرفقة. الرقم المرجعي C19 هو اللائحة التنفيذية المطلوبة.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "573742e4-3216-48ca-a9af-70a48a518b92",
+            "chunk_id": "bc019963-2041-583a-811f-ee102737fee0",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "المواد 30-32: المعالجة البحثية وتصوير الوثائق ومسؤول الحماية",
+            "subtitle": "اللائحة التنفيذية لنظام حماية البيانات الشخصية",
+            "doc_type": "لائحة تنفيذية",
+            "source_url": "https://sdaia.gov.sa/ar/SDAIA/about/Pages/RegulationsAndPolicies.aspx"
+          }
+        ],
+        "ns": [
+          20
+        ]
+      }
+    },
+    {
+      "id": "r4",
+      "domain": "regulations",
+      "q": "اعطيني نص المادة الحادية عشرة من نظام المحاكم التجارية اللي في المراجع",
+      "want": 6,
+      "got": [
+        6
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C5"
+        ],
+        "data_type": "article",
+        "rationale": "المستخدم يطلب المادة الحادية عشرة من نظام المحاكم التجارية، وهي موجودة مسبقاً في المراجع المرفقة (C5).",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "f4715200-685e-494b-8391-299122877ea6",
+            "chunk_id": "25efa74c-f480-59f6-be0f-12cd612768b3",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "المادة الحادية عشرة",
+            "subtitle": "نظام المحاكم التجارية",
+            "doc_type": "نظام",
+            "source_url": "https://laws.moj.gov.sa/ar/legislation/5-3nY9odCRxj7FPBTXJG0Q"
+          }
+        ],
+        "ns": [
+          6
+        ]
+      }
+    },
+    {
+      "id": "k1",
+      "domain": "circulars",
+      "q": "افتح لي التعميم رقم 13/ت/6251",
+      "want": 9,
+      "got": [
+        9
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C9"
+        ],
+        "data_type": "circulars",
+        "rationale": "التعميم رقم 13/ت/6251 موجود ضمن المصادر المرفقة (C9).",
+        "resolved": [
+          {
+            "level": "circular",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "32d102af-252e-5078-8588-72fa8515ad7b",
+            "service_id": "",
+            "title": "تعميم رقم 13/ت/6251 - جنسية وجوازات",
+            "subtitle": "وزارة العدل",
+            "doc_type": "",
+            "source_url": "scraped"
+          }
+        ],
+        "ns": [
+          9
+        ]
+      }
+    },
+    {
+      "id": "k2",
+      "domain": "circulars",
+      "q": "ورّني تعميم مبادئ التمويل المسؤول للأفراد من البنك المركزي",
+      "want": 36,
+      "got": [
+        36
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C12"
+        ],
+        "data_type": "circulars",
+        "rationale": "التعميم موجود في قائمة المصادر المرفقة (C12) ويطابق طلب المستخدم حرفياً.",
+        "resolved": [
+          {
+            "level": "circular",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "e9d5220e-53fa-5abc-a20a-bb64523c7056",
+            "service_id": "",
+            "title": "تعميم بشأن مبادئ التمويل المسؤول للأفراد",
+            "subtitle": "البنك المركزي السعودي",
+            "doc_type": "",
+            "source_url": "scraped"
+          }
+        ],
+        "ns": [
+          36
+        ]
+      }
+    },
+    {
+      "id": "s1",
+      "domain": "compliance",
+      "q": "ورّني خدمة تمويل كنف من بنك التنمية الاجتماعية",
+      "want": 17,
+      "got": [
+        17
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C13"
+        ],
+        "data_type": "services",
+        "rationale": "خدمة \"تمويل كنف\" من بنك التنمية الاجتماعية موجودة ضمن المصادر المرفقة (C13)",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "153fa5b8-259d-4ec5-acf7-1dd7db3b4100",
+            "title": "بنك التنمية الاجتماعية - تمويل كنف",
+            "subtitle": "بنك التنمية الاجتماعية",
+            "doc_type": "",
+            "source_url": "https://www.sdb.gov.sa/ar-sa/our-products/personal/social-loans/products/kanaf"
+          }
+        ],
+        "ns": [
+          17
+        ]
+      }
+    },
+    {
+      "id": "s2",
+      "domain": "compliance",
+      "q": "افتح لي خدمة إثبات السداد من وزارة العدل",
+      "want": 15,
+      "got": [
+        15
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C10"
+        ],
+        "data_type": "services",
+        "rationale": "المستخدم طلب خدمة إثبات السداد من وزارة العدل، وهي موجودة ضمن المصادر المرفقة (C10).",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "c99144d7-e26c-471d-9bb6-cc126ed652b4",
+            "title": "وزارة العدل - إثبات السداد",
+            "subtitle": "وزارة العدل",
+            "doc_type": "",
+            "source_url": "https://www.moj.gov.sa/ar/eServices/Pages/ServiceDetailsNew.aspx?itemId=485"
+          }
+        ],
+        "ns": [
+          15
+        ]
+      }
+    }
+  ],
+  "ambiguity": [
+    {
+      "id": "a1",
+      "q": "الحكم اللي في المراجع عن دعوى تعويض عن أضرار — اعطيني تفاصيله",
+      "plausible": [
+        8,
+        9
+      ],
+      "note": "two rulings, both «دعوى تعويض عن أضرار…» — guessing spends an unlock on the wrong one",
+      "asked": true,
+      "got": [],
+      "detail": {
+        "kind": "ask_user",
+        "question": "{\"question\": \"في المراجع حكمان عن دعوى تعويض عن أضرار:\\n- C8: دعوى تعويض عن أضرار نجمت عن إيقاف خدمات بناءً على سندين لأمر\\n- C9: دعوى تعويض عن أضرار ناتجة عن مماطلة في تنفيذ حكم سابق\\n\\nأيهما تقصد؟\"}",
+        "ns": []
+      }
+    },
+    {
+      "id": "a2",
+      "q": "اش الحكم اللي في المراجع وعن نزاع تاجرين؟ اعطيني تفاصيله",
+      "plausible": [
+        10,
+        11,
+        13,
+        33,
+        35,
+        37
+      ],
+      "note": "the plan's own example sentence — 8+ of the 18 rulings are two-partner disputes",
+      "asked": true,
+      "got": [],
+      "detail": {
+        "kind": "ask_user",
+        "question": "{\"question\": \"أي حكم تقصد بالضبط من الأحكام المرفقة؟ في المراجع أحكام متعددة عن نزاعات بين شركاء/تجار، مثل:\\n- C9 (نزاع بين شريكين في شركة محاصة - مغاسل)\\n- C13 (تصفية شركة تضامنية بين شريكين)\\n- C28 (نزاع تجاري بين شريكين في شركة مضاربة)\\n- C8 (دعوى شراكة في شركة محاصة)\\n\\nأي واحد منهم؟\"}",
+        "ns": []
+      }
+    },
+    {
+      "id": "a3",
+      "q": "ابغى اللائحة التنفيذية لنظام الأحوال المدنية اللي عن الفصل الثامن",
+      "plausible": [
+        1,
+        2,
+        27
+      ],
+      "note": "three refs render the same chip + regulation + «الفصل الثامن»",
+      "asked": false,
+      "got": [
+        1,
+        2,
+        27
+      ],
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C1",
+          "C2",
+          "C21"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب اللائحة التنفيذية لنظام الأحوال المدنية المتعلقة بالفصل الثامن. المرفقات C1 و C2 و C21 كلها أجزاء من هذه اللائحة لنفس الفصل الثامن.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "cf14f315-e674-4b91-935b-cace12f39119",
+            "chunk_id": "f015b1f0-bd05-5cfc-899d-2230fa3f37d5",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نصوص اللائحة التنفيذية للفصل الثامن (151-160)",
+            "subtitle": "اللائحة التنفيذية لنظام الأحوال المدنية",
+            "doc_type": "لائحة تنفيذية",
+            "source_url": "https://ncar.gov.sa/document-details/eyJpdiI6IkhVVWMwMVhjY0NzMWlWajhwQVBuTEE9PSIsInZhbHVlIjoiVHlJRHM4a3RyY0R3Wmc5NXVFL3pJZz09IiwibWFjIjoiN2E4OTM4ZDllOTNlY2EwMzBjMWEyYTA5MmYyM2YzNjgxNzEyODc3MjQ0ZGQ0NjdiY2Q3YzA4NDdhZDllNTA3NSIsInRhZyI6IiJ9"
+          },
+          {
+            "level": "chunk",
+            "regulation_id": "cf14f315-e674-4b91-935b-cace12f39119",
+            "chunk_id": "d9cd8236-479f-5484-8f75-eb0db06abf58",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نصوص اللائحة التنفيذية للفصل الثامن (146-150)",
+            "subtitle": "اللائحة التنفيذية لنظام الأحوال المدنية",
+            "doc_type": "لائحة تنفيذية",
+            "source_url": "https://ncar.gov.sa/document-details/eyJpdiI6IkhVVWMwMVhjY0NzMWlWajhwQVBuTEE9PSIsInZhbHVlIjoiVHlJRHM4a3RyY0R3Wmc5NXVFL3pJZz09IiwibWFjIjoiN2E4OTM4ZDllOTNlY2EwMzBjMWEyYTA5MmYyM2YzNjgxNzEyODc3MjQ0ZGQ0NjdiY2Q3YzA4NDdhZDllNTA3NSIsInRhZyI6IiJ9"
+          },
+          {
+            "level": "chunk",
+            "regulation_id": "cf14f315-e674-4b91-935b-cace12f39119",
+            "chunk_id": "5626b7fc-0ba2-531a-b9fe-dff84bb51b06",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "الفصل الثامن: البطاقات الشخصية ودفاتر العائلة",
+            "subtitle": "اللائحة التنفيذية لنظام الأحوال المدنية",
+            "doc_type": "لائحة تنفيذية",
+            "source_url": "https://ncar.gov.sa/document-details/eyJpdiI6IkhVVWMwMVhjY0NzMWlWajhwQVBuTEE9PSIsInZhbHVlIjoiVHlJRHM4a3RyY0R3Wmc5NXVFL3pJZz09IiwibWFjIjoiN2E4OTM4ZDllOTNlY2EwMzBjMWEyYTA5MmYyM2YzNjgxNzEyODc3MjQ0ZGQ0NjdiY2Q3YzA4NDdhZDllNTA3NSIsInRhZyI6IiJ9"
+          }
+        ],
+        "ns": [
+          1,
+          2,
+          27
+        ]
+      }
+    },
+    {
+      "id": "a4",
+      "q": "افتح لي خدمة طلب هوية بدل تالف",
+      "plausible": [
+        11,
+        13
+      ],
+      "note": "two refs whose service-name cards are byte-identical",
+      "asked": false,
+      "got": [
+        11,
+        13
+      ],
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C10"
+        ],
+        "data_type": "services",
+        "rationale": "المستخدم طلب خدمة \"طلب هوية بدل تالف\" وهي موجودة مسبقاً في المصادر المرفقة (C10).",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "fc04dfc9-2a63-4940-b68e-8df384234676",
+            "title": "وكالة وزارة الداخلية للأحوال المدنية - طلب هوية بدل تالف",
+            "subtitle": "وكالة وزارة الداخلية للأحوال المدنية",
+            "doc_type": "",
+            "source_url": "https://www.absher.sa/wps/portal/individuals/static/guide/service-contents/%21ut/p/z1/vVPJcsIwDP0VOHDMWHYcJxxDoAmEUhrKlgvjbNQtBEgCXb6-hmE6ZWuml-oky0-W9J6MfDRBfsp3Ys4LsUr5Qp6nPpth3DQcYkMXek0TmAtaa1TvYsAaGh8A0KbUwZS4NjAC5sgzaKutYZtR5O-vb5gJx_zvAobrNeHR6jP85Diq0dAO-aX1NatvtY17Fdv9oQ7kTqcdi7n2CPTT_Mvnj_3fbrAkf4R85IdpsS6e0TRcpUWcFnkNRBqJnYi2fJFXeFaDOI-znQjjvLKVXmW-FVH8I1qDUMIXCk8SLrJcOYtXjvHZMU7q-6rrUERomgQEc4KpokZ6oFAeUKUexdLTCGEJU3kQ6ecsX9JYqpJ_BWJCwyMNFcB-IFcBp0QeAL8pVcb1VE6h35zCYWi8E_EbGqarbCl3d_BHkhxAnbJ1k_9BvGw2vilF34v9XqDJP6o-4BlaL4fSlob6obx6zmejp9hjxaxWvwC_SkKF/dz/d5/L2dBISEvZ0FBIS9nQSEh"
+          }
+        ],
+        "ns": [
+          11,
+          13
+        ]
+      }
+    }
+  ]
+}

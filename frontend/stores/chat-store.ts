@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type {
   DeepSearchStage,
+  LibraryItemRef,
   PendingBlog,
   PendingFile,
+  PendingLibraryItem,
   PendingTemplate,
   SSEAgentProgress,
   SSEQuotaExceeded,
@@ -207,6 +209,14 @@ interface ChatState {
   // destination ChatInput after the create-conversation navigation.
   pendingBlogs: PendingBlog[];
   pendingBlogTokens: string[];
+  // Library pages carried in from «تحدّث مع ريحان عن هذه الصفحة»
+  // (.claude/plans/simple_search_family.md §8) — the blog pair, one level up:
+  // ``pendingLibraryItems`` are the live chips, ``pendingLibraryRefs`` is the
+  // new-chat carry slot (pages picked before a conversation exists, the
+  // ``pendingBlogTokens`` twin), drained by the destination ChatInput after the
+  // create-then-navigate hop.
+  pendingLibraryItems: PendingLibraryItem[];
+  pendingLibraryRefs: LibraryItemRef[];
   // قالب chip picked from the composer's «+» menu. Single-slot — the planner
   // drafts from ONE template, so picking another replaces it. Cleared on
   // conversation switch (same discipline as files/blogs); ``pendingTemplateCarry``
@@ -322,6 +332,16 @@ interface ChatState {
   updatePendingBlog: (id: string, partial: Partial<PendingBlog>) => void;
   setPendingBlogTokens: (tokens: string[]) => void;
   clearPendingBlogTokens: () => void;
+  addPendingLibraryItem: (item: PendingLibraryItem) => void;
+  removePendingLibraryItem: (id: string) => void;
+  clearPendingLibraryItems: () => void;
+  /** Patch a library chip in place; no-op when the id is gone (removal race). */
+  updatePendingLibraryItem: (
+    id: string,
+    partial: Partial<PendingLibraryItem>,
+  ) => void;
+  setPendingLibraryRefs: (refs: LibraryItemRef[]) => void;
+  clearPendingLibraryRefs: () => void;
   setPendingTemplate: (template: PendingTemplate | null) => void;
   setPendingTemplateCarry: (template: PendingTemplate | null) => void;
   openWorkspaceItem: (conversationId: string, itemId: string) => void;
@@ -431,6 +451,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingMessage: null,
   pendingBlogs: [],
   pendingBlogTokens: [],
+  pendingLibraryItems: [],
+  pendingLibraryRefs: [],
   pendingTemplate: null,
   pendingTemplateCarry: null,
   error: null,
@@ -597,6 +619,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setPendingBlogTokens: (tokens) => set({ pendingBlogTokens: tokens }),
 
   clearPendingBlogTokens: () => set({ pendingBlogTokens: [] }),
+
+  addPendingLibraryItem: (item) =>
+    set((state) => ({
+      pendingLibraryItems: [...state.pendingLibraryItems, item],
+    })),
+
+  removePendingLibraryItem: (id) =>
+    set((state) => ({
+      pendingLibraryItems: state.pendingLibraryItems.filter((i) => i.id !== id),
+    })),
+
+  clearPendingLibraryItems: () => set({ pendingLibraryItems: [] }),
+
+  updatePendingLibraryItem: (id, partial) =>
+    set((state) => ({
+      pendingLibraryItems: state.pendingLibraryItems.map((i) =>
+        i.id === id ? { ...i, ...partial } : i,
+      ),
+    })),
+
+  setPendingLibraryRefs: (refs) => set({ pendingLibraryRefs: refs }),
+
+  clearPendingLibraryRefs: () => set({ pendingLibraryRefs: [] }),
 
   setPendingTemplate: (template) => set({ pendingTemplate: template }),
 
@@ -913,6 +958,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingMessage: null,
       pendingBlogs: [],
       pendingBlogTokens: [],
+      pendingLibraryItems: [],
+      pendingLibraryRefs: [],
       pendingTemplate: null,
       pendingTemplateCarry: null,
       error: null,

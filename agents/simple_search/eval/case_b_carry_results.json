@@ -1,0 +1,399 @@
+{
+  "conversation_id": "a64aaabf-414e-48bc-83fb-32d35b95e081",
+  "carried_item_ids": {
+    "regulation": "0dc75cf9-1e9e-478d-8678-0134c53aa19d",
+    "article": "575b025d-7035-41b0-9f04-2a7638284c56",
+    "judgment": "11a718f6-8ca5-4bd7-a992-8972970745de",
+    "blog": "f2536b4d-3446-4869-9f57-4154b144f148"
+  },
+  "results": [
+    {
+      "check": "[regulation] kind == 'references'",
+      "ok": true,
+      "detail": "references"
+    },
+    {
+      "check": "[regulation] first carry is not a dup",
+      "ok": true,
+      "detail": false
+    },
+    {
+      "check": "[regulation] title == public page H1",
+      "ok": true,
+      "detail": {
+        "wi_title": "نظام العمل",
+        "page_h1": "نظام العمل"
+      }
+    },
+    {
+      "check": "[regulation] summary pre-filled",
+      "ok": true,
+      "detail": {
+        "len": 400,
+        "head": "الباب الأول: التعريفات والأحكام العامة نظام العمل: الصادر بالمرسوم الملكي رقم (م/51) وتاري"
+      }
+    },
+    {
+      "check": "[regulation] metadata.source_page_type",
+      "ok": true,
+      "detail": "regulation"
+    },
+    {
+      "check": "[regulation] metadata.source_page_id",
+      "ok": true,
+      "detail": "نظام-العمل"
+    },
+    {
+      "check": "[regulation] grounding body <= MAX_CONTEXT_CHARS (6000)",
+      "ok": true,
+      "detail": 6000
+    },
+    {
+      "check": "[regulation] content_md bounded (frame + body)",
+      "ok": true,
+      "detail": {
+        "content_chars": 6039,
+        "body_chars": 6000
+      }
+    },
+    {
+      "check": "[regulation] round-trips to a ResolvedObject",
+      "ok": true,
+      "detail": "ResolvedObject"
+    },
+    {
+      "check": "[regulation] ref_id() == regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+      "ok": true,
+      "detail": {
+        "actual": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+        "expected": "regdoc:da51024f-a713-48e7-af87-b6a541f055e4",
+        "level": "regulation_doc",
+        "ss_object": {
+          "level": "regulation_doc",
+          "title": "نظام العمل",
+          "regulation_id": "da51024f-a713-48e7-af87-b6a541f055e4"
+        }
+      }
+    },
+    {
+      "check": "[article] kind == 'references'",
+      "ok": true,
+      "detail": "references"
+    },
+    {
+      "check": "[article] first carry is not a dup",
+      "ok": true,
+      "detail": false
+    },
+    {
+      "check": "[article] title == public page H1",
+      "ok": false,
+      "detail": {
+        "wi_title": "المادة 5 — نظام العمل",
+        "page_h1": "المادة 5 من نظام العمل"
+      }
+    },
+    {
+      "check": "[article] summary pre-filled",
+      "ok": true,
+      "detail": {
+        "len": 400,
+        "head": "المادة الخامسة ٤: تسري أحكام هذا النظام على الآتي: 1. كل عقد عمل يلتزم بمقتضاه أي شخص بالع"
+      }
+    },
+    {
+      "check": "[article] metadata.source_page_type",
+      "ok": true,
+      "detail": "article"
+    },
+    {
+      "check": "[article] metadata.source_page_id",
+      "ok": true,
+      "detail": "نظام-العمل/المادة-5"
+    },
+    {
+      "check": "[article] grounding body <= MAX_CONTEXT_CHARS (6000)",
+      "ok": true,
+      "detail": 470
+    },
+    {
+      "check": "[article] content_md bounded (frame + body)",
+      "ok": true,
+      "detail": {
+        "content_chars": 520,
+        "body_chars": 470
+      }
+    },
+    {
+      "check": "[article] round-trips to a ResolvedObject",
+      "ok": true,
+      "detail": "ResolvedObject"
+    },
+    {
+      "check": "[article] ref_id() == article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+      "ok": true,
+      "detail": {
+        "actual": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+        "expected": "article:528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+        "level": "article",
+        "ss_object": {
+          "level": "article",
+          "title": "المادة 5 — نظام العمل",
+          "article_id": "528c9dd2-fb71-5afd-ae6c-5dd26d54832a",
+          "regulation_id": "da51024f-a713-48e7-af87-b6a541f055e4",
+          "article_number": "5"
+        }
+      }
+    },
+    {
+      "check": "[judgment] kind == 'references'",
+      "ok": true,
+      "detail": "references"
+    },
+    {
+      "check": "[judgment] first carry is not a dup",
+      "ok": true,
+      "detail": false
+    },
+    {
+      "check": "[judgment] title == public page H1",
+      "ok": false,
+      "detail": {
+        "wi_title": "نزاع بين شريكين في شركة ذات مسؤولية محدودة حول طلب تصفية الشركة — التجارية 1444هـ",
+        "page_h1": "نزاع بين شريكين في شركة ذات مسؤولية محدودة حول طلب تصفية الشركة"
+      }
+    },
+    {
+      "check": "[judgment] summary pre-filled",
+      "ok": true,
+      "detail": {
+        "len": 400,
+        "head": "الحكم: التجارية — ابتدائي — الرياض — 1 شَعبان 1444 رقم القضية: 4470682912 الملخص: - نزاع ب"
+      }
+    },
+    {
+      "check": "[judgment] metadata.source_page_type",
+      "ok": true,
+      "detail": "judgment"
+    },
+    {
+      "check": "[judgment] metadata.source_page_id",
+      "ok": true,
+      "detail": "نزاع-بين-شريكين-في-شركة-ذات-مسؤولية-محدودة-fi-4470682912"
+    },
+    {
+      "check": "[judgment] grounding body <= MAX_CONTEXT_CHARS (6000)",
+      "ok": true,
+      "detail": 1253
+    },
+    {
+      "check": "[judgment] content_md bounded (frame + body)",
+      "ok": true,
+      "detail": {
+        "content_chars": 1368,
+        "body_chars": 1253
+      }
+    },
+    {
+      "check": "[judgment] round-trips to a ResolvedObject",
+      "ok": true,
+      "detail": "ResolvedObject"
+    },
+    {
+      "check": "[judgment] ref_id() == case:17642_fi_4470682912",
+      "ok": true,
+      "detail": {
+        "actual": "case:17642_fi_4470682912",
+        "expected": "case:17642_fi_4470682912",
+        "level": "judgment",
+        "ss_object": {
+          "level": "judgment",
+          "title": "نزاع بين شريكين في شركة ذات مسؤولية محدودة حول طلب تصفية الشركة — التجارية 1444هـ",
+          "case_id": "cea98fd5-b256-4a0e-9675-b550ef920c7e",
+          "case_ref": "17642_fi_4470682912"
+        }
+      }
+    },
+    {
+      "check": "[blog] kind == 'references'",
+      "ok": true,
+      "detail": "references"
+    },
+    {
+      "check": "[blog] first carry is not a dup",
+      "ok": true,
+      "detail": false
+    },
+    {
+      "check": "[blog] title == public page H1",
+      "ok": false,
+      "detail": {
+        "wi_title": "أثر إصلاح السيارة على دعوى تعويض تأمينية",
+        "page_h1": "عندي قضية تأمينية في لجنة النزاعات التامينية مطالبة تعويض ضد شركة التأمين  لها فترة وهي تحت الدراسة و باقي شهر وينتهي تأميني \nاقدر اصلح سيارتي على حسابي الخاص \nاو بيصير في ضرر على القضية اذا صلحتها حتى اقدر ائمن على السيارة ؟"
+      }
+    },
+    {
+      "check": "[blog] summary pre-filled",
+      "ok": true,
+      "detail": {
+        "len": 400,
+        "head": "نعم، يجوز لك إصلاح سيارتك على حسابك الخاص قبل البت في القضية، لكن بشرط أن تسبق الإصلاح خطو"
+      }
+    },
+    {
+      "check": "[blog] metadata.source_page_type",
+      "ok": true,
+      "detail": "blog"
+    },
+    {
+      "check": "[blog] metadata.source_page_id",
+      "ok": true,
+      "detail": "9687fb4ce6f579329bdaefa420a1ac8f"
+    },
+    {
+      "check": "[blog] grounding body <= MAX_CONTEXT_CHARS (6000)",
+      "ok": true,
+      "detail": 3690
+    },
+    {
+      "check": "[blog] content_md bounded (frame + body)",
+      "ok": true,
+      "detail": {
+        "content_chars": 3760,
+        "body_chars": 3690
+      }
+    },
+    {
+      "check": "[blog] no simple_search level → resolved_from_attachment None",
+      "ok": true,
+      "detail": {
+        "obj": null,
+        "ss_object": null
+      }
+    },
+    {
+      "check": "judgment ref_id keys on cases.case_ref (not cases.id)",
+      "ok": true,
+      "detail": {
+        "ref_id": "case:17642_fi_4470682912",
+        "cases.id": "cea98fd5-b256-4a0e-9675-b550ef920c7e",
+        "case_ref": "17642_fi_4470682912"
+      }
+    },
+    {
+      "check": "dedup: already_attached=True",
+      "ok": true,
+      "detail": true
+    },
+    {
+      "check": "dedup: same item_id returned",
+      "ok": true,
+      "detail": {
+        "second": "0dc75cf9-1e9e-478d-8678-0134c53aa19d",
+        "first": "0dc75cf9-1e9e-478d-8678-0134c53aa19d"
+      }
+    },
+    {
+      "check": "dedup: nothing written",
+      "ok": true,
+      "detail": {
+        "before": 4,
+        "after": 4
+      }
+    },
+    {
+      "check": "[circular] refused with 400",
+      "ok": true,
+      "detail": {
+        "status": 400,
+        "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+      }
+    },
+    {
+      "check": "[circular] refusal message is Arabic",
+      "ok": true,
+      "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+    },
+    {
+      "check": "[circular] created NOTHING",
+      "ok": true,
+      "detail": {
+        "before": 4,
+        "after": 4
+      }
+    },
+    {
+      "check": "[service] refused with 400",
+      "ok": true,
+      "detail": {
+        "status": 400,
+        "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+      }
+    },
+    {
+      "check": "[service] refusal message is Arabic",
+      "ok": true,
+      "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+    },
+    {
+      "check": "[service] created NOTHING",
+      "ok": true,
+      "detail": {
+        "before": 4,
+        "after": 4
+      }
+    },
+    {
+      "check": "[form] refused with 400",
+      "ok": true,
+      "detail": {
+        "status": 400,
+        "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+      }
+    },
+    {
+      "check": "[form] refusal message is Arabic",
+      "ok": true,
+      "detail": "لا يمكن إحضار هذا النوع من الصفحات إلى المحادثة"
+    },
+    {
+      "check": "[form] created NOTHING",
+      "ok": true,
+      "detail": {
+        "before": 4,
+        "after": 4
+      }
+    },
+    {
+      "check": "carried library items project 0 OCR pages",
+      "ok": true,
+      "detail": {
+        "item_ids": [
+          "0dc75cf9-1e9e-478d-8678-0134c53aa19d",
+          "575b025d-7035-41b0-9f04-2a7638284c56",
+          "11a718f6-8ca5-4bd7-a992-8972970745de",
+          "f2536b4d-3446-4869-9f57-4154b144f148"
+        ],
+        "pages": 0
+      }
+    },
+    {
+      "check": "carried items do not consume the counted-kind budget",
+      "ok": true,
+      "detail": {
+        "counted_kinds": 0,
+        "references": 4
+      }
+    },
+    {
+      "check": "a non-owner cannot carry into this conversation (404)",
+      "ok": true,
+      "detail": {
+        "status": 404,
+        "detail": "المحادثة غير موجودة"
+      }
+    }
+  ],
+  "passed": 52,
+  "failed": 3
+}

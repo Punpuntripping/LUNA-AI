@@ -1,0 +1,700 @@
+{
+  "selection": [
+    {
+      "id": "c1",
+      "domain": "cases",
+      "q": "اش الحكم اللي في المراجع عن نزاع شريكين في شركة محاصة مغاسل عبر تطبيق إلكتروني؟ اعطيني تفاصيله",
+      "want": 11,
+      "got": [
+        11
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C9"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم يسأل عن الحكم المذكور في المراجع (C9) الخاص بنزاع شريكين في شركة محاصة مغاسل عبر تطبيق إلكتروني، وهو موجود مباشرة في المصادر المرفقة.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "f5191fc8-92d1-45be-876d-b7285e25a238",
+            "case_ref": "17642_ap_439185965",
+            "circular_id": "",
+            "service_id": "",
+            "title": "قضية: [439185965] نزاع بين شريكين في شركة محاصة (مغاسل عبر تطبيق إلكتروني) حيث يطالب المدعي بإعادة رأس ماله — المحكمة: التجارية (استئناف) ## الملخص - نزاع بين شريكين في شركة محاصة (مغاسل عبر تطبيق إلكتروني) حيث يطالب المدعي بإعادة رأس ماله (375,000 ريال) بدعوى أن المدعى عليه (المدير) بدد رأس المال. - حكمت المحكمة الابتدائية برفض الدعوى لعدم جواز مطالبة شريك بإعادة رأس ماله بعد بدء نشاط الشركة. - أيدت محكمة الاستئناف الحكم الابتدائي ورفضت الاعتراض موضوعاً. ## الوقائع - بتاريخ 24/07/2018 تعاقد الم",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          11
+        ]
+      }
+    },
+    {
+      "id": "c2",
+      "domain": "cases",
+      "q": "ابغى تفاصيل الحكم اللي عن شراكة مكب النفايات",
+      "want": 14,
+      "got": [
+        14
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C12"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب \"الحكم اللي عن شراكة مكب النفايات\" والمصدر C12 المرفق هو قضية رقم 2448 بعنوان \"نزاع شراكة (شركة محاصة) تأسست لإدارة وتشغيل مكب نفايات لمدة ثلاث سنوات\" — تطابق تام.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "71db1b23-91a8-4051-a4a8-d0439dcbf752",
+            "case_ref": "17642_fi_2448",
+            "circular_id": "",
+            "service_id": "",
+            "title": "قضية: [2448] نزاع شراكة (شركة محاصة) تأسست لإدارة وتشغيل مكب نفايات لمدة ثلاث سنوات — المحكمة: التجارية (ابتدائي) ## الملخص - نزاع شراكة (شركة محاصة) تأسست لإدارة وتشغيل مكب نفايات لمدة ثلاث سنوات. - المدعي طلب تصفية الشراكة أو انسحابه منها بعد انتهاء المشروع بسبب قرار قضائي. - المحكمة قضت بانقضاء الشراكة بسبب انسحاب المدعي وفقاً للمادة 50 من نظام الشركات. ## الوقائع - بتاريخ 7/3/1437هـ تأسست شركة محاصة بين المدعي والمدعى عليهم لغرض الدخول في مناقصة حكومية لإدارة وتشغيل مكب نفايات لمدة ثلاث سنوا",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          14
+        ]
+      }
+    },
+    {
+      "id": "c3",
+      "domain": "cases",
+      "q": "الحكم اللي عن نزاع الشراكة في العيادات الطبية — ورّني تفاصيله",
+      "want": 22,
+      "got": [
+        22
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C19"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب \"الحكم اللي عن نزاع الشراكة في العيادات الطبية\" وهو مطابق للمصدر C19 المرفق في الجلسة.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "afdae6ce-b44b-4d8a-86f6-c87b9bcc6ff1",
+            "case_ref": "17642_fi_7491",
+            "circular_id": "",
+            "service_id": "",
+            "title": "قضية: [7491] نزاع شراكة في عيادات طبية بين شريكين حول الإدارة والتحويلات المالية — المحكمة: التجارية (ابتدائي) ## الملخص - نزاع شراكة في عيادات طبية بين شريكين حول الإدارة والتحويلات المالية. - ادعى المدعي سوء إدارة المدعى عليه وتحويل أموال الشراكة لحسابات خارجية. - رفضت المحكمة النظر في الدعوى لسبق الفصل فيها بحكم قضائي سابق (حجية الأمر المقضي). ## الوقائع - اتفق الطرفان على الشراكة في عيادات طبية بتاريخ 01/01/1433هـ، حيث يساهم المدعى عليه بنسبة 51% من رأس المال ويتولى الإدارة، ويساهم المدعي بن",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          22
+        ]
+      }
+    },
+    {
+      "id": "c4",
+      "domain": "cases",
+      "q": "افتح لي الحكم اللي عن أرباح شراكة تصنيع وبيع المنظفات",
+      "want": 36,
+      "got": [
+        36
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C27"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم طلب \"الحكم عن أرباح شراكة تصنيع وبيع المنظفات\" وهو مطابق للقضية C27 المرفقة.",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "68466818-8f20-4bce-b592-6bf261c7f874",
+            "case_ref": "17642_fi_4470830465",
+            "circular_id": "",
+            "service_id": "",
+            "title": "قضية: [4470830465] نزاع حول أرباح شراكة في تصنيع وبيع المنظفات — المحكمة: التجارية (ابتدائي) ## الملخص - نزاع حول أرباح شراكة في تصنيع وبيع المنظفات. - المحكمة قضت بعدم جواز نظر الدعوى لسبق الفصل فيها بحكم سابق في نفس الموضوع بين الطرفين. ## الوقائع - أبرم المدعي والمدعى عليه عقد شراكة في 22/10/1438 هـ (16/07/2017م) في مجال تصنيع المنظفات والمطهرات ومنتجات السيارات. - دفع المدعي للمدعى عليه مبلغ 150,000 ريال، وتم الاتفاق على أن تكون نسبة أرباح المدعي 50%. - الشراكة انتهت بالاتفاق، ولم يحصل المدع",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          36
+        ]
+      }
+    },
+    {
+      "id": "c5",
+      "domain": "cases",
+      "q": "الحكم اللي عن أمانة العاصمة المقدسة والحجز التنفيذي، اعطيني تفاصيله",
+      "want": 32,
+      "got": [
+        32
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C11"
+        ],
+        "data_type": "judgments",
+        "rationale": "المستخدم يسأل عن الحكم المتعلق بأمانة العاصمة المقدسة والحجز التنفيذي، وهو موجود مسبقاً في المصادر المرفقة (C11).",
+        "resolved": [
+          {
+            "level": "judgment",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "7448177b-91c1-4440-bc86-4dbb1b083bd3",
+            "case_ref": "17486_الأحكام_الإدارية_1440هـ_Volume_7_6218_1433",
+            "circular_id": "",
+            "service_id": "",
+            "title": "قضية: [6218] ثبتت مخالفة المدعى عليها (أمانة العاصمة المقدسة) للنظام عندما أقدمت على الحجز التنفيذي — المحكمة: ديوان المظالم — الدائرة الإدارية (ابتدائي) ## الملخص - ثبتت مخالفة المدعى عليها (أمانة العاصمة المقدسة) للنظام عندما أقدمت على الحجز التنفيذي لشيك يخص المدعية (شركة) قبل استصدار أمر قضائي بذلك، مما يعد تعدياً على السلطة القضائية ومخالفة لمبدأ الفصل بين السلطات. - انتهت المحكمة الإدارية إلى قيام ركني الجدية والاستعجال في الطلب الأول، وأيدتها محكمة الاستئناف فيه، أما الطلب الثاني بتخفيض ا",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          32
+        ]
+      }
+    },
+    {
+      "id": "r1",
+      "domain": "regulations",
+      "q": "ورّني الدليل اللي في المراجع عن أعمال مصفي الأموال المشتركة",
+      "want": 3,
+      "got": [
+        3
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C3"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم يطلب دليل أعمال مصفي الأموال المشتركة، وهو موجود في المراجع المرفقة كـ C3.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "7fe69e02-154e-5444-bffc-3384259ebe05",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "دليل: دليل أعمال مصفي الأموال المشتركة — الفصل الثالث: أعمال الحصر",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          3
+        ]
+      }
+    },
+    {
+      "id": "r2",
+      "domain": "regulations",
+      "q": "افتح لي التنظيم اللي عن صندوق النفقة",
+      "want": 10,
+      "got": [
+        10
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C7"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب تنظيم صندوق النفقة، وهو موجود مسبقاً في المصادر المرفقة (C7).",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "3c00e8a0-17af-5d04-91e1-5a6acd085da6",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "تنظيم: تنظيم صندوق النفقة — المادة الأولى – المادة السابعة",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          10
+        ]
+      }
+    },
+    {
+      "id": "r3",
+      "domain": "regulations",
+      "q": "ابغى اللائحة التنفيذية لنظام حماية البيانات الشخصية اللي في المراجع",
+      "want": 20,
+      "got": [
+        20
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C19"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم يطلب اللائحة التنفيذية لنظام حماية البيانات الشخصية، وهي موجودة في المراجع المرفقة تحت C19.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "bc019963-2041-583a-811f-ee102737fee0",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "لائحة تنفيذية: اللائحة التنفيذية لنظام حماية البيانات الشخصية — المواد 30-32: المعالجة البحثية وتصوير الوثائق ومسؤول الحماية",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          20
+        ]
+      }
+    },
+    {
+      "id": "r4",
+      "domain": "regulations",
+      "q": "اعطيني نص المادة الحادية عشرة من نظام المحاكم التجارية اللي في المراجع",
+      "want": 6,
+      "got": [
+        6
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C5"
+        ],
+        "data_type": "article",
+        "rationale": "المستخدم يشير إلى المادة الحادية عشرة من نظام المحاكم التجارية المرفقة في المراجع (C5) ويطلب نصها. تم تحديد هوية الكائن المطلوب.",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "25efa74c-f480-59f6-be0f-12cd612768b3",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "نظام: نظام المحاكم التجارية — المادة الحادية عشرة",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          6
+        ]
+      }
+    },
+    {
+      "id": "k1",
+      "domain": "circulars",
+      "q": "افتح لي التعميم رقم 13/ت/6251",
+      "want": 9,
+      "got": [
+        9
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C9"
+        ],
+        "data_type": "circulars",
+        "rationale": "التعميم المطلوب (رقم 13/ت/6251) موجود كمرفق C9 ضمن المصادر المرفقة.",
+        "resolved": [
+          {
+            "level": "circular",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "32d102af-252e-5078-8588-72fa8515ad7b",
+            "service_id": "",
+            "title": "تعميم: تعميم رقم 13/ت/6251 - جنسية وجوازات — وزارة العدل",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          9
+        ]
+      }
+    },
+    {
+      "id": "k2",
+      "domain": "circulars",
+      "q": "ورّني تعميم مبادئ التمويل المسؤول للأفراد من البنك المركزي",
+      "want": 36,
+      "got": [
+        36
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C12"
+        ],
+        "data_type": "circulars",
+        "rationale": "المستخدم يطلب تعميم مبادئ التمويل المسؤول للأفراد من البنك المركزي، وهو موجود مسبقاً في المصادر المرفقة (C12).",
+        "resolved": [
+          {
+            "level": "circular",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "e9d5220e-53fa-5abc-a20a-bb64523c7056",
+            "service_id": "",
+            "title": "تعميم: تعميم بشأن مبادئ التمويل المسؤول للأفراد — البنك المركزي السعودي",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          36
+        ]
+      }
+    },
+    {
+      "id": "s1",
+      "domain": "compliance",
+      "q": "ورّني خدمة تمويل كنف من بنك التنمية الاجتماعية",
+      "want": 17,
+      "got": [
+        17
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C13"
+        ],
+        "data_type": "services",
+        "rationale": "المستخدم يطلب خدمة \"تمويل كنف\" من بنك التنمية الاجتماعية، وهي موجودة في المصادر المرفقة (C13).",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "153fa5b8-259d-4ec5-acf7-1dd7db3b4100",
+            "title": "بنك التنمية الاجتماعية - تمويل كنف",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          17
+        ]
+      }
+    },
+    {
+      "id": "s2",
+      "domain": "compliance",
+      "q": "افتح لي خدمة إثبات السداد من وزارة العدل",
+      "want": 15,
+      "got": [
+        15
+      ],
+      "verdict": "PASS",
+      "kind": "decision",
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C10"
+        ],
+        "data_type": "services",
+        "rationale": "المستخدم يطلب خدمة إثبات السداد من وزارة العدل، وهي موجودة مباشرة في المصادر المرفقة (C10)، فلا حاجة للبحث.",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "c99144d7-e26c-471d-9bb6-cc126ed652b4",
+            "title": "وزارة العدل - إثبات السداد",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          15
+        ]
+      }
+    }
+  ],
+  "ambiguity": [
+    {
+      "id": "a1",
+      "q": "الحكم اللي في المراجع عن دعوى تعويض عن أضرار — اعطيني تفاصيله",
+      "plausible": [
+        8,
+        9
+      ],
+      "note": "two rulings, both «دعوى تعويض عن أضرار…» — guessing spends an unlock on the wrong one",
+      "asked": true,
+      "got": [],
+      "detail": {
+        "kind": "ask_user",
+        "question": "{\"question\": \"في المراجع حكمان عن دعوى تعويض عن أضرار: الأول (C8) عن أضرار إيقاف خدمات بناءً على سندين لأمر، والثاني (C9) عن أضرار مماطلة في تنفيذ حكم. أي واحد تريد تفاصيله؟\"}",
+        "ns": []
+      }
+    },
+    {
+      "id": "a2",
+      "q": "اش الحكم اللي في المراجع وعن نزاع تاجرين؟ اعطيني تفاصيله",
+      "plausible": [
+        10,
+        11,
+        13,
+        33,
+        35,
+        37
+      ],
+      "note": "the plan's own example sentence — 8+ of the 18 rulings are two-partner disputes",
+      "asked": true,
+      "got": [],
+      "detail": {
+        "kind": "ask_user",
+        "question": "{\"question\": \"في المراجع عدة أحكام عن نزاعات بين طرفين. أي حكم تقصد بالضبط؟ هل هو رقم C8 (دعوى شراكة في شركة محاصة)، أم C9 (نزاع بين شريكين في مغاسل)، أم C24 (نزاع بين شريكين في شركة محاصة حول إعادة رأس المال)، أم C28 (نزاع تجاري بين شريكين في شركة مضاربة)؟\"}",
+        "ns": []
+      }
+    },
+    {
+      "id": "a3",
+      "q": "ابغى اللائحة التنفيذية لنظام الأحوال المدنية اللي عن الفصل الثامن",
+      "plausible": [
+        1,
+        2,
+        27
+      ],
+      "note": "three refs render the same chip + regulation + «الفصل الثامن»",
+      "asked": false,
+      "got": [
+        1,
+        2,
+        27
+      ],
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C1",
+          "C2",
+          "C21"
+        ],
+        "data_type": "regs",
+        "rationale": "المستخدم طلب اللائحة التنفيذية لنظام الأحوال المدنية عن الفصل الثامن. المرفقات C1 و C2 و C21 كلها أجزاء من ذات اللائحة تغطي الفصل الثامن (البطاقات الشخصية ودفاتر العائلة، المواد 146-160).",
+        "resolved": [
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "f015b1f0-bd05-5cfc-899d-2230fa3f37d5",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "لائحة تنفيذية: اللائحة التنفيذية لنظام الأحوال المدنية — نصوص اللائحة التنفيذية للفصل الثامن (151-160)",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          },
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "d9cd8236-479f-5484-8f75-eb0db06abf58",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "لائحة تنفيذية: اللائحة التنفيذية لنظام الأحوال المدنية — نصوص اللائحة التنفيذية للفصل الثامن (146-150)",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          },
+          {
+            "level": "chunk",
+            "regulation_id": "",
+            "chunk_id": "5626b7fc-0ba2-531a-b9fe-dff84bb51b06",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "",
+            "title": "لائحة تنفيذية: اللائحة التنفيذية لنظام الأحوال المدنية — الفصل الثامن: البطاقات الشخصية ودفاتر العائلة",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          1,
+          2,
+          27
+        ]
+      }
+    },
+    {
+      "id": "a4",
+      "q": "افتح لي خدمة طلب هوية بدل تالف",
+      "plausible": [
+        11,
+        13
+      ],
+      "note": "two refs whose service-name cards are byte-identical",
+      "asked": false,
+      "got": [
+        11,
+        13
+      ],
+      "detail": {
+        "kind": "decision",
+        "aborted": false,
+        "abort_reason": "",
+        "selected": [
+          "C10"
+        ],
+        "data_type": "services",
+        "rationale": "طلب المستخدم خدمة «طلب هوية بدل تالف»، وقد وُجدت مطابقة لها في المصادر المرفقة (C10)، وتم تأكيدها عبر البحث اليدوي.",
+        "resolved": [
+          {
+            "level": "service",
+            "regulation_id": "",
+            "chunk_id": "",
+            "article_id": "",
+            "article_number": "",
+            "case_id": "",
+            "case_ref": "",
+            "circular_id": "",
+            "service_id": "fc04dfc9-2a63-4940-b68e-8df384234676",
+            "title": "وكالة وزارة الداخلية للأحوال المدنية - طلب هوية بدل تالف",
+            "subtitle": "",
+            "doc_type": "",
+            "source_url": ""
+          }
+        ],
+        "ns": [
+          11,
+          13
+        ]
+      }
+    }
+  ]
+}

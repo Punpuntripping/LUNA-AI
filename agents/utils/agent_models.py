@@ -242,6 +242,21 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # corpus contents — diagnosed in conv faa3b71e). DeepSeek-flash is fast and
     # cheap; the call is short (two-field structured output).
     "sector_picker":              ModelPolicy("tier_2", primary="deepseek"),
+    # ── simple_search — the lookup family (.claude/plans/simple_search_family.md §3)
+    # Layer-2 Major. Resolves WHICH legal object the user is pointing at:
+    # deterministic title/number resolution, manual search, ask_user on
+    # ambiguity. Tool orchestration, not legal reasoning — but the ambiguity
+    # judgement ("did they mean the نظام or its لائحة?") is real inference, so
+    # reasoning=medium rather than the provider default.
+    "simple_search_searcher":     _FLASH_MEDIUM,
+    # Layer-3 Task. Opens ONE already-unfolded object and answers from it: it
+    # validates the object is the one meant, writes the Arabic answer, and
+    # decides whether a workspace card is warranted. Up to 3 run per turn (the
+    # D4 fan-out). Deliberately NOT _FLASH_MAX — the deep_search aggregator
+    # earns max reasoning by synthesizing across many ranked candidates; this
+    # one holds a single document and the reasoning is bounded, which is the
+    # whole point of the family costing less.
+    "simple_search_synthesizer":  _FLASH_MEDIUM,
     # Layer-3 task agent invoked as a router tool (edit_artifact) — one flash
     # call over a full injected artifact emitting a batched surgical-edit tool
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the

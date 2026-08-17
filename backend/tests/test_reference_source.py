@@ -27,7 +27,11 @@ from typing import Any, Optional
 import pytest
 from fastapi.testclient import TestClient
 
-from agents.deep_search_v4.source_viewer import ChunkSourceView
+from agents.deep_search_v4.source_viewer import (
+    ArticleFullSourceView,
+    ChunkSourceView,
+    RegulationSummarySourceView,
+)
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
@@ -64,6 +68,11 @@ REG_ID = "cccc3333-3333-4333-8333-333333333333"
 CASE_ID = "dddd4444-4444-4444-8444-444444444444"
 CIRC_ID = "eeee5555-5555-4555-8555-555555555555"
 SVC_ID = "ffff6666-6666-4666-8666-666666666666"
+# simple_search (migration 136): an articles_v2 row keyed directly, plus one
+# whose article_number is compound and therefore has no published مادة page.
+ART_ID = "aaaa7777-7777-4777-8777-777777777777"
+ART_COMPOUND_ID = "aaaa8888-8888-4888-8888-888888888888"
+ART_MUKARRAR_ID = "aaaa9999-9999-4999-8999-999999999999"
 
 
 def run(coro):
@@ -144,6 +153,18 @@ def base_supabase(**tables: Any) -> FakeSupabase:
         ],
         "circulars": [
             {"id": CIRC_ID, "title": "تعميم مهم", "content": "ن" * 5000},
+        ],
+        "articles_v2": [
+            {"id": ART_ID, "regulation_id": REG_ID, "article_number": "6"},
+            # «7-4» exists in the corpus and has NO published مادة page.
+            {"id": ART_COMPOUND_ID, "regulation_id": REG_ID, "article_number": "7-4"},
+            # …and so does «81 مكرر». 487 of 51,792 مواد (0.94%, across 7 أنظمة)
+            # carry a number no int can hold (§12a C4 / §13).
+            {"id": ART_MUKARRAR_ID, "regulation_id": REG_ID,
+             "article_number": "81 مكرر"},
+        ],
+        "regulations_v2": [
+            {"id": REG_ID, "title": "نظام العمل الصادر بالمرسوم", "clean_title": "نظام العمل"},
         ],
         "seo_item_meta": [],
         "seo_articles": [],
@@ -299,6 +320,120 @@ def test_resolve_ref_id_projects_to_the_pinned_tuple() -> None:
     assert run(
         reference_resolver.resolve_ref_id(supabase, f"reg:{CHUNK_SINGLE}")
     ) == ("article", f"{REG_ID}#6")
+
+
+# ---------------------------------------------------------------------------
+# 1b. The two simple_search prefixes (migration 136, plan §6.1a / §7.3)
+# ---------------------------------------------------------------------------
+
+
+def test_article_ref_resolves_to_the_same_tuple_a_chunk_would() -> None:
+    """``article:<articles_v2.id>`` short-circuits to the EXISTING ``article``
+    ledger type — no new metering vocabulary.
+
+    The proof that matters is the equality below: a مادة reached by lookup and
+    the same مادة reached through its chunk must produce the identical
+    ``(content_type, content_id)``, or the user would be charged twice for one
+    document and D5's نظام-covers-مادة grant would stop applying.
+    """
+    supabase = base_supabase()
+
+    via_lookup = run(reference_resolver.resolve_ref(supabase, f"article:{ART_ID}"))
+    via_chunk = run(reference_resolver.resolve_ref(supabase, f"reg:{CHUNK_SINGLE}"))
+
+    assert via_lookup is not None and via_chunk is not None
+    assert via_lookup.as_tuple() == via_chunk.as_tuple() == ("article", f"{REG_ID}#6")
+    assert via_lookup.article_no == 6
+    assert via_lookup.parent_regulation_id == REG_ID
+
+
+def test_compound_article_number_lifts_to_the_regulation() -> None:
+    """«7-4» has no published مادة page, so no sidecar key can be minted — the
+    ref lifts to the نظام rather than being dropped. Same policy
+    ``_owned_article_numbers`` applies to a chunk's ``owns`` map."""
+    supabase = base_supabase()
+    resolved = run(reference_resolver.resolve_ref(supabase, f"article:{ART_COMPOUND_ID}"))
+
+    assert resolved is not None
+    assert resolved.as_tuple() == ("regulation", REG_ID)
+    assert resolved.article_no is None
+    assert resolved.parent_regulation_id == REG_ID
+
+
+def test_regdoc_ref_resolves_to_the_regulation_and_names_it() -> None:
+    """``regdoc:<regulations_v2.id>`` → ``('regulation', id)``. The lookup is not
+    redundant: it proves the نظام exists (fail closed) and supplies the title the
+    unlock toast shows instead of a uuid."""
+    supabase = base_supabase()
+    resolved = run(reference_resolver.resolve_ref(supabase, f"regdoc:{REG_ID}"))
+
+    assert resolved is not None
+    assert resolved.as_tuple() == ("regulation", REG_ID)
+    assert resolved.title == "نظام العمل"          # clean_title, not title
+    assert resolved.parent_regulation_id == REG_ID
+
+
+def test_new_prefixes_are_metered_exactly_like_reg_chunks() -> None:
+    """NOT ``always_free``.
+
+    D12's "regulations are not metered" governs what the AGENT reads while
+    composing an answer. This module governs the USER-facing «عرض المصدر» reveal,
+    where a نظام has always cost what a ``reg:`` chunk of it costs — and the two
+    paths are two doors onto one document. Only a compliance service and a short
+    circular are policy-open (§1.3).
+    """
+    supabase = base_supabase()
+    for ref_id in (f"article:{ART_ID}", f"regdoc:{REG_ID}", f"reg:{CHUNK_SINGLE}"):
+        resolved = run(reference_resolver.resolve_ref(supabase, ref_id))
+        assert resolved is not None, ref_id
+        assert resolved.always_free is False, ref_id
+        assert resolved.free_reason == "", ref_id
+
+
+def test_prefixless_rows_fall_back_to_the_new_domains() -> None:
+    """A row whose ref_id lost its prefix is disambiguated by ``domain``, exactly
+    like the four older domains."""
+    supabase = base_supabase()
+    assert run(
+        reference_resolver.resolve_ref(supabase, ART_ID, domain="articles")
+    ).as_tuple() == ("article", f"{REG_ID}#6")
+    assert run(
+        reference_resolver.resolve_ref(supabase, REG_ID, domain="regulation_docs")
+    ).as_tuple() == ("regulation", REG_ID)
+
+
+@pytest.mark.parametrize(
+    "ref_id, domain",
+    [
+        ("article:not-a-uuid", "articles"),
+        ("regdoc:not-a-uuid", "regulation_docs"),
+        # Right shape, vanished row — a re-ingested corpus must not mint free
+        # access to a phantom.
+        (f"article:{'9' * 8}-9999-4999-8999-{'9' * 12}", "articles"),
+        (f"regdoc:{'9' * 8}-9999-4999-8999-{'9' * 12}", "regulation_docs"),
+    ],
+)
+def test_new_prefixes_fail_closed(ref_id: str, domain: str) -> None:
+    supabase = base_supabase()
+    assert run(reference_resolver.resolve_ref(supabase, ref_id, domain=domain)) is None
+    assert run(reference_resolver.resolve_ref_id(supabase, ref_id, domain=domain)) is None
+
+
+def test_regdoc_prefix_is_not_swallowed_by_the_reg_branch() -> None:
+    """``regdoc`` must not be matched as ``reg``. If it were, the whole-نظام uuid
+    would be read against ``chunks_v2``, find nothing, and refuse a valid
+    citation — the mirror image of §9 trap 4."""
+    supabase = base_supabase(chunks_v2=[])   # any chunk lookup would fail
+    resolved = run(reference_resolver.resolve_ref(supabase, f"regdoc:{REG_ID}"))
+    assert resolved is not None and resolved.content_type == "regulation"
+
+
+def test_a_reg_prefixed_regulation_uuid_still_fails_closed() -> None:
+    """The trap itself, asserted from the resolver's side: a regulations_v2 uuid
+    wearing ``reg:`` is looked up as a CHUNK, is not found, and is refused. That
+    is why the write path mints ``regdoc:`` instead."""
+    supabase = base_supabase()
+    assert run(reference_resolver.resolve_ref(supabase, f"reg:{REG_ID}")) is None
 
 
 # ===========================================================================
@@ -629,7 +764,7 @@ def test_unlocking_the_nizam_covers_its_madda(monkeypatch) -> None:
     assert res.status_code == 200, res.text
     assert res.json()["unlocked"]["content_type"] == "article"
     assert res.json()["unlocked"]["content_id"] == f"{REG_ID}#6"
-    assert res.json()["unlocked"]["article_no"] == 6
+    assert res.json()["unlocked"]["article_no"] == "6"   # §12a C4 — a string
     assert res.json()["unlocked"]["charged"] is False
     assert len(supabase.tables["library_unlocks"]) == 1  # no second row
 
@@ -720,6 +855,275 @@ def test_short_circular_reveal_is_free(monkeypatch) -> None:
     assert res.status_code == 200, res.text
     assert res.json()["unlocked"]["charged"] is False
     assert supabase.tables["library_unlocks"] == []
+
+
+# --- build BEFORE charge (plan §7.3 / §9 trap 6) ---------------------------
+
+
+def test_an_unbuildable_source_costs_nothing(monkeypatch) -> None:
+    """THE ordering fix.
+
+    ``resolve_access`` used to run at step 4 and the build at step 5, so a source
+    that failed to build charged a real, PERMANENT unlock and then answered 404:
+    the reader paid for a document they never received, and the unlock is not
+    refundable. Building first makes that impossible.
+
+    Asserted the only way that can't be faked: through the real ledger table.
+    """
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_MULTI}")],
+    )
+    uses = _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    async def _no_view(_supabase, _row):
+        return None
+
+    monkeypatch.setattr(workspace_api, "build_reference_source_view", _no_view)
+
+    res = client.get(_url())
+    assert res.status_code == 404
+    assert res.json()["detail"] == "تعذّر عرض هذا المصدر"
+    # Not one ledger row, not one shelf write, not one point spent.
+    assert supabase.tables["library_unlocks"] == []
+    assert uses == []
+
+
+def test_an_entitled_reveal_still_charges_after_the_reorder(monkeypatch) -> None:
+    """The reorder must not turn the meter off. Same request as
+    ``test_reveal_charges_exactly_once_then_is_free``, asserted for the charge
+    alone — build-first changes WHEN we charge, never WHETHER."""
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_MULTI}")],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    assert res.json()["unlocked"]["charged"] is True
+    assert len(supabase.tables["library_unlocks"]) == 1
+
+
+def test_a_refused_reveal_returns_no_body_even_though_it_was_built(monkeypatch) -> None:
+    """Build-before-charge means the view EXISTS when the refusal is written. It
+    must still be discarded unread — a 402 that leaked the body would hand out
+    exactly what the meter is bounding."""
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1)],
+        quota_row=quota_row(limit=10, used=10),
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(
+        monkeypatch, supabase,
+        source_view=ChunkSourceView(title="نظام", content="سر لا يجب تسريبه"),
+    )
+
+    res = client.get(_url())
+    assert res.status_code == 402
+    assert "سر لا يجب تسريبه" not in res.text
+    assert "source_view" not in res.json()
+    assert supabase.tables["library_unlocks"] == []
+
+
+# --- the two simple_search domains, end to end through the route -----------
+
+
+def test_article_reveal_charges_the_madda_and_shelves_it(monkeypatch) -> None:
+    """An ``articles`` row reveals through the same metered path as any other
+    citation, on the same ledger types."""
+    supabase = base_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=f"article:{ART_ID}", domain="articles", item_id=ART_ID)
+        ],
+    )
+    uses = _install_fake_library_items(monkeypatch)
+    client = _client(
+        monkeypatch, supabase,
+        source_view=ArticleFullSourceView(
+            title="المادة 6 من نظام العمل",
+            article_num="6",
+            content="نص المادة الكامل",
+            regulation_title="نظام العمل",
+        ),
+    )
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["domain"] == "articles"
+    assert body["source_view"]["source_type"] == "article_full"
+    assert body["source_view"]["content"] == "نص المادة الكامل"
+    assert body["unlocked"]["content_type"] == "article"
+    assert body["unlocked"]["content_id"] == f"{REG_ID}#6"
+    # §12a C4: a STRING on the wire, even when the number is a plain integer.
+    assert body["unlocked"]["article_no"] == "6"
+    assert body["unlocked"]["charged"] is True
+    assert uses == [(USER_A, "article", f"{REG_ID}#6")]
+
+
+# --- §12a C4: ``article_no`` is a STRING on the wire -----------------------
+#
+# ``articles_v2.article_number`` is TEXT. Typing this field as a number meant
+# «1-1» / «81 مكرر» arrived as ``null``, and ``unlockedNotice`` fell through to
+# its «بجميع مواده» branch — telling the reader they unlocked the whole نظام
+# while they were looking at ONE مادة, AFTER the unlock was spent. Silent, and
+# on a metered action.
+
+
+@pytest.mark.parametrize(
+    "article_id, number",
+    [(ART_COMPOUND_ID, "7-4"), (ART_MUKARRAR_ID, "81 مكرر")],
+)
+def test_a_compound_madda_number_reaches_the_unlock_notice(
+    monkeypatch, article_id: str, number: str
+) -> None:
+    """THE regression. A compound مادة must still NAME the مادة in the notice.
+
+    The two halves are deliberately independent:
+
+    * **Metering** lifts to the نظام — «7-4» has no published مادة page, so no
+      sidecar key exists to charge against. That is correct and unchanged.
+    * **The notice** still names «المادة 7-4», because the reader clicked one
+      مادة and just paid for it. It reads the raw TEXT off the built
+      ``ArticleFullSourceView``, which never went through the resolver's int
+      gate.
+
+    Without both, the reader spends an unlock on «المادة 81 مكرر» and is told
+    they opened «نظام العمل كاملاً — بجميع مواده».
+    """
+    supabase = base_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=f"article:{article_id}", domain="articles",
+                    item_id=article_id)
+        ],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(
+        monkeypatch, supabase,
+        source_view=ArticleFullSourceView(
+            title=f"المادة {number} من نظام العمل",
+            article_num=number,
+            content="نص المادة الكامل",
+            regulation_title="نظام العمل",
+        ),
+    )
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    unlocked = res.json()["unlocked"]
+
+    # The notice's article branch is `articleNo !== null` — this is what arms it.
+    assert unlocked["article_no"] == number
+    assert isinstance(unlocked["article_no"], str)
+    # …while the CHARGE still lands on the نظام (D15.1 / D5), unchanged.
+    assert unlocked["content_type"] == "regulation"
+    assert unlocked["content_id"] == REG_ID
+    assert unlocked["charged"] is True
+    assert supabase.tables["library_unlocks"][0]["content_type"] == "regulation"
+
+
+def test_a_single_madda_chunk_reports_its_number_as_a_string(monkeypatch) -> None:
+    """The ``reg:`` path types the same field. Its number comes off the chunk's
+    ``owns`` map (ints by construction) and is stringified at the payload edge,
+    so the frontend sees ONE type on this field regardless of which door the
+    citation came through."""
+    supabase = base_supabase(
+        workspace_item_references=[ref_row(n=1, ref_id=f"reg:{CHUNK_SINGLE}")],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    unlocked = client.get(_url()).json()["unlocked"]
+    assert unlocked["article_no"] == "6"
+    assert isinstance(unlocked["article_no"], str)
+    assert unlocked["content_id"] == f"{REG_ID}#6"
+
+
+@pytest.mark.parametrize(
+    "ref_id, domain, item_id, view",
+    [
+        # A chunk owning 3 مواد — it does not know which one, and neither does
+        # ``ChunkSourceView`` (it has no ``article_num`` field at all).
+        (f"reg:{CHUNK_MULTI}", "regulations", CHUNK_MULTI, None),
+        # A whole نظام — there is no مادة to name.
+        (f"regdoc:{REG_ID}", "regulation_docs", REG_ID,
+         RegulationSummarySourceView(title="نظام العمل", content="ملخص النظام")),
+    ],
+)
+def test_a_reference_that_names_no_madda_still_sends_null(
+    monkeypatch, ref_id: str, domain: str, item_id: str, view: Any
+) -> None:
+    """The other direction of the same guard, and the reason the fallback reads
+    ``article_num`` off the VIEW rather than guessing from the domain: a source
+    view that carries no مادة number must never acquire one, or the notice would
+    claim a مادة for an unlock that really did cover «النظام كاملاً — بجميع
+    مواده»."""
+    supabase = base_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=ref_id, domain=domain, item_id=item_id)
+        ],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase, source_view=view)
+
+    unlocked = client.get(_url()).json()["unlocked"]
+    assert unlocked["article_no"] is None
+    assert unlocked["content_type"] == "regulation"
+
+
+def test_regdoc_reveal_names_the_nizam_in_the_unlock(monkeypatch) -> None:
+    """D15.1's rule holds for the whole-نظام ref too: the toast names the
+    document, never a uuid — and here the resolver's own title supplies it."""
+    supabase = base_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=f"regdoc:{REG_ID}", domain="regulation_docs",
+                    item_id=REG_ID)
+        ],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(
+        monkeypatch, supabase,
+        source_view=RegulationSummarySourceView(
+            title="نظام العمل", content="ملخص النظام"
+        ),
+    )
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["domain"] == "regulation_docs"
+    assert body["source_view"]["source_type"] == "regulation_summary"
+    assert body["unlocked"]["content_type"] == "regulation"
+    assert body["unlocked"]["content_id"] == REG_ID
+    assert body["unlocked"]["title"] == "نظام العمل"
+    assert supabase.tables["library_unlocks"][0]["content_type"] == "regulation"
+
+
+def test_a_regdoc_reveal_is_free_once_the_nizam_is_unlocked(monkeypatch) -> None:
+    """§1.2 — unlocks are permanent and idempotent ACROSS surfaces. A user who
+    unlocked this نظام through a ``reg:`` chunk must not pay again to open it as a
+    whole document; the shared ``('regulation', id)`` tuple is what guarantees it,
+    and is the reason no new metering type was invented."""
+    supabase = base_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=f"regdoc:{REG_ID}", domain="regulation_docs",
+                    item_id=REG_ID)
+        ],
+        library_unlocks=[{
+            "unlock_id": "seed", "user_id": USER_A, "content_type": "regulation",
+            "content_id": REG_ID, "period_key": "free:202607", "cost": 1,
+            "surface": "library",
+        }],
+    )
+    _install_fake_library_items(monkeypatch)
+    client = _client(monkeypatch, supabase)
+
+    res = client.get(_url())
+    assert res.status_code == 200, res.text
+    assert res.json()["unlocked"]["charged"] is False
+    assert res.json()["unlocked"]["reason"] == "already_unlocked"
+    assert len(supabase.tables["library_unlocks"]) == 1   # still ONE row
 
 
 def test_cross_user_item_id_is_refused_before_anything_else(monkeypatch) -> None:

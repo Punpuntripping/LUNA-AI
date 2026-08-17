@@ -24,6 +24,16 @@ Planner-redesign rewiring:
 - _run_deep_search accepts an optional `decision`: on resume, _resume_major_agent
   resumes planner_decider itself, then passes the PlannerDecision so phases 2–3
   run through the same convergence point as a fresh dispatch.
+
+simple_search pause/resume (plan §13l, the §13j fix wave):
+- The family writes its OWN paused_runs row, so the orchestrator never assumes
+  the open pause belongs to it (_own_simple_search_pause) and never re-reads the
+  slot for the question text (_SkipRunRecord carries it).
+- A pause MAY carry answers — they are streamed AND persisted before the
+  question goes out (_persist_paused_delivery); a paused turn writes no
+  assistant row otherwise, because message_service deletes the placeholder.
+- _resume_simple_search_leg feeds the reply back through the family's own
+  resume entry point instead of the shared DeferredToolResults path.
 """
 from __future__ import annotations
 
@@ -57,6 +67,7 @@ from agents.models import (
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
+from agents.simple_search.runner import run_simple_search
 from agents.tool_repository.save_memo import MEMO_SUBTYPE, NOTE_KIND
 from agents.paused_runs import (
     PauseRecord,
@@ -729,8 +740,10 @@ async def _resume_major_agent_inner(
 ) -> AsyncGenerator[dict, None]:
     """Resume a paused agent run after the user has replied to an ask_user question.
 
-    ``deep_search`` and ``writing`` support pause/resume. Any other
-    agent_family (memory, etc.) is abandoned and re-routed fresh via the
+    ``deep_search`` and ``writing`` resume through the shared
+    ``DeferredToolResults`` rehydration below; ``simple_search`` resumes through
+    its own family entry point (``_resume_simple_search_leg``, §13l.4). Any
+    other agent_family (memory, etc.) is abandoned and re-routed fresh via the
     normal router path.
 
     ``assistant_message_id`` is the FK of the assistant-message placeholder
@@ -759,6 +772,27 @@ async def _resume_major_agent_inner(
             logger.warning("_resume_major_agent: could not patch user message metadata: %s", e)
 
     yield {"type": "agent_resumed", "run_id": run_id, "agent_family": agent_family}
+
+    # ── simple_search resume (§13l.4) ───────────────────────────────────────
+    # The family owns its own loop and its own rehydration, so it does NOT go
+    # through the shared DeferredToolResults path below — it takes the pause row
+    # whole. Before this branch existed the searcher's ask_user was write-only:
+    # the row fell through to the "unsupported family" abandon below, was
+    # DELETED, and the user's answer was re-routed as a brand-new turn with the
+    # candidate list and the tool call gone (measured, §13j #2 / state-02).
+    if agent_family == "simple_search":
+        async for ev in _resume_simple_search_leg(
+            pending=pending,
+            user_reply=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+        ):
+            yield ev
+        return
 
     # ── Only deep_search + writing support resume; abandon everything else. ──
     if agent_family not in ("deep_search", "writing"):
@@ -1283,6 +1317,265 @@ async def _resume_major_agent_inner(
     yield {"type": "agent_run_finished", "agent_family": "deep_search"}
 
 
+async def _resume_simple_search_leg(
+    *,
+    pending: dict,
+    user_reply: str,
+    supabase: SupabaseClient,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    user_message_id: str | None,
+    assistant_message_id: str | None = None,
+) -> AsyncGenerator[dict, None]:
+    """Resume a paused ``simple_search`` run with the user's reply (§13l.4).
+
+    The family's own entry point does the rehydrating: the pause row carries the
+    searcher's ``message_history`` + ``deferred_payload``, and
+    ``resume_simple_search`` feeds the reply back into the same run. Everything
+    after that is the fresh-dispatch shape — messages, cards, a possible SECOND
+    pause, a possible abort — so this leg handles it the same way ``_dispatch``
+    does, and the pause row is resolved exactly once.
+    """
+    run_id: str = str(pending.get("run_id", ""))
+
+    yield {"type": "agent_run_started", "agent_family": "simple_search", "subtype": None}
+
+    # Imported here, not at module scope: a deploy where the family half of the
+    # §13l wave has NOT landed must fail loudly at the one call site instead of
+    # taking the whole orchestrator down at import time.
+    try:
+        from agents.simple_search.runner import resume_simple_search
+    except ImportError as exc:
+        logger.error(
+            "_resume_simple_search_leg: resume_simple_search is missing — the "
+            "simple_search family does not implement §13l.4 in this build "
+            "(run_id=%s): %s", run_id, exc, exc_info=True,
+        )
+        _logfire.error(
+            "simple_search.resume_unavailable",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            error=str(exc)[:200],
+        )
+        # The pause is unconsumable — drop it and give the user an answer via the
+        # normal router rather than a dead turn. The alarm above is the signal.
+        _resolve_pause_loud(supabase, run_id, where="ss_resume_symbol_missing")
+        yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+        async for ev in _route(
+            question=user_reply,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+        ):
+            yield ev
+        return
+
+    # Set when a pause row must SURVIVE this leg (the searcher asked again). The
+    # finally must then not resolve — same discipline as the writing branch's
+    # `_rewrote_pause`, and for the same reason: resolving would delete the row
+    # the next turn has to resume.
+    _keep_pause = False
+    try:
+        ss_outcome = await resume_simple_search(
+            user_reply,
+            pending,
+            supabase,
+            user_id,
+            conversation_id,
+            case_id,
+            # Parity with the fresh dispatch, which hands the family the same
+            # window it hands the planners. The pause row rehydrates the RUN;
+            # it does not carry the conversation the run is happening in.
+            recent_messages=_load_recent_messages(
+                supabase, conversation_id, user_id=user_id
+            ),
+        )
+
+        # ── Abort → hand off to deep_search ─────────────────────────────────
+        # Same precedent as the fresh-dispatch branch in _dispatch: the searcher
+        # has established this is not a lookup, the router already established it
+        # is a legal question, and there is exactly one family left. Going
+        # straight there is deterministic and terminal — re-routing could loop.
+        if ss_outcome.aborted:
+            logger.info(
+                "simple_search resume aborted for conversation %s — handing off "
+                "to deep_search (reason=%s)",
+                conversation_id, ss_outcome.abort_reason or "unspecified",
+            )
+            major_input = MajorAgentInput(
+                describe_query=user_reply,
+                task_label=(pending.get("task_label") or "").strip() or "متابعة المحادثة",
+                attached_items=_load_attached_items(
+                    supabase, [], user_id, conversation_id
+                ),
+                recent_messages=_load_recent_messages(
+                    supabase, conversation_id, user_id=user_id
+                ),
+                compaction_summary_md=_load_compaction_summary(
+                    supabase, conversation_id, user_id
+                ),
+                target_item_id=None,
+                # No welcome on any resume leg: resolve_welcome runs in _route
+                # only, so a run that paused can never re-greet mid-conversation.
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+            )
+            ds_handoff = await _run_deep_search(
+                major_input, supabase, assistant_message_id=assistant_message_id,
+            )
+            if ds_handoff.kind == "paused":
+                # A FRESH run_id is minted for the planner's row (paused_runs.run_id
+                # is the PK — reusing this leg's would collide on INSERT); this
+                # leg's row is dropped by the finally below.
+                new_question, new_run_id = _record_deferred(
+                    supabase=supabase,
+                    planner_result=ds_handoff.planner_result,
+                    planner_output=ds_handoff.deferred,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    user_message_id=user_message_id,
+                    agent_family="deep_search",
+                    describe_query=user_reply,
+                    task_label=(pending.get("task_label") if pending else None),
+                )
+                yield {
+                    "type": "agent_question",
+                    "run_id": new_run_id or "",
+                    "question": new_question,
+                }
+                yield {"type": "done", "usage": _zero_usage("paused")}
+                yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+                return
+
+            ds_result = ds_handoff.result
+            for ev in ds_result.sse_events:
+                if ev.get("streamed"):
+                    continue
+                yield ev
+            if ds_result.chat_summary:
+                yield {"type": "token", "text": ds_result.chat_summary}
+            if ds_result.key_findings:
+                bullets = "\n\n" + "\n".join(f"• {k}" for k in ds_result.key_findings)
+                yield {"type": "token", "text": bullets}
+            yield {
+                "type": "done",
+                "usage": {
+                    "prompt_tokens": ds_result.tokens_in or 0,
+                    "completion_tokens": ds_result.tokens_out or 0,
+                    "model": ds_result.model_used or "deep_search_v4",
+                },
+            }
+            yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+            return
+
+        delivered = [m for m in ss_outcome.chat_messages if m and m.strip()]
+        answer_text = "\n\n".join(delivered)
+        ss_question = (ss_outcome.question_text or "").strip()
+
+        for ev in ss_outcome.sse_events:
+            if ev.get("streamed"):
+                continue
+            yield ev
+
+        # ── The searcher asked AGAIN ────────────────────────────────────────
+        if ss_outcome.paused and not ss_question:
+            # Same guard as the fresh-dispatch branch: a pause with nothing to
+            # ask must not survive as an invisible row. This leg's row goes in
+            # the finally; a NEW one the runner may have opened goes here.
+            logger.warning(
+                "simple_search resume paused with an empty question_text "
+                "(conversation %s) — resolving the orphan pause row",
+                conversation_id,
+            )
+            orphan = _own_simple_search_pause(supabase, conversation_id, user_id)
+            orphan_id = str((orphan or {}).get("run_id") or "")
+            if orphan_id and orphan_id != run_id:
+                _resolve_pause_loud(
+                    supabase, orphan_id, where="ss_pause_without_question"
+                )
+        elif ss_outcome.paused:
+            open_row = _own_simple_search_pause(supabase, conversation_id, user_id)
+            if open_row is not None:
+                next_run_id = str(open_row.get("run_id") or "")
+                pause_reason = str(open_row.get("pause_reason") or "clarify")
+                if answer_text:
+                    yield {"type": "token", "text": answer_text}
+                _persist_paused_delivery(
+                    supabase,
+                    conversation_id=conversation_id,
+                    answer_text=answer_text,
+                    artifact_ids=list(ss_outcome.created_item_ids),
+                    question=ss_question,
+                    run_id=next_run_id,
+                    pause_reason=pause_reason,
+                )
+                if next_run_id and next_run_id != run_id:
+                    # The runner opened a NEW row — this leg's is superseded and
+                    # must go now (the finally is skipped so the new one lives).
+                    _resolve_pause_loud(
+                        supabase, run_id, where="ss_resume_chained_pause_supersede"
+                    )
+                _keep_pause = True
+                yield {
+                    "type": "agent_question",
+                    "run_id": next_run_id,
+                    "question": ss_question,
+                    "pause_reason": pause_reason,
+                }
+                yield {"type": "done", "usage": _zero_usage("paused")}
+                yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+                return
+
+            # paused=True with no row of ours: the runner declined to re-open the
+            # slot (§13l.3) or the write failed. Deliver the question as text —
+            # this leg's row is consumed by the finally, and the user's answer
+            # comes back as a fresh routed turn.
+            logger.warning(
+                "simple_search resume paused for conversation %s with no pause "
+                "row of its own — delivering the question as text (§13l.3)",
+                conversation_id,
+            )
+            if ss_question:
+                delivered = delivered + [ss_question]
+                answer_text = "\n\n".join(delivered)
+
+        if answer_text:
+            yield {"type": "token", "text": answer_text}
+        yield {
+            "type": "done",
+            "usage": _zero_usage("simple_search"),
+        }
+
+    except asyncio.CancelledError:
+        logger.info(
+            "_resume_simple_search_leg: cancelled mid-resume run_id=%s", run_id,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "_resume_simple_search_leg: resume failed for run_id=%s: %s",
+            run_id, exc, exc_info=True,
+        )
+        yield {
+            "type": "token",
+            "text": "عذراً، حدث خطأ أثناء استئناف البحث. يرجى المحاولة مرة أخرى.",
+        }
+        yield {"type": "done", "usage": _zero_usage("error")}
+    finally:
+        # Consumed (answered / aborted / errored / cancelled) → the row goes, so
+        # it can never be resumed twice. Skipped only when a pause row must
+        # survive this leg (the chained-pause branch above).
+        if not _keep_pause:
+            _resolve_pause_loud(supabase, run_id, where="ss_resume_finally")
+
+    yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+
+
 def _record_deferred(
     *,
     supabase: SupabaseClient,
@@ -1389,7 +1682,162 @@ class _SkipRunRecord(Exception):
 
     Used when the run transitions to 'awaiting_user' and is persisted by
     _record_deferred instead of by the normal finally block.
+
+    ``question`` / ``run_id`` / ``pause_reason`` carry the pause identity when
+    the raising branch already KNOWS it — the simple_search family, whose runner
+    writes its own pause row (§13l.2). The handler then emits THAT question
+    instead of re-querying ``_find_awaiting_user``: since §13l.3 the runner
+    declines to write a second row when the conversation's single pause slot is
+    occupied, so the row that query returns may belong to another family
+    entirely. Measured (§13j #3): with a months-old planner pause open, the user
+    was shown the PLANNER's question and their reply resumed deep_search.
+
+    ``question is None`` keeps the legacy behaviour for deep_search / writing —
+    there ``_record_deferred`` wrote the row microseconds earlier, so re-reading
+    it is safe and carries the freshest text.
     """
+
+    def __init__(
+        self,
+        *,
+        question: str | None = None,
+        run_id: str = "",
+        pause_reason: str = "clarify",
+    ) -> None:
+        super().__init__(question or "")
+        self.question = question
+        self.run_id = run_id
+        self.pause_reason = pause_reason
+
+
+# ---------------------------------------------------------------------------
+# simple_search pause plumbing (§13l.1–.3)
+# ---------------------------------------------------------------------------
+#
+# The searcher's pause row is written by ``simple_search/runner.py`` itself, not
+# by ``_record_deferred``. Two consequences the orchestrator has to carry:
+#
+#   1. The row may not exist. §13l.3: when the conversation's single pause slot
+#      is already taken the runner does NOT open a second one. Whatever
+#      ``find_open_pause`` returns then belongs to somebody else, and presenting
+#      it as this turn's question is the §13j #3 swap.
+#   2. Nobody inserts the ``agent_question`` message row. ``_record_deferred``
+#      does that for the planner families; without it the paused turn leaves no
+#      assistant message behind, ``_pause_is_current`` finds no matching
+#      ``metadata.run_id`` on the next user message and the stale-pause guard
+#      drops the pause before ``_resume_major_agent`` ever sees it — i.e. the
+#      resume branch of §13l.4 could never fire.
+
+
+def _own_simple_search_pause(
+    supabase: SupabaseClient, conversation_id: str, user_id: str
+) -> dict | None:
+    """The open pause row this family owns, or None.
+
+    A row of any other ``agent_family`` is NOT ours: per §13l.3 the runner
+    declines to record when the slot is occupied, so a foreign row means this
+    turn's question has no answer-channel at all. Returning None is what routes
+    the caller onto the "deliver the question as text" path instead of emitting
+    an ``agent_question`` that would resume the wrong agent.
+    """
+    row = _find_awaiting_user(supabase, conversation_id, user_id)
+    if row and str(row.get("agent_family") or "") == "simple_search":
+        return row
+    return None
+
+
+def _insert_assistant_message(
+    supabase: SupabaseClient,
+    *,
+    conversation_id: str,
+    content: str,
+    metadata: dict | None = None,
+    artifact_ids: list[str] | None = None,
+) -> str | None:
+    """Insert one assistant message row. Best-effort; returns its id or None.
+
+    وضع السرية: ``content`` is pipeline output built from ENCODED input, so it
+    can carry fakes. Decoded once here (store-real invariant) exactly like
+    ``_record_deferred`` does for the planner question. ``emit=False`` — the SSE
+    relay in message_service emits decode counters for the same text.
+    """
+    from backend.app.services.masking_service import (
+        active_codec as _active_codec,
+        decode_text as _decode_text,
+    )
+
+    message_id = str(uuid.uuid4())
+    payload: dict = {
+        "message_id": message_id,
+        "conversation_id": conversation_id,
+        "role": "assistant",
+        "content": _decode_text(_active_codec(), content, emit=False),
+    }
+    if metadata is not None:
+        payload["metadata"] = metadata
+    if artifact_ids:
+        payload["artifact_ids"] = list(artifact_ids)
+    try:
+        supabase.table("messages").insert(payload).execute()
+        return message_id
+    except Exception as e:  # noqa: BLE001 — persistence must not break the turn
+        logger.warning("_insert_assistant_message failed: %s", e)
+        return None
+
+
+def _persist_paused_delivery(
+    supabase: SupabaseClient,
+    *,
+    conversation_id: str,
+    answer_text: str,
+    artifact_ids: list[str] | None,
+    question: str,
+    run_id: str,
+    agent_family: str = "simple_search",
+    pause_reason: str = "clarify",
+) -> None:
+    """Persist a deliver-then-ask turn as TWO assistant rows, answer first.
+
+    message_service treats the ``agent_question`` SSE event as "this turn wrote
+    no assistant message": it DELETES the empty placeholder it created and never
+    writes ``full_content``. The frontend agrees — its ``agent_question`` handler
+    calls ``finishStreaming()``, which discards the streaming bubble and waits
+    for the refetch. So on a paused turn, text that is only STREAMED is text the
+    user watches disappear. §13l.1 says the answers the family already charged
+    for are delivered; delivering them means persisting them here.
+
+    Order is load-bearing: the question row must be the conversation's most
+    recent assistant message, because that is the single row
+    ``_pause_is_current`` judges the pause by on the user's next turn.
+    """
+    if answer_text.strip():
+        _insert_assistant_message(
+            supabase,
+            conversation_id=conversation_id,
+            content=answer_text,
+            # No `kind`: this is an ordinary answer bubble. `agent_answer` is the
+            # USER-side marker for a reply to an agent question (see the metadata
+            # patch in _resume_major_agent_inner) — reusing it here would mislabel
+            # the assistant's own text.
+            metadata={"run_id": run_id, "agent_family": agent_family},
+            # message_service captures workspace_item_created ids into
+            # messages.artifact_ids at `done` — but only on the non-paused path.
+            # Without this the cards published by a paused turn lose their chat
+            # linkage (chip + citation resolution) permanently.
+            artifact_ids=artifact_ids,
+        )
+    if question.strip():
+        _insert_assistant_message(
+            supabase,
+            conversation_id=conversation_id,
+            content=question,
+            metadata={
+                "kind": "agent_question",
+                "run_id": run_id,
+                "agent_family": agent_family,
+                "pause_reason": pause_reason,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2122,6 +2570,178 @@ async def _dispatch(
                     )
                     raise _SkipRunRecord()
                 run_result = wp_outcome.result
+            elif agent_family == "simple_search":
+                # The lookup family (plan .claude/plans/simple_search_family.md).
+                # runner.run_simple_search owns its own loop — searcher → up to 3
+                # synthesizers, 3 rejection cycles from ONE shared per-turn pool —
+                # and returns the pinned §12a C1 shape.
+                ss_outcome = await run_simple_search(
+                    describe_query,
+                    supabase,
+                    user_id,
+                    conversation_id,
+                    case_id,
+                    attached_items=attached_items,
+                    # The SAME window the planners get — built once above for
+                    # MajorAgentInput, so provenance tags and the masking codec
+                    # ride along rather than being re-derived.
+                    recent_messages=recent_messages,
+                    welcome=welcome,
+                )
+
+                if ss_outcome.paused:
+                    # ── §13l.1 deliver-then-ask + §13l.2 question_text wins ────
+                    # A pause is no longer a discard. The family may have already
+                    # produced — and CHARGED unlocks for — answers before the
+                    # searcher asked its question (measured: 3 unlocks, zero
+                    # replies, §13j #1). Those answers go out FIRST; the question
+                    # follows.
+                    own_pause = _own_simple_search_pause(
+                        supabase, conversation_id, user_id
+                    )
+                    delivered = [
+                        m for m in ss_outcome.chat_messages if m and m.strip()
+                    ]
+                    answer_text = "\n\n".join(delivered)
+                    ss_question = (ss_outcome.question_text or "").strip()
+
+                    if own_pause is not None and not ss_question:
+                        # A pause with nothing to ask is not a pause — it is an
+                        # invisible row that would hijack the user's NEXT message
+                        # into a resume of a question they were never shown. Drop
+                        # it and finish the turn as a normal delivery.
+                        logger.warning(
+                            "simple_search paused with an empty question_text "
+                            "(conversation %s) — resolving the orphan pause row",
+                            conversation_id,
+                        )
+                        _resolve_pause_loud(
+                            supabase,
+                            str(own_pause.get("run_id") or ""),
+                            where="ss_pause_without_question",
+                        )
+                        own_pause = None
+
+                    # Cards published before the pause — drained here exactly like
+                    # the completed path (skipping anything already streamed).
+                    for ev in ss_outcome.sse_events:
+                        if ev.get("streamed"):
+                            continue
+                        yield ev
+
+                    if own_pause is not None:
+                        if answer_text:
+                            yield {"type": "token", "text": answer_text}
+                            # The user got an answer this turn, welcome and all —
+                            # so the welcome is SPENT. The invariant the tail's
+                            # mark_welcomed encodes ("a turn that only asked a
+                            # question leaves it unspent") is preserved by the
+                            # `if answer_text` gate, not broken by it.
+                            from agents.utils.welcome import mark_welcomed
+
+                            mark_welcomed(supabase, user_id, welcome)
+                        _persist_paused_delivery(
+                            supabase,
+                            conversation_id=conversation_id,
+                            answer_text=answer_text,
+                            artifact_ids=list(ss_outcome.created_item_ids),
+                            question=ss_question,
+                            run_id=str(own_pause.get("run_id") or ""),
+                            pause_reason=str(
+                                own_pause.get("pause_reason") or "clarify"
+                            ),
+                        )
+                        raise _SkipRunRecord(
+                            question=ss_question,
+                            run_id=str(own_pause.get("run_id") or ""),
+                            pause_reason=str(
+                                own_pause.get("pause_reason") or "clarify"
+                            ),
+                        )
+
+                    # No row of OURS — the slot was taken (§13l.3) or the insert
+                    # failed. There is nothing to resume, so this turn must NOT
+                    # emit agent_question: that would hand the reply to whichever
+                    # family owns the slot. Apply §13l.3's own rule from this
+                    # side — the question travels as the last chat message and
+                    # the user's answer arrives as a fresh routed turn.
+                    logger.warning(
+                        "simple_search paused for conversation %s with no pause "
+                        "row of its own — delivering the question as text "
+                        "(§13l.3)", conversation_id,
+                    )
+                    ss_outcome.chat_messages = (
+                        delivered + ([ss_question] if ss_question else [])
+                    )
+                    ss_outcome.sse_events = []  # already drained above
+                    if not delivered:
+                        # Question-only turn: no answer reached the user, so the
+                        # welcome is not spent. Clearing the state here is what
+                        # keeps the tail's unconditional mark_welcomed honest
+                        # (mark_welcomed(None) is a no-op by contract).
+                        welcome = None
+
+                if ss_outcome.aborted:
+                    # The searcher established this is not a lookup — most often
+                    # an INTEGRATIVE question across several documents («قارن
+                    # الحكمين»), which this family cannot answer by construction:
+                    # each object goes to a separate synthesizer that never sees
+                    # the others, so a fan-out returns unrelated summaries and
+                    # spends an unlock per ruling.
+                    #
+                    # Hand off DIRECTLY to deep_search — do NOT re-route via
+                    # _route. The router is what sent us here this turn and the
+                    # Case-C eval shows it would do so again (0/9 on comparison),
+                    # so recursing risks a loop AND a second wrong choice. Going
+                    # straight to deep_search is deterministic and terminal: the
+                    # router already established this is a legal question, the
+                    # searcher has now established it is not a lookup, and there
+                    # is exactly one family left.
+                    logger.info(
+                        "simple_search aborted for conversation %s — handing off "
+                        "to deep_search (reason=%s)",
+                        conversation_id, ss_outcome.abort_reason or "unspecified",
+                    )
+                    ds_handoff = await _run_deep_search(
+                        major_input, supabase,
+                        assistant_message_id=assistant_message_id,
+                    )
+                    if ds_handoff.kind == "paused":
+                        _record_deferred(
+                            supabase=supabase,
+                            planner_result=ds_handoff.planner_result,
+                            planner_output=ds_handoff.deferred,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            case_id=case_id,
+                            user_message_id=user_message_id,
+                            agent_family="deep_search",
+                            describe_query=describe_query,
+                            task_label=task_label,
+                            run_id=run_id,
+                        )
+                        raise _SkipRunRecord()
+                    run_result = ds_handoff.result
+                    # Skip the simple_search result assembly below entirely —
+                    # deep_search owns this turn's answer now.
+                    ss_outcome = None
+
+                # Fan-out: each synthesizer wrote its own reply. They concatenate
+                # into the single assistant message this turn streams — the SSE
+                # contract is one message per turn, so separate 'token' yields
+                # would append to the same bubble anyway.
+                # (Skipped when the abort branch above handed off to deep_search.)
+                run_result = run_result if ss_outcome is None else SpecialistResult(
+                    output_item_id=(
+                        ss_outcome.created_item_ids[0]
+                        if ss_outcome.created_item_ids else None
+                    ),
+                    chat_summary="\n\n".join(
+                        m for m in ss_outcome.chat_messages if m and m.strip()
+                    ),
+                    sse_events=list(ss_outcome.sse_events),
+                    model_used="simple_search",
+                )
             elif agent_family == "memory":
                 run_result = await _run_memory(
                     describe_query=describe_query,
@@ -2148,9 +2768,12 @@ async def _dispatch(
             if run_result.chat_summary:
                 yield {"type": "token", "text": run_result.chat_summary}
                 # The specialist wrote this turn's reply, welcome and all, and
-                # it reached the user. Every paused branch above raised
-                # _SkipRunRecord before here, so a first turn that stopped to
-                # ask a clarifying question leaves the welcome unspent.
+                # it reached the user. Every paused branch above either raised
+                # _SkipRunRecord before here (having marked the welcome itself
+                # iff it delivered an answer) or, on simple_search's
+                # question-as-text path, cleared `welcome` when the turn produced
+                # nothing but a question. Either way the invariant holds: a turn
+                # that only ASKED leaves the welcome unspent for the next one.
                 from agents.utils.welcome import mark_welcomed
 
                 mark_welcomed(supabase, user_id, welcome)
@@ -2169,7 +2792,7 @@ async def _dispatch(
                 },
             }
 
-        except _SkipRunRecord:
+        except _SkipRunRecord as skip:
             # Phase-1 ask_user pause — _run_deep_search returned kind="paused"
             # and the deep_search branch already persisted the awaiting_user row
             # + question message via _record_deferred. The run is alive; no
@@ -2178,14 +2801,25 @@ async def _dispatch(
             # pause_reason (migration 053) tells the frontend whether to render
             # a plain question ('clarify') or a plan_md block with inline
             # approve/reject affordances ('approve_plan').
-            deferred_row = _find_awaiting_user(supabase, conversation_id, user_id)
-            if deferred_row:
+            if skip.question is not None:
+                # §13l.2 — the raiser handed us the question the agent ACTUALLY
+                # asked. Emit it verbatim; never re-query the slot, which may be
+                # held by an older pause of a different family (§13j #3).
                 yield {
                     "type": "agent_question",
-                    "run_id": str(deferred_row.get("run_id", "")),
-                    "question": deferred_row.get("question_text", ""),
-                    "pause_reason": deferred_row.get("pause_reason", "clarify"),
+                    "run_id": skip.run_id,
+                    "question": skip.question,
+                    "pause_reason": skip.pause_reason,
                 }
+            else:
+                deferred_row = _find_awaiting_user(supabase, conversation_id, user_id)
+                if deferred_row:
+                    yield {
+                        "type": "agent_question",
+                        "run_id": str(deferred_row.get("run_id", "")),
+                        "question": deferred_row.get("question_text", ""),
+                        "pause_reason": deferred_row.get("pause_reason", "clarify"),
+                    }
             yield {"type": "done", "usage": _zero_usage("paused")}
             return  # run stays alive (paused_runs row written); just emit SSE
 
