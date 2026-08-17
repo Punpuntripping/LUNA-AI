@@ -52,23 +52,39 @@ function selectionFromUser(): ProfessionSelection {
 }
 
 /**
- * «اتعرف على ريحان» — profession step + 3-step tour. Auto-opens per user:
- * - full tour when `preferences.onboarding_seen` is absent/false after a
- *   successful hydrate (first run);
- * - profession step ALONE when the tour was already seen but
- *   `users.profession_group` is still NULL (existing users predating
- *   migration 115 — asked exactly once).
- * ANY dismissal (skip, X, ESC, finish, picking a question) marks the tour
- * seen AND resolves the profession answer — the picked selection if there is
- * one, «declined» otherwise — so neither screen ever nags. Reopenable anytime
- * from the sidebar settings popover via `useOnboardingStore.open()` (full
- * tour, stored profession pre-selected and editable). Mounted in
- * ChatLayoutClient so it only ever renders inside the authenticated shell.
+ * «اتعرف على ريحان» — profession step + 3-step tour, retimed by
+ * `.claude/plans/edu_series.md` §8 so the two halves no longer arrive together.
+ *
+ * Auto-opens per user, in this priority order:
+ * - **profession step ALONE** whenever `users.profession_group` is exactly NULL
+ *   — which is every brand-new signup (A1), and also the pre-115 accounts that
+ *   predate the question. Asked exactly once ever; the column IS the gate.
+ * - **full tour** on the first render after the account turns paid (A2):
+ *   `isPaid && !onboarding_seen && profession_group !== null`.
+ *
+ * ANY dismissal (skip, X, ESC, finish, picking a question) resolves the
+ * profession answer — the picked selection if there is one, «declined»
+ * otherwise — so neither screen ever nags. Only a dismissal of the FULL tour
+ * additionally marks `onboarding_seen`; see `finish()`.
+ *
+ * Reopenable anytime from the sidebar settings popover via
+ * `useOnboardingStore.open()` (full tour, stored profession pre-selected and
+ * editable). Mounted in ChatLayoutClient so it only ever renders inside the
+ * authenticated shell.
  */
 export function OnboardingDialog() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   // undefined = unknown/degraded (fail-closed); ONLY exactly null prompts.
   const professionGroup = useAuthStore((s) => s.user?.profession_group);
+  // The paid signal for A2, read off the user object /auth/me already returns
+  // (sourced from the user_subscriptions SSoT). Deliberately DERIVED state, not
+  // an event handler on the payment callback: `/pay/callback` is a cold boot
+  // after a full-page 3DS redirect and lives outside ChatLayoutClient — this
+  // dialog is not even mounted there — and a `processing` payment's grant lands
+  // later via webhook, which an on-success handler would miss entirely. Reading
+  // plan_id on the next /chat render covers both, plus existing paid users.
+  const planId = useAuthStore((s) => s.user?.plan_id);
+  const isPaid = planId != null && planId !== "free";
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const onboardingSeen = usePreferencesStore((s) => s.onboardingSeen);
 
@@ -101,16 +117,26 @@ export function OnboardingDialog() {
     }
   }, [isAuthenticated, isHydrated]);
 
+  // Two first-runs, deliberately far apart in time (plan §8):
+  //
+  //   A1 · signup  → the profession step ALONE. One question, before the user
+  //                  has done anything, instead of a 4-step modal.
+  //   A2 · payment → the full tour, once the user has actually bought in.
+  //
+  // The profession branch is tested FIRST, so the null case can never fall
+  // through to the tour: a paid account that still owes the question answers it
+  // first and gets the tour on the very next pass (the effect re-runs when
+  // `saveProfession` fills the column) rather than both stacking at once.
+  // Reaching the second branch therefore already implies `professionGroup`
+  // is not null.
   useEffect(() => {
     if (!isAuthenticated || !isHydrated) return;
-    if (!onboardingSeen) {
-      useOnboardingStore.getState().open("full");
-    } else if (professionGroup === null) {
-      // Tour already seen but the profession question never asked (users row
-      // NULL, pre-115 account) — ask it once, alone.
+    if (professionGroup === null) {
       useOnboardingStore.getState().open("profession");
+    } else if (isPaid && !onboardingSeen) {
+      useOnboardingStore.getState().open("full");
     }
-  }, [isAuthenticated, isHydrated, onboardingSeen, professionGroup]);
+  }, [isAuthenticated, isHydrated, isPaid, onboardingSeen, professionGroup]);
 
   /** Persist the profession answer if it changed; a wholly untouched step on
    *  a never-asked account records «declined» (dismissal = declining). */
@@ -128,10 +154,28 @@ export function OnboardingDialog() {
     }
   };
 
+  /**
+   * Dismissal — skip, X, ESC, «حفظ» / «ابدأ الاستخدام», or picking a question.
+   *
+   * ⚠ THE FLAG SPLIT. `onboarding_seen` now means «the intro tour has been
+   * shown», and ONLY a dismissal of the FULL tour may set it. Marking it from
+   * the profession-alone run — which is what signup opens after A1 — would
+   * retire the flag before the tour had ever run and permanently block A2 for
+   * every user: the post-payment tour would then never fire for anyone.
+   *
+   * The profession run needs no flag of its own to stay once-only; its gate is
+   * `users.profession_group`, which `resolveProfession()` fills on every exit
+   * («declined» when untouched). So the two screens keep independent gates.
+   */
   const finish = () => {
+    // Read through the store rather than the render-time `mode`: it is set at
+    // open() and never changes while open, and close() below leaves it intact.
+    const wasFullTour = useOnboardingStore.getState().mode !== "profession";
     resolveProfession();
     useOnboardingStore.getState().close();
-    void usePreferencesStore.getState().markOnboardingSeen();
+    if (wasFullTour) {
+      void usePreferencesStore.getState().markOnboardingSeen();
+    }
   };
 
   const handlePickQuestion = (question: string) => {
@@ -153,9 +197,12 @@ export function OnboardingDialog() {
         <DialogHeader>
           <DialogTitle>اتعرف على ريحان</DialogTitle>
           <DialogDescription>
+            {/* The full tour no longer runs «قبل أول سؤال» — after A2 it opens
+                once the user has paid, and the settings item reopens it at any
+                time — so the description no longer claims it does. */}
             {mode === "profession"
               ? "سؤال واحد سريع يساعدنا نطوّر ريحان."
-              : "جولة سريعة في أربع خطوات قبل أول سؤال."}
+              : "جولة سريعة في أربع خطوات للتعرّف على ريحان."}
           </DialogDescription>
         </DialogHeader>
 

@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/sidebar/Sidebar";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import TourOverlay from "@/components/tour/TourOverlay";
+import { EduLessonHost } from "@/components/edu/EduLessonHost";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -203,6 +204,19 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           and above every portalled Radix layer (z-[70]), because Act 3 points
           INSIDE the «عرض المصدر» dialog. */}
       <TourOverlay />
+
+      {/* «سلسلة تعلّم ريحان» — one lesson every 4 completed turns, in syllabus
+          order, once each. Self-gating and renders null almost always; every
+          rule lives in `edu-store`. Deliberately the LOWEST-priority chrome in
+          this file (the card is z-40): it is the one surface here the user did
+          not ask for, and the engine refuses to show it while any of the three
+          above are open. */}
+      <EduLessonHost />
+
+      {/* «حدود الاستخدام» / «إعدادات المحادثة» are NOT mounted here. They hang
+          off `Sidebar` (see SidebarDialogs) so they also exist on /templates,
+          /blogs and /library/mine, which render the same sidebar through
+          SidebarPageShell. Mounting them here as well would double-mount. */}
     </div>
   );
 }

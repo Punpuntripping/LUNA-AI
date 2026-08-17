@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { messagesApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
+import { useEduStore } from "@/stores/edu-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
@@ -99,8 +100,14 @@ export function useSendMessage(): UseSendMessageReturn {
       // any upload is in flight). Failed / cancelled files contribute
       // no attachment_ids — we silently drop them so the message still
       // sends with whatever made it through.
-      const { pendingFiles, clearPendingFiles, pendingBlogs, clearPendingBlogs } =
-        useChatStore.getState();
+      const {
+        pendingFiles,
+        clearPendingFiles,
+        pendingBlogs,
+        clearPendingBlogs,
+        pendingLibraryItems,
+        clearPendingLibraryItems,
+      } = useChatStore.getState();
       const attachmentIds: string[] = pendingFiles
         .filter((pf) => pf.uploadStatus === "completed" && pf.itemId)
         .map((pf) => pf.itemId as string);
@@ -112,6 +119,16 @@ export function useSendMessage(): UseSendMessageReturn {
         ...pendingBlogs
           .filter((pb) => pb.status === "ready" && pb.itemId)
           .map((pb) => pb.itemId as string),
+      );
+
+      // Carried library pages (simple_search_family §8): the `references` item
+      // was created at attach time, so a ready chip contributes its item_id the
+      // same way. This is the WHOLE send-side change — `attachment_ids` already
+      // accepts any owned workspace item, so the request payload is untouched.
+      attachmentIds.push(
+        ...pendingLibraryItems
+          .filter((li) => li.status === "ready" && li.itemId)
+          .map((li) => li.itemId as string),
       );
 
       // Build optimistic attachment list from pending files (for UI display).
@@ -145,6 +162,20 @@ export function useSendMessage(): UseSendMessageReturn {
           })),
       );
 
+      // …and so do carried library pages.
+      optimisticAttachments.push(
+        ...pendingLibraryItems
+          .filter((li) => li.status === "ready" && li.itemId)
+          .map((li) => ({
+            id: li.id,
+            document_id: li.itemId as string,
+            attachment_type: "file" as const,
+            filename: (li.title ?? "").trim() || "صفحة من المكتبة",
+            file_size: 0,
+            kind: "references" as const,
+          })),
+      );
+
       // Composer attachments are released only once the backend CONFIRMS the
       // send (`message_start`). The quota gate now rejects BEFORE anything is
       // persisted, so a blocked send must leave the chips exactly where they
@@ -155,6 +186,7 @@ export function useSendMessage(): UseSendMessageReturn {
       const releaseComposerAttachments = () => {
         if (pendingFiles.length > 0) clearPendingFiles();
         if (pendingBlogs.length > 0) clearPendingBlogs();
+        if (pendingLibraryItems.length > 0) clearPendingLibraryItems();
       };
 
       // If no text but files are pending, use a default (backend requires min_length=1)
@@ -572,6 +604,18 @@ export function useSendMessage(): UseSendMessageReturn {
               }
               // Clear streaming state without aborting the fetch
               useChatStore.getState().finishStreaming();
+              // «سلسلة تعلّم ريحان» — one completed turn. Counted HERE and not
+              // at submit on purpose: a send that never produced an answer
+              // (quota block, transport failure) is not a turn the user spent,
+              // and counting it would drift every lesson early.
+              //
+              // The demo conversation cannot reach this line — its composer is
+              // replaced with a CTA (`DEMO_COMPOSER_HINT`), so no stream can
+              // start there and lesson zero costs the user no turns.
+              //
+              // Every gate lives in the store; this call site stays dumb and is
+              // safe to over-fire.
+              useEduStore.getState().bumpTurn();
               break;
             }
             case "workspace_item_created": {
@@ -688,6 +732,13 @@ export function useSendMessage(): UseSendMessageReturn {
               break;
             case "error": {
               const errorMsg = (data as { detail?: string }).detail ?? "حدث خطأ أثناء المعالجة";
+              // Flag the bubble failed, not just the banner. Without this the
+              // optimistic message sat in its "sending" state with no retry
+              // affordance, so a user whose turn died had no way back other
+              // than retyping the question — which is exactly what the
+              // orphaned-turn forensics showed them doing, twice, before
+              // leaving. `retryMessage` re-sends from the failed bubble.
+              markOptimisticFailed(qc, conversationId, optimisticId);
               useChatStore.getState().setError(errorMsg);
               break;
             }

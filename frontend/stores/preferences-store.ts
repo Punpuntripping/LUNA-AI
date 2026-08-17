@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { DetailLevel, UserPreferencesData } from "@/types";
 import { preferencesApi, ApiClientError } from "@/lib/api";
+import { useEduStore } from "@/stores/edu-store";
 
 const DEFAULT_DETAIL_LEVEL: DetailLevel = "medium";
 const VALID_DETAIL_LEVELS: readonly DetailLevel[] = ["low", "medium", "high"] as const;
@@ -27,10 +28,15 @@ interface PreferencesState {
   detailLevel: DetailLevel;
   privacyMasking: boolean;
   /**
-   * «اتعرف على ريحان» first-run tour flag. Fail-closed: defaults to true
-   * (= seen) so the tour never flashes for existing users before/without a
-   * successful hydrate — only an explicit absent/false value from the
-   * backend opens it.
+   * «اتعرف على ريحان» — *the intro tour has been shown*. Since the retiming in
+   * `.claude/plans/edu_series.md` §8 this no longer means "onboarding is done":
+   * signup opens the profession step alone and deliberately does NOT set this
+   * flag (that would permanently block the post-payment tour for everyone), so
+   * it is written ONLY by a dismissal of the full tour.
+   *
+   * Fail-closed, unchanged: defaults to true (= shown) so the tour never
+   * flashes for existing users before/without a successful hydrate — only an
+   * explicit absent/false value from the backend opens it.
    */
   onboardingSeen: boolean;
   /**
@@ -58,7 +64,9 @@ interface PreferencesState {
   setDetailLevel: (level: DetailLevel) => Promise<void>;
   /** Optimistically update وضع السرية; PATCH /preferences; rollback on failure. */
   setPrivacyMasking: (enabled: boolean) => Promise<void>;
-  /** Mark the onboarding tour as seen; PATCH /preferences (no rollback — worst case the tour shows once more next session). */
+  /** Mark the intro tour as shown; PATCH /preferences (no rollback — worst case
+   *  the tour shows once more next session). Call this ONLY from a dismissal of
+   *  the FULL «اتعرف على ريحان» tour, never from the profession-alone run. */
   markOnboardingSeen: () => Promise<void>;
   /** Mark «جولة المخرجات» as seen (finish OR skip); same no-rollback contract. */
   markTourWorkspaceSeen: () => Promise<void>;
@@ -82,7 +90,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 
-  reset: () =>
+  reset: () => {
     set({
       detailLevel: DEFAULT_DETAIL_LEVEL,
       privacyMasking: DEFAULT_PRIVACY_MASKING,
@@ -92,7 +100,14 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       isHydrated: false,
       isSaving: false,
       error: null,
-    }),
+    });
+    // Logout. Piggy-backing on this reset (rather than editing auth-store)
+    // covers every teardown path at once — `teardownSession()` and the
+    // no-session branch of the restore probe both land here. Without it the
+    // next user to sign in on this browser inherits the previous one's turn
+    // count and lesson history.
+    useEduStore.getState().reset();
+  },
 
   hydrate: async () => {
     try {
@@ -101,14 +116,19 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       set({
         detailLevel: coerceDetailLevel(prefs.detail_level),
         privacyMasking: coercePrivacyMasking(prefs.privacy_masking),
-        // Only an explicit true counts as seen — a brand-new user has no
-        // stored key, which is exactly the "open the tour" signal.
+        // Only an explicit true counts as shown — a brand-new user has no
+        // stored key, which is what leaves the intro tour still owed until
+        // the account turns paid (edu_series §8, A2).
         onboardingSeen: prefs.onboarding_seen === true,
         tourWorkspaceSeen: prefs.tour_workspace_seen === true,
         demoConversationHidden: prefs.demo_conversation_hidden === true,
         isHydrated: true,
         error: null,
       });
+      // «سلسلة تعلّم ريحان» rides THIS read — the edu keys (`edu_turns`,
+      // `edu_last_shown_at`, `edu_<lesson>`) are in the same blob, so the
+      // series costs zero extra requests.
+      useEduStore.getState().hydrateFrom(prefs);
     } catch (err) {
       // Hydration failures are silent — fall back to defaults but mark hydrated
       // so the toggle is not stuck in a loading state.
@@ -126,6 +146,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
             ? err.message
             : "تعذر تحميل إعدادات المستخدم",
       });
+      // Fail CLOSED, same principle as the two tour flags above: `null` marks
+      // every lesson seen so the series stays silent this session. Teaching off
+      // a failed read would re-nag users who finished the syllabus long ago.
+      useEduStore.getState().hydrateFrom(null);
     }
   },
 

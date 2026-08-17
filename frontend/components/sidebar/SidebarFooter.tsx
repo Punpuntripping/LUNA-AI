@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  BookMarked,
   ChevronDown,
   CreditCard,
   Gauge,
@@ -9,7 +10,6 @@ import {
   KeyRound,
   LogOut,
   Receipt,
-  Route,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -19,7 +19,10 @@ import {
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
-import { useTourStore } from "@/stores/tour-store";
+import { useEduStore } from "@/stores/edu-store";
+import { EDU_SYLLABUS } from "@/components/edu/edu-syllabus";
+import { useUsageDialogStore } from "@/stores/usage-dialog-store";
+import { useConversationSettingsDialogStore } from "@/stores/conversation-settings-dialog-store";
 import { LEGAL_ROUTES } from "@/lib/legal";
 import { userDisplayName } from "@/lib/user-name";
 import { cn } from "@/lib/utils";
@@ -36,9 +39,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
-import { UsageLimitsDialog } from "@/components/Settings/UsageLimitsDialog";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
-import { ConversationSettingsDialog } from "@/components/Settings/ConversationSettingsDialog";
 import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
 import { PaymentHistoryDialog } from "@/components/Settings/PaymentHistoryDialog";
 
@@ -70,12 +71,29 @@ const ABOUT_LINKS = [
 export function SidebarFooter() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
-  const [usageOpen, setUsageOpen] = useState(false);
+  // «حدود الاستخدام» and «إعدادات المحادثة» are the two dialogs here NOT held
+  // in local state: each is mounted once by the surrounding app shell and
+  // opened from two places (this row and an edu lesson's action button). A
+  // dialog mounted HERE is unreachable on a phone with the drawer closed —
+  // the Sheet unmounts its children. See usage-dialog-store for the full note.
+  const openUsageDialog = useUsageDialogStore((s) => s.open);
+  const openConversationSettings = useConversationSettingsDialogStore(
+    (s) => s.open,
+  );
   const [redeemOpen, setRedeemOpen] = useState(false);
-  const [conversationOpen, setConversationOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [lessonsOpen, setLessonsOpen] = useState(false);
+  // The settings popover is CONTROLLED so a lesson click can close the whole
+  // menu stack. Without it the flyout and its parent stay open on top of the
+  // lesson card the click just summoned.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const closeMenus = () => {
+    setLessonsOpen(false);
+    setSettingsOpen(false);
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -102,10 +120,15 @@ export function SidebarFooter() {
 
         <div className="flex items-center gap-1">
           <Popover
+            open={settingsOpen}
             onOpenChange={(open) => {
+              setSettingsOpen(open);
               // Reopen collapsed — a stale-expanded عن ريحان section can push
               // the popover taller than a short viewport and clip its top rows.
-              if (!open) setAboutOpen(false);
+              if (!open) {
+                setAboutOpen(false);
+                setLessonsOpen(false);
+              }
             }}
           >
             <Tooltip>
@@ -136,7 +159,7 @@ export function SidebarFooter() {
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => setConversationOpen(true)}
+                  onClick={openConversationSettings}
                   data-testid="sidebar-settings-conversation-trigger"
                 >
                   <span className="flex items-center gap-2">
@@ -148,7 +171,7 @@ export function SidebarFooter() {
                 <Button
                   variant="ghost"
                   className="w-full justify-between gap-2 px-2 text-sm font-medium"
-                  onClick={() => setUsageOpen(true)}
+                  onClick={openUsageDialog}
                   data-testid="sidebar-settings-usage-trigger"
                 >
                   <span className="flex items-center gap-2">
@@ -209,16 +232,29 @@ export function SidebarFooter() {
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
-                {/* «المكتبة القانونية» and «مكتبتي» deliberately do NOT live
-                    here. Settings is for account-level actions; both are
-                    content surfaces, so they belong in the nav — مكتبتي is a
-                    sidebar tab under مدوناتي, and the public library is reached
-                    from the global header. */}
+                {/* «المكتبة القانونية» was previously kept OUT of this popover
+                    on the reasoning that settings is for account-level actions
+                    and the library is a content surface reachable from the
+                    global header. Added back by owner request (2026-08-16) —
+                    the header is not visible from inside the chat shell, which
+                    is where users actually are when they want it. «مكتبتي»
+                    stays out; it is still a sidebar tab. */}
+                <Button
+                  variant="ghost"
+                  className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                  onClick={() => window.open("/library", "_blank")}
+                  data-testid="sidebar-settings-library"
+                >
+                  <span className="flex items-center gap-2">
+                    <BookMarked className="h-4 w-4" />
+                    المكتبة القانونية
+                  </span>
+                  <span className="text-muted-foreground">›</span>
+                </Button>
                 <Separator />
-                {/* Bottom group = 3 rows mirroring the public header:
-                    عن ريحان (expandable, السياسات folded in) · اكتشف ريحان
-                    (tour popup + أدلة /learn) — replaced the loose عن ريحان /
-                    الشروط / الخصوصية rows (5 → 3, 2026-08-02). */}
+                {/* Bottom group = 2 expandables mirroring the public header:
+                    عن ريحان (السياسات folded in) · اكتشف ريحان (the 8 lessons
+                    of «سلسلة تعلّم ريحان», folded in — 2026-08-16). */}
                 <div>
                   <Button
                     variant="ghost"
@@ -254,49 +290,107 @@ export function SidebarFooter() {
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    className="flex-1 justify-start gap-2 px-2 text-sm font-medium"
-                    onClick={() => useOnboardingStore.getState().open()}
-                    data-testid="sidebar-settings-onboarding-trigger"
+                {/* «اكتشف ريحان» — now the browse surface for «سلسلة تعلّم
+                    ريحان». The series drips these one per 4 turns; this is
+                    where a user reads one on demand instead of waiting, or
+                    re-reads one already delivered.
+
+                    Replaces the old row that opened the «اتعرف على ريحان»
+                    dialog. That dialog is NOT orphaned: it auto-opens after
+                    payment (edu_series §8 A2) and is still reachable as the
+                    first entry below, so the only manual re-entry survives.
+
+                    «جولة المخرجات» was deleted from this popover by owner
+                    request (2026-08-16). The tour itself still exists and still
+                    auto-runs once over the demo conversation — only its manual
+                    re-entry is gone. */}
+                {/* A FLYOUT, not an inline accordion: the lessons are their own
+                    list, and pushing 10 rows into a popover that already holds
+                    8 would make the settings menu scroll on any short viewport.
+
+                    `side="left"` is physical, and in this RTL layout the sidebar
+                    sits on the RIGHT — so left is away from it. `collisionPadding`
+                    lets Radix flip to the right when there is no room (a narrow
+                    viewport), which is also what keeps this usable on a phone. */}
+                <Popover open={lessonsOpen} onOpenChange={setLessonsOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                      aria-expanded={lessonsOpen}
+                      data-testid="sidebar-settings-lessons"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Sparkles className="h-4 w-4" />
+                        اكتشف ريحان
+                      </span>
+                      <span className="text-muted-foreground">›</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    side="left"
+                    align="start"
+                    sideOffset={8}
+                    collisionPadding={8}
+                    className="max-h-[min(70dvh,28rem)] w-64 max-w-[calc(100vw-2rem)] overflow-y-auto p-1.5"
+                    data-testid="sidebar-settings-lessons-panel"
                   >
-                    <Sparkles className="h-4 w-4" />
-                    اكتشف ريحان
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="shrink-0 px-2 text-xs text-muted-foreground"
-                    onClick={() => window.open("/learn", "_blank")}
-                    aria-label="أدلة اكتشف ريحان"
-                    data-testid="sidebar-settings-learn"
-                  >
-                    المزيد
-                  </Button>
-                </div>
-                {/* Re-entry for «جولة المخرجات» (plan §8) — beside «اكتشف
-                    ريحان», because they are the same errand at two depths: the
-                    dialog is a modal skim with drawings, this one runs on the
-                    real UI. `open()` always resets to step 0. */}
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start gap-2 px-2 text-sm font-medium"
-                  onClick={() => useTourStore.getState().open()}
-                  data-testid="sidebar-settings-tour-trigger"
-                >
-                  <Route className="h-4 w-4" />
-                  جولة المخرجات
-                </Button>
+                    <div className="flex flex-col gap-0.5" dir="rtl">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          useOnboardingStore.getState().open();
+                          closeMenus();
+                        }}
+                        data-testid="sidebar-settings-onboarding-trigger"
+                        className="rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        جولة التعريف السريعة
+                      </button>
+                      <Separator className="my-1" />
+                      {EDU_SYLLABUS.map((lesson) => (
+                        <button
+                          key={lesson.id}
+                          type="button"
+                          onClick={() => {
+                            // Close the menu stack, then show. Order is
+                            // cosmetic only — `showLesson` deliberately does
+                            // NOT gate on an open modal, because this popover
+                            // is itself `role="dialog"` and would have blocked
+                            // its own lesson. See the note in edu-store.
+                            closeMenus();
+                            useEduStore.getState().showLesson(lesson.id);
+                          }}
+                          data-testid={`sidebar-settings-lesson-${lesson.id}`}
+                          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          <lesson.icon className="h-3.5 w-3.5 shrink-0" />
+                          <span className="truncate">{lesson.title}</span>
+                        </button>
+                      ))}
+                      <Separator className="my-1" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.open("/learn", "_blank");
+                          closeMenus();
+                        }}
+                        data-testid="sidebar-settings-learn"
+                        className="rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        المزيد من الأدلة
+                      </button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
               </div>
             </PopoverContent>
           </Popover>
-          <UsageLimitsDialog open={usageOpen} onOpenChange={setUsageOpen} />
+          {/* «حدود الاستخدام» and «إعدادات المحادثة» are NOT mounted here —
+              they live in SidebarDialogs, outside the mobile Sheet, because
+              edu lesson buttons must be able to open them with the drawer
+              shut. The three below are sidebar-only and stay local. */}
           <RedeemCodeDialog open={redeemOpen} onOpenChange={setRedeemOpen} />
-          <ConversationSettingsDialog
-            open={conversationOpen}
-            onOpenChange={setConversationOpen}
-          />
           <AccountSettingsDialog
             open={accountOpen}
             onOpenChange={setAccountOpen}

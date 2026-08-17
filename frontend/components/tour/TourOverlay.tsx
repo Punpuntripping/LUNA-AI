@@ -111,10 +111,28 @@ function isSatisfied(condition: TourCondition, snapshot: BeatSnapshot): boolean 
  * re-watch shouldn't have to hunt through the settings popover for it.
  *
  * Fires when: authenticated · preferences hydrated · «اتعرف على ريحان» is NOT on
- * screen (never both at once) · this is the demo conversation · and Act 1's
- * anchor has actually rendered. The last two are separate tests on purpose: the
- * first says the script matches this screen, the second says the screen has
- * finished painting it.
+ * screen and has nothing left to ask (never both at once) · this is the demo
+ * conversation · and Act 1's anchor has actually rendered. The last two are
+ * separate tests on purpose: the first says the script matches this screen, the
+ * second says the screen has finished painting it.
+ *
+ * THE MODAL THIS CHAINS BEHIND CHANGED (edu_series.md §8, A1). Signup used to
+ * open the full 4-step «اتعرف على ريحان»; it now opens the profession step
+ * ALONE. `onboardingOpen` is a live "a dialog is on screen" gate rather than a
+ * seen-flag, so it re-points itself for free — the profession dialog holds it
+ * and its dismissal releases it. But it is read through a render-time selector,
+ * and `OnboardingDialog` is mounted BEFORE this component in `ChatLayoutClient`,
+ * so its open() lands during the same passive-effect flush that runs the effect
+ * below — which would still see a stale `false` and start the tour underneath
+ * the modal about to paint.
+ *
+ * `professionPending` closes that hole, because the dismissal itself is what
+ * writes the column: exactly `null` means the question is unanswered, i.e. the
+ * profession step is open or about to be. `saveProfession` is optimistic, so it
+ * flips non-null («declined» included) the instant the user dismisses — exactly
+ * when the tour should take over. `undefined` is a degraded/unknown read and is
+ * NOT treated as pending: the dialog never prompts on `undefined` either, so
+ * there would be nothing to wait for.
  *
  * RE-ARMING IS KEYED ON THE CONVERSATION, NOT ON A BOOLEAN. `startedForRef`
  * holds the conversation the tour was last auto-started for, so:
@@ -133,6 +151,8 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const onboardingOpen = useOnboardingStore((s) => s.isOpen);
+  // Exactly null = «اتعرف على ريحان» still owes the profession question.
+  const professionPending = useAuthStore((s) => s.user?.profession_group === null);
   const isDemo = useIsDemoConversation(conversationId);
   const startedForRef = useRef<string | null>(null);
 
@@ -145,7 +165,9 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
       return;
     }
     if (isOpen || startedForRef.current === conversationId) return;
-    if (!isAuthenticated || !isHydrated || onboardingOpen) return;
+    if (!isAuthenticated || !isHydrated || onboardingOpen || professionPending) {
+      return;
+    }
 
     const tryStart = (): boolean => {
       if (startedForRef.current === conversationId) return true;
@@ -165,7 +187,15 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
       }
     }, AUTO_START_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
-  }, [isOpen, isAuthenticated, isHydrated, onboardingOpen, isDemo, conversationId]);
+  }, [
+    isOpen,
+    isAuthenticated,
+    isHydrated,
+    onboardingOpen,
+    professionPending,
+    isDemo,
+    conversationId,
+  ]);
 }
 
 /**

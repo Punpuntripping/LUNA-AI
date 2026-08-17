@@ -15,6 +15,7 @@ import { useSidebarStore } from "@/stores/sidebar-store";
 import { useIsMobile, useIsMobileNow } from "@/hooks/use-media-query";
 import { SidebarHeader } from "@/components/sidebar/SidebarHeader";
 import { SidebarFooter } from "@/components/sidebar/SidebarFooter";
+import { SidebarDialogs } from "@/components/sidebar/SidebarDialogs";
 import { ConversationList } from "@/components/sidebar/ConversationList";
 import { CaseList } from "@/components/sidebar/CaseList";
 import { Button } from "@/components/ui/button";
@@ -242,6 +243,9 @@ export function Sidebar() {
             {body}
           </SheetContent>
         </Sheet>
+        {/* OUTSIDE the Sheet on purpose — a Sheet unmounts its children when
+            closed, and these two must stay openable with the drawer shut. */}
+        <SidebarDialogs />
       </TooltipProvider>
     );
   }
@@ -257,6 +261,9 @@ export function Sidebar() {
       >
         {body}
       </aside>
+      {/* Sibling of the rail, not a child — the rail collapses to `w-0
+          overflow-hidden`, which would clip a dialog rendered inside it. */}
+      <SidebarDialogs />
     </TooltipProvider>
   );
 }
