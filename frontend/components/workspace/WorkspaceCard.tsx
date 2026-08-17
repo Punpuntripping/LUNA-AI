@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { FileText, Paperclip, NotebookPen, BookOpen, MessageSquare } from "lucide-react";
 import { cn, getRelativeTimeAr } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
+import { trackWiOpened } from "@/components/analytics/run-tracker";
 import { WiBadge } from "./WiBadge";
 import type { WorkspaceItem, WorkspaceItemKind } from "@/types";
 
@@ -85,6 +86,14 @@ export function WorkspaceCard({ item, onClick }: WorkspaceCardProps) {
     KIND_COLORS[item.kind] ?? "bg-muted text-muted-foreground";
 
   function handleClick() {
+    // `wi_opened` (product_analytics §3b): this card IS the funnel — every
+    // user-initiated open, in the chat pane and on the artifacts page alike,
+    // passes through here, and the desktop auto-open on
+    // `workspace_item_created` deliberately does not (it is the app opening
+    // the pane, not the user choosing to read the card). Emitted BEFORE the
+    // open so the store watcher that ends the dwell sees this item already
+    // registered. Fire-and-forget, guarded inside the tracker (T9).
+    trackWiOpened(item.item_id, item.kind, item.created_at);
     if (onClick) {
       onClick(item.item_id);
     } else if (item.conversation_id) {

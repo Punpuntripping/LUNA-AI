@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pencil, Save, X, Loader2, Share2, BookmarkPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { trackWiClosed } from "@/components/analytics/run-tracker";
 import {
   useUpdateWorkspaceItem,
   useWorkspaceItem,
@@ -51,6 +52,18 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
   const [editTitle, setEditTitle] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [saveBlogOpen, setSaveBlogOpen] = useState(false);
+
+  // `wi_dwell` (product_analytics §3b): this viewer is mounted for exactly as
+  // long as the item is open — the dialog that hosts it unmounts on close — so
+  // unmount IS the close signal, and it covers navigating away too. Id-matched
+  // and idempotent inside the tracker, so it can never double-count against
+  // the chat pane's own close signal, and it is a no-op for an item that was
+  // opened by something other than a WorkspaceCard click.
+  useEffect(() => {
+    return () => {
+      trackWiClosed(itemId);
+    };
+  }, [itemId]);
 
   function enterEditMode() {
     if (!item) return;

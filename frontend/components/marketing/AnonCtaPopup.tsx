@@ -35,6 +35,12 @@ import {
   readAnonCtaState,
   recordImpression,
 } from "@/lib/anon-cta/session";
+import {
+  trackGateCtaClick,
+  trackGateDismiss,
+  trackGateView,
+  type GateCta,
+} from "@/components/analytics/useGateImpression";
 
 /**
  * «جرّب ريحان مجاناً» — the ACTIVE conversion surface on the five public content
@@ -62,6 +68,15 @@ import {
  * simply never fires for the crawler — no user-agent branch, no cloaking, and no
  * interstitial in the indexed render. That is why the primary signal is a
  * gesture rather than a timer.
+ *
+ * ANALYTICS (`product_analytics.md` §5.3, Phase 2). This component already
+ * decided the three moments question 4 needs — shown, clicked, dismissed — and
+ * threw them away in `sessionStorage`. It now also hands each to `track()`:
+ * `gate_view` where the impression is RECORDED (not where it is attempted — a
+ * dropped fire shows no popup), `gate_cta_click` on either CTA, `gate_dismiss`
+ * on every other close. That is three fire-and-forget beacons and no new logic.
+ * It does NOT breach the T9 rule above: the beacons run after hydration, on the
+ * client, and carry nothing into the shared ISR bake.
  */
 export function AnonCtaPopup() {
   const pathname = usePathname() ?? "";
@@ -91,6 +106,14 @@ export function AnonCtaPopup() {
   const openRef = useRef(false);
   /** Re-entry point for the trigger, called when a popup leaves the screen. */
   const reevaluateRef = useRef<(() => void) | null>(null);
+  /**
+   * Analytics only: did the popup that is closing close because the reader
+   * CLICKED a CTA? Both CTAs route through `handleOpenChange(false)`, so without
+   * this flag a conversion would also be recorded as a `gate_dismiss` and the
+   * abandonment number — the whole point of the instrument — would be inflated
+   * by exactly the readers who converted.
+   */
+  const ctaClickedRef = useRef(false);
 
   // ── Axis 2 of the cadence: a NEW eligible document drains the quiet period. ──
   // Deduped inside `noteEligibleDoc` on the stored `lastDoc` (T8), so a remount
@@ -195,6 +218,12 @@ export function AnonCtaPopup() {
         // T11 — an impression that cannot be PERSISTED must not be shown, or a
         // broken sessionStorage becomes an unbounded loop of popups.
         if (!recordImpression(pathname)) return;
+        // `gate_view` belongs HERE and nowhere earlier: every line above can
+        // still drop this fire, and a dropped fire shows no popup. This is the
+        // first point at which the reader is certain to see the pitch, which
+        // makes it the only honest denominator for question 4.
+        ctaClickedRef.current = false;
+        trackGateView("anon_popup", pathname);
         openRef.current = true;
         setOpen(true);
       });
@@ -321,25 +350,42 @@ export function AnonCtaPopup() {
     reevaluateRef.current?.();
   }, [open]);
 
-  const handleOpenChange = useCallback((next: boolean) => {
-    if (!next) {
-      openRef.current = false;
-      // The same-document gap runs from the moment the popup LEFT the screen,
-      // not from when it appeared: measuring from the impression would let the
-      // second threshold open the instant a reader dismissed a first popup they
-      // had spent six seconds reading.
-      progressRef.current.lastShotEndedAt = Date.now();
-    }
-    setOpen(next);
-  }, []);
+  // `pathname` is in the deps ONLY so the dismissal event can name the document
+  // the reader refused on; the callback's behaviour is unchanged.
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (!next) {
+        openRef.current = false;
+        // The same-document gap runs from the moment the popup LEFT the screen,
+        // not from when it appeared: measuring from the impression would let the
+        // second threshold open the instant a reader dismissed a first popup they
+        // had spent six seconds reading.
+        progressRef.current.lastShotEndedAt = Date.now();
+        // The refusal itself — the X, Escape or a click on the overlay. A close
+        // that a CTA caused is a conversion and was already recorded as one.
+        if (!ctaClickedRef.current) trackGateDismiss("anon_popup", pathname);
+        ctaClickedRef.current = false;
+      }
+      setOpen(next);
+    },
+    [pathname],
+  );
 
   // Clicking either CTA mutes the session BEFORE navigating (§4): the reader is
   // on their way to /login, and pitching them again after a back button — in the
   // same session — is nagging.
-  const handleCtaClick = useCallback(() => {
-    muteAnonCta();
-    handleOpenChange(false);
-  }, [handleOpenChange]);
+  const handleCtaClick = useCallback(
+    (cta: GateCta) => {
+      // Recorded BEFORE the mute + close, and before the Link navigates: the
+      // beacon is fire-and-forget, so the event has to be handed over while this
+      // component is still the thing on screen.
+      ctaClickedRef.current = true;
+      trackGateCtaClick("anon_popup", pathname, cta);
+      muteAnonCta();
+      handleOpenChange(false);
+    },
+    [handleOpenChange, pathname],
+  );
 
   const next = encodeURIComponent(pathname || "/");
   // Built inline on purpose: `lib/safe-next.ts` validates `next` on the READ
@@ -394,7 +440,7 @@ export function AnonCtaPopup() {
         <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:justify-center">
           <Link
             href={registerHref}
-            onClick={handleCtaClick}
+            onClick={() => handleCtaClick("register")}
             className={cn(buttonVariants({ variant: "default", size: "lg" }))}
           >
             <Sparkles aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -402,7 +448,7 @@ export function AnonCtaPopup() {
           </Link>
           <Link
             href={loginHref}
-            onClick={handleCtaClick}
+            onClick={() => handleCtaClick("login")}
             className={cn(buttonVariants({ variant: "outline", size: "lg" }))}
           >
             {anonCtaCopy.secondaryCta}

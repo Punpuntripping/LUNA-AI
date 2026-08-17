@@ -27,6 +27,12 @@ import { BlogChips } from "@/components/chat/BlogChip";
 import { LibraryItemChips } from "@/components/chat/LibraryItemChip";
 import { TemplateChip } from "@/components/chat/TemplateChip";
 import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
+// Chat-depth analytics (product_analytics §3b). Fire-and-forget, individually
+// guarded inside the tracker — a tracking failure must never block a send (T9).
+import {
+  trackChatSend,
+  trackConversationOpened,
+} from "@/components/analytics/run-tracker";
 import { api, workspaceApi, ApiClientError } from "@/lib/api";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { conversationKeys } from "@/hooks/use-conversations";
@@ -210,6 +216,19 @@ export function ChatInput({
     setPendingTemplate,
   ]);
 
+  // Analytics `conversation_opened` (product_analytics §3b). The composer is
+  // the one component mounted for exactly one conversation at a time, which
+  // makes it the cheapest honest hook for "this conversation was loaded".
+  // It is the event that reframes abandonment: a user who closed the tab
+  // during a five-minute deep_search and read the answer the next morning has
+  // not churned. Chat is authed, so that join works across sessions without
+  // any persistent anonymous identifier. Deduped inside the tracker, so a
+  // remount cannot inflate the count.
+  useEffect(() => {
+    if (!conversationId) return;
+    trackConversationOpened(conversationId);
+  }, [conversationId]);
+
   // Abort any live tus uploads on unmount (e.g. user navigates away
   // mid-upload). Cancel handles also call the backend cancel endpoint
   // best-effort.
@@ -290,11 +309,30 @@ export function ChatInput({
     }
 
     setValidationError(null);
+
+    // `chat_send` — t₀ for the whole run, and USER SUBMIT ONLY (T14). Fired
+    // here, BEFORE the POST, so a send the quota gate refuses is still
+    // measured; and never from use-chat's SSE (re)connect path, or every
+    // reconnect would look like a fresh question and wait tolerance would be
+    // measured against the wrong clock. Read from the store rather than the
+    // render-scope counts so this stays out of the callback's dependencies.
+    const store = useChatStore.getState();
+    trackChatSend({
+      conversationId: conversationId ?? null,
+      hasAttachment:
+        store.pendingFiles.some((f) => f.uploadStatus === "completed") ||
+        store.pendingBlogs.some((b) => b.status === "ready" && !!b.itemId) ||
+        store.pendingLibraryItems.some(
+          (i) => i.status === "ready" && !!i.itemId,
+        ),
+    });
+
     onSend(outgoing);
     setContent("");
     if (template) setPendingTemplate(null);
   }, [
     content,
+    conversationId,
     onSend,
     pendingFiles.length,
     pendingBlogs.length,

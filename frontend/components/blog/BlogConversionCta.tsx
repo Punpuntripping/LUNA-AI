@@ -7,6 +7,10 @@ import { useAuthStore } from "@/stores/auth-store";
 import { buttonVariants } from "@/components/ui/button";
 import { loginHref } from "@/lib/safe-next";
 import { cn } from "@/lib/utils";
+import {
+  trackGateCtaClick,
+  useGateImpression,
+} from "@/components/analytics/useGateImpression";
 
 /**
  * «جرّب ريحان مجاناً» conversion block shown above the مدونة footer — for
@@ -23,6 +27,13 @@ export function BlogConversionCta() {
   // not drag the route into a Suspense boundary.
   const pathname = usePathname();
 
+  // Analytics (product_analytics.md §5.3). This block is PASSIVE and sits above
+  // the footer, so a reader who never reaches the bottom never meets it —
+  // «rendered» here is especially far from «seen» (T6). The hook is called
+  // before the early return below so the rules of hooks hold; the ref only
+  // attaches when the block actually renders, i.e. for anonymous readers.
+  const ctaRef = useGateImpression("blog_cta");
+
   if (isLoading || isAuthenticated) return null;
 
   return (
@@ -31,6 +42,7 @@ export function BlogConversionCta() {
           surface is on screen — never two signup pitches at once (T6). */}
       <section
         data-anon-cta
+        ref={ctaRef}
         className="overflow-hidden rounded-xl border bg-primary/5 p-6 text-center"
       >
         <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
@@ -46,6 +58,7 @@ export function BlogConversionCta() {
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
           <Link
             href={loginHref(pathname, { register: true })}
+            onClick={() => trackGateCtaClick("blog_cta", pathname, "register")}
             className={cn(buttonVariants({ variant: "default", size: "lg" }))}
           >
             <Sparkles className="h-4 w-4" />
@@ -53,6 +66,7 @@ export function BlogConversionCta() {
           </Link>
           <Link
             href={loginHref(pathname)}
+            onClick={() => trackGateCtaClick("blog_cta", pathname, "login")}
             className={cn(buttonVariants({ variant: "outline", size: "lg" }))}
           >
             تسجيل الدخول

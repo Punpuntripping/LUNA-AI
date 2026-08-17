@@ -1,6 +1,8 @@
 "use client";
 
+import { useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import {
   Dialog,
@@ -13,6 +15,12 @@ import { buttonVariants } from "@/components/ui/button";
 import { loginHref } from "@/lib/safe-next";
 import { cn } from "@/lib/utils";
 import { SEARCH_CTA_COPY } from "@/lib/search/copy";
+import {
+  trackGateCtaClick,
+  trackGateDismiss,
+  trackGateView,
+  type GateCta,
+} from "@/components/analytics/useGateImpression";
 
 /**
  * The anon conversion modal behind every search box (D9).
@@ -56,8 +64,53 @@ export function SearchCtaModal({
   /** Site-relative path (query string allowed) to return to after auth. */
   returnTo: string;
 }) {
+  // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
+  // This surface needs no `IntersectionObserver`: an open modal IS seen, and it
+  // only opens on a deliberate click, so `open` is the honest impression signal.
+  //
+  // ⚠ T4 — `path` is `usePathname()`, NEVER `returnTo`. `returnTo` deliberately
+  // carries the query string («/regulations?q=إجازة الأمومة») so the reader lands
+  // back on their search, and that `q` is user-typed legal text in a product for
+  // lawyers. It must never reach the beacon.
+  const pathname = usePathname() ?? "";
+  /** The impression has been reported for the currently-open modal. */
+  const shownRef = useRef(false);
+  /** A CTA carried the reader away — that is a conversion, not a dismissal. */
+  const ctaClickedRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      shownRef.current = false;
+      return;
+    }
+    if (shownRef.current) return;
+    shownRef.current = true;
+    ctaClickedRef.current = false;
+    trackGateView("search_modal", pathname);
+  }, [open, pathname]);
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      // Closed by Escape, the X or the overlay, with no CTA taken: the visitor
+      // asked what search costs and decided against an account.
+      if (!next && !ctaClickedRef.current) {
+        trackGateDismiss("search_modal", pathname);
+      }
+      onOpenChange(next);
+    },
+    [onOpenChange, pathname],
+  );
+
+  const handleCtaClick = useCallback(
+    (cta: GateCta) => {
+      ctaClickedRef.current = true;
+      trackGateCtaClick("search_modal", pathname, cta);
+    },
+    [pathname],
+  );
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         dir="rtl"
         className="max-w-md gap-5 rounded-2xl sm:rounded-2xl"
@@ -87,6 +140,7 @@ export function SearchCtaModal({
               says «ابدأ الآن» means what it says (anon_conversion_popup §7.7). */}
           <Link
             href={loginHref(returnTo, { register: true })}
+            onClick={() => handleCtaClick("register")}
             className={cn(buttonVariants({ variant: "default", size: "lg" }))}
           >
             <Sparkles aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -94,6 +148,7 @@ export function SearchCtaModal({
           </Link>
           <Link
             href={loginHref(returnTo)}
+            onClick={() => handleCtaClick("login")}
             className={cn(buttonVariants({ variant: "outline", size: "lg" }))}
           >
             {SEARCH_CTA_COPY.secondaryCta}

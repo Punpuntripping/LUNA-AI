@@ -2,6 +2,7 @@
 
 import { type ReactNode } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { BookOpen, Loader2, Lock, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -30,6 +31,10 @@ import {
   type RefusalCardCopy,
   type RevealTarget,
 } from "@/lib/library/gate-copy";
+import {
+  trackGateCtaClick,
+  useGateImpression,
+} from "@/components/analytics/useGateImpression";
 
 /**
  * The shape of the full payload for a given `kind`:
@@ -164,6 +169,7 @@ export function FullContentGate({
       <GateCtaSuppressor>{children}</GateCtaSuppressor>
       {gated && (
         <RevealPanel
+          contentType={contentType}
           isAuthenticated={isAuthenticated}
           isRevealing={isRevealing}
           balance={balance}
@@ -182,6 +188,8 @@ export function FullContentGate({
 // ------------------------------------------------------------------
 
 interface RevealPanelProps {
+  /** Analytics only — the `content_type` dimension on the gate events. */
+  contentType: FullContentType;
   isAuthenticated: boolean;
   isRevealing: boolean;
   balance: LibraryBalance | null;
@@ -192,6 +200,7 @@ interface RevealPanelProps {
 }
 
 function RevealPanel({
+  contentType,
   isAuthenticated,
   isRevealing,
   balance,
@@ -200,6 +209,17 @@ function RevealPanel({
   revealTarget,
   onReveal,
 }: RevealPanelProps) {
+  // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
+  // Question 4 counts the ANONYMOUS branch only. The authed branch below is a
+  // metered reveal and the refusal card above it is an UPGRADE surface pointing
+  // at /pricing — neither is a "decided not to sign in" moment, and folding them
+  // into the same denominator would make the signup funnel unreadable.
+  //
+  // The ref is attached to the anon panel alone, so nothing is reported on any
+  // other branch. Hooks stay unconditional (they run before every early return).
+  const pathname = usePathname() ?? "";
+  const anonPanelRef = useGateImpression("full_content", { contentType });
+
   // «النص» vs «الشرح» — the CTA has to name what is actually behind the gate.
   const copy = revealCopyFor(revealTarget);
 
@@ -220,10 +240,18 @@ function RevealPanel({
         // is on screen the popup drops its fire, so a reader looking at «سجّل
         // مجاناً لعرض النص كاملاً» never gets a modal saying the same thing.
         data-anon-cta
+        // `gate_view` fires when this panel is genuinely on screen, not when it
+        // renders — it sits at the END of a document that can run several
+        // viewports (T6).
+        ref={anonPanelRef}
         className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-5 text-center shadow-xs"
       >
         <Link
           href="/login"
+          // The CTA reads «سجّل مجاناً…», so the intent is register even though
+          // the href is the bare /login (the form's own toggle takes it from
+          // there). Tracked before navigation, never awaited.
+          onClick={() => trackGateCtaClick("full_content", pathname, "register")}
           className={cn(buttonVariants({ size: "lg" }), "shadow-sm")}
         >
           <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />

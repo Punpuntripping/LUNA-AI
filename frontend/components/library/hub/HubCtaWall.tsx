@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Library, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
@@ -20,6 +21,10 @@ import {
   type HubItem,
   type HubSection,
 } from "@/components/library/hub/HubCards";
+import {
+  trackGateCtaClick,
+  useGateImpression,
+} from "@/components/analytics/useGateImpression";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -136,6 +141,18 @@ export function HubCtaWall({
   const [data, setData] = useState<AuthedHubPayload | null>(null);
   const [callerMaxPage, setCallerMaxPage] = useState<number>(anonMaxPage);
 
+  // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
+  // ⚠ ONLY the anonymous SIGNUP wall is part of question 4. The other three
+  // walls this component can render are different refusals with different ways
+  // out: the upgrade wall and the section wall both point at /pricing, and the
+  // rate-limit card points nowhere at all. None of them can produce a
+  // `register|login` click, so counting their impressions would add a
+  // denominator that can never convert and report the signup funnel as broken.
+  // Those are an upgrade funnel and belong to their own metric.
+  const pathname = usePathname() ?? "";
+  const signupWall = !isAuthenticated && !sectionScope;
+  const wallRef = useGateImpression("hub_wall", { enabled: signupWall });
+
   useEffect(() => {
     if (!isAuthenticated) {
       setPhase("loading");
@@ -175,6 +192,14 @@ export function HubCtaWall({
     return (
       <Wall
         copy={sectionScope ? sectionWallCopy(sectionScope) : hubWallCopy.anon}
+        // Attached on the signup wall alone — see the note by the hook above.
+        sectionRef={signupWall ? wallRef : undefined}
+        onCtaClick={
+          signupWall
+            ? // «سجّل مجاناً» → /login: a register intent.
+              () => trackGateCtaClick("hub_wall", pathname, "register")
+            : undefined
+        }
       />
     );
   }
@@ -257,13 +282,28 @@ export function HubCtaWall({
  * is what lets a bare rate-limit card render here without inventing a button
  * that cannot help.
  */
-function Wall({ copy }: { copy: RefusalCardCopy }) {
+function Wall({
+  copy,
+  sectionRef,
+  onCtaClick,
+}: {
+  copy: RefusalCardCopy;
+  /**
+   * Analytics only (`gate_view`), and passed by the SIGNUP wall only. Every
+   * other caller leaves it undefined, so nothing is observed and nothing is
+   * reported for a wall that is not part of the signup funnel.
+   */
+  sectionRef?: (node: Element | null) => void;
+  /** Analytics only (`gate_cta_click`), on the same terms. */
+  onCtaClick?: () => void;
+}) {
   return (
     <section
       dir="rtl"
       // Tagged for the anon conversion POPUP's gate 5 (T6) — never two calls to
       // action on screen at once.
       data-anon-cta
+      ref={sectionRef}
       className="mx-auto my-8 max-w-xl overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-8 text-center shadow-md sm:p-10"
     >
       <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
@@ -276,6 +316,7 @@ function Wall({ copy }: { copy: RefusalCardCopy }) {
       {copy.ctaHref && copy.ctaLabel && (
         <Link
           href={copy.ctaHref}
+          onClick={onCtaClick}
           className={cn(buttonVariants({ size: "lg" }), "mt-6 px-8 shadow-sm")}
         >
           {copy.ctaLabel}

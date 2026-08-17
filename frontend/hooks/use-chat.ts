@@ -7,6 +7,22 @@ import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { isMobileViewport } from "@/hooks/use-media-query";
+// Chat-depth analytics (product_analytics §3b). Every call below is
+// fire-and-forget and individually guarded inside the tracker — a tracking
+// failure must never touch the stream (T9).
+import {
+  getRunToken,
+  noteRunAborted,
+  noteRunFamily,
+  noteRunStage,
+  trackFirstToken,
+  trackMessageStart,
+  trackRunDone,
+  trackRunFailed,
+  trackRunPaused,
+  trackWiCreated,
+} from "@/components/analytics/run-tracker";
+import { useRunVisibility } from "@/components/analytics/useRunVisibility";
 import type {
   Attachment,
   Message,
@@ -74,6 +90,12 @@ interface UseSendMessageReturn {
  */
 export function useSendMessage(): UseSendMessageReturn {
   const qc = useQueryClient();
+  // tab_hidden / tab_visible / page_leave have exactly ONE owner so no
+  // visibility event is ever counted twice. Mounted from here because this
+  // hook is alive for precisely as long as a chat surface is: its listeners
+  // are module-level and reference-counted, so the two call sites of
+  // useSendMessage still install one set.
+  useRunVisibility();
   const {
     startStreaming,
     appendToken,
@@ -231,6 +253,14 @@ export function useSendMessage(): UseSendMessageReturn {
         }
       );
 
+      // Analytics identity of THIS send (product_analytics §3b). `chat_send`
+      // already opened the run in ChatInput, so this reads that run's token;
+      // `message_start` refreshes it for the paths that submit without the
+      // composer (regenerate / retry / edit-and-resend). Every terminal exit
+      // below hands the token back so a superseded run's late abort can never
+      // rewrite the state of the run that replaced it.
+      let analyticsRunToken = getRunToken();
+
       let assistantMessageId: string | null = null;
       // Layer 2: flips true once the backend confirms the run is committed
       // (message_start arrives → user row saved, placeholder created, slot
@@ -282,6 +312,8 @@ export function useSendMessage(): UseSendMessageReturn {
             markOptimisticFailed(qc, conversationId, optimisticId);
             setError(errorDetail);
             useChatStore.getState().resetReconnect();
+            // Nothing is running — stop reporting this send as in_flight.
+            noteRunAborted(analyticsRunToken);
             return;
           }
 
@@ -289,6 +321,7 @@ export function useSendMessage(): UseSendMessageReturn {
             markOptimisticFailed(qc, conversationId, optimisticId);
             setError("لم يتم استلام استجابة من الخادم");
             useChatStore.getState().resetReconnect();
+            noteRunAborted(analyticsRunToken);
             return;
           }
 
@@ -338,6 +371,9 @@ export function useSendMessage(): UseSendMessageReturn {
             if (streamErr instanceof DOMException && streamErr.name === "AbortError") {
               void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
               useChatStore.getState().resetReconnect();
+              // Cancelled (Stop button, or superseded by a newer send) — this
+              // run is over. Token-scoped, so it can only ever end ITS OWN run.
+              noteRunAborted(analyticsRunToken);
               return;
             }
             // Any other mid-stream read error propagates to the retry logic below
@@ -354,6 +390,7 @@ export function useSendMessage(): UseSendMessageReturn {
           if (err instanceof DOMException && err.name === "AbortError") {
             void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
             useChatStore.getState().resetReconnect();
+            noteRunAborted(analyticsRunToken);
             return;
           }
 
@@ -395,6 +432,8 @@ export function useSendMessage(): UseSendMessageReturn {
           } else {
             // Non-retryable error or max retries exceeded
             resetReconnect();
+            // The retry budget is spent and no run survives it.
+            noteRunAborted(analyticsRunToken);
             markOptimisticFailed(qc, conversationId, optimisticId);
             if (reconnectAttempts >= maxReconnectAttempts) {
               setError("فشل الاتصال بعد عدة محاولات. يرجى المحاولة مرة أخرى.");
@@ -415,6 +454,13 @@ export function useSendMessage(): UseSendMessageReturn {
               const payload = data as SSEMessageStart;
               assistantMessageId = payload.assistant_message_id;
               messageStartSeen = true;
+              // Bind the run to its real assistant message id. No event —
+              // `chat_send` already stamped t₀ at user submit, and a
+              // reconnect must never restart that clock (T14).
+              analyticsRunToken = trackMessageStart({
+                conversationId,
+                messageId: payload.assistant_message_id,
+              });
               // The send is committed server-side — only now do the composer
               // chips go away. See `releaseComposerAttachments`.
               releaseComposerAttachments();
@@ -476,6 +522,11 @@ export function useSendMessage(): UseSendMessageReturn {
               // that literal into an empty composer would put a word there the
               // user never typed.
               const payload = data as SSEQuotaExceeded;
+              // `chat_send` was measured on purpose (a refused send is still
+              // an intent), but no run exists — close it out so run_state
+              // stops saying `in_flight`. No event: the refusal itself is the
+              // public funnel's `quota_blocked`, not a chat-depth event.
+              noteRunAborted(analyticsRunToken);
               removeOptimisticMessage(qc, conversationId, optimisticId);
               if (content) useChatStore.getState().injectComposerText(content);
               useChatStore.getState().finishStreaming();
@@ -486,6 +537,9 @@ export function useSendMessage(): UseSendMessageReturn {
             case "token": {
               const payload = data as SSEToken;
               useChatStore.getState().appendToken(payload.text);
+              // FIRST token only — the tracker drops every subsequent call.
+              // A long run emits thousands of these (T16).
+              trackFirstToken();
               break;
             }
             case "agent_progress": {
@@ -495,6 +549,10 @@ export function useSendMessage(): UseSendMessageReturn {
               // message list.
               const payload = data as SSEAgentProgress;
               useChatStore.getState().setDeepSearchProgress(payload);
+              // Analytics: record the stage, emit NOTHING (T16). Its whole
+              // value is answering "which stage were they looking at when
+              // they gave up" — `tab_hidden` reads it back off the run.
+              noteRunStage(payload.stage);
               // The terminal event carries the run totals. Seal here as well
               // as on `done`: this way the chip survives regardless of the
               // order the backend emits agent_progress(done) /
@@ -518,6 +576,12 @@ export function useSendMessage(): UseSendMessageReturn {
             }
             case "done": {
               const payload = data as SSEDone;
+              // Analytics FIRST: `was_visible` is read at this exact moment
+              // (an answer that landed in a backgrounded tab is the point of
+              // the metric), and the `done` stamp has to exist before the
+              // cache write below re-renders the bubble — that is what arms
+              // `answer_seen` for this message.
+              trackRunDone(assistantMessageId ?? payload.message_id ?? null);
               // The paced reveal may still hold tail text in its buffer —
               // publish it so streamingContent is the complete answer before
               // it is persisted into the cache.
@@ -620,6 +684,9 @@ export function useSendMessage(): UseSendMessageReturn {
             }
             case "workspace_item_created": {
               const payload = data as SSEWorkspaceItemCreated;
+              // Denominator of WI click-through. The auto-open below is NOT
+              // an open: `wi_opened` fires only from a WorkspaceCard click.
+              trackWiCreated(payload.item_id, payload.kind);
               void qc.invalidateQueries({
                 queryKey: workspaceKeys.byConversation(conversationId),
               });
@@ -639,6 +706,12 @@ export function useSendMessage(): UseSendMessageReturn {
             case "agent_run_started": {
               const payload = data as SSEAgentRunStarted;
               useChatStore.getState().startAgentRun(payload.agent_family, payload.subtype ?? null);
+              // Analytics: the router's choice, recorded on the run and
+              // stamped onto every run/visibility event from here on. No event
+              // of its own. A general_qa run and a five-minute deep_search run
+              // have completely different abandonment profiles, so a blended
+              // wait-tolerance number describes nobody.
+              noteRunFamily(payload.agent_family);
               break;
             }
             case "agent_run_finished": {
@@ -654,6 +727,10 @@ export function useSendMessage(): UseSendMessageReturn {
               // question bubble will appear once the cache invalidation in the
               // post-stream block lands.
               const _payload = data as SSEAgentQuestion;
+              // The run is alive but waiting on the user. Its own state:
+              // abandonment here (the agent asked, nobody answered) is a
+              // distinct and expensive failure mode with its own number.
+              trackRunPaused();
               useChatStore.getState().finishAgentRun();
               // Also clear any in-progress streaming bubble — the assistant
               // message that arrives via refetch is the canonical question.
@@ -668,6 +745,12 @@ export function useSendMessage(): UseSendMessageReturn {
               // Surface the spinner again so the UI shows the agent is working.
               const payload = data as SSEAgentResumed;
               useChatStore.getState().startAgentRun(payload.agent_family, null);
+              // Same fact as `agent_run_started`, different SSE name: a run
+              // resumed after `ask_user` never re-announces its start, so
+              // without this the whole resumed leg — the one whose
+              // abandonment `run_paused` exists to measure — would report a
+              // null family.
+              noteRunFamily(payload.agent_family);
               break;
             }
             case "workspace_item_updated": {
@@ -738,6 +821,10 @@ export function useSendMessage(): UseSendMessageReturn {
               // than retyping the question — which is exactly what the
               // orphaned-turn forensics showed them doing, twice, before
               // leaving. `retryMessage` re-sends from the failed bubble.
+              // Carries the stage the run died at; also drops the run out of
+              // `in_flight` so a later page_leave isn't read as abandoning a
+              // live run — nobody is waiting for an answer that isn't coming.
+              trackRunFailed();
               markOptimisticFailed(qc, conversationId, optimisticId);
               useChatStore.getState().setError(errorMsg);
               break;

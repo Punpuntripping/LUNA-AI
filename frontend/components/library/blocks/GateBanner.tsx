@@ -2,10 +2,15 @@
 
 import { createContext, useContext, type ReactNode } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 import type { GateBannerProps } from "@/types/library";
+import {
+  trackGateCtaClick,
+  useGateImpression,
+} from "@/components/analytics/useGateImpression";
 
 // Cycled bar widths so the decorative skeleton reads like real ragged text.
 const BAR_WIDTHS = ["100%", "92%", "84%", "96%", "78%", "88%", "90%"] as const;
@@ -72,6 +77,16 @@ export function GateBanner({
   const ctaSuppressed = useContext(GateCtaSuppressionContext);
   const lines = Math.min(Math.max(4, hiddenPlaceholderLines), 7);
 
+  // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
+  // Counted ONLY when this banner is the page's actual conversion surface. A
+  // `barsOnly` or SUPPRESSED banner is decorative skeleton — the FullContentGate
+  // below owns the CTA — and reporting a `gate_view` from it would count one
+  // gated document two or three times over and bury the real conversion rate.
+  const pathname = usePathname() ?? "";
+  const cardRef = useGateImpression("gate_banner", {
+    enabled: !barsOnly && !ctaSuppressed,
+  });
+
   // Decorative skeleton bars — aria-hidden, no textual content. Shared by both
   // the full card and the bars-only variant.
   const bars = (
@@ -104,6 +119,7 @@ export function GateBanner({
       {/* CTA card overlaid on the fading bars — standalone usage only. */}
       <div
         data-gate-cta="anon"
+        ref={cardRef}
         className="absolute inset-0 flex items-end justify-center pb-1"
       >
         <div className="w-full max-w-md rounded-2xl border border-primary/20 bg-gradient-to-b from-card to-surface-2 p-6 text-center shadow-md">
@@ -118,6 +134,8 @@ export function GateBanner({
           </p>
           <Link
             href={ctaHref}
+            // «سجّل مجاناً» — a signup intent whatever `ctaHref` points at.
+            onClick={() => trackGateCtaClick("gate_banner", pathname, "register")}
             className={cn(
               buttonVariants({ size: "default" }),
               "mt-4 w-full shadow-sm sm:w-auto sm:px-8",

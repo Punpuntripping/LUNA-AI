@@ -1,10 +1,18 @@
 import { LoginForm } from "@/components/auth/LoginForm";
 import { LegalLinksFooter } from "@/components/legal/LegalLinksFooter";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { SignupStartedTracker } from "@/components/analytics/SignupStartedTracker";
 
 export default function LoginPage() {
   return (
     <div className="relative flex min-h-screen items-center justify-center bg-background px-4">
+      {/* `signup_started` when this page opens on `mode=register` — the step
+          that joins a gate CTA click to an account (product_analytics.md §5.4).
+          A client LEAF on purpose: this page must stay a server component, or
+          reading the query string forces the whole route into client rendering
+          (see the useSearchParams note in LoginForm). Renders no DOM. */}
+      <SignupStartedTracker />
+
       {/* Theme toggle — top-start corner (top-right in RTL) */}
       <div className="absolute top-4 start-4">
         <ThemeToggle />

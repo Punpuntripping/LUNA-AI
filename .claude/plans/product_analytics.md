@@ -122,13 +122,13 @@ identity, and it is one the user knowingly created.
 | Event | Fired when | Key props |
 |---|---|---|
 | `chat_send` | Message submitted | `conversation_id`, `message_id`, `family`, `has_attachment` |
-| `run_first_token` | First `token` SSE arrives | `ms_since_send` |
-| `run_done` | `done` SSE arrives | `ms_since_send`, `was_visible` |
-| `run_failed` | `error` SSE | `ms_since_send`, `stage` |
-| `run_paused` | `agent_question` SSE — agent asked, awaiting reply | `ms_since_send` |
-| `tab_hidden` | `visibilitychange → hidden` | `run_state`, `ms_since_send`, `stage` |
+| `run_first_token` | First `token` SSE arrives | `ms_since_send`, `family` |
+| `run_done` | `done` SSE arrives | `ms_since_send`, `was_visible`, `family` |
+| `run_failed` | `error` SSE | `ms_since_send`, `stage`, `family` |
+| `run_paused` | `agent_question` SSE — agent asked, awaiting reply | `ms_since_send`, `family` |
+| `tab_hidden` | `visibilitychange → hidden` | `run_state`, `ms_since_send`, `stage`, `family` |
 | `tab_visible` | `visibilitychange → visible` | `ms_hidden`, `run_state` |
-| `page_leave` | `pagehide` with `persisted === false` | `run_state`, `ms_since_send` |
+| `page_leave` | `pagehide` with `persisted === false` | `run_state`, `ms_since_send`, `family` |
 | `answer_seen` | Assistant bubble ≥50% visible for ≥1s **after** `done` | `ms_since_done` |
 | `wi_created` | `workspace_item_created` SSE | `wi_id`, `kind` |
 | `wi_opened` | `WorkspaceCard` `onClick` | `wi_id`, `kind`, `ms_since_created` |
@@ -165,6 +165,8 @@ abandoned would push you to optimise the wrong thing.
   never answered; that is a distinct and expensive failure worth its own number.
 - **WI click-through** — `wi_opened` ÷ `wi_created`, by `kind`, plus dwell.
 
+**Where `family` comes from.** `chat_send` carries `family: null` — and `message_id: null` — by construction: the assistant message id is minted at `message_start` and the family is chosen by the router (`agent_run_started`), so neither exists at submit time, and a quota-blocked send never acquires either. Every family-split metric above therefore reads `family` off the RUN events (`run_first_token`, `run_done`, `run_failed`, `run_paused`, `tab_hidden`, `page_leave`), where it is recorded the moment the router announces its choice; it is `null` there only for a run that died or was refused before classification, which is the honest value. A `chat_send` joins to its run by (`session_key`, `conversation_id`, order).
+
 ### Capture points
 
 | File | Hook |
@@ -177,7 +179,7 @@ abandoned would push you to optimise the wrong thing.
 
 ---
 
-## §4 Schema — migration `138_analytics_events.sql`
+## §4 Schema — migration `139_analytics_events.sql`
 
 ```sql
 create table if not exists public.analytics_events (
@@ -353,7 +355,7 @@ the edge like all browser traffic — it must **not** be added to `origin_lock`'
 **T9 — analytics must never break a page.** Every call site wrapped so a storage failure, a blocked beacon, or a
 503 is a no-op. A reader must never see a degraded page because a tracker failed.
 
-**T10 — deploy order.** Migration 138 must be applied **before** the code that writes to it ships, or the first
+**T10 — deploy order.** Migration 139 must be applied **before** the code that writes to it ships, or the first
 beacon 500s in a loop. This repo has been bitten by migration-after-deploy before (see the Moyasar and
 free-window ladder work).
 
@@ -391,7 +393,7 @@ that matter: first token, stage transitions, and whatever stage was current when
 
 | Phase | Scope | Answers |
 |---|---|---|
-| **0** | Migration 138 · beacon endpoint · client lib · `<AnalyticsTracker/>` · purge job | infrastructure |
+| **0** | Migration 139 · beacon endpoint · client lib · `<AnalyticsTracker/>` · purge job | infrastructure |
 | **1** | `session_start` / `page_view` / `page_exit` | Q1, Q2, Q3, Q5 |
 | **2** | Gate events across all seven surfaces + signup funnel | **Q4** |
 | **3** | **Chat depth (§3b)** — run lifecycle, visibility, `answer_seen`, WI engagement | **wait tolerance, abandonment, did-they-read-it** |

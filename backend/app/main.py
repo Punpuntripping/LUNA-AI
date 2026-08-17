@@ -44,6 +44,7 @@ from shared.observability import (
     run_logfire_token_probe_once,
 )
 from backend.app.services.account_purge_service import purge_expired_accounts
+from backend.app.services.analytics_service import purge_old_analytics_events
 from backend.app.services.attachment_cleanup import cleanup_old_pdf_attachments
 from backend.app.services.receipt_service import run_smtp_probe_once
 from backend.app.services.summary_sweeper import sweep_missing_summaries
@@ -304,6 +305,34 @@ async def lifespan(app: FastAPI):
             "no renewal job registered, no card is stored or charged"
         )
 
+    # 6c. APScheduler — daily analytics retention purge. Deletes
+    #     `analytics_events` rows older than 180 days
+    #     (analytics_service.RETENTION_DAYS). Retention is not decoration here:
+    #     the table holds behavioural data captured without a persistent
+    #     identifier precisely so it stays aggregate measurement rather than
+    #     profiling (product_analytics.md §2), and an unbounded raw-event table
+    #     quietly turns that into a growing PDPL exposure.
+    #
+    #     04:00 UTC — 15 min after the account purge, so the five daily jobs
+    #     never contend for the same postgrest connection pool. Runs through
+    #     to_thread (sync Supabase client) and swallows its own failures, like
+    #     the PDF/purge jobs.
+    async def _run_analytics_purge() -> None:
+        try:
+            stats = await asyncio.to_thread(
+                purge_old_analytics_events, app.state.supabase
+            )
+            logger.info("Analytics retention purge complete: %s", stats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Analytics retention purge failed: %s", e)
+
+    scheduler.add_job(
+        _run_analytics_purge,
+        trigger=CronTrigger(hour=4, minute=0),  # daily at 04:00 UTC
+        id="analytics_events_purge",
+        replace_existing=True,
+    )
+
     # 7. APScheduler — one-shot startup catch-up for the upload reconciler. The
     #    03:15 cron silently skips a day whenever the process restarts across
     #    it; the reconciler is idempotent and cheap, so run it once shortly
@@ -365,7 +394,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     logger.info(
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
-        "summary sweep 03:30, account purge 03:45 UTC%s, + one-shot "
+        "summary sweep 03:30, account purge 03:45, analytics purge 04:00 UTC%s, + one-shot "
         "upload-reconciler, blog-job & account-purge catch-up on boot",
         ", subscription renewals 03:30" if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED else "",
     )
@@ -703,6 +732,21 @@ def create_app() -> FastAPI:
     application.include_router(
         public_ask_router,
         tags=["public-ask"],
+    )
+
+    # Product analytics beacon (product_analytics.md Phase 0). POST
+    # /public/events is anonymous by design — no auth dep — and ALWAYS answers
+    # 204, so a tracker failure can never degrade a page (§7 T9). The router
+    # declares prefix="/api/v1" itself, so it is mounted WITHOUT an extra prefix
+    # (same as public_ask above).
+    # ⚠ Requires migration 138 to be applied FIRST (§7 T10): a backend deployed
+    # ahead of the table would fail every insert — silently, since the endpoint
+    # swallows write errors, so the symptom is an empty table, not an alarm.
+    from backend.app.api.analytics import router as analytics_router
+
+    application.include_router(
+        analytics_router,
+        tags=["analytics"],
     )
 
     # Preferences + Templates router

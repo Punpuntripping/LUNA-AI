@@ -40,6 +40,8 @@ import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
 import { WiBadge } from "@/components/workspace/WiBadge";
+import { getDoneAt } from "@/components/analytics/run-tracker";
+import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
 import type { Attachment, Message, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
@@ -164,6 +166,23 @@ export const MessageBubble = memo(function MessageBubble({
     !isAgentQuestion &&
     templateOffer !== undefined &&
     !!templateOffer.itemId;
+
+  // `answer_seen` (product_analytics §3b / T15) — "rendered" is not "seen",
+  // and here that distinction IS the metric: the honest denominator for
+  // "answers generated but never read". Armed only for a settled assistant
+  // answer whose run completed in THIS tab; `getDoneAt` is a plain read
+  // re-evaluated each render, and the render that fills this bubble with the
+  // finished answer is exactly the one that flips it non-null and starts the
+  // observer. Declared before the `isUser` early return so hook order is
+  // identical on both branches.
+  const isAnswerBubble =
+    !isUser && !isAgentQuestion && isCompleted && !message.isFailed;
+  const answerDoneAt = isAnswerBubble ? getDoneAt(message.message_id) : null;
+  const answerSeenRef = useAnswerSeen({
+    messageId: message.message_id,
+    conversationId: message.conversation_id,
+    doneAt: answerDoneAt,
+  });
 
   // Focus the textarea when entering edit mode
   useEffect(() => {
@@ -428,6 +447,9 @@ export const MessageBubble = memo(function MessageBubble({
       <div
         dir="rtl"
         lang="ar"
+        // `answer_seen` observes THIS element (assistant bubbles only; the ref
+        // is inert on every other branch). See useAnswerSeen — T15.
+        ref={answerSeenRef}
         // Tour anchor `chat-thread` — RETIRED from the script when the tour was
         // cut to five steps (a whole step spent saying the thread is a thread).
         // Kept: still declared in TOUR_ANCHOR_IDS, so restoring that step is a

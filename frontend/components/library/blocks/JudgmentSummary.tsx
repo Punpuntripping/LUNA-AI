@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { BookOpen, Loader2, Lock, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -11,6 +12,10 @@ import {
 } from "@/components/library/LibraryReveal";
 import type { FullJudgment } from "@/lib/library/full-content";
 import { judgmentSummaryCopy, revealCopy } from "@/lib/library/gate-copy";
+import {
+  trackGateCtaClick,
+  useGateImpression,
+} from "@/components/analytics/useGateImpression";
 
 /**
  * «ملخص ريحان» on a /judgments/{slug} page — the structured AI summary of the
@@ -59,6 +64,25 @@ export function JudgmentSummaryButton({
   showBalance = false,
 }: JudgmentSummaryProps) {
   const reveal = useSharedLibraryReveal();
+
+  // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
+  // The ANONYMOUS branch only. For a signed-in reader this button is a metered
+  // reveal, not a signup pitch, and the refusal branch is an upgrade surface —
+  // neither can produce a `register|login` click, so neither belongs in the
+  // question-4 denominator. Hooks run before the early return; the ref attaches
+  // on the anon branch alone.
+  //
+  // ⚠ This button sits in the المعلومات الأساسية card while the page's
+  // `FullContentGate` panel sits at the bottom of the ruling, so ONE judgment
+  // page can legitimately report two impressions of two different `gate_kind`s.
+  // That is per-surface conversion, which is what §6.6 groups by — it is not a
+  // stacked CTA (the two are viewports apart) and not the suppression case
+  // `GateCtaSuppressor` exists for.
+  const pathname = usePathname() ?? "";
+  const anonCtaRef = useGateImpression("judgment_summary", {
+    contentType: "judgment",
+  });
+
   if (!reveal || !hasSummary) return null;
 
   const {
@@ -109,8 +133,19 @@ export function JudgmentSummaryButton({
   // Anonymous — straight to /login, the API is never touched (and never charged).
   if (!isAuthenticated) {
     return (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Link href="/login" className={cn(buttonVariants(), "shadow-xs")}>
+      <div
+        ref={anonCtaRef}
+        className="flex flex-wrap items-center gap-x-3 gap-y-2"
+      >
+        <Link
+          href="/login"
+          // «افتح حسابك المجاني لعرض ملخص الحكم» — a signup intent, even though
+          // the href is the bare /login.
+          onClick={() =>
+            trackGateCtaClick("judgment_summary", pathname, "register")
+          }
+          className={cn(buttonVariants(), "shadow-xs")}
+        >
           <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />
           {judgmentSummaryCopy.cta}
         </Link>
