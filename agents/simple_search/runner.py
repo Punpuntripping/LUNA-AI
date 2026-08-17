@@ -69,6 +69,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agents.deep_search_v4.aggregator.models import Reference
+from agents.models import WorkspaceItemSnapshot
 from agents.paused_runs import PauseRecord, find_open_pause, record_pause
 from agents.simple_search.models import (
     LEVEL_SOURCE_TYPE,
@@ -660,7 +661,37 @@ _PAGE_TYPE_LEVEL: dict[str, SimpleSearchLevel] = {
 }
 
 
-def resolved_from_attachment(item: dict) -> ResolvedObject | None:
+def _as_snapshot(item: Any) -> WorkspaceItemSnapshot:
+    """Normalize one attached item to the orchestrator's snapshot contract.
+
+    ``_load_attached_items`` (orchestrator) hands every family a
+    :class:`WorkspaceItemSnapshot`, and this family was written against plain
+    dicts — so the first turn that ran with a workspace item attached died on
+    ``'WorkspaceItemSnapshot' object has no attribute 'get'`` and every later
+    turn in that conversation died the same way (the card persists, so the
+    crash repeats forever). Coercing ONCE here keeps a single internal type and
+    leaves every reader below on attribute access.
+
+    Dicts are still accepted because the ``eval/`` harnesses hand-build partial
+    ones (often just ``{"item_id": ...}``); missing fields default rather than
+    raise, matching what the previous ``.get(...) or ""`` reads did.
+    """
+    if isinstance(item, WorkspaceItemSnapshot):
+        return item
+    d = item if isinstance(item, dict) else {}
+    return WorkspaceItemSnapshot(
+        item_id=str(d.get("item_id") or ""),
+        kind=str(d.get("kind") or ""),
+        title=str(d.get("title") or ""),
+        content_md=str(d.get("content_md") or ""),
+        summary=str(d.get("summary") or ""),
+        word_count=int(d.get("word_count") or 0),
+        metadata=d.get("metadata") if isinstance(d.get("metadata"), dict) else {},
+        wi_seq=d.get("wi_seq"),
+    )
+
+
+def resolved_from_attachment(item: WorkspaceItemSnapshot) -> ResolvedObject | None:
     """Case B: recover a pre-resolved identity from a library workspace item.
 
     Reads, in order:
@@ -676,9 +707,9 @@ def resolved_from_attachment(item: dict) -> ResolvedObject | None:
     ``metadata.source_page_id`` alone is a **slug**, not an id, so it cannot
     resolve here without a DB lookup — see the report note on C3.
     """
-    if (item.get("kind") or "") != _LIBRARY_KIND:
+    if (item.kind or "") != _LIBRARY_KIND:
         return None
-    meta = item.get("metadata") or {}
+    meta = item.metadata or {}
     if not isinstance(meta, dict):
         return None
 
@@ -687,18 +718,18 @@ def resolved_from_attachment(item: dict) -> ResolvedObject | None:
         try:
             obj = ResolvedObject.model_validate(payload)
         except Exception:  # noqa: BLE001 — a malformed payload is not fatal
-            logger.warning("simple_search: bad simple_search_object on %s", item.get("item_id"))
+            logger.warning("simple_search: bad simple_search_object on %s", item.item_id)
         else:
             if not obj.missing_id():
                 if not obj.title:
-                    obj.title = str(item.get("title") or "")
+                    obj.title = str(item.title or "")
                 return obj
 
     level = _PAGE_TYPE_LEVEL.get(str(meta.get("source_page_type") or ""))
     row_id = str(meta.get("source_row_id") or "").strip()
     if not level or not row_id:
         return None
-    obj = ResolvedObject(level=level, title=str(item.get("title") or ""))
+    obj = ResolvedObject(level=level, title=str(item.title or ""))
     if level == "regulation_doc":
         obj.regulation_id = row_id
     elif level == "article":
@@ -871,7 +902,9 @@ async def run_simple_search(
     conversation_id: str,
     case_id: str | None,
     *,
-    attached_items: list[dict] | None = None,   # case B/C payload; [] for case A
+    # case B/C payload; [] for case A. The orchestrator passes
+    # WorkspaceItemSnapshot; dicts are coerced by _as_snapshot for eval harnesses.
+    attached_items: "list[WorkspaceItemSnapshot] | list[dict] | None" = None,
     recent_messages: list | None = None,        # the planners' conversation window
     user_preferences: dict | None = None,
     user_call_name: str | None = None,
@@ -888,7 +921,10 @@ async def run_simple_search(
         user_id: a **users.user_id**, never an ``auth_id``. It is what the
             ledger keys on, so the wrong one here would charge the wrong
             account — the orchestrator receives it already mapped.
-        attached_items: workspace-item dicts the router attached. A
+        attached_items: the workspace items the router attached, as
+            :class:`WorkspaceItemSnapshot` (what ``_load_attached_items``
+            returns). Normalized via ``_as_snapshot``, so plain dicts from the
+            ``eval/`` harnesses work too. A
             ``kind='references'`` library item is **case B** — the searcher is
             skipped entirely. Any other attached item is **case C** — its cited
             sources become the searcher's candidate list.
@@ -910,7 +946,7 @@ async def run_simple_search(
     prefs = user_preferences or {}
     detail_level = str(prefs.get("detail_level") or "")
     welcome_instruction = render_welcome_instruction(welcome) or None
-    items = list(attached_items or [])
+    items = [_as_snapshot(i) for i in (attached_items or [])]
     # D12 — built once per turn, bound to this user. Every ruling body served
     # this turn goes through it; nothing else in the family is metered.
     grant_judgment_access = judgment_access_resolver(supabase, user_id)
@@ -954,7 +990,7 @@ async def run_simple_search(
                 )
         if deps.candidates:
             span.set(library_candidates=len(deps.candidates))
-        wi_ids = [str(i.get("item_id") or "") for i in items if i.get("item_id")]
+        wi_ids = [i.item_id for i in items if i.item_id]
         if wi_ids:
             # The attached CARDS' own identities, ahead of their refs. Without
             # this the searcher receives a card's references but not the card:
@@ -963,8 +999,8 @@ async def run_simple_search(
             # The searcher also only speaks C-handles while users and the
             # router say WI-N — this line is where the two vocabularies meet.
             for item in items:
-                seq = item.get("wi_seq")
-                title = str(item.get("title") or "").strip()
+                seq = item.wi_seq
+                title = str(item.title or "").strip()
                 if seq is not None and title:
                     deps.candidate_lines.append(
                         f"(البطاقة المرفقة WI-{seq} «{title}» — عندما يقول المستخدم "
