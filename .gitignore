@@ -152,3 +152,11 @@ frontend/dev.log
 
 # graphify knowledge graph output
 graphify-out/
+
+# simple_search eval RUN ARTIFACTS — every one of these is written by a script
+# in the same directory (results dumps, and the setup/teardown state files
+# ab_setup.json / rerun_setup.json). The harness (*.py) is the durable part and
+# stays tracked; re-running it regenerates all of this. Committed once by
+# mistake in 0ff6f6f — ~1MB of dumps — and removed in the follow-up.
+agents/simple_search/eval/*.json
+agents/simple_search/eval/*.log
