@@ -94,6 +94,21 @@ def _load_case_block(
     except Exception as e:
         logger.warning("load_router_context: lawyer_cases load failed: %s", e)
 
+    # Ownership gate — fail closed. The ``lawyer_cases`` lookup above is the
+    # ONLY owner check in this function: ``case_memories`` has no user column,
+    # it is user-scoped solely through its ``case_id`` foreign key. An empty
+    # ``case_metadata`` means the case is not this user's, is deleted, or the
+    # lookup errored — in every one of those cases the memories below must not
+    # load, because they are rendered verbatim into the router's instructions
+    # and into ``case_brief`` (planner → executors → aggregator).
+    #
+    # This is not hypothetical: ``conversations.case_id`` is writable by hand
+    # (Studio), and on 2026-08-17 a production conversation carried a case
+    # belonging to a different account. Without this gate that turn would have
+    # rendered the other account's case memories into the prompt.
+    if case_metadata is None:
+        return None, None
+
     memories: list[dict] = []
     try:
         mem_resp = (
