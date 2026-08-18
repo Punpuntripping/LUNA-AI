@@ -15,8 +15,19 @@ export interface User {
   call_name?: string | null;
   /** Legacy column — superseded by plan_id. */
   subscription_tier?: string | null;
-  /** Subscription plan (plans table). null = account not activated yet. */
+  /** Subscription plan (plans table). null = account not activated yet.
+   *
+   *  ⚠ NOT a paid-ness test. `plan_id !== "free"` is true for dev grants, comps
+   *  and long-expired terms alike — use `paid_activated_at` for "this account
+   *  actually bought something". */
   plan_id?: string | null;
+  /** ISO timestamp of the last time this account activated a paid plan BY
+   *  PAYING for it — null for free, dev, comped and expired subscriptions.
+   *  Server-resolved from source + plan + a still-running term
+   *  (`subscription_service.resolve_paid_activated_at`); absent on the /login
+   *  payload, which does not read the subscription at all. Gates the
+   *  post-purchase «اتعرف على ريحان» tour. */
+  paid_activated_at?: string | null;
   created_at?: string | null;
   /** Account deletion grace period (30 days). True → app is gated behind
    *  AccountDeletionPendingScreen until restored. */
@@ -24,6 +35,17 @@ export interface User {
   deletion_requested_at?: string | null;
   /** Server-computed purge date (requested + 30 days) — never derived client-side. */
   purge_at?: string | null;
+  /** True when the account holds a password credential (migration 141).
+   *  Decides «تعيين» vs «تغيير كلمة المرور» in إعدادات الحساب and which branch
+   *  DeleteAccountDialog confirms with.
+   *
+   *  ⚠ Do NOT re-derive this from the Supabase session's `app_metadata.providers`
+   *  — that is what this field replaced. Setting a password on a Google account
+   *  writes the credential without adding an `email` identity, so the session
+   *  still reads ["google"] forever afterwards and the settings dialog would go
+   *  on hiding the password form from someone who has one. Server-resolved from
+   *  auth.users.encrypted_password; absent/undefined is treated as false. */
+  has_password?: boolean;
   /** Onboarding profession segment (users.profession_group, migration 115).
    *  EXACTLY null = never asked → the profession prompt opens. "unknown" is
    *  the server's fail-closed sentinel for degraded reads; "declined" = chose
@@ -1785,6 +1807,54 @@ export interface PaymentMethodState {
 export type PaymentMethodRevokeResponse = Partial<PaymentMethodState>;
 
 // -----------------------------------------------
+// المشتركون الأوائل — early-adopters campaign
+// (.claude/plans/early_adopters.md)
+// -----------------------------------------------
+
+/**
+ * `GET /payments/early-adopter` — PUBLIC, unauthenticated, server-side cached.
+ *
+ * ⚠ THERE IS NO COUNT IN THIS SHAPE, AND NONE MAY BE ADDED. Not a remaining
+ * seat count, not a seat total, not a closing date (owner decision, plan §1.10):
+ * the API does not carry them and the UI must not render them even if it one day
+ * does. The single permitted scarcity signal is the literal «المقاعد محدودة»
+ * (`SEATS_LIMITED_NOTE` in `lib/pricing.ts`).
+ *
+ * `open` is the whole campaign flag — it answers "are seats still being
+ * issued?", which is also what decides whether `basic` is discounted for
+ * everyone. It is NOT "does the caller hold a seat"; that is `EarlyAdopterState`
+ * on the authed subscription read, and the two are independent (a seat holder
+ * keeps their price for 90 days after the campaign closes).
+ *
+ * `promo` maps `plans.plan_id` → the promotional amount as a 2-dp LATIN string
+ * ("49.90"), exactly like every other money field on the wire. Render it through
+ * `formatSar`, never by hand. A plan missing from the map has no promo; an
+ * `open: false` answer carries `{}`.
+ */
+export interface EarlyAdopterCampaign {
+  open: boolean;
+  promo: Record<string, string>;
+}
+
+/**
+ * The `early_adopter` block on `GET /payments/subscription` — the CALLER's own
+ * standing, which is a different question from whether the campaign is open.
+ *
+ * Optional on `SubscriptionState` because of deploy skew: a backend from before
+ * this shipped sends no block at all, and "absent" must read as "not a member"
+ * rather than as an error. Never derive membership from the price on screen.
+ *
+ * `promo_ends_at` is the end of the 90-day window anchored at the claiming
+ * payment's `paid_at` (wall-clock, so a gap in the subscription burns days
+ * rather than pausing them). It is the user's OWN date, not a campaign closing
+ * date — showing it discloses nothing about remaining capacity.
+ */
+export interface EarlyAdopterState {
+  is_member: boolean;
+  promo_ends_at: string | null;
+}
+
+// -----------------------------------------------
 // Subscription cancellation (إلغاء الاشتراك)
 // (.claude/plans/subscription_cancellation.md)
 // -----------------------------------------------
@@ -1825,4 +1895,11 @@ export interface SubscriptionState {
   cancellable: boolean;
   /** Set = the user has opted out of renewal; null = renewal is on. */
   renewal_cancelled_at: string | null;
+  /**
+   * المشتركون الأوائل standing. ABSENT on an older backend — treat a missing
+   * block as "not a member" (see `EarlyAdopterState`). The cancel flow reads
+   * this to warn a seat holder that cancelling forfeits the price permanently,
+   * which is the one place that rule is stated before the user acts.
+   */
+  early_adopter?: EarlyAdopterState | null;
 }

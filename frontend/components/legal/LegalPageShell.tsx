@@ -8,7 +8,8 @@ interface Props {
 }
 
 /**
- * RTL shell for the public legal pages (/terms, /privacy, /masking). Wraps the
+ * RTL shell for the public legal pages (/terms, /privacy, /masking,
+ * /promo-terms). Wraps the
  * baked markdown body in the global `SitePageShell`, so the brand + nav come
  * from the shared header rather than a one-off centered logo box.
  *

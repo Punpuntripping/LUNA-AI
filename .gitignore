@@ -27,6 +27,17 @@ backend/tests/*
 !backend/tests/test_rate_limit_library.py
 !backend/tests/test_reference_source.py
 !backend/tests/test_blog_snapshot_gating.py
+# المشتركون الأوائل — the early-adopter promo suite is durable for the same
+# reason: it pins that a seat holder is precisely someone charged the promo
+# price, that cancelling forfeits it and a refund does not, and that a renewal
+# never discounts a non-member. All four are money, and none is visible in a
+# type. Mutation-tested (17/17) — losing the file loses the proof.
+!backend/tests/test_early_adopters.py
+# what counts as a PURCHASE — the rule the post-payment intro tour fires on.
+# Durable because it is invisible in every type: `plan_id != "free"` compiles
+# fine and is wrong (dev grants, comps and expired terms all read as paid),
+# which is exactly the bug this suite was written against.
+!backend/tests/test_intro_tour_gate.py
 # reference-card library links are durable — they pin that «فتح ... في ريحان» is
 # NAVIGATION: never metered, never a guessed URL, and never present for a
 # compliance service (that wing was retired, so any link there is a 404). They

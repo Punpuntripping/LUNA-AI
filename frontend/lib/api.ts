@@ -56,6 +56,7 @@ import type {
   PaymentMethodRevokeResponse,
   SubscriptionState,
   CancelSubscriptionReason,
+  EarlyAdopterCampaign,
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { loginHref } from "@/lib/safe-next";
@@ -537,6 +538,12 @@ export const authApi = {
       current_password,
       new_password,
     }),
+
+  /** First password for an account that has none (Google-OAuth signups). No
+   *  current password is sent because there is none; the server refuses with
+   *  409 if the account already has one, so this can never overwrite. */
+  setPassword: (new_password: string) =>
+    api.post<{ success: boolean }>("/auth/set-password", { new_password }),
 
   /** Revokes ALL refresh tokens — including this device's. 503 on failure. */
   logoutAll: () => api.post<{ success: boolean }>("/auth/logout-all"),
@@ -1102,6 +1109,24 @@ export const paymentsApi = {
    */
   refund: (paymentId: string) =>
     api.post<PaymentRefundResponse>(`/payments/${paymentId}/refund`),
+
+  /**
+   * المشتركون الأوائل — is the campaign issuing seats, and at what price
+   * (`.claude/plans/early_adopters.md` §6).
+   *
+   * PUBLIC and unauthenticated: it answers the same for a signed-out visitor as
+   * for a subscriber, and the server caches it for ~30 s. It goes through
+   * `apiFetch` only for the Arabic error mapping — the Authorization header it
+   * may attach is ignored by the endpoint.
+   *
+   * ⚠ THE ANSWER CONTAINS NO COUNT, and no caller may display one even if a
+   * future payload grows one: the remaining seats, the seat total and the
+   * closing date are all undisclosed (plan §1.10). A 404 (backend older than
+   * this feature) or any other error is treated by the store as "closed", which
+   * renders list prices.
+   */
+  getEarlyAdopter: () =>
+    api.get<EarlyAdopterCampaign>("/payments/early-adopter"),
 
   /**
    * Current subscription state for إعدادات الحساب: plan, term end, `source`,

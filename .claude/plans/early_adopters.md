@@ -1,8 +1,24 @@
 # المشتركون الأوائل — Early Adopters
 
-**Status:** PLANNED · not built · nothing applied
+**Status:** BUILT 2026-08-17 · nothing applied · nothing committed · nothing deployed
 **Owner decisions locked:** 2026-08-16 (see §1)
-**Next migration number:** `138` (137 is the highest applied)
+**Migrations:** `138_early_adopters.sql` + `140_early_adopter_product_docs.sql`
+(140, not 139 — parallel analytics work took 139)
+
+**Ships inert:** `early_adopter_campaign.enabled = false`. The migration and the
+deploy change behaviour for zero users; a one-row UPDATE starts the campaign.
+
+**Tests:** `backend/tests/test_early_adopters.py`, 43 tests, 17/17 mutations
+caught. 266 passing across the three payment suites. Re-included in `.gitignore`
+(line 35) so it is not silently lost.
+
+**Open owner decisions:** §5 disclosure (step-up in the hashed consent string);
+`LEGAL_VERSION` staleness in `frontend/lib/legal.ts` and whether the forfeiture
+clause should trigger re-consent.
+
+**The invariant everything else leans on:**
+> A seat holder is precisely someone who was charged the promotional price —
+> no capacity state, flag state, or campaign edge changes that.
 
 A launch campaign: the first **100 users to pay for `pro` or `max`** become
 المشتركون الأوائل and hold a promotional price for **90 days**. While seats
@@ -93,7 +109,7 @@ a plain UPDATE, no code change. `NULL` = this plan has no promo.
 ```sql
 CREATE TABLE public.early_adopter_seats (
     seat_id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         uuid NOT NULL REFERENCES public.users(user_id) ON DELETE SET NULL,
+    user_id         uuid REFERENCES public.users(user_id) ON DELETE SET NULL,  -- NULLABLE: NOT NULL + SET NULL cannot both hold
     payment_id      uuid UNIQUE REFERENCES public.payment_transactions(payment_id),
     claimed_at      timestamptz NOT NULL DEFAULT now(),
     promo_ends_at   timestamptz NOT NULL,          -- claimed_at + 90 days
@@ -142,7 +158,10 @@ rollback.
 early_adopter_open() RETURNS boolean
 
 -- The ONE price definition. Consumed by checkout, renewal and the upgrade credit.
-effective_plan_price(p_user_id uuid, p_plan_id text) RETURNS numeric
+--   p_context = 'purchase' -> the buy-now price (seat OR open campaign)
+--   p_context = 'current'  -> what this user's RUNNING term costs (live seat only)
+effective_plan_price(p_user_id uuid, p_plan_id text,
+                     p_context text DEFAULT 'purchase') RETURNS numeric
 
 -- Claim. Called AFTER grant_plan returns, never inside it.
 claim_early_adopter_seat(p_user_id uuid, p_payment_id uuid) RETURNS TABLE(...)
@@ -161,12 +180,39 @@ early_adopter_status(p_user_id uuid) RETURNS TABLE(campaign_open boolean,
 
 `effective_plan_price` resolution order:
 
-1. plan has no `promo_price_sar`, or campaign row `enabled = false` → `price_sar`
+1. plan has no `promo_price_sar` → `price_sar`
 2. `basic` → `promo_price_sar` **iff** `early_adopter_open()`
 3. `pro`/`max` → `promo_price_sar` **iff** the user holds a live seat with
-   `promo_ends_at > now()` **OR** `early_adopter_open()` (this is the purchase
-   that will claim the seat)
+   `promo_ends_at > now()` **OR** (`early_adopter_open()` **AND** the user is not
+   forfeit — this is the purchase that will claim the seat)
 4. otherwise `price_sar`
+
+**Forfeiture (§1 rule 6) is enforced here, not just in the UI.** A user holding
+any seat row with `release_reason = 'cancelled'` never gets the promo price
+again, even with seats open, even on a brand-new purchase. A `'refund'` release
+is *not* forfeit — rule 5 lets them rejoin. An undone cancellation leaves no
+`'cancelled'` row (restore clears `released_at` and `release_reason` together),
+so it correctly does not forfeit. The same test must be applied to
+`claim_early_adopter_seat` in the same edit: quoting the promo and then
+withholding the seat is the one outcome §3.5 forbids.
+
+**The `'current'` context exists to stop two leaks.** (1) The renewal job prices
+through this function; with only the `'purchase'` rule, a *non-member* pro
+subscriber is charged 49.90 at renewal purely because the campaign is open — an
+uncapped discount that burns no seat, appears in no count, and silently enrols
+the pre-campaign payers §1.2 excludes. (2) `_upgrade_credit` prices the OLD plan;
+under `'purchase'` a full-price pro holder is credited at 49.90 for a term they
+paid 89.90 for. `'current'` answers "what is this user charged for this plan
+today", which is exactly what both callers are asking. Only the checkout that is
+about to claim a seat uses `'purchase'`.
+
+**`enabled = false` must NOT reprice live seat holders.** It stops new seats and
+returns `basic` to list price; the seat-holder branch of rule 3 survives it.
+Otherwise an operator flipping the switch to stop signups silently jumps every
+existing member's next auto-renewal to full price — as a card charge, which is
+the precise failure this whole plan exists to prevent. A true emergency stop is a
+deliberate, auditable `UPDATE early_adopter_seats SET released_at = now()`, not a
+second flag.
 
 All EXECUTE **revoked from `anon`/`authenticated`**, granted to `service_role`
 only — the 118 lockdown posture. `early_adopter_open()` is surfaced to the public
@@ -183,8 +229,18 @@ them costs nothing.
 49.90 while seats were open can settle after the campaign closed. The alternatives
 are refusing a payment that already succeeded, or charging someone the full price
 after quoting them the promo. Instead the seat is granted anyway and stamped
-`over_capacity = true`. Bounded by the number of open quotes at closing time
-(realistically 0–3), visible in one query, and it fails toward the customer.
+`over_capacity = true`. It fails toward the customer, and it is visible in one
+query (`WHERE over_capacity`).
+
+⚠ **Over-capacity must be GATED on the payment having actually been quoted at the
+promo price** — not granted unconditionally. The backend calls `claim` after
+*every* pro/max grant, so an unconditional grant means payer #101, #102 … each
+take a seat and the campaign never closes. Reconstruct the quote from the ledger:
+`amount_sar + upgrade_credit_sar <= promo_price_sar + 0.01`, which is exactly the
+quantity `create_checkout` split apart (`charge = q2(price - credit)`), so
+prorated upgrades reconstruct correctly. A payment quoted at list price gets no
+seat. This bounds over-capacity to the open quotes outstanding at closing time
+(realistically 0–3).
 
 ---
 
@@ -286,9 +342,18 @@ fact, not as a threat, and the undo deadline must be in it.
 
 ## 7. Copy elsewhere
 
-- **`/terms` §5** — a promotional-pricing clause: who qualifies, the 90 days, the
-  step-up, and that cancelling forfeits it. The forfeiture rule especially cannot
-  live only in a dialog.
+- **`/promo-terms` — a SEPARATE public page** (owner, 2026-08-18), not clauses
+  inside `/terms`. The offer's conditions bind only the users who take an offer,
+  and two long clauses made §5 unreadable for everyone else. `/terms` §5 keeps a
+  single short pointer clause (item 8) instead. Follows the `/masking`
+  precedent: `LegalPageShell` + a markdown doc, public via `AuthGuard`,
+  deliberately NOT in the sitemap and NOT in the footer nav — reached only from
+  where a promotional price is shown.
+- **The link must travel with the price.** `PromoTermsLink`
+  («تطبق أحكام العروض الترويجية») renders on /pricing, the landing teaser, the
+  quota-upgrade dialog, and inside the cancellation warning. A discounted number
+  with no route to its conditions is a worse disclosure than the crowded §5 it
+  replaced — that is the whole risk this split takes on.
 - **`product_docs.pricing`** — the router answers questions about ريحان from
   these rows and **no doc currently states a price** (deliberate). Decide whether
   the router should be able to say «هناك عرض للمشتركين الأوائل، والمقاعد محدودة»

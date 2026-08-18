@@ -34,9 +34,17 @@ for that. The five rules, in the order they matter:
    the row ``initiated``. Any renewal row for the period in ``initiated`` OR
    ``paid`` blocks every further attempt for that period. A renewal that needs a
    human is infinitely better than one that charges twice.
-4. **The amount comes from ``plans.price_sar``, read at charge time.** Never
-   from the last payment, never from a cached figure, and there is no client
-   anywhere near this path.
+4. **The EFFECTIVE price is the price, read at charge time.** Never from the
+   last payment, never from a cached figure, and there is no client anywhere
+   near this path. Since migration 138 that price is
+   ``effective_plan_price(user, plan)`` and not ``plans.price_sar`` — one
+   definition shared with checkout and the upgrade credit
+   (`.claude/plans/early_adopters.md` §2). **This is the line that keeps the
+   90-day promise made to المشتركون الأوائل:** the job re-reads the price at
+   every charge, so quoting the catalog would step an early adopter up to the
+   list price on a saved card the moment the campaign closed — automatically,
+   with no warning, which is exactly the failure the promotion was designed not
+   to have.
 5. **The term extends from the OLD ``expires_at``, never from ``now()``.** That
    arithmetic is not re-implemented here: ``grant_plan`` (092) already does
    exactly it — a same-plan grant on a still-live term sets
@@ -384,7 +392,7 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     # retry from a duplicate.
     period_start = _iso(expires_at)
 
-    # ── the catalog is the price (plan trap 2) ─────────────────────────────
+    # ── the EFFECTIVE price is the price (plan trap 2) ─────────────────────
     plans = await run_db(ps._fetch_plans, supabase, [plan_id])
     plan = plans.get(plan_id)
     if not pm.plan_renews(plan):
@@ -392,7 +400,33 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         # 'recurring_30d'. Trap 6: the column is finally READ, and it is a gate.
         logger.info("renewal skipped: plan=%s does not renew (billing_cycle)", plan_id)
         return "skipped_plan_not_recurring"
-    price = ps.q2(plan.get("price_sar"))
+    # `plans.price_sar` is the LIST price and this job charges what THIS user's
+    # RUNNING TERM costs — context 'current', which is the live-seat branch only.
+    #
+    # Both halves are load-bearing:
+    #   * a seat holder inside their 90 days is charged the promo rate, and the
+    #     first period that BEGINS after the window is full price (§1.3). This is
+    #     the line that keeps the 90-day promise: the job re-reads the price at
+    #     every charge, so quoting the catalog would step an early adopter up the
+    #     moment the campaign closed, on a saved card, with no warning;
+    #   * 'purchase' here would be worse in the other direction — while the
+    #     campaign is open it would hand every renewing NON-member an automatic
+    #     discount they never asked for, on a charge they did not choose to make.
+    #     A renewal is not a purchase decision, so it can neither win the promo
+    #     price nor enrol anybody (see the claim in payment_service, which is
+    #     skipped for `initiated_by='renewal'`).
+    #
+    # A failed lookup falls back to the catalog inside ``_effective_price`` — the
+    # pre-campaign behaviour, and the only fallback that keeps this job charging
+    # at all when 138 is missing.
+    price = await run_db(
+        ps._effective_price,
+        supabase,
+        user_id,
+        plan_id,
+        plan.get("price_sar"),
+        context=ps.PRICE_CONTEXT_CURRENT,
+    )
     if price < ps.MIN_CHARGE_SAR:
         logger.error("renewal skipped: plan=%s price %s is below the minimum", plan_id, price)
         return "skipped_bad_price"
@@ -448,7 +482,8 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         "provider": ps.PROVIDER,
         "vat_amount_sar": ps._money(vat),
         "net_amount_sar": ps._money(net),
-        # A renewal is never prorated: it is one full period at list price.
+        # A renewal is never prorated: it is one full period at the effective
+        # price (list, or the early-adopter rate while that window is open).
         "upgrade_credit_sar": ps._money(Decimal("0.00")),
         "customer_name_snapshot": customer.get("full_name_ar"),
         "customer_email_snapshot": customer.get("email"),

@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pytest
@@ -65,17 +66,20 @@ def _now() -> datetime:
 # In-memory PostgREST + RPC stand-in
 # ---------------------------------------------------------------------------
 
+# `promo_price_sar` is migration 138 (المشتركون الأوائل). It is only ever read
+# when the campaign is ENABLED, and the campaign ships disabled — see
+# FakeSupabase.__init__.
 PLAN_ROWS = [
     {"plan_id": "free", "name_ar": "المجانية", "price_sar": None, "duration_days": None,
-     "billing_cycle": None},
+     "billing_cycle": None, "promo_price_sar": None},
     {"plan_id": "basic", "name_ar": "الأساسية", "price_sar": "49.90", "duration_days": 7,
-     "billing_cycle": "one_time"},
+     "billing_cycle": "one_time", "promo_price_sar": "39.90"},
     {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "89.90", "duration_days": 30,
-     "billing_cycle": "one_time"},
+     "billing_cycle": "one_time", "promo_price_sar": "49.90"},
     {"plan_id": "max", "name_ar": "القصوى", "price_sar": "189.90", "duration_days": 30,
-     "billing_cycle": "one_time"},
+     "billing_cycle": "one_time", "promo_price_sar": "99.90"},
     {"plan_id": "marketing_lawyer", "name_ar": "عرض المحامين", "price_sar": None,
-     "duration_days": 7, "billing_cycle": None},
+     "duration_days": 7, "billing_cycle": None, "promo_price_sar": None},
 ]
 
 
@@ -202,8 +206,50 @@ class FakeSupabase:
         self.calls: list[str] = []      # rpc + write sequence, in order
         self.writes: list[tuple] = []
 
+        # ── المشتركون الأوائل (migration 138) ───────────────────────────────
+        # 138 ships `early_adopter_campaign.enabled = false`, so the default
+        # here is deploy-day production: effective price == list price, every
+        # claim answers 'campaign_disabled', nobody holds a seat and NOTHING in
+        # this suite changes. Set `db.campaign_enabled = True` to model an open
+        # campaign.
+        self.campaign_enabled = False
+        self.campaign_seat_limit = 100
+        self.campaign_promo_days = 90
+        self.early_adopter_seats: list[dict] = []
+        # The singleton `early_adopter_campaign` row. Set False to model the
+        # broken install `campaign_disabled` now means — NOT the flag being off,
+        # which is `campaign_enabled` above and no longer refuses a claim.
+        self.campaign_row_present = True
+
     def table(self, name: str) -> _Query:
         return _Query(self, name)
+
+    # -- migration 138 helpers -------------------------------------------
+    def _plan(self, plan_id):
+        return next((p for p in self.tables["plans"] if p["plan_id"] == plan_id), None)
+
+    def _live_seat(self, user_id):
+        return next(
+            (s for s in self.early_adopter_seats
+             if s.get("user_id") == user_id and not s.get("released_at")),
+            None,
+        )
+
+    def _forfeited(self, user_id) -> bool:
+        """Did this user cancel and let it stand? §1.6 — the price is gone for
+        good, even while seats are open. Only an undo takes it back."""
+        return any(
+            s.get("user_id") == user_id and s.get("release_reason") == "cancelled"
+            for s in self.early_adopter_seats
+        )
+
+    def _campaign_open(self) -> bool:
+        """Enabled AND under capacity. Capacity is `count(*) WHERE released_at
+        IS NULL` — 138 has no seat_no, seats release and are re-issued."""
+        if not self.campaign_enabled:
+            return False
+        live = [s for s in self.early_adopter_seats if not s.get("released_at")]
+        return len(live) < self.campaign_seat_limit
 
     # -- RPCs ------------------------------------------------------------
     def rpc(self, name: str, params: dict):
@@ -312,6 +358,179 @@ class FakeSupabase:
                 subs[0]["usage_reset_at"] = stamp
             return _Rpc([{"action": "reset"}])
 
+        # ── migration 138 — المشتركون الأوائل ────────────────────────────
+        # Mirrors `.claude/plans/early_adopters.md` §3.4/§3.5. It is a MODEL of
+        # the SQL, not the SQL: anything that turns on capacity, the advisory
+        # lock or the promo window must be re-verified against 138 itself
+        # before it is believed (the FakeSupabase-cannot-catch-drift rule).
+
+        if name == "early_adopter_open":
+            return _Rpc(self._campaign_open())
+
+        if name == "effective_plan_price":
+            # §3.4's resolution order: no promo or campaign off → list;
+            # FORFEIT → list, always; then the CONTEXT decides.
+            #
+            #   'purchase' — live seat OR campaign open. The buy-now price of a
+            #                decision being made right now, and the only context
+            #                that can enrol anybody.
+            #   'current'  — the live-seat branch ONLY. What this user's running
+            #                term costs: the renewal job and the OLD plan of an
+            #                upgrade credit both ask this, and an open campaign
+            #                must not answer it (that would discount a renewal
+            #                nobody chose, and credit a full-price holder against
+            #                a promo they never paid).
+            #
+            # An unknown context RAISES here because it raises in 138 (22023):
+            # the return value IS the amount charged, so it must never be
+            # guessed. `basic` deliberately has no 'current' answer other than
+            # list — it holds no seat — which is the accepted ≤10 SAR over-credit
+            # on a basic→pro upgrade (the ledger has the exact number).
+            plan = self._plan(params.get("p_plan_id")) or {}
+            listed, promo = plan.get("price_sar"), plan.get("promo_price_sar")
+            context = params.get("p_context", "purchase")
+            if context not in ("purchase", "current"):
+                raise RuntimeError(
+                    f"22023 invalid_parameter_value: unknown p_context {context!r}"
+                )
+            if promo is None or not self.campaign_enabled:
+                return _Rpc(listed)
+            uid = params.get("p_user_id")
+            if self._forfeited(uid):
+                # Beats a live seat AND an open campaign, in both contexts.
+                return _Rpc(listed)
+            seat = self._live_seat(uid)
+            in_window = seat is not None and str(seat["promo_ends_at"]) > _iso(_now())
+            if context == "current":
+                return _Rpc(promo if in_window else listed)
+            if plan.get("plan_id") == "basic":
+                return _Rpc(promo if self._campaign_open() else listed)
+            return _Rpc(promo if (in_window or self._campaign_open()) else listed)
+
+        if name == "claim_early_adopter_seat":
+            # 138's eight actions, in its order. `seat_id IS NOT NULL`
+            # discriminates all of them; only `claimed`/`already_claimed` carry
+            # one.
+            uid = params.get("p_user_id")
+            if row is None:
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False, "action": "payment_not_found"}])
+            if not uid or row.get("user_id") != uid:
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False, "action": "user_mismatch"}])
+            if str(row.get("plan_id") or "") not in ss.EARLY_ADOPTER_PLAN_IDS:
+                # basic / free / marketing_* bear no seats. The Python wrapper
+                # already refuses these, so reaching here at all means the guard
+                # was removed — and 138 is the second wall.
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False, "action": "plan_not_eligible"}])
+            if self._forfeited(uid):
+                # §1.6, enforced in 138 by the SAME predicate the price uses: a
+                # user who cancelled and let it stand was quoted the LIST price,
+                # so they get no seat either — otherwise their next renewal
+                # ('current' → live seat) would be discounted by a seat they
+                # never paid for. seat_id is NULL on this branch.
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False,
+                              "action": ss.CLAIM_ACTION_FORFEITED}])
+            # THE PROMO-PRICE GATE (138), and it gates EVERY claim — there is no
+            # "campaign is full" refusal left, because hoisting this split that
+            # branch in two:
+            #
+            #   A seat holder is precisely someone who was charged the
+            #   promotional price.
+            #
+            # The quote is `amount_sar + upgrade_credit_sar`, because an upgrade
+            # pays the promo price MINUS its credit; measuring the charge alone
+            # would refuse every promo-priced upgrade. Ungated, it leaks at both
+            # ends of the campaign: at the CLOSING instant every later payer
+            # takes a seat forever, and at the OPENING instant a quote priced at
+            # the list price the day before collects 90 days of promo renewals
+            # it never paid for.
+            #
+            # FAILS CLOSED ON A NULL `amount_sar`: a row that cannot say what it
+            # charged cannot prove it was promo-priced, so it mints nothing.
+            plan_row = self._plan(row.get("plan_id")) or {}
+            promo, amount = plan_row.get("promo_price_sar"), row.get("amount_sar")
+            quoted = ps.q2(ps._dec(amount) + ps._dec(row.get("upgrade_credit_sar")))
+            if amount is None or promo is None or quoted > ps.q2(promo) + ps._dec("0.01"):
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False,
+                              "action": ss.CLAIM_ACTION_NOT_PROMO_PRICED}])
+            if not self.campaign_row_present:
+                # The ONLY thing `campaign_disabled` means now: the singleton row
+                # is gone, so there is no promo_days to anchor a window with. A
+                # broken install, not a policy state — and note the gate is
+                # AHEAD of this, so `enabled = false` does NOT land here: the
+                # switch stops new quotes, never settled money.
+                return _Rpc([{"seat_id": None, "promo_ends_at": None,
+                              "over_capacity": False,
+                              "action": ss.CLAIM_ACTION_CAMPAIGN_DISABLED}])
+            # `payment_id` UNIQUE is the webhook/verify idempotency key, and the
+            # partial unique index allows ONE live seat per user. Neither the
+            # double-run nor a second purchase can produce a second seat.
+            held = next(
+                (s for s in self.early_adopter_seats if s.get("payment_id") == payment_id),
+                None,
+            ) or self._live_seat(uid)
+            if held is not None:
+                # Also the pro→max carry-over: the upgrade keeps the ORIGINAL
+                # window rather than opening a new one (§1.8).
+                return _Rpc([{"seat_id": held["seat_id"],
+                              "promo_ends_at": held["promo_ends_at"],
+                              "over_capacity": held["over_capacity"],
+                              "action": ss.CLAIM_ACTION_ALREADY_CLAIMED}])
+            seat = {
+                "seat_id": str(uuid.uuid4()),
+                "user_id": uid,
+                "payment_id": payment_id,
+                "claimed_at": _iso(_now()),
+                "promo_ends_at": _iso(_now() + timedelta(days=self.campaign_promo_days)),
+                "released_at": None,
+                "release_reason": None,
+                # PAST THE GATE, CAPACITY NEVER REFUSES (§3.5) — being full only
+                # STAMPS the seat, so a promo-priced payment is always granted
+                # one. The stamp is what `WHERE over_capacity` counts later.
+                "over_capacity": not self._campaign_open(),
+            }
+            self.early_adopter_seats.append(seat)
+            return _Rpc([{"seat_id": seat["seat_id"],
+                          "promo_ends_at": seat["promo_ends_at"],
+                          "over_capacity": seat["over_capacity"],
+                          "action": ss.CLAIM_ACTION_CLAIMED}])
+
+        if name == "release_early_adopter_seat":
+            seat = self._live_seat(params.get("p_user_id"))
+            if seat is None:
+                return _Rpc(False)
+            seat["released_at"] = _iso(_now())
+            seat["release_reason"] = params.get("p_reason")
+            return _Rpc(True)
+
+        if name == "restore_early_adopter_seat":
+            uid = params.get("p_user_id")
+            if self._live_seat(uid) is not None:
+                return _Rpc(False)                 # nothing to undo
+            seat = next(
+                (s for s in reversed(self.early_adopter_seats)
+                 if s.get("user_id") == uid and s.get("release_reason") == "cancelled"),
+                None,
+            )
+            if seat is None:
+                return _Rpc(False)                 # a REFUNDED seat is not restorable
+            seat["released_at"] = None
+            seat["release_reason"] = None
+            return _Rpc(True)
+
+        if name == "early_adopter_status":
+            uid = params.get("p_user_id")
+            # `has_seat` carries the forfeiture predicate too — the dialog must
+            # not call someone a member at a price they will not be charged.
+            seat = None if self._forfeited(uid) else self._live_seat(uid)
+            return _Rpc([{"campaign_open": self._campaign_open(),
+                          "has_seat": seat is not None,
+                          "promo_ends_at": (seat or {}).get("promo_ends_at")}])
+
         raise AssertionError(f"unexpected rpc {name}")
 
 
@@ -375,7 +594,18 @@ def sub(
 
 
 def checkout(db, plan_id="pro", user_id=USER):
-    return run(ps.create_checkout(db, user_id, plan_id))
+    """Open a checkout — and FORGET the RPCs it made.
+
+    Checkout is setup for most of the tests below, and since migration 138 it
+    prices through ``effective_plan_price`` (twice on an upgrade: the new plan,
+    then the old one for the credit). Every ``db.calls`` assertion in this file
+    is about what CONFIRMATION does, so the pricing calls are dropped here
+    rather than repeated in every expected list. What checkout PRICED is still
+    asserted, on ``amount_sar``/``credit_sar``, by the tests just below.
+    """
+    result = run(ps.create_checkout(db, user_id, plan_id))
+    db.calls.clear()
+    return result
 
 
 def paid_row(db, plan_id="pro", amount="89.90", **over):
@@ -645,7 +875,15 @@ def test_paid_path_stamps_snapshot_before_grant(keys, monkeypatch):
     patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
 
     run(ps.verify_payment(db, USER, MOYASAR_ID))
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
+    assert db.calls == [
+        # A credited row is re-priced from live state before it grants (H-4
+        # layer 3): the new plan, then the old one for the credit — both
+        # through effective_plan_price since 138.
+        "effective_plan_price", "effective_plan_price",
+        "stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset",
+        # …and the seat is claimed AFTER the grant, never inside it.
+        "claim_early_adopter_seat",
+    ]
     row = db.tables["payment_transactions"][0]
     assert row["prior_plan_id"] == "pro"      # what a refund would restore
 
@@ -843,7 +1081,8 @@ def test_webhook_paid_grants(keys, monkeypatch):
 
     result = run(ps.handle_webhook_event(db, _event(pid)))
     assert result["status"] == "paid" and result["granted"] is True
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
+    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan",
+                        "stamp_usage_reset", "claim_early_adopter_seat"]
 
 
 def test_webhook_retry_grants_exactly_once(keys, monkeypatch):
@@ -935,7 +1174,9 @@ def test_webhook_refunded_revokes_the_grant(keys, monkeypatch):
     result = run(ps.handle_webhook_event(db, _event(row["payment_id"], event="payment_refunded")))
     assert result["status"] == "refunded" and result["revoked"] is True
     assert db.tables["payment_transactions"][0]["status"] == "refunded"
-    assert db.calls == ["revoke_plan_grant"]
+    # A dashboard-side refund reaches us only as this event, so it releases the
+    # early-adopter seat here too (138 — a refund voids the status).
+    assert db.calls == ["revoke_plan_grant", "release_early_adopter_seat"]
 
 
 def test_late_paid_event_never_resurrects_a_refund(keys, monkeypatch):
@@ -987,7 +1228,7 @@ def test_refund_marks_refunded_before_revoking(keys, provider_refunds):
     db = FakeSupabase(sub("pro", source="payment", days_left=29))
     row = paid_row(db)
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
-    assert db.calls == ["revoke_plan_grant"]
+    assert db.calls == ["revoke_plan_grant", "release_early_adopter_seat"]
     assert result["revoke_action"] in ps.REVOKE_ACTIONS_OK
     assert db.tables["payment_transactions"][0]["revoked_at"]
 
@@ -1075,6 +1316,51 @@ def test_applepay_rejects_non_apple_urls(keys, url):
 )
 def test_applepay_accepts_apple_urls(keys, url):
     assert ps._validate_apple_validation_url(url) == url
+
+
+# ── How Apple Pay died in prod on 2026-08-18 ─────────────────────────────────
+#
+# The checkout pointed `apple_pay.validate_merchant_url` at OUR backend proxy.
+# That is not Moyasar's integration: their guide has the browser call
+# `https://api.moyasar.com/v1/applepay/initiate` directly, and their SDK is
+# built for it — moyasar.js puts an `X-Moyasar-Form-Version` header on that
+# fetch (our CORS allowlist 400'd the preflight) and no Authorization header
+# (our authed route would have 401'd it). 46 mobile-Safari buyers hit a dead
+# payment sheet, and the only trace was a 400 on an OPTIONS.
+#
+# The failure was SILENT and it was in a one-line frontend constant, so no
+# service-level test above could have caught it. There is no frontend test
+# runner in this repo, which makes this static assertion the only executable
+# guard on that line. It is deliberately narrow: it pins WHERE merchant
+# validation goes, nothing else.
+
+PAY_PAGE = Path(__file__).resolve().parents[2] / "frontend" / "app" / "pay" / "[plan]" / "page.tsx"
+
+
+def test_applepay_merchant_validation_does_not_route_through_our_backend():
+    """`validate_merchant_url` must be Moyasar's endpoint, never ours."""
+    src = PAY_PAGE.read_text(encoding="utf-8")
+
+    assert "validate_merchant_url: MOYASAR_APPLEPAY_VALIDATE_URL" in src, (
+        "the Apple Pay merchant-validation URL must come from the documented "
+        "constant in frontend/lib/moyasar.ts"
+    )
+    # The exact shape of the regression: our own origin behind that key.
+    assert "applepay/session" not in src, (
+        "checkout is proxying Apple Pay merchant validation through our backend "
+        "again — that is what killed every Apple Pay payment on 2026-08-18"
+    )
+
+
+def test_applepay_validate_url_constant_points_at_moyasar():
+    const_src = (
+        Path(__file__).resolve().parents[2] / "frontend" / "lib" / "moyasar.ts"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'MOYASAR_APPLEPAY_VALIDATE_URL =\n  "https://api.moyasar.com/v1/applepay/initiate"'
+        in const_src
+    ), "merchant validation must post to Moyasar's documented endpoint"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1234,7 +1520,14 @@ def test_stockpiled_credited_checkouts_grant_exactly_once(keys, monkeypatch):
         results.append(run(ps.verify_payment(db, USER, MOYASAR_ID)))
 
     assert [r["granted"] for r in results] == [True, False, False]
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]  # once, total
+    # ONCE, TOTAL. The effective_plan_price reads around it are the
+    # re-derivation (H-4 layer 3) running for all three payments — only the
+    # first one gets past it — and they are filtered out so this assertion keeps
+    # saying what it is for: exactly one grant.
+    assert [c for c in db.calls if c != "effective_plan_price"] == [
+        "stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset",
+        "claim_early_adopter_seat",
+    ]
     assert db.tables["user_subscriptions"][0]["plan_id"] == "max"
 
     held = [r for r in db.tables["payment_transactions"] if not r.get("fulfilled_at")]
@@ -1257,7 +1550,8 @@ def test_credit_revalidation_refuses_when_the_term_is_gone(keys, monkeypatch):
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is False
     assert result["review_reason"] == "credit_no_longer_owed"
-    assert db.calls == []                       # neither snapshot nor grant ran
+    # Priced (138), then refused: neither snapshot nor grant ran.
+    assert db.calls == ["effective_plan_price"]
 
     row = db.tables["payment_transactions"][0]
     assert row["status"] == "paid" and not row.get("fulfilled_at")
@@ -1287,7 +1581,11 @@ def test_an_honest_upgrade_still_grants(keys, monkeypatch):
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is True
-    assert db.calls == ["stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset"]
+    assert db.calls == [
+        "effective_plan_price", "effective_plan_price",     # re-priced, still owed
+        "stamp_payment_prior_snapshot", "grant_plan", "stamp_usage_reset",
+        "claim_early_adopter_seat",
+    ]
 
 
 def test_a_credited_upgrade_is_idempotent_across_both_paths(keys, monkeypatch):
@@ -1505,7 +1803,11 @@ def test_subscription_state_of_a_user_with_no_row():
     state = run(ss.get_subscription(FakeSupabase(), USER))
     assert state == {"plan_id": None, "plan_name_ar": None, "expires_at": None,
                      "source": None, "cancellable": False,
-                     "renewal_cancelled_at": None}
+                     "renewal_cancelled_at": None,
+                     # 138 — always present, and "not a member" is what every
+                     # user reads while the campaign is disabled. No count here,
+                     # by design (early_adopters.md §1.10).
+                     "early_adopter": {"is_member": False, "promo_ends_at": None}}
 
 
 @pytest.mark.parametrize(

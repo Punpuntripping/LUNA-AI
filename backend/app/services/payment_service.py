@@ -7,9 +7,11 @@ price it, verify it, and grant the plan.
 Three rules this module exists to enforce:
 
 1. **The server owns the amount.** The client sends a `plan_id` and nothing
-   else. Price comes from ``plans.price_sar``, the upgrade credit is computed
-   here, and the VAT split is stamped once at initiation (never recomputed at
-   display time — a future rate change must not rewrite history).
+   else. Price comes from ``effective_plan_price(user, plan)`` — the catalog's
+   ``price_sar`` unless a promotion says otherwise (see 138 below) — the upgrade
+   credit is computed here, and the VAT split is stamped once at initiation
+   (never recomputed at display time — a future rate change must not rewrite
+   history).
 2. **Only a re-fetch is evidence.** Both confirmation paths (the browser's
    `/verify` after the redirect, and Moyasar's webhook) re-fetch
    ``GET /v1/payments/{id}`` with our secret key and trust ONLY that object.
@@ -83,11 +85,43 @@ with auto-renewal, and every one of them is inert while
 The job that spends those tokens lives in ``renewal_service`` — a separate
 module, on the 113/120 precedent that the grant path is not edited for a side
 concern.
+
+Migration ``138_early_adopters.sql`` (المشتركون الأوائل — see
+`.claude/plans/early_adopters.md`) makes the PRICE a function of *(user, plan,
+context, now)* instead of a column. Three readers quoted ``plans.price_sar``
+directly and all three now go through ``_effective_price`` → the
+``effective_plan_price`` RPC: ``create_checkout`` (context ``'purchase'``),
+``_upgrade_credit`` for the OLD plan (``'current'``) and — every 30 days,
+unattended — ``renewal_service`` (``'current'``). Editing the column instead
+would have broken in both directions: during the campaign the catalog cannot see
+who is asking, and putting it back would step every early adopter up to the list
+price on their next automatic charge (plan §2).
+
+``'purchase'`` is the buy-now price (a live seat, or an open campaign);
+``'current'`` is what the user's running term costs (the live-seat branch only).
+Anything that asks "what may they buy this for?" uses the first; anything that
+asks "what are they already paying?" uses the second.
+
+The seat itself is subscription bookkeeping and lives in
+``subscription_service`` §7. This module has exactly two dealings with it, both
+in the posture ``clear_renewal_cancellation`` established — beside the money
+path, never inside it, and never raising:
+
+* ``_mark_paid_and_grant`` claims a seat AFTER ``grant_plan`` returns, for
+  USER-INITIATED purchases only — an automatic renewal charge never enrols
+  anybody (idempotent on ``early_adopter_seats.payment_id`` UNIQUE, which is
+  what makes the webhook + ``/verify`` double-run safe);
+* both refund paths release it — a refund voids the status (plan §1.5).
+
+All of it is inert until someone flips ``early_adopter_campaign.enabled``: 138
+ships it false, ``effective_plan_price`` then returns ``price_sar``, and every
+claim answers ``campaign_disabled``.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid as uuid_module
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -673,6 +707,201 @@ def _fetch_plans(supabase: SupabaseClient, plan_ids: list[str]) -> dict[str, dic
     return {row["plan_id"]: row for row in (res.data or [])}
 
 
+# ── المشتركون الأوائل — the ONE price definition (early_adopters.md §2, §3.4) ─
+#
+# ``plans.price_sar`` is the LIST price. What a given user pays for a given plan
+# right now is ``effective_plan_price(user, plan, context)``, defined once in SQL
+# (migration 138) and consumed by all three readers that used to quote the
+# column: checkout, the upgrade credit, and the renewal job.
+#
+# THE CONTEXT IS THE WHOLE DESIGN, so it is spelled out here once:
+#
+#   'purchase' — the BUY-NOW price. A live seat, or an open campaign and no
+#                forfeiture. This is the price of a decision someone is making
+#                right now, and it is the only context that can enrol anybody.
+#   'current'  — what this user's RUNNING TERM costs. The live-seat branch only,
+#                never the open-campaign branch. Used where the question is "what
+#                is this user already paying?" rather than "what may they buy
+#                for?": the renewal job, and the OLD plan in an upgrade credit.
+#
+# Getting that split wrong is not a rounding error. 'purchase' on the renewal
+# path would hand every renewing non-member an automatic discount they never
+# chose (and, if a seat followed it, enrol them by a charge they did not make);
+# 'purchase' on the old plan of an upgrade would credit a full-price holder
+# against the promo price they never paid.
+#
+# FORFEITURE (§1.6) is enforced inside 138, not here: one predicate — the user
+# holds any seat row released with reason 'cancelled' — shared byte-for-byte by
+# effective_plan_price, claim_early_adopter_seat and early_adopter_status, and it
+# beats BOTH a live seat and an open campaign, in BOTH contexts. So a user who
+# cancelled and let it stand is quoted the list price everywhere, by one rule in
+# one place, and no call site has to remember it. An undo restores the seat AND
+# clears the reason, so it leaves no forfeiture behind.
+#
+# Passing an unknown context RAISES in SQL (22023) rather than returning a price
+# — the return value IS the amount charged, so guessing is not an option. Here
+# that lands in the except below and degrades to the catalog price, which is why
+# the two literals are constants and never string arguments at the call site.
+#
+# FALLBACK DIRECTION, deliberately: every failure — the function missing because
+# 138 is not applied yet, an unknown ``p_context``, a NULL, a non-numeric answer,
+# a non-positive value — returns the CATALOG price. That is precisely the
+# pre-campaign behaviour, so a backend that lands ahead of its migration keeps
+# selling at list price instead of 503-ing every checkout and every renewal. It
+# is also the only safe direction: quoting the promo price on a failed read
+# would discount everybody, forever, invisibly.
+#
+# Sync, like every other DB helper here, and therefore always called through
+# ``run_db`` from async callers — or directly from code already inside one
+# (``_upgrade_credit`` under ``_revalidate_credited_charge``).
+PRICE_CONTEXT_PURCHASE = "purchase"
+PRICE_CONTEXT_CURRENT = "current"
+
+
+def _effective_price(
+    supabase: SupabaseClient,
+    user_id: Optional[str],
+    plan_id: Optional[str],
+    catalog_price_sar: Any,
+    *,
+    context: str = PRICE_CONTEXT_PURCHASE,
+) -> Decimal:
+    """What THIS user pays for THIS plan right now, quantized to 2dp.
+
+    ``context`` is passed explicitly on every call even though the SQL defaults
+    it: a default that is only ever right for two of the four call sites is a
+    trap, and the wire call is the place the choice should be readable.
+    """
+    catalog = q2(catalog_price_sar)
+    if not user_id or not plan_id:
+        # A purged buyer (117) or an unbound row has no promotional identity to
+        # resolve against; the catalog is the only honest answer.
+        return catalog
+    try:
+        res = supabase.rpc(
+            "effective_plan_price",
+            {
+                "p_user_id": str(user_id),
+                "p_plan_id": str(plan_id),
+                "p_context": context,
+            },
+        ).execute()
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if isinstance(data, dict):                     # RETURNS TABLE shape, defensively
+            data = next(iter(data.values()), None)
+    except Exception as exc:  # noqa: BLE001 — includes "function does not exist"
+        logger.warning(
+            "effective_plan_price(context=%s) unavailable for user=%s plan=%s — "
+            "falling back to the catalog price %s (pre-campaign behaviour): %s",
+            context, user_id, plan_id, catalog, exc,
+        )
+        return catalog
+
+    price = _dec(data, default="0")
+    if data is None or price <= 0:
+        logger.error(
+            "effective_plan_price(context=%s) returned %r for user=%s plan=%s — "
+            "using the catalog price %s instead",
+            context, data, user_id, plan_id, catalog,
+        )
+        return catalog
+    return q2(price)
+
+
+# ── the public campaign flag (GET /payments/early-adopter) ───────────────────
+#
+# The ONLY thing about the campaign that ever leaves the server: is it open, and
+# what are the promo prices. Never a remaining count, never a seat total, never
+# a closing date (§1.10, §7). After the campaign closes a visitor simply sees
+# the list price, with no explanation.
+PROMO_PLAN_IDS: tuple[str, ...] = ("basic", "pro", "max")
+
+# An anonymous marketing page polls this. 30s is short enough that the window in
+# which /pricing can show a stale promo is bounded by the frontend's own
+# revalidate (60s), and long enough that a crawler cannot turn a public endpoint
+# into a query per request.
+EARLY_ADOPTER_CACHE_TTL_S = 30.0
+_CAMPAIGN_CACHE: Optional[tuple[float, dict]] = None
+
+
+def _campaign_closed() -> dict:
+    """The shape a closed, disabled, or unreadable campaign answers with. It is
+    indistinguishable from "there has never been a campaign", which is the
+    point."""
+    return {"open": False, "promo": {}}
+
+
+def _fetch_promo_prices(supabase: SupabaseClient) -> dict[str, str]:
+    """``plans.promo_price_sar`` for the three purchasable plans, as 2-dp strings.
+
+    Read through its OWN query rather than widened into ``_fetch_plans``: that
+    one is on the live checkout path, and selecting a column that does not exist
+    yet answers 42703 for the whole purchase. Here a failure only costs a badge
+    on a marketing page.
+    """
+    res = (
+        supabase.table("plans")
+        .select("plan_id, promo_price_sar")
+        .in_("plan_id", list(PROMO_PLAN_IDS))
+        .execute()
+    )
+    out: dict[str, str] = {}
+    for row in getattr(res, "data", None) or []:
+        promo = row.get("promo_price_sar")
+        if promo is None:
+            continue                                   # this plan has no promo
+        out[str(row.get("plan_id"))] = f"{q2(promo):.2f}"
+    return out
+
+
+def _read_campaign_state(supabase: SupabaseClient) -> dict:
+    """``early_adopter_open()`` + the promo prices, or a closed campaign.
+
+    Fail-CLOSED, the opposite of ``_effective_price``: an unreadable campaign
+    shows list prices on a public page, which is always safe, whereas claiming
+    a promo we cannot price would advertise a discount the checkout then refuses.
+    """
+    try:
+        res = supabase.rpc("early_adopter_open", {}).execute()
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if isinstance(data, dict):
+            data = next(iter(data.values()), None)
+        if not bool(data):
+            return _campaign_closed()
+        promo = _fetch_promo_prices(supabase)
+    except Exception as exc:  # noqa: BLE001 — includes 138 not being applied
+        logger.warning(
+            "early-adopter campaign state unreadable — answering 'closed': %s", exc
+        )
+        return _campaign_closed()
+    if not promo:
+        return _campaign_closed()
+    return {"open": True, "promo": promo}
+
+
+async def early_adopter_campaign_state(supabase: SupabaseClient) -> dict:
+    """Cached ``{"open": bool, "promo": {plan_id: "39.90"}}`` for the public route.
+
+    The cache is a module-level tuple with no lock: two concurrent refreshes
+    cost one extra query and produce the same answer, and a lock on an anon
+    endpoint is a queue waiting to happen. Both branches return a fresh dict —
+    a caller must never be able to mutate what the next visitor is served.
+    """
+    global _CAMPAIGN_CACHE
+    now = time.monotonic()
+    cached = _CAMPAIGN_CACHE
+    if cached is not None and now - cached[0] < EARLY_ADOPTER_CACHE_TTL_S:
+        state = cached[1]
+    else:
+        state = await run_db(_read_campaign_state, supabase)
+        _CAMPAIGN_CACHE = (now, state)
+    return {"open": bool(state.get("open")), "promo": dict(state.get("promo") or {})}
+
+
 def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
     # limit(1) rather than maybe_single(): PostgREST answers 406 for a
     # single-object request that matches no row, and postgrest-py surfaces that
@@ -1189,6 +1418,8 @@ def _plan_rank(plan_id: Optional[str]) -> Optional[int]:
 
 
 def _upgrade_credit(
+    supabase: SupabaseClient,
+    user_id: Optional[str],
     *,
     new_plan_id: str,
     new_price: Decimal,
@@ -1202,7 +1433,8 @@ def _upgrade_credit(
     clocks: once by ``create_checkout`` to price the row, and once by
     ``_revalidate_credited_charge`` to re-derive that same price from live state
     before the plan is granted. Two copies of this arithmetic would drift, and
-    the drift would be a discount.
+    the drift would be a discount. That is also why the old plan's price is
+    resolved HERE and not by either caller.
 
     Credit is owed ONLY for a still-running plan the user actually PAID for. A
     code/marketing/manual grant earns nothing — otherwise a promo code becomes a
@@ -1212,6 +1444,9 @@ def _upgrade_credit(
     ``at`` is the moment the credit is measured from. Passing the quote's
     ``created_at`` at fulfilment is what keeps ordinary time decay between
     checkout and payment from reading as a state change.
+
+    SYNC and DB-touching (``_effective_price``), so async callers must reach it
+    through ``run_db``.
     """
     current_plan_id = (subscription or {}).get("plan_id")
     expires_at = _parse_ts((subscription or {}).get("expires_at"))
@@ -1227,9 +1462,34 @@ def _upgrade_credit(
 
     old_plan = plans.get(current_plan_id) or {}
     duration_days = old_plan.get("duration_days")
-    old_price = old_plan.get("price_sar")
-    if not duration_days or old_price is None:
+    if not duration_days or old_plan.get("price_sar") is None:
         return Decimal("0.00")
+
+    # THE OLD PLAN IS CREDITED AT WHAT THIS USER IS PAYING FOR IT — context
+    # 'current', never 'purchase' (early_adopters.md §4, "the two traps").
+    #
+    # Reading ``price_sar`` credits an early adopter who paid 49.90 for pro with
+    # the 89.90 LIST price when they upgrade to max: more than they ever paid,
+    # which is the H-4 class of bug arriving through a new door. Reading
+    # 'purchase' would produce the mirror of it — a FULL-price holder upgrading
+    # while the campaign is open would be credited against a promo price they
+    # never paid, and be short-changed.
+    #
+    # 'current' answers both by construction, because it asks the only question
+    # that matters here: what does this user's RUNNING TERM cost? A seat holder
+    # inside their window → 49.90. Everyone else, campaign open or not → 89.90.
+    # It also self-corrects after day 90, when the seat holder genuinely is
+    # paying 89.90.
+    #
+    # The plan being BOUGHT keeps 'purchase' (the caller resolved it) — that one
+    # is a decision being made now, and it is the purchase that may claim a seat.
+    old_price = _effective_price(
+        supabase,
+        user_id,
+        current_plan_id,
+        old_plan.get("price_sar"),
+        context=PRICE_CONTEXT_CURRENT,
+    )
 
     remaining_days = Decimal(str((expires_at - at).total_seconds())) / Decimal(86400)
     # CLAMP TO ONE PERIOD (H-4). Same-plan purchases STACK — grant_plan adds
@@ -1272,7 +1532,12 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
             detail=PLAN_NOT_PURCHASABLE_AR,
         )
 
-    price = q2(plan["price_sar"])
+    # THE price, not the catalog's (early_adopters.md §2). Everything downstream
+    # — the charge, the VAT split, the halalas the form is handed, the ledger row
+    # — follows from this one number and is unchanged.
+    price = await run_db(
+        _effective_price, supabase, user_id, plan_id, plan["price_sar"]
+    )
     expires_at = _parse_ts((subscription or {}).get("expires_at"))
     # NULL expires_at = non-expiring grant (dev/manual) — active, not expired.
     active = bool(subscription and current_plan_id and (expires_at is None or expires_at > _now()))
@@ -1288,7 +1553,12 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
 
     # ── upgrade proration ──────────────────────────────────────────────────
     # The whole rule lives in _upgrade_credit, because fulfilment re-runs it.
-    credit = _upgrade_credit(
+    # Through run_db now: it prices the OLD plan through effective_plan_price,
+    # so it is a DB-touching call and must not run on the event loop.
+    credit = await run_db(
+        _upgrade_credit,
+        supabase,
+        user_id,
         new_plan_id=plan_id,
         new_price=price,
         subscription=subscription,
@@ -1411,6 +1681,13 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         # SUBSCRIPTION_AUTO_RENEWAL_ENABLED is off, and always for `basic` —
         # which does not renew, so tokenizing its card would collect a
         # credential with no purpose.
+        #
+        # TODO(early-adopters §5): a promotional price STEPS UP — someone consents
+        # at a screen showing 49.90 and is charged 89.90 on day 91, on a saved
+        # card, and today's hashed disclosure (v2) does not contain the fact that
+        # a step-up is coming. Whether to bump DISCLOSURE_VERSION to v3 for
+        # seat-holding pro/max purchases is an OPEN OWNER DECISION; nothing here
+        # touches DISCLOSURE_VERSION or recurring_disclosure_ar until it is made.
         "requires_recurring_consent": payment_method_service.requires_recurring_consent(plan),
         "recurring_disclosure_ar": (
             payment_method_service.recurring_disclosure_ar(plan)
@@ -1610,13 +1887,44 @@ def _revalidate_credited_charge(supabase: SupabaseClient, row: dict) -> dict:
     if plan.get("price_sar") is None:
         return {**verdict, "ok": False, "reason": "plan_not_purchasable"}
 
-    price = q2(plan["price_sar"])
+    # The EFFECTIVE price, on both sides of the inequality — the row was quoted
+    # from it, so re-deriving from the list price would hold every promotional
+    # upgrade for review (early_adopters.md §2).
+    #
+    # …and never ABOVE what we quoted. A PRICE RISE between quote and settlement
+    # is not the customer's problem and never was: the docstring above already
+    # says a price CUT must not hold a grant, and the promotional case simply
+    # made the opposite movement possible for the first time. The only two ways
+    # `effective_now > quoted` are the campaign closing and a day-90 crossing —
+    # both time-based, neither user-controllable — and §3.5 has already decided
+    # that outcome: a quote priced while seats were open is HONOURED, the seat is
+    # granted anyway and stamped `over_capacity`. Holding the payment instead
+    # would contradict that decision in the worst possible way (money in, plan
+    # pending, the customer shown nothing).
+    #
+    # This does not weaken H-4. The exploit was an oversized CREDIT, which is
+    # still re-derived below at the quote's own clock, and 119's one-open-quote
+    # index still stands. `quoted` is server-stamped at checkout, TTL'd to 24h,
+    # and unreachable by a client.
+    quoted = q2(_dec(row.get("amount_sar")) + credit)
+    price = min(
+        _effective_price(
+            supabase,
+            str(user_id),
+            str(plan_id),
+            plan["price_sar"],
+            context=PRICE_CONTEXT_PURCHASE,
+        ),
+        quoted,
+    )
     # Anchored at the quote's own timestamp, NOT at now: between checkout and
     # payment the remaining term shrinks by the minutes the user spent typing a
     # card number, and that decay is not a state change. Anything that IS a
     # state change — plan switched, term refunded, source changed, this very
     # credit already spent by a sibling checkout — still collapses the credit.
     owed = _upgrade_credit(
+        supabase,
+        str(user_id),
         new_plan_id=str(plan_id),
         new_price=price,
         subscription=subscription,
@@ -1774,6 +2082,35 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
         subscription_service.clear_renewal_cancellation, supabase, row["user_id"]
     )
 
+    # ── المشتركون الأوائل: claim the seat (early_adopters.md §1.1, §4) ─────
+    # BESIDE grant_plan, never inside it — 113/119/120's rule, the same one the
+    # call above is written to — and after the usage reset, because a side
+    # concern does not stand in front of the thing that unblocks the customer.
+    # Never raises, and carries no guard of its own: idempotency is
+    # early_adopter_seats.payment_id UNIQUE, which is exactly what makes the
+    # webhook + /verify double-run safe. The wrapper self-guards on pro/max.
+    #
+    # A RENEWAL NEVER CLAIMS. «المشتركون الأوائل» is the first 100 to PAY, and an
+    # automatic charge on a saved card is not a decision the subscriber made
+    # today — enrolling them by it would silently sign up existing full-price
+    # subscribers (plan §1.2 says the current payers are not enrolled) and burn
+    # capacity that belongs to real purchases. There is no discount to cap here
+    # either: renewal_service prices with context 'current', so a non-member's
+    # renewal is charged the LIST price, and a seat holder's is already covered
+    # by the seat they hold. They can still join — by making a real purchase
+    # (an upgrade, or a re-buy after a lapse), which is a decision.
+    #
+    # `initiated_by` is 132's column; a row from before it (or any browser
+    # purchase) reads as 'user', which is the branch that claims.
+    if str(row.get("initiated_by") or INITIATED_BY_USER) != INITIATED_BY_RENEWAL:
+        await run_db(
+            subscription_service.claim_early_adopter_seat,
+            supabase,
+            row["user_id"],
+            payment_id,
+            plan_id=row.get("plan_id"),
+        )
+
     # ── tokenize (auto-renewal plan §6) ────────────────────────────────────
     # BOTH confirmation paths run this function, which is precisely why the
     # capture lives here and not in verify_payment: 3DS destroys the page, so
@@ -1888,6 +2225,18 @@ async def _mark_refunded(supabase: SupabaseClient, row: dict, fetched: dict) -> 
         )
     action = await run_db(_revoke_plan_grant, supabase, payment_id)
     logger.info("payment refunded: payment=%s revoke_action=%s", payment_id, action)
+
+    # A refund voids the early-adopter status (§1.5). Handled here as well as in
+    # refund_payment because a refund issued from the Moyasar dashboard only ever
+    # reaches us as this event, and a refunded buyer who kept the seat would keep
+    # the promo price and hold capacity nobody can see.
+    await run_db(
+        subscription_service.release_early_adopter_seat,
+        supabase,
+        row.get("user_id"),
+        reason=subscription_service.RELEASE_REASON_REFUND,
+        plan_id=row.get("plan_id"),
+    )
 
     # إيصال استرداد — self-claiming, so if the self-serve route already sent
     # it this is a no-op. Never raises.
@@ -2237,6 +2586,18 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
 
     # Only now — the RPC refuses a row that is not yet 'refunded'.
     revoke_action = await run_db(_revoke_plan_grant, supabase, payment_id)
+
+    # A refund releases the seat and voids the status (early_adopters.md §1.5) —
+    # they may buy back in while seats remain. Same never-raises posture as the
+    # revoke above: the money is already back with the customer, so nothing here
+    # may turn a completed refund into an error.
+    await run_db(
+        subscription_service.release_early_adopter_seat,
+        supabase,
+        user_id,
+        reason=subscription_service.RELEASE_REASON_REFUND,
+        plan_id=row.get("plan_id"),
+    )
 
     await run_db(
         write_audit_log,

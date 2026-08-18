@@ -1,3 +1,5 @@
+import type { EarlyAdopterCampaign } from "@/types";
+
 /**
  * Pricing catalog for the public /pricing page. This is marketing copy — the
  * single source of truth for what is *displayed*. The matching enforcement
@@ -39,6 +41,35 @@
  * the Arabic decimal separator ٫ (U+066B) — the same shape `formatSar` produces
  * from the `ar-EG` locale, so a hard-coded card price and a server-computed
  * charge on /pay read identically.
+ *
+ * ── المشتركون الأوائل (.claude/plans/early_adopters.md) ──────────────────────
+ *
+ * Each plan carries a `promoPrice` beside its list `price`, and a CAMPAIGN FLAG
+ * — never a hard-coded date — chooses which one renders. The flag arrives from
+ * `GET /payments/early-adopter`; absent, unreachable or malformed, every surface
+ * falls back to the LIST price. Failing that direction is the only safe one: a
+ * card promising 39.90 while checkout charges 49.90 is a mismatch discovered at
+ * the moment of payment.
+ *
+ * ⚠ THE DB REMAINS AUTHORITATIVE FOR THE AMOUNT, exactly as it is for
+ * `price_sar`. `plans.promo_price_sar` is what `effective_plan_price()` quotes
+ * to checkout, to the renewal job and to the upgrade credit; the strings here
+ * are display copy and drift silently if edited apart. Migration 138 and this
+ * file must move as one — the same rule migration 113 already imposes on
+ * `price`. The promo AMOUNT a card shows is in fact taken straight from the
+ * campaign endpoint (`promoPriceFor()`); the hard-coded `promoPrice` is the
+ * catalog mirror and is read only to rank the upgrade ladder.
+ *
+ * ⚠ NEVER RENDER A SEAT COUNT, A SEAT TOTAL, OR A CLOSING DATE. Not here, not on
+ * a card, not in an error. The only permitted scarcity signal anywhere is
+ * `SEATS_LIMITED_NOTE` («المقاعد محدودة») — an owner decision (plan §1.10), not
+ * a stylistic one, and it holds even if the API ever grows a count field.
+ *
+ * ⚠ THE PROMO CHANGES THE PRICE, NOT THE BILLING MODEL. `promoBillingNote`
+ * exists so pro/max can state the step-up honestly, and it still says NOTHING
+ * about renewal for the reasons in the block above. `basic` deliberately has no
+ * `promoBillingNote`: «بدون تجديد تلقائي · فترة الاشتراك ٧ أيام فقط» is true
+ * during the campaign and after it, and must never be copied onto pro/max.
  */
 export interface PricingPlan {
   /** Matches plans.plan_id in the DB. */
@@ -47,6 +78,20 @@ export interface PricingPlan {
   tagline: string;
   /** Price in SAR, Arabic-Indic numerals, with the ٫ decimal separator. */
   price: string;
+  /**
+   * The المشتركون الأوائل price, same numeral convention — the catalog's mirror
+   * of `plans.promo_price_sar`, kept in sync by hand exactly like `price`.
+   *
+   * ⚠ NOT WHAT GETS RENDERED. The amount on a card comes from the campaign
+   * endpoint via `promoPriceFor()`; this value is read only for ORDERING, by
+   * `cheapestPricingPlan()` and `pricingPlansAbove()`, which are handed the
+   * boolean "is the campaign open" and never the server's price map. Trusting it
+   * to rank is safe (the order is the same either way); trusting it to price
+   * would advertise a discount the server might not honour.
+   *
+   * Undefined = this plan is not part of the campaign and never discounts.
+   */
+  promoPrice?: string;
   /** Billing cadence label shown next to the price. */
   period: "أسبوعياً" | "شهرياً";
   /**
@@ -55,6 +100,21 @@ export interface PricingPlan {
    * pro/max are deliberately silent on renewal.
    */
   billingNote: string;
+  /**
+   * Replaces `billingNote` while the promo price is on screen. pro/max ONLY:
+   * their price steps back up to the list price after 90 days and a buyer has to
+   * be told that before paying, which is the same standard `basic`'s
+   * «بدون تجديد تلقائي» meets.
+   *
+   * Still carries the term (the invariant `billingNote` owes the reader), still
+   * asserts nothing about renewal, and deliberately does NOT repeat the list
+   * number — `PlanPrice` already renders it struck through directly above, and
+   * two copies of one price is one copy too many to keep in sync.
+   *
+   * `basic` has none on purpose: its discount is not time-boxed to 90 days (it
+   * simply ends when seats run out), so its permanent note stays as it is.
+   */
+  promoBillingNote?: string;
   features: string[];
   /** The visually emphasised "most popular" card. */
   highlighted?: boolean;
@@ -66,6 +126,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     nameAr: "الأساسية",
     tagline: "للبدء والاستخدام الخفيف",
     price: "٤٩٫٩٠",
+    promoPrice: "٣٩٫٩٠",
     period: "أسبوعياً",
     billingNote: "بدون تجديد تلقائي · فترة الاشتراك ٧ أيام فقط",
     features: [
@@ -79,8 +140,11 @@ export const PRICING_PLANS: PricingPlan[] = [
     nameAr: "الاحترافية",
     tagline: "الأنسب للممارسة اليومية",
     price: "٨٩٫٩٠",
+    promoPrice: "٤٩٫٩٠",
     period: "شهرياً",
     billingNote: "فترة الاشتراك ٣٠ يوماً",
+    promoBillingNote:
+      "فترة الاشتراك ٣٠ يوماً · سعر المشتركين الأوائل لأول ٩٠ يوماً، ثم يعود إلى السعر المعتاد",
     highlighted: true,
     features: [
       "٧٥ نقطة استخدام أسبوعياً",
@@ -93,8 +157,11 @@ export const PRICING_PLANS: PricingPlan[] = [
     nameAr: "القصوى",
     tagline: "أقصى سعة للقضايا المكثّفة",
     price: "١٨٩٫٩٠",
+    promoPrice: "٩٩٫٩٠",
     period: "شهرياً",
     billingNote: "فترة الاشتراك ٣٠ يوماً",
+    promoBillingNote:
+      "فترة الاشتراك ٣٠ يوماً · سعر المشتركين الأوائل لأول ٩٠ يوماً، ثم يعود إلى السعر المعتاد",
     features: [
       "٢٥٠ نقطة استخدام أسبوعياً",
       "٥٠ نقطة لكل جلسة (٥ ساعات)",
@@ -116,10 +183,17 @@ export function findPricingPlan(id: string): PricingPlan | undefined {
  * otherwise leave the dialog advertising a price no card shows. Compared on the
  * parsed Arabic-Indic string rather than a second numeric field, so there is
  * still exactly one place a price is written down.
+ *
+ * `campaignOpen` makes the comparison EFFECTIVE (promo where one exists), so
+ * «ابتداءً من …» quotes what the cards beneath it actually show. Defaults to
+ * `false` = list prices — the same fail-safe direction as every other campaign
+ * read here, and byte-identical to the pre-campaign behaviour for any caller
+ * that does not pass it.
  */
-export function cheapestPricingPlan(): PricingPlan {
+export function cheapestPricingPlan(campaignOpen = false): PricingPlan {
   return PRICING_PLANS.reduce((cheapest, plan) =>
-    arabicPriceToNumber(plan.price) < arabicPriceToNumber(cheapest.price)
+    effectivePriceNumber(plan, campaignOpen) <
+    effectivePriceNumber(cheapest, campaignOpen)
       ? plan
       : cheapest,
   );
@@ -142,16 +216,47 @@ export function cheapestPricingPlan(): PricingPlan {
  * catalog: we cannot prove any of these is an upgrade for them, and
  * `marketing_lawyer` (74 points weekly) would be shown `basic` (50) as a step
  * up. Failing quiet costs an upsell; failing loud sells a downgrade.
+ *
+ * `campaignOpen` switches the comparison to EFFECTIVE prices so the ladder is
+ * ranked the way the cards are priced. It does NOT widen or narrow the ladder:
+ * promo pricing preserves the catalog's rank (39.90 < 49.90 < 99.90, exactly as
+ * 49.90 < 89.90 < 189.90), so the same plans are offered either way and nothing
+ * the server's downgrade guard would refuse can appear. Assert that whenever a
+ * promo amount changes — a promo that inverted the order would let this function
+ * offer a downgrade.
  */
 export function pricingPlansAbove(
   planId: string | null | undefined,
+  campaignOpen = false,
 ): PricingPlan[] {
   const current = planId ? findPricingPlan(planId) : undefined;
   if (!current) return [];
-  const floor = arabicPriceToNumber(current.price);
+  const floor = effectivePriceNumber(current, campaignOpen);
   return PRICING_PLANS.filter(
-    (plan) => arabicPriceToNumber(plan.price) > floor,
-  ).sort((a, b) => arabicPriceToNumber(a.price) - arabicPriceToNumber(b.price));
+    (plan) => effectivePriceNumber(plan, campaignOpen) > floor,
+  ).sort(
+    (a, b) =>
+      effectivePriceNumber(a, campaignOpen) -
+      effectivePriceNumber(b, campaignOpen),
+  );
+}
+
+/**
+ * What this plan costs RIGHT NOW, as a number, for ordering only.
+ *
+ * Reads the hard-coded `promoPrice` rather than the campaign payload: the two
+ * ranking helpers above are handed a boolean, not the server's price map, and
+ * ranking only needs the relative order. The number a user SEES always comes
+ * from `resolvePlanPricing()`, which reads the server's amount and nothing else.
+ *
+ * A promo that is missing, unparseable, or not actually cheaper falls back to
+ * the list price — a "discount" above list must never reorder the ladder.
+ */
+function effectivePriceNumber(plan: PricingPlan, campaignOpen: boolean): number {
+  const list = arabicPriceToNumber(plan.price);
+  if (!campaignOpen || !plan.promoPrice) return list;
+  const promo = arabicPriceToNumber(plan.promoPrice);
+  return Number.isFinite(promo) && promo > 0 && promo < list ? promo : list;
 }
 
 /** «٤٩٫٩٠» → 49.9. Arabic-Indic digits + the ٫ separator back to a JS number. */
@@ -160,6 +265,206 @@ function arabicPriceToNumber(price: string): number {
     String("٠١٢٣٤٥٦٧٨٩".indexOf(d)),
   );
   return Number(latin.replace("٫", "."));
+}
+
+// -----------------------------------------------
+// المشتركون الأوائل — the campaign surface
+// (.claude/plans/early_adopters.md §6)
+// -----------------------------------------------
+
+/**
+ * The campaign's name, and the ONLY scarcity signal that may ever appear.
+ *
+ * ⚠ Do not add «بقي N مقعداً», «١٠٠ مقعد», or a closing date next to these. The
+ * remaining count is not disclosed anywhere — not on a page, not in the API, not
+ * in an error message (plan §1.10). After the campaign closes a visitor simply
+ * sees the list price, with no explanation that anything ended.
+ */
+export const EARLY_ADOPTER_LABEL = "المشتركون الأوائل";
+export const SEATS_LIMITED_NOTE = "المقاعد محدودة";
+
+/**
+ * The link that must accompany every promotional price we show.
+ *
+ * The offer's real conditions — who qualifies, the 90 days, the step-up, and
+ * that cancelling forfeits it permanently — live on `/promo-terms`, NOT in
+ * `/terms`. They were moved out (owner, 2026-08-18) because they bind only the
+ * users who take an offer, and folding two long clauses into §5 made the
+ * subscription terms unreadable for everyone who never sees a promo.
+ *
+ * ⚠ That split only holds if the link actually travels with the price. A
+ * discounted number shown with no route to its conditions is a worse
+ * disclosure than the crowded §5 it replaced. Render `PROMO_TERMS_NOTE` as a
+ * link to `LEGAL_ROUTES.promoTerms` on every surface that shows a promo price.
+ */
+export const PROMO_TERMS_NOTE = "تطبق أحكام العروض الترويجية";
+
+/**
+ * The answer every surface starts from and falls back to: campaign closed, list
+ * prices. Frozen because it is shared by reference across renders and stores.
+ */
+export const EARLY_ADOPTER_CAMPAIGN_CLOSED: EarlyAdopterCampaign = Object.freeze({
+  open: false,
+  promo: {},
+});
+
+/**
+ * ISR window for the server-rendered price surfaces, in seconds.
+ *
+ * ⚠ `/pricing` also declares `export const revalidate = 60` as a LITERAL, and
+ * must: Next only accepts a statically analysable value there, so an imported
+ * constant would be silently useless. Keep the two equal by hand — this one
+ * bounds the `fetch` Data Cache entry, that one bounds the rendered page.
+ */
+export const EARLY_ADOPTER_REVALIDATE_SECONDS = 60;
+
+/** Hard ceiling on the campaign probe. A hung backend must not hang a build. */
+const CAMPAIGN_FETCH_TIMEOUT_MS = 4000;
+
+/**
+ * Coerce an unknown payload into a campaign answer, or into "closed".
+ *
+ * Shared by the server fetcher below and the client store so there is exactly
+ * one parser: an `open` that is not literally `true` is closed, and a promo
+ * entry that is not a finite positive number is dropped rather than rendered.
+ * Anything unexpected therefore degrades to list prices instead of putting an
+ * unparseable string where a price belongs.
+ */
+export function normalizeEarlyAdopterCampaign(
+  raw: unknown,
+): EarlyAdopterCampaign {
+  if (!raw || typeof raw !== "object") return EARLY_ADOPTER_CAMPAIGN_CLOSED;
+  const body = raw as { open?: unknown; promo?: unknown };
+  if (body.open !== true) return EARLY_ADOPTER_CAMPAIGN_CLOSED;
+
+  const promo: Record<string, string> = {};
+  if (body.promo && typeof body.promo === "object") {
+    for (const [planId, value] of Object.entries(
+      body.promo as Record<string, unknown>,
+    )) {
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      const amount = Number(value);
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      promo[planId] = String(value);
+    }
+  }
+  return { open: true, promo };
+}
+
+/**
+ * Read the campaign state SERVER-SIDE for `/pricing` and the landing teaser.
+ *
+ * ⚠ Server components only. It lives here rather than beside either page so the
+ * two surfaces share one definition (and one failure mode), and it resolves the
+ * backend origin the way `lib/library/api.ts` does — `INTERNAL_API_URL` first,
+ * so a rendered page reaches the backend over Railway's private network instead
+ * of round-tripping through the edge. The client path is
+ * `paymentsApi.getEarlyAdopter()` via `stores/early-adopter-store.ts`; never
+ * call this from a `'use client'` module, where both env vars read `undefined`.
+ *
+ * `EDGE_SECRET` carries no `NEXT_PUBLIC_` prefix, so Next never inlines its
+ * value into the browser bundle — the same guarantee documented at length in
+ * `lib/library/api.ts`. Do not add the prefix, and do not log it.
+ *
+ * FAILS SAFE, ALWAYS: a non-OK status, a timeout, an unreachable backend (which
+ * is what `npm run build` sees) or a malformed body all return "closed", i.e.
+ * list prices. The opposite failure — advertising 39.90 while checkout charges
+ * 49.90 — lands at the moment of payment and is the one this must never make.
+ */
+export async function fetchEarlyAdopterCampaign(): Promise<EarlyAdopterCampaign> {
+  const base =
+    process.env.INTERNAL_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "http://localhost:8000";
+  const edgeSecret = process.env.EDGE_SECRET;
+
+  try {
+    const res = await fetch(`${base}/api/v1/payments/early-adopter`, {
+      next: { revalidate: EARLY_ADOPTER_REVALIDATE_SECONDS },
+      signal: AbortSignal.timeout(CAMPAIGN_FETCH_TIMEOUT_MS),
+      ...(edgeSecret ? { headers: { "X-Edge-Secret": edgeSecret } } : {}),
+    });
+    if (!res.ok) return EARLY_ADOPTER_CAMPAIGN_CLOSED;
+    return normalizeEarlyAdopterCampaign(await res.json());
+  } catch {
+    return EARLY_ADOPTER_CAMPAIGN_CLOSED;
+  }
+}
+
+/**
+ * The promo price to DISPLAY for a plan, or `null` when none applies.
+ *
+ * Reads the campaign endpoint's amount — the number `effective_plan_price()`
+ * will actually charge — and formats it through `formatSar`, so a wire value of
+ * "49.90" renders as «٤٩٫٩٠» and cannot land on a payment surface in Latin
+ * digits.
+ *
+ * ⚠ A PLAN MISSING FROM THE PAYLOAD GETS NO DISCOUNT, and deliberately does NOT
+ * fall back to the hard-coded `promoPrice`. The two failures are not
+ * symmetrical: falling back would advertise a discount the server may have
+ * withdrawn for that plan (a mismatch discovered at the moment of payment),
+ * while not falling back can only ever charge someone LESS than the card
+ * promised. The ranking helpers do trust the hard-coded value, because an
+ * ordering that agrees with itself costs nothing if it is wrong; a price does.
+ */
+export function promoPriceFor(
+  plan: PricingPlan,
+  campaign: EarlyAdopterCampaign | null | undefined,
+): string | null {
+  if (!campaign?.open) return null;
+  const raw = campaign.promo?.[plan.id];
+  if (raw === undefined || raw === null || raw === "") return null;
+  const amount = Number(raw);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return formatSar(amount);
+}
+
+/** What one plan card renders once the campaign has been taken into account. */
+export interface PlanPricingView {
+  /** The headline price — the promo while it applies, else the list price. */
+  price: string;
+  /** The struck-through original, or `null` when nothing is discounted. */
+  listPrice: string | null;
+  /** `promoBillingNote` while discounted, else `billingNote`. */
+  billingNote: string;
+  /** True ⇒ this card may show the «المقاعد محدودة» note. */
+  isPromo: boolean;
+}
+
+/**
+ * One resolution shared by /pricing, the landing teaser and the quota dialog, so
+ * the three cannot disagree about what a plan costs or why.
+ *
+ * A promo that is not strictly BELOW the list price is ignored: striking through
+ * 89.90 to advertise 89.90 reads as a rendering bug, and striking it through to
+ * advertise more reads as a scam. Either way the list price is the honest
+ * answer, so that is what renders.
+ */
+export function resolvePlanPricing(
+  plan: PricingPlan,
+  campaign: EarlyAdopterCampaign | null | undefined,
+): PlanPricingView {
+  const promo = promoPriceFor(plan, campaign);
+  const listNumber = arabicPriceToNumber(plan.price);
+  const promoNumber = promo === null ? NaN : arabicPriceToNumber(promo);
+  const discounted =
+    promo !== null && Number.isFinite(promoNumber) && promoNumber < listNumber;
+
+  if (!discounted || promo === null) {
+    return {
+      price: plan.price,
+      listPrice: null,
+      billingNote: plan.billingNote,
+      isPromo: false,
+    };
+  }
+
+  return {
+    price: promo,
+    listPrice: plan.price,
+    billingNote: plan.promoBillingNote ?? plan.billingNote,
+    isPromo: true,
+  };
 }
 
 // -----------------------------------------------

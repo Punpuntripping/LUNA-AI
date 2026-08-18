@@ -11,12 +11,13 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     GET  /history           authed   the caller's receipts
     GET  /method            authed   the stored card (brand/last4 only, never the token)
     DELETE /method          authed   forget the stored card + revoke it at Moyasar
-    POST /applepay/session  authed   Apple Pay merchant-validation proxy
+    POST /applepay/session  authed   Apple Pay merchant-validation proxy — UNUSED
+    GET  /early-adopter     NO JWT   is the launch campaign open, and at what prices
     GET  /subscription      authed   plan + term + cancel eligibility
     POST /subscription/cancel     authed  opt out of renewal + exit survey
     POST /subscription/reactivate authed  undo that opt-out
 
-Two things are unusual here and both are deliberate:
+Three things are unusual here and all of them are deliberate:
 
 * **The webhook has no auth dependency.** Moyasar authenticates with a shared
   ``secret_token`` *inside the JSON body* — there is no HMAC header to verify.
@@ -28,6 +29,16 @@ Two things are unusual here and both are deliberate:
   event type, or a mode mismatch answers 200 + a log line. The only exceptions:
   401 for a bad secret, and 503 when a transient provider/DB failure means a
   retry would genuinely help.
+* **``GET /early-adopter`` has no auth dependency either**, because the public
+  pricing page and the landing page render from it before anyone signs in. Auth
+  in this backend is per-endpoint (there is no global middleware), so omitting
+  ``Depends(get_current_user)`` is what makes a route anonymous — the same
+  posture ``public_ask.py`` and ``public_library.py`` use. It is READ-ONLY, it
+  touches no per-user state, its answer is identical for every caller, and it is
+  server-side cached (~30s) so a crawler cannot turn it into a query per request.
+  **It carries no remaining count, no seat total and no closing date** — the
+  campaign's scarcity is «المقاعد محدودة» and nothing more (early_adopters.md
+  §1.10, §7).
 """
 from __future__ import annotations
 
@@ -279,6 +290,55 @@ async def history(
     return {"payments": payments}
 
 
+# ── /early-adopter (PUBLIC — no auth dependency) ─────────────────────────────
+# المشتركون الأوائل, `.claude/plans/early_adopters.md` §4. The one door the
+# campaign has onto the public internet.
+
+# Anonymous and identical for everyone, so it may be cached at the edge and in
+# the browser — unlike every other answer in this file, which is per-user money.
+# The TTL matches the service-side cache and is bounded by /pricing's own
+# `revalidate = 60`; closing the campaign therefore shows a stale promo for at
+# most ~a minute, which is why the runbook's ISR purge (percent-encoded) exists.
+_PUBLIC_CACHE = "public, max-age=30"
+
+
+@router.get("/early-adopter")
+async def early_adopter(
+    response: Response,
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Is the launch campaign taking new seats, and at what prices?
+
+    **Public.** No ``Depends(get_current_user)``, by design — /pricing, the
+    landing page and the upgrade dialog all render this before signup.
+
+    Returns::
+
+        {"open": true,
+         "promo": {"basic": "39.90", "pro": "49.90", "max": "99.90"}}
+
+    …or, once the campaign is closed, disabled, or unreadable::
+
+        {"open": false, "promo": {}}
+
+    Prices are 2-dp STRINGS, the same wire format as ``amount_sar`` everywhere
+    else here, and they come from ``plans.promo_price_sar`` — the catalog stays
+    the price authority, so tuning a promo is an UPDATE, not a deploy.
+
+    **What this deliberately does NOT return: how many seats are left, how many
+    there ever were, or when the campaign ends.** The remaining count never
+    leaves the server (early_adopters.md §1.10) — after the campaign closes a
+    visitor simply sees the list price, with no explanation and no way to tell
+    "closed" from "never existed".
+
+    Never errors: an unreadable campaign answers ``open: false`` rather than a
+    5xx, because a marketing page must not break on a promotion.
+    """
+    result = await payment_service.early_adopter_campaign_state(supabase)
+    response.headers["Cache-Control"] = _PUBLIC_CACHE
+    return result
+
+
 # ── /applepay/session ────────────────────────────────────────────────────────
 
 @router.post("/applepay/session")
@@ -289,14 +349,19 @@ async def applepay_session(
 ):
     """Apple Pay merchant validation — proxies ``GET /v1/applepay/initiate``.
 
-    Called from Safari's ``onvalidatemerchant``; Moyasar's JSON is returned
-    verbatim because Apple's ``completeMerchantValidation`` wants that object
-    unmodified. Best-effort: a 502 PAYMENT_PROVIDER_ERROR here means the page
-    should fall back to cards-only, not fail the checkout.
-
-    Requires the domain to be registered under Moyasar → Apple Pay Domains and
-    the association file served at ``/.well-known/`` on
-    ``MOYASAR_APPLEPAY_DOMAIN``.
+    ⚠ **NOTHING CALLS THIS. Do not wire a checkout back to it.** The Apple Pay
+    button posts merchant validation straight to
+    ``https://api.moyasar.com/v1/applepay/initiate``, which is what Moyasar's
+    guide prescribes and what their SDK is built against — see
+    ``frontend/lib/moyasar.ts``. This route was written from the plan's
+    unverified guess ("likely a thin backend route proxying the call",
+    moyasar_payments.md §Apple Pay step 3) and, once Apple Pay was switched on,
+    it silently failed every payment for two reasons that no proxy can fix:
+    moyasar.js sends an ``X-Moyasar-Form-Version`` header our CORS allowlist
+    rejected at preflight, and it sends no Authorization header, so the
+    dependency below 401s it. Kept only as the starting point should we ever
+    move to our own Apple Developer merchant certificate, where a server-side
+    session really would be required.
     """
     result = await payment_service.applepay_session(payload.validation_url)
     response.headers["Cache-Control"] = _NO_STORE
@@ -326,12 +391,25 @@ async def subscription(
           "expires_at": "2026-09-02T…",         # null for a non-expiring grant
           "source": "payment",                  # payment|code|manual|signup
           "cancellable": true,                  # a PAID term still running
-          "renewal_cancelled_at": null          # set = already opted out
+          "renewal_cancelled_at": null,         # set = already opted out
+          "early_adopter": {                    # المشتركون الأوائل — the CALLER's own seat
+            "is_member": true,
+            "promo_ends_at": "2026-11-14T…"     # null when not a member
+          }
         }
 
     ``cancellable`` describes the SUBSCRIPTION, not the button: it stays true
     while ``renewal_cancelled_at`` is set, because an undo makes cancelling
     legal again. The dialog reads both.
+
+    ``early_adopter`` exists so the cancel flow can render the forfeiture
+    warning (early_adopters.md §6.2): cancelling releases the seat and the promo
+    price is gone for good, while an undo before ``expires_at`` restores it.
+    It reports membership and nothing else — **there is no seat count on this
+    payload, and there will not be one** (§1.10). It is always present:
+    ``{"is_member": false, "promo_ends_at": null}`` covers "no campaign", "not a
+    member" and "the seat table could not be read", which are indistinguishable
+    to a client on purpose.
 
     This exists rather than a ``source`` field on ``GET /usage`` because the
     quota report is read on the message path by every send — a money-shaped

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Check, ShieldCheck, Zap } from "lucide-react";
+import { Check, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -12,16 +12,21 @@ import {
 } from "@/components/ui/dialog";
 import { PlanPrice } from "@/components/pricing/PlanPrice";
 import { PlanCheckoutCta } from "@/components/pricing/PlanCheckoutCta";
+import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
 import {
+  EARLY_ADOPTER_LABEL,
   PAYMENT_TRUST_NOTE,
   PRICING_PLANS,
+  SEATS_LIMITED_NOTE,
   cheapestPricingPlan,
   findPricingPlan,
   pricingPlansAbove,
+  resolvePlanPricing,
 } from "@/lib/pricing";
 import type { PricingPlan } from "@/lib/pricing";
 import { formatReset } from "@/lib/quota-reset";
+import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
 import type { SSEQuotaExceeded } from "@/types";
 
 interface QuotaUpgradeDialogProps {
@@ -62,6 +67,12 @@ interface QuotaUpgradeDialogProps {
  * about a plan is written down here — a repricing touches `lib/pricing.ts` and
  * both surfaces move together. The «ابتداءً من» figure comes from
  * `cheapestPricingPlan()` for the same reason.
+ *
+ * المشتركون الأوائل rides on that property: every price on this surface goes
+ * through `resolvePlanPricing()`, the same call /pricing makes, so the promo
+ * price, the struck-through original and the «المقاعد محدودة» note appear here
+ * exactly when they appear there. The card markup is deliberately NOT forked to
+ * accommodate it.
  */
 export function QuotaUpgradeDialog({
   open,
@@ -79,12 +90,22 @@ export function QuotaUpgradeDialog({
     return () => window.clearInterval(id);
   }, [open]);
 
+  // المشتركون الأوائل — one probe per session, shared with إعدادات الحساب. The
+  // store defaults to "closed", so the cards render list prices until an answer
+  // actually arrives and never the other way round.
+  const campaign = useEarlyAdopterStore((s) => s.campaign);
+  const ensureCampaignLoaded = useEarlyAdopterStore((s) => s.ensureLoaded);
+  useEffect(() => {
+    if (open) ensureCampaignLoaded();
+  }, [open, ensureCampaignLoaded]);
+
   const ladder = info?.upgrade_options;
 
   const plans = useMemo<PricingPlan[]>(() => {
     // No block → Settings. Derived by price, since there is no blocking window
-    // to ask the server about.
-    if (!info) return pricingPlansAbove(currentPlanId);
+    // to ask the server about — EFFECTIVE price while the campaign is open, or
+    // the ladder would be ranked against numbers no card shows.
+    if (!info) return pricingPlansAbove(currentPlanId, campaign.open);
     // Deploy skew: a backend from before the ladder shipped sends no field at
     // all. Fall back to the whole catalog — i.e. exactly the pre-ladder free
     // paywall — rather than to an empty dialog. An EMPTY array is different:
@@ -98,7 +119,7 @@ export function QuotaUpgradeDialog({
       if (plan) resolved.push(plan);
     }
     return resolved;
-  }, [info, ladder, currentPlanId]);
+  }, [info, ladder, currentPlanId, campaign.open]);
 
   // A zero limit is not an exhausted window — it is a feature the free plan
   // never included (OCR is `ocr_pages_monthly = 0` on `free`). Saying «انتهى
@@ -146,7 +167,19 @@ export function QuotaUpgradeDialog({
   // offer; one or two cards are read directly, and quoting the catalog's
   // cheapest plan next to a card set that excludes it would be a lie.
   const showFromPrice = plans.length === PRICING_PLANS.length;
-  const cheapest = cheapestPricingPlan();
+  // Cheapest by EFFECTIVE price, and quoted at the same price its own card
+  // shows: during the campaign the list figure would undersell the offer by
+  // naming a number nothing on screen charges.
+  const cheapest = cheapestPricingPlan(campaign.open);
+  const cheapestPricing = resolvePlanPricing(cheapest, campaign);
+
+  // Cards priced against the campaign — resolved once, so the badge and the
+  // prices can never disagree about whether an offer is running.
+  const cards = plans.map((plan) => ({
+    plan,
+    pricing: resolvePlanPricing(plan, campaign),
+  }));
+  const campaignVisible = cards.some((card) => card.pricing.isPromo);
 
   // One card in a 4xl modal under a 3-column grid looks broken. Both the shell
   // and the grid follow the count.
@@ -196,6 +229,22 @@ export function QuotaUpgradeDialog({
           <span>{unblockLine}</span>
         </p>
 
+        {/* المشتركون الأوائل. «المقاعد محدودة» is the ONLY scarcity signal
+            permitted — never a remaining count, a seat total or a closing date
+            (early_adopters.md §1.10). */}
+        {campaignVisible && (
+          <p
+            className="flex items-center gap-2 text-sm font-medium text-primary"
+            data-testid="early-adopter-badge"
+          >
+            <Sparkles className="h-4 w-4 shrink-0" />
+            <span>
+              {EARLY_ADOPTER_LABEL} · {SEATS_LIMITED_NOTE}
+            </span>
+            <PromoTermsLink className="font-normal" />
+          </p>
+        )}
+
         {/* The offer, in one line, before any card: the cheapest way back to
             work. Quoted from the catalog so it can never contradict the cards
             rendered directly beneath it. */}
@@ -203,7 +252,7 @@ export function QuotaUpgradeDialog({
           <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm leading-relaxed text-foreground">
             <span>يمكنك متابعة العمل بالاشتراك ابتداءً من</span>
             <span className="inline-flex items-center gap-1 font-bold tabular-nums">
-              {cheapest.price}
+              {cheapestPricing.price}
               <RiyalSymbol className="h-4 w-auto" />
             </span>
             <span className="text-muted-foreground">
@@ -215,7 +264,7 @@ export function QuotaUpgradeDialog({
         {/* Plan cards — same structure as app/pricing/page.tsx, tightened one
             step (p-5, text-base heading) to fit three across inside a modal. */}
         <div className={`mt-2 grid gap-4 ${gridClass}`}>
-          {plans.map((plan) => (
+          {cards.map(({ plan, pricing }) => (
             <div
               key={plan.id}
               className={`relative flex flex-col rounded-2xl border bg-card p-5 ${
@@ -236,13 +285,19 @@ export function QuotaUpgradeDialog({
               </p>
 
               <PlanPrice
-                price={plan.price}
+                price={pricing.price}
+                listPrice={pricing.listPrice}
                 period={plan.period}
                 className="mt-4"
               />
               <p className="mt-2 text-xs text-muted-foreground">
-                {plan.billingNote}
+                {pricing.billingNote}
               </p>
+              {pricing.isPromo && (
+                <p className="mt-1.5 text-xs font-medium text-primary">
+                  {SEATS_LIMITED_NOTE}
+                </p>
+              )}
 
               <ul className="mt-5 flex flex-col gap-2.5">
                 {plan.features.map((feature) => (

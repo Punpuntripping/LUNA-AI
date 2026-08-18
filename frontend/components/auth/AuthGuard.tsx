@@ -65,6 +65,7 @@ const PUBLIC_PREFIXES = [
   "/pricing",
   "/audiences",
   "/masking",
+  "/promo-terms",
   "/about_us",
   "/vs-chatgpt",
   "/library",
@@ -75,6 +76,11 @@ const PUBLIC_PREFIXES = [
   "/circulars",
   "/forms",
   "/judgments",
+  // «نسيت كلمة المرور» — reachable only by someone who cannot log in, so it has
+  // to render logged-out. Its sibling /reset-password is deliberately NOT here:
+  // that one is entered through /auth/callback, which establishes a session
+  // first, and a visitor arriving without one has no code to redeem.
+  "/forgot-password",
 ] as const;
 
 export function isPublicPath(pathname: string | null): boolean {

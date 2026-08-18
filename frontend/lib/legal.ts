@@ -13,4 +13,12 @@ export const LEGAL_VERSION = "2026-06-22";
 export const LEGAL_ROUTES = {
   terms: "/terms",
   privacy: "/privacy",
+  /**
+   * Promotional-offer terms. A SATELLITE legal page, deliberately not part of
+   * the signup consent bundle: it binds only the subset of users who take an
+   * offer, and folding it into /terms made §5 unreadable for everyone else.
+   * Linked from wherever a promotional price is shown — see
+   * `PROMO_TERMS_NOTE` in lib/pricing.ts.
+   */
+  promoTerms: "/promo-terms",
 } as const;
