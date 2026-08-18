@@ -26,6 +26,30 @@ import { StepQuestions } from "./steps/StepQuestions";
 const FULL_STEPS = ["profession", "agents", "workspace", "questions"] as const;
 const PROFESSION_ONLY_STEPS = ["profession"] as const;
 
+/**
+ * How long after a purchase the intro tour still counts as "post-purchase".
+ *
+ * Generous on purpose. The tour opens on the next /chat render, and the gap
+ * between paying and getting there is not bounded by anything we control: a
+ * `processing` payment is granted by webhook minutes later, and a 3DS redirect
+ * can land the buyer on `/pay/callback`, then a receipt, then their inbox. A
+ * day covers every one of those and still excludes "has been a subscriber for
+ * a month" — which is the case that made this a bug.
+ */
+const PURCHASE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Did money land on this account within the window? Unparseable or absent
+ *  (free, dev, comped, expired — the server already collapsed all four to
+ *  null) reads as NO: the tour is opt-in from the sidebar for everyone else. */
+function withinPurchaseWindow(paidActivatedAt: string | null | undefined): boolean {
+  if (!paidActivatedAt) return false;
+  const at = Date.parse(paidActivatedAt);
+  if (Number.isNaN(at)) return false;
+  const age = Date.now() - at;
+  // Negative age = the server's clock is ahead of ours, not a future purchase.
+  return age < PURCHASE_WINDOW_MS;
+}
+
 const PROFESSION_GROUP_KEYS = [
   "legal",
   "entrepreneur",
@@ -59,8 +83,9 @@ function selectionFromUser(): ProfessionSelection {
  * - **profession step ALONE** whenever `users.profession_group` is exactly NULL
  *   — which is every brand-new signup (A1), and also the pre-115 accounts that
  *   predate the question. Asked exactly once ever; the column IS the gate.
- * - **full tour** on the first render after the account turns paid (A2):
- *   `isPaid && !onboarding_seen && profession_group !== null`.
+ * - **full tour** on the first render after the account actually BUYS (A2):
+ *   `paid_activated_at` within 24h && `!onboarding_seen` && profession answered.
+ *   Not `plan_id !== "free"` — see the note on `justPaid` below.
  *
  * ANY dismissal (skip, X, ESC, finish, picking a question) resolves the
  * profession answer — the picked selection if there is one, «declined»
@@ -76,15 +101,23 @@ export function OnboardingDialog() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   // undefined = unknown/degraded (fail-closed); ONLY exactly null prompts.
   const professionGroup = useAuthStore((s) => s.user?.profession_group);
-  // The paid signal for A2, read off the user object /auth/me already returns
-  // (sourced from the user_subscriptions SSoT). Deliberately DERIVED state, not
-  // an event handler on the payment callback: `/pay/callback` is a cold boot
-  // after a full-page 3DS redirect and lives outside ChatLayoutClient — this
-  // dialog is not even mounted there — and a `processing` payment's grant lands
-  // later via webhook, which an on-success handler would miss entirely. Reading
-  // plan_id on the next /chat render covers both, plus existing paid users.
-  const planId = useAuthStore((s) => s.user?.plan_id);
-  const isPaid = planId != null && planId !== "free";
+  // The paid signal for A2, read off the user object /auth/me already returns.
+  // Deliberately DERIVED state, not an event handler on the payment callback:
+  // `/pay/callback` is a cold boot after a full-page 3DS redirect and lives
+  // outside ChatLayoutClient — this dialog is not even mounted there — and a
+  // `processing` payment's grant lands later via webhook, which an on-success
+  // handler would miss entirely. Reading it on the next /chat render covers both.
+  //
+  // ⚠ This was `plan_id !== "free"` until 2026-08-18, and that is not what
+  // "just paid" means: `dev` isn't `free` either, so every internal grant read
+  // as a fresh purchase and the 4-step tour opened for the team's own accounts
+  // on sight — which is how it looked like it was still firing at signup. Worse,
+  // the condition had no time in it at all, so it also fired for customers who
+  // had held their plan for months and simply never had the flag written.
+  // `paid_activated_at` is server-resolved from source + plan + a live term, and
+  // the window below is what makes this "just now" rather than "ever".
+  const paidActivatedAt = useAuthStore((s) => s.user?.paid_activated_at);
+  const justPaid = withinPurchaseWindow(paidActivatedAt);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const onboardingSeen = usePreferencesStore((s) => s.onboardingSeen);
 
@@ -133,10 +166,10 @@ export function OnboardingDialog() {
     if (!isAuthenticated || !isHydrated) return;
     if (professionGroup === null) {
       useOnboardingStore.getState().open("profession");
-    } else if (isPaid && !onboardingSeen) {
+    } else if (justPaid && !onboardingSeen) {
       useOnboardingStore.getState().open("full");
     }
-  }, [isAuthenticated, isHydrated, isPaid, onboardingSeen, professionGroup]);
+  }, [isAuthenticated, isHydrated, justPaid, onboardingSeen, professionGroup]);
 
   /** Persist the profession answer if it changed; a wholly untouched step on
    *  a never-asked account records «declined» (dismissal = declining). */
