@@ -128,3 +128,102 @@ All four endpoints under `/api/v1/auth/` → existing strict 10/min window. No w
 6. tsc + lint → manual E2E
 
 Deploy note: NOT deployed until asked; migration 090 touches prod DB at build time.
+
+---
+
+# Addendum — «تعيين كلمة مرور» + password recovery (2026-08-18)
+
+Status: **BUILT, NOT DEPLOYED.** Migration 141 IS applied to prod (additive, nothing calls it until the backend ships).
+
+## The bug this closes
+
+The original plan hid the change-password section for accounts with no password
+identity and called that done. It is not done: it left **33 of 51 prod users**
+(every Google-OAuth signup — essentially every signup since August) with
+
+- no password section in إعدادات الحساب at all — no form, no explanation, the
+  block simply absent, and
+- no way to ever obtain a password, because `/change-password` requires a
+  current one and nothing anywhere issues a first one, and
+- no recovery path if they lose their Google account: they can neither sign in,
+  nor delete their data (a PDPL erasure problem).
+
+There was also **no «نسيت كلمة المرور» flow of any kind** — no link, no reset
+page, no `resetPasswordForEmail` call — so the 18 password users had no recovery
+either. Account *deletion* itself was never broken: the type-to-confirm branch
+worked, in prod, for Google-only accounts. The complaint was about the settings
+dialog.
+
+## T1 — the ghost-password trap (why migration 141 exists)
+
+Setting a password on an OAuth-only user writes `auth.users.encrypted_password`
+and makes `signInWithPassword` work, but does **not** add an `email` row to
+`auth.identities` (supabase/discussions#37737). `has_password_identity()` read
+the identity list, so a naive build would have shipped a set-password form that
+worked once and then locked the user out of ever *changing* the password —
+recreating the exact complaint it was meant to fix.
+
+Fix: `public.user_has_password(uuid)` (migration 141, SECURITY DEFINER over
+`auth.users`, service_role only) is now the single reader, and
+`account_service.has_password` replaces `has_password_identity` at every call
+site. **Never reintroduce an identity-list check for this question.** The RPC is
+service_role-only on purpose — anon-callable it is an account-enumeration oracle.
+
+## T2 — why the reset is requested client-side
+
+`resetPasswordForEmail` runs in the browser, NOT through our backend, for the
+same reason signup does (see the note above `/refresh` in `api/auth.py`): PKCE
+stores the `code_verifier` in the requesting browser, and `/auth/callback` needs
+it to exchange the emailed `?code=`. A backend-initiated reset leaves no
+verifier, so the emailed link lands on a callback that cannot complete. Cost:
+the link must be opened in the same browser that asked for it; the copy says so.
+Rate limiting is Supabase's own email limit — there is no backend endpoint to
+attach `RateLimitMiddleware` to.
+
+## T3 — /set-password must never become a password-overwrite route
+
+It takes no current password, so the JWT is the only thing gating it. The 409
+guard (`has_password` → refuse) is what stops a stolen access token from
+permanently seizing an account. `has_password` fails CLOSED (503 on any error)
+precisely so an outage cannot degrade into "no password → go ahead".
+Deliberately does NOT sign out other devices, unlike `/change-password`: the
+user is adding a first credential to sessions they own.
+
+## Files
+
+| Layer | File | Change |
+|---|---|---|
+| DB | `shared/db/migrations/141_password_credential.sql` | `user_has_password` RPC — **applied to prod** |
+| Backend | `services/account_service.py` | `has_password_identity` → `has_password` (RPC, fail-closed) |
+| Backend | `models/requests.py` | `SetPasswordRequest` |
+| Backend | `models/responses.py` | `has_password` on `UserProfile` + `UserProfileResponse` |
+| Backend | `api/auth.py` | new `POST /set-password`; `/me` resolves `has_password`; `/login` hardcodes it True (that route IS the password grant); change-password message now points at «تعيين» |
+| Backend | `tests/test_account_settings.py` | 26 pass — ghost-password, fail-closed, 409 guard, no-sign-out |
+| Frontend | `types/index.ts` | `User.has_password` |
+| Frontend | `lib/api.ts` | `authApi.setPassword` |
+| Frontend | `Settings/AccountSettingsDialog.tsx` | «تعيين كلمة مرور» form; **dropped the `supabase.auth.getSession()` provider probe** in favour of the server field |
+| Frontend | `Settings/DeleteAccountDialog.tsx` | prop doc — source is now `has_password` |
+| Frontend | `auth/LoginForm.tsx` | «نسيت كلمة المرور؟» link (login mode only) |
+| Frontend | `app/forgot-password/page.tsx` | new — request a link, enumeration-safe (same answer either way) |
+| Frontend | `app/reset-password/page.tsx` | new — `updateUser({password})` on the recovery session |
+| Frontend | `lib/safe-next.ts` | allowlist `/reset-password` (else the callback drops it → /chat) |
+| Frontend | `auth/AuthGuard.tsx` | `/forgot-password` public; `/reset-password` deliberately NOT |
+
+## Deploy order
+
+1. Migration 141 — **already applied**.
+2. Push + deploy backend (the `/me` RPC read and `/set-password` need it live).
+3. Deploy frontend.
+4. Supabase dashboard: confirm `<site>/auth/callback` is in the redirect
+   allowlist for prod AND localhost — the reset link dies without it.
+
+## E2E to run after deploy (none of this is verified yet)
+
+1. Google-only account → إعدادات الحساب shows «تعيين كلمة مرور» → set one →
+   section flips to «تغيير كلمة المرور» **without a reload** (this is the
+   ghost-password regression canary — if it stays on «تعيين», T1 has regressed).
+2. Same account → log out → log in with email + the new password.
+3. `/login` → «نسيت كلمة المرور؟» → email arrives → link opens → new password →
+   lands on /chat → log out → log in with it.
+4. Unknown address on /forgot-password → identical success screen, no email.
+5. Email account → إعدادات الحساب still shows «تغيير كلمة المرور», unchanged.

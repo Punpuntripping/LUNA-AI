@@ -72,6 +72,13 @@ const ALLOWED_PREFIXES = [
   "/templates",
   "/blogs",
   "/settings",
+  // Password-reset landing. `/auth/callback?next=/reset-password` exchanges the
+  // emailed code for a session and then sends the user here to choose the new
+  // password. Without this entry the value is dropped and they land on /chat
+  // still not knowing their password — the one destination the whole flow
+  // exists to reach. Like /chat and /pay above this is an authed app route, so
+  // returning a freshly-authenticated user here is navigation, not privilege.
+  "/reset-password",
 ] as const;
 
 /**

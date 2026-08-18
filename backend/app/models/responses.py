@@ -38,6 +38,12 @@ class UserProfile(BaseModel):
     deletion_pending: bool = False
     deletion_requested_at: Optional[datetime] = None
     purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
+    # True when the account holds a password credential (migration 141). Drives
+    # which form إعدادات الحساب shows (تعيين vs تغيير كلمة المرور) and which
+    # branch DeleteAccountDialog confirms with. Server-resolved on purpose: the
+    # client used to infer this from the Supabase session's app_metadata, which
+    # still reads ["google"] after an OAuth user sets a password.
+    has_password: bool = False
     # Onboarding profession segment (migration 115). None (JSON null) means
     # "never asked" and PROMPTS the frontend — degraded paths that could not
     # read the users row must send the "unknown" sentinel instead (fail-closed).
@@ -68,11 +74,22 @@ class UserProfileResponse(BaseModel):
     call_name: Optional[str] = None
     subscription_tier: Optional[str] = None  # legacy column — superseded by plan_id
     plan_id: Optional[str] = None            # None = account not activated yet
+    # When this account last activated a paid plan BY PAYING FOR IT — None for
+    # free, dev, comped and expired subscriptions alike. Server-resolved
+    # (`subscription_service.resolve_paid_activated_at`) because "paid" is a
+    # three-column question — source + plan + a term still running — and the
+    # client had no way to ask it: it inferred paid-ness from `plan_id != free`
+    # and opened the post-purchase intro tour for every internal grant.
+    # Absent on LoginResponse.user by design: /login does not read the
+    # subscription at all, and /me lands moments later with the real answer.
+    paid_activated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     # Account-deletion grace window (migration 090).
     deletion_pending: bool = False
     deletion_requested_at: Optional[datetime] = None
     purge_at: Optional[datetime] = None       # server-computed: requested_at + 30 days
+    # See UserProfile above — same field, same meaning (migration 141).
+    has_password: bool = False
     # Onboarding profession segment (migration 115). None (JSON null) = never
     # asked → the frontend shows the profession prompt. "unknown" = fail-closed
     # sentinel for degraded reads — never prompts, never written to the DB.

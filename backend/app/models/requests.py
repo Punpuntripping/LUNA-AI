@@ -46,6 +46,18 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)  # mirrors the signup rule (LoginForm.tsx)
 
 
+class SetPasswordRequest(BaseModel):
+    """POST /api/v1/auth/set-password
+
+    First password for an account that has none (Google-OAuth-only signups —
+    the majority of the user base). There is deliberately no ``current_password``
+    because there is nothing to re-enter; the route instead refuses outright
+    unless the server confirms the account is password-less, so this can never
+    become a password-overwrite endpoint that skips re-authentication.
+    """
+    new_password: str = Field(..., min_length=8)  # mirrors the signup rule (LoginForm.tsx)
+
+
 class UpdateProfessionRequest(BaseModel):
     """PATCH /api/v1/auth/profession — onboarding profession answer.
 

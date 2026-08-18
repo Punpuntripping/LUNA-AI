@@ -25,18 +25,33 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { ApiClientError, authApi, paymentsApi } from "@/lib/api";
-import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import { pricingPlansAbove } from "@/lib/pricing";
+import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
 import { usePaymentMethod, useRemovePaymentMethod } from "@/hooks/use-payments";
 import type { CancelSubscriptionReason, SubscriptionState } from "@/types";
+import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
 
 // Same rule as signup (LoginForm) — keep the messages identical.
 const changePasswordSchema = z
   .object({
     current_password: z.string().min(1, "كلمة المرور الحالية مطلوبة"),
+    new_password: z
+      .string()
+      .min(8, "كلمة المرور يجب أن تحتوي على 8 أحرف على الأقل"),
+    confirm_password: z.string().min(1, "تأكيد كلمة المرور مطلوب"),
+  })
+  .refine((data) => data.new_password === data.confirm_password, {
+    message: "كلمتا المرور غير متطابقتين",
+    path: ["confirm_password"],
+  });
+
+// Setting a FIRST password (Google-OAuth accounts): same rules minus the
+// current-password field, because there is none to re-enter.
+const setPasswordSchema = z
+  .object({
     new_password: z
       .string()
       .min(8, "كلمة المرور يجب أن تحتوي على 8 أحرف على الأقل"),
@@ -185,10 +200,14 @@ interface AccountSettingsDialogProps {
 /**
  * إعدادات الحساب — change password · log out of all devices · delete account.
  *
- * The change-password section is hidden for accounts with no password identity
- * (Google-only), resolved from the Supabase session's `app_metadata.providers`.
- * That read is display-only: the backend independently verifies the real
- * identity via the admin API on every one of these endpoints.
+ * Accounts with no password (Google-OAuth signups — most of the user base) get
+ * «تعيين كلمة مرور» instead of «تغيير كلمة المرور». Which one is shown comes
+ * from the server-resolved `user.has_password` (migration 141), NOT from the
+ * Supabase session's `app_metadata.providers` as it once did: setting a password
+ * on a Google account does not add an `email` identity, so that read stays
+ * ["google"] forever and would keep hiding the form from someone who has a
+ * password. Display-only either way — the backend re-checks on every one of
+ * these endpoints and 409s a set-password against an account that has one.
  */
 export function AccountSettingsDialog({
   open,
@@ -197,6 +216,7 @@ export function AccountSettingsDialog({
   const router = useRouter();
   const logoutAll = useAuthStore((s) => s.logoutAll);
   const savePreferredName = useAuthStore((s) => s.savePreferredName);
+  const loadUser = useAuthStore((s) => s.loadUser);
   // `call_name` is the resolved answer (override → derived first name), which
   // is exactly what the field should show whether or not one was ever typed.
   const callName = useAuthStore((s) => s.user?.call_name);
@@ -206,9 +226,10 @@ export function AccountSettingsDialog({
   const [nameSaved, setNameSaved] = useState(false);
   const [isSavingName, setIsSavingName] = useState(false);
 
-  const [hasPasswordIdentity, setHasPasswordIdentity] = useState<boolean | null>(
-    null,
-  );
+  // Server-resolved (/auth/me). Undefined on a degraded read → treated as
+  // "no password", which only ever OFFERS to set one; the server refuses if
+  // there already is one.
+  const hasPassword = useAuthStore((s) => s.user?.has_password ?? false);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -237,6 +258,16 @@ export function AccountSettingsDialog({
   const [reactivateError, setReactivateError] = useState<string | null>(null);
   const [isReactivating, setIsReactivating] = useState(false);
 
+  // المشتركون الأوائل — one probe per session, shared with the upgrade dialog.
+  // Only the ladder's PRICE ORDER is read from it; whether THIS user holds a
+  // seat comes from the authed subscription payload, never from the campaign
+  // flag (a seat holder keeps their price after the campaign closes).
+  const campaign = useEarlyAdopterStore((s) => s.campaign);
+  const ensureCampaignLoaded = useEarlyAdopterStore((s) => s.ensureLoaded);
+  useEffect(() => {
+    if (open) ensureCampaignLoaded();
+  }, [open, ensureCampaignLoaded]);
+
   // وسيلة الدفع — read only while the dialog is open, and fail-quiet exactly
   // like the subscription read above: no card (or no such endpoint, which is
   // what a backend with the renewal flag off looks like) → no section.
@@ -254,23 +285,6 @@ export function AccountSettingsDialog({
     if (!open) return;
     setNameInput(callName ?? "");
   }, [open, callName]);
-
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void (async () => {
-      const { data } = await supabase.auth.getSession();
-      const meta = data.session?.user.app_metadata as
-        | { providers?: string[]; provider?: string }
-        | undefined;
-      const providers =
-        meta?.providers ?? (meta?.provider ? [meta.provider] : []);
-      if (!cancelled) setHasPasswordIdentity(providers.includes("email"));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   // The subscription section is silent about failure on purpose: this dialog's
   // job is passwords, sessions and account deletion, and none of those may be
@@ -389,6 +403,58 @@ export function AccountSettingsDialog({
     }
   };
 
+  const handleSetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordError(null);
+    setPasswordSuccess(false);
+
+    const result = setPasswordSchema.safeParse({
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    });
+
+    if (!result.success) {
+      const errors: Record<string, string> = {};
+      for (const issue of result.error.issues) {
+        const field = issue.path[0] as string;
+        if (!errors[field]) errors[field] = issue.message;
+      }
+      setFieldErrors(errors);
+      return;
+    }
+
+    setFieldErrors({});
+    setIsChangingPassword(true);
+    try {
+      await authApi.setPassword(newPassword);
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordSuccess(true);
+      // Re-read /auth/me so `has_password` flips and this section becomes the
+      // CHANGE form. Without it the user could submit «تعيين» twice and get a
+      // confusing 409 from the server for what looks like the same action.
+      await loadUser();
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        if (err.status === 409) {
+          // Raced another tab, or /me had degraded to has_password=false.
+          setPasswordError(
+            "هذا الحساب يملك كلمة مرور بالفعل. أعد فتح الإعدادات لتغييرها.",
+          );
+          void loadUser();
+        } else if (err.status === 429) {
+          setPasswordError("تم تجاوز الحد المسموح من المحاولات. حاول بعد قليل.");
+        } else {
+          setPasswordError(err.message || "تعذّر تعيين كلمة المرور. حاول مجددًا.");
+        }
+      } else {
+        setPasswordError("تعذّر تعيين كلمة المرور. حاول مجددًا.");
+      }
+    } finally {
+      setIsChangingPassword(false);
+    }
+  };
+
   const handleCancelSubscription = async () => {
     if (!cancelReason) return;
     setCancelError(null);
@@ -472,8 +538,15 @@ export function AccountSettingsDialog({
   // catches someone already blocked. Derived by price from the catalog: there is
   // no blocking window here to ask the server about, and price order mirrors the
   // server's downgrade guard, so nothing offered can be refused at checkout.
-  // Empty for `max` (nothing above it) — and then no button at all.
-  const upgradePlans = pricingPlansAbove(subscription?.plan_id);
+  // Empty for `max` (nothing above it) — and then no button at all. Ranked on
+  // EFFECTIVE prices while المشتركون الأوائل is open, so the ladder matches the
+  // numbers the upgrade dialog then puts on its cards.
+  const upgradePlans = pricingPlansAbove(subscription?.plan_id, campaign.open);
+
+  // Seat holder? Straight from the authed subscription read — an older backend
+  // omits the block entirely, and absent must mean "no", so the warning below is
+  // shown only on an explicit `true`.
+  const isEarlyAdopter = subscription?.early_adopter?.is_member === true;
 
   // The stored-card surface. Shown on `has_method` ALONE — never gated on a
   // running subscription: a credential the user cannot see is a credential they
@@ -572,7 +645,7 @@ export function AccountSettingsDialog({
 
             <Separator />
 
-            {hasPasswordIdentity && (
+            {hasPassword ? (
               <>
                 <form
                   onSubmit={handleChangePassword}
@@ -640,6 +713,73 @@ export function AccountSettingsDialog({
                       <Loader2 className="h-4 w-4 animate-spin" />
                     )}
                     {isChangingPassword ? "جارٍ الحفظ…" : "تغيير كلمة المرور"}
+                  </Button>
+                </form>
+
+                <Separator />
+              </>
+            ) : (
+              <>
+                <form
+                  onSubmit={handleSetPassword}
+                  className="flex flex-col gap-3"
+                  noValidate
+                >
+                  <h3 className="text-sm font-semibold text-foreground">
+                    تعيين كلمة مرور
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    سجّلت الدخول عبر Google، فلا توجد كلمة مرور لحسابك. عيّن
+                    كلمة مرور لتتمكّن من الدخول بالبريد الإلكتروني أيضًا.
+                  </p>
+
+                  <PasswordField
+                    id="set-password-new"
+                    label="كلمة المرور الجديدة"
+                    value={newPassword}
+                    onChange={setNewPassword}
+                    autoComplete="new-password"
+                    error={fieldErrors.new_password}
+                    testId="set-password-new"
+                  />
+                  <PasswordField
+                    id="set-password-confirm"
+                    label="تأكيد كلمة المرور الجديدة"
+                    value={confirmPassword}
+                    onChange={setConfirmPassword}
+                    autoComplete="new-password"
+                    error={fieldErrors.confirm_password}
+                    testId="set-password-confirm"
+                  />
+
+                  {passwordError && (
+                    <p
+                      className="text-sm text-destructive"
+                      data-testid="set-password-error"
+                    >
+                      {passwordError}
+                    </p>
+                  )}
+                  {passwordSuccess && (
+                    <p
+                      className="text-sm text-emerald-600 dark:text-emerald-500"
+                      data-testid="set-password-success"
+                    >
+                      تم تعيين كلمة المرور
+                    </p>
+                  )}
+
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    disabled={isChangingPassword}
+                    className="w-full"
+                    data-testid="set-password-submit"
+                  >
+                    {isChangingPassword && (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
+                    {isChangingPassword ? "جارٍ الحفظ…" : "تعيين كلمة المرور"}
                   </Button>
                 </form>
 
@@ -892,6 +1032,45 @@ export function AccountSettingsDialog({
                   المجانية. يمكنك التراجع في أي وقت قبل ذلك.
                 </span>
 
+                {/* المشتركون الأوائل — early_adopters.md §6.2. Stated BEFORE
+                    the confirm because the rule is irreversible: a completed
+                    cancellation releases the seat and the promotional price is
+                    gone for good, seats open or not.
+
+                    ⚠ TONE IS THE SPEC HERE. This is a retention lever pointed
+                    at someone in the act of leaving, so it reads as a fact and
+                    carries the undo deadline in the same breath. Deliberately
+                    NOT destructive-red, NOT a countdown, NOT a second confirm
+                    step — the primary tint marks it as information about their
+                    standing, not an alarm. Do not "strengthen" it. */}
+                {isEarlyAdopter && (
+                  <span
+                    className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
+                    data-testid="cancel-early-adopter-note"
+                  >
+                    {/* Written out rather than interpolated from
+                        EARLY_ADOPTER_LABEL: that constant is the campaign's
+                        NAME («المشتركون الأوائل»), and after «من» Arabic needs
+                        the genitive «المشتركين». A constant cannot carry both
+                        cases, and the badge is the one that must match the
+                        marketing exactly. */}
+                    أنت من{" "}
+                    <strong className="font-semibold">المشتركين الأوائل</strong>
+                    . إذا اكتمل الإلغاء فسيعود سعر باقتك إلى السعر المعتاد، ولن
+                    يمكن استعادة سعر المشتركين الأوائل لاحقاً. يمكنك التراجع عن
+                    الإلغاء
+                    {termEndsAt
+                      ? ` قبل انتهاء اشتراكك في ${termEndsAt}.`
+                      : " قبل انتهاء اشتراكك."}
+                    {/* The forfeiture rule this sentence states lives in full on
+                        /promo-terms. Linked HERE and not only at the point of
+                        sale because this is the moment the rule actually costs
+                        the user something, and «نهائياً» is a claim they are
+                        entitled to go read. */}
+                    <PromoTermsLink className="mt-2 block" />
+                  </span>
+                )}
+
                 <span className="text-sm font-medium text-foreground">
                   ما سبب الإلغاء؟
                 </span>
@@ -1039,7 +1218,7 @@ export function AccountSettingsDialog({
       <DeleteAccountDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        hasPasswordIdentity={hasPasswordIdentity ?? false}
+        hasPasswordIdentity={hasPassword}
       />
 
       {/* Same dialog the quota block opens, minus the block: no `info`, because

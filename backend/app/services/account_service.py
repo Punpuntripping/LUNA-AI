@@ -187,34 +187,55 @@ def cancel_account_deletion(supabase: SupabaseClient, auth_id: str) -> None:
 # IDENTITY
 # ============================================
 
-def has_password_identity(supabase: SupabaseClient, auth_id: str) -> bool:
-    """True when the account has an email/password identity in GoTrue.
+def has_password(supabase: SupabaseClient, auth_id: str) -> bool:
+    """True when the account holds a usable password credential.
 
-    Authoritative live check (service-role admin API) — a client claim about the
-    provider is never trusted, and the JWT's app_metadata can be up to an hour
-    stale. Fails CLOSED: a GoTrue outage raises 503 rather than reporting
-    "no password", which would skip password confirmation on delete-account.
+    Reads ``auth.users.encrypted_password`` through the ``user_has_password``
+    RPC (migration 141) rather than scanning GoTrue's identity list, because
+    those two disagree in the case this codebase now creates on purpose:
+    setting a password on an OAuth-only account writes the credential and makes
+    password sign-in work, but does NOT add an ``email`` identity ("ghost
+    password", supabase/discussions#37737). Keying off identities would leave a
+    Google user who just set a password still reported as password-less —
+    /change-password would keep 400ing and إعدادات الحساب would keep hiding the
+    form, which is the very bug set-password exists to fix.
+
+    Authoritative live check — a client claim about the provider is never
+    trusted, and the JWT's app_metadata can be up to an hour stale.
+
+    Fails CLOSED: any error raises 503 rather than reporting "no password",
+    which would skip password confirmation on delete-account and would let
+    /set-password overwrite an existing password without re-authentication.
 
     Raises:
-        HTTPException 503: GoTrue unreachable or returned no user.
+        HTTPException 503: the RPC failed or returned an unusable answer.
     """
     try:
-        response = supabase.auth.admin.get_user_by_id(auth_id)
-        user = response.user
+        response = supabase.rpc("user_has_password", {"p_auth_id": auth_id}).execute()
+        value = response.data
     except Exception as e:
-        logger.error("GoTrue identity lookup failed for auth_id=%s: %s", auth_id, e)
+        logger.error("user_has_password RPC failed for auth_id=%s: %s", auth_id, e)
         raise LunaHTTPException(
             status_code=503,
             code=ErrorCode.SERVICE_UNAVAILABLE,
             detail=MSG_SERVICE_UNAVAILABLE,
         )
 
-    if user is None:
-        logger.error("GoTrue returned no user for auth_id=%s", auth_id)
+    # A scalar-returning RPC answers with the bare boolean; tolerate the
+    # single-row-list shape too rather than trusting one client version.
+    if isinstance(value, list):
+        value = value[0] if value else None
+
+    if not isinstance(value, bool):
+        logger.error(
+            "user_has_password returned a non-boolean for auth_id=%s: %r",
+            auth_id,
+            value,
+        )
         raise LunaHTTPException(
             status_code=503,
             code=ErrorCode.SERVICE_UNAVAILABLE,
             detail=MSG_SERVICE_UNAVAILABLE,
         )
 
-    return any(i.provider == "email" for i in (user.identities or []))
+    return value

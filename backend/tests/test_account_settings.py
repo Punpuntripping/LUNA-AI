@@ -5,6 +5,7 @@ Covers the إعدادات الحساب backend surface:
     POST /api/v1/auth/delete-account   (30-day grace, password OR Google-only)
     POST /api/v1/auth/restore-account
     POST /api/v1/auth/change-password
+    POST /api/v1/auth/set-password     (first password for a Google-only account)
     POST /api/v1/auth/logout-all
     case_service.get_user_id           (grace-period 403 gate)
     account_purge_service              (daily hard-purge sweep)
@@ -38,6 +39,7 @@ def test_account_endpoints_registered() -> None:
     assert "/api/v1/auth/delete-account" in paths
     assert "/api/v1/auth/restore-account" in paths
     assert "/api/v1/auth/change-password" in paths
+    assert "/api/v1/auth/set-password" in paths
     assert "/api/v1/auth/logout-all" in paths
 
 
@@ -204,10 +206,14 @@ class FakeSupabase:
 
     def rpc(self, name: str, params: Any) -> Any:
         self.rpcs.append((name, params))
+        # Scriptable per-RPC result: queue("rpc:user_has_password", True).
+        # Falls back to the purge stub so existing callers are unaffected.
+        queued = self._pop(f"rpc:{name}")
+        payload = {"purged": True} if queued is None else queued
 
         class _RpcChain:
             def execute(self_inner) -> _Result:  # noqa: N805
-                return _Result({"purged": True})
+                return _Result(payload)
 
         return _RpcChain()
 
@@ -321,30 +327,63 @@ def test_cancel_deletion_on_active_account_is_a_noop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# has_password_identity — decides the delete/change-password branch server-side
+# has_password — decides the delete / change-password / set-password branch
 # ---------------------------------------------------------------------------
 
 
-def test_has_password_identity_true_for_email_account() -> None:
-    assert account_service.has_password_identity(FakeSupabase(["email"]), AUTH_ID)
+def _fake_with_password(value: Any) -> FakeSupabase:
+    fake = FakeSupabase()
+    fake.queue("rpc:user_has_password", value)
+    return fake
 
 
-def test_has_password_identity_false_for_google_only() -> None:
-    assert not account_service.has_password_identity(FakeSupabase(["google"]), AUTH_ID)
+def test_has_password_true_when_credential_exists() -> None:
+    assert account_service.has_password(_fake_with_password(True), AUTH_ID)
 
 
-def test_has_password_identity_fails_closed_on_gotrue_outage() -> None:
-    """A GoTrue outage must NOT be read as "no password" — that would let a
-    delete-account request through without any password confirmation."""
+def test_has_password_false_for_oauth_only_account() -> None:
+    assert not account_service.has_password(_fake_with_password(False), AUTH_ID)
+
+
+def test_has_password_reads_the_credential_not_the_identity_list() -> None:
+    """The ghost-password case (migration 141): GoTrue reports google-only
+    identities while the account DOES hold a password. Answering from the
+    identity list here would hide تغيير كلمة المرور from a user who just set
+    one, and would let /set-password overwrite it without re-authentication."""
+    fake = FakeSupabase(["google"])  # identity list says "no password"
+    fake.queue("rpc:user_has_password", True)  # the credential says otherwise
+
+    assert account_service.has_password(fake, AUTH_ID)
+    assert fake.rpcs == [("user_has_password", {"p_auth_id": AUTH_ID})]
+
+
+def test_has_password_accepts_single_row_list_shape() -> None:
+    assert account_service.has_password(_fake_with_password([True]), AUTH_ID)
+
+
+def test_has_password_fails_closed_on_rpc_error() -> None:
+    """An outage must NOT be read as "no password" — that would let a
+    delete-account request through without any password confirmation, and would
+    let /set-password replace an existing password with no re-auth."""
     fake = FakeSupabase()
 
-    def _boom(_uid: str) -> Any:
-        raise RuntimeError("gotrue down")
+    def _boom(_name: str, _params: Any) -> Any:
+        raise RuntimeError("db down")
 
-    fake.admin.get_user_by_id = _boom  # type: ignore[assignment]
+    fake.rpc = _boom  # type: ignore[assignment]
 
     with pytest.raises(LunaHTTPException) as exc:
-        account_service.has_password_identity(fake, AUTH_ID)
+        account_service.has_password(fake, AUTH_ID)
+
+    assert exc.value.status_code == 503
+
+
+def test_has_password_fails_closed_on_non_boolean() -> None:
+    """An unusable answer is not "False". Anything other than a bool (a NULL, an
+    error envelope, a client that changed its return shape) must 503 rather than
+    silently degrade into the no-password branch."""
+    with pytest.raises(LunaHTTPException) as exc:
+        account_service.has_password(_fake_with_password("maybe"), AUTH_ID)
 
     assert exc.value.status_code == 503
 
@@ -520,3 +559,110 @@ def test_purge_sweep_never_raises_on_query_failure() -> None:
     stats = account_purge_service.purge_expired_accounts(_Exploding())
 
     assert stats == {"scanned": 0, "purged": 0, "failed": 0}
+
+
+# ---------------------------------------------------------------------------
+# POST /set-password — the ONLY route that writes a credential without re-auth
+# ---------------------------------------------------------------------------
+
+
+def _auth_user() -> Any:
+    from shared.auth.jwt import AuthUser
+
+    return AuthUser(auth_id=AUTH_ID, email="user@example.com", role="authenticated")
+
+
+def _run(coro: Any) -> Any:
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_set_password_writes_the_credential_for_an_oauth_account() -> None:
+    from backend.app.api.auth import set_password
+    from backend.app.models.requests import SetPasswordRequest
+
+    fake = FakeSupabase(["google"])
+    fake.queue("rpc:user_has_password", False)
+    fake.queue("select:users", {"user_id": USER_ID})  # audit lookup
+
+    out = _run(
+        set_password(
+            body=SetPasswordRequest(new_password="a-good-password"),
+            current_user=_auth_user(),
+            supabase=fake,
+        )
+    )
+
+    assert out.success is True
+    assert ("update_user_by_id", AUTH_ID) in fake.admin.calls
+
+
+def test_set_password_refuses_when_a_password_already_exists() -> None:
+    """The guard that keeps this from being a password-overwrite endpoint with
+    no re-authentication: anyone holding a stolen access token could otherwise
+    replace the password and own the account permanently."""
+    from backend.app.api.auth import set_password
+    from backend.app.models.requests import SetPasswordRequest
+
+    fake = FakeSupabase()
+    fake.queue("rpc:user_has_password", True)
+
+    with pytest.raises(LunaHTTPException) as exc:
+        _run(
+            set_password(
+                body=SetPasswordRequest(new_password="a-good-password"),
+                current_user=_auth_user(),
+                supabase=fake,
+            )
+        )
+
+    assert exc.value.status_code == 409
+    assert not any(c[0] == "update_user_by_id" for c in fake.admin.calls)
+
+
+def test_set_password_refuses_when_the_password_check_is_unavailable() -> None:
+    """Fail-closed end to end: if we cannot prove the account is password-less,
+    we must not write one."""
+    from backend.app.api.auth import set_password
+    from backend.app.models.requests import SetPasswordRequest
+
+    fake = FakeSupabase()
+
+    def _boom(_name: str, _params: Any) -> Any:
+        raise RuntimeError("db down")
+
+    fake.rpc = _boom  # type: ignore[assignment]
+
+    with pytest.raises(LunaHTTPException) as exc:
+        _run(
+            set_password(
+                body=SetPasswordRequest(new_password="a-good-password"),
+                current_user=_auth_user(),
+                supabase=fake,
+            )
+        )
+
+    assert exc.value.status_code == 503
+    assert not any(c[0] == "update_user_by_id" for c in fake.admin.calls)
+
+
+def test_set_password_does_not_sign_out_other_devices() -> None:
+    """Unlike /change-password. The user is ADDING a first credential to
+    sessions they own; killing their other devices would punish them for it."""
+    from backend.app.api.auth import set_password
+    from backend.app.models.requests import SetPasswordRequest
+
+    fake = FakeSupabase(["google"])
+    fake.queue("rpc:user_has_password", False)
+    fake.queue("select:users", {"user_id": USER_ID})
+
+    _run(
+        set_password(
+            body=SetPasswordRequest(new_password="a-good-password"),
+            current_user=_auth_user(),
+            supabase=fake,
+        )
+    )
+
+    assert not any(c[0] == "sign_out" for c in fake.admin.calls)

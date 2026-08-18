@@ -1,7 +1,7 @@
 """
 Auth API routes — /api/v1/auth/
-10 endpoints: login, refresh, logout, me, profession, preferred-name,
-delete-account, restore-account, change-password, logout-all
+11 endpoints: login, refresh, logout, me, profession, preferred-name,
+delete-account, restore-account, change-password, set-password, logout-all
 
 (Signup runs client-side via supabase.auth.signUp() — see the note above /refresh.)
 """
@@ -32,6 +32,7 @@ from backend.app.models.requests import (
     DeleteAccountRequest,
     LoginRequest,
     RefreshRequest,
+    SetPasswordRequest,
     UpdatePreferredNameRequest,
     UpdateProfessionRequest,
 )
@@ -48,10 +49,11 @@ from backend.app.services.account_service import (
     cancel_account_deletion,
     compute_purge_at,
     get_account_user_id,
-    has_password_identity,
+    has_password,
     schedule_account_deletion,
 )
 from backend.app.services.audit_service import write_audit_log
+from backend.app.services.subscription_service import resolve_paid_activated_at
 from shared.auth.jwt import AuthUser
 from shared.db.client import create_isolated_anon_client
 from shared.db.run import run_db
@@ -330,6 +332,11 @@ async def login(
             deletion_pending=bool(deletion_requested_at),
             deletion_requested_at=deletion_requested_at,
             purge_at=compute_purge_at(deletion_requested_at),
+            # No RPC needed: this route IS the password grant. Reaching this
+            # line means sign_in_with_password just succeeded, so the account
+            # demonstrably has one. Google users never arrive here — they come
+            # through /auth/callback and get the resolved value from /me.
+            has_password=True,
             profession_group=profession_group,
             profession_label=profession_label,
         ),
@@ -493,11 +500,15 @@ async def me(
     def _fetch_profile():
         # plan_id comes from the user_subscriptions SSoT (embedded via the FK),
         # not the legacy users.plan_id mirror. subscription_tier is a dead column.
+        # The four columns beside it are what `resolve_paid_activated_at` needs to
+        # answer "did this account BUY a plan, and when" — a question `plan_id`
+        # alone cannot answer (a dev grant and a purchase look identical to it).
         return (
             supabase.table("users")
             .select("user_id, auth_id, email, full_name_ar, preferred_name, created_at, "
                     "deletion_requested_at, profession_group, profession_label, "
-                    "user_subscriptions(plan_id)")
+                    "user_subscriptions(plan_id, source, started_at, expires_at, "
+                    "usage_reset_at)")
             .eq("auth_id", current_user.auth_id)
             .maybe_single()
             .execute()
@@ -513,12 +524,25 @@ async def me(
     if result is None or result.data is None:
         raise LunaHTTPException(status_code=404, code=ErrorCode.USER_NOT_FOUND, detail="الملف الشخصي غير موجود")
 
+    # Whether a password exists lives in GoTrue's schema, not in `users`, so it
+    # cannot ride the select above. A failure here must not break /me — the
+    # frontend's blocking restore screen depends on this route answering — so it
+    # degrades to False, which only ever OFFERS «تعيين كلمة مرور» to someone who
+    # may already have one. That is safe: /set-password re-checks server-side
+    # and refuses (409) when a password already exists.
+    try:
+        password_set = await run_db(has_password, supabase, current_user.auth_id)
+    except Exception as e:
+        logger.warning("Could not resolve has_password during /me: %s", e)
+        password_set = False
+
     profile = result.data
     # Embedded one-to-one may arrive as a dict or a single-element list.
     sub = profile.get("user_subscriptions")
     if isinstance(sub, list):
         sub = sub[0] if sub else None
     plan_id = (sub or {}).get("plan_id")
+    paid_activated_at = resolve_paid_activated_at(sub)
     deletion_requested_at = profile.get("deletion_requested_at")
     return UserProfileResponse(
         user_id=profile["user_id"],
@@ -530,10 +554,12 @@ async def me(
         ),
         subscription_tier=None,  # legacy column retired — plan_id is the truth
         plan_id=plan_id,
+        paid_activated_at=paid_activated_at,
         created_at=profile.get("created_at"),
         deletion_pending=bool(deletion_requested_at),
         deletion_requested_at=deletion_requested_at,
         purge_at=compute_purge_at(deletion_requested_at),
+        has_password=password_set,
         # NULL from the DB (never asked) passes through as JSON null — that is
         # the frontend's signal to show the onboarding profession prompt.
         profession_group=profile.get("profession_group"),
@@ -667,7 +693,7 @@ async def delete_account(
     get_user_id gate.
     """
     needs_password = await run_db(
-        has_password_identity, supabase, current_user.auth_id
+        has_password, supabase, current_user.auth_id
     )
 
     if needs_password:
@@ -721,11 +747,11 @@ async def change_password(
 
     The caller's own session survives; other devices are signed out.
     """
-    if not await run_db(has_password_identity, supabase, current_user.auth_id):
+    if not await run_db(has_password, supabase, current_user.auth_id):
         raise LunaHTTPException(
             status_code=400,
             code=ErrorCode.VALIDATION_ERROR,
-            detail="هذا الحساب مسجّل عبر Google ولا يملك كلمة مرور",
+            detail="لا توجد كلمة مرور لهذا الحساب — استخدم «تعيين كلمة مرور»",
         )
 
     await _verify_password(
@@ -793,6 +819,96 @@ async def change_password(
         )
     except Exception as e:
         logger.warning("Audit write failed after password change: %s", e)
+
+    return SuccessResponse(success=True)
+
+
+# ============================================
+# POST /set-password
+# ============================================
+
+@router.post("/set-password", response_model=SuccessResponse)
+async def set_password(
+    body: SetPasswordRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """
+    Set a FIRST password on an account that has none (Google-OAuth-only users).
+
+    There is no current-password to re-enter, so the only thing standing between
+    a caller and a new credential is the JWT — which is why this route refuses
+    the moment the server sees an existing password (409). Without that guard it
+    would be a password-overwrite endpoint that skips re-authentication, i.e. a
+    session-hijack escalation: steal an access token, own the account forever.
+    ``has_password`` fails CLOSED, so a GoTrue/DB wobble 503s rather than
+    reporting "no password" and opening exactly that hole.
+
+    Note this creates a "ghost password": GoTrue writes the credential without
+    adding an ``email`` identity, so password sign-in starts working while
+    ``user.identities`` still reads ["google"]. That is why every reader in this
+    codebase goes through ``has_password`` (migration 141) and never through the
+    identity list — see the migration header.
+    """
+    if await run_db(has_password, supabase, current_user.auth_id):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="هذا الحساب يملك كلمة مرور بالفعل — استخدم «تغيير كلمة المرور»",
+        )
+
+    try:
+        await run_db(
+            supabase.auth.admin.update_user_by_id,
+            current_user.auth_id,
+            {"password": body.new_password},
+        )
+    except AuthApiError as e:
+        if e.status in (400, 422):
+            # GoTrue rejected the password itself (too weak, breached in HIBP if
+            # that check is on) — a user error, not an outage.
+            logger.info(
+                "GoTrue rejected new password on set-password (status=%s code=%s)",
+                e.status,
+                e.code,
+            )
+            raise LunaHTTPException(
+                status_code=400,
+                code=ErrorCode.VALIDATION_ERROR,
+                detail="تعذّر تعيين كلمة المرور. اختر كلمة مرور أقوى",
+            )
+        logger.error(
+            "GoTrue API error during set-password (status=%s code=%s)",
+            e.status,
+            e.code,
+        )
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+    except Exception as e:
+        logger.exception("Unexpected error during set-password: %s", e)
+        raise LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_SERVICE_UNAVAILABLE,
+        )
+
+    # Deliberately NO sign-out of other sessions, unlike /change-password. There
+    # this account had a password that may have leaked, so other sessions are
+    # suspect; here the user is ADDING a first credential to sessions they own,
+    # and killing their other devices would punish them for improving security.
+    try:
+        await run_db(
+            _audit_account_event,
+            supabase,
+            current_user.auth_id,
+            "update",
+            "password_set",
+        )
+    except Exception as e:
+        logger.warning("Audit write failed after set-password: %s", e)
 
     return SuccessResponse(success=True)
 

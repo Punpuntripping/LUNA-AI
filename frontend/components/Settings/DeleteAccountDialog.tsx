@@ -21,8 +21,10 @@ const CONFIRM_PHRASE = "حذف حسابي";
 interface DeleteAccountDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Session providers include "email" → confirm by re-entering the password.
-   *  Display-only: the backend re-checks the real GoTrue identity. */
+  /** The account holds a password (server-resolved `user.has_password`,
+   *  migration 141) → confirm by re-entering it; otherwise type-to-confirm.
+   *  Display-only: the backend re-checks and 422s if it disagrees, which the
+   *  handler below recovers from by flipping to the password field. */
   hasPasswordIdentity: boolean;
 }
 
