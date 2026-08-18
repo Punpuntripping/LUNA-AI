@@ -81,6 +81,13 @@ export type MoyasarNetwork = "mada" | "visa" | "mastercard" | "amex";
 
 export interface MoyasarApplePayConfig {
   country: string;
+  /**
+   * Merchant name on the Apple Pay sheet. ⚠ ASCII ONLY: moyasar.js forwards
+   * this as `display_name` to `/v1/applepay/initiate`, which rejects anything
+   * else — "Invalid display name, only ASCII is supported." (their live API,
+   * verified 2026-08-18). An Arabic label here silently kills the payment
+   * sheet within a second of opening.
+   */
   label: string;
   /**
    * Our backend route that proxies Moyasar's `GET /v1/applepay/initiate`. Apple

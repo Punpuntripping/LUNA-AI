@@ -154,7 +154,17 @@ export default function PayPlanPage() {
             ? {
                 apple_pay: {
                   country: "SA",
-                  label: "ريحان",
+                  // ⚠ ASCII ONLY — «ريحان» here is a 400 and a dead payment
+                  // sheet. moyasar.js forwards this label as `display_name` to
+                  // /v1/applepay/initiate, and Moyasar validates it: "Invalid
+                  // display name, only ASCII is supported." (verified against
+                  // their live API 2026-08-18 — the Arabic label was why every
+                  // Apple Pay sheet closed within a second of opening; the SDK
+                  // gets the 400, aborts the ApplePaySession, and the sheet
+                  // vanishes with no visible error). This is the merchant name
+                  // Apple shows on the sheet; the rest of the page keeps the
+                  // Arabic brand.
+                  label: "Rayhan",
                   // Moyasar's own endpoint, called straight from the browser —
                   // their documented integration. NOT a route of ours; see
                   // MOYASAR_APPLEPAY_VALIDATE_URL for why proxying it through
