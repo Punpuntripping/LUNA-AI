@@ -151,6 +151,25 @@ export const judgmentSummaryCopy = {
   panelTitle: "ملخص ريحان",
 } as const;
 
+/**
+ * The one-tap Google path out of a gate (`GoogleQuickSignup`). The CTA label
+ * matches LoginForm's Google button word for word — the reader may meet both
+ * in one session and they must read as the same action. The consent line is
+ * REQUIRED wherever this button renders: first Google sign-in auto-creates the
+ * account, so the fine print is the signup consent, not decoration.
+ */
+export const googleGateCopy = {
+  cta: "المتابعة مع Google",
+  loading: "جارٍ التحويل إلى Google…",
+  error: "تعذّر تسجيل الدخول عبر Google. حاول مرة أخرى.",
+  /** The email/password fallback link rendered under the Google button. */
+  emailFallback: "أو المتابعة بالبريد الإلكتروني",
+  consentPrefix: "بالمتابعة عبر Google، فإنك توافق على ",
+  consentTerms: "الشروط والأحكام",
+  consentAnd: " و",
+  consentPrivacy: "سياسة الخصوصية",
+} as const;
+
 /** What a given reveal action actually buys — picks the CTA wording. */
 export type RevealTarget = "content" | "sharh";
 

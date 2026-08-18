@@ -1,10 +1,11 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BookOpen, Loader2, Lock, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { loginHref } from "@/lib/safe-next";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
 import { GateCtaSuppressor } from "@/components/library/blocks/GateBanner";
@@ -25,7 +26,9 @@ import {
   type LibraryBalance,
 } from "@/lib/library/full-content";
 import { OfficialSources } from "@/components/library/blocks/OfficialSources";
+import { GoogleQuickSignup } from "@/components/auth/GoogleQuickSignup";
 import {
+  googleGateCopy,
   revealCopy,
   revealCopyFor,
   type RefusalCardCopy,
@@ -187,6 +190,15 @@ export function FullContentGate({
 // The reveal panel — the single conversion surface on a gated document
 // ------------------------------------------------------------------
 
+/**
+ * The panel's anchor. Auth round-trips (Google, email) append this as a URL
+ * fragment to `next`, so the returning reader lands back AT the panel — now in
+ * its authed state — instead of at the top of a document that runs several
+ * viewports. Also the id Next's router scrolls to on the email path's
+ * `router.push`.
+ */
+const REVEAL_PANEL_ID = "reveal-panel";
+
 interface RevealPanelProps {
   /** Analytics only — the `content_type` dimension on the gate events. */
   contentType: FullContentType;
@@ -209,6 +221,22 @@ function RevealPanel({
   revealTarget,
   onReveal,
 }: RevealPanelProps) {
+  // ── Return-to-gate scroll ──────────────────────────────────────────────────
+  // A reader coming back from an auth round trip arrives with `#reveal-panel`
+  // in the URL. The browser's native anchor scroll fires against the SSR'd anon
+  // markup, but the panel swaps branches (and the page above it settles) once
+  // auth state resolves — so re-scroll when `isAuthenticated` flips, once per
+  // mount, and never without the fragment.
+  const returnedToPanelRef = useRef(false);
+  useEffect(() => {
+    if (returnedToPanelRef.current) return;
+    if (window.location.hash !== `#${REVEAL_PANEL_ID}`) return;
+    const el = document.getElementById(REVEAL_PANEL_ID);
+    if (!el) return;
+    returnedToPanelRef.current = true;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [isAuthenticated]);
+
   // ── Analytics (product_analytics.md §5.3) ─────────────────────────────────
   // Question 4 counts the ANONYMOUS branch only. The authed branch below is a
   // metered reveal and the refusal card above it is an UPGRADE surface pointing
@@ -235,6 +263,7 @@ function RevealPanel({
   if (!isAuthenticated) {
     return (
       <section
+        id={REVEAL_PANEL_ID}
         dir="rtl"
         // Tagged for the anon conversion POPUP's gate 5 (T6): while this panel
         // is on screen the popup drops its fire, so a reader looking at «سجّل
@@ -246,16 +275,31 @@ function RevealPanel({
         ref={anonPanelRef}
         className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-5 text-center shadow-xs"
       >
-        <Link
-          href="/login"
-          // The CTA reads «سجّل مجاناً…», so the intent is register even though
-          // the href is the bare /login (the form's own toggle takes it from
-          // there). Tracked before navigation, never awaited.
-          onClick={() => trackGateCtaClick("full_content", pathname, "register")}
-          className={cn(buttonVariants({ size: "lg" }), "shadow-sm")}
-        >
-          <Lock aria-hidden="true" className="h-4 w-4 shrink-0" />
+        {/* The value statement is now a HEADLINE, not the button: the lowest-
+            friction action (one-tap Google, returns to THIS page via ?next=)
+            sits directly under it, and the email path demotes to a text link. */}
+        <h2 className="flex items-center justify-center gap-2 text-sm font-bold text-foreground">
+          <Lock aria-hidden="true" className="h-4 w-4 shrink-0 text-primary" />
           {copy.anonCta}
+        </h2>
+        <GoogleQuickSignup
+          gateKind="full_content"
+          returnTo={pathname}
+          returnFragment={REVEAL_PANEL_ID}
+        />
+        <Link
+          // ⚠ NOT the bare "/login" this used to be. Two things broke when it
+          // was: `SignupStartedTracker` only fires on `?mode=register`, so this
+          // gate — the highest-volume one on the site — could never record a
+          // `signup_started`, and without `?next=` the new account landed on
+          // /chat instead of the نظام it had just been reading. The fragment
+          // brings the email path back to this panel too.
+          href={loginHref(`${pathname}#${REVEAL_PANEL_ID}`, { register: true })}
+          // Tracked before navigation, never awaited.
+          onClick={() => trackGateCtaClick("full_content", pathname, "register")}
+          className="text-xs font-medium text-primary underline-offset-4 hover:underline"
+        >
+          {googleGateCopy.emailFallback}
         </Link>
         <p className="text-xs leading-relaxed text-muted-foreground">
           {copy.anonHint(hiddenSections)}
@@ -266,6 +310,7 @@ function RevealPanel({
 
   return (
     <section
+      id={REVEAL_PANEL_ID}
       dir="rtl"
       className="mt-4 flex flex-col items-center gap-2 rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-card p-5 text-center shadow-xs"
     >

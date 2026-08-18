@@ -97,8 +97,12 @@ export interface TopicChip {
 export interface GateInfo {
   isTruncated: boolean;
   hiddenPlaceholderLines: number;
-  /** Where the «سجّل مجاناً» CTA links. Default "/login". */
-  ctaHref: string;
+  /**
+   * Where the «سجّل مجاناً» CTA links. OMIT for signup — `GateBanner` then
+   * builds `/login?next=<page>&mode=register` from the pathname itself. Set it
+   * only to aim the card somewhere that is not signup.
+   */
+  ctaHref?: string;
 }
 
 // ------------------------------------------------------------------
@@ -413,8 +417,14 @@ export interface ArticleBodyProps {
 export interface GateBannerProps {
   /** How many decorative skeleton bars to draw (purely cosmetic). */
   hiddenPlaceholderLines: number;
-  /** CTA link target. */
-  ctaHref: string;
+  /**
+   * CTA link target. OMIT IT for the signup card — the banner then builds
+   * `/login?next=<this page>&mode=register` from `usePathname()` itself, which
+   * is the only form that opens the form on signup (so `signup_started` can
+   * fire) and returns the new account to the page it was reading. Pass a value
+   * only to point the card somewhere that is NOT signup, e.g. `/pricing`.
+   */
+  ctaHref?: string;
   /** CTA card headline. Default «سجّل مجاناً لعرض المحتوى كاملاً». */
   ctaLabel?: string;
   /**

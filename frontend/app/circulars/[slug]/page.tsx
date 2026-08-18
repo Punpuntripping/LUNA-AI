@@ -97,7 +97,6 @@ export default async function CircularDocPage({ params }: PageProps) {
     ? {
         isTruncated: true,
         hiddenPlaceholderLines: doc.hidden_placeholder_lines,
-        ctaHref: "/login",
       }
     : undefined;
 

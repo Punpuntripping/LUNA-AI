@@ -82,7 +82,6 @@ export default async function FormDetailPage({ params }: PageProps) {
     ? {
         isTruncated: true,
         hiddenPlaceholderLines: detail.body_preview.hidden_placeholder_lines,
-        ctaHref: "/login",
       }
     : undefined;
 

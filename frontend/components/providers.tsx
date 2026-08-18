@@ -8,6 +8,7 @@ import { DirectionProvider } from "@radix-ui/react-direction";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 import { AuthSync } from "@/components/auth/AuthSync";
 import { AnalyticsTracker } from "@/components/analytics/AnalyticsTracker";
+import { SignupCompletedTracker } from "@/components/analytics/SignupCompletedTracker";
 import { ApiClientError } from "@/lib/api";
 import { ApiEnvBadge } from "@/components/dev/ApiEnvBadge";
 
@@ -49,6 +50,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
               must not copy AnonCtaPopup's per-shell mounting or it would miss
               the entire authed app. Renders nothing. */}
           <AnalyticsTracker />
+          {/* `signup_completed` — funnel step 4 (§5.4). A sibling leaf rather
+              than a branch of AnalyticsTracker because it watches the AUTH
+              store, not the router, and it must sit outside AuthGuard for the
+              same reason the tracker does: a gate CTA lands the new account
+              back on the PUBLIC page it came from (`?next=`), which AuthGuard
+              never wraps. Renders nothing. */}
+          <SignupCompletedTracker />
           <AuthGuard>{children}</AuthGuard>
           <ReactQueryDevtools initialIsOpen={false} />
           <ApiEnvBadge />

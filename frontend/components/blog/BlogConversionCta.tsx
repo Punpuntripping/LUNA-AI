@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { ArrowLeft, Sparkles } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { buttonVariants } from "@/components/ui/button";
+import { GoogleQuickSignup } from "@/components/auth/GoogleQuickSignup";
 import { loginHref } from "@/lib/safe-next";
 import { cn } from "@/lib/utils";
 import {
@@ -55,11 +56,14 @@ export function BlogConversionCta() {
           المساعد القانوني الذكي للمحامين السعوديين — أنشئ تحليلاتك القانونية
           ومذكراتك مدعومة بالأنظمة والسوابق.
         </p>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+        {/* Google is the ONE primary action (lowest friction, returns here via
+            ?next=); the form paths demote to outline so the hierarchy reads. */}
+        <GoogleQuickSignup gateKind="blog_cta" returnTo={pathname} className="mt-4" />
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
           <Link
             href={loginHref(pathname, { register: true })}
             onClick={() => trackGateCtaClick("blog_cta", pathname, "register")}
-            className={cn(buttonVariants({ variant: "default", size: "lg" }))}
+            className={cn(buttonVariants({ variant: "outline", size: "lg" }))}
           >
             <Sparkles className="h-4 w-4" />
             ابدأ الآن

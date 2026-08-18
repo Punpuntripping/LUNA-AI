@@ -266,7 +266,6 @@ export default async function RegulationDocPage({ params }: PageProps) {
                           isTruncated: true,
                           hiddenPlaceholderLines:
                             section.hidden_placeholder_lines,
-                          ctaHref: "/login",
                         }
                       : undefined;
                     return (
@@ -317,7 +316,6 @@ export default async function RegulationDocPage({ params }: PageProps) {
                 <div id="library-doc-gate" className="scroll-mt-20">
                   <GateBanner
                     hiddenPlaceholderLines={Math.min(doc.hidden_section_count, 6)}
-                    ctaHref="/login"
                     ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا بانتظارك — سجّل مجانًا لعرض النظام كاملًا`}
                   />
                 </div>

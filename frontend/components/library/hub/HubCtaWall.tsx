@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Library, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { loginHref } from "@/lib/safe-next";
 import { buttonVariants } from "@/components/ui/button";
 import { getAccessToken } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
@@ -191,7 +192,21 @@ export function HubCtaWall({
   if (!isAuthenticated) {
     return (
       <Wall
-        copy={sectionScope ? sectionWallCopy(sectionScope) : hubWallCopy.anon}
+        copy={
+          sectionScope
+            ? // A section slice is a PAID surface — its CTA points at /pricing
+              // and is not part of the signup funnel at all.
+              sectionWallCopy(sectionScope)
+            : {
+                ...hubWallCopy.anon,
+                // ⚠ Overrides the bare "/login" in `gate-copy.ts`, which is a
+                // static module and cannot know the page. Without `?mode=
+                // register` the form opens on SIGN IN and `signup_started`
+                // never fires; without `?next=` the new account lands on /chat
+                // instead of the hub it was browsing.
+                ctaHref: loginHref(pathname, { register: true }),
+              }
+        }
         // Attached on the signup wall alone — see the note by the hook above.
         sectionRef={signupWall ? wallRef : undefined}
         onCtaClick={

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BookOpen, Loader2, Lock, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { loginHref } from "@/lib/safe-next";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import {
@@ -138,9 +139,11 @@ export function JudgmentSummaryButton({
         className="flex flex-wrap items-center gap-x-3 gap-y-2"
       >
         <Link
-          href="/login"
-          // «افتح حسابك المجاني لعرض ملخص الحكم» — a signup intent, even though
-          // the href is the bare /login.
+          // «افتح حسابك المجاني لعرض ملخص الحكم» — a signup intent, and the
+          // href now carries it. The bare "/login" it replaces opened the form
+          // on SIGN IN, which never fires `signup_started`, and dropped the
+          // reader on /chat instead of the حكم whose ملخص they came for.
+          href={loginHref(pathname, { register: true })}
           onClick={() =>
             trackGateCtaClick("judgment_summary", pathname, "register")
           }

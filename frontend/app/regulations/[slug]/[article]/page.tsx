@@ -107,7 +107,6 @@ export default async function RegulationArticlePage({ params }: PageProps) {
     ? {
         isTruncated: true,
         hiddenPlaceholderLines: doc.hidden_placeholder_lines,
-        ctaHref: "/login",
       }
     : undefined;
 
@@ -266,7 +265,6 @@ export default async function RegulationArticlePage({ params }: PageProps) {
                     Math.max(doc.sharh.hidden_placeholder_lines, 2),
                     8,
                   )}
-                  ctaHref="/login"
                   ctaLabel="سجّل مجانًا لعرض الشرح كاملًا"
                 />
               </section>

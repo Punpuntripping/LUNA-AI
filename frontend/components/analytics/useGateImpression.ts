@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { track } from "@/lib/analytics/client";
 import type { GateKind } from "@/lib/analytics/events";
+import { stashGateAttribution } from "@/components/analytics/signup-attribution";
 
 /**
  * «Was this gate actually SEEN?» — the shared impression signal behind question 4
@@ -39,8 +40,10 @@ import type { GateKind } from "@/lib/analytics/events";
  * `location.search`.
  */
 
-/** Which CTA the reader took out of a gate. Matches the §3 taxonomy. */
-export type GateCta = "register" | "login";
+/** Which CTA the reader took out of a gate. Matches the §3 taxonomy.
+ *  `google` = the one-tap OAuth path (`GoogleQuickSignup`) — leaves for Google
+ *  directly, so it never produces a `signup_started` (`/login` is skipped). */
+export type GateCta = "register" | "login" | "google";
 
 export interface GateImpressionOptions {
   /**
@@ -199,6 +202,11 @@ export function trackGateCtaClick(
   } catch {
     // T9.
   }
+  // Leave a note for `signup_completed`, which fires on a different path
+  // minutes later and cannot otherwise tell which gate earned the account
+  // (§5.4). Separate try/catch: a failed beacon must not cost the attribution,
+  // and a failed stash must not cost the event.
+  stashGateAttribution(gateKind, path);
 }
 
 /** `gate_dismiss` — a popup closed with no CTA click. The refusal, captured. */

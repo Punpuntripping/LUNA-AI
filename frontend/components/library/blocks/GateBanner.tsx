@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { loginHref } from "@/lib/safe-next";
 import { buttonVariants } from "@/components/ui/button";
 import type { GateBannerProps } from "@/types/library";
 import {
@@ -133,8 +134,12 @@ export function GateBanner({
             أنشئ حسابك المجاني لقراءة النص كاملاً مع الشرح والمراجع.
           </p>
           <Link
-            href={ctaHref}
-            // «سجّل مجاناً» — a signup intent whatever `ctaHref` points at.
+            // The button says «سجّل مجاناً», so the default target has to mean
+            // it: `?mode=register` opens the form on signup (the only thing
+            // `SignupStartedTracker` counts) and `?next=` returns the new
+            // account to this page. Callers that hardcoded "/login" got neither
+            // — see the prop's doc comment in types/library.ts.
+            href={ctaHref ?? loginHref(pathname, { register: true })}
             onClick={() => trackGateCtaClick("gate_banner", pathname, "register")}
             className={cn(
               buttonVariants({ size: "default" }),

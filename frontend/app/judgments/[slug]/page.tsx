@@ -331,7 +331,6 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                             isTruncated: true,
                             hiddenPlaceholderLines:
                               section.hidden_placeholder_lines,
-                            ctaHref: "/login",
                           }
                         : undefined;
                       return (
@@ -372,7 +371,6 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                         doc.hidden_section_count,
                         6,
                       )}
-                      ctaHref="/login"
                       ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا من الحكم بانتظارك — سجّل مجانًا لعرضه كاملًا`}
                     />
                   </div>
