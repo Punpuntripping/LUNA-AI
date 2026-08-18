@@ -25,6 +25,35 @@ export const MOYASAR_FORM_VERSION = "1.19.0";
 export const MOYASAR_SCRIPT_URL = `https://cdn.moyasar.com/mpf/${MOYASAR_FORM_VERSION}/moyasar.js`;
 export const MOYASAR_STYLE_URL = `https://cdn.moyasar.com/mpf/${MOYASAR_FORM_VERSION}/moyasar.css`;
 
+/**
+ * Apple Pay merchant validation — **Moyasar's endpoint, not ours.**
+ *
+ * This is the value Moyasar's own guide prescribes verbatim
+ * (docs.moyasar.com/guides/apple-pay/apple-pay-web): the browser calls
+ * `/v1/applepay/initiate` DIRECTLY. It needs no Apple Developer account and no
+ * merchant-hosted route — Web Merchant Registration means Moyasar holds the
+ * merchant identity, and the publishable key in the body is the whole auth.
+ *
+ * ⚠ Do NOT point this back at our backend. We shipped a proxy route here until
+ * 2026-08-18 (`moyasar_payments.md` guessed one would be needed — "likely a
+ * thin backend route", never verified in sandbox) and it silently killed every
+ * Apple Pay payment in production: moyasar.js sends its own
+ * `X-Moyasar-Form-Version` header on this fetch, which failed our CORS
+ * preflight with a 400, and it sends no Authorization header, which our authed
+ * route would have 401'd. Moyasar's endpoint answers preflights with
+ * `access-control-allow-origin: *` and explicitly allowlists that header —
+ * verified live 2026-08-18. Their SDK and their API are built as a matched
+ * pair; putting our origin between them is what broke it.
+ *
+ * `domain_name` is filled in by the SDK as `window.location.hostname` and must
+ * match a domain registered under Moyasar → Apple Pay Domains (`rayhanai.com`;
+ * the association file is served extensionless from `public/.well-known/`).
+ * www 308-redirects to the apex, so checkout always runs on the registered
+ * host — do not add a www checkout path without registering that domain too.
+ */
+export const MOYASAR_APPLEPAY_VALIDATE_URL =
+  "https://api.moyasar.com/v1/applepay/initiate";
+
 /** DOM id the form mounts into. Also the `element` selector handed to `init`. */
 export const MOYASAR_FORM_ELEMENT_ID = "moyasar-payment-form";
 

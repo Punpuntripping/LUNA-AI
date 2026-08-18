@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AlertTriangle, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
-import { getApiBase, paymentsApi } from "@/lib/api";
+import { paymentsApi } from "@/lib/api";
 import {
+  MOYASAR_APPLEPAY_VALIDATE_URL,
   MOYASAR_FORM_ELEMENT_ID,
   loadMoyasarForm,
   type MoyasarPayment,
@@ -153,10 +154,11 @@ export default function PayPlanPage() {
                 apple_pay: {
                   country: "SA",
                   label: "ريحان",
-                  // Apple requires merchant validation to originate from a
-                  // server, so this points at our backend, which proxies
-                  // Moyasar's `GET /v1/applepay/initiate`.
-                  validate_merchant_url: `${getApiBase()}/api/v1/payments/applepay/session`,
+                  // Moyasar's own endpoint, called straight from the browser —
+                  // their documented integration. NOT a route of ours; see
+                  // MOYASAR_APPLEPAY_VALIDATE_URL for why proxying it through
+                  // our origin silently killed every Apple Pay payment.
+                  validate_merchant_url: MOYASAR_APPLEPAY_VALIDATE_URL,
                 },
               }
             : {}),
