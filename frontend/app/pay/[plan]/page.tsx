@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AlertTriangle, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { paymentsApi } from "@/lib/api";
+import { flushAnalytics, track } from "@/lib/analytics/client";
 import {
   MOYASAR_APPLEPAY_VALIDATE_URL,
   MOYASAR_FORM_ELEMENT_ID,
@@ -174,7 +175,42 @@ export default function PayPlanPage() {
               // Swallowed on purpose — see above.
             }
           },
-          on_failure: () => {
+          on_failure: (error: unknown) => {
+            // The raw failure object, shipped home. moyasar.js hands this
+            // callback the ACTUAL reason a payment died — a fetch TypeError, a
+            // non-ok Response, a cancel string, or null — and then we show one
+            // generic Arabic banner and the reason evaporates. On an iPhone
+            // (no devtools, no Web Inspector without a Mac) that reason is
+            // unobtainable any other way; this is how the Apple-Pay
+            // sheet-closes-instantly report gets diagnosed. `run_failed` is
+            // already in the backend taxonomy; `stage` scopes it so chat-run
+            // queries can filter it out. Shape probe, not prose: `kind`
+            // distinguishes the four failure shapes, `status` is only present
+            // when Moyasar answered non-ok.
+            try {
+              const e = error as
+                | { name?: unknown; message?: unknown; status?: unknown }
+                | null
+                | undefined;
+              track("run_failed", {
+                stage: "moyasar_form",
+                applepay_offered: canApplePay,
+                kind: error === null ? "null" : typeof error,
+                name: typeof e?.name === "string" ? e.name : undefined,
+                status: typeof e?.status === "number" ? e.status : undefined,
+                detail:
+                  typeof error === "string"
+                    ? error.slice(0, 200)
+                    : typeof e?.message === "string"
+                      ? (e.message as string).slice(0, 200)
+                      : String(error).slice(0, 200),
+              });
+              // The sheet just died; the tab may die next. Don't wait for the
+              // debounce.
+              flushAnalytics();
+            } catch {
+              // Diagnostics must never break the error banner.
+            }
             setFormError(
               "تعذّر إتمام الدفع. تأكد من بيانات البطاقة ثم حاول مرة أخرى.",
             );
