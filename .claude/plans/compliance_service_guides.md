@@ -265,8 +265,15 @@ The renderer that owns the REFERENCE.md contract client-side:
 - Split `guide_md` on `/^[ \t]*(\d+_\d+)[ \t]*$/gm`; text segments through the
   existing library markdown body component; each resolved hole renders
   `<figure><img src={url} width height alt={description} loading="lazy"
-  decoding="async"/><figcaption>{description}</figcaption></figure>`
-  (width/height reserve the box — CLS). First image may skip `loading="lazy"`.
+  decoding="async"/></figure>` (width/height reserve the box — CLS). First image
+  may skip `loading="lazy"`.
+- ⚠ **NO `<figcaption>`** (decision #8, user 2026-08-19): `description` is
+  400–1,031 chars of analysis written for the **agent/RAG layer**, not reader
+  copy. It stays as `alt` only — invisible to sighted users, and removing it
+  would blind screen readers and crawlers on an SEO wing. **This OVERRIDES
+  REFERENCE.md §3.2 rule 3 ("alt text and/or caption") and §3.3** (text-only
+  channels printing the description) — those remain right for an agent rendering
+  a guide into a chat reply, and wrong for this page.
 - Token with no entry in the images map ⇒ render NOTHING (contract rule 1).
 - Keep the split helper a pure function in `frontend/lib/library/guide.ts` so
   it's testable and reusable; images map keyed by `image_ref`.

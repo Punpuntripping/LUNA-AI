@@ -121,7 +121,26 @@ export function GuideBody({
         if (!image) return null;
 
         return (
-          <figure key={index} className="my-6 space-y-2">
+          <figure key={index} className="my-6">
+            {/* ⚠ NO `<figcaption>`, DELIBERATELY — do not "restore" it.
+                `image_ref.description` is a 400–1,031 char analysis written for
+                MACHINE consumers (the RAG/agent layer that answers «أين أضغط؟»
+                from it), NOT copy for a reader. Printed under each screenshot it
+                read as a wall of generated prose — 47 paragraphs on the حساب
+                المواطن guide alone — restating what the image already shows and
+                what the prose above it already said.
+
+                ⚠ THE INGESTION CONTRACT DISAGREES AND IS OVERRIDDEN HERE.
+                REFERENCE.md §3.2 rule 3 calls the description "alt text and/or
+                caption" and §3.3 has a text-only channel print it as a
+                parenthetical. That is right for an agent rendering a guide into
+                a chat reply; it is wrong for this page. The product decision
+                (2026-08-19) is: descriptions serve agents, the page shows the
+                screenshot.
+
+                It stays as `alt` — invisible to sighted readers, and dropping it
+                would blind screen readers and crawlers on a wing whose entire
+                purpose is SEO. */}
             {/* `width`/`height` are REQUIRED here, not decorative: they reserve
                 the box before the bytes land, and one guide carries 69
                 screenshots — without them the page reflows 69 times.
@@ -141,12 +160,6 @@ export function GuideBody({
               decoding="async"
               className="mx-auto h-auto max-w-full rounded-lg border border-border bg-muted/30"
             />
-            {/* The description IS the alt text (contract rule 3) — a real Arabic
-                sentence naming the buttons and fields in the screenshot, which
-                is what keeps the guide usable with images off. */}
-            <figcaption className="text-center text-xs leading-relaxed text-muted-foreground">
-              {image.description}
-            </figcaption>
           </figure>
         );
       })}
