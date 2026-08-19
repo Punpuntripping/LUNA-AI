@@ -13,11 +13,15 @@ What these tests pin, and why each one is load-bearing:
   never write ``library_unlocks``, and never touch the quota — otherwise the
   reader is charged twice for one document and the balance chip moves when
   nothing was unlocked.
-* **A compliance reference NEVER gets one.** ``_URL_PREFIX`` has no ``service``
-  key: the /compliance wing was retired, so any link there is a 404 dressed up
+* **A compliance reference gets one ONLY through a published guide** (2026-08-19).
+  The wing publishes **service guides** — Rayhan's own authored rewrite of the
+  issuing entity's official PDF user guide — not the ``services`` corpus. ~169 of
+  4,746 services have one, so no-button stays the common answer, and the stale
+  ``content_type='service'`` sidecar rows (Arabic slugs from the retired wing,
+  keyed by ``services.id``) must never be read: matching one is a 404 dressed up
   as navigation.
 * **No slug ⇒ no button.** Never a hub fallback, never a guessed URL.
-* **The resolution is BATCHED.** ≤4 round-trips for a whole panel regardless of
+* **The resolution is BATCHED.** ≤7 round-trips for a whole panel regardless of
   reference count — the alternative (one ``reference_resolver`` pass per card) is
   both N round-trips and a code path that CHARGES.
 * **Fail-soft.** A sidecar blip costs the buttons, never the panel.
@@ -50,6 +54,14 @@ CASE_ID = "dddd4444-4444-4444-8444-444444444444"
 CASE_ID_2 = "dddd5555-5555-4555-8555-555555555555"
 CIRC_ID = "eeee5555-5555-4555-8555-555555555555"
 SVC_ID = "ffff6666-6666-4666-8666-666666666666"
+# The service guide for SVC_ID. A DIFFERENT id on purpose: the compliance sidecar
+# is keyed on ``service_guides.id`` while the reference row carries
+# ``services.id``, and a test that reused one uuid for both would pass even if
+# the resolver skipped the hop between them.
+GUIDE_ID = "bbbb7777-7777-4777-8777-777777777777"
+# A service that is cited in chat and has NO guide — the common case (~169 of
+# 4,746 services have one).
+SVC_ID_NO_GUIDE = "cccc8888-8888-4888-8888-888888888888"
 # simple_search (plan §6.1a): ONE مادة and a WHOLE نظام, each with its own
 # domain + ref_id prefix. ``regdoc:`` points at the SAME نظام the chunk above
 # belongs to — that shared destination is the point (§6.2).
@@ -178,8 +190,20 @@ def corpus(**tables: Any) -> CountingSupabase:
                 "service_context": "سياق الخدمة.",
                 "service_url": "https://my.gov.sa/x",
                 "url": "",
-            }
+            },
+            {
+                "id": SVC_ID_NO_GUIDE,
+                "service_ref": "svc-2",
+                "service_name_ar": "وزارة التجارة - تجديد سجل",
+                "provider_name": "وزارة التجارة",
+                "service_context": "سياق آخر.",
+                "service_url": "https://my.gov.sa/y",
+                "url": "",
+            },
         ],
+        # EMPTY by default — the guide-less service is the common case, so it is
+        # what an unconfigured panel gets. Tests that want the button seed a row.
+        "service_guides": [],
         "entities": [],
         "seo_item_meta": [],
     }
@@ -219,30 +243,134 @@ def test_unpublished_judgment_gets_no_url() -> None:
     assert urls == {}
 
 
-def test_compliance_reference_never_gets_a_url() -> None:
-    """``_URL_PREFIX`` has NO ``service`` key — the wing was retired (2026-08-03).
+def guide(service_id: str, guide_id: str = GUIDE_ID) -> dict[str, Any]:
+    """A canonical ``service_guides`` row for one service."""
+    return {
+        "id": guide_id,
+        "service_id": service_id,
+        "service_ref": "svc-1",
+        "title": "الدليل الشامل: إصدار صك",
+        "is_canonical": True,
+    }
 
-    Seeding a ``service`` slug is the point of this test: even when the sidecar
-    happens to carry one, a government service must render no in-app button,
-    because there is no page behind it. Re-adding the prefix without rebuilding
-    those pages ships 404s."""
-    supabase = corpus(seo_item_meta=[meta("service", SVC_ID, "isdar-sak")])
+
+def compliance_ref(n: int, item_id: Optional[str]) -> dict[str, Any]:
+    """A compliance reference row, minted the way the URA mints them.
+
+    The ``ref_id`` is ``compliance:{sha1(service_ref)[:16]}`` — a DIGEST of the
+    service_ref, with no inverse. It is junk to the resolver on purpose: this
+    row's only usable identity is ``item_id``."""
+    return ref_row(
+        n=n, domain="compliance", ref_id="compliance:deadbeefcafebabe", item_id=item_id
+    )
+
+
+def test_a_guided_service_links_to_its_compliance_guide() -> None:
+    """THE new arm. A cited service whose guide is published gets the in-app exit
+    «افتح الدليل الشامل للخدمة في ريحان» → ``/compliance/{slug}``.
+
+    Note the two hops the assertion pins: the reference row carries a
+    ``services.id``, the sidecar is keyed on ``service_guides.id``, and the slug
+    is read under ``content_type='compliance'``. Getting any one of those wrong
+    produces either no button or a button into someone else's page."""
+    supabase = corpus(
+        service_guides=[guide(SVC_ID)],
+        seo_item_meta=[meta("compliance", GUIDE_ID, "isdar-sak")],
+    )
+    urls = run(
+        lis.public_page_urls_for_reference_rows(supabase, [compliance_ref(1, SVC_ID)])
+    )
+    assert urls == {1: "/compliance/isdar-sak"}
+    # One hop, then the wing's single sidecar call. Nothing per-reference.
+    assert supabase.queries == ["service_guides", "seo_item_meta"]
+
+
+def test_a_service_with_no_guide_gets_no_url() -> None:
+    """THE COMMON PATH — ~169 of 4,746 services have a guide, so most cited
+    services must render title + «فتح المصدر الرسمي» and no in-app button at all.
+
+    It must also be CHEAP: with nothing to resolve, the guide lookup is the only
+    query and the sidecar is never asked. A button that 404s is strictly worse
+    than no button."""
+    supabase = corpus(service_guides=[])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(
+            supabase, [compliance_ref(1, SVC_ID_NO_GUIDE)]
+        )
+    )
+    assert urls == {}
+    assert supabase.queries == ["service_guides"]
+
+
+def test_a_guide_with_no_slug_gets_no_url() -> None:
+    """A guide exists but was never slugged (only a pilot subset is published).
+    No slug ⇒ no page ⇒ no button — the same rule every other wing follows."""
+    supabase = corpus(service_guides=[guide(SVC_ID)], seo_item_meta=[])
+    urls = run(
+        lis.public_page_urls_for_reference_rows(supabase, [compliance_ref(1, SVC_ID)])
+    )
+    assert urls == {}
+
+
+def test_the_stale_service_sidecar_rows_are_never_read() -> None:
+    """``seo_item_meta`` still holds 4,717 ``content_type='service'`` rows — stale
+    Arabic slugs from the RETIRED wing, keyed by ``services.id``. 100 carry a
+    slug. Reading one would mint ``/compliance/{arabic-slug}``, which addresses
+    nothing: the live wing's pages are keyed on ``service_guides.id`` under
+    ``content_type='compliance'``.
+
+    Seeding both key spaces at once is the point — the stale row is the trap, and
+    only the guide's own row may answer."""
+    supabase = corpus(
+        service_guides=[guide(SVC_ID)],
+        seo_item_meta=[
+            meta("service", SVC_ID, "الخدمة-القديمة"),
+            meta("compliance", GUIDE_ID, "isdar-sak"),
+        ],
+    )
+    urls = run(
+        lis.public_page_urls_for_reference_rows(supabase, [compliance_ref(1, SVC_ID)])
+    )
+    assert urls == {1: "/compliance/isdar-sak"}
+
+
+def test_a_compliance_row_with_no_item_id_gets_no_button() -> None:
+    """Unlike every other wing, compliance has NO ``ref_id`` fallback — and must
+    not grow one. ``compliance:<sha1>`` is a one-way digest of the service_ref,
+    so there is nothing to recover from it; a fallback here could only be a
+    guess. (Verified live 2026-08-19: all 509 rows carry an ``item_id``, so this
+    path is defensive, not load-bearing.)"""
+    supabase = corpus(
+        service_guides=[guide(SVC_ID)],
+        seo_item_meta=[meta("compliance", GUIDE_ID, "isdar-sak")],
+    )
+    urls = run(lis.public_page_urls_for_reference_rows(supabase, [compliance_ref(1, None)]))
+    assert urls == {}
+    assert supabase.queries == []
+
+
+def test_a_guide_lookup_failure_only_costs_the_service_cards() -> None:
+    """Fail-soft per wing: a ``service_guides`` blip must not take the ruling's
+    button down with it."""
+    supabase = corpus(
+        service_guides=[guide(SVC_ID)],
+        seo_item_meta=[
+            meta("compliance", GUIDE_ID, "isdar-sak"),
+            meta("judgment", CASE_ID, "hukm-ummali-123"),
+        ],
+    )
+    supabase.fail_tables.add("service_guides")
+
     urls = run(
         lis.public_page_urls_for_reference_rows(
             supabase,
             [
-                ref_row(
-                    n=1,
-                    domain="compliance",
-                    ref_id="compliance:deadbeefcafebabe",
-                    item_id=SVC_ID,
-                )
+                compliance_ref(1, SVC_ID),
+                ref_row(n=2, domain="cases", ref_id="case:case-ref-1", item_id=CASE_ID),
             ],
         )
     )
-    assert urls == {}
-    # Not even a lookup was attempted — there is nothing to look up.
-    assert "seo_item_meta" not in supabase.queries
+    assert urls == {2: "/judgments/hukm-ummali-123"}
 
 
 def test_regulation_chunk_lifts_to_its_nizam_page() -> None:
@@ -376,11 +504,15 @@ def test_an_article_lookup_failure_only_costs_the_madda_cards() -> None:
 
 
 def test_all_six_domains_share_one_sidecar_call_per_wing() -> None:
-    """THE cost assertion, re-stated with the two new domains on the panel.
+    """THE cost assertion, with every domain on the panel and every one of them
+    RESOLVING — including compliance, which is the expensive shape (a guide hop
+    AND a sidecar call of its own).
 
     Chunks, مواد and whole أنظمة all land in the ``regulation`` bucket, so they
-    share ONE ``seo_item_meta`` call — the bound only moves from ≤4 to ≤5, and
-    only because ``articles_v2`` needs its own parent hop."""
+    share ONE ``seo_item_meta`` call. The bound is ≤7: three parent hops
+    (``chunks_v2``, ``articles_v2``, ``service_guides``) plus one sidecar call
+    per wing present — four wings here. Compliance is the only domain that costs
+    both, and only when a guide resolves."""
     rows: list[dict[str, Any]] = []
     n = 0
     for _ in range(5):
@@ -403,27 +535,28 @@ def test_all_six_domains_share_one_sidecar_call_per_wing() -> None:
             ref_row(n=n, domain="regulation_docs", ref_id=f"regdoc:{REG_ID}", item_id=REG_ID)
         )
         n += 1
-        rows.append(
-            ref_row(n=n, domain="compliance", ref_id="compliance:deadbeefcafebabe",
-                    item_id=SVC_ID)
-        )
+        rows.append(compliance_ref(n, SVC_ID))
 
     supabase = corpus(
+        service_guides=[guide(SVC_ID)],
         seo_item_meta=[
             meta("judgment", CASE_ID, "hukm-ummali-123"),
             meta("regulation", REG_ID, "nizam-al-amal"),
             meta("circular", CIRC_ID, "taamim-muhim"),
-        ]
+            meta("compliance", GUIDE_ID, "isdar-sak"),
+        ],
     )
     urls = run(lis.public_page_urls_for_reference_rows(supabase, rows))
 
     assert len(rows) == 30
-    assert len(urls) == 25          # every ref except the 5 compliance ones
-    assert len(supabase.queries) <= 5, supabase.queries
+    assert len(urls) == 30          # every ref, compliance included
+    assert len(supabase.queries) <= 7, supabase.queries
     assert supabase.queries.count("chunks_v2") == 1
     assert supabase.queries.count("articles_v2") == 1
+    # Five compliance refs, ONE guide lookup — the hop is batched like the rest.
+    assert supabase.queries.count("service_guides") == 1
     # The headline: مواد + chunks + whole أنظمة = ONE regulation sidecar call.
-    assert supabase.queries.count("seo_item_meta") == 3
+    assert supabase.queries.count("seo_item_meta") == 4
 
 
 def test_circular_uses_its_item_id_with_no_lookup() -> None:
@@ -468,10 +601,12 @@ def test_null_item_id_falls_back_to_the_ref_id_tail() -> None:
 
 
 def test_resolution_is_batched_not_per_reference() -> None:
-    """THE cost assertion. 24 references across all four domains must cost the
-    same handful of round-trips as one — ≤4: the chunk→نظام lookup plus one
-    sidecar lookup per wing present. A per-card ``reference_resolver`` pass would
-    be O(n) round-trips AND would run the charging code path."""
+    """THE cost assertion, on the shape production actually serves: guide-LESS
+    services. 24 references across four domains must cost the same handful of
+    round-trips as one — ≤5: the chunk→نظام lookup, the service→guide lookup, and
+    one sidecar lookup per wing that resolved. Compliance resolves nothing here,
+    so it never reaches the sidecar at all. A per-card ``reference_resolver``
+    pass would be O(n) round-trips AND would run the charging code path."""
     rows: list[dict[str, Any]] = []
     n = 0
     for _ in range(6):
@@ -486,14 +621,7 @@ def test_resolution_is_batched_not_per_reference() -> None:
             ref_row(n=n, domain="circulars", ref_id=f"circular:{CIRC_ID}", item_id=CIRC_ID)
         )
         n += 1
-        rows.append(
-            ref_row(
-                n=n,
-                domain="compliance",
-                ref_id="compliance:deadbeefcafebabe",
-                item_id=SVC_ID,
-            )
-        )
+        rows.append(compliance_ref(n, SVC_ID_NO_GUIDE))
 
     supabase = corpus(
         seo_item_meta=[
@@ -505,9 +633,12 @@ def test_resolution_is_batched_not_per_reference() -> None:
     urls = run(lis.public_page_urls_for_reference_rows(supabase, rows))
 
     assert len(rows) == 24
-    assert len(urls) == 18          # every ref except the 6 compliance ones
-    assert len(supabase.queries) <= 4, supabase.queries
+    assert len(urls) == 18          # every ref except the 6 guide-less services
+    assert len(supabase.queries) <= 5, supabase.queries
     assert supabase.queries.count("chunks_v2") == 1
+    # Six guide-less services, ONE lookup — and no compliance sidecar call,
+    # because nothing resolved to ask about.
+    assert supabase.queries.count("service_guides") == 1
     assert supabase.queries.count("seo_item_meta") == 3
 
 
@@ -586,17 +717,16 @@ def test_payload_carries_library_url_per_wing() -> None:
         workspace_item_references=[
             ref_row(n=1, domain="cases", ref_id="case:case-ref-1", item_id=CASE_ID),
             ref_row(n=2, domain="regulations", ref_id=f"reg:{CHUNK_ID}", item_id=CHUNK_ID),
-            ref_row(
-                n=3,
-                domain="compliance",
-                ref_id="compliance:deadbeefcafebabe",
-                item_id=SVC_ID,
-            ),
+            compliance_ref(3, SVC_ID),
+            compliance_ref(4, SVC_ID_NO_GUIDE),
         ],
+        service_guides=[guide(SVC_ID)],
         seo_item_meta=[
             meta("judgment", CASE_ID, "hukm-ummali-123"),
             meta("regulation", REG_ID, "nizam-al-amal"),
-            meta("service", SVC_ID, "isdar-sak"),
+            meta("compliance", GUIDE_ID, "isdar-sak"),
+            # The retired wing's leftover, seeded as the trap it is.
+            meta("service", SVC_ID_NO_GUIDE, "الخدمة-القديمة"),
         ],
     )
     entries = panel(supabase)
@@ -604,8 +734,12 @@ def test_payload_carries_library_url_per_wing() -> None:
     by_n = {e["n"]: e for e in entries}
     assert by_n[1]["library_url"] == "/judgments/hukm-ummali-123"
     assert by_n[2]["library_url"] == "/regulations/nizam-al-amal"
-    # A government service has no page in our library — no button, ever.
-    assert by_n[3]["library_url"] is None
+    # A service WITH a published guide opens our guide («افتح الدليل الشامل
+    # للخدمة في ريحان»); the service's own page stays on the other exit.
+    assert by_n[3]["library_url"] == "/compliance/isdar-sak"
+    # A service with no guide gets no in-app button — not even from the stale
+    # ``service`` sidecar row seeded above.
+    assert by_n[4]["library_url"] is None
 
     # The key is present on EVERY entry (never absent), so the client can treat
     # ``null`` as "no page" rather than "old payload".

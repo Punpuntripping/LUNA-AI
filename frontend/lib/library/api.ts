@@ -418,24 +418,40 @@ export interface RegulationArticle {
 }
 
 // ------------------------------------------------------------------
-// Compliance (`compliance_table` — «دليل مبسط لأكثر الخدمات استخداماً»)
+// Compliance (`service_guides` — «دليل مبسط لأكثر الخدمات استخداماً»)
 // ------------------------------------------------------------------
+//
+// WHAT THIS WING PUBLISHES: Rayhan's OWN authored rewrite of the issuing
+// entity's official PDF user-guide for a government service, with our own
+// screenshot pipeline — 169 guides over the most-used services, 3,180 صور
+// between them. The body is published IN FULL and UNGATED (that is what makes
+// it an SEO surface at all), the entity's own service page is the ONLY outbound
+// link, and the source PDF is never surfaced anywhere in the UI.
+//
+// That is a different thing in kind from the wing retired on 2026-08-03, which
+// republished the `services` corpus — someone else's procedure text under our
+// chrome. A rewrite we authored is ours to publish; a procedure the entity owns
+// and edits is not, and nothing here may grow back into one.
 
 /**
- * ⚠ PROVISIONAL, and EMPTY in production today. `compliance_table` does not
- * exist yet, so `getComplianceHub` always resolves to a zero-item page.
+ * One card in the /compliance grid. Mirrors `public_library.ComplianceHubItem`.
  *
- * Mirrors `public_library.ComplianceHubItem`. The absent fields are the design:
- * no `requirements`, no `required_documents`, no `steps`, no `intro_*`. The wing
- * retired on 2026-08-03 had all of those, copied out of the `services` corpus,
- * and that is what it was retired for. `summary` is one line of our own
- * orientation text — never a restatement of the procedure.
+ * `summary` is our own one-paragraph abstract of the guide — «is this the
+ * service I need?» — and `image_count` is how many screenshots the guide walks
+ * through, which also decides whether the title reads «الدليل الشامل بالصور»
+ * (`guideDisplayTitle`, `lib/library/guide.ts`).
  */
 export interface ComplianceHubItem {
   slug: string;
   title: string;
   provider_name: string | null;
   summary: string;
+  /**
+   * Screenshots in the guide. OPTIONAL on the wire: an ISR entry baked by a
+   * backend older than the guides release simply has no field — absent ⇒ the
+   * plain «الدليل الشامل:» title and no صور hint, never a crash.
+   */
+  image_count?: number;
 }
 
 export interface ComplianceFilters {
@@ -444,6 +460,59 @@ export interface ComplianceFilters {
   /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
   sector_slug?: string;
   q?: string;
+}
+
+/**
+ * One screenshot of a guide.
+ *
+ * `image_ref` is THE join key: it appears in `guide_md` as a line containing
+ * nothing but that token, and resolving a hole by anything else — position, or
+ * the «الصورة {n}» phrase — corrupts the page (`lib/library/guide.ts` carries
+ * the full contract). `description` is a real Arabic sentence describing the
+ * screenshot, so it serves as both the `alt` and the `<figcaption>`.
+ *
+ * `url` is a plain public URL: the `service-guide-images` bucket is public, so
+ * nothing is signed and nothing expires. `width`/`height` are the intrinsic
+ * pixel dimensions and are REQUIRED on the `<img>` — one guide carries 69
+ * screenshots, and an image-heavy page without reserved boxes is pure CLS.
+ */
+export interface ComplianceGuideImage {
+  image_ref: string;
+  description: string;
+  url: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Full /compliance/{slug} payload — one service guide, published complete.
+ *
+ * NO GATE FIELDS, deliberately: the guide body is ungated for everyone,
+ * including anonymous readers and Googlebot, so there is no `gate_effective`,
+ * no truncation and no hidden-line count to render.
+ *
+ * ⚠ AND NO `source_pdf_url` — the guide is our rewrite of the entity's official
+ * PDF, and that PDF is never surfaced in the UI. The absence is enforced at the
+ * source (the backend payload simply does not carry the column), so there is
+ * nothing here for a future page to accidentally render. The ONE outbound link
+ * is `service_url` — the service's own page on the issuing entity's site.
+ */
+export interface ComplianceGuideDoc {
+  slug: string;
+  title: string;
+  summary: string;
+  provider_name: string | null;
+  /**
+   * The service's page on the issuing entity's site. 0 of the 169 guides are
+   * missing it today, but a null must cost the page its «المصادر الرسمية»
+   * section, never its render.
+   */
+  service_url: string | null;
+  /** Screenshots in this guide — 0 for the 10 legitimately text-only guides. */
+  image_count: number;
+  /** Arabic markdown with `{guide_ref}_{n}` holes — render via `GuideBody`. */
+  guide_md: string;
+  images: ComplianceGuideImage[];
 }
 
 // ------------------------------------------------------------------
@@ -746,6 +815,20 @@ export function getComplianceHub(
   );
 }
 
+/**
+ * One service guide. Same 24h document window and the same null-on-404 /
+ * throw-on-transient contract as `getCircularDoc` — a 429 or 5xx must never be
+ * cached as a `notFound()` on a live, indexable guide page.
+ */
+export function getComplianceGuide(
+  slug: string,
+): Promise<ComplianceGuideDoc | null> {
+  return fetchJson<ComplianceGuideDoc>(
+    `${SERVER_API_BASE}/api/v1/public/library/compliance/${encodeSlug(slug)}`,
+    DOC_REVALIDATE,
+  );
+}
+
 export function getCircularsHub(
   page: number,
   filters?: CircularsFilters,
@@ -905,7 +988,7 @@ export interface SectorsResponse {
 export interface SectorPreview {
   regulations: RegulationHubItem[];
   judgments: JudgmentHubItem[];
-  /** Always `[]` until `compliance_table` ships — the strip self-hides. */
+  /** Service guides for this sector — `[]` in sectors no guide covers yet. */
   compliance: ComplianceHubItem[];
   circulars: CircularHubItem[];
 }

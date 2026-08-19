@@ -59,10 +59,18 @@ CIRC_HUB = f"{HUB}/circulars"
 JUD_HUB = f"{HUB}/judgments"
 SECTORS = f"{HUB}/sectors"
 
-# The three wings, with the query param each one spells the sector axis with. The
-# judgments wing filters ``cases.legal_domains`` and calls it ``domain``; it is
-# the SAME 38-value vocabulary, which is exactly why it takes the same rule.
-# ``/compliance`` was a fourth until 2026-08-03 — the wing was retired entirely.
+# The wings exercised here, with the query param each one spells the sector axis
+# with. The judgments wing filters ``cases.legal_domains`` and calls it
+# ``domain``; it is the SAME 38-value vocabulary, which is exactly why it takes
+# the same rule.
+#
+# ``/compliance`` is a FOURTH counted wing since 2026-08-19 (migration 142) and is
+# deliberately absent from THIS list: these cases drive the hub routes through
+# ``stubs``, and compliance's lister reads a different relation
+# (``library_compliance_v``) on a different published-ids path. Its own route
+# coverage lives in ``test_library_compliance.py``. It still appears in every
+# COUNT expectation below, because ``ls.SECTOR_COUNT_SECTIONS`` now has four
+# members and the sector grid reports all four.
 WINGS = [
     (REG_HUB, "regulations", "sector", "regulations_hub_total_pages"),
     (CIRC_HUB, "circulars", "sector", "circulars_hub_total_pages"),
@@ -76,23 +84,35 @@ COMMERCE_SLUG = "commercial-transactions"
 COMMERCE_AR = "المعاملات التجارية"
 
 # The §3 numbers for that sector, and the page counts they imply at 9/page.
-# ``compliance`` is 0 and STAYS 0 until `compliance_table` ships. It is absent
-# from ``ls.SECTOR_COUNT_SECTIONS`` (no table to count), so the zero here comes
-# from the response MODEL's default — which is exactly the contract under test:
-# the wing is present on the wire and empty.
+#
+# ``compliance`` is 0 HERE for a reason that is no longer "the wing is empty" —
+# since migration 142 it serves 169 real guides. It is 0 because these stubs feed
+# the counts RPC, and compliance is the one wing whose per-sector column that RPC
+# must never answer for (``ls._RPC_SECTOR_COUNT_EXCLUDED``): the RPC's
+# ``compliance`` column counts the 4,746-row ``services`` corpus, not the guides
+# the wing publishes. Counting zero is the designed degradation. The real
+# per-sector guide counts come from the sampled path, covered in
+# ``test_library_compliance.py``.
 COMMERCE_COUNTS = {
     "regulations": 693,
     "judgments": 18879,
     "compliance": 0,
     "circulars": 162,
 }
-# What ``ls.sector_counts()`` itself returns: the COUNTED wings only. The
-# `compliance: 0` above is added a layer up by ``SectorCounts``'s model default,
-# because the wing has no table to count yet.
+# What ``ls.sector_counts()`` itself returns — all four counted wings since
+# 2026-08-19. ``compliance`` is now a MEMBER of ``SECTOR_COUNT_SECTIONS``, so its
+# zero is a real counted zero rather than a model default filled in a layer up.
 COUNTED_COMMERCE = {
     k: v for k, v in COMMERCE_COUNTS.items() if k in ls.SECTOR_COUNT_SECTIONS
 }
-COMMERCE_PAGES = {k: math.ceil(v / 9) for k, v in COUNTED_COMMERCE.items()}
+# ⚠ FLOORED AT 1, and that floor is the contract, not a fudge. A hub's
+# ``*_total_pages`` never returns 0 — the paginator and the CTA wall both read it
+# as "how many pages exist", and zero renders as a broken paginator instead of as
+# one empty page. A wing counting 0 for a sector therefore memoises 1, which is
+# what a bare ``ceil(0/9)`` would get wrong.
+COMMERCE_PAGES = {
+    k: max(1, math.ceil(v / 9)) for k, v in COUNTED_COMMERCE.items()
+}
 
 # The unfiltered corpus totals (§7.3). ⚠ judgments is 30,531 — the TRUE corpus
 # total, NOT the 20,671 the per-sector judgment column sums to (D10).
@@ -909,7 +929,8 @@ def test_sector_counts_seeds_every_slug_and_drops_unknown_sector_values(
         "total": sum(COUNTED_COMMERCE.values())
     }
     assert counts["human-rights"] == {
-        "regulations": 0, "judgments": 0, "circulars": 0, "total": 0,
+        "regulations": 0, "judgments": 0, "compliance": 0, "circulars": 0,
+        "total": 0,
     }
 
 

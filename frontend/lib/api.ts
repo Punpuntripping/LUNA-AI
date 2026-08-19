@@ -1213,13 +1213,23 @@ export const templatesApi = {
 // Every endpoint is authed and answers `Cache-Control: private, no-store` —
 // a shelf is per-user by definition and must never reach a shared/ISR cache.
 
-/** Shelf content types. `article` never gets its own tab — مواد nest. */
+/**
+ * Shelf content types. `article` never gets its own tab — مواد nest.
+ *
+ * `service` and `compliance` are NOT interchangeable. A `service` row is a bare
+ * government service cited in chat: it has no page of ours and renders unlinked.
+ * A `compliance` row is a **service guide** — our own authored rewrite of the
+ * entity's official PDF user guide, published at `/compliance/{slug}` — and its
+ * id is a guide id, not a service id. Sending one where the other is meant
+ * resolves to nothing.
+ */
 export type MyLibraryContentType =
   | "regulation"
   | "article"
   | "judgment"
   | "circular"
   | "service"
+  | "compliance"
   | "form"
   | "calculator";
 

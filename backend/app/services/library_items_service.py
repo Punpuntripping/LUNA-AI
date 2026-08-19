@@ -85,12 +85,23 @@ __all__ = [
 # Everything that can land on the shelf. ``calculator`` has no corpus table yet
 # (the calculators wing is hand-built pages), so it hydrates to a bare row — it
 # is listed here so a save never 400s on a type the product already ships.
+#
+# ``compliance`` is the /compliance service guide (2026-08-19) and is what the
+# guide page's ``LibraryUseBeacon`` sends. ``service`` stays for the historical
+# rows chat citations shelved before guides existed — same wing to a reader, two
+# different id spaces to us (see ``_URL_PREFIX``), so they are never merged.
+#
+# ⚠ This tuple is the app half of a THREE-layer validation (``library_mine``
+# docstring): the ``library_items_content_type_valid`` CHECK constraint is the
+# other half, and it must list ``compliance`` too or every guide-page beacon is
+# a rejected INSERT that ``record_use`` silently swallows.
 SHELF_CONTENT_TYPES = (
     "regulation",
     "article",
     "judgment",
     "circular",
     "service",
+    "compliance",
     "form",
     "calculator",
 )
@@ -119,16 +130,30 @@ _ITEM_COLS = (
 # Public page path per content_type. مادة is nested under its نظام
 # ('/regulations/{reg}/{article}') and so is built separately.
 #
-# ⚠ ``service`` HAS NO ENTRY, deliberately (2026-08-03). The compliance wing was
-# retired, so a shelved government service has no page in our library: it keeps
-# its title on the shelf and renders unlinked (`ShelfCard`'s plain fallback), and
-# the chat panel drops its «فتح الخدمة في ريحان» button because `_url_for`
-# returns None. Re-adding the key without rebuilding the pages ships 404s.
+# ⚠ ``service`` AND ``compliance`` ARE NOT THE SAME KEY SPACE — the single
+# easiest way to ship 404s here (2026-08-19).
+#
+#   * ``service``    — a row of the ``services`` corpus (4,746 of them). It has
+#     no page of ours: we never republished someone else's procedure text, and
+#     that has not changed. Still NO entry, so a bare shelved service keeps its
+#     title and renders unlinked (`ShelfCard`'s plain fallback).
+#   * ``compliance`` — a **service guide**: Rayhan's OWN authored rewrite of the
+#     issuing entity's official PDF user guide, published in full and ungated at
+#     ``/compliance/{slug}``. That is a document we wrote, so we may publish it.
+#     Only ~169 services have one, so most services still resolve to no URL.
+#
+# The two never share an id either: a ``compliance`` content_id is a
+# ``service_guides.id``, NOT the ``services.id`` a reference row carries — see
+# ``_guide_ids_for_services``. The pre-existing ``seo_item_meta`` rows under
+# ``content_type='service'`` are STALE Arabic slugs from the retired wing keyed
+# by ``services.id``; reading them here would link every card at a page that
+# does not exist. They are never consulted.
 _URL_PREFIX = {
     "regulation": "/regulations",
     "judgment": "/judgments",
     "circular": "/circulars",
     "form": "/forms",
+    "compliance": "/compliance",
 }
 
 
@@ -234,7 +259,12 @@ def _resolve_content_id(
         table and the id is the gate key. The liability gate
         (``approved`` + ``is_published``) is applied here too, so a draft form
         can never be shelved by guessing its slug.
-      * everything else — the ``seo_item_meta`` sidecar.
+      * everything else — the ``seo_item_meta`` sidecar. ``compliance`` rides
+        this branch exactly like ``circular`` does, and the id it yields is a
+        **``service_guides.id``** (the sidecar's ``content_type='compliance'``
+        key space), never the ``services.id`` the chat's reference rows carry.
+        An unslugged guide resolves to ``None`` — the shelf beacon then skips,
+        which is correct: only published guides have a page to come back to.
 
     Returns ``None`` when the slug does not resolve (caller decides: a 404 for
     an explicit save, a silent skip for the fire-and-forget beacon).
@@ -759,8 +789,15 @@ _JUDGMENT_SELECT = (
     "facts, ruling"
 )
 _CIRCULAR_SELECT = "id, circ_ref, title, content, source, entity_id"
-# Title only — the shelf has nothing else to render for a service (see `_hydrate`).
+# Title only — a bare service has nothing else to render (see `_hydrate`). Its
+# GUIDE, when one exists, is the ``compliance`` type below and carries a card.
 _SERVICE_SELECT = "id, service_name_ar"
+# The service guide's card fields. ``guide_md`` is deliberately absent: the shelf
+# renders never-gated metadata only, and the body belongs to the guide page.
+# ``source_pdf_url`` is absent for a stronger reason — the source PDF is never
+# surfaced anywhere in the product (plan decision #4), and the safest way to
+# honour that is for the column to never enter a payload at all.
+_GUIDE_SELECT = "id, title, summary, image_count"
 _FORM_SELECT = "id, slug, title_ar, category, use_case_md"
 
 
@@ -972,10 +1009,59 @@ def _article_regulation_ids(
     return out
 
 
+def _guide_ids_for_services(
+    supabase: SupabaseClient, service_ids: list[str]
+) -> dict[str, str]:
+    """``{services.id: service_guides.id}`` — ONE batched select. SYNC, fail-soft.
+
+    The compliance twin of :func:`_chunk_regulation_ids`, and it exists because a
+    ``domain='compliance'`` reference row names a SERVICE while the page it can
+    open is a GUIDE. Verified live 2026-08-19 on all 509 compliance rows:
+    ``item_id`` is populated on every one and joins ``services.id`` on every one,
+    so that column is the identity this hop starts from. ``ref_id`` is NOT — it
+    is ``compliance:{sha1(service_ref)[:16]}`` (``references_service._compliance_hash``),
+    a one-way digest with no inverse, which is why there is no ref_id fallback
+    here the way the other wings have one.
+
+    Only ~169 of 4,746 services have a guide (98 of those 509 rows), so MOST
+    calls legitimately return fewer keys than they were given — that is the
+    common path, not a failure, and it costs the caller nothing further because
+    an empty result skips the sidecar lookup entirely.
+
+    ``is_canonical`` is filtered rather than assumed: the ingestion pipeline owns
+    this table and may rebuild it with aliases, and a non-canonical row's id has
+    no sidecar slug, so it would resolve to nothing anyway — filtering just makes
+    that explicit instead of accidental.
+    """
+    ids = list(dict.fromkeys(s for s in service_ids if s))
+    if not ids:
+        return {}
+    out: dict[str, str] = {}
+    for i in range(0, len(ids), 150):
+        batch = ids[i : i + 150]
+        try:
+            res = (
+                supabase.table("service_guides")
+                .select("id, service_id")
+                .eq("is_canonical", True)
+                .in_("service_id", batch)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("library_items: service→guide lookup failed: %s", e)
+            continue
+        for r in res.data or []:
+            sid = r.get("service_id")
+            gid = r.get("id")
+            if sid and gid:
+                out[str(sid)] = str(gid)
+    return out
+
+
 def _public_page_urls_for_reference_rows(
     supabase: SupabaseClient, rows: list[dict[str, Any]]
 ) -> dict[int, str]:
-    """``{n: url}`` for a whole المراجع panel, in ≤ 5 round-trips. SYNC.
+    """``{n: url}`` for a whole المراجع panel, in ≤ 7 round-trips. SYNC.
 
     ``rows`` are ``workspace_item_references`` rows — ``n``, ``domain``,
     ``item_id``, ``ref_id``. The write path (``persist_item_references``) already
@@ -989,13 +1075,19 @@ def _public_page_urls_for_reference_rows(
     ``regulations``       ``chunks_v2.regulation_id``                  1
     ``regulation_docs``   ``item_id`` **IS** ``regulations_v2.id``     0
     ``articles``          ``articles_v2.regulation_id``                1
-    ``compliance``        — no wing —                                  0
+    ``compliance``        ``service_guides.id`` for ``item_id``        1
     ====================  ==========================================  ======
 
-    then at most three ``ls._slug_map`` calls (judgment / circular / regulation).
-    **Total ≤ 5 round-trips per panel load, independent of reference count.** A
-    legacy row with a NULL ``item_id`` adds at most ONE more (the batched
-    ``case_ref → cases.id`` lookup below) — still bounded, still batched.
+    then at most four ``ls._slug_map`` calls (judgment / circular / regulation /
+    compliance). **Total ≤ 7 round-trips per panel load, independent of
+    reference count.** A legacy row with a NULL ``item_id`` adds at most ONE more
+    (the batched ``case_ref → cases.id`` lookup below) — still bounded, still
+    batched.
+
+    That 7 is the worst case (every wing on one panel, every one of them
+    published). Compliance costs 2 of it only when a guide actually resolves;
+    when none does — the common case, since ~169 of 4,746 services have a guide —
+    it costs 1, because an empty bucket skips the sidecar call entirely.
 
     THE TWO simple_search DOMAINS LAND IN THE ``regulation`` BUCKET (plan §6.1a).
     ``regulation_docs`` **is** a نظام, and an ``articles`` مادة **collapses** to
@@ -1005,9 +1097,20 @@ def _public_page_urls_for_reference_rows(
     own, and none is needed: both end up asking the sidecar for a ``regulation``
     slug, so they share the wing's single existing lookup.
 
-    COMPLIANCE NEVER GETS A URL. ``_URL_PREFIX`` has no ``service`` key: the
-    compliance wing was retired, so a government service has no page in our
-    library. Re-adding it here without rebuilding those pages ships 404s.
+    COMPLIANCE RESOLVES ONLY WHEN THE SERVICE HAS A PUBLISHED GUIDE, and that is
+    the uncommon case: ~169 of 4,746 services have one, and only the slugged
+    subset of those is published. The button therefore does NOT appear for most
+    cited services, by design — a link into a service we never wrote a guide for
+    is a 404 dressed as navigation, which is strictly worse than no button. What
+    it opens when it does appear is our OWN authored rewrite of the entity's
+    official PDF user guide, published in full and ungated; the entity's service
+    page stays the only outbound official link, on the dialog's other exit.
+
+    Note the domain does NOT reuse ``service``: the reference row carries a
+    ``services.id`` and the sidecar is keyed on ``service_guides.id``, hence the
+    hop through :func:`_guide_ids_for_services`. The legacy
+    ``content_type='service'`` sidecar rows (stale Arabic slugs from the retired
+    wing) are never read — matching one would link the card at a dead page.
 
     FAIL-SOFT THROUGHOUT. Any error yields no URL for the affected references —
     never a 500, never a guessed URL. A missing button is correct; a button into
@@ -1026,6 +1129,8 @@ def _public_page_urls_for_reference_rows(
     chunk_by_n: dict[int, str] = {}
     article_by_n: dict[int, str] = {}    # simple_search: articles_v2.id
     case_ref_by_n: dict[int, str] = {}   # legacy fallback: NULL item_id
+    service_by_n: dict[int, str] = {}    # compliance: services.id → its guide
+    guide_by_n: dict[int, str] = {}      # …once that hop returns
     # Seeded directly by ``regulation_docs`` (item_id IS the نظام), then filled
     # in for chunks and مواد once their parent lookups return.
     regulation_by_n: dict[int, str] = {}
@@ -1079,8 +1184,17 @@ def _public_page_urls_for_reference_rows(
             )
             if article_id:
                 article_by_n[n] = article_id
-        # compliance → no wing, no URL. Deliberately not an else-branch: an
-        # unknown future domain must fall through to "no button" as well.
+        elif domain == "compliance":
+            # ``item_id`` IS ``services.id`` — verified live on all 509 rows
+            # (2026-08-19). There is deliberately NO ``ref_id`` fallback: unlike
+            # every other wing's prefix, ``compliance:<hash>`` carries a
+            # sha1[:16] of the ``service_ref``, not the id, and a digest cannot
+            # be inverted. A row with no ``item_id`` therefore gets no button
+            # rather than a guessed one.
+            if item_id:
+                service_by_n[n] = item_id
+        # Deliberately not an else-branch: an unknown future domain must fall
+        # through to "no button" as well.
 
     # Legacy case rows: case_ref → cases.id. Reuses the batch helper the write
     # path already owns rather than minting a second query for the same join.
@@ -1116,12 +1230,27 @@ def _public_page_urls_for_reference_rows(
             if reg_id:
                 regulation_by_n[n] = reg_id
 
+    # Compliance: service → its guide. One batched select, and it is skipped
+    # entirely on a panel with no compliance references. When a cited service has
+    # no guide (the common case) nothing lands in ``guide_by_n``, so the wing's
+    # sidecar call below is skipped too — the no-guide path costs ONE query for
+    # the whole panel and yields no buttons, which is the correct answer.
+    if service_by_n:
+        guide_by_service = _guide_ids_for_services(
+            supabase, list(service_by_n.values())
+        )
+        for n, service_id in service_by_n.items():
+            guide_id = guide_by_service.get(service_id)
+            if guide_id:
+                guide_by_n[n] = guide_id
+
     # ---- phase 2: one sidecar slug lookup per wing present on the panel.
     out: dict[int, str] = {}
     for content_type, by_n in (
         ("judgment", judgment_by_n),
         ("circular", circular_by_n),
         ("regulation", regulation_by_n),
+        ("compliance", guide_by_n),
     ):
         if not by_n:
             continue
@@ -1165,7 +1294,9 @@ def _hydrate(
     present on the page. The per-type card shapes mirror the public hub item
     models 1:1 (``RegHubItem``, ``JudgmentHubItem``, ``CircularHubItem``,
     ``FormHubItem``) so the existing card components drop straight in (§5B.5).
-    ``service`` is the exception and carries a title alone — its wing is gone.
+    ``service`` is the exception and carries a title alone — a bare government
+    service has no page of ours. Its ``compliance`` GUIDE does, and gets a full
+    card.
     """
     cards: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -1266,13 +1397,44 @@ def _hydrate(
                 "body_length": len(content),
             }
 
+    # --- service guides (the /compliance wing) -----------------------------
+    # A guide is OUR document: Rayhan's own authored rewrite of the issuing
+    # entity's official PDF user guide, published in full and ungated at
+    # ``/compliance/{slug}``. So unlike a bare ``service`` it has a page, and the
+    # shelf card links to it — which is what makes the guide page's
+    # ``LibraryUseBeacon`` round-trip: view → shelf row → card → back.
+    #
+    # The content_id is a ``service_guides.id`` and the sidecar is read under
+    # ``content_type='compliance'``. NEVER read the legacy ``'service'`` sidecar
+    # rows for this: they are stale Arabic slugs keyed by ``services.id`` from
+    # the retired wing, and a slug lifted from there addresses nothing.
+    guide_ids = by_type.get("compliance") or []
+    if guide_ids:
+        rows = _rows_by_ids(supabase, "service_guides", _GUIDE_SELECT, guide_ids)
+        slugs = ls._slug_map(supabase, "compliance", guide_ids)
+        for cid in guide_ids:
+            r = rows.get(str(cid)) or {}
+            slug = slugs.get(str(cid))
+            cards[("compliance", str(cid))] = {
+                "slug": slug,
+                "url": _url_for("compliance", slug),
+                "title": (r.get("title") or "").strip(),
+                "summary_snippet": ls._text_snippet(r.get("summary"), 160),
+                "image_count": int(r.get("image_count") or 0),
+            }
+
     # --- government services -----------------------------------------------
-    # TITLE ONLY, since the compliance wing was retired (2026-08-03). No slug (no
-    # page to address), no url (`ShelfCard` renders it unlinked), and none of the
-    # card metadata the الخدمات hub card used to draw — provider, sectors and the
-    # intro snippet all went with it. The row still LISTS: the reader unlocked
-    # this service in a chat and it is theirs, so §5B.4's never-filter-a-row rule
-    # holds; it simply has nothing to show but its name.
+    # TITLE ONLY, and that has not changed: we never published the `services`
+    # corpus and never will — a procedure restated under our chrome goes stale
+    # the moment its issuing entity edits it, and makes ريحان read as the
+    # authority on a process it does not own. So no slug (no page to address),
+    # no url (`ShelfCard` renders it unlinked), no provider/sectors/intro.
+    #
+    # These rows are the HISTORICAL shape: a service cited in chat before guides
+    # existed. They still LIST — the reader unlocked this service and it is
+    # theirs, so §5B.4's never-filter-a-row rule holds; it simply has nothing to
+    # show but its name. A service with a guide is shelved as ``compliance``
+    # (above) by the guide page's beacon, not converted from these.
     svc_ids = by_type.get("service") or []
     if svc_ids:
         rows = _rows_by_ids(supabase, "services", _SERVICE_SELECT, svc_ids)

@@ -1,0 +1,155 @@
+import { cn } from "@/lib/utils";
+import { ArticleBody } from "@/components/library/blocks/ArticleBody";
+import { normalizeHeadingText } from "@/lib/library/legal-text";
+import { splitGuideMarkdown } from "@/lib/library/guide";
+import type { ComplianceGuideImage } from "@/lib/library/api";
+
+/**
+ * Drop the guide's own title + abstract when the PAGE already rendered them.
+ *
+ * ⚠ MEASURED AGAINST THE WHOLE CORPUS (`_manifest.ndjson`, 2026-08-19), not
+ * guessed: 169 of 169 guide bodies open with `# {title}` — the exact corpus
+ * title — and 168 of them follow it with a first paragraph that is `summary`
+ * VERBATIM. Rendered raw under a page that already carries an `<h1>` and the
+ * summary, every guide page would ship TWO `<h1>`s (the second one missing the
+ * «بالصور» treatment, so the two disagree) and print its abstract twice.
+ *
+ * Both strips are EQUALITY-GATED, never positional: a body whose first heading
+ * is not the title, or whose first paragraph is not the summary, is left
+ * completely alone. Comparison goes through `normalizeHeadingText` — the same
+ * whitespace/colon-insensitive rule `ArticleBody`'s `dedupeHeading` uses — so
+ * one notion of "the same heading" serves the whole library.
+ */
+function stripDuplicatedLead(
+  text: string,
+  heading?: string,
+  lead?: string,
+): string {
+  let out = text.replace(/^\s+/, "");
+
+  if (heading) {
+    const h1 = /^#{1,6}[ \t]+([^\n]*)(?:\n|$)/.exec(out);
+    if (h1 && normalizeHeadingText(h1[1]) === normalizeHeadingText(heading)) {
+      out = out.slice(h1[0].length).replace(/^\s+/, "");
+    }
+  }
+
+  if (lead) {
+    // The first paragraph = everything up to the first blank line. `split` with
+    // a limit returns a true prefix of `out`, so slicing by its length is exact.
+    const paragraph = out.split(/\n\s*\n/, 1)[0] ?? "";
+    if (
+      paragraph &&
+      normalizeHeadingText(paragraph) === normalizeHeadingText(lead)
+    ) {
+      out = out.slice(paragraph.length).replace(/^\s+/, "");
+    }
+  }
+
+  return out;
+}
+
+/**
+ * The body of a service guide: our own authored rewrite of the issuing entity's
+ * official PDF user-guide, published in full, with its screenshots dropped back
+ * into the exact places the prose refers to them.
+ *
+ * `guide_md` arrives with HOLES — lines containing nothing but a `{ref}` token —
+ * and `images` carries one row per hole. This component owns the join. The
+ * contract it implements (and the two traps it exists to avoid) is documented on
+ * `lib/library/guide.ts`; the short version:
+ *
+ *   - Resolve every hole by `image_ref` through the map below. NEVER by
+ *     position: 28% of guides place their holes out of numeric order.
+ *   - A hole with NO entry in the map renders NOTHING AT ALL. A raw `223719_1`
+ *     on a user-facing page is the one failure mode this design prevents, and
+ *     the backend already blanks unresolvable holes — this is the second layer.
+ *
+ * Server component: markdown in, JSX out, no data fetching, no state. The text
+ * segments go through `ArticleBody` — the same library body block every other
+ * document page renders through — so a guide's headings, lists and tables look
+ * identical to the rest of the library.
+ *
+ * `dedupeHeading` / `dedupeLead` take the PLAIN corpus title and the summary the
+ * page rendered above the body; see `stripDuplicatedLead` for why every guide
+ * needs them.
+ */
+export function GuideBody({
+  guideMd,
+  images,
+  dedupeHeading,
+  dedupeLead,
+  className,
+}: {
+  guideMd: string;
+  images: ComplianceGuideImage[];
+  dedupeHeading?: string;
+  dedupeLead?: string;
+  className?: string;
+}) {
+  const segments = splitGuideMarkdown(guideMd);
+  const byRef = new Map(
+    (images ?? []).map((image) => [image.image_ref, image] as const),
+  );
+
+  // The first RESOLVED screenshot loads eagerly — on a guide it is usually the
+  // largest element above the fold, so lazying it would delay LCP. Identified by
+  // segment identity rather than by index so an unresolvable leading hole cannot
+  // hand the flag to nothing.
+  const firstImageSegment = segments.find(
+    (segment) => segment.kind === "image" && byRef.has(segment.ref),
+  );
+
+  const firstTextSegment = segments.find((segment) => segment.kind === "text");
+
+  return (
+    <div dir="rtl" className={cn("space-y-4", className)}>
+      {segments.map((segment, index) => {
+        if (segment.kind === "text") {
+          // Only the FIRST text segment can carry the duplicated title/abstract.
+          const value =
+            segment === firstTextSegment
+              ? stripDuplicatedLead(segment.value, dedupeHeading, dedupeLead)
+              : segment.value;
+          // A body that was nothing BUT its own title + abstract strips to
+          // empty — render nothing rather than an empty paragraph.
+          if (!value.trim()) return null;
+          return <ArticleBody key={index} visibleText={value} />;
+        }
+
+        const image = byRef.get(segment.ref);
+        if (!image) return null;
+
+        return (
+          <figure key={index} className="my-6 space-y-2">
+            {/* `width`/`height` are REQUIRED here, not decorative: they reserve
+                the box before the bytes land, and one guide carries 69
+                screenshots — without them the page reflows 69 times.
+
+                A plain `<img>` on purpose, not `next/image`: the bucket is
+                public and the payload already carries intrinsic dimensions, so
+                the optimizer would only add a remote pattern, a transform per
+                image and a bill to 3,180 screenshots served off ISR-cached
+                anonymous pages. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={image.url}
+              width={image.width}
+              height={image.height}
+              alt={image.description}
+              loading={segment === firstImageSegment ? "eager" : "lazy"}
+              decoding="async"
+              className="mx-auto h-auto max-w-full rounded-lg border border-border bg-muted/30"
+            />
+            {/* The description IS the alt text (contract rule 3) — a real Arabic
+                sentence naming the buttons and fields in the screenshot, which
+                is what keeps the guide usable with images off. */}
+            <figcaption className="text-center text-xs leading-relaxed text-muted-foreground">
+              {image.description}
+            </figcaption>
+          </figure>
+        );
+      })}
+    </div>
+  );
+}

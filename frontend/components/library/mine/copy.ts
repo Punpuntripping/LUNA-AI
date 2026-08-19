@@ -1,4 +1,5 @@
 import { getDateGroupAr } from "@/lib/utils";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { MyLibraryContentType, MyLibrarySort } from "@/lib/api";
 
 /**
@@ -37,6 +38,11 @@ export const MY_LIBRARY_COPY = {
     judgment: "الأحكام",
     service: "الخدمات",
     circular: "التعاميم",
+    // Service GUIDES — our own authored rewrite of an entity's official PDF user
+    // guide, published at /compliance/{slug}. Separate from «الخدمات», which is
+    // the bare government service a chat citation shelved and which has no page
+    // of ours: two id spaces, two shelf types, so two labels.
+    compliance: "أدلة الخدمات",
     form: "النماذج",
     calculator: "الحاسبات",
     article: "المواد",
@@ -47,6 +53,7 @@ export const MY_LIBRARY_COPY = {
     regulation: "لا توجد أنظمة في مكتبتك بعد.",
     judgment: "لا توجد أحكام في مكتبتك بعد.",
     service: "لا توجد خدمات في مكتبتك بعد.",
+    compliance: "لا توجد أدلة خدمات في مكتبتك بعد.",
     circular: "لا توجد تعاميم في مكتبتك بعد.",
     form: "لا توجد نماذج في مكتبتك بعد.",
     calculator: "لا توجد حاسبات في مكتبتك بعد.",
@@ -136,17 +143,17 @@ export function articlesLabel(count: number): string {
 }
 
 /**
- * «آخر استخدام: اليوم / أمس / هذا الأسبوع / هذا الشهر / 12‏/3‏/1447 هـ».
+ * «آخر استخدام: اليوم / أمس / هذا الأسبوع / هذا الشهر / 12 مارس 2026».
  * Reuses the app-wide grouping (`getDateGroupAr`) so مكتبتي speaks the same
  * date vocabulary as the sidebar; anything older than a month falls back to a
- * full `ar-SA` date rather than the useless «أقدم».
+ * full Arabic date rather than the useless «أقدم».
  */
 export function lastUsedLabel(iso: string | null): string | null {
   if (!iso) return null;
   const group = getDateGroupAr(iso);
   const when =
     group === "أقدم"
-      ? new Intl.DateTimeFormat("ar-SA", {
+      ? new Intl.DateTimeFormat(AR_DATE_LOCALE, {
           year: "numeric",
           month: "long",
           day: "numeric",

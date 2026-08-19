@@ -67,9 +67,9 @@ export async function LibraryHubView() {
     getSectorSlugMap(),
     getRegulationsHub(1),
     getJudgmentsHub(1),
-    // Resolves to an empty page until `compliance_table` ships; the strip below
-    // renders nothing for an empty slice, so this costs the hub one cached
-    // no-op fetch and keeps the wiring exercised.
+    // Coverage is partial ON PURPOSE — only the most-used services have a
+    // guide — so this slice is empty for most sectors and the strip below
+    // renders nothing for an empty one.
     getComplianceHub(1),
     getCircularsHub(1),
   ]);

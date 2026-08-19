@@ -43,6 +43,16 @@ export const SITE_URL = "https://rayhanai.com";
  * `noindex`: an enumerable index of every ruling is the crawl the PDPL gate
  * exists to prevent.
  *
+ * `compliance` joined on 2026-08-19 with the `service_guides` corpus — the 169
+ * `/compliance/{slug}` service guides. It was held out while the wing was
+ * deliberately EMPTY (a listed section serving an empty urlset is a file Google
+ * refetches hourly to learn nothing); the guides are our own authored rewrites
+ * of the entities' official PDF user-guides, published in full and ungated, so
+ * every listed URL is a fully crawlable page with no gate to contradict. The
+ * backend feed lists only slugged + indexable rows, exactly like every other
+ * section here — which is also why hub depth is irrelevant: an anonymous
+ * visitor is capped at page 1, and all 169 URLs still ship from this file.
+ *
  * ⚠ `courts` WAS HERE AND IS NOT ANY MORE (removed 2026-08-11). The 12 court
  * section pages were the one carve-out from that gate — indexable because they
  * list derived titles, never judgment text. Then a court became a paid-only
@@ -68,6 +78,7 @@ export const SITEMAP_SECTIONS = [
   "calculators",
   "sectors",
   "judgments",
+  "compliance",
 ] as const;
 
 export type SitemapSection = (typeof SITEMAP_SECTIONS)[number];

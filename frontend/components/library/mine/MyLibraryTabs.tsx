@@ -19,8 +19,20 @@ const DEFAULT_TABS = [
   "circular",
 ] as const satisfies readonly MyLibraryContentType[];
 
-/** Shown only when non-empty (§5B.1). */
-const SECONDARY_TABS = ["form", "calculator"] as const satisfies readonly MyLibraryContentType[];
+/**
+ * Shown only when non-empty (§5B.1).
+ *
+ * `compliance` (service guides) rides here rather than in DEFAULT_TABS: only a
+ * pilot subset of guides is published, so for most readers the tab would be a
+ * permanently empty promise. It appears the moment one is actually shelved —
+ * which is what keeps a shelved guide reachable instead of stranded in a type
+ * with no tab to select it.
+ */
+const SECONDARY_TABS = [
+  "compliance",
+  "form",
+  "calculator",
+] as const satisfies readonly MyLibraryContentType[];
 
 type ShelfCounts = MyLibraryResponse["counts"];
 

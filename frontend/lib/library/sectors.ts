@@ -8,13 +8,14 @@
 // and never appear in a URL. If a second copy of this table ever appears, the two
 // WILL drift — every consumer imports from here.
 //
-// ⚠ `compliance` IS WIRED AND EMPTY, and it is NOT the wing that was retired on
-// 2026-08-03. That one republished the `services` corpus — الشروط / المستندات /
-// الخطوات restated under our chrome — and was deleted for it. This one is backed
-// by `compliance_table`: «دليل مبسط لأكثر الخدمات استخداماً», our own short guide
-// plus a link out, and it stays empty until that table exists. The tab renders
-// today (a 0-count chip is hidden only on a SECTOR page) so the wing is reachable
-// and its plumbing is exercised; nothing about it may grow a service's procedure.
+// ⚠ `compliance` IS LIVE (2026-08-19), and it is NOT the wing that was retired
+// on 2026-08-03. That one republished the `services` corpus — الشروط / المستندات
+// / الخطوات restated under our chrome — and was deleted for it. This one is
+// backed by `service_guides`: OUR OWN authored rewrite of the issuing entity's
+// official PDF user guide, screenshots and all, published in full and ungated.
+// The entity's service page stays the only outbound link, and the source PDF is
+// never surfaced. Coverage is partial ON PURPOSE — only the most-used services
+// have a guide — so a sector with no guides shows a 0 chip, which is the truth.
 //
 // Pure data + pure string helpers. No fetching, no client state, no React —
 // safe in both the server and the browser graph.
@@ -210,8 +211,9 @@ export function sectorTypeRobots(type: LibraryType): RobotsDirective {
  * The locale is PINNED to `en-US` on purpose. `toLocaleString()` with no
  * argument resolves against the runtime's locale, which differs between the
  * Node render and the browser hydration and would produce a hydration mismatch
- * — and an `ar` locale would emit Arabic-Indic digits (٢٠٬١٨٢), which the rest
- * of the UI does not use ("أكثر من 3,000 نظام ولائحة" in the nav copy).
+ * — and a bare `ar` locale would emit Arabic-Indic digits (٢٠٬١٨٢), which the
+ * app never renders (see `lib/format/numerals`). `en-US` and `AR_NUM_LOCALE`
+ * group identically, so this stays as it is.
  */
 export function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);

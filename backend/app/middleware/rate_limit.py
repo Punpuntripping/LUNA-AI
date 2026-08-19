@@ -184,10 +184,12 @@ LIBRARY_FULL_PREFIX = "/api/v1/library/full/"
 # expensive per-call surface in the wing and the least suitable one to hand a
 # per-slug budget. The flat `/public/library/sectors` list has no tail and keeps
 # its own key, like every other hub list path.
-# `compliance` is listed AHEAD of its item route. The wing serves only a hub
-# today, but the day `compliance_table` brings a `/compliance/{slug}` guide
-# page, an unlisted section is one handing out a fresh DEFAULT_RATE_LIMIT per
-# slug — a gap that opens silently and is invisible until someone walks it.
+# `compliance` was listed AHEAD of its item route, and that foresight paid off on
+# 2026-08-19: `/compliance/{slug}` now serves the service guides (migration 142)
+# and its dynamic tail collapses onto one bucket with no change here. Left as the
+# standing warning it was — an unlisted section hands out a fresh
+# DEFAULT_RATE_LIMIT per slug, a gap that opens silently and stays invisible
+# until someone walks it.
 PUBLIC_LIBRARY_SECTIONS = frozenset(
     {"regulations", "compliance", "circulars", "judgments", "forms", "sectors"}
 )

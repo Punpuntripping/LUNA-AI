@@ -17,6 +17,7 @@ import {
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
 //   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
 //   judgments                → backend feed, `indexable` rows only (3k of 10k).
+//   compliance               → backend feed, the 169 service guides.
 //   other                    → 404.
 //
 // Fail-safe rule: if the backend is unreachable we return an EMPTY but VALID
@@ -70,6 +71,7 @@ export async function GET(
     case "circulars":
     case "forms":
     case "judgments":
+    case "compliance":
       // Same feed contract; fetchSectionUrls never throws. `articles` is the
       // ~50k per-مادة URL feed (backend joins seo_articles × regulation slugs);
       // `forms` lists approved+published rows only (empty until review).
@@ -78,6 +80,8 @@ export async function GET(
       // `app/judgments/[slug]` reads for its `robots` meta. Re-closing the wing
       // is a data change (`UPDATE seo_item_meta SET indexable = false …`), which
       // leaves this case serving a valid empty <urlset> rather than a 404.
+      // `compliance` lists the service guides — ungated pages with no `robots`
+      // key of their own, so nothing here can contradict what the page serves.
       urls = await fetchSectionUrls(section);
       break;
     default:

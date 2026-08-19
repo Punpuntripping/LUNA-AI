@@ -261,9 +261,17 @@ async def fetch_item_references_payload(
     That one is NAVIGATION, not content: it is a path to a page that enforces its
     own access tier, so it is resolved for free, for every card, on the LIST
     (which is why the button no longer requires spending a reveal first). It is
-    ``None`` for a compliance reference (the wing was retired — no page exists)
-    and for any item with no published slug; the panel then renders the external
-    link alone, never a hub fallback.
+    ``None`` for any item with no published slug; the panel then renders the
+    external link alone, never a hub fallback.
+
+    A **compliance** reference resolves too, as of 2026-08-19, but only when the
+    cited service has a published **service guide** — our own authored rewrite of
+    the entity's official PDF user guide, at ``/compliance/{slug}``. ~169 of
+    4,746 services have one, so ``None`` stays the common answer there and the
+    card correctly shows the entity's own page alone. The guide's CONTENT is not
+    involved on either side of this: the popup still shows a service as a title
+    and a link with no procedure body, and nothing from ``guide_md`` enters agent
+    context — the reader reaches the guide by leaving to its own page.
 
     ⚠ ``blog.py`` snapshots this payload into ``blog_posts.references_json``, so
     new posts inherit the key and posts published before it existed simply lack
@@ -749,6 +757,12 @@ async def _build_compliance_shells(
     16-char sha1 hash, not the service_ref. Rows whose item_id failed to
     resolve at write time fall through to a stub card via ``shells_by_n``
     omission.
+
+    ⚠ ``item_id`` being the ONLY usable handle is also what
+    ``library_items_service._guide_ids_for_services`` depends on to find the
+    service's published guide — so a row that loses it loses both its card
+    details and its «افتح الدليل الشامل للخدمة في ريحان» exit. Verified live
+    2026-08-19: all 509 compliance rows carry one.
     """
     rows_by_id: dict[str, list[dict]] = {}
     for row in rows:

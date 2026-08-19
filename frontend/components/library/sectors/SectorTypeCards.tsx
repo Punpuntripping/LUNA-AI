@@ -58,8 +58,6 @@ export function SectorTypeCards({
         </>
       );
     case "compliance":
-      // Empty until `compliance_table` ships — the branch exists so the switch
-      // stays exhaustive over `LibraryType`.
       return (
         <>
           {(items as ComplianceHubItem[]).map((item) => (

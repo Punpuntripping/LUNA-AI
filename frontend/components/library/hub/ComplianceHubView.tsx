@@ -11,19 +11,23 @@ import type { BreadcrumbItem } from "@/types/library";
  * Shared server-component body for the /compliance hub — page 1 (`/compliance`)
  * and deep pages (`/compliance/page/{n}`).
  *
- * ⚠ THIS WING IS LIVE AND EMPTY. It is backed by `compliance_table` («دليل مبسط
- * لأكثر الخدمات استخداماً»), which does not exist yet, so the backend answers a
- * zero-item page and this renders the empty state every time. That is the
- * intended production state — the route, the cap wall and the pagination are
- * wired now so nothing has to be rediscovered when the table lands.
+ * WHAT THE GRID LISTS: `service_guides` — 169 guides to the most-used Saudi
+ * government services, ordered most-used first. Each one is OUR OWN authored
+ * rewrite of the issuing entity's official PDF user-guide, published in full and
+ * ungated at `/compliance/{slug}`, with the entity's service page as the only
+ * outbound link and the source PDF surfaced nowhere.
  *
  * It is NOT the wing retired on 2026-08-03. That one republished the `services`
- * corpus (الشروط / المستندات / الخطوات); this one is our own short guide plus a
- * link out to the issuing entity.
+ * corpus — الشروط / المستندات / الخطوات, the entity's own procedure text under
+ * our chrome. A guide we wrote is ours to publish; a procedure they own is not.
+ * Only guided services are listed; there is deliberately no fallback listing of
+ * the other ~4,577 services, because «دليل مبسط لأكثر الخدمات استخداماً» IS the
+ * offer.
  *
  * NO SEARCH PANEL, deliberately: `HubSearchPanel` runs BM25 over `search_index`,
- * and `compliance_table` has no rows there — a live-looking box that can only
- * ever return nothing is worse than no box. Add it back with the corpus.
+ * and the guides are not in that corpus (adding them is its own decision, out of
+ * scope for v1) — a live-looking box that can only ever return nothing is worse
+ * than no box. Add it back with the corpus.
  *
  * `verifiedBot` is the §3.7 crawler exemption, set by the DEEP-page route only
  * (`app/compliance/page/[n]`) — page 1 must stay statically prerendered.

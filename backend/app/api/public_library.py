@@ -111,10 +111,17 @@ _LIBRARY_SITEMAP_SECTIONS = {
     "regulations": ("regulation", "regulations"),
     "circulars": ("circular", "circulars"),
     "judgments": ("judgment", "judgments"),
+    "compliance": ("compliance", "compliance"),
 }
-# ``compliance`` was a third entry until 2026-08-03. The whole wing was retired —
-# there are no /compliance/{slug} pages left to list, so feeding a crawler that
-# section would hand it several thousand 404s.
+# ``compliance`` REJOINED this map on 2026-08-19, after 16 days out. It left when
+# the old wing — which republished the ``services`` corpus — was retired and had
+# no /compliance/{slug} pages left to list. It is back because the wing now
+# serves SERVICE GUIDES: 169 pages of ريحان's own authored rewrite of each
+# entity's official PDF user-guide, published in full and ungated, which is
+# precisely the kind of page a sitemap is for. The content_type is
+# ``'compliance'`` (keyed by ``service_guides.id``) — NOT the stale ``'service'``
+# rows, which are Arabic slugs keyed by ``services.id`` left over from the
+# retired wing and are never read by anything.
 # ``forms`` and ``articles`` are NOT in the sidecar-driven map above: form slugs
 # live on the forms table (approved+published only) and مادة URLs are a nested
 # reg-slug/article-slug path — both handled by their own service functions in the
@@ -992,11 +999,11 @@ def _clean(value: Optional[str]) -> Optional[str]:
 def _search_text(value: Optional[str]) -> Optional[str]:
     """Validate a free-text filter: absent, or >= 3 characters.
 
-    ⚠ ``_search_query`` IS NOW ITS ONLY CALLER. It used to be reached directly by
-    the non-search free-text facets too — ``provider`` on /compliance was the
-    last of those, and it went with the wing (2026-08-03). Kept separate from
-    ``_search_query`` because the two answer different questions: this one is the
-    3-char floor, that one is the D9 anon rule.
+    TWO KINDS OF CALLER, and keeping them separate is the point. ``_search_query``
+    wraps this for the ``q`` box (adding the D9 anon rule on top); the non-search
+    free-text FACETS call it directly, and ``provider`` on /compliance — the
+    issuing entity's name — is one of those. A facet is not a search: it stays
+    available to anonymous callers, so it gets the 3-char floor and nothing else.
     """
     value = _clean(value)
     if value is not None and len(value) < _MIN_SEARCH_CHARS:
@@ -1256,7 +1263,7 @@ class HubSearchTotals(BaseModel):
     over. ``bm25_search`` cuts to ``p_candidates`` (500) by ``ts_rank_cd`` before
     scoring, and the hub then takes at most ``HUB_SEARCH_LIMIT`` (200) ranked ids.
     When either cut binds, ``total_count`` is a FLOOR and
-    ``total_count_is_exact`` is false — render «أفضل ٢٠٠ نتيجة», never «٢٠٠ نتيجة».
+    ``total_count_is_exact`` is false — render «أفضل 200 نتيجة», never «200 نتيجة».
     """
 
     total_count: Optional[int] = None
@@ -1409,28 +1416,45 @@ class RegulationArticleResponse(BaseModel):
     next: Optional[ArticleNavEntry] = None
 
 
-# --- Compliance hub (`compliance_table`) ----------------------------------
+# --- Compliance wing — service guides (`service_guides`) ------------------
+#
+# «دليل الخدمات» — 169 guides to the most-used government services. Each one is
+# RAYHAN'S OWN AUTHORED REWRITE of the issuing entity's official PDF user-guide,
+# with our own screenshots, published IN FULL and UNGATED (plan
+# `.claude/plans/compliance_service_guides.md` §0). Two rules run through every
+# model below and neither is negotiable:
+#
+#   * the ONLY outbound link is the entity's own service page (``service_url``);
+#     ``source_pdf_url`` is never surfaced, and no model here has a field for it.
+#   * nothing on this wing is gated. There is no ``gate``, no ``is_truncated``,
+#     no ``hidden_placeholder_lines`` — the absence of those fields is the API
+#     shape saying so.
 
 
 class ComplianceHubItem(BaseModel):
     """One card on the /compliance guide grid.
 
-    ⚠ PROVISIONAL — `compliance_table` is not designed yet, and no route can
-    return one of these until it is (``library_service.COMPLIANCE_TABLE_READY``).
-    The shape is deliberately the SMALLEST thing a card can render: who issues
-    the service, what it is called, and one line of OUR OWN orientation text.
+    The smallest thing a card can render: who issues the service, what the guide
+    is called, its own one-paragraph abstract, and how many screenshots it
+    carries.
 
-    THE FIELDS THAT ARE MISSING ARE THE POINT. There is no ``requirements``, no
-    ``required_documents``, no ``steps`` — the retired wing had all three, copied
-    out of the `services` corpus, and that is exactly what it was retired for.
-    ``summary`` is a guide sentence, never a restatement of the procedure; the
-    procedure lives on the issuing entity's page and is reached by leaving.
+    ``image_count`` is load-bearing, not decoration. The title treatment puts
+    «الدليل الشامل بالصور» on a guide WITH screenshots and leaves «الدليل الشامل»
+    on the 10 that are legitimately text-only — promising صور on a guide that has
+    none is the one lie that carve-out exists to prevent — and the card renders
+    the same title the detail page's H1 does, so it needs the same input.
+
+    THE FIELDS THAT ARE MISSING ARE STILL THE POINT. There is no
+    ``requirements``, no ``required_documents``, no ``steps``: those belong to
+    the ``services`` corpus, which stays behind the agent's retrieval. What the
+    wing publishes is the GUIDE we wrote, not the entity's procedure text.
     """
 
     slug: str
     title: str
     provider_name: Optional[str] = None
     summary: str = ""
+    image_count: int = 0
 
 
 class ComplianceHubResponse(HubSearchTotals):
@@ -1443,6 +1467,58 @@ class ComplianceHubResponse(HubSearchTotals):
     cap_reached: bool = False
     max_page: int = library_service.ANON_HUB_MAX_PAGE
     max_anon_page: int = library_service.ANON_HUB_MAX_PAGE
+
+
+class ComplianceGuideImage(BaseModel):
+    """One screenshot of a guide — the resolution of ONE hole in ``guide_md``.
+
+    ``image_ref`` is the join key and the ONLY one: the body carries bare
+    ``\\d+_\\d+`` lines, and a renderer swaps each for the image whose
+    ``image_ref`` matches. Never resolve by position (28% of guides place their
+    holes out of numeric order) and never by «الصورة {n}» (2,804 of those sit
+    inside prose sentences).
+
+    ``description`` is a real Arabic sentence describing the screenshot — it is
+    the ``alt`` text AND the caption, and it is what keeps the guide usable with
+    images off. ``width``/``height`` are the natural pixel dimensions, present so
+    the layout can reserve the box before the bytes land (CLS). ``url`` is a
+    plain public bucket URL: no signature, no expiry, identical for every caller,
+    which is what lets the guide page keep the shared hour-cache.
+    """
+
+    image_ref: str
+    description: str = ""
+    url: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+class ComplianceGuideDoc(BaseModel):
+    """Full /compliance/{slug} payload — the guide, whole.
+
+    ``guide_md`` is the complete Arabic markdown with its image holes still in
+    place; ``images`` resolves them. The body is NOT truncated and carries no
+    gate: every byte here reaches an anonymous reader, and that is the wing's
+    entire SEO bet. (Contrast ``CircularDocResponse``, whose ``text`` is
+    gate-truncated server-side.)
+
+    ⚠ THERE IS NO ``source_pdf_url`` FIELD AND THERE MUST NEVER BE ONE. The guide
+    is our rewrite of the entity's official PDF; the PDF itself is never surfaced.
+    The single outbound link is ``service_url`` — the entity's own page for the
+    service — rendered as «صفحة الخدمة على موقع الجهة الرسمي».
+
+    ``image_count`` is what this payload actually carries (``len(images)``), so a
+    title reading «بالصور» is always backed by bytes.
+    """
+
+    slug: str
+    title: str
+    summary: str = ""
+    provider_name: Optional[str] = None
+    service_url: Optional[str] = None
+    image_count: int = 0
+    guide_md: str = ""
+    images: list[ComplianceGuideImage] = Field(default_factory=list)
 
 
 # --- Circulars hub + document page ----------------------------------------
@@ -1716,11 +1792,12 @@ class FormDetailResponse(BaseModel):
 class LibraryCounts(BaseModel):
     """The tab counts of the unified «المكتبة القانونية» hub.
 
-    ``compliance`` is ALWAYS 0 today and that is not a bug: the wing exists and is
-    empty until ``compliance_table`` ships, and it is deliberately absent from
-    ``library_service._SECTION_SOURCES`` so a guaranteed-zero count costs no query.
-    The chip still renders (``LibraryTypeChips`` hides a zero only on a SECTOR
-    page), which is what makes the empty wing reachable.
+    ``compliance`` WENT REAL ON 2026-08-19 and any code still treating it as a
+    guaranteed zero is wrong. It counts the PUBLISHED service guides (169 at
+    launch — ``library_service._SECTION_SOURCES['compliance']`` reads
+    ``library_compliance_v``), so the chip now sizes a paginator that actually
+    walks something. It can still legitimately read 0 before the slugs are built:
+    the count is of SLUGGED guides, and a guide with no slug has no page.
 
     ⚠ ``judgments`` is the TRUE UNFILTERED corpus total (30,531) and is NOT
     derivable from ``SectorSummary.counts`` — in either direction, both verified
@@ -1811,9 +1888,13 @@ class SectorPreview(BaseModel):
 
     regulations: list[RegHubItem] = Field(default_factory=list)
     judgments: list[JudgmentHubItem] = Field(default_factory=list)
-    # Always empty until `compliance_table` ships — the overview does not call the
-    # compliance lister at all, so the wing costs the sector page nothing. The
-    # frontend strip renders nothing for an empty slice (SectorPreviewStrip).
+    # ⚠ EMPTY BY OMISSION, NOT BECAUSE THE WING IS EMPTY (it has 169 guides since
+    # 2026-08-19). The overview handler still calls only three listers, so this
+    # slice stays `[]` and the frontend strip renders nothing for it
+    # (SectorPreviewStrip) — while the sector's compliance COUNT is real and its
+    # tab links to the scoped hub, which serves the guides properly. Wiring the
+    # fourth lister in is a one-line change in `get_library_sector`; it was left
+    # out here to keep the sector overview at three round-trips.
     compliance: list[ComplianceHubItem] = Field(default_factory=list)
     circulars: list[CircularHubItem] = Field(default_factory=list)
 
@@ -2406,15 +2487,22 @@ async def list_compliance(
 ):
     """/compliance hub list (9 cards/page) — «دليل مبسط لأكثر الخدمات استخداماً».
 
-    ANSWERS AN EMPTY PAGE TODAY, ON PURPOSE. `compliance_table` does not exist
-    yet (``library_service.COMPLIANCE_TABLE_READY``), so the lister short-circuits
-    without a query. The route is wired now rather than later so the wing, its
-    cache headers, its metering and its cap behaviour are all in place — the day
-    the table lands, only the lister changes.
+    Lists the 169 SERVICE GUIDES, most-used first (``most_used_rank`` ascending —
+    the portal's own popularity order, so page 1 is the services people actually
+    file). A guide is ريحان's own authored rewrite of the issuing entity's
+    official PDF user-guide; the wing publishes it in full and ungated.
 
-    Every guard the other hubs run stays live so none of them can be forgotten
-    later: the filters are validated, the anon depth cap applies, and yielded
-    items are metered (§2.2 — currently a no-op over an empty list)."""
+    ``provider`` is a free-text substring of the issuing entity's name (>= 3
+    chars — same floor as every other free-text facet); ``sector_slug`` is the
+    SECTION axis (§5), not a filter for cap purposes; ``q`` is registered-only and
+    dropped for anon (D9).
+
+    THE CARDS ARE NOT GATED AND NEITHER IS THE PAGE THEY LINK TO — this wing has
+    no gate resolution anywhere. What still applies is everything that is about
+    the CALLER rather than the content: the filters are validated before any query
+    (§2.1), the browse-depth cap bounds anon at page 1 (§2.2 — SEO does not depend
+    on hub depth; the sitemap carries all 169 detail URLs), and a signed-in
+    caller's yielded items are metered."""
     provider = _search_text(provider)
     sector, sector_key = _sector_section(sector_slug, sector)
     search_dropped = _search_was_dropped(q, current_user)
@@ -2468,6 +2556,40 @@ async def list_compliance(
         total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
     )
+
+
+@router.get(
+    "/public/library/compliance/{slug}", response_model=ComplianceGuideDoc
+)
+async def get_compliance_guide(
+    slug: str,
+    response: Response,
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Anonymous, cacheable /compliance/{slug} service-guide payload.
+
+    Ships the guide WHOLE: the full ``guide_md`` plus every screenshot's public
+    URL, to anyone, signed in or not. No ``resolve_gate``, no truncation, no
+    unlock — this wing is open by design, so the handler is the plainest one in
+    the file (fetch, 404 or 200).
+
+    ``_LIBRARY_CACHE_CONTROL`` (public, 1h) is correct HERE precisely because the
+    body does not vary by caller: no tier decides a byte of it and the image URLs
+    are unsigned public-bucket paths, so nothing per-user can land in the shared
+    cache. That is the exact opposite of the hub handlers above, whose bodies DO
+    vary by tier and which therefore switch headers per caller.
+
+    404 «الدليل غير موجود» when the slug is unknown — including a guide that
+    exists but has no slug yet, which has no public page by definition."""
+    doc = await run_db(library_service.get_compliance_guide, supabase, slug)
+    if doc is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="الدليل غير موجود",
+        )
+    response.headers["Cache-Control"] = _LIBRARY_CACHE_CONTROL
+    return ComplianceGuideDoc(**doc)
 
 
 # --- /circulars (Phase 5) -------------------------------------------------
@@ -2990,10 +3112,17 @@ async def open_form_in_writer(
 # alike (never shared/ISR-cached).
 # ============================================
 
-# content_type ∈ regulation|article|judgment|circular|form. 'service' is
-# excluded: it was policy-never-gated (nothing to unlock), and since the
-# compliance wing was retired (2026-08-03) it has no public payload at all — a
-# service is a chat citation now. An unknown/excluded type is a 404.
+# content_type ∈ regulation|article|judgment|circular|form. Two types are
+# excluded, for opposite reasons, and neither exclusion is an oversight:
+#
+#   * 'service'    — policy-never-gated, so there is nothing to unlock, and it
+#                    has no public payload at all: a service is a chat citation.
+#   * 'compliance' — the service GUIDES. Excluded because the public wing already
+#                    serves them WHOLE and ungated (see ComplianceGuideDoc). A
+#                    reveal endpoint exists to hand over a withheld half; this
+#                    wing has none. Adding it here would imply the opposite.
+#
+# An unknown/excluded type is a 404.
 _FULL_CONTENT_TYPES = ("regulation", "article", "judgment", "circular", "form")
 
 _FULL_CACHE_CONTROL = "private, no-store"

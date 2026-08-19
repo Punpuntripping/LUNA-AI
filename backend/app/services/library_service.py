@@ -57,8 +57,11 @@ from supabase import Client as SupabaseClient
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import search_service
+from shared.config import get_settings
 from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
 from shared.library.sectors import SECTOR_SLUGS, slug_for_sector
+from shared.library.case_sources import entity_name as _judgment_entity_name
+from shared.library.case_sources import judgment_provenance
 from shared.seo.judgment_naming import (
     court_level_label,
     hijri_year,
@@ -124,7 +127,15 @@ _MAX_PLACEHOLDER_LINES = 30
 
 # The recognised library content types (mirrors the seo_item_meta CHECK
 # constraint in migration 095). 'service' is the only fail-OPEN type.
-_CONTENT_TYPES = ("regulation", "article", "judgment", "circular", "service", "form")
+#
+# ``compliance`` is the /compliance wing's own sidecar type (service GUIDES —
+# see the wing's block comment below), keyed by ``service_guides.id``. It is a
+# DIFFERENT key space from the legacy ``service`` rows, which are keyed by
+# ``services.id`` and are stale leftovers of the retired wing: never read, never
+# written, never reused.
+_CONTENT_TYPES = (
+    "regulation", "article", "judgment", "circular", "service", "form", "compliance",
+)
 
 # In-process TTL cache for seo_gate_defaults. The policy table has one row per
 # content_type and changes rarely (operator edit), so a ~5-minute cache spares
@@ -158,8 +169,11 @@ _gate_defaults_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
 # corpus size. ``_RANKED_HUB_VIEWS`` is the switch, and
 # ``_published_sample_counts`` short-circuits on it.
 #
-# WHAT IS LEFT: circulars and services (100 published each), which have no
-# ranked view. They are the only callers of ``_published_ids`` now.
+# WHAT IS LEFT: circulars (100 published) and compliance (169 service guides,
+# the whole wing), which have no ranked view. They are the only callers of
+# ``_published_ids`` now. Compliance is a 169-row corpus by construction — one
+# guide per guided service — so it sits far below the ceiling and stays there;
+# if it ever grows past it, give it a ranked view, do not raise the constant.
 #
 # The ceiling was raised 300 → 1000 on 2026-08-06 when /regulations went to 462
 # published rows, as a stopgap for exactly the failure the views fix: crossing it
@@ -211,10 +225,11 @@ __all__ = [
     "list_regulations_hub",
     "regulations_hub_total_pages",
     "get_regulation_doc",
-    # /compliance — wired, empty until `compliance_table` exists
-    "COMPLIANCE_TABLE_READY",
+    # /compliance — the service-guides wing (ungated, SEO)
+    "COMPLIANCE_WING_READY",
     "list_compliance_hub",
     "compliance_hub_total_pages",
+    "get_compliance_guide",
     # Phase 3 — مادة (article) pages
     "ARTICLE_FREE_CHARS",
     "SHARH_TEASER_CHARS",
@@ -503,9 +518,12 @@ def resolve_gate(
       (d) ``seo_gate_defaults[content_type]`` (the section policy);
       (e) ultimate fallback ``'gated'`` (fail-closed) — EXCEPT
           ``content_type='service'`` which fails OPEN. Services are
-          policy-never-gated; the /compliance pages are gone (2026-08-03) but a
-          service citation is still revealed free in chat, and that reveal calls
-          through here.
+          policy-never-gated: a service citation is revealed free in chat, and
+          that reveal is what calls through here.
+          ⚠ ``'service'`` IS NOT THE /compliance WING. That wing serves
+          ``content_type='compliance'`` — service GUIDES — which never reach this
+          function at all: the guides are ungated by design, so nothing resolves
+          a gate for them (``get_compliance_guide`` makes no call here).
 
     ``parent_regulation_id`` is the ``content_id`` of the article's parent
     regulation in ``seo_item_meta`` (content_type ``'regulation'``); when it is
@@ -815,9 +833,14 @@ ARTICLE_GAP_MIN_MISSING = 3       # absolute floor — ignore small documents
 ARTICLE_GAP_MAX_RATIO = 0.10      # >10% of the document missing → distrust it
 
 # Content types that are never gated and therefore never charged (§1.3): a
-# government service is policy-open, so it produces no ledger row at all. Still
-# live after the compliance wing was retired — a service citation is revealed
-# free in chat, and that reveal is what this now guards.
+# government service is policy-open, so it produces no ledger row at all. What
+# this guards is the CHAT reveal of a service citation.
+#
+# ⚠ ``'compliance'`` (the service-GUIDE wing) is deliberately absent, and its
+# absence is not an oversight: an ungated wing never asks. The guide page reads
+# through ``get_compliance_guide``, which resolves no gate and charges nothing,
+# so no content type for it ever arrives here. Adding one would imply the
+# opposite — that something in that wing is unlockable.
 NEVER_CHARGED_TYPES = ("service",)
 
 # The one column set Layer B reads off the ledger.
@@ -1323,7 +1346,7 @@ async def resolve_access(
     ct = (content_type or "").strip()
     cid = str(content_id or "")
 
-    # 1. Compliance services are never gated, never charged, never a ledger row.
+    # 1. Government services are never gated, never charged, never a ledger row.
     if ct in NEVER_CHARGED_TYPES:
         return AccessDecision(may_unlock=True, charged=False, reason="open")
 
@@ -1678,7 +1701,7 @@ def _published_ids(
 ) -> Optional[list[str]]:
     """Published (slugged) corpus ids for a wing, or ``None`` in steady state.
 
-    ⚠ ONLY WINGS WITHOUT A RANKED VIEW REACH THIS — circulars and services. A
+    ⚠ ONLY WINGS WITHOUT A RANKED VIEW REACH THIS — circulars and compliance. A
     wing that has one (regulations, judgments) has no sample mode to detect: see
     ``_RANKED_HUB_VIEWS`` and the ``SAMPLE_MODE_MAX_IDS`` header.
 
@@ -1844,7 +1867,7 @@ def _bm25_hub_rows(
     ``truncated`` is True when the ranked id set came back AT the cap, i.e. there
     were probably more matches than were ranked. It is the honesty flag behind
     the hub envelope's ``total_count_is_exact``: ``len(rows)`` is then a FLOOR,
-    not a total, and a UI printing it as «٢٠٠ نتيجة» would be inventing a number.
+    not a total, and a UI printing it as «200 نتيجة» would be inventing a number.
 
     Only slugged rows are in the index, so the result is already the published
     set — which is why this path needs no ``_published_ids`` intersection in
@@ -1886,7 +1909,7 @@ def _hub_result(
     wants to say how many. It is NOT necessarily exact: the ranked id set is cut
     at ``HUB_SEARCH_LIMIT``, and ``bm25_search`` itself cuts at ``p_candidates``
     before scoring. ``total_count_is_exact`` reports which of the two you have,
-    so a UI can print «١٧ نتيجة» when it is true and «أفضل ٢٠٠ نتيجة» when it is
+    so a UI can print «17 نتيجة» when it is true and «أفضل 200 نتيجة» when it is
     not, instead of asserting a number the backend does not actually know.
     """
     return {
@@ -1906,9 +1929,10 @@ def _hub_result(
 # "fixing" a number that looks too small.
 #
 # The hub listers paginate the PUBLISHED set — a ranked view for regulations and
-# judgments, the ``_published_ids`` sample list for circulars. These two functions
-# follow the same rule per wing, independently, because the alternative is worse
-# than a cosmetic mismatch — measured on live data 2026-08-01:
+# judgments, the ``_published_ids`` sample list for circulars and compliance.
+# These two functions follow the same rule per wing, independently, because the
+# alternative is worse than a cosmetic mismatch — measured on live data
+# 2026-08-01:
 #
 #     sector (أنظمة)          corpus   servable   a corpus-based paginator says
 #     المواصفات والمقاييس        695          0   78 pages, every one EMPTY
@@ -1943,8 +1967,8 @@ def _hub_result(
 # derives one from the other is wrong twice over (both measured live):
 #
 #   * ``library_corpus_counts`` — one servable total per wing. Sizes the unified
-#     hub's three tab chips, whose paginators walk exactly that set.
-#   * ``sector_counts``         — 38 × 3 per-sector counts. A row carries
+#     hub's four tab chips, whose paginators walk exactly that set.
+#   * ``sector_counts``         — 38 × 4 per-sector counts. A row carries
 #     MULTIPLE sectors, so the columns OVER-count (over the full corpus the
 #     regulations column sums to 8,971 against 3,373 rows, judgments to 31,924);
 #     and ``cases.legal_domains`` is only 67.7% populated (20,671 of 30,531 —
@@ -1969,19 +1993,33 @@ _SECTOR_COUNTS_RPC = "library_sector_counts_published"
 # corpus table is then only the fallback nobody reaches. The content_type and the
 # array column are used by both paths.
 #
-# ⚠ ``compliance`` LEFT THIS MAP ON 2026-08-03 with the rest of the wing. The
-# counts RPC still RETURNS a ``compliance`` column — it reads the ``services``
-# corpus, which is untouched — and that column is simply not read any more.
-# Do not "fix" the RPC to match; the corpus is still there and the agent pipeline
-# still searches it.
+# ⚠ ``compliance`` READS A VIEW AND IS NEVER COUNTED BY THE RPC. The wing is the
+# 169 service GUIDES (``library_compliance_v`` = ``service_guides`` ⋈ ``services``
+# — migration 142), and it rejoined this map on 2026-08-19 when the guides
+# shipped. The counts RPC ALSO returns a ``compliance`` column, and that column is
+# a DIFFERENT NUMBER: it counts the ``services`` corpus (4,746 rows), which this
+# wing does not publish. ``_RPC_SECTOR_COUNT_EXCLUDED`` below is what keeps the two
+# apart; do not "fix" the RPC to match, and do not delete that guard.
 _SECTION_SOURCES: dict[str, tuple[str, str, str]] = {
     "regulations": ("regulations_v2", "regulation", "sectors"),
     "judgments": ("cases", "judgment", "legal_domains"),
+    "compliance": ("library_compliance_v", "compliance", "sectors"),
     "circulars": ("circulars", "circular", "sectors"),
 }
 
 SECTOR_COUNT_SECTIONS: tuple[str, ...] = tuple(_SECTION_SOURCES)
-"""The three wings a sector page has tabs for, in tab order (plan D3)."""
+"""The four wings a sector page has tabs for, in tab order (plan D3)."""
+
+# Sections whose per-sector counts must NEVER be read from
+# ``library_sector_counts_published()``. Exactly one member, and it is a
+# fail-safe rather than a routine path: ``compliance`` is a 169-row wing, so it
+# is always in sample mode (ceiling 1,000) and ``_published_sample_counts``
+# answers for it. The ONE way the RPC branch could be reached is a sidecar blip
+# making ``_published_ids`` return ``None`` — and the RPC's ``compliance`` column
+# would then hand the sector grid the ``services`` corpus (4,746 rows of
+# procedures we do not publish) instead of the guides. Counting zero is the
+# correct degradation; counting the wrong corpus is not.
+_RPC_SECTOR_COUNT_EXCLUDED: frozenset[str] = frozenset({"compliance"})
 
 
 def _published_sample_counts(
@@ -2078,19 +2116,22 @@ def library_corpus_counts(supabase: SupabaseClient) -> dict[str, int]:
 
 
 def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
-    """All 114 sector×wing counts — ``{slug: {regulations, …, total}}``.
+    """All 152 sector×wing counts — ``{slug: {regulations, …, total}}``.
 
     §5 makes a sector a SECTION rather than a filter, which means real counts on
-    38 pages × 3 tabs, and is equally explicit that they must not cost a count
+    38 pages × 4 tabs, and is equally explicit that they must not cost a count
     query apiece. Per wing:
 
-      * SAMPLED  → one ``id IN (...)`` read of the ~100 published rows, tallied
-        in Python. One query for that wing's whole 38-sector column. Only wings
-        with no ranked view (circulars) can be here.
+      * SAMPLED  → one ``id IN (...)`` read of the published rows (~100
+        circulars, 169 compliance guides), tallied in Python. One query for that
+        wing's whole 38-sector column. Only wings with no ranked view — circulars
+        and compliance — can be here.
       * OTHERWISE → ``library_sector_counts_published()`` (migration 124), which
         does all 38 in one grouped ``unnest`` over the corpus ⋈ sidecar —
         PostgREST cannot express that, which is why the RPC exists. It is issued
-        ONCE per refresh and covers every non-sampled wing at the same time.
+        ONCE per refresh and covers every non-sampled wing at the same time —
+        every one EXCEPT the members of ``_RPC_SECTOR_COUNT_EXCLUDED``, whose
+        same-named RPC column counts a different corpus.
 
     So the worst case is two small reads plus one RPC per 5-minute memo refresh,
     and the end state is a single RPC. Wings leave the sampled path on their own
@@ -2103,7 +2144,7 @@ def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
     Every one of the 38 slugs is present in the result, seeded to zero, so a
     sector that holds nothing servable still returns a row (the frontend needs
     the zero — it is what makes D9 drop the tab and skip prerendering) instead of
-    vanishing from the grid. ``total`` is the sum of the three wings.
+    vanishing from the grid. ``total`` is the sum of the four wings.
     """
     per_section: dict[str, dict[str, int]] = {}
     steady: list[str] = []
@@ -2127,6 +2168,10 @@ def sector_counts(supabase: SupabaseClient) -> dict[str, dict[str, int]]:
             if not slug:
                 continue
             for section in steady:
+                # ⚠ NOT every wing's column here means what the wing serves —
+                # see ``_RPC_SECTOR_COUNT_EXCLUDED``.
+                if section in _RPC_SECTOR_COUNT_EXCLUDED:
+                    continue
                 per_section.setdefault(section, {})[slug] = int(row.get(section) or 0)
 
     counts: dict[str, dict[str, int]] = {}
@@ -2919,35 +2964,225 @@ def get_regulation_doc(
     }
 
 
-# --- /compliance hub (`compliance_table`) ---------------------------------
+# ==========================================================================
+# /compliance — THE SERVICE-GUIDES WING (`service_guides`, migration 142)
+# (.claude/plans/compliance_service_guides.md · §0 §1 §4.1)
 #
-# «دليل مبسط لأكثر الخدمات استخداماً» — a short, hand-written guide to the most-used
-# government services. THE WING IS WIRED AND DELIBERATELY EMPTY until that table
-# exists.
+# «دليل مبسط لأكثر الخدمات استخداماً» — 169 guides to the most-used Saudi
+# government services, each one RAYHAN'S OWN AUTHORED REWRITE of the issuing
+# entity's official PDF user-guide, with our own screenshot pipeline
+# (`service_guide_images`, 3,180 rows). Published IN FULL and UNGATED: no
+# `resolve_gate` call, no `truncate_for_gate`, no CTA wall on the body. This is
+# the wing's SEO bet — the whole guide is the ranking food.
 #
-# ⚠ THIS IS NOT THE OLD /compliance. That wing republished the `services` corpus
-# — الشروط / المستندات المطلوبة / الخطوات, restated under ريحان's chrome — and was
-# retired for it: a procedure goes stale the moment the issuing entity edits it,
-# and mirroring it made us the apparent authority on a process we do not own.
-# `compliance_table` is the opposite shape: OUR OWN short orientation text plus a
-# link out. It must never grow a copy of a service's procedure. The `services`
-# table stays where it belongs — behind the agent's retrieval, cited in chat as a
-# title and the entity's own link.
-COMPLIANCE_TABLE_READY = False
-"""Flip to True in the SAME change that creates ``compliance_table``.
+# ⚠ THE FOUNDING RULE OF THE OLD WING IS SUPERSEDED, NOT BENT. The 2026-08-03
+# retirement was of a wing that REPUBLISHED the `services` corpus — الشروط /
+# المستندات المطلوبة / الخطوات, someone else's procedure text restated under
+# ريحان's chrome, stale the moment the entity edits it. A service GUIDE is
+# different in kind: we wrote it. What survives from that decision is the shape
+# of the outbound link, and it is absolute:
+#
+#   * the ONLY outbound link is the service's own page (`services.service_url`),
+#     surfaced as «صفحة الخدمة على موقع الجهة الرسمي»;
+#   * `source_pdf_url` IS NEVER SURFACED. `library_compliance_v` does not even
+#     select the column, so the payload cannot carry it by accident. Do not add
+#     it to the view, to `_COMPLIANCE_DOC_SELECT`, or to any response model.
+#   * `services.steps` / `requirements` / `required_documents` stay
+#     retrieval-only — behind the agent, never on a public page.
+#
+# The wing reads ONE relation, `library_compliance_v` (= `service_guides` ⋈
+# `services` on the canonical rows), because the sector axis, the provider and
+# the service URL live on `services` while the guide body lives on
+# `service_guides`, and both tables are PIPELINE-OWNED (the ingest rebuilds
+# them). App-owned shape stays in the view and in the `seo_item_meta` sidecar.
+# ==========================================================================
 
-While False the two listers below return an empty page WITHOUT touching the
-database — the table does not exist yet, and querying a missing relation is a
-PostgREST error, i.e. a 500 on a public page. An empty hub renders the wing's
-own «لا توجد خدمات لعرضها حالياً» state, which is the truth.
+COMPLIANCE_WING_READY = True
+"""The wing serves real guides (2026-08-19). Was ``COMPLIANCE_TABLE_READY``.
 
-When the table lands: add the real query here, add ``"compliance": ("compliance_table",
-"service", "sectors")`` to ``_SECTION_SOURCES`` so the sector counts pick it up,
-and re-add the section to ``_LIBRARY_SITEMAP_SECTIONS`` (public_library.py) plus
-``SITEMAP_SECTIONS`` (frontend ``lib/seo/sitemap.ts``) so it starts being crawled.
-Until then those three are OFF ON PURPOSE — an empty wing must not be advertised
-to Google, and a zero-row sector count must not be paid for with a query.
+The old name promised a `compliance_table` that will never exist:
+``service_guides`` IS the table the wing was waiting for. Kept as a named
+constant — rather than deleted — because the frontend's empty-wing robots rule,
+the sitemap sections and ``_SECTION_SOURCES`` all flipped together with it, and
+a future reader tracing "when did /compliance turn on" lands here.
 """
+
+# The wing's read surface. NOTE what is absent: `source_pdf_url`. See the block
+# comment above — the view is the structural half of that guarantee and this
+# select list is the other half.
+_COMPLIANCE_HUB_TABLE = "library_compliance_v"
+
+# Hub cards never fetch `guide_md` (169 bodies averaging several KB is a page
+# render's worth of bytes for a 9-card grid that shows none of it).
+_COMPLIANCE_HUB_SELECT = (
+    "id, service_ref, title, summary, image_count, most_used_rank, "
+    "provider_name, sectors"
+)
+
+# The document page. `service_url` joins here; `source_pdf_url` does not exist
+# on the view at all.
+_COMPLIANCE_DOC_SELECT = (
+    "id, title, summary, guide_md, image_count, provider_name, service_url"
+)
+
+# Storage bucket holding the screenshots. PUBLIC (flipped 2026-08-18), so the
+# URLs are plain and permanent — no signing, no expiry, nothing per-caller in the
+# payload. That is what lets the guide page keep the shared anon hour-cache.
+_GUIDE_IMAGE_BUCKET = "service-guide-images"
+
+# THE ONE REGEX (REFERENCE.md §3.1). A hole is a line that is ONLY a
+# `{guide_ref}_{n}` token. Never anchor on «الصورة {n}»: 2,804 of those sit
+# INSIDE prose sentences and substituting there would rewrite normal Arabic into
+# image tags. Never key on position either — 28% of guides place their holes out
+# of numeric order, so "the 3rd image in the document" is not `image_index = 3`.
+# Resolution is by `image_ref` and by nothing else.
+_GUIDE_HOLE_RE = re.compile(r"^[ \t]*(\d+_\d+)[ \t]*$", re.M)
+
+
+def _guide_image_base() -> str:
+    """Public-object URL prefix for the screenshots bucket.
+
+    Built from ``SUPABASE_URL`` (the config validator has already stripped its
+    trailing slash) so the project ref is never hardcoded — a restore into a
+    different project must not need a code change to find its own images.
+    """
+    return (
+        f"{get_settings().SUPABASE_URL}/storage/v1/object/public/"
+        f"{_GUIDE_IMAGE_BUCKET}"
+    )
+
+
+def _strip_unresolved_holes(guide_md: str, known_refs: set[str]) -> str:
+    """Blank every hole line whose ``image_ref`` has no image row.
+
+    DEFENSE IN DEPTH, and it is the failure mode this whole design exists to
+    prevent: a raw ``223719_1`` token rendered onto a user-facing page. The
+    renderer (``GuideBody.tsx``) applies the same rule client-side — REFERENCE.md
+    §3.2 rules 1–2 — but a payload that carries an unresolvable token is already
+    one bad `split()` away from printing it, so the server does not ship one.
+
+    Today the removed set is EMPTY on every guide (invariant §8: every hole has
+    exactly one image row and every row's token appears as a hole), which is
+    exactly why this must be code and not a comment: nothing else would notice
+    the day an ingest rebuild breaks the pairing.
+
+    The matched LINE is replaced with the empty string (the newline around it
+    stays), matching the reference implementation. Pure function.
+    """
+    if not guide_md:
+        return guide_md or ""
+    return _GUIDE_HOLE_RE.sub(
+        lambda m: m.group(0) if m.group(1) in known_refs else "", guide_md
+    )
+
+
+def _compliance_sort_key(row: dict[str, Any]) -> tuple[int, int, str, str]:
+    """Wing ordering: ``most_used_rank`` ASC, then ``title``, then ``id``.
+
+    Rank is the government portal's own popularity order (lower = more used), so
+    page 1 is «أكثر الخدمات استخداماً» rather than an alphabetical accident — the
+    same reasoning as ``seo_item_meta.rank`` on /regulations, with the number
+    supplied by the corpus instead of by our citation log. A NULL rank sorts
+    LAST (there are none live; ordering must still be total, since the alternative
+    is a page whose contents shuffle between two requests).
+    """
+    raw = row.get("most_used_rank")
+    try:
+        rank = int(raw)
+        missing = 0
+    except (TypeError, ValueError):
+        rank = 0
+        missing = 1
+    return (missing, rank, (row.get("title") or ""), str(row.get("id") or ""))
+
+
+def _compliance_matches(
+    row: dict[str, Any],
+    provider: Optional[str],
+    sector: Optional[str],
+    q: Optional[str],
+) -> bool:
+    """The hub filters, in Python — see ``_compliance_published_rows``.
+
+    ``provider`` = case-insensitive substring of ``provider_name`` (the ``ilike``
+    the other wings push into PostgREST); ``sector`` = array containment on
+    ``sectors``, the §7.1 convention every wing spells the same way (the value is
+    the RAW Arabic sector name, already resolved from its Latin slug by the
+    route); ``q`` = substring over ``title`` + ``summary``.
+
+    ⚠ ``q`` HERE IS NOT BM25 AND MUST NOT BECOME IT. The other wings route ``q``
+    through ``bm25_search()``, which ranks over ``search_index`` — and the guides
+    are deliberately NOT in that index (plan §9: the BM25 navigation corpus for
+    guides is its own decision, not a side effect of this wing). A substring match
+    over 169 titles is honest and cheap; a wing silently absent from the shared
+    index would just return nothing. ``q`` is registered-only either way — the
+    ROUTE drops it for anon before this module ever sees it.
+    """
+    if provider:
+        if provider.lower() not in (row.get("provider_name") or "").lower():
+            return False
+    if sector:
+        sectors = [str(s) for s in (row.get("sectors") or [])]
+        if sector not in sectors:
+            return False
+    if q:
+        haystack = f"{row.get('title') or ''} {row.get('summary') or ''}".lower()
+        if q.lower() not in haystack:
+            return False
+    return True
+
+
+def _compliance_published_rows(
+    supabase: SupabaseClient,
+    select_cols: str,
+    provider: Optional[str] = None,
+    sector: Optional[str] = None,
+    q: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """``(filtered+sorted published rows, {id: slug})`` for the whole wing.
+
+    SAMPLE MODE ALL THE WAY DOWN, and permanently so: the wing is 169 rows — one
+    guide per guided service — which is an order of magnitude below
+    ``SAMPLE_MODE_MAX_IDS``. So the published set comes from the sidecar
+    (``_published_ids('compliance')``), the rows come back in one or two
+    ``id IN (...)`` chunks, and the filtering, ordering and 9-item slicing all
+    happen in Python. That is the same shape ``list_circulars_hub`` uses for its
+    sample, and it is what guarantees a page is never mysteriously empty (the
+    failure that made sample mode exist: paginating a corpus whose first pages
+    hold none of the published rows).
+
+    The slug map is computed over the CANDIDATE set rather than the served page,
+    because it does double duty — it carries the card's ``slug`` AND it is the
+    fallback publication filter for the one path where ``_published_ids`` cannot
+    answer (a sidecar blip returns ``None``; the whole view is read instead and
+    the unslugged rows are dropped here). Both paths therefore list exactly the
+    slugged guides, never a row with no public URL.
+    """
+    pub_ids = _published_ids(supabase, "compliance")
+    if pub_ids is not None:
+        rows = (
+            _fetch_corpus_by_ids(
+                supabase, _COMPLIANCE_HUB_TABLE, select_cols, pub_ids, lambda qb: qb
+            )
+            if pub_ids
+            else []
+        )
+    else:
+        try:
+            res = supabase.table(_COMPLIANCE_HUB_TABLE).select(select_cols).execute()
+            rows = res.data or []
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Error reading %s: %s", _COMPLIANCE_HUB_TABLE, e)
+            raise _hub_error()
+
+    slugs = _slug_map(supabase, "compliance", [r.get("id") for r in rows])
+    kept = [
+        r
+        for r in rows
+        if slugs.get(str(r.get("id"))) and _compliance_matches(r, provider, sector, q)
+    ]
+    kept.sort(key=_compliance_sort_key)
+    return kept, slugs
 
 
 def compliance_hub_total_pages(
@@ -2958,15 +3193,24 @@ def compliance_hub_total_pages(
 ) -> int:
     """Total hub pages for the filtered guide set (for the anon-cap body).
 
-    ``1`` while the wing is empty, never ``0``: the paginator and the CTA wall
-    both read this as "how many pages exist", and zero pages renders as a broken
-    paginator rather than as one empty page.
+    Counts exactly the set ``list_compliance_hub`` paginates — same published
+    ids, same Python filters — so the page count and the pages actually served
+    cannot disagree (§12.2's failure was a wall reporting one total while the
+    paginator walked another). ``ceil(n / 9)``, floored at ``1``: the paginator
+    and the CTA wall both read this as "how many pages exist", and zero pages
+    renders as a broken paginator rather than as one empty page.
     """
-    if not COMPLIANCE_TABLE_READY:
-        return 1
-    raise NotImplementedError(
-        "compliance_table shipped without a counter — see COMPLIANCE_TABLE_READY"
-    )
+    try:
+        rows, _slugs = _compliance_published_rows(
+            supabase, "id, title, summary, provider_name, sectors", provider, sector, q
+        )
+        total = len(rows)
+    except LunaHTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error counting compliance hub: %s", e)
+        raise _hub_error()
+    return max(1, math.ceil(total / HUB_PAGE_SIZE)) if total else 1
 
 
 def list_compliance_hub(
@@ -2977,17 +3221,185 @@ def list_compliance_hub(
     sector: Optional[str] = None,
     q: Optional[str] = None,
 ) -> dict[str, Any]:
-    """One page (9 items) of the /compliance hub — empty until the table exists.
+    """One page (9 cards) of the /compliance hub — «دليل الخدمات».
 
-    Signature mirrors the other wing listers (``provider`` / ``sector`` / ``q``)
-    so the route, the CTA wall and ``getSectorTypeHub`` need no special case when
-    the data arrives. Every argument is accepted and ignored while empty.
+    Ordering = ``most_used_rank`` ascending (most-used service first), tiebroken
+    ``(title, id)`` — see ``_compliance_sort_key``. Filters: ``provider``
+    (substring of the issuing entity's name), ``sector`` (§7.1 containment on the
+    joined ``services.sectors``) and ``q`` (title + summary substring,
+    registered-only — the route drops it for anon). Only slugged (published)
+    guides are listed.
+
+    Card = ``{slug, title, provider_name, summary, image_count}``. ``summary`` is
+    the guide's own one-paragraph abstract, cut to a card-sized snippet at a word
+    boundary (the same ``_text_snippet`` treatment every other wing's card text
+    gets — a card is not the page). ``image_count`` is how many screenshots the
+    guide carries, and the frontend needs it to decide whether the title reads
+    «الدليل الشامل بالصور» or plain «الدليل الشامل» (10 guides are legitimately
+    text-only, and promising صور on one of those is the lie that carve-out
+    exists to prevent).
+
+    NOTHING HERE IS GATED. There is no ``resolve_gate`` call in this wing and no
+    truncation anywhere in it — the cards, the bodies and the screenshots are all
+    open to anon by design. The only limits that apply are the wing-agnostic ones
+    the ROUTE owns: the browse-depth cap and the per-user item budget.
     """
-    if not COMPLIANCE_TABLE_READY:
-        return _hub_result([], max(1, int(page or 1)), 1, q=q, total=0)
-    raise NotImplementedError(
-        "compliance_table shipped without a lister — see COMPLIANCE_TABLE_READY"
+    page = max(1, int(page or 1))
+    ps = HUB_PAGE_SIZE
+    offset = (page - 1) * ps
+
+    all_rows, slugs = _compliance_published_rows(
+        supabase, _COMPLIANCE_HUB_SELECT, provider, sector, q
     )
+    total = len(all_rows)
+    total_pages = max(1, math.ceil(total / ps)) if total else 1
+    rows = all_rows[offset : offset + ps]
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        slug = slugs.get(str(r.get("id")))
+        if not slug:
+            continue
+        try:
+            image_count = int(r.get("image_count") or 0)
+        except (TypeError, ValueError):
+            image_count = 0
+        items.append(
+            {
+                "slug": slug,
+                "title": (r.get("title") or "").strip(),
+                "provider_name": r.get("provider_name"),
+                "summary": _text_snippet(r.get("summary"), 220),
+                "image_count": image_count,
+            }
+        )
+
+    # ``total_count`` rides the envelope only for a search, and this wing's search
+    # is an exhaustive substring pass over the published set — never truncated,
+    # so the count is always exact (unlike a BM25 wing capped at HUB_SEARCH_LIMIT).
+    return _hub_result(items, page, total_pages, q=q, total=total)
+
+
+def get_compliance_guide(
+    supabase: SupabaseClient, slug: str
+) -> Optional[dict[str, Any]]:
+    """Full /compliance/{slug} guide payload, or ``None`` for an unknown slug
+    (the route turns ``None`` into a 404 «الدليل غير موجود»).
+
+    Resolves ``slug → content_id`` through the sidecar (``content_type
+    ='compliance'``, ``content_id = service_guides.id``), reads the guide row from
+    ``library_compliance_v`` and its screenshots from ``service_guide_images``
+    ordered by ``image_index``. Read-only, no counters.
+
+    Returns::
+
+        {slug, title, summary, provider_name, service_url, image_count,
+         guide_md, images: [{image_ref, description, url, width, height}]}
+
+    Three properties of that payload are decisions, not details:
+
+      * NO ``source_pdf_url``. Not in the view, not in the select, not in the
+        dict. The entity's SERVICE page is the only outbound link.
+      * NO GATE AND NO TRUNCATION. ``guide_md`` ships whole to anon. Adding a
+        ``resolve_gate`` call here would silently re-gate an open wing; the
+        signup carrot on this wing is the chat, not a hidden half of the guide.
+      * ``guide_md`` HAS BEEN HOLE-SWEPT (``_strip_unresolved_holes``): every
+        remaining ``\\d+_\\d+`` line has a matching entry in ``images``, so a
+        renderer that resolves by ``image_ref`` cannot print a raw token.
+
+    ``image_count`` is what this payload ACTUALLY CARRIES (``len(images)``), not
+    the corpus counter — the title treatment «بالصور» is derived from it, so it
+    must describe the bytes being shipped. The two agree across the live corpus
+    (invariant §8: 3,180 rows, every hole paired, ``uploaded_at`` never null).
+    """
+    slug = (slug or "").strip()
+    if not slug:
+        return None
+
+    try:
+        meta = (
+            supabase.table("seo_item_meta")
+            .select("content_id")
+            .eq("content_type", "compliance")
+            .eq("slug", slug)
+            .limit(1)
+            .execute()
+        )
+        meta_rows = meta.data or []
+        if not meta_rows:
+            return None
+        content_id = meta_rows[0].get("content_id")
+        if not content_id:
+            return None
+
+        guide_res = (
+            supabase.table(_COMPLIANCE_HUB_TABLE)
+            .select(_COMPLIANCE_DOC_SELECT)
+            .eq("id", content_id)
+            .limit(1)
+            .execute()
+        )
+        guide_rows = guide_res.data or []
+        if not guide_rows:
+            return None
+        guide = guide_rows[0]
+
+        # `image_index` is a stable LABEL, ordered here for a predictable listing;
+        # the holes are still resolved by `image_ref` (REFERENCE.md §4.2). The
+        # biggest guide carries 69 screenshots, so the PostgREST 1,000-row clamp
+        # is never in play.
+        img_res = (
+            supabase.table("service_guide_images")
+            .select("image_ref, description, storage_path, width, height")
+            .eq("guide_id", content_id)
+            .order("image_index", desc=False)
+            .execute()
+        )
+        image_rows = img_res.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.exception("Error loading compliance guide (%s): %s", slug, e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.INTERNAL_ERROR,
+            detail="حدث خطأ أثناء جلب الدليل",
+        )
+
+    base = _guide_image_base()
+    images: list[dict[str, Any]] = []
+    for row in image_rows:
+        image_ref = str(row.get("image_ref") or "").strip()
+        storage_path = str(row.get("storage_path") or "").strip()
+        # No token or no bytes ⇒ no image, and therefore no resolvable hole. The
+        # sweep below drops the matching line rather than shipping a dead <img>.
+        if not image_ref or not storage_path:
+            continue
+        images.append(
+            {
+                "image_ref": image_ref,
+                # The description is the ALT TEXT: a real Arabic sentence
+                # describing the screenshot (188–1,031 chars, never empty), which
+                # is what keeps a guide usable with images off entirely.
+                "description": (row.get("description") or "").strip(),
+                "url": f"{base}/{urllib.parse.quote(storage_path, safe='/')}",
+                "width": row.get("width"),
+                "height": row.get("height"),
+            }
+        )
+
+    guide_md = _strip_unresolved_holes(
+        guide.get("guide_md") or "", {im["image_ref"] for im in images}
+    )
+
+    return {
+        "slug": slug,
+        "title": (guide.get("title") or "").strip(),
+        "summary": (guide.get("summary") or "").strip(),
+        "provider_name": guide.get("provider_name"),
+        "service_url": guide.get("service_url"),
+        "image_count": len(images),
+        "guide_md": guide_md,
+        "images": images,
+    }
 
 
 # ==========================================================================
@@ -4320,10 +4732,18 @@ _JUDGMENT_HUB_SELECT = (
 # the mesh source + ``content`` (the real ruling text that becomes the body).
 # `facts`/`reasoning`/`ruling`… are deliberately NOT selected: they are summaries
 # of the document, and the document itself is what this page publishes.
+#
+# ``source`` + the embedded ``entities(entity_name)`` feed
+# ``shared.library.case_sources.judgment_provenance``: two thirds of the corpus is وزارة
+# العدل and says where it came from via ``details_url``, but the other 9,860 rulings were
+# parsed out of PDFs and carry that only in ``source``. The entity comes along as a
+# PostgREST embed rather than a second read — it titles the source links, and this is
+# already the one round-trip the page makes for the row.
 _JUDGMENT_DOC_SELECT = (
     "id, case_ref, court, court_level, city, case_number, judgment_number, "
     "date_hijri, date_gregorian, appeal_result, legal_domains, short_summary, "
-    "summary, details_url, referenced_regulations, content"
+    "summary, details_url, referenced_regulations, content, source, "
+    "entities(entity_name)"
 )
 
 # Leading bullet / list noise on a summary line. ``short_summary`` is stored as a
@@ -4622,7 +5042,7 @@ def court_counts(supabase: SupabaseClient) -> dict[str, int]:
     that is the point to add one.
 
     ⚠ THESE ARE COUNTS OF WHAT IS SERVABLE. They come from the same relation the
-    lister pages, so «المحكمة التجارية ٤٥٠» and the section's last page agree by
+    lister pages, so «المحكمة التجارية 450» and the section's last page agree by
     construction. The corpus numbers in ``shared/library/courts.py``'s comments
     are documentation of the CORPUS and will be larger — do not reconcile them.
 
@@ -4795,6 +5215,13 @@ def _judgment_metadata(row: dict[str, Any]) -> list[dict[str, str]]:
     ``judgment_number``, ``date_hijri``, ``date_gregorian`` and ``appeal_result``
     are each missing on a large slice of the corpus, so the card is built by
     omission rather than rendering «غير متوفر» rows.
+
+    The trailing «المجلد» / «الصفحات» rows come from ``judgment_provenance`` and locate a
+    ruling inside the bound مجلد it was parsed out of — 5,538 rulings that previously named
+    no source at all. They are the CITATION half only: the matching PDF and collection URLs
+    are the crosswalk and belong to the metered reveal (D-CROSSWALK), which is why this
+    function reads ``.citation`` and never ``.official_sources``. A وزارة العدل ruling or a
+    standalone قرار PDF adds nothing here — its source is a link, and links are gated.
     """
     pairs = (
         ("المحكمة", (row.get("court") or "").strip()),
@@ -4806,7 +5233,9 @@ def _judgment_metadata(row: dict[str, Any]) -> list[dict[str, str]]:
         ("التاريخ الميلادي", _iso_date(row.get("date_gregorian")) or ""),
         ("نتيجة الاستئناف", (row.get("appeal_result") or "").strip()),
     )
-    return [{"label": label, "value": value} for label, value in pairs if value]
+    items = [{"label": label, "value": value} for label, value in pairs if value]
+    items.extend(judgment_provenance(row, _judgment_entity_name(row)).citation)
+    return items
 
 
 def _judgment_row_for_slug(
@@ -4960,13 +5389,10 @@ def get_judgment_doc(
     # starts 'gated' (``seo_gate_defaults``), so the downgrade is the only way
     # this branch fires today.
     official_sources: list[dict[str, str]] = []
-    details_url = (row.get("details_url") or "").strip()
-    if gate_effective == "open" and (
-        details_url.startswith("http://") or details_url.startswith("https://")
-    ):
-        official_sources.append(
-            {"title": "مصدر الحكم — وزارة العدل", "href": details_url}
-        )
+    if gate_effective == "open":
+        official_sources = judgment_provenance(
+            row, _judgment_entity_name(row)
+        ).official_sources
 
     return {
         "slug": slug,
@@ -5047,9 +5473,11 @@ def get_judgment_doc(
 # ``library_unlocks``. The older note here claiming library reads are an unmetered
 # free-account carrot was deleted — it is now the opposite of the policy.
 # 'service' has no full-content function: it is policy-never-gated, so there was
-# never anything to "unlock" and it is never charged. Since the compliance wing
-# was retired (2026-08-03) it has no public payload at all — a service is a
-# citation title plus the issuing entity's link.
+# never anything to "unlock" and it is never charged. It has no public payload
+# either — a service is a citation title plus the issuing entity's link.
+# 'compliance' has no full-content function for the OPPOSITE reason: the service
+# guide is served whole, to everyone, by the public wing. There is no withheld
+# half for an authed reveal to hand over.
 #
 # ⚠ get_full_regulation returns {id, title, text} sections and NO ``sharh_md`` —
 # شرح is reachable only one-مادة-at-a-time via get_full_article. This is a moat
@@ -5120,18 +5548,25 @@ def official_sources_for_item(
                 out.append({"title": "الموقع الرسمي", "href": row["landing_url"]})
 
         elif ct == "judgment":
+            # ``source`` is here for the 9,860 rulings that have NO ``details_url``:
+            # 4,322 قرارات published as their own PDF and 5,538 lifted out of a bound
+            # مجلد. Before this, every one of them revealed an empty block — the unlock
+            # bought content but no way to check it against the publisher.
+            #
+            # The volume links are the crosswalk in its strongest form: one مجلد PDF is
+            # ~50 full rulings, all of them gated. That is an argument for keeping them
+            # HERE, behind the unlock, not for exempting them from D-CROSSWALK.
             res = (
                 supabase.table("cases")
-                .select("details_url")
+                .select("details_url, source, entities(entity_name)")
                 .eq("id", cid)
                 .limit(1)
                 .execute()
             )
-            details_url = ((res.data or [{}])[0].get("details_url") or "").strip()
-            if details_url.startswith("http://") or details_url.startswith("https://"):
-                out.append(
-                    {"title": "مصدر الحكم — وزارة العدل", "href": details_url}
-                )
+            row = (res.data or [{}])[0]
+            out.extend(
+                judgment_provenance(row, _judgment_entity_name(row)).official_sources
+            )
 
         else:  # circular
             res = (

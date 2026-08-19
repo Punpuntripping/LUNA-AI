@@ -584,7 +584,7 @@ function ReferenceCard({
                 )}
               >
                 <BookOpen className="h-3 w-3" />
-                فتح {referenceDefiniteType(reference)} في ريحان
+                {referenceLibraryExitLabel(reference)}
               </Link>
             )}
             {primaryUrl && (
@@ -661,6 +661,16 @@ function SourceRevealBody({
 
   if (result.ok) {
     const { source_view: view, unlocked, balance, library_url } = result.data;
+    // Two resolvers answer this question and they disagree on exactly one wing.
+    // The reveal endpoint resolves from the ledger's `(content_type,
+    // content_id)` pair, where a compliance citation is `('service',
+    // services.id)` — a bare service, which has no page of ours. The LIST
+    // resolves from the reference row and hops `services.id →
+    // service_guides.id → /compliance/{slug}`, which does. So the card's answer
+    // is the fallback: the dialog must not drop a button the card behind it is
+    // already showing. The precedence is never reversed — where the reveal has
+    // an answer it is the fresher one.
+    const exitUrl = library_url ?? reference.library_url ?? null;
     return (
       <RevealedSource
         view={view}
@@ -669,7 +679,7 @@ function SourceRevealBody({
         balanceUsed={balance?.used ?? null}
         fallbackTitle={fallbackTitle}
         reference={reference}
-        libraryUrl={library_url ?? null}
+        libraryUrl={exitUrl}
       />
     );
   }
@@ -717,12 +727,19 @@ function SourceLoadingBody() {
  * a quiet line naming WHAT was unlocked, and the remaining balance.
  *
  * EXITS ARE EXACTLY TWO (2026-08-01). «فتح المصدر الرسمي» goes to the official
- * government page; «فتح ال… في ريحان» goes to the same document inside our own
- * library. Everything else that used to hang off this dialog — «رابط النظام»،
- * «ملف PDF»، «تفاصيل الحكم»، «المنصة الوطنية»، «رابط الخدمة»، «رابط التعميم» —
- * was a per-domain variation on those same two ideas, plus a raw-file exit for
- * content we now publish ourselves. One pair of buttons, identical in every
- * domain, is the whole point: the reader learns it once.
+ * government page; the in-app one (`referenceLibraryExitLabel`) goes to the same
+ * document inside our own library. Everything else that used to hang off this
+ * dialog — «رابط النظام»، «ملف PDF»، «تفاصيل الحكم»، «المنصة الوطنية»، «رابط
+ * الخدمة»، «رابط التعميم» — was a per-domain variation on those same two ideas,
+ * plus a raw-file exit for content we now publish ourselves. One pair of
+ * buttons, identical in every domain, is the whole point: the reader learns it
+ * once.
+ *
+ * A government service is the one place the two exits point at genuinely
+ * different documents rather than two views of one: the official button opens
+ * the ENTITY's service page, the in-app button opens OUR service guide. That is
+ * why compliance is the only domain whose label is rewritten rather than
+ * templated — see `referenceLibraryExitLabel`.
  */
 function RevealedSource({
   view,
@@ -802,7 +819,7 @@ function RevealedSource({
           )}
           <span>{notice}</span>
           {/* The meter, right where the spend happened. `limit === null` is an
-              unlimited plan — never render it as «٠ متبقٍ». */}
+              unlimited plan — never render it as «0 متبقٍ». */}
           {balanceLimit !== null && remaining !== null && (
             <span className="rounded-full bg-pill px-2 py-0.5 font-medium tabular-nums text-pill-fg">
               {remaining > 0
@@ -847,7 +864,7 @@ function RevealedSource({
             )}
           >
             <BookOpen className="h-3.5 w-3.5" />
-            فتح {definiteType} في ريحان
+            {referenceLibraryExitLabel(reference)}
           </Link>
         )}
         {sourceContent ? <SourceCopyButton content={sourceContent} /> : null}
@@ -1109,6 +1126,62 @@ function extractSourceContent(view: SourceView): string {
   return "";
 }
 
+/**
+ * «المصدر» — where a ruling was published, under the ملخص in the source dialog.
+ *
+ * Two thirds of the أحكام corpus is وزارة العدل and has always had its own page behind
+ * «فتح المصدر الرسمي». The other 9,860 rulings were parsed out of PDFs and had NOTHING:
+ * a قرار زكوي or a ديوان المظالم ruling opened as an unattributed digest. This block is
+ * their attribution — the مجلد and page range as text, then the publisher's links.
+ *
+ * Renders `null` when the view carries neither, which is every وزارة العدل ruling and
+ * every artifact persisted before these fields existed. Both are optional on the type,
+ * so `?? []` is load-bearing, not defensive noise.
+ */
+function CaseProvenance({
+  view,
+}: {
+  view: Extract<SourceView, { source_type: "case" }>;
+}) {
+  const citation = view.citation ?? [];
+  const links = view.official_sources ?? [];
+  if (citation.length === 0 && links.length === 0) return null;
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3">
+      <p className="text-xs font-medium text-muted-foreground">المصدر</p>
+
+      {citation.length > 0 && (
+        <dl className="space-y-1">
+          {citation.map((row) => (
+            <div key={row.label} className="flex gap-2 text-xs leading-relaxed">
+              <dt className="shrink-0 text-muted-foreground">{row.label}:</dt>
+              <dd className="font-medium text-foreground">{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {links.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {links.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
+            >
+              <ExternalLink aria-hidden="true" className="h-3 w-3 shrink-0" />
+              {link.title}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SourceViewContent({
   view,
   sourceContent,
@@ -1141,6 +1214,11 @@ function SourceViewContent({
     // unconditional «النص الكامل في…» would promise an exit that isn't on screen.
     // `view.summary` empty ⇒ `sourceContent` IS the raw ruling (the no-summary
     // fallback), so the label is dropped rather than mislabelling it.
+    //
+    // «المصدر» sits BELOW the body, and it is the answer to a question the ملخص cannot
+    // answer on its own: which مجلد is this from, and at which pages. 9,860 rulings —
+    // ديوان المظالم, لجان الزكاة والضريبة, لجان التأمين — carry no `details_url`, so
+    // until this block they revealed a digest with no attribution whatsoever.
     return (
       <div className="space-y-3">
         {view.summary && (
@@ -1149,6 +1227,7 @@ function SourceViewContent({
           </p>
         )}
         {sourceContent && <MarkdownRenderer content={sourceContent} />}
+        <CaseProvenance view={view} />
       </div>
     );
   }
@@ -1160,16 +1239,25 @@ function SourceViewContent({
     );
   }
   if (view.source_type === "gov_service") {
-    // A service is a TITLE AND A LINK here (2026-08-03). The four blocks that
-    // used to fill this body — intro, الخطوات, المتطلبات, المستندات المطلوبة —
-    // are gone for the same reason `/compliance` was retired: those are the
-    // issuing entity's to state, they go stale the moment it edits them, and
-    // restating them under our chrome made ريحان read as the authority on a
-    // process it does not own.
+    // A service is STILL a title and a link here, and the guides wing does not
+    // change that. The four blocks that used to fill this body — intro,
+    // الخطوات, المتطلبات, المستندات المطلوبة — were the issuing entity's own
+    // text: it goes stale the moment the entity edits it, and restating it under
+    // our chrome made ريحان read as the authority on a process it does not own.
+    // They are not coming back.
     //
-    // The dialog is not left blank: the title is in the header and one muted
-    // line points at the action bar. Dropped when there IS no exit, so the line
-    // never promises a link that isn't on screen.
+    // What `/compliance` publishes now is a different document — a SERVICE
+    // GUIDE, our own authored rewrite of the entity's official PDF user guide,
+    // in full and ungated. It is reached by LEAVING to its own page via the
+    // action bar's «افتح الدليل الشامل للخدمة في ريحان», which the backend adds
+    // only for the ~169 services that have one. Nothing from the guide is
+    // inlined into this body, and nothing from it enters agent context — both
+    // are deliberate, and the second is a separate later project.
+    //
+    // So the line below stays deliberately about the OFFICIAL source: it names
+    // where the authoritative procedure lives, which is the entity's site, not
+    // our guide. Dropped when there IS no exit at all, so it never promises a
+    // link that isn't on screen.
     return hasFullTextExit ? (
       <p className="text-sm leading-relaxed text-muted-foreground">
         شروط هذه الخدمة ومستنداتها وخطواتها منشورة على موقع الجهة الرسمي.
@@ -1370,6 +1458,31 @@ export function referenceDefiniteType(ref: Reference): string {
   const known = DEFINITE_DOC_TYPE[raw];
   if (known) return known;
   return raw.startsWith("ال") ? raw : `ال${raw}`;
+}
+
+/**
+ * The FULL label on the in-app exit — «فتح النظام في ريحان», «فتح الحكم في
+ * ريحان»… and, for a government service, «افتح الدليل الشامل للخدمة في ريحان».
+ *
+ * Compliance needs the whole string rather than another `DEFINITE_DOMAIN_TYPE`
+ * entry because it does not fit the `فتح {X} في ريحان` template at all: the verb
+ * changes to «افتح» and the object is «الدليل الشامل للخدمة», not «الخدمة». What
+ * the button opens is not the service — it is the SERVICE GUIDE, our own
+ * authored rewrite of the entity's official PDF user guide, and naming it
+ * «الخدمة» would promise the reader the entity's service page, which is what the
+ * OTHER exit («فتح المصدر الرسمي») already is. Two buttons that read as the same
+ * destination is the failure this arm avoids.
+ *
+ * `referenceDefiniteType` is deliberately left returning «الخدمة» for the
+ * `compliance` domain: it is also the ملخص label inside `SourceViewContent`,
+ * where «الخدمة» is right and the guide has no business appearing.
+ *
+ * The two callers — the card and the reveal dialog — share this so the same
+ * reference cannot be labelled two ways on two surfaces.
+ */
+export function referenceLibraryExitLabel(ref: Reference): string {
+  if (ref.domain === "compliance") return "افتح الدليل الشامل للخدمة في ريحان";
+  return `فتح ${referenceDefiniteType(ref)} في ريحان`;
 }
 
 /** The single external URL a card's "فتح المصدر الرسمي" button targets. */

@@ -27,9 +27,10 @@ interface Props {
 // authenticated users (the bare "/" does) — their way back to the front door.
 // /regulations + /compliance are the public library surfaces (Phase 2) — anon
 // searchers land on them from Google, signed-in users may browse freely.
-// /compliance is WIRED AND EMPTY until `compliance_table` ships, and noindex
-// while it is; it still has to render for anon visitors who reach it from the
-// library hub, so it belongs here now rather than later.
+// /compliance is the دليل الخدمات wing — Rayhan's own illustrated guides to the
+// most-used government services, published in full and UNGATED (no metering, no
+// FullContentGate), which makes it the one library wing an anon visitor sees
+// whole. It must render for them: that is the entire point of the surface.
 // /judgments is the الأحكام القضائية wing — public and anon-viewable like the
 // other library surfaces, but currently `noindex` pending the PDPL
 // anonymization audit (a crawler gate, NOT an auth gate — it must still render

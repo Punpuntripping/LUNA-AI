@@ -771,24 +771,60 @@ export type SourceView =
        * handful of rulings that carry no summary. Never both this and `summary`.
        */
       content: string;
+      /**
+       * The ruling's own page on the issuing body's site — وزارة العدل only (20,671
+       * of 30,531 rulings). The rest were parsed out of PDFs and reach their source
+       * through `official_sources`. This stays the target of «فتح المصدر الرسمي».
+       */
       details_url: string;
+      /**
+       * «المجلد» / «الصفحات» — which bound مجلد this ruling was lifted out of and at
+       * which pages. Present for the 5,538 volume-parsed rulings, empty for a وزارة
+       * العدل ruling (it has its own page) and for a standalone قرار PDF (one file,
+       * one decision — a page range would describe the file, not locate anything).
+       *
+       * OPTIONAL: artifacts persisted before 2026-08-19 have no such key, and their
+       * dialogs simply render no citation block.
+       */
+      citation?: { label: string; value: string }[];
+      /**
+       * The publisher's collection page and the volume/decision PDF, for the 9,860
+       * rulings with no `details_url` of their own. This is what lets «عرض المصدر»
+       * answer "where is this from?" for a قرار زكوي or a ديوان المظالم ruling —
+       * before it, those revealed a body with no attribution at all.
+       *
+       * Safe to render here even though the /judgments page withholds the same links
+       * from anonymous readers: reaching this view already spent the item's unlock.
+       */
+      official_sources?: { title: string; href: string }[];
     }
   | {
       /**
-       * A government service — title and link, no body (2026-08-03). The popup
-       * used to restate the service's intro, الخطوات, المتطلبات and المستندات
-       * المطلوبة; that content and the `/compliance` pages that mirrored it are
-       * both gone. A procedure goes stale when its issuing entity edits it, and
-       * repeating it under our chrome makes us look like the authority on a
+       * A government service — title and link, NO body, and that is still true
+       * (2026-08-19). The popup used to restate the service's intro, الخطوات,
+       * المتطلبات and المستندات المطلوبة. That content is gone and stays gone: a
+       * procedure goes stale when its issuing entity edits it, and repeating the
+       * entity's own text under our chrome makes us look like the authority on a
        * process we don't own. The service's own page is the authority.
+       *
+       * What DID come back is the `/compliance` wing, with different content:
+       * **service guides**, our own authored rewrite of the issuing entity's
+       * official PDF user guide, published in full and ungated at
+       * `/compliance/{slug}`. ~169 of 4,746 services have one. That changes the
+       * dialog's EXITS, not this view — when a guide exists the panel gains a
+       * second button («افتح الدليل الشامل للخدمة في ريحان») and the reader
+       * leaves for the guide's own page. No guide content is ever inlined here,
+       * and none of it enters agent context.
        */
       source_type: 'gov_service';
       title: string;
       /**
-       * `services.service_url` — THE exit, and the only one. The المنصة الوطنية
-       * portal link (`national_platform_url`) went with the body: a portal home
+       * `services.service_url` — the OFFICIAL exit, and still the only outbound
+       * one: the guide never links the source PDF, and the المنصة الوطنية portal
+       * link (`national_platform_url`) went with the body, because a portal home
        * page is not the cited source. May be "" when the corpus has no link, in
-       * which case the popup shows the title alone.
+       * which case the popup shows the title alone (plus the guide exit, if the
+       * backend resolved one).
        */
       service_url: string;
     }
@@ -1526,7 +1562,7 @@ export interface ReferenceUnlockInfo {
  * The «فتح المصادر» allowance AFTER this reveal (a `granted` decision reports
  * the post-charge number). `null` on the response — not here — means the quota
  * was never consulted; `limit: null` means unlimited. Those are different, and
- * conflating them shows «٠ متبقٍ» to a dev account.
+ * conflating them shows «0 متبقٍ» to a dev account.
  */
 export interface ReferenceBalance {
   used: number;

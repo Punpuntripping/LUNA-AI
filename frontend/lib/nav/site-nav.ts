@@ -220,6 +220,20 @@ export const SITE_NAV: NavGroup[] = [
         section: "المصادر الرسمية",
         enabled: true,
       },
+      // PARKED FOR THE PILOT, not for lack of content. /compliance is live and
+      // real — Rayhan's own illustrated guides to the most-used government
+      // services — but only 5 of 169 are published while the pipeline is being
+      // validated end to end. A global-header slot is a site-wide promise, and 5
+      // items does not read like «دليل الخدمات». The wing's SEO does not depend
+      // on this: its detail pages are indexable and its sitemap section carries
+      // every published slug today. FLIP THIS ONE WORD when the rest publish.
+      {
+        label: "دليل الخدمات الحكومية",
+        href: "/compliance",
+        description: "أدلة مصوّرة خطوة بخطوة لأكثر الخدمات استخداماً",
+        section: "المصادر الرسمية",
+        enabled: false,
+      },
       // Still parked — /forms awaits the drafts review, /calculators its phase.
       // Flip `enabled` and they slot into المصادر الرسمية with no other change.
       {

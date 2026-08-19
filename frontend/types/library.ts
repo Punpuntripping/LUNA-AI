@@ -280,6 +280,7 @@ export type LibraryPageType =
   | "article"
   | "judgment"
   | "circular"
+  | "compliance"
   | "form"
   | "blog"
   | "calculator"
