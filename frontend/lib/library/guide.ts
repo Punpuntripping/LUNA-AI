@@ -31,6 +31,9 @@
 // Pure functions — no React, no fetching, no DOM. Safe in the server and the
 // browser graph alike, and directly testable.
 
+import { normalizeHeadingText } from "@/lib/library/legal-text";
+import { extractHeadings, type TocHeading } from "@/lib/markdown/headings";
+
 /**
  * A whole line that is ONLY a `{digits}_{digits}` token — THE hole marker.
  *
@@ -205,4 +208,95 @@ export function prettifyGuideUrls(md: string): string {
       if (!clean) return url;
       return `[${prettyUrlLabel(clean)}](${clean})${trailing}`;
     });
+}
+
+/**
+ * Drop the guide's own title + abstract when the PAGE already rendered them.
+ *
+ * ⚠ MEASURED AGAINST THE WHOLE CORPUS, not guessed: 168 of 169 guide bodies open
+ * with `# {title}` — the exact corpus title — and all 169 carry the `summary`
+ * text. Rendered raw under a page that already has an `<h1>` and the summary,
+ * every guide page would ship TWO `<h1>`s (the second missing the «بالصور»
+ * treatment, so the two disagree) and print its abstract twice.
+ *
+ * Both strips are EQUALITY-GATED, never positional: a body whose first heading
+ * is not the title, or whose first paragraph is not the summary, is left
+ * completely alone. Comparison goes through `normalizeHeadingText` — the same
+ * whitespace/colon-insensitive rule `ArticleBody`'s `dedupeHeading` uses.
+ *
+ * ⚠ LIVES HERE, NOT IN `GuideBody`, because the TABLE OF CONTENTS has to see the
+ * same text the body renders. Extracting headings from the raw `guide_md` would
+ * list a title heading that the body no longer emits, and its anchor would jump
+ * nowhere. One implementation, two consumers.
+ */
+export function stripDuplicatedLead(
+  text: string,
+  heading?: string,
+  lead?: string,
+): string {
+  let out = (text ?? "").replace(/^\s+/, "");
+
+  if (heading) {
+    const h1 = /^#{1,6}[ \t]+([^\n]*)(?:\n|$)/.exec(out);
+    if (h1 && normalizeHeadingText(h1[1]) === normalizeHeadingText(heading)) {
+      out = out.slice(h1[0].length).replace(/^\s+/, "");
+    }
+  }
+
+  if (lead) {
+    // The first paragraph = everything up to the first blank line. `split` with
+    // a limit returns a true prefix of `out`, so slicing by its length is exact.
+    const paragraph = out.split(/\n\s*\n/, 1)[0] ?? "";
+    if (
+      paragraph &&
+      normalizeHeadingText(paragraph) === normalizeHeadingText(lead)
+    ) {
+      out = out.slice(paragraph.length).replace(/^\s+/, "");
+    }
+  }
+
+  return out;
+}
+
+/**
+ * The guide's headings, in document order — the TOC's data source.
+ *
+ * Runs over EXACTLY the text `GuideBody` renders: hole lines removed, and the
+ * duplicated title/abstract stripped from the first text segment. That equality
+ * is the whole contract — the ids come from `slugifyHeading` inside
+ * `MarkdownRenderer`'s `headingAnchors` mode, and the hrefs come from here, so
+ * the two must be derived from the same string or every anchor dead-links.
+ *
+ * ⚠ DE-DUPED BY SLUG, keeping the first. `slugifyHeading` is deterministic and
+ * NOT collision-suffixed by design, so two identical heading texts in one guide
+ * produce one id. Rendering both TOC rows would give two links to one anchor;
+ * the ids themselves cannot be made unique from here, because the renderer
+ * derives them independently.
+ */
+export function guideTocHeadings(
+  guideMd: string,
+  dedupeHeading?: string,
+  dedupeLead?: string,
+): TocHeading[] {
+  const segments = splitGuideMarkdown(guideMd);
+  const firstText = segments.find((segment) => segment.kind === "text");
+
+  const body = segments
+    .filter(
+      (segment): segment is { kind: "text"; value: string } =>
+        segment.kind === "text",
+    )
+    .map((segment) =>
+      segment === firstText
+        ? stripDuplicatedLead(segment.value, dedupeHeading, dedupeLead)
+        : segment.value,
+    )
+    .join("\n\n");
+
+  const seen = new Set<string>();
+  return extractHeadings(body).filter((heading) => {
+    if (!heading.slug || seen.has(heading.slug)) return false;
+    seen.add(heading.slug);
+    return true;
+  });
 }

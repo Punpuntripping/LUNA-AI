@@ -412,6 +412,13 @@ export interface ArticleBodyProps {
    * an effect when the body is truncated.
    */
   gateBarsOnly?: boolean;
+  /**
+   * Markdown path only: emit deterministic `slugifyHeading` ids on `h1..h6` so a
+   * table of contents can link INTO the body. Opt-in — default off keeps every
+   * existing caller byte-identical. Only meaningful where the TOC's hrefs are
+   * built from the SAME slugger, or the anchors dead-link.
+   */
+  headingAnchors?: boolean;
   className?: string;
 }
 

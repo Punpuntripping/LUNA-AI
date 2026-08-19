@@ -21,6 +21,12 @@ import type { ArticleBodyProps } from "@/types/library";
  * duplicates this value (colon/whitespace-insensitive), it is dropped — used
  * where a styled section `<h2>` already renders the same title the body repeats.
  *
+ * `headingAnchors` (markdown path only): give `h1..h6` deterministic
+ * `slugifyHeading` ids so a table of contents can link INTO the body. Opt-in and
+ * default-off, so every existing caller renders byte-identically — the ids are
+ * only meaningful to a surface that also builds hrefs from the same slugger
+ * (`/compliance/{slug}`, and the مدونة before it).
+ *
  * `gateBarsOnly`: render the trailing GateBanner as decorative skeleton bars
  * WITHOUT its CTA card — for per-section gates when a single document-level CTA
  * card is the one conversion surface (avoids stacked back-to-back cards).
@@ -36,6 +42,7 @@ export function ArticleBody({
   plain,
   dedupeHeading,
   gateBarsOnly,
+  headingAnchors,
   className,
 }: ArticleBodyProps) {
   const truncated = Boolean(gate?.isTruncated);
@@ -68,7 +75,7 @@ export function ArticleBody({
           )}
         </div>
       ) : (
-        <MarkdownRenderer content={visibleText} />
+        <MarkdownRenderer content={visibleText} headingAnchors={headingAnchors} />
       )}
 
       {truncated && gate && (

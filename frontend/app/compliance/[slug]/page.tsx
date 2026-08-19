@@ -5,6 +5,9 @@ import {
   LibraryPageShell,
   TopicBreadcrumbs,
   TrustLine,
+  TocList,
+  TocRail,
+  TocFloating,
   OfficialSources,
   AskRayhanWidget,
 } from "@/components/library/blocks";
@@ -12,11 +15,12 @@ import { GuideBody } from "@/components/library/blocks/GuideBody";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle } from "@/lib/seo/schema";
 import { getComplianceGuide, toSnippet } from "@/lib/library/api";
-import { guideDisplayTitle } from "@/lib/library/guide";
+import { guideDisplayTitle, guideTocHeadings } from "@/lib/library/guide";
 import type {
   BreadcrumbItem,
   LibraryPageType,
   OfficialSourceLink,
+  TocEntry,
 } from "@/types/library";
 
 // One service guide — «الدليل الشامل بالصور» for a government service.
@@ -127,6 +131,27 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
       ]
     : [];
 
+  // «محتويات الدليل» — built from the body's own `##` headings, over EXACTLY the
+  // text `GuideBody` renders (hole lines gone, duplicated title/abstract
+  // stripped). The ids come from `slugifyHeading` inside `MarkdownRenderer`'s
+  // `headingAnchors` mode and the hrefs come from the same slugger, which is the
+  // only reason these anchors resolve.
+  //
+  // ⚠ FEWER THAN 2 HEADINGS ⇒ NO TOC AT ALL, and the body takes the full width.
+  // A one-row index is furniture: it costs a sticky column and tells the reader
+  // nothing they cannot see.
+  const tocEntries: TocEntry[] = guideTocHeadings(
+    doc.guide_md,
+    doc.title,
+    doc.summary,
+  ).map((heading) => ({
+    id: heading.slug,
+    label: heading.text,
+    href: `#${heading.slug}`,
+    level: heading.depth,
+  }));
+  const showToc = tocEntries.length >= 2;
+
   const now = new Date().toISOString();
   // Article, with NO paywall fragment: `buildPaywallFragment` describes content
   // withheld behind a gate, and there is none here. Claiming one on an open page
@@ -163,21 +188,57 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
           </p>
         )}
 
-        {/* `dedupeHeading` gets the PLAIN corpus title, because that is what the
-            body's own `# …` line says — the «بالصور» rewrite is a display
-            concern and never reaches `guide_md`. `dedupeLead` kills the body's
-            opening paragraph, which is the summary verbatim in 168 of 169
-            guides and would otherwise print twice. */}
-        <GuideBody
-          guideMd={doc.guide_md}
-          images={doc.images}
-          dedupeHeading={doc.title}
-          dedupeLead={doc.summary}
-        />
+        {/* Two-column reading layout, the same shape /regulations/{slug} uses.
+            The page is dir="rtl", so grid column 1 (the guide) starts on the
+            RIGHT and the rail — column 2 — lands on the LEFT, sticky beside the
+            scrolling body. Without a TOC the grid collapses to one column and
+            the body keeps the full reading width. */}
+        <div
+          className={
+            showToc
+              ? "lg:grid lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start lg:gap-10"
+              : undefined
+          }
+        >
+          <div className="min-w-0 space-y-6 lg:max-w-3xl">
+            {showToc && (
+              <div className="lg:hidden">
+                {/* Collapsed on mobile for the reason the regulation wing
+                    learned: an expanded index puts the whole TOC between the
+                    reader and the first step. The floating pill takes over once
+                    this has scrolled away. */}
+                <TocList
+                  entries={tocEntries}
+                  title="محتويات الدليل"
+                  defaultOpen={false}
+                />
+                <TocFloating entries={tocEntries} title="محتويات الدليل" />
+              </div>
+            )}
 
-        {officialSources.length > 0 && (
-          <OfficialSources sources={officialSources} />
-        )}
+            {/* `dedupeHeading` gets the PLAIN corpus title, because that is what
+                the body's own `# …` line says — the «بالصور» rewrite is a
+                display concern and never reaches `guide_md`. `dedupeLead` kills
+                the body's opening paragraph, which is the summary verbatim in
+                168 of 169 guides and would otherwise print twice. */}
+            <GuideBody
+              guideMd={doc.guide_md}
+              images={doc.images}
+              dedupeHeading={doc.title}
+              dedupeLead={doc.summary}
+            />
+
+            {officialSources.length > 0 && (
+              <OfficialSources sources={officialSources} />
+            )}
+          </div>
+
+          {showToc && (
+            <aside className="hidden lg:sticky lg:top-24 lg:block">
+              <TocRail entries={tocEntries} title="محتويات الدليل" />
+            </aside>
+          )}
+        </div>
       </div>
 
       <AskRayhanWidget

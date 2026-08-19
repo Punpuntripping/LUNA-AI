@@ -1,53 +1,11 @@
 import { cn } from "@/lib/utils";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
-import { normalizeHeadingText } from "@/lib/library/legal-text";
-import { prettifyGuideUrls, splitGuideMarkdown } from "@/lib/library/guide";
+import {
+  prettifyGuideUrls,
+  splitGuideMarkdown,
+  stripDuplicatedLead,
+} from "@/lib/library/guide";
 import type { ComplianceGuideImage } from "@/lib/library/api";
-
-/**
- * Drop the guide's own title + abstract when the PAGE already rendered them.
- *
- * ⚠ MEASURED AGAINST THE WHOLE CORPUS (`_manifest.ndjson`, 2026-08-19), not
- * guessed: 169 of 169 guide bodies open with `# {title}` — the exact corpus
- * title — and 168 of them follow it with a first paragraph that is `summary`
- * VERBATIM. Rendered raw under a page that already carries an `<h1>` and the
- * summary, every guide page would ship TWO `<h1>`s (the second one missing the
- * «بالصور» treatment, so the two disagree) and print its abstract twice.
- *
- * Both strips are EQUALITY-GATED, never positional: a body whose first heading
- * is not the title, or whose first paragraph is not the summary, is left
- * completely alone. Comparison goes through `normalizeHeadingText` — the same
- * whitespace/colon-insensitive rule `ArticleBody`'s `dedupeHeading` uses — so
- * one notion of "the same heading" serves the whole library.
- */
-function stripDuplicatedLead(
-  text: string,
-  heading?: string,
-  lead?: string,
-): string {
-  let out = text.replace(/^\s+/, "");
-
-  if (heading) {
-    const h1 = /^#{1,6}[ \t]+([^\n]*)(?:\n|$)/.exec(out);
-    if (h1 && normalizeHeadingText(h1[1]) === normalizeHeadingText(heading)) {
-      out = out.slice(h1[0].length).replace(/^\s+/, "");
-    }
-  }
-
-  if (lead) {
-    // The first paragraph = everything up to the first blank line. `split` with
-    // a limit returns a true prefix of `out`, so slicing by its length is exact.
-    const paragraph = out.split(/\n\s*\n/, 1)[0] ?? "";
-    if (
-      paragraph &&
-      normalizeHeadingText(paragraph) === normalizeHeadingText(lead)
-    ) {
-      out = out.slice(paragraph.length).replace(/^\s+/, "");
-    }
-  }
-
-  return out;
-}
 
 /**
  * The body of a service guide: our own authored rewrite of the issuing entity's
@@ -119,7 +77,9 @@ export function GuideBody({
           // A body that was nothing BUT its own title + abstract strips to
           // empty — render nothing rather than an empty paragraph.
           if (!value.trim()) return null;
-          return <ArticleBody key={index} visibleText={value} />;
+          return (
+            <ArticleBody key={index} visibleText={value} headingAnchors />
+          );
         }
 
         const image = byRef.get(segment.ref);
