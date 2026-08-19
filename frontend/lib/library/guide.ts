@@ -119,3 +119,90 @@ export function guideDisplayTitle(title: string, imageCount: number): string {
   if (imageCount <= 0 || !trimmed.startsWith(GUIDE_PREFIX)) return trimmed;
   return GUIDE_PREFIX_IMAGES + trimmed.slice(GUIDE_PREFIX.length);
 }
+
+/**
+ * A readable label for a URL that a guide body printed as its own link text.
+ *
+ * ⚠ WHY THIS EXISTS. 155 of 169 guide bodies carry a `**الرابط الرسمي:**
+ * [<url>](<url>)` line, and 13 of those URLs are percent-encoded Arabic. Rendered
+ * literally, the label is a 200-character `%D8%A5%D8%B5%D8%AF%D8%A7%D8%B1…`
+ * wall that wraps across five lines and is unreadable in either script. The
+ * `href` is fine — it is only the visible TEXT that is wrong.
+ *
+ * Returns the DECODED last path segment (hyphens → spaces, so an Arabic slug
+ * reads as the sentence it is), falling back to the host when there is no
+ * meaningful segment. Host-plus-path was rejected: mixing a Latin host and an
+ * Arabic path in one RTL line puts the punctuation on the wrong side.
+ *
+ * Never throws — a malformed URL or a bad percent-escape returns the input
+ * untouched, because a slightly ugly link beats a page that fails to render.
+ */
+export function prettyUrlLabel(url: string): string {
+  const raw = (url ?? "").trim();
+  if (!raw) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const last = segments.length ? segments[segments.length - 1] : "";
+
+    // `decodeURIComponent` throws on a malformed escape ("%D8%") — that is the
+    // exact input this helper exists for, so it must not take the page down.
+    let label = "";
+    if (last) {
+      try {
+        label = decodeURIComponent(last);
+      } catch {
+        label = last;
+      }
+      label = label.replace(/[-_]+/g, " ").trim();
+    }
+
+    if (!label) return parsed.host;
+    // A decoded segment can still be a long file name; keep it to one line.
+    return label.length > 80 ? `${label.slice(0, 79)}…` : label;
+  } catch {
+    return raw;
+  }
+}
+
+const MD_LINK_WITH_URL_LABEL = /\[\s*(https?:\/\/[^\]\s]+)\s*\]\(([^)\s]+)\)/g;
+// A bare URL is one that is NOT already a markdown href. The lookbehind targets
+// `](` exactly — anything looser also skips a URL sitting in ordinary
+// parentheses, «(https://…)», which is prose and SHOULD be prettified.
+const BARE_URL = /(?<!\]\()\bhttps?:\/\/[^\s<>()[\]]+/g;
+// Sentence punctuation that a bare URL at the end of a sentence swallows.
+// «زر https://a.gov.sa/foo.» must link to `/foo`, not to `/foo.` — absorbing the
+// full stop into the href is a 404 the reader gets blamed for.
+const TRAILING_PUNCT = /[.,;:!?،؛»"')\]]+$/;
+
+/**
+ * Rewrite every URL a guide body would render as raw link text into a readable
+ * label, keeping the destination untouched.
+ *
+ * Two forms, because the corpus uses both: 81 bodies write `[<url>](<url>)` and
+ * 83 leave the URL bare for the markdown renderer to autolink. Both end up as
+ * `[<pretty>](<url>)`.
+ *
+ * ⚠ ORDER IS LOAD-BEARING: the markdown-link pass must run FIRST so that the
+ * bare-URL pass cannot see a link label and wrap it a second time.
+ *
+ * This is DISPLAY ONLY. `href` values are passed through byte-for-byte — a
+ * percent-encoded Arabic path is a perfectly valid URL and decoding it into the
+ * href could break the destination.
+ */
+export function prettifyGuideUrls(md: string): string {
+  const source = md ?? "";
+  if (!source) return source;
+
+  return source
+    .replace(MD_LINK_WITH_URL_LABEL, (_m, label: string, href: string) =>
+      `[${prettyUrlLabel(label)}](${href})`)
+    .replace(BARE_URL, (url: string) => {
+      // Give the sentence its punctuation back — it is not part of the link.
+      const trailing = TRAILING_PUNCT.exec(url)?.[0] ?? "";
+      const clean = trailing ? url.slice(0, -trailing.length) : url;
+      if (!clean) return url;
+      return `[${prettyUrlLabel(clean)}](${clean})${trailing}`;
+    });
+}

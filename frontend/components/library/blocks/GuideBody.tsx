@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
 import { normalizeHeadingText } from "@/lib/library/legal-text";
-import { splitGuideMarkdown } from "@/lib/library/guide";
+import { prettifyGuideUrls, splitGuideMarkdown } from "@/lib/library/guide";
 import type { ComplianceGuideImage } from "@/lib/library/api";
 
 /**
@@ -107,10 +107,15 @@ export function GuideBody({
       {segments.map((segment, index) => {
         if (segment.kind === "text") {
           // Only the FIRST text segment can carry the duplicated title/abstract.
-          const value =
+          // `prettifyGuideUrls` LAST: 155 of 169 bodies print «الرابط الرسمي:»
+          // followed by the URL as its own link text, and 13 of those are
+          // percent-encoded Arabic that renders as an unreadable five-line wall.
+          // Display only — every href is passed through untouched.
+          const value = prettifyGuideUrls(
             segment === firstTextSegment
               ? stripDuplicatedLead(segment.value, dedupeHeading, dedupeLead)
-              : segment.value;
+              : segment.value,
+          );
           // A body that was nothing BUT its own title + abstract strips to
           // empty — render nothing rather than an empty paragraph.
           if (!value.trim()) return null;
