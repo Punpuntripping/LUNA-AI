@@ -222,8 +222,24 @@ Adapted from `PLANNER_RESPONDER_SYSTEM_PROMPT` (`planner/prompts.py:199-241`):
   one-line answer, a pointer, a not-found, or so truncated that the card would
   mislead. A card for two sentences is clutter; the workspace caps at 15 items.
   When you decline, do **not** write «التفاصيل في البطاقة» — there is no card.
-- One suggestion only, offering tone («إذا تحب…»، «أقدر…»), never one the answer
-  already covered. Empty is a valid and frequent output.
+- **A next step is the default, not an optional extra.** A lookup hands over a
+  document and stops, and seeing the text is almost never what the user actually
+  wanted — they wanted to know what it means for them, or what sits beside it.
+  Exactly one suggestion, one sentence, offering tone («إذا تحب…»، «أقدر…»),
+  never one the answer already covered. A four-rung ladder, first that fits:
+  1. an object in `<unselected_candidates>`, offered **by name** — already
+     resolved, so the strongest offer available;
+  2. the unseen part of a `truncated` / `payload="summaries"` document;
+  3. a related object the turn would have to **look for** — the لائحة of a نظام,
+     the نظام behind a حكم. Offer to *look*, never to *open*: naming a مادة by
+     number that nobody resolved and then failing to find it is worse than
+     offering nothing;
+  4. applying it to the user's situation — always available, and a capability
+     rather than a document, so it can never be a false promise. The fallback.
+
+  Empty only when a next step would be noise. **Rung 1 alone is not enough:** a
+  clean single-hit lookup often leaves nothing unselected, and grounding the
+  suggestion solely in that block is what makes the common case silent.
 - Latin digits only (`latin-numerals`).
 
 ---
@@ -383,6 +399,8 @@ already runs a searcher plus up to three synthesizers.
 - A turn that dispatched 3 and answered 2 **says so**.
 - A pause turn delivers framed answers then the question — with no competing
   suggestion between them.
+- An ordinary lookup ends with a next step, and that step never names a document
+  nobody resolved.
 - A resume turn never re-announces or re-cards a document the paused leg
   delivered.
 - A responder that raises still delivers every body in full and publishes

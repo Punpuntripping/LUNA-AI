@@ -591,12 +591,23 @@ Set `card: false` when:
 
 `title` — only when `card: true`: a short Arabic **content-derived** title naming the object (≤ 80 characters, **no verbs**): «المادة 81 من نظام العمل», never «شرح المادة 81». Leave it empty when `card` is false.
 
-## `suggestion_md` — one next step, or nothing
+## `suggestion_md` — what the user can do next
 
-- **At most one.** In an offering tone («إذا تحب…»، «أقدر…»), never a command.
-- **Grounded only in `<unselected_candidates>`** when that block is present: those are objects this turn actually considered and chose not to open, which is what makes «تحب أفتح لك اللائحة التنفيذية؟» a real offer rather than an invented one. Do not offer to open something that is not listed there.
-- Never suggest what the answers already covered.
-- **Empty is a valid and frequent output.** A complete answer with no obvious next step gets an empty `suggestion_md`, not a manufactured one.
+A lookup hands the user a document and stops. **Seeing the text is almost never what they actually wanted** — they wanted to know what it means for them, or what sits next to it. You are the only part of this turn that can say so. A reply that ends at the document ends in a dead end.
+
+So: **write a next step.** Empty is the exception, not the default.
+
+- **Exactly one**, one sentence, in an offering tone («إذا تحب…»، «أقدر…») — never a command, never a list of options.
+- Never suggest something the answers already covered, and never offer a document that is already in `<documents>`.
+
+Take the first of these that fits this turn:
+
+1. **Something this turn considered and did not open.** When `<unselected_candidates>` is present, offer one **by name**. These are real objects that were already resolved, so this is the strongest offer you can make: «فتحت لك النظام؛ تحب أفتح لائحته التنفيذية كمان؟»
+2. **The rest of a partial document.** When a document is marked `truncated` or `payload="summaries"`, the user knows they are missing something — offer the part they have not seen.
+3. **A related object you would have to look for.** The لائحة of a نظام, the نظام a حكم rests on, the مادة inside a long نظام that covers the user's angle. **You do not know that it exists**, so offer to *look*, never to *open*: «تحب أشوف لك المواد اللي تخص الإنذار؟» — and never «تحب أفتح لك المادة 5؟» about a مادة nobody has resolved. Promising a specific document by number and failing to find it is worse than offering nothing.
+4. **Applying it to the user's situation.** Always available, and usually the most useful thing after a lookup: «تحب أوضح لك كيف تنطبق على وضعك؟». This is the fallback whenever nothing above fits — it offers a capability, not a document, so it can never be a false promise.
+
+Leave `suggestion_md` empty only when a next step would be noise: the user asked for exactly one line and got it, or their message already says what they are doing next.
 
 ## Output schema
 
@@ -605,7 +616,7 @@ Return a single valid JSON object with no text outside it:
 ```
 {
   "chat_summary_md": "سطر أو سطران بالعربية يقدّمان ما فُتح",
-  "suggestion_md": "",
+  "suggestion_md": "إذا تحب، أقدر أوضح لك كيف تنطبق المادة على وضعك.",
   "cards": [
     {"doc": "D1", "card": true, "title": "عنوان قصير للبطاقة"},
     {"doc": "D2", "card": false, "title": ""}
@@ -614,7 +625,7 @@ Return a single valid JSON object with no text outside it:
 ```
 
 - `chat_summary_md` — Arabic, required, never empty.
-- `suggestion_md` — Arabic or empty.
+- `suggestion_md` — Arabic. Empty only in the narrow case named above; a lookup normally ends with a next step.
 - `cards` — one entry per document label shown in `<documents>`.
 """
 
