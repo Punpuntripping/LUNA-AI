@@ -93,6 +93,14 @@ backend/tests/*
 # every dated judgment behind ~11k dateless ones. It was local-only until
 # 2026-08-08, which is why the ranked-view rewire broke 8 of its tests with CI green.
 !backend/tests/test_library_judgments.py
+# case-provenance suite is durable — it pins the GATE SPLIT that D-CROSSWALK rests on:
+# «المجلد»/«الصفحات» may render on an anonymous /judgments page, the مجلد PDF and
+# collection URLs may not. One bound-volume PDF is ~50 full gated rulings, so a URL that
+# drifts into the citation half publishes far more than the per-item MoJ link the original
+# decision was written about — and it would do so silently, since both halves are
+# list[dict[str, str]] and no type tells them apart. Also pins the volume registry's two
+# key shapes (path vs sha1) against the int `source_volume` that looks like a key and is not.
+!backend/tests/test_case_sources.py
 # judgment publish-selector suite is durable — it pins the per-feed allocation
 # (insurance takes ALL, shortfall redistributes), the sqrt court spread, and that
 # the sector cap is scoped to the وزارة العدل slice. Sectors exist on NO other

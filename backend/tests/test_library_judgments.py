@@ -303,6 +303,13 @@ FULL_CASE = {
     "summary": "ملخص مطول",
     "details_url": "https://laws.moj.gov.sa/ar/JudicialDecisionsList/1/abc",
     "referenced_regulations": [],
+    # `_JUDGMENT_DOC_SELECT` embeds the issuing body, and the source-link titles read off
+    # it («مصدر الحكم — وزارة العدل»). A fixture without the embed silently exercises the
+    # entity-less fallback instead of the وزارة العدل path this row represents.
+    "entities": {"entity_name": "وزارة العدل"},
+    # No `source`: this is the وزارة العدل shape — the ruling has its own page and was not
+    # parsed out of a PDF. The volume shapes are covered by `VOLUME_CASE` below.
+    "source": {},
     "facts": _long("FACTS"),
     "claims": _long("CLAIMS"),
     "plaintiff_grounds": _long("PGROUNDS"),
@@ -789,6 +796,67 @@ def test_the_moj_details_url_is_still_what_the_reveal_serves() -> None:
     assert out == [
         {"title": "مصدر الحكم — وزارة العدل", "href": FULL_CASE["details_url"]}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Bound-volume provenance (2026-08-19)
+# ---------------------------------------------------------------------------
+#
+# 9,860 of the 30,531 rulings carry NO ``details_url``: 5,538 were lifted out of a bound
+# مجلد and 4,322 are قرارات published as their own PDF. Until this, every one of them
+# rendered a page that named no source at all and a reveal that bought an empty block.
+#
+# The unit-level rules live in ``test_case_sources.py``. What these three cover is the
+# WIRING — that the citation reaches the anon card, that the links do NOT, and that the
+# reveal serves them. The شكل below is a real ديوان المظالم row.
+
+VOLUME_CASE = {
+    **FULL_CASE,
+    "details_url": None,
+    "court": "ديوان المظالم — الدائرة الإدارية",
+    "case_number": "1880/5/ق",
+    "entities": {"entity_name": "ديوان المظالم"},
+    "source": {
+        "group": "الأحكام_الإدارية_1440هـ",
+        "pages": {"end": 259, "start": 253},
+        "volume": "الأحكام_الإدارية_1440هـ/Volume_2",
+        "entity_ref": "17486",
+        "source_volume": 2,
+    },
+}
+
+
+def test_a_volume_ruling_names_its_مجلد_in_the_anon_metadata_card() -> None:
+    """The half of the source a gated page IS allowed to publish. «المجلد 2» not
+    «Volume_2»: the second is the publisher's filename."""
+    doc = ls.get_judgment_doc(_fake(VOLUME_CASE), SLUG)
+    card = {m["label"]: m["value"] for m in doc["metadata"]}
+    assert card["المجلد"] == "المجلد 2 — مجموعة الأحكام الإدارية لعام 1440 هـ"
+    assert card["الصفحات"] == "253–259"
+
+
+def test_a_GATED_volume_ruling_still_withholds_every_volume_URL() -> None:
+    """The load-bearing one. A مجلد PDF is ~50 full rulings, all gated — so D-CROSSWALK
+    applies to it MORE strongly than to a per-item MoJ link, not less. Assert on bytes:
+    a citation row that silently grew an href would pass a key check."""
+    doc = ls.get_judgment_doc(_fake(VOLUME_CASE), SLUG)
+    assert doc["gate_effective"] == "gated", "fixture is not gated — test proves nothing"
+    assert doc["official_sources"] == []
+    body = json.dumps(doc, ensure_ascii=False)
+    assert "bog.gov.sa" not in body
+    assert "http" not in json.dumps(doc["metadata"], ensure_ascii=False)
+
+
+def test_the_reveal_serves_a_volume_ruling_its_pdf_and_collection_page() -> None:
+    """What the unlock buys for the 9,860 rulings that have no page of their own."""
+    fake = _fake(VOLUME_CASE)
+    fake.tables.setdefault("cases", [dict(VOLUME_CASE)])
+    out = ls.official_sources_for_item(fake, "judgment", VOLUME_CASE["id"])
+    assert [o["title"] for o in out] == [
+        "ملف المجلد (PDF)",
+        "صفحة المجموعة — ديوان المظالم",
+    ]
+    assert all(o["href"].startswith("https://www.bog.gov.sa/") for o in out)
 
 
 def test_non_url_details_url_is_not_surfaced_as_a_source() -> None:

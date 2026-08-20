@@ -72,6 +72,8 @@ from agents.deep_search_v4.ura.schema import (
     RegURAResult,
     URAResult,
 )
+from shared.library.case_sources import entity_name as _entity_name
+from shared.library.case_sources import judgment_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,22 @@ class CaseSourceView(BaseModel):
     ONLY when the ruling has no summary at all (18 rows of 30.5k). Never sent
     alongside ``summary``: it would be several KB the popup does not render."""
     details_url: str = ""
+    """The ruling's own page on the issuing body's site. وزارة العدل only (20,671 of
+    30,531) — the rest were parsed out of PDFs and reach their source through
+    ``official_sources`` instead. Kept as its own field because it is what the panel's
+    «فتح المصدر الرسمي» button has always targeted."""
+    citation: list[dict[str, str]] = Field(default_factory=list)
+    """«المجلد» / «الصفحات» label-value rows for a ruling lifted out of a bound مجلد —
+    which volume, which pages. Bibliographic text, no URLs.
+
+    Unlike the /judgments page, this carries no gate consequence: reaching this view
+    already spent the item's unlock (D-REVEAL), so the citation and the links below travel
+    together. Empty for a وزارة العدل ruling and for a standalone قرار PDF."""
+    official_sources: list[dict[str, str]] = Field(default_factory=list)
+    """``[{'title', 'href'}]`` — the publisher's collection page and the volume/decision
+    PDF, for the 9,860 rulings that have no ``details_url`` of their own. This is what
+    makes «عرض المصدر» able to answer "where is this from?" for a قرار زكوي or a ديوان
+    المظالم ruling at all; before it, those revealed a body with no attribution."""
 
 
 class ServiceSourceView(BaseModel):
@@ -372,6 +390,11 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
     neither summary. The URA result may or may not carry a body of its own (it
     does when produced by the case_search adapter; it doesn't when
     ``references_service`` rebuilds the shell from the relational refs table).
+
+    ``source`` + the embedded ``entities(entity_name)`` feed the provenance block: 9,860
+    rulings have an empty ``details_url`` because they were parsed out of a PDF, and this
+    is the only place that says which one. The embed is free — the row read happens either
+    way — and PostgREST returns ``None`` for the 797 rows with no ``entity_id``.
     """
     def _call() -> dict | None:
         try:
@@ -380,7 +403,8 @@ async def _fetch_case(supabase: SupabaseClient, case_ref: str) -> dict | None:
                 .select(
                     "id, court, court_level, city, case_number, "
                     "judgment_number, date_hijri, details_url, "
-                    "summary, short_summary, content"
+                    "summary, short_summary, content, source, "
+                    "entities(entity_name)"
                 )
                 .eq("case_ref", case_ref)
                 .maybe_single()
@@ -610,11 +634,31 @@ async def _build_case_view(
     # exactly the PDPL-sensitive payload the /judgments wing is noindexed over.
     case_body = "" if summary else (row.get("content") or "").strip()
 
+    # Where the ruling came from. Only a fetched row can answer this — a live URA carries
+    # no `source`, so a reveal that missed the row fetch degrades to the title and body it
+    # already had rather than inventing provenance.
+    prov = judgment_provenance(row, _entity_name(row))
+    details_url = row.get("details_url", "") or ""
+
+    # `details_url` is dropped from the list because it already has a home: it is the
+    # dedicated field above, and the panel's «فتح المصدر الرسمي» button targets it. Left
+    # in, every وزارة العدل ruling would offer the same MoJ link twice in one dialog —
+    # once in the action bar, once in the provenance block. `official_sources` is
+    # therefore exactly "the sources that have nowhere else to go", which is why it is
+    # empty for the 20,671 MoJ rulings and populated for the 9,860 PDF-parsed ones.
+    #
+    # ⚠ NOT true of the /judgments reveal, which has no such action bar and DOES serve
+    # `details_url` inside `official_sources`. Same builder, different consumer — do not
+    # "fix" one to match the other.
+    official_sources = [s for s in prov.official_sources if s["href"] != details_url]
+
     return CaseSourceView(
         title=title,
         summary=summary,
         content=case_body,
-        details_url=row.get("details_url", "") or "",
+        details_url=details_url,
+        citation=prov.citation,
+        official_sources=official_sources,
     )
 
 
