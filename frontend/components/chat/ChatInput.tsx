@@ -10,7 +10,7 @@ import {
 } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { useRouter } from "next/navigation";
-import { Send, Square, Sparkles, Plus } from "lucide-react";
+import { Send, Sparkles, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -999,15 +999,26 @@ export function ChatInput({
         />
 
         {isStreaming ? (
-          <Button
-            variant="destructive"
-            size="icon"
-            className="h-10 w-10 shrink-0"
+          <button
+            type="button"
             onClick={handleStopClick}
             aria-label="إيقاف"
+            className={cn(
+              "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md",
+              // Rayhan's own danger family (--error-bg / --error-fg): warm clay,
+              // not the raw --destructive red. Tinted at rest, solid on hover —
+              // the button commits to the danger colour as you reach for it.
+              "border border-error-fg bg-error text-error-fg",
+              "ring-offset-background transition-colors",
+              "hover:border-error-fg hover:bg-error-fg hover:text-error",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-error-fg focus-visible:ring-offset-2",
+            )}
           >
-            <Square className="h-4 w-4" />
-          </Button>
+            <span
+              aria-hidden="true"
+              className="block h-[9px] w-[9px] rounded-[2px] bg-current"
+            />
+          </button>
         ) : (
           <Button
             size="icon"
