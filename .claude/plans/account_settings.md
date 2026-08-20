@@ -227,3 +227,43 @@ user is adding a first credential to sessions they own.
    lands on /chat → log out → log in with it.
 4. Unknown address on /forgot-password → identical success screen, no email.
 5. Email account → إعدادات الحساب still shows «تغيير كلمة المرور», unchanged.
+
+## T4 — SMTP is the blocker, and it is a dashboard fix (found 2026-08-18, post-deploy)
+
+First live test of «نسيت كلمة المرور» sent no email. Diagnosis, in order:
+
+1. `auth.users.recovery_sent_at` is NULL for **every** user in the project — no
+   recovery email has ever been sent successfully.
+2. Direct probe of the endpoint with the anon key:
+   `POST /auth/v1/recover {"email":"<real user>"}` →
+   `{"code":500,"error_code":"unexpected_failure","msg":"Error sending recovery email"}`
+   So the flow is correct end to end and dies at the last step.
+3. `auth_logs` names the last step:
+   `535 "5.7.8 Username and Password not accepted … - gsmtp"`,
+   `error_code: unexpected_failure`, on `/signup` — 4 occurrences from
+   2026-08-17 19:15 onward (the 24h log window cannot see further back).
+
+**Custom SMTP is pointed at Gmail and the credentials are rejected.** Every
+transactional email the project sends is dead — recovery AND signup confirmation.
+It went unnoticed because ~all signups are Google OAuth, which sends no mail; only
+two March test accounts sit unconfirmed. Fix in the Supabase dashboard (Auth →
+SMTP): a Gmail account password will always be refused — it needs an App Password,
+and a real transactional provider (Resend / SES / Postmark) is the right answer for
+a production sender anyway. **No code change fixes this.**
+
+### The bug this exposed in our own page (FIXED)
+
+`resetPasswordForEmail` RESOLVES with `{ error }`; it does not throw. The first
+cut ignored the return value and showed «تحقّق من بريدك الإلكتروني» unconditionally
+— so with SMTP down every user was told their link was on the way while GoTrue
+500ed on every send. The `catch` never fired because there was nothing to catch.
+
+Enumeration safety was the stated reason for swallowing it, and that reason was
+wrong: **GoTrue already returns `200 {}` for an address with no account** (verified
+against prod). Hiding failures buys no safety and costs the user the one signal
+they need. Now: non-200 → visible Arabic error (429 gets its own copy), 200 →
+success screen regardless of whether the account exists.
+
+⚠ Note while SMTP is broken: known address → 500, unknown → 200, which IS an
+enumeration oracle. It closes when SMTP is fixed; it is not something the page can
+paper over without also hiding real failures from real users.

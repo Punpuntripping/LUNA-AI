@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { z } from "zod";
 import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import { PasswordInput } from "@/components/ui/password-input";
 import { useAuthStore } from "@/stores/auth-store";
 
 /**
@@ -45,7 +46,6 @@ export default function ResetPasswordPage() {
 
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -117,66 +117,25 @@ export default function ResetPasswordPage() {
           </p>
         </div>
 
-        <div className="flex flex-col gap-2">
-          <label
-            htmlFor="reset-password-new"
-            className="block text-sm font-medium text-foreground"
-          >
-            كلمة المرور الجديدة
-          </label>
-          <div className="relative">
-            <input
-              id="reset-password-new"
-              type={showPassword ? "text" : "password"}
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              autoComplete="new-password"
-              dir="ltr"
-              data-testid="reset-password-new"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 pe-10 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((prev) => !prev)}
-              className="absolute end-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground transition-colors hover:text-foreground"
-              tabIndex={-1}
-              aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
-            >
-              {showPassword ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </button>
-          </div>
-          {fieldErrors.new_password && (
-            <p className="text-xs text-destructive">{fieldErrors.new_password}</p>
-          )}
-        </div>
+        <PasswordInput
+          id="reset-password-new"
+          label="كلمة المرور الجديدة"
+          value={newPassword}
+          onChange={setNewPassword}
+          autoComplete="new-password"
+          error={fieldErrors.new_password}
+          data-testid="reset-password-new"
+        />
 
-        <div className="flex flex-col gap-2">
-          <label
-            htmlFor="reset-password-confirm"
-            className="block text-sm font-medium text-foreground"
-          >
-            تأكيد كلمة المرور الجديدة
-          </label>
-          <input
-            id="reset-password-confirm"
-            type={showPassword ? "text" : "password"}
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            autoComplete="new-password"
-            dir="ltr"
-            data-testid="reset-password-confirm"
-            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-          {fieldErrors.confirm_password && (
-            <p className="text-xs text-destructive">
-              {fieldErrors.confirm_password}
-            </p>
-          )}
-        </div>
+        <PasswordInput
+          id="reset-password-confirm"
+          label="تأكيد كلمة المرور الجديدة"
+          value={confirmPassword}
+          onChange={setConfirmPassword}
+          autoComplete="new-password"
+          error={fieldErrors.confirm_password}
+          data-testid="reset-password-confirm"
+        />
 
         {error && (
           <div className="flex flex-col gap-2">

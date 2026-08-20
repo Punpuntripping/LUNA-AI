@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { z } from "zod";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { ApiClientError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
@@ -13,6 +13,7 @@ import { DEFAULT_NEXT, safeNext } from "@/lib/safe-next";
 // The "G" mark moved to the shared quick-signup module so the gate surfaces
 // and this form render the identical logo.
 import { GoogleIcon } from "@/components/auth/GoogleQuickSignup";
+import { PasswordInput } from "@/components/ui/password-input";
 
 // -----------------------------------------------
 // Zod schemas with Arabic error messages
@@ -47,7 +48,6 @@ export function LoginForm() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   // Neutral, non-destructive message (e.g. an email link that could not be
   // exchanged here). Deliberately separate from serverError — it is not a
@@ -343,17 +343,17 @@ export function LoginForm() {
         </div>
 
         {/* Password */}
-        <div className="space-y-2">
-          <div className="flex items-baseline justify-between gap-2">
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-foreground"
-            >
-              كلمة المرور
-            </label>
-            {/* Login only: in register mode there is no password to have
-                forgotten, and offering a reset there reads as an error. */}
-            {mode === "login" && (
+        <PasswordInput
+          id="password"
+          label="كلمة المرور"
+          value={password}
+          onChange={setPassword}
+          autoComplete={mode === "login" ? "current-password" : "new-password"}
+          error={errors.password}
+          labelAction={
+            /* Login only: in register mode there is no password to have
+               forgotten, and offering a reset there reads as an error. */
+            mode === "login" ? (
               <Link
                 href="/forgot-password"
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -361,39 +361,9 @@ export function LoginForm() {
               >
                 نسيت كلمة المرور؟
               </Link>
-            )}
-          </div>
-          <div className="relative">
-            <input
-              id="password"
-              type={showPassword ? "text" : "password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className={`w-full rounded-md border bg-background px-3 py-2 pe-10 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent transition-colors ${
-                errors.password ? "border-destructive" : "border-input"
-              }`}
-              dir="ltr"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((prev) => !prev)}
-              className="absolute end-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
-              tabIndex={-1}
-              aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
-            >
-              {showPassword ? (
-                <EyeOff className="h-4 w-4" />
-              ) : (
-                <Eye className="h-4 w-4" />
-              )}
-            </button>
-          </div>
-          {errors.password && (
-            <p className="text-xs text-destructive">{errors.password}</p>
-          )}
-        </div>
+            ) : undefined
+          }
+        />
 
         {/* Terms consent (option B) — register only */}
         {mode === "register" && (

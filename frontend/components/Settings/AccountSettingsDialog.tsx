@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
-import { CheckCircle2, CreditCard, Eye, EyeOff, Loader2 } from "lucide-react";
+import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -24,6 +24,8 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
+import { PasswordInput } from "@/components/ui/password-input";
 import { ApiClientError, authApi, paymentsApi } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
@@ -67,11 +69,14 @@ interface PasswordFieldProps {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  autoComplete: string;
+  autoComplete: "current-password" | "new-password";
   error?: string;
   testId: string;
 }
 
+/** Thin alias over the shared `PasswordInput` so the existing call sites in
+ *  this dialog keep their prop names. The markup — and the RTL/LTR toggle
+ *  collision it used to carry — now lives in one place. */
 function PasswordField({
   id,
   label,
@@ -81,43 +86,16 @@ function PasswordField({
   error,
   testId,
 }: PasswordFieldProps) {
-  const [show, setShow] = useState(false);
-
   return (
-    <div className="space-y-1.5">
-      <label
-        htmlFor={id}
-        className="block text-sm font-medium text-foreground"
-      >
-        {label}
-      </label>
-      <div className="relative">
-        <input
-          id={id}
-          type={show ? "text" : "password"}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="••••••••"
-          autoComplete={autoComplete}
-          dir="ltr"
-          data-testid={testId}
-          className={cn(
-            "w-full rounded-md border bg-background px-3 py-2 pe-10 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-transparent focus:outline-none focus:ring-2 focus:ring-ring",
-            error ? "border-destructive" : "border-input",
-          )}
-        />
-        <button
-          type="button"
-          onClick={() => setShow((prev) => !prev)}
-          className="absolute end-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground transition-colors hover:text-foreground"
-          tabIndex={-1}
-          aria-label={show ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
-        >
-          {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-        </button>
-      </div>
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
+    <PasswordInput
+      id={id}
+      label={label}
+      value={value}
+      onChange={onChange}
+      autoComplete={autoComplete}
+      error={error}
+      data-testid={testId}
+    />
   );
 }
 
@@ -127,7 +105,7 @@ function PasswordField({
 /** Term-end dates only — day precision, Arabic locale, same as the receipts
  *  list (which adds a time because a payment happens at a moment; a term ends
  *  on a day). */
-const TERM_DATE_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const TERM_DATE_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   year: "numeric",
   month: "long",
   day: "numeric",
@@ -154,7 +132,7 @@ const CANCEL_REASONS: { key: CancelSubscriptionReason; label: string }[] = [
 // the backend, so there is nothing on this surface worth stealing.
 
 /** Card expiry — month + year, same Arabic locale as the term dates above. */
-const CARD_EXPIRY_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const CARD_EXPIRY_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   year: "numeric",
   month: "long",
 });
@@ -175,7 +153,7 @@ function formatCardBrand(brand: string | null | undefined): string {
 }
 
 /**
- * «أغسطس ٢٠٢٧» from `exp_month` + `exp_year`, or null for anything unusable.
+ * «أغسطس 2027» from `exp_month` + `exp_year`, or null for anything unusable.
  *
  * ⚠ LOCAL midnight, never `Date.UTC`: formatting a UTC instant in a
  * negative-offset zone lands on the previous day, and for a first-of-month date
@@ -973,7 +951,7 @@ export function AccountSettingsDialog({
                 منطقة الخطر
               </h3>
               <p className="text-sm text-muted-foreground">
-                حذف الحساب نهائيًا بعد ٣٠ يومًا، بما في ذلك جميع القضايا
+                حذف الحساب نهائيًا بعد 30 يومًا، بما في ذلك جميع القضايا
                 والمحادثات والمستندات.
               </p>
               <Button

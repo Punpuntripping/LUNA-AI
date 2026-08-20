@@ -21,9 +21,18 @@ import { Button } from "@/components/ui/button";
  * Consequence worth knowing: the link must be opened in the same browser that
  * asked for it. That is standard Supabase behaviour, and the copy below says so.
  *
- * The response is deliberately identical whether or not the address has an
- * account: a page that says "no such user" is an account-enumeration oracle on
- * a public, unauthenticated route.
+ * Enumeration safety is GoTrue's, not ours: `/auth/v1/recover` answers 200 for
+ * an address with no account (verified against prod). So this page does NOT need
+ * to hide failures to stay safe — and MUST NOT, which is the bug fixed here.
+ * The first cut ignored the returned error and showed «تحقّق من بريدك» no matter
+ * what; with SMTP down that told every user their link was on the way while
+ * GoTrue was 500ing on every single send. A non-200 is a mail-system failure,
+ * which is true whether or not the address exists, so surfacing it leaks nothing
+ * and is the only way the user learns to retry.
+ *
+ * ⚠ `resetPasswordForEmail` RESOLVES with `{ error }` — it does not throw. The
+ * `catch` below only ever sees a transport/CSP failure, so checking the returned
+ * error is not optional.
  */
 
 const emailSchema = z.string().email("البريد الإلكتروني غير صحيح");
@@ -48,17 +57,33 @@ export default function ForgotPasswordPage() {
     try {
       // `next` rides the callback so the exchange lands on the reset form
       // rather than /chat. It is allowlisted in lib/safe-next.ts.
-      await supabase.auth.resetPasswordForEmail(parsed.data, {
-        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(
-          "/reset-password",
-        )}`,
-      });
-      // Success regardless of the result — see the enumeration note above. A
-      // genuine transport failure still lands here; the user retries, and the
-      // alternative (leaking which addresses exist) is worse.
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+        parsed.data,
+        {
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(
+            "/reset-password",
+          )}`,
+        },
+      );
+
+      if (resetError) {
+        // 429 is GoTrue's own per-address/per-hour email cap — a real answer to
+        // "why didn't it arrive", and worth saying plainly rather than folding
+        // into the generic failure.
+        setError(
+          resetError.status === 429
+            ? "تم إرسال رابط بالفعل. انتظر قليلًا قبل المحاولة مرة أخرى."
+            : "تعذّر إرسال الرابط حاليًا. حاول بعد قليل، وإن تكرّر الأمر تواصل معنا.",
+        );
+        return;
+      }
+
+      // 200 — shown identically whether or not the address has an account,
+      // because that is exactly what GoTrue returned.
       setSent(true);
     } catch {
-      setSent(true);
+      // Only reached on a transport-level failure (offline, CSP, DNS).
+      setError("تعذّر الاتصال. تحقّق من الشبكة وحاول مجددًا.");
     } finally {
       setIsSending(false);
     }
@@ -83,6 +108,16 @@ export default function ForgotPasswordPage() {
             <p className="text-sm leading-relaxed text-muted-foreground">
               إن كان لديك حساب بهذا البريد، فقد أرسلنا إليك رابطًا لتعيين كلمة
               مرور جديدة. افتح الرابط من هذا المتصفّح نفسه.
+            </p>
+            {/* Observed on the very first real send (2026-08-18): Gmail filed it
+                as spam. `rayhanai.com` only started sending through Resend that
+                day, so the domain has no sending reputation yet — SPF and DKIM
+                both align, but reputation is earned over weeks of delivered
+                mail. Until it settles, a user who does not think to look in
+                spam concludes the reset is broken and leaves. */}
+            <p className="rounded-md bg-muted px-3 py-2 text-sm leading-relaxed text-foreground">
+              لم تصلك الرسالة؟ تحقّق من مجلد <strong>الرسائل غير المرغوب فيها
+              (Spam)</strong> — قد تصل إليه أحيانًا.
             </p>
             <Link
               href="/login"
