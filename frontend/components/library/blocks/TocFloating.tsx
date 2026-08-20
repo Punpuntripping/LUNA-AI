@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ChevronLeft, ListTree, Lock, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { parseTocLabel } from "@/lib/library/toc";
+import { toLatinDigits } from "@/lib/format/numerals";
 import { useTocScrollspy, TOC_GATE_ANCHOR_ID } from "@/hooks/use-toc-scrollspy";
 import type { TocEntry, TocFloatingProps } from "@/types/library";
 
@@ -19,13 +20,6 @@ const WINDOW_SIZE = 5;
 const PHONE_ROOT_MARGIN = "-72px 0px -60% 0px";
 
 const GATED_HINT = "محتوى محجوب — سجّل مجاناً لعرضه";
-
-/** Arabic-Indic / Persian digits → Western, so «45» finds «المادة ٤٥». */
-function normalizeDigits(value: string): string {
-  return value
-    .replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)))
-    .replace(/[۰-۹]/g, (d) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(d)));
-}
 
 /**
  * The floating phone TOC — «فهرس المواد» compressed into a thumb-reachable pill.
@@ -136,11 +130,14 @@ export function TocFloating({
     [entries, windowStart],
   );
 
+  // Digits are normalised on BOTH sides so «45» finds «المادة ٤٥»: the corpus
+  // labels are inconsistent about numerals, and the reader types whatever their
+  // keyboard produces.
   const filtered = useMemo(() => {
-    const needle = normalizeDigits(query.trim().toLowerCase());
+    const needle = toLatinDigits(query.trim().toLowerCase());
     if (!needle) return entries;
     return entries.filter((entry) =>
-      normalizeDigits(entry.label.toLowerCase()).includes(needle),
+      toLatinDigits(entry.label.toLowerCase()).includes(needle),
     );
   }, [entries, query]);
 

@@ -80,7 +80,7 @@ interface HubCtaWallProps {
    * Set when this list is narrowed to a SECTION (a sector or a court) rather
    * than being a page of the unfiltered wing. Swaps BOTH refusal cards for the
    * section wall: the bound being reported is no longer depth, so neither
-   * «سجّل مجاناً» nor «باقتك الحالية تتيح ٣ صفحات» describes what happened.
+   * «سجّل مجاناً» nor «باقتك الحالية تتيح 3 صفحات» describes what happened.
    *
    * It changes copy ONLY. The authed fetch below still runs and still decides —
    * a paid reader gets the real cards on exactly this path.

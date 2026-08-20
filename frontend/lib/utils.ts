@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 
 // shadcn/ui class merge utility
 export function cn(...inputs: ClassValue[]) {
@@ -32,7 +33,7 @@ export function getRelativeTimeAr(dateStr: string): string {
   if (diffDays < 2) return "أمس";
   if (diffDays < 7) return `منذ ${arabicPlural(diffDays, "يوم", "يومين", "أيام", "يوم")}`;
   if (diffDays < 30) return `منذ ${arabicPlural(diffWeeks, "أسبوع", "أسبوعين", "أسابيع", "أسبوع")}`;
-  return date.toLocaleDateString("ar-SA");
+  return date.toLocaleDateString(AR_DATE_LOCALE);
 }
 
 export function getDateGroupAr(dateStr: string): string {

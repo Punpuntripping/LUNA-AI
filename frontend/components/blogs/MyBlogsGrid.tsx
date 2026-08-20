@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchEmptyState } from "@/components/search/SearchEmptyState";
 import { SEARCH_PRIVATE_COPY } from "@/lib/search/copy";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 
 /**
  * «مدوناتي» as a full-pane card grid — the surface behind both `/blogs` (the
@@ -38,7 +39,7 @@ import { SEARCH_PRIVATE_COPY } from "@/lib/search/copy";
  * surface interpolates a query into markup.
  */
 
-const DATE_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const DATE_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   day: "numeric",
   month: "long",
   year: "numeric",

@@ -14,7 +14,7 @@ import { TOUR_UI, type TourStep } from "./tour-content";
 
 interface TourCardProps {
   step: TourStep;
-  /** 1-based, for the «٣ / ١٣» progress line. */
+  /** 1-based, for the «3 / 13» progress line. */
   stepNumber: number;
   totalSteps: number;
   /** Anchor rect to sit beside, or null when the anchor is nowhere on screen. */

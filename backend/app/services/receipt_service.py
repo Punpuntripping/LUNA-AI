@@ -58,7 +58,10 @@ STATEMENT_AR = "مقابل اشتراك في تطبيق ريحان للذكاء 
 
 # ───────────────────────────── formatting ────────────────────────────────
 
-_ARABIC_DIGITS = str.maketrans("0123456789.", "٠١٢٣٤٥٦٧٨٩٫")
+# Numerals stay WESTERN across the whole product (frontend:
+# `lib/format/numerals.ts`). A receipt is the one surface a customer keeps,
+# forwards to an accountant, and compares against a bank statement — it must
+# read in the same digits as the charge screen that produced it.
 
 _ARABIC_MONTHS = [
     "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
@@ -67,15 +70,13 @@ _ARABIC_MONTHS = [
 
 
 def _ar_amount(value: Any) -> str:
-    """``49.90`` / ``'49.90'`` → ``'٤٩٫٩٠'`` — two decimals, Arabic-Indic."""
-    return f"{float(value):.2f}".translate(_ARABIC_DIGITS)
+    """``49.90`` / ``'49.90'`` → ``'49.90'`` — two decimals, Latin digits."""
+    return f"{float(value):.2f}"
 
 
 def _ar_date(dt: datetime) -> str:
-    """``2026-08-04`` → ``'٤ أغسطس ٢٠٢٦'``."""
-    day = str(dt.day).translate(_ARABIC_DIGITS)
-    year = str(dt.year).translate(_ARABIC_DIGITS)
-    return f"{day} {_ARABIC_MONTHS[dt.month - 1]} {year}"
+    """``2026-08-04`` → ``'4 أغسطس 2026'`` — Arabic month, Latin digits."""
+    return f"{dt.day} {_ARABIC_MONTHS[dt.month - 1]} {dt.year}"
 
 
 def _receipt_no_display(receipt_no: Optional[int]) -> str:

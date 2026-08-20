@@ -21,16 +21,16 @@ import { cn } from "@/lib/utils";
  * come from the `llm_calls` ledger (45-day window, 188 real deep_search turns,
  * points = cost_usd × 100 — see shared/quota POINTS_PER_USD):
  *
- *     router     median 0.09  p90 0.18   →  «≈ ٠٫١ نقطة»
- *     writing    median 0.77  p90 1.41   →  «≈ ١ نقطة»
- *     deep_search median 3.96 p25–p75 3.19–4.61 → «٣–٥ نقاط»
+ *     router     median 0.09  p90 0.18   →  «≈ 0.1 نقطة»
+ *     writing    median 0.77  p90 1.41   →  «≈ 1 نقطة»
+ *     deep_search median 3.96 p25–p75 3.19–4.61 → «3–5 نقاط»
  *
  * The per-plan counts are those medians divided into `plans.points_session` /
  * `points_weekly` (live values: basic 10/50 · pro 15/75 · max 50/250).
  *
  * `free` is deliberately NOT in that table any more (migration 129): it has no
  * session and no weekly limit at all, just 5 points per rolling 30 days. Its
- * old row read «٥ / ٥» in the session and weekly columns, which stopped being
+ * old row read «5 / 5» in the session and weekly columns, which stopped being
  * true the moment those limits went NULL.
  * An earlier draft claimed 4–6 deep searches per session on pro; the ledger says
  * 3–4 at the 15-point cap, and the honest number shipped (owner decision
@@ -72,19 +72,19 @@ const OPERATION_ROWS: readonly OperationRow[] = [
   {
     icon: MessageCircle,
     label: "سؤال عام أو توجيه",
-    cost: "≈ ٠٫١ نقطة",
+    cost: "≈ 0.1 نقطة",
     note: "الردود المباشرة والتوجيه بين الوكلاء",
   },
   {
     icon: FileSignature,
     label: "صياغة مستند أو تعديله",
-    cost: "≈ ١ نقطة",
+    cost: "≈ 1 نقطة",
     note: "المذكرات والعقود والخطابات",
   },
   {
     icon: Search,
     label: "البحث المعمّق",
-    cost: "٣–٥ نقاط",
+    cost: "3–5 نقاط",
     note: "أثقل عملية في ريحان — عدة وكلاء على المصادر الرسمية",
     emphasis: true,
   },
@@ -117,40 +117,40 @@ interface PlanRow {
 const PLAN_ROWS: readonly PlanRow[] = [
   {
     plan: "الأساسية",
-    session: "١٠",
-    sessionRuns: "٢–٣",
-    weekly: "٥٠",
-    weeklyRuns: "١٠–١٥",
+    session: "10",
+    sessionRuns: "2–3",
+    weekly: "50",
+    weeklyRuns: "10–15",
   },
   {
     plan: "الاحترافية",
-    session: "١٥",
-    sessionRuns: "٣–٤",
-    weekly: "٧٥",
-    weeklyRuns: "١٦–٢٣",
+    session: "15",
+    sessionRuns: "3–4",
+    weekly: "75",
+    weeklyRuns: "16–23",
     highlighted: true,
   },
   {
     plan: "القصوى",
-    session: "٥٠",
-    sessionRuns: "١٠–١٦",
-    weekly: "٢٥٠",
-    weeklyRuns: "٥٤–٧٨",
+    session: "50",
+    sessionRuns: "10–16",
+    weekly: "250",
+    weeklyRuns: "54–78",
   },
 ] as const;
 
 const WINDOW_POINTS = [
   {
-    title: "الجلسة — كتلة ٥ ساعات",
+    title: "الجلسة — كتلة 5 ساعات",
     body: "تبدأ من أول رسالة ترسلها، لا من منتصف الليل. تنتهي الجلسة فتعود نقاطها كاملة دون انتظار يوم جديد.",
   },
   {
-    title: "الأسبوع — نافذة متحركة ٧ أيام",
+    title: "الأسبوع — نافذة متحركة 7 أيام",
     body: "تبدأ من أول استخدام لاشتراكك وتتحرك معه، فلا يضيع عليك جزء من الأسبوع لأن اشتراكك بدأ يوم أربعاء.",
   },
   {
-    title: "المجانية — نافذة واحدة ٣٠ يوماً",
-    body: "لا جلسة ولا أسبوع في الباقة المجانية: ٥ نقاط تتحرك على آخر ٣٠ يوماً، تكفي لتجربة بحث معمّق قبل أن تقرر.",
+    title: "المجانية — نافذة واحدة 30 يوماً",
+    body: "لا جلسة ولا أسبوع في الباقة المجانية: 5 نقاط تتحرك على آخر 30 يوماً، تكفي لتجربة بحث معمّق قبل أن تقرر.",
   },
   {
     title: "النقاط لا تُرحّل",
@@ -355,7 +355,7 @@ export function UsageLimitsView() {
               columns the table is built on. Stating its single window here is
               clearer than a row of «—». */}
           <p className="mt-3 text-center text-xs leading-relaxed text-muted-foreground">
-            الباقة المجانية خارج الجدول: نافذة واحدة بـ٥ نقاط كل ٣٠ يوماً — بحث
+            الباقة المجانية خارج الجدول: نافذة واحدة بـ5 نقاط كل 30 يوماً — بحث
             معمّق واحد تقريباً، لتجربة ريحان قبل الاشتراك.
           </p>
         </div>
@@ -425,11 +425,11 @@ export function UsageLimitsView() {
             <p className="rounded-xl border border-border bg-muted/30 p-4 text-sm leading-relaxed text-muted-foreground">
               <b className="text-foreground">حدّان مستقلان</b> — لا يمسّان
               نقاطك: <b className="text-foreground">فتح المصادر</b> من المكتبة
-              (١٠٠ للأساسية · ٢٠٠ للاحترافية · ١٠٠٠ للقصوى)، و
+              (100 للأساسية · 200 للاحترافية · 1000 للقصوى)، و
               <b className="text-foreground"> استخراج النص</b> من الملفات
-              بالصفحات (١٥ · ٤٠ · ٢٠٠ شهرياً).
+              بالصفحات (15 · 40 · 200 شهرياً).
             </p>
-            {/* The «سقف شهري احتياطي (٣٠٠ / ١٠٠٠)» line that stood here was
+            {/* The «سقف شهري احتياطي (300 / 1000)» line that stood here was
                 removed with migration 129: those numbers were set to NULL so
                 re-enabling the monthly window for the free plan would not
                 quietly start capping people who had already paid. There is no

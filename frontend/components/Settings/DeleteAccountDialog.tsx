@@ -103,7 +103,7 @@ export function DeleteAccountDialog({
             حذف الحساب
           </DialogTitle>
           <DialogDescription className="text-start leading-relaxed">
-            سيتم إلغاء تنشيط حسابك فورًا وحذفه نهائيًا بعد ٣٠ يومًا، بما في ذلك
+            سيتم إلغاء تنشيط حسابك فورًا وحذفه نهائيًا بعد 30 يومًا، بما في ذلك
             جميع القضايا والمحادثات والمستندات. يمكنك استعادة الحساب خلال هذه
             الفترة بتسجيل الدخول مجددًا.
           </DialogDescription>

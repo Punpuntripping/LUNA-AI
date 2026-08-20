@@ -22,6 +22,7 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
 import { cn } from "@/lib/utils";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import { usePaymentHistory, useRefundPayment } from "@/hooks/use-payments";
 import {
   REFUND_FEE_SAR,
@@ -34,7 +35,7 @@ import type { PaymentHistoryItem, PaymentStatus } from "@/types";
 
 const REFUND_WINDOW_MS = REFUND_WINDOW_HOURS * 60 * 60 * 1000;
 
-const DATE_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const DATE_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   year: "numeric",
   month: "long",
   day: "numeric",

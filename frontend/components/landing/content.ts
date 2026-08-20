@@ -259,7 +259,7 @@ export interface ShowcaseCitation {
 }
 
 /** Verbatim source text behind citation [1] — نظام العمل, مكافأة نهاية الخدمة
- *  (المواد ٨٤–٨٨). Exactly what the in-app «عرض المصدر» shows. */
+ *  (المواد 84–88). Exactly what the in-app «عرض المصدر» shows. */
 const SOURCE_LABOR_LAW_EOS = `# الفصل الرابع
 
 ## مكافأة نهاية الخدمة

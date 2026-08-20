@@ -12,6 +12,7 @@ import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { WorkspaceItemActionBar } from "@/components/workspace/WorkspaceItemActionBar";
 import { useDebounce } from "@/hooks/use-debounce";
 import { cn } from "@/lib/utils";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { WorkspaceFeedback } from "@/types";
 
 interface MarkdownDocEditorProps {
@@ -292,7 +293,7 @@ export function MarkdownDocEditor({
         </span>
         <span>
           آخر تحديث:{" "}
-          {new Intl.DateTimeFormat("ar-SA", {
+          {new Intl.DateTimeFormat(AR_DATE_LOCALE, {
             dateStyle: "medium",
             timeStyle: "short",
           }).format(new Date(updatedAt))}

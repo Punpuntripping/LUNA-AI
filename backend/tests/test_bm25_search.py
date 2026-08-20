@@ -293,7 +293,7 @@ def test_an_uncapped_total_is_reported_as_exact() -> None:
 
 def test_a_capped_total_is_reported_as_inexact() -> None:
     """``total_count`` counts the CANDIDATE set (``p_candidates``), so at the
-    ceiling it is a floor. A UI printing «٥٠٠ نتيجة» would be inventing it."""
+    ceiling it is a floor. A UI printing «500 نتيجة» would be inventing it."""
     fake = FakeSupabase([_hit("regulation", 1)], total=ss.DEFAULT_CANDIDATES)
     body = _client(fake, _User()).get("/api/v1/search", params={"q": "نظام"}).json()
     assert body["total"] == ss.DEFAULT_CANDIDATES

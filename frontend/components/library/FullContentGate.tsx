@@ -61,7 +61,7 @@ interface FullContentGateProps {
   gated?: boolean;
   /**
    * How many sections sit entirely behind the gate, when the page knows. Used
-   * only to make the anonymous CTA concrete («٥ أقسام إضافية بانتظارك»); the
+   * only to make the anonymous CTA concrete («5 أقسام إضافية بانتظارك»); the
    * string itself lives in `gate-copy.ts` like every other gate string.
    */
   hiddenSections?: number;

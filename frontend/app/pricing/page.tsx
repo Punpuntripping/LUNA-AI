@@ -26,8 +26,8 @@ export const metadata: Metadata = {
  *
  * This page was statically rendered — baked once, served forever — which was
  * fine while the prices were constants. With a campaign that opens and closes by
- * a one-row UPDATE, a frozen card showing ٣٩٫٩٠ against a checkout charging
- * ٤٩٫٩٠ is the worst mismatch available: it is discovered at the moment of
+ * a one-row UPDATE, a frozen card showing 39.90 against a checkout charging
+ * 49.90 is the worst mismatch available: it is discovered at the moment of
  * payment. Sixty seconds bounds that window, and the runbook still purges this
  * path explicitly when the campaign closes (percent-encoded, or the 200 lies).
  *

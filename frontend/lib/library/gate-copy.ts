@@ -7,43 +7,45 @@
 // a dead end — the official source URL is in the never-gated class and stays on
 // the page through every refusal, so a refused reader always has somewhere to go.
 //
-// Numbers are rendered with Arabic-Indic digits (ar-EG), matching the usage
-// dialog. Dates are Gregorian rendered in Arabic (`ar-SA` + `calendar: gregory`)
-// — the library period boundary is a UTC calendar/subscription instant, and a
-// Hijri rendering of it would read as a different date than the one the plan
-// pages quote.
+// Numbers are rendered with Latin digits, matching the usage dialog and the
+// rest of the product (`lib/format/numerals`). Dates are Gregorian rendered in
+// Arabic (Arabic month names, Latin digits, `calendar: gregory`) — the library
+// period boundary is a UTC calendar/subscription instant, and a Hijri rendering
+// of it would read as a different date than the one the plan pages quote.
 
 import type { LibraryRefusalReason } from "@/lib/library/full-content";
+import {
+  AR_DATE_LOCALE,
+  AR_NUM_LOCALE,
+  toLatinDigits,
+} from "@/lib/format/numerals";
 
 // ------------------------------------------------------------------
 // Formatters
 // ------------------------------------------------------------------
 
-/** Arabic-Indic digits, no grouping surprises. */
+/** Latin digits, no grouping surprises. */
 export function arNumber(value: number): string {
-  return Math.round(value).toLocaleString("ar-EG");
+  return Math.round(value).toLocaleString(AR_NUM_LOCALE);
 }
 
-/** ASCII 0-9 → ٠-٩, by code point. Everything else is passed through. */
-const ARABIC_INDIC_DIGITS = "٠١٢٣٤٥٦٧٨٩";
-
 /**
- * Arabic-Indic digits for a value that is NOT a number — an article "number"
+ * Latin digits for a value that is NOT a number — an article "number"
  * (§12a C4). `articles_v2.article_number` is TEXT: «81», but also «1-1» and
  * «81 مكرر». `arNumber` would `Math.round` those into `NaN`, so anything
  * carrying a compound article number must come through here instead.
  *
- * Digits are mapped one by one and every other character — the hyphen in
- * «1-1», the word in «81 مكرر», any Arabic-Indic digits the source already
- * used — is preserved verbatim. No rounding, no grouping separators (a
- * grouped «1٬234» would misread as a different article).
+ * The corpus is inconsistent about numerals, so any Arabic-Indic digit the
+ * source used is normalised to ASCII. Every other character — the hyphen in
+ * «1-1», the word in «81 مكرر» — is preserved verbatim. No rounding, no
+ * grouping separators (a grouped «1,234» would misread as a different article).
  */
 export function arDigits(value: string): string {
-  return value.replace(/[0-9]/g, (d) => ARABIC_INDIC_DIGITS[Number(d)]);
+  return toLatinDigits(value);
 }
 
 /**
- * An ISO instant → «١ أغسطس ٢٠٢٦», or "" when absent/unparsable. Callers must
+ * An ISO instant → «1 أغسطس 2026», or "" when absent/unparsable. Callers must
  * treat "" as "no date to show" and fall back to the date-free copy variant.
  */
 export function arResetDate(iso: string | null | undefined): string {
@@ -51,7 +53,7 @@ export function arResetDate(iso: string | null | undefined): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return "";
   try {
-    return new Intl.DateTimeFormat("ar-SA", {
+    return new Intl.DateTimeFormat(AR_DATE_LOCALE, {
       day: "numeric",
       month: "long",
       year: "numeric",
@@ -62,7 +64,7 @@ export function arResetDate(iso: string | null | undefined): string {
   }
 }
 
-/** «قسم إضافي واحد» / «قسمان إضافيان» / «٥ أقسام إضافية» — gated-section count. */
+/** «قسم إضافي واحد» / «قسمان إضافيان» / «5 أقسام إضافية» — gated-section count. */
 export function arSections(count: number): string {
   if (count === 1) return "قسم إضافي واحد";
   if (count === 2) return "قسمان إضافيان";
@@ -70,7 +72,7 @@ export function arSections(count: number): string {
   return `${arNumber(count)} قسماً إضافياً`;
 }
 
-/** «صفحة واحدة» / «صفحتان» / «٣ صفحات» — the hub depth cap, read naturally. */
+/** «صفحة واحدة» / «صفحتان» / «3 صفحات» — the hub depth cap, read naturally. */
 export function arPages(count: number): string {
   if (count === 1) return "صفحة واحدة";
   if (count === 2) return "صفحتان";
@@ -309,7 +311,7 @@ export const hubWallCopy = {
    * Signed-in but past the free cap — an upgrade surface, not a signup one.
    * `maxPage` >= 999 is the wire's "unbounded" sentinel (D16.3 trap 8); a caller
    * with an unbounded cap can never actually reach this wall, so the count is
-   * dropped rather than rendered as «٩٬٩٩٩ صفحة».
+   * dropped rather than rendered as «9,999 صفحة».
    */
   upgrade: (maxPage: number) => ({
     title: "تصفّح بلا حدود مع باقة مدفوعة",

@@ -8,7 +8,6 @@ import type { DeepSearchSummary } from "@/stores/chat-store";
 import {
   formatCountAr,
   formatElapsedAr,
-  toArabicDigits,
   type ArabicPlural,
 } from "@/components/chat/DeepSearchProgress";
 
@@ -18,7 +17,7 @@ import {
 
 const LABEL = "بحث معمّق";
 
-/** Sources counted in the chip ("٢٤ مصدرًا"). */
+/** Sources counted in the chip ("24 مصدرًا"). */
 const SOURCE_FORMS: ArabicPlural = {
   one: "مصدر واحد",
   two: "مصدران",
@@ -30,7 +29,7 @@ const EXPAND_LABEL = "عرض خطوات البحث المعمّق";
 const COLLAPSE_LABEL = "إخفاء خطوات البحث المعمّق";
 const EMPTY_LOG = "لا توجد تفاصيل إضافية";
 
-/** Separator between the chip's parts: «بحث معمّق · ٢٤ مصدرًا · ١:٥٠». */
+/** Separator between the chip's parts: «بحث معمّق · 24 مصدرًا · 1:50». */
 const SEP = "·";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,7 +112,7 @@ export const DeepSearchSummaryChip = memo(function DeepSearchSummaryChip({
                     className="flex gap-1.5 text-xs leading-4 text-muted-foreground"
                   >
                     <span className="shrink-0 tabular-nums text-muted-foreground/60">
-                      {toArabicDigits(i + 1)}.
+                      {i + 1}.
                     </span>
                     <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
                       {line}

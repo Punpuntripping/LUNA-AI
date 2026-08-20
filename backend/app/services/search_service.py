@@ -123,7 +123,7 @@ FACET_KEYS: dict[str, frozenset[str]] = {
 # three overlap heavily. ``public_library`` imports these rather than keeping its
 # own copy, so the floor and the message have ONE definition.
 MIN_QUERY_CHARS = 3
-MSG_SEARCH_TOO_SHORT = "اكتب ٣ أحرف على الأقل للبحث"
+MSG_SEARCH_TOO_SHORT = "اكتب 3 أحرف على الأقل للبحث"
 MSG_SEARCH_FAILED = "حدث خطأ أثناء البحث"
 
 # Queries longer than this are TRUNCATED, not refused. Every extra word is

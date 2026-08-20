@@ -192,8 +192,8 @@ def recurring_disclosure_ar(plan: Optional[dict]) -> Optional[str]:
     ⚠ **THE AMOUNT AND CADENCE ARE DELIBERATELY NOT IN THIS STRING** (owner,
     2026-08-12 — the v1 wording was judged too heavy at the point of sale). They
     are still disclosed, but by the PAGE rather than by the hashed artefact:
-    `/pay` renders «المبلغ المستحق ٨٩٫٩٠» in the order summary and «فترة الاشتراك
-    ٣٠ يوماً» under the plan name, both directly above this box. If that layout
+    `/pay` renders «المبلغ المستحق 89.90» in the order summary and «فترة الاشتراك
+    30 يوماً» under the plan name, both directly above this box. If that layout
     ever changes, this string becomes the only disclosure left and must take the
     numbers back — a recurring consent that never states a price is not worth
     much in a dispute.

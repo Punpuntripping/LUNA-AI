@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Eye } from "lucide-react";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
 import { SERVER_API_BASE, serverFetchInit } from "@/lib/library/api";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { BlogCardPublic, PublicBlogsResponse } from "@/types";
 
 // This is a PUBLIC, anon-accessible route — the SEO-indexable مدونة gallery.
@@ -32,9 +33,9 @@ const SUBTYPE_LABEL: Record<string, string> = {
   legal_synthesis: "تحليل قانوني",
 };
 
-// Arabic long-form Gregorian date (e.g. «١٢ يونيو ٢٠٢٦»). Module-level so the
+// Arabic long-form Gregorian date (e.g. «12 يونيو 2026»). Module-level so the
 // Intl formatter is built once, not per card render.
-const DATE_FORMATTER = new Intl.DateTimeFormat("ar-EG", {
+const DATE_FORMATTER = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   day: "numeric",
   month: "long",
   year: "numeric",

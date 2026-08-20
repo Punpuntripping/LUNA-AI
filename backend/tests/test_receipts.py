@@ -63,8 +63,8 @@ def test_payment_receipt_contents():
     assert "RYH-000007" in subject
     assert "إيصال دفع" in html
     assert "مستخدم تجريبي" in html          # customer name
-    assert "٤٩٫٩٠" in html                   # amount, Arabic-Indic, 2dp
-    assert "٤ أغسطس ٢٠٢٦" in html            # receipt date
+    assert "49.90" in html                   # amount, Latin digits, 2dp
+    assert "4 أغسطس 2026" in html            # receipt date
     assert STATEMENT_AR in html              # the بيان line
     # Owner (2026-08-04): NO refund/fee copy in the purchase receipt — the
     # policy surfaces only at the refund action inside the app.
@@ -80,7 +80,7 @@ def test_refund_receipt_contents():
         refunded_at=_DT,
     )
     assert "إيصال استرداد" in subject
-    assert "٤٧٫٩٠" in html                   # refunded amount, not the charge
+    assert "47.90" in html                   # refunded amount, not the charge
     assert "أُلغي الاشتراك" in html          # revocation is stated
 
 

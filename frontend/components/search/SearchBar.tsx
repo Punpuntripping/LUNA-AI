@@ -39,7 +39,7 @@ export interface SearchBarProps {
   /** Swap the clear button for a spinner while a query is in flight. */
   isPending?: boolean;
   /**
-   * Characters required before the «اكتب ٣ أحرف» hint stops showing. Defaults to
+   * Characters required before the «اكتب 3 أحرف» hint stops showing. Defaults to
    * `SEARCH_MIN_LENGTH` (3) — the floor the BM25 library surfaces need, because
    * `search_service.normalize_query` 400s below it.
    *

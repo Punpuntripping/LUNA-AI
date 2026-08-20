@@ -185,9 +185,9 @@ def _arabic_message(meter: Meter, period: Period, limit: float) -> str:
     if meter == "library":
         return LIBRARY_QUOTA_EXHAUSTED_AR
     if period == "session":
-        return "تم تجاوز حدّ الاستخدام لكل ٥ ساعات."
+        return "تم تجاوز حدّ الاستخدام لكل 5 ساعات."
     if period == "weekly":
-        return "تم تجاوز حدّ الاستخدام الأسبوعي (٧ أيام)."
+        return "تم تجاوز حدّ الاستخدام الأسبوعي (7 أيام)."
     if period == "monthly":
         return _AR_MONTHLY.get(meter, _AR_MONTHLY["ord"])
     return f"تم تجاوز حدّ {_AR_METER.get(meter, meter)}."

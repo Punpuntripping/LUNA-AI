@@ -27,7 +27,7 @@ const TITLE = "بحث معمّق";
  */
 const NOTE_TITLE = "شكرًا لتجربتك ريحان";
 const NOTE_BODY =
-  "البحث المعمّق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من ٣ إلى ٥ دقائق. " +
+  "البحث المعمّق مصمَّم ليمرّ على كل المصادر ذات الصلة بسؤالك، وقد يستغرق من 3 إلى 5 دقائق. " +
   "يمكنك تركه يعمل في الخلفية والانشغال بشيء آخر — ستجد الإجابة بانتظارك هنا.";
 
 /** The four stages, in pipeline order. `done` is not a step — it fills all four. */
@@ -57,7 +57,7 @@ export interface ArabicPlural {
   many: string;
 }
 
-/** Retrieved results shown under the active step ("١٢ نتيجة"). */
+/** Retrieved results shown under the active step ("12 نتيجة"). */
 const SOURCE_FORMS: ArabicPlural = {
   one: "نتيجة واحدة",
   two: "نتيجتان",
@@ -65,7 +65,7 @@ const SOURCE_FORMS: ArabicPlural = {
   many: "نتيجة",
 };
 
-/** Sub-queries shown under the active step ("٦ استعلامات"). */
+/** Sub-queries shown under the active step ("6 استعلامات"). */
 const QUERY_FORMS: ArabicPlural = {
   one: "استعلام واحد",
   two: "استعلامان",
@@ -75,7 +75,7 @@ const QUERY_FORMS: ArabicPlural = {
 
 /**
  * Live query counter shown during `searching` before the authoritative
- * phase-end `queries` count arrives: «الاستعلام ٣». Driven by `topicsSeen`
+ * phase-end `queries` count arrives: «الاستعلام 3». Driven by `topicsSeen`
  * (one bump per streamed "بحث في …" line).
  */
 const QUERY_COUNTER_PREFIX = "الاستعلام ";
@@ -206,31 +206,26 @@ function formatTopic(line: string): string {
 // Formatters (shared with DeepSearchSummaryChip)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const AR_DIGITS = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"] as const;
-
 /**
- * Latin → Arabic-Indic digits. Deterministic on purpose (no `toLocaleString`):
- * the tracker renders during SSR-hydrated client updates and must never
- * disagree with itself across environments.
+ * Elapsed wall-clock as m:ss in Latin digits ("1:50").
+ *
+ * Built by hand rather than through `toLocaleString`: the tracker renders
+ * during SSR-hydrated client updates and must never disagree with itself
+ * across environments.
  */
-export function toArabicDigits(value: string | number): string {
-  return String(value).replace(/\d/g, (d) => AR_DIGITS[Number(d)]);
-}
-
-/** Elapsed wall-clock as m:ss in Arabic-Indic digits ("١:٥٠"). */
 export function formatElapsedAr(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return toArabicDigits(`${minutes}:${String(seconds).padStart(2, "0")}`);
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-/** Count + Arabic plural agreement ("نتيجة واحدة" / "٦ نتائج" / "١٢ نتيجة"). */
+/** Count + Arabic plural agreement ("نتيجة واحدة" / "6 نتائج" / "12 نتيجة"). */
 export function formatCountAr(n: number, forms: ArabicPlural): string {
   if (n === 1) return forms.one;
   if (n === 2) return forms.two;
-  if (n >= 3 && n <= 10) return `${toArabicDigits(n)} ${forms.few}`;
-  return `${toArabicDigits(n)} ${forms.many}`;
+  if (n >= 3 && n <= 10) return `${n} ${forms.few}`;
+  return `${n} ${forms.many}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,7 +488,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
 
   // Meta line under the detail: prefer the authoritative phase-end counts;
   // before the `queries` count arrives, fall back to the live revealed-topic
-  // counter («الاستعلام ٣») so the search stages show progress from the first
+  // counter («الاستعلام 3») so the search stages show progress from the first
   // sub-query and the number advances with the paced reveal.
   const metaParts: string[] = [];
   if (progress.sources > 0) {
@@ -502,7 +497,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   if (progress.queries > 0) {
     metaParts.push(formatCountAr(progress.queries, QUERY_FORMS));
   } else if (showsTopics && revealedCount > 0) {
-    metaParts.push(`${QUERY_COUNTER_PREFIX}${toArabicDigits(revealedCount)}`);
+    metaParts.push(`${QUERY_COUNTER_PREFIX}${revealedCount}`);
   }
   const metaLine = metaParts.length > 0 ? metaParts.join(" · ") : null;
 

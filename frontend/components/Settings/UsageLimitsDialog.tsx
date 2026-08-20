@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { useUsageLimits } from "@/hooks/use-usage";
 import { usageBarCopy } from "@/lib/library/gate-copy";
+import { AR_NUM_LOCALE } from "@/lib/format/numerals";
 import type { UsageBar } from "@/types";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -41,11 +42,11 @@ function formatReset(resetsAt: string | null, now: number): string {
 /** Points may be fractional (1$ = 100 pts) — show one decimal, trimmed. */
 function formatAmount(value: number, fractionDigits: number): string {
   if (fractionDigits > 0) {
-    return Number(value.toFixed(fractionDigits)).toLocaleString("ar-EG", {
+    return Number(value.toFixed(fractionDigits)).toLocaleString(AR_NUM_LOCALE, {
       maximumFractionDigits: fractionDigits,
     });
   }
-  return Math.round(value).toLocaleString("ar-EG");
+  return Math.round(value).toLocaleString(AR_NUM_LOCALE);
 }
 
 interface BarRowProps {
@@ -224,14 +225,14 @@ export function UsageLimitsDialog({
             نقاط الاستخدام
           </h3>
           <BarRow
-            label="الجلسة (٥ ساعات)"
+            label="الجلسة (5 ساعات)"
             unit="نقطة"
             bar={data.points.session}
             now={now}
             fractionDigits={1}
           />
           <BarRow
-            label="الأسبوعي (٧ أيام)"
+            label="الأسبوعي (7 أيام)"
             unit="نقطة"
             bar={data.points.weekly}
             now={now}
@@ -244,7 +245,7 @@ export function UsageLimitsDialog({
               are the mirror image: points_monthly is NULL, so this row reads
               «بلا حد» and the two above carry the real numbers. */}
           <BarRow
-            label="الشهري (٣٠ يوماً)"
+            label="الشهري (30 يوماً)"
             unit="نقطة"
             bar={data.points.monthly}
             now={now}
@@ -295,8 +296,8 @@ export function UsageLimitsDialog({
         <div className="flex items-start gap-2 rounded-md border border-muted-foreground/20 bg-muted/40 p-3 text-xs text-muted-foreground">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="leading-relaxed">
-            تبدأ الجلسة عند إرسال أول رسالة وتستمر ٥ ساعات ثم تتجدّد تلقائيًا.
-            ويُحتسب الحد الأسبوعي على استهلاكك خلال آخر ٧ أيام.
+            تبدأ الجلسة عند إرسال أول رسالة وتستمر 5 ساعات ثم تتجدّد تلقائيًا.
+            ويُحتسب الحد الأسبوعي على استهلاكك خلال آخر 7 أيام.
           </p>
         </div>
       </div>

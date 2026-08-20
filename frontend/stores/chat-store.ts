@@ -109,7 +109,7 @@ export interface DeepSearchProgressState {
    * Count of streamed sub-query TOPIC lines (``"بحث في …"``) seen so far this
    * run. Bumped by ``appendDeepSearchLog`` as topics stream in during the
    * ``searching`` stage, so the tracker can show a live query counter
-   * («الاستعلام ٣») before the authoritative phase-end ``queries`` count lands.
+   * («الاستعلام 3») before the authoritative phase-end ``queries`` count lands.
    */
   topicsSeen: number;
   /** Client clock at the first progress event — drives the elapsed timer. */

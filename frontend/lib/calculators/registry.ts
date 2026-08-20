@@ -14,6 +14,7 @@
 // pages themselves always render «نتيجة استرشادية — راجع مختصاً».
 
 import type { FaqItem } from "@/types/library";
+import { AR_NUM_LOCALE } from "@/lib/format/numerals";
 
 // ------------------------------------------------------------------
 // Schema + result types
@@ -84,14 +85,14 @@ export interface CalculatorDef {
 }
 
 // ------------------------------------------------------------------
-// Formatting helpers (Arabic-Indic, matching the app-wide RTL numeral
-// convention used by UsageLimitsDialog / TrustLine).
+// Formatting helpers (Latin digits, matching the app-wide numeral convention
+// used by UsageLimitsDialog / TrustLine — see `lib/format/numerals`).
 // ------------------------------------------------------------------
 
-/** Format a number with grouping + up to 2 fraction digits, Arabic-Indic. */
+/** Format a number with grouping + up to 2 fraction digits, Latin digits. */
 function fmt(n: number): string {
   const safe = Number.isFinite(n) ? n : 0;
-  return safe.toLocaleString("ar-EG", { maximumFractionDigits: 2 });
+  return safe.toLocaleString(AR_NUM_LOCALE, { maximumFractionDigits: 2 });
 }
 
 /** Format a monetary amount as «{n} ريال». */

@@ -2,17 +2,18 @@ import Link from "next/link";
 import { Clock, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LEGAL_ROUTES } from "@/lib/legal";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { TrustLineProps } from "@/types/library";
 
 /**
- * Format an ISO date as an Arabic Gregorian long date («٢٢ يوليو ٢٠٢٦»),
- * matching the app-wide `toLocaleDateString("ar-SA")` convention. Falls back to
- * the raw string on an unparseable input so we never render «Invalid Date».
+ * Format an ISO date as an Arabic Gregorian long date («22 يوليو 2026»),
+ * matching the app-wide `AR_DATE_LOCALE` convention. Falls back to the raw
+ * string on an unparseable input so we never render «Invalid Date».
  */
 function formatArabicDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return new Intl.DateTimeFormat("ar-SA", {
+  return new Intl.DateTimeFormat(AR_DATE_LOCALE, {
     year: "numeric",
     month: "long",
     day: "numeric",

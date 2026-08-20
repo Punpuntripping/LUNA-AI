@@ -270,7 +270,7 @@ export const TOUR_UI = {
   skip: "تخطّي الجولة",
   next: "التالي",
   finish: "تمام، فهمت",
-  /** Rendered as «٣ / ٥» style progress — Western digits, tabular. */
+  /** Rendered as «3 / 5» style progress — Western digits, tabular. */
   progress: (current: number, total: number) => `${current} / ${total}`,
   /**
    * Shown instead of a spotlight when the step's anchor is nowhere on screen

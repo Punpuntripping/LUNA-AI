@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 
-// Gregorian Arabic date («١٢ أغسطس ٢٠٢٦»), matching the BlogArticleView byline
+// Gregorian Arabic date («12 أغسطس 2026»), matching the BlogArticleView byline
 // convention. No shared absolute-date helper exists in frontend/lib.
-const PURGE_DATE_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const PURGE_DATE_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   day: "numeric",
   month: "long",
   year: "numeric",

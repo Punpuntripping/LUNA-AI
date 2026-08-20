@@ -57,7 +57,7 @@ class SearchResponse(BaseModel):
     scoring, and ``total_count`` is the count over THAT set. So ``total`` is exact
     only when fewer than ``p_candidates`` documents matched — which
     ``total_is_exact`` reports honestly rather than dressing a ceiling up as a
-    total. A UI that prints «٥٠٠ نتيجة» for a common Arabic term would be lying.
+    total. A UI that prints «500 نتيجة» for a common Arabic term would be lying.
 
     ``corpora`` echoes the wings actually searched (after whitelisting), so a
     caller that asked for something unknown can see it was dropped.

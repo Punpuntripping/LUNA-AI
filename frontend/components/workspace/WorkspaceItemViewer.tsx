@@ -13,6 +13,7 @@ import { ReferencePanel } from "@/components/workspace/ReferencePanel";
 import { ShareArtifactDialog } from "@/components/workspace/ShareArtifactDialog";
 import { SaveAsBlogDialog } from "@/components/workspace/SaveAsBlogDialog";
 import { useWorkspaceItemReferences } from "@/hooks/use-workspace-item-references";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { WorkspaceItem } from "@/types";
 
 const USER_EDITABLE_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<
@@ -232,7 +233,7 @@ export function WorkspaceItemViewer({ itemId }: WorkspaceItemViewerProps) {
       <div className="border-t px-4 py-2 text-xs text-muted-foreground">
         <span>
           آخر تحديث:{" "}
-          {new Intl.DateTimeFormat("ar-SA", {
+          {new Intl.DateTimeFormat(AR_DATE_LOCALE, {
             dateStyle: "medium",
             timeStyle: "short",
           }).format(new Date(item.updated_at))}

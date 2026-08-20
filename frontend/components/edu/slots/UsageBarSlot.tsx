@@ -1,6 +1,7 @@
 "use client";
 
 import { useUsageLimits } from "@/hooks/use-usage";
+import { AR_NUM_LOCALE } from "@/lib/format/numerals";
 import type { UsageBar, UsageReport } from "@/types";
 
 /**
@@ -40,7 +41,7 @@ function bindingBar(report: UsageReport): { label: string; bar: UsageBar } | nul
     candidate === report.points.monthly
       ? "نقاطك هذا الشهر"
       : candidate === report.points.session
-      ? "نقاط الجلسة (٥ ساعات)"
+      ? "نقاط الجلسة (5 ساعات)"
       : "نقاطك هذا الأسبوع";
 
   return { label, bar: candidate };
@@ -48,7 +49,7 @@ function bindingBar(report: UsageReport): { label: string; bar: UsageBar } | nul
 
 /** One decimal, trimmed — points are fractional (1$ = 100 نقطة). */
 function formatPoints(value: number): string {
-  return Number(value.toFixed(1)).toLocaleString("ar-EG", {
+  return Number(value.toFixed(1)).toLocaleString(AR_NUM_LOCALE, {
     maximumFractionDigits: 1,
   });
 }

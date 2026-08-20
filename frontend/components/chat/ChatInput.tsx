@@ -14,6 +14,7 @@ import { Send, Square, Sparkles, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { AR_NUM_LOCALE } from "@/lib/format/numerals";
 import { useChatStore } from "@/stores/chat-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import {
@@ -304,7 +305,9 @@ export function ChatInput({
       : trimmed;
 
     if (outgoing.length > MAX_CHARS) {
-      setValidationError(`الحد الأقصى ${MAX_CHARS.toLocaleString("ar-SA")} حرف`);
+      setValidationError(
+        `الحد الأقصى ${MAX_CHARS.toLocaleString(AR_NUM_LOCALE)} حرف`,
+      );
       return;
     }
 

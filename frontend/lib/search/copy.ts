@@ -40,7 +40,7 @@ export type SearchSurface = "regulations" | "judgments" | "circulars";
  * refusal is turned into the inline hint below instead of a round trip.
  *
  * ⚠ THE NUMBER AND `minLengthHint` MUST AGREE. They live one line apart for
- * exactly that reason: the hint spells the digit out in Arabic-Indic («٣»), so
+ * exactly that reason: the hint spells the digit out in Arabic-Indic («3»), so
  * a change here that skips the sentence produces a box that lies about itself.
  */
 export const SEARCH_MIN_LENGTH = 3;
@@ -55,7 +55,7 @@ export const SEARCH_DEBOUNCE_MS = 250;
 
 export const SEARCH_COPY = {
   /** Under the box while the typed value is 1–2 characters (see the floor). */
-  minLengthHint: "اكتب ٣ أحرف على الأقل للبحث",
+  minLengthHint: "اكتب 3 أحرف على الأقل للبحث",
   /** The clear («×») button's accessible name. */
   clear: "مسح البحث",
 
@@ -137,7 +137,7 @@ export const SEARCH_LIBRARY_COPY = {
  *
  * `bm25_search` is two-stage: it cuts to `p_candidates` (500) by `ts_rank_cd`
  * before scoring, so `total` counts THAT set. When the cut bound the answer,
- * `total` is a ceiling and printing «٥٠٠ نتيجة» would be a lie — «أفضل ٥٠٠
+ * `total` is a ceiling and printing «500 نتيجة» would be a lie — «أفضل 500
  * نتيجة» is the same number told honestly. The backend refuses to dress the
  * ceiling up as a total (`SearchResponse`'s own docstring says so); this is the
  * frontend keeping that bargain.

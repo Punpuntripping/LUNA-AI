@@ -1,3 +1,32 @@
 {
-  "extends": "next/core-web-vitals"
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "Literal[value=/[\\u0660-\\u0669\\u06F0-\\u06F9]/]",
+        "message": "Arabic-Indic digits (٠-٩) are never rendered by the app — write Latin digits and format through AR_NUM_LOCALE / AR_DATE_LOCALE from @/lib/format/numerals. A parser that must ACCEPT Arabic-Indic input is the exception: disable this rule on that line with a comment saying why."
+      },
+      {
+        "selector": "TemplateElement[value.raw=/[\\u0660-\\u0669\\u06F0-\\u06F9]/]",
+        "message": "Arabic-Indic digits (٠-٩) are never rendered by the app — write Latin digits and format through AR_NUM_LOCALE / AR_DATE_LOCALE from @/lib/format/numerals."
+      },
+      {
+        "selector": "JSXText[value=/[\\u0660-\\u0669\\u06F0-\\u06F9]/]",
+        "message": "Arabic-Indic digits (٠-٩) are never rendered by the app — write Latin digits."
+      },
+      {
+        "selector": "CallExpression[callee.property.name=/^toLocale(String|DateString|TimeString)$/] > Literal[value=/^ar([-_]|$)/]",
+        "message": "A bare \"ar\" / \"ar-EG\" / \"ar-SA\" locale resolves to the `arab` numbering system and emits Arabic-Indic digits. Pass AR_NUM_LOCALE or AR_DATE_LOCALE from @/lib/format/numerals instead."
+      },
+      {
+        "selector": "NewExpression[callee.object.name='Intl'] > Literal[value=/^ar([-_]|$)/]",
+        "message": "A bare \"ar\" / \"ar-EG\" / \"ar-SA\" locale resolves to the `arab` numbering system and emits Arabic-Indic digits. Pass AR_NUM_LOCALE or AR_DATE_LOCALE from @/lib/format/numerals instead."
+      },
+      {
+        "selector": "CallExpression[callee.object.name='Intl'] > Literal[value=/^ar([-_]|$)/]",
+        "message": "A bare \"ar\" / \"ar-EG\" / \"ar-SA\" locale resolves to the `arab` numbering system and emits Arabic-Indic digits. Pass AR_NUM_LOCALE or AR_DATE_LOCALE from @/lib/format/numerals instead."
+      }
+    ]
+  }
 }

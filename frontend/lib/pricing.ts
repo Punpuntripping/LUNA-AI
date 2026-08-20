@@ -1,4 +1,5 @@
 import type { EarlyAdopterCampaign } from "@/types";
+import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
 
 /**
  * Pricing catalog for the public /pricing page. This is marketing copy — the
@@ -37,10 +38,10 @@ import type { EarlyAdopterCampaign } from "@/types";
  * secondary line. The monthly backstop is enforced but intentionally not shown
  * (and `basic` has no monthly cap at all). There is no internet-search feature.
  *
- * Numerals are written in Arabic-Indic to match the rest of the RTL UI, with
- * the Arabic decimal separator ٫ (U+066B) — the same shape `formatSar` produces
- * from the `ar-EG` locale, so a hard-coded card price and a server-computed
- * charge on /pay read identically.
+ * Numerals are written in Western (Latin) digits with a `.` decimal separator,
+ * matching the rest of the product (`lib/format/numerals`) — the same shape
+ * `formatSar` produces, so a hard-coded card price and a server-computed charge
+ * on /pay read identically.
  *
  * ── المشتركون الأوائل (.claude/plans/early_adopters.md) ──────────────────────
  *
@@ -68,7 +69,7 @@ import type { EarlyAdopterCampaign } from "@/types";
  * ⚠ THE PROMO CHANGES THE PRICE, NOT THE BILLING MODEL. `promoBillingNote`
  * exists so pro/max can state the step-up honestly, and it still says NOTHING
  * about renewal for the reasons in the block above. `basic` deliberately has no
- * `promoBillingNote`: «بدون تجديد تلقائي · فترة الاشتراك ٧ أيام فقط» is true
+ * `promoBillingNote`: «بدون تجديد تلقائي · فترة الاشتراك 7 أيام فقط» is true
  * during the campaign and after it, and must never be copied onto pro/max.
  */
 export interface PricingPlan {
@@ -76,7 +77,7 @@ export interface PricingPlan {
   id: "basic" | "pro" | "max";
   nameAr: string;
   tagline: string;
-  /** Price in SAR, Arabic-Indic numerals, with the ٫ decimal separator. */
+  /** Price in SAR, Latin digits, with the `.` decimal separator. */
   price: string;
   /**
    * The المشتركون الأوائل price, same numeral convention — the catalog's mirror
@@ -125,47 +126,47 @@ export const PRICING_PLANS: PricingPlan[] = [
     id: "basic",
     nameAr: "الأساسية",
     tagline: "للبدء والاستخدام الخفيف",
-    price: "٤٩٫٩٠",
-    promoPrice: "٣٩٫٩٠",
+    price: "49.90",
+    promoPrice: "39.90",
     period: "أسبوعياً",
-    billingNote: "بدون تجديد تلقائي · فترة الاشتراك ٧ أيام فقط",
+    billingNote: "بدون تجديد تلقائي · فترة الاشتراك 7 أيام فقط",
     features: [
-      "٥٠ نقطة استخدام طوال الاشتراك (٧ أيام)",
-      "١٠ نقاط لكل جلسة (٥ ساعات)",
-      "١٥ صفحة استخراج نص",
+      "50 نقطة استخدام طوال الاشتراك (7 أيام)",
+      "10 نقاط لكل جلسة (5 ساعات)",
+      "15 صفحة استخراج نص",
     ],
   },
   {
     id: "pro",
     nameAr: "الاحترافية",
     tagline: "الأنسب للممارسة اليومية",
-    price: "٨٩٫٩٠",
-    promoPrice: "٤٩٫٩٠",
+    price: "89.90",
+    promoPrice: "49.90",
     period: "شهرياً",
-    billingNote: "فترة الاشتراك ٣٠ يوماً",
+    billingNote: "فترة الاشتراك 30 يوماً",
     promoBillingNote:
-      "فترة الاشتراك ٣٠ يوماً · سعر المشتركين الأوائل لأول ٩٠ يوماً، ثم يعود إلى السعر المعتاد",
+      "فترة الاشتراك 30 يوماً · سعر المشتركين الأوائل لأول 90 يوماً، ثم يعود إلى السعر المعتاد",
     highlighted: true,
     features: [
-      "٧٥ نقطة استخدام أسبوعياً",
-      "١٥ نقطة لكل جلسة (٥ ساعات)",
-      "٤٠ صفحة استخراج نص شهرياً",
+      "75 نقطة استخدام أسبوعياً",
+      "15 نقطة لكل جلسة (5 ساعات)",
+      "40 صفحة استخراج نص شهرياً",
     ],
   },
   {
     id: "max",
     nameAr: "القصوى",
     tagline: "أقصى سعة للقضايا المكثّفة",
-    price: "١٨٩٫٩٠",
-    promoPrice: "٩٩٫٩٠",
+    price: "189.90",
+    promoPrice: "99.90",
     period: "شهرياً",
-    billingNote: "فترة الاشتراك ٣٠ يوماً",
+    billingNote: "فترة الاشتراك 30 يوماً",
     promoBillingNote:
-      "فترة الاشتراك ٣٠ يوماً · سعر المشتركين الأوائل لأول ٩٠ يوماً، ثم يعود إلى السعر المعتاد",
+      "فترة الاشتراك 30 يوماً · سعر المشتركين الأوائل لأول 90 يوماً، ثم يعود إلى السعر المعتاد",
     features: [
-      "٢٥٠ نقطة استخدام أسبوعياً",
-      "٥٠ نقطة لكل جلسة (٥ ساعات)",
-      "٢٠٠ صفحة استخراج نص شهرياً",
+      "250 نقطة استخدام أسبوعياً",
+      "50 نقطة لكل جلسة (5 ساعات)",
+      "200 صفحة استخراج نص شهرياً",
     ],
   },
 ];
@@ -253,18 +254,22 @@ export function pricingPlansAbove(
  * the list price — a "discount" above list must never reorder the ladder.
  */
 function effectivePriceNumber(plan: PricingPlan, campaignOpen: boolean): number {
-  const list = arabicPriceToNumber(plan.price);
+  const list = priceToNumber(plan.price);
   if (!campaignOpen || !plan.promoPrice) return list;
-  const promo = arabicPriceToNumber(plan.promoPrice);
+  const promo = priceToNumber(plan.promoPrice);
   return Number.isFinite(promo) && promo > 0 && promo < list ? promo : list;
 }
 
-/** «٤٩٫٩٠» → 49.9. Arabic-Indic digits + the ٫ separator back to a JS number. */
-function arabicPriceToNumber(price: string): number {
-  const latin = price.replace(/[٠-٩]/g, (d) =>
-    String("٠١٢٣٤٥٦٧٨٩".indexOf(d)),
-  );
-  return Number(latin.replace("٫", "."));
+/**
+ * «49.90» → 49.9.
+ *
+ * The catalog strings above are Latin now, but this stays tolerant of the old
+ * Arabic-Indic shape (digits AND the ٫ separator): the same helper parses
+ * `promoPriceFor()` output, and a stray legacy string must rank correctly
+ * rather than collapse to `NaN` and silently reorder the upgrade ladder.
+ */
+function priceToNumber(price: string): number {
+  return Number(toLatinDigits(price).replace("٫", "."));
 }
 
 // -----------------------------------------------
@@ -275,7 +280,7 @@ function arabicPriceToNumber(price: string): number {
 /**
  * The campaign's name, and the ONLY scarcity signal that may ever appear.
  *
- * ⚠ Do not add «بقي N مقعداً», «١٠٠ مقعد», or a closing date next to these. The
+ * ⚠ Do not add «بقي N مقعداً», «100 مقعد», or a closing date next to these. The
  * remaining count is not disclosed anywhere — not on a page, not in the API, not
  * in an error message (plan §1.10). After the campaign closes a visitor simply
  * sees the list price, with no explanation that anything ended.
@@ -396,8 +401,8 @@ export async function fetchEarlyAdopterCampaign(): Promise<EarlyAdopterCampaign>
  *
  * Reads the campaign endpoint's amount — the number `effective_plan_price()`
  * will actually charge — and formats it through `formatSar`, so a wire value of
- * "49.90" renders as «٤٩٫٩٠» and cannot land on a payment surface in Latin
- * digits.
+ * "49.9" always renders with the same two decimals as the catalog price and
+ * cannot read as a different amount than the one being charged.
  *
  * ⚠ A PLAN MISSING FROM THE PAYLOAD GETS NO DISCOUNT, and deliberately does NOT
  * fall back to the hard-coded `promoPrice`. The two failures are not
@@ -445,8 +450,8 @@ export function resolvePlanPricing(
   campaign: EarlyAdopterCampaign | null | undefined,
 ): PlanPricingView {
   const promo = promoPriceFor(plan, campaign);
-  const listNumber = arabicPriceToNumber(plan.price);
-  const promoNumber = promo === null ? NaN : arabicPriceToNumber(promo);
+  const listNumber = priceToNumber(plan.price);
+  const promoNumber = promo === null ? NaN : priceToNumber(promo);
   const discounted =
     promo !== null && Number.isFinite(promoNumber) && promoNumber < listNumber;
 
@@ -481,11 +486,11 @@ export function resolvePlanPricing(
 /**
  * Shown ONLY at the refund action (PaymentHistoryDialog — owner decision
  * 2026-08-04): out of context it reads as an anytime-refund promise.
- * «أول ٢٤ ساعة من الاشتراك» anchors the window to the purchase, matching the
+ * «أول 24 ساعة من الاشتراك» anchors the window to the purchase, matching the
  * server's paid_at arithmetic. /terms carries the long-form version.
  */
 export const REFUND_POLICY_NOTE =
-  "استرداد خلال أول ٢٤ ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + ٠٫٥٠ ريال";
+  "استرداد خلال أول 24 ساعة من الاشتراك · تُخصم رسوم بوابة الدفع + 0.50 ريال";
 
 /**
  * The trust claim, chosen over «لا نحفظ بطاقتك» — see the Phase E table in the
@@ -518,20 +523,21 @@ export const REFUND_WINDOW_HOURS = 24;
 // -----------------------------------------------
 
 /**
- * A SAR amount in Arabic-Indic digits with the ٫ separator and exactly two
- * decimals — «٤٩٫٩٠». Matches the `ar-EG` locale the usage dialog already uses,
- * so a server-computed charge and a hard-coded card price render identically.
+ * A SAR amount in Latin digits with a `.` separator and exactly two decimals —
+ * «49.90». Uses the app-wide `AR_NUM_LOCALE`, so a server-computed charge and a
+ * hard-coded card price render identically.
  *
  * Always two decimals, even for a whole number: a prorated upgrade charge of
- * «١١١٫٩٩» next to a credit of «٧٨» looks like a rounding bug, and on a payment
+ * «111.99» next to a credit of «78» looks like a rounding bug, and on a payment
  * screen a rounding bug looks like a wrong charge.
  */
 export function formatSar(value: number | string): string {
   // The API ships SAR as 2-dp strings ("89.90"). Coerce BEFORE formatting:
   // String.prototype.toLocaleString ignores locale arguments entirely, so a
-  // string slipping through renders as Latin "89.90" on a payment screen.
+  // string slipping through would skip the two-decimal padding below and
+  // render "89.9" on a payment screen.
   const n = typeof value === "string" ? Number(value) : value;
-  return n.toLocaleString("ar-EG", {
+  return n.toLocaleString(AR_NUM_LOCALE, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -543,35 +549,35 @@ export function formatHalalas(halalas: number): string {
 }
 
 /**
- * Same digits, but without forced decimals — «٢», not «٢٫٠٠».
+ * Same digits, but without forced decimals — «2», not «2.00».
  *
  * Used ONLY for the processing fee, so that the refund confirmation dialog
  * reads the same fee wording, character-for-character identical to the
  * `REFUND_POLICY_NOTE` the user was shown before they bought. A fee that was
- * disclosed as «٢» and confirmed as «٢٫٠٠» is the same number and a worse
+ * disclosed as «2» and confirmed as «2.00» is the same number and a worse
  * disclosure — the reader has to stop and check that it is the same number,
  * which is exactly the moment of doubt this clause exists to prevent.
  *
- * Never use this for an AMOUNT: «٤٩٫٩» beside «٤٧٫٩٠» reads as a rounding bug.
+ * Never use this for an AMOUNT: «49.9» beside «47.90» reads as a rounding bug.
  */
 export function formatFeeSar(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
-  return n.toLocaleString("ar-EG", { maximumFractionDigits: 2 });
+  return n.toLocaleString(AR_NUM_LOCALE, { maximumFractionDigits: 2 });
 }
 
 /**
- * Split a price string on the Arabic decimal separator so the fractional part
- * can be rendered smaller than the integer part.
+ * Split a price string on the decimal separator so the fractional part can be
+ * rendered smaller than the integer part.
  *
- * Purely a layout concern, and a real one: at `text-5xl`, «١٨٩٫٩٠» is materially
- * wider than «١٨٩» and reflows the three-card grid at the md breakpoint. Shared
+ * Purely a layout concern, and a real one: at `text-5xl`, «189.90» is materially
+ * wider than «189» and reflows the three-card grid at the md breakpoint. Shared
  * by /pricing and the landing teaser so they can never diverge.
  */
 export function splitPrice(price: string): {
   whole: string;
   fraction: string | null;
 } {
-  const at = price.indexOf("٫");
+  const at = price.indexOf(".");
   if (at < 0) return { whole: price, fraction: null };
   return { whole: price.slice(0, at), fraction: price.slice(at) };
 }

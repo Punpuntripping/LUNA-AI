@@ -12,6 +12,7 @@ import {
 } from "@/components/workspace/ReferencePanel";
 import { Button } from "@/components/ui/button";
 import { extractHeadings } from "@/lib/markdown/headings";
+import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { BlogPostPublic } from "@/types";
 
 // Subtype → Arabic kicker label. Mirrors PublicAnswerView / WorkspaceCard so
@@ -26,9 +27,9 @@ const SUBTYPE_LABEL: Record<string, string> = {
   legal_synthesis: "تحليل قانوني",
 };
 
-// Gregorian Arabic byline date (e.g. «٣٠ يونيو ٢٠٢٦»). No shared date helper
+// Gregorian Arabic byline date (e.g. «30 يونيو 2026»). No shared date helper
 // exists in ``frontend/lib`` yet, so the formatter is built once here.
-const BYLINE_DATE_FORMAT = new Intl.DateTimeFormat("ar-EG", {
+const BYLINE_DATE_FORMAT = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   day: "numeric",
   month: "long",
   year: "numeric",
