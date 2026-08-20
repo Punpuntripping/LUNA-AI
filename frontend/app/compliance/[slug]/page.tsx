@@ -165,8 +165,16 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
     dateModified: now,
   });
 
+  // `hub`, NOT `doc` — and the two-column grid below is the whole reason.
+  // `doc` is max-w-3xl (768px), which is the right measure for a page whose body
+  // is the ONLY column (circulars, forms and calculators all sit there
+  // correctly). This page spends 17rem + gap-10 of its width on a sticky rail,
+  // so under `doc` the guide itself rendered at ~456px — 40% narrower than the
+  // same body on /regulations/{slug}, which reaches its full 768px because that
+  // shell is `hub` (max-w-6xl) and the rail comes out of the SURPLUS. The rail
+  // is a desktop affordance; it must not be paid for by the reading column.
   return (
-    <LibraryPageShell maxWidth="doc">
+    <LibraryPageShell maxWidth="hub">
       {/* Ungated by design ⇒ `gate="open"`: opening a guide shelves it in مكتبتي
           for a signed-in reader, and costs nothing. */}
       <LibraryUseBeacon contentType="compliance" slug={doc.slug} gate="open" />
@@ -182,25 +190,29 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
           <TrustLine updatedAt={now} entity={doc.provider_name ?? undefined} />
         </header>
 
-        {doc.summary && (
-          <p className="text-base leading-relaxed text-text-secondary">
-            {doc.summary}
-          </p>
-        )}
-
         {/* Two-column reading layout, the same shape /regulations/{slug} uses.
             The page is dir="rtl", so grid column 1 (the guide) starts on the
             RIGHT and the rail — column 2 — lands on the LEFT, sticky beside the
-            scrolling body. Without a TOC the grid collapses to one column and
-            the body keeps the full reading width. */}
+            scrolling body. Without a TOC there is no grid at all — the reading
+            column is simply centred at its own width. */}
         <div
           className={
             showToc
               ? "lg:grid lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start lg:gap-10"
-              : undefined
+              : // No rail ⇒ no surplus to absorb: centre the reading column
+                // rather than let it hug the RTL edge of a max-w-6xl main.
+                "lg:mx-auto lg:max-w-3xl"
           }
         >
           <div className="min-w-0 space-y-6 lg:max-w-3xl">
+            {/* Inside the column, exactly where /regulations/{slug} puts its
+                LeadSummary. Above the grid it would set a 1152px measure. */}
+            {doc.summary && (
+              <p className="text-base leading-relaxed text-text-secondary">
+                {doc.summary}
+              </p>
+            )}
+
             {showToc && (
               <div className="lg:hidden">
                 {/* Collapsed on mobile for the reason the regulation wing
