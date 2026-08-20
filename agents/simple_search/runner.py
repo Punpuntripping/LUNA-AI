@@ -58,6 +58,26 @@ each measured as broken first (`agents_reports/simple_search_adv_money_state.md`
   explains it as «غير موجود» — measured, 3/3 replies.
 * **The spend is visible.** ``unlock_notes`` carries every ruling opened, and a
   charged turn says so in one Arabic line.
+
+**The responder owns the turn** (``.claude/plans/simple_search_responder.md``).
+Up to three synthesizers still run concurrently and blind to each other, but
+none of them writes the bubble and none of them decides whether a card exists:
+:func:`_finalise` collects every settled answer, hands the whole set to ONE
+:mod:`agents.simple_search.responder` call as bounded digests, and **publishes
+only what comes back carded** — the same gate ``should_publish`` puts in front
+of ``publish_search_result`` (``orchestrator.py:3063``). Three consequences run
+through this module:
+
+* Nothing is written to ``workspace_items`` before that agent answers (trap
+  §11.5), so the publish loop lives *after* the call, not before it.
+* A ``card=False`` verdict moves a body into the bubble; it can never lose one
+  (trap §11.4). Uncarded bodies are carried verbatim, by code, with their
+  ``[n]`` markers stripped — the responder never retypes legal text (D4).
+* **Failure publishes NOTHING** (D7) — the deliberate inverse of deep_search's
+  ``_response_from_artifact`` (``planner/runner.py:140``), which publishes on
+  responder failure because there the artifact is the product. Here the bubble
+  carries the text, so a raised responder still delivers every body in full and
+  the turn simply leaves no card.
 """
 from __future__ import annotations
 
@@ -74,14 +94,24 @@ from agents.paused_runs import PauseRecord, find_open_pause, record_pause
 from agents.simple_search.models import (
     LEVEL_SOURCE_TYPE,
     ResolvedObject,
+    ResponderDocDigest,
     SimpleSearchLevel,
     UnfoldResult,
 )
 from agents.simple_search.prompts import (
+    build_responder_user_message,
     build_searcher_user_message,
     build_synthesizer_user_message,
 )
 from agents.simple_search.publisher import publish_simple_search_result
+from agents.simple_search.responder import (
+    RESPONDER_EXCERPT_CHARS,
+    RESPONDER_LIMITS,
+    RESPONDER_SLOT,
+    ResponderDeps,
+    ResponderOutput,
+    create_responder_agent,
+)
 from agents.simple_search.searcher import (
     MAX_FANOUT_DOCUMENTS,
     SEARCHER_LIMITS,
@@ -105,7 +135,7 @@ from agents.simple_search.unfold import (
     unfold,
 )
 from agents.utils.tracking import run_tracked, track_stage
-from agents.utils.welcome import render_welcome_instruction
+from agents.utils.welcome import compose_opening, render_welcome_instruction
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from supabase import Client as SupabaseClient
@@ -141,11 +171,22 @@ _CITATION_MARKER_RE = re.compile(r"\[\s*[\d٠-٩]+(?:\s*[,،]\s*[\d٠-٩]+)*\s*\
 
 
 def _strip_citation_markers(text: str) -> str:
-    """Remove ``[n]`` markers from a reply that publishes no card.
+    """Remove ``[n]`` markers from a body that ships in the bubble, uncarded.
 
-    Only ever applied when ``wi_warranted`` is False — with a card, the markers
-    are load-bearing and `[n]` is the anchor into المراجع. Collapses the space
-    a removed marker leaves behind so «النص [1] .» does not become «النص  .».
+    Applied to **every** body the responder declines to card, plus every body on
+    the D7 failure path — those are the two ways a synthesis reaches the chat
+    without a panel behind it. With a card the markers are load-bearing (`[n]`
+    is the anchor into المراجع) and the body never comes through here at all,
+    because a carded answer contributes nothing to the bubble (§9).
+
+    The older note that this fired only when the synthesizer's own card flag was
+    False died with that field: the synthesizer no longer rules on cards at all
+    (responder plan §5), so it cites unconditionally and the marker strip became
+    the designed hand-off step between two agents that each did their own job
+    correctly, rather than a patch over one agent contradicting itself.
+
+    Collapses the space a removed marker leaves behind so «النص [1] .» does not
+    become «النص  .».
     """
     if not text:
         return text
@@ -502,17 +543,41 @@ def build_references(group: _Group, unfolds: list[UnfoldResult]) -> list[Referen
 
 @dataclass
 class _Answer:
-    """One synthesizer's verdict on one document.
+    """One synthesizer's verdict on one document, plus what the responder needs.
 
     ``refused`` marks the §13l.5 case: the ledger refused the ruling, so no
     synthesizer was built at all and ``output`` carries a line this module
-    wrote, not one a model wrote.
+    wrote, not one a model wrote. It is also a **hard card veto** in
+    :func:`_finalise` — a body that says «هذا الحكم يحتاج رصيد» is not a
+    document, whatever the responder rules.
+
+    The last three fields exist for the responder (plan §6/§7) and are filled
+    where the data is, in :func:`_synthesize_group`:
+
+    * ``fanout_index`` — the dispatch slot this group was handed. It is the
+      only ordering that survives to :func:`_finalise`: ``answers`` is a dict
+      keyed by ``document_key`` and insertion-ordered by *round*, so a document
+      answered in cycle 2 (after a rejection) sorts after cycle-1 answers no
+      matter which one the user asked for first (§7 "Order"). The ``D1..Dn``
+      labels, the bubble order and the responder's framing order all derive
+      from it.
+    * ``truncated`` / ``summary_payload`` — the two unfold facts D3 says the
+      responder must *see* rather than guess at: a body too truncated to stand
+      as a document is an explicit decline case, and so is a §5 ladder that
+      served summaries instead of the text. Computed from the local ``unfolds``
+      list and carried here **because :func:`_finalise` must not re-unfold** —
+      unfold is an I/O path and the judgment ledger is charged inside it
+      (``_recording_judgment_access``), so a second call is a double charge as
+      well as a double read.
     """
 
     group: _Group
     output: SynthesizerOutput
     references: list[Reference]
     refused: bool = False
+    fanout_index: int = 0
+    truncated: bool = False
+    summary_payload: bool = False
 
 
 #: §13j #5 — the note ``unfold._judgment_refused`` stamps on a no-body result.
@@ -573,7 +638,6 @@ async def _synthesize_group(
     question: str,
     conversation_id: str,
     case_id: str | None,
-    welcome_instruction: str | None,
     detail_level: str,
     judgment_access: JudgmentAccessResolver,
     recent_messages: list | None = None,
@@ -593,6 +657,19 @@ async def _synthesize_group(
 
     **A refused ruling stops here** (§13l.5): no synthesizer is built, and the
     group's reply is :func:`refusal_message`, written deterministically.
+
+    **No ``welcome_instruction``.** It used to arrive here and be handed to
+    ``build_synthesizer_user_message`` for the first group of the first round
+    only. The responder owns the opening line of the turn now (responder plan
+    §9), so the welcome is passed to it in :func:`_finalise` instead — which
+    also retires the "which synthesizer is first?" question the old
+    ``welcome_instruction if i == 0`` threading had to answer from inside a
+    concurrent fan-out. ``build_synthesizer_user_message`` still *accepts* the
+    argument; this module simply stops passing one.
+
+    ``fanout_index`` is no longer only the ``_UnlockRecord`` sort key: it is
+    carried onto the returned :class:`_Answer` as the turn's one stable
+    ordering (see that dataclass).
     """
     access = judgment_access
     if unlock_records is not None:
@@ -602,6 +679,10 @@ async def _synthesize_group(
         for obj in group.objects
     ]
     references = build_references(group, unfolds)
+    # D3 — the two unfold facts the responder must SEE rather than guess at,
+    # captured here because this is the only scope that holds ``unfolds``.
+    truncated = any(u.truncated for u in unfolds)
+    summary_payload = any(u.payload == "summary" for u in unfolds)
 
     if _is_refused_judgment(group, unfolds):
         logger.info(
@@ -610,14 +691,18 @@ async def _synthesize_group(
         )
         return _Answer(
             group=group,
-            output=SynthesizerOutput(
-                synthesis_md=refusal_message(group, unfolds),
-                # No body ⇒ nothing to put on a card, and the references would
-                # point at a document the user cannot open.
-                wi_warranted=False,
-            ),
+            # No body ⇒ nothing to put on a card, and the references would point
+            # at a document the user cannot open. That verdict is no longer a
+            # field on this output (it moved to the responder, plan §5) — it is
+            # enforced as ``_Answer.refused``, which :func:`_finalise` vetoes
+            # unconditionally, and the line still reaches the bubble so the turn
+            # names the ruling it could not open (§13j #5).
+            output=SynthesizerOutput(synthesis_md=refusal_message(group, unfolds)),
             references=references,
             refused=True,
+            fanout_index=fanout_index,
+            truncated=truncated,
+            summary_payload=summary_payload,
         )
 
     agent = create_synthesizer_agent(group.level)
@@ -627,7 +712,6 @@ async def _synthesize_group(
             question,
             unfolds,
             references,
-            welcome_instruction=welcome_instruction,
             detail_level=detail_level,
             recent_messages=recent_messages,
         ),
@@ -641,7 +725,14 @@ async def _synthesize_group(
     output = result.output
     if not isinstance(output, SynthesizerOutput):  # defensive; salvager returns one
         output = SynthesizerOutput(synthesis_md=str(output or ""))
-    return _Answer(group=group, output=output, references=references)
+    return _Answer(
+        group=group,
+        output=output,
+        references=references,
+        fanout_index=fanout_index,
+        truncated=truncated,
+        summary_payload=summary_payload,
+    )
 
 
 # =========================================================================== #
@@ -930,9 +1021,16 @@ async def run_simple_search(
             sources become the searcher's candidate list.
         user_preferences: read for ``detail_level`` only.
         user_call_name: reserved; the welcome line already carries the address.
-        welcome: this turn's welcome state. Rendered into the FIRST synthesizer
-            only — the greeting is the opening LINE of the answer, and three
-            fan-out replies each opening with «أهلين» would read as a stutter.
+        welcome: this turn's welcome state. Rendered into the **responder**
+            (responder plan §9) — the greeting is the opening LINE of the turn,
+            and the responder now owns the opening. It used to go to the first
+            synthesizer of the first round, guarded by ``if i == 0``, because
+            three fan-out replies each opening with «أهلين» would read as a
+            stutter; with one voice writing the lead-in there is no first reply
+            to pick any more. ``mark_welcomed`` stays where it is
+            (``orchestrator.py:2775``): a turn that only asked a question must
+            still leave the welcome unspent, and that invariant is the
+            orchestrator's.
         emit_sse: async sink handed to the searcher's tools for live chips. The
             turn's ``workspace_item_created`` events are NOT sent through it —
             they come back on ``sse_events`` so ``_route`` drains them exactly
@@ -946,6 +1044,9 @@ async def run_simple_search(
     prefs = user_preferences or {}
     detail_level = str(prefs.get("detail_level") or "")
     welcome_instruction = render_welcome_instruction(welcome) or None
+    # The same greeting as literal text — D7's fallback opens with it when
+    # the responder never gets to (see `_finalise`).
+    welcome_opening = compose_opening(welcome) if welcome else ""
     items = [_as_snapshot(i) for i in (attached_items or [])]
     # D12 — built once per turn, bound to this user. Every ruling body served
     # this turn goes through it; nothing else in the family is metered.
@@ -1022,6 +1123,7 @@ async def run_simple_search(
             case_id=case_id,
             deps=deps,
             welcome_instruction=welcome_instruction,
+            welcome_opening=welcome_opening,
             detail_level=detail_level,
             judgment_access=grant_judgment_access,
             recent_messages=recent_messages,
@@ -1038,6 +1140,7 @@ async def _answer_loop(
     case_id: str | None,
     deps: Any,
     welcome_instruction: str | None,
+    welcome_opening: str = "",
     detail_level: str,
     judgment_access: JudgmentAccessResolver,
     recent_messages: list | None,
@@ -1057,12 +1160,30 @@ async def _answer_loop(
 
     ``skip_keys`` are documents already answered and DELIVERED on the leg that
     paused; re-synthesizing one would show the user the same reply twice and pay
-    a second synthesizer for it.
+    a second synthesizer for it. They still have to reach :func:`_finalise`
+    (responder plan §8): a skipped group never enters ``answers``, so without
+    ``delivered`` below the responder would present the new document as if the
+    earlier one had never been opened — «فتحت لك نظام العمل» on a turn where the
+    user is already looking at نظام العمل.
     """
     answers: dict[str, _Answer] = {}
     unlock_records: list[_UnlockRecord] = []
     skip = set(skip_keys or ())
+    #: §8 — the groups this leg SKIPPED because the paused leg already delivered
+    #: and carded them. Collected here because this is the only scope that holds
+    #: both ``group_documents(output.resolved)`` (the objects, with their titles
+    #: and level) and ``skip`` (the keys). Keyed by group key: a document
+    #: re-selected on two cycles is one delivered document, not two.
+    delivered: dict[str, _Group] = {}
     dispatched = 0          # fan-out slots handed out this turn — the note order
+    #: Synthesizers that were dispatched and never came back — the ONLY loss the
+    #: user can see, and therefore the only thing §7.2's honesty line may fire
+    #: on. It is deliberately NOT ``dispatched - len(answers)``: that difference
+    #: also counts rejections, and a rejection is a document the loop *replaced*
+    #: (D3), not one it dropped. Counting slots made every turn with a loop-back
+    #: — the exact path the retry pool exists for — open by apologising for a
+    #: document the user did receive.
+    lost = 0
     cycles = 0
     # ONE counter, turn-wide (D3). Not per synthesizer, not per document.
     while cycles < MAX_CYCLES:
@@ -1095,13 +1216,33 @@ async def _answer_loop(
             # 3 unlocks billed, zero replies delivered, and the question asked
             # the user to re-attach the report whose rulings had just been
             # billed). Work that is paid for is delivered.
-            delivered = await _finalise(
+            #
+            # The responder DOES run here (§8): those answers were already paid
+            # for, and the pre-question delivery is exactly where framing helps
+            # most. What it does not do is suggest — the searcher's ``ask_user``
+            # question, appended below or emitted as an ``agent_question``, IS
+            # the turn's next step, and a second offer above it reads as two
+            # competing questions.
+            result_so_far = await _finalise(
                 list(answers.values()),
                 supabase=supabase,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 case_id=case_id,
+                question=question,
+                # Answers in hand + crashes. NOT the slot counter: see ``lost``.
+                dispatched=len(answers) + lost,
+                recent_messages=recent_messages,
+                welcome_instruction=welcome_instruction,
+                welcome_opening=welcome_opening,
+                unselected_candidates=unselected_candidate_lines(
+                    deps,
+                    answered_keys=set(answers) | skip,
+                    unlock_records=unlock_records,
+                ),
+                delivered_groups=list(delivered.values()),
                 unlock_records=unlock_records,
+                suppress_suggestion=True,
                 degraded_fallback=False,
             )
 
@@ -1134,22 +1275,22 @@ async def _answer_loop(
                 )
 
             if run_id:
-                delivered.paused = True
-                delivered.question_text = q or None
+                result_so_far.paused = True
+                result_so_far.question_text = q or None
             else:
                 # No row ⇒ nothing can consume a reply to this question, so it
                 # must not be emitted as an `agent_question`: it goes out as the
                 # last chat message and the next turn routes fresh.
                 if q:
-                    delivered.chat_messages.append(q)
-                if not delivered.chat_messages:
-                    delivered.chat_messages.append(_DEGRADED_AR)
+                    result_so_far.chat_messages.append(q)
+                if not result_so_far.chat_messages:
+                    result_so_far.chat_messages.append(_DEGRADED_AR)
             span.set(
                 outcome="paused" if run_id else "asked_inline",
                 cycles=cycles,
-                delivered=len(delivered.chat_messages),
+                delivered=len(result_so_far.chat_messages),
             )
-            return delivered
+            return result_so_far
 
         if output.aborted:
             # Most often an INTEGRATIVE question the fan-out cannot serve:
@@ -1169,10 +1310,15 @@ async def _answer_loop(
                 unlock_notes=unlock_notes_payload(unlock_records),
             )
 
-        todo = [
-            g for g in group_documents(output.resolved)
-            if g.key not in answers and g.key not in skip
-        ]
+        grouped = group_documents(output.resolved)
+        # §8 — a group the paused leg already delivered is skipped for synthesis
+        # but REMEMBERED for the responder. This is the only place both halves
+        # are in hand, and the resolved objects are what carry the title and the
+        # level the digest needs.
+        for grp in grouped:
+            if grp.key in skip and grp.key not in delivered:
+                delivered[grp.key] = grp
+        todo = [g for g in grouped if g.key not in answers and g.key not in skip]
         if not todo:
             break
 
@@ -1182,8 +1328,6 @@ async def _answer_loop(
             question=question,
             conversation_id=conversation_id,
             case_id=case_id,
-            # Only the first synthesizer of the turn carries the greeting.
-            welcome_instruction=welcome_instruction if not answers else None,
             detail_level=detail_level,
             judgment_access=judgment_access,
             recent_messages=recent_messages,
@@ -1191,6 +1335,9 @@ async def _answer_loop(
             fanout_base=dispatched,
         )
         dispatched += len(todo)
+        # ``_run_round`` logs and drops a synthesizer that raised, so the gap
+        # between what went out and what came back IS the crash count.
+        lost += len(todo) - len(round_answers)
 
         rejections: list[str] = []
         for answer in round_answers:
@@ -1215,10 +1362,23 @@ async def _answer_loop(
         user_id=user_id,
         conversation_id=conversation_id,
         case_id=case_id,
+        question=question,
+        # Answers in hand + crashes. NOT the slot counter: see ``lost``.
+        dispatched=len(answers) + lost,
+        recent_messages=recent_messages,
+        welcome_instruction=welcome_instruction,
+        welcome_opening=welcome_opening,
+        unselected_candidates=unselected_candidate_lines(
+            deps,
+            answered_keys=set(answers) | skip,
+            unlock_records=unlock_records,
+        ),
+        delivered_groups=list(delivered.values()),
         unlock_records=unlock_records,
         # A resume that re-selects only documents the paused leg already
         # answered has nothing new to say — and «لم أتمكّن من تأكيد المصدر»
-        # would be a lie about work that succeeded.
+        # would be a lie about work that succeeded. No responder call on that
+        # path either (§8): with no answers there is nothing to respond about.
         degraded_text=_ALREADY_ANSWERED_AR if (skip and not answers) else _DEGRADED_AR,
     )
 
@@ -1230,14 +1390,22 @@ async def _run_round(
     question: str,
     conversation_id: str,
     case_id: str | None,
-    welcome_instruction: str | None,
     detail_level: str,
     judgment_access: JudgmentAccessResolver,
     recent_messages: list | None = None,
     unlock_records: list[_UnlockRecord] | None = None,
     fanout_base: int = 0,
 ) -> list[_Answer]:
-    """Run one synthesizer per document, concurrently, in fan-out order."""
+    """Run one synthesizer per document, concurrently, in fan-out order.
+
+    ``fanout_base`` makes the slot numbers turn-wide rather than round-wide, so
+    a cycle-2 document keeps sorting after every cycle-1 document in
+    :func:`_finalise` — see :class:`_Answer.fanout_index`.
+
+    No welcome here any more (responder plan §9): the greeting is the opening
+    line of the *turn*, not of whichever synthesizer happened to be dispatched
+    first, and it is now handed to the responder in :func:`_finalise`.
+    """
     if not groups:
         return []
     tasks = [
@@ -1247,8 +1415,6 @@ async def _run_round(
             question=question,
             conversation_id=conversation_id,
             case_id=case_id,
-            # The welcome line belongs to the first reply the user reads.
-            welcome_instruction=welcome_instruction if i == 0 else None,
             detail_level=detail_level,
             judgment_access=judgment_access,
             recent_messages=recent_messages,
@@ -1270,6 +1436,82 @@ async def _run_round(
     return answers
 
 
+# =========================================================================== #
+# The responder — the turn's voice, and the publish gate (responder plan §7).
+# =========================================================================== #
+
+
+#: A ``candidate_lines`` entry that starts with a handle is an OBJECT the
+#: searcher registered. Entries without one are prose the runner appended for
+#: the searcher's benefit (the «البطاقة المرفقة WI-N …» note), and they name
+#: nothing that could be opened next turn.
+_CANDIDATE_HANDLE_RE = re.compile(r"^\s*(C\d+)\b")
+
+
+def _object_title(obj: ResolvedObject | None) -> str:
+    """One document's display name: its own title, else the Arabic level noun.
+
+    The middle and last rungs of the §6 title chain (the responder's own string
+    is the first). Shared by the digest — where it is what the responder names
+    the document by — and by the card title, so a card and the sentence
+    introducing it cannot disagree about what the document is called.
+    """
+    if obj is None:
+        return ""
+    return (obj.title or "").strip() or obj.label_ar()
+
+
+def unselected_candidate_lines(
+    deps: Any,
+    *,
+    answered_keys: set[str] | None = None,
+    unlock_records: list[_UnlockRecord] | None = None,
+) -> list[str]:
+    """The objects this turn considered and did NOT open — suggestion material.
+
+    §4/§6: the searcher **saw** the لائحة تنفيذية sitting beside the نظام and
+    chose not to open it, so «تحب أفتح لك اللائحة؟» is grounded in what the turn
+    actually weighed rather than invented by a model staring at its own output.
+    ``build_responder_user_message`` fences these as the ONLY offerable objects.
+
+    Two filters, and both are the runner's job because ``prompts.py`` holds
+    neither piece of state:
+
+    * **Already opened.** A candidate whose ``document_key`` is in
+      ``answered_keys`` (this leg's answers plus the paused leg's ``skip`` set)
+      was just delivered; offering to open it is offering to repeat the turn.
+    * **Refused rulings** — trap §11.7. A ruling the ledger declined this turn
+      appears in ``unlock_records`` with ``granted=False``, and offering to open
+      it is offering the user the exact thing they were just told they cannot
+      have. This is why unlock state is a parameter here and not of the prompt
+      builder: the filtering decision belongs to whoever holds the ledger
+      verdicts.
+    """
+    candidates = getattr(deps, "candidates", None) or {}
+    answered = set(answered_keys or ())
+    refused_cases = {
+        rec.case_id for rec in (unlock_records or [])
+        if rec.case_id and not rec.granted
+    }
+    lines: list[str] = []
+    for raw in getattr(deps, "candidate_lines", None) or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        match = _CANDIDATE_HANDLE_RE.match(text)
+        if match is None:
+            continue
+        obj = candidates.get(match.group(1).upper())
+        if obj is None:
+            continue
+        if document_key(obj) in answered:
+            continue
+        if obj.level == "judgment" and str(obj.case_id or "") in refused_cases:
+            continue
+        lines.append(text)
+    return lines
+
+
 async def _finalise(
     answers: list[_Answer],
     *,
@@ -1277,15 +1519,92 @@ async def _finalise(
     user_id: str,
     conversation_id: str,
     case_id: str | None,
+    question: str,
+    dispatched: int = 0,
+    recent_messages: list | None = None,
+    welcome_instruction: str | None = None,
+    welcome_opening: str = "",
+    unselected_candidates: list[str] | None = None,
+    delivered_groups: list[_Group] | None = None,
     unlock_records: list[_UnlockRecord] | None = None,
+    suppress_suggestion: bool = False,
     degraded_fallback: bool = True,
     degraded_text: str = _DEGRADED_AR,
 ) -> SimpleSearchRunResult:
-    """Publish the warranted cards and assemble the C1 result.
+    """Run the responder, publish what it cards, assemble the bubble (§7/§9).
 
-    One chat message per synthesizer, in fan-out order. ``created_item_ids`` may
-    be shorter than ``chat_messages``: not every lookup deserves a card, and a
-    publish failure degrades to a chat-only answer rather than losing it.
+    **The single choke point.** Both the terminal path and the pause path reach
+    here, and ``resume_simple_search`` re-enters through the same
+    :func:`_answer_loop` — so putting any of this anywhere else guarantees
+    dispatch and resume drift apart invisibly (trap §11.6).
+
+    Order is load-bearing (§7), and it is the order of the code below:
+
+    1. drop empty bodies — but **keep the refusals**, whose bodies this module
+       wrote (:func:`refusal_message`);
+    2. sort by ``fanout_index`` and assign ``D1..Dn`` in that order — dispatch
+       order, not ``answers`` insertion order (see :class:`_Answer`);
+    3. digest each answer into a :class:`ResponderDocDigest` — a bounded
+       excerpt and the measured body length, never the body (trap §11.8);
+    4. **call the responder**;
+    5. apply the code vetoes to its verdicts;
+    6. publish only what survives as ``card=True`` — nothing is written to
+       ``workspace_items`` before step 4 returns (trap §11.5), exactly as
+       ``should_publish`` gates ``publish_search_result``
+       (``orchestrator.py:3063``);
+    7. assemble the bubble (§9).
+
+    **The bubble**, in this fixed order, returned as ordered ``chat_messages``
+    entries because ``orchestrator.py:2736`` joins them with ``"\\n\\n"``::
+
+        [responder.chat_summary_md]
+        [verbatim synthesis_md of every UNCARDED answer, dispatch order]  ← code
+        [responder.suggestion_md]              ← omitted when suppressed (§8)
+        [unlock_acknowledgement(...)]          ← code, unchanged (D5)
+
+    A carded answer contributes **nothing** to the bubble — its body lives on
+    its card, which is the §1.1 fix: before this, the same ``synthesis_md`` was
+    the bubble AND the card's ``content_md``, so a carded lookup showed the user
+    the whole document twice. Uncarded bodies are moved by code and never
+    regenerated (D4), and a ``card=False`` verdict can never *lose* one: it
+    decides **where** the text goes, never **whether** it ships (trap §11.4).
+
+    **The vetoes code keeps** (D3 — the responder rules on everything else,
+    with the body in hand):
+
+    * A **refused judgment** never gets a card, whatever the verdict says. Its
+      body is :func:`refusal_message`, written here, and a "you need balance"
+      line is not a document. It is still shown to the responder as a document
+      so the turn frames the refusal honestly instead of going silent about a
+      ruling the user asked for by name — the §13j #5 failure this family fixed
+      once already, where 3/3 replies explained the *absence* of the ruling.
+    * An **already-delivered** document never gets a card: the paused leg
+      published one, and a second publish is a duplicate row in a 15-item-capped
+      workspace. Enforced structurally — a delivered group has no ``_Answer``,
+      so it is not in the publish loop at all (``zip`` below stops at ``live``).
+    * A **missing verdict** for a dispatched label is ``card=False``, not an
+      error (§6): the safe default under D7 is to leave no card. An *unknown*
+      label never reaches here — the responder's output validator turns that one
+      into an Arabic ``ModelRetry``.
+    * ``card=True`` with an **empty title** falls back
+      ``objects[0].title`` → ``label_ar()``, the chain that has always been here.
+
+    **The responder is NOT called when there is nothing to respond about**
+    (trap §11.3). With no live answer the code-written ``_DEGRADED_AR`` /
+    ``_ALREADY_ANSWERED_AR`` line stands and no LLM runs — a model asked to
+    narrate an empty result invents absence («لا يوجد نظام بهذا الاسم»), the
+    exact failure :func:`refusal_message` exists to prevent, and the same
+    conclusion ``_minimal_response`` (``planner/runner.py:158``) reached
+    independently.
+
+    **Failure publishes NOTHING (D7).** If the responder raises, times out or
+    exhausts its retries, the turn degrades to the pre-responder behaviour —
+    every body in the bubble in dispatch order with markers stripped, no cards,
+    empty ``created_item_ids``, and the unlock acknowledgement still appended.
+    The deliberate inverse of ``_response_from_artifact``
+    (``planner/runner.py:140``), which publishes on failure because there the
+    artifact is the product: here the bubble carries the text, so a missing card
+    costs the user a re-ask while a wrongly-published one is permanent clutter.
 
     ``degraded_fallback`` is False on the pause path: there, an empty answer set
     is not a failure — the searcher's question IS the turn's message, and
@@ -1295,28 +1614,169 @@ async def _finalise(
     many rulings were opened is appended to the LAST chat message. Last, not
     first: the acknowledgment is a footer, and it is appended after the cards
     are published so the durable card never carries a billing line.
+
+    Args:
+        answers: every settled :class:`_Answer` of the turn, in whatever order
+            ``answers.values()`` produced them — this function sorts.
+        question: the user's RAW message, never a paraphrase (§2.1). Required
+            and undefaulted: a responder handed an empty ``<user_message>``
+            frames a turn it cannot see.
+        dispatched: fan-out slots handed out this leg. When it exceeds the
+            number of answers a synthesizer was dropped (``_run_round`` logs and
+            continues) and the responder is told to say so (§7.2) — without it
+            the turn announces "opened both" for a turn that opened one.
+        unselected_candidates: pre-filtered lines from
+            :func:`unselected_candidate_lines`.
+        delivered_groups: §8 — documents the paused leg already delivered and
+            carded. Digested with ``already_delivered=True``, an empty excerpt
+            and no body: they can produce neither bubble text nor a card, and
+            exist so the responder has continuity («سبق أن فتحت لك نظام العمل
+            قبل قليل») instead of re-announcing a document the user is looking
+            at.
+        suppress_suggestion: the pause leg (§8). Told to the prompt AND enforced
+            here on the way into the bubble.
     """
-    chat_messages: list[str] = []
     created_item_ids: list[str] = []
     sse_events: list[dict] = []
 
-    for answer in answers:
+    # ── 1/2. Empty bodies out; dispatch order in. ───────────────────────────
+    # A REFUSED answer stays: its body is the code-written refusal line, the
+    # user asked for that ruling by name, and silence about it is the §13j #5
+    # failure. Its card is vetoed below, not its text.
+    live = sorted(
+        (a for a in answers if a.output.synthesis_md.strip()),
+        key=lambda a: a.fanout_index,
+    )
+
+    # ── 3. The digest. Bounded excerpt + measured length, never the body. ───
+    docs: list[ResponderDocDigest] = []
+    for n, answer in enumerate(live, 1):
         body = answer.output.synthesis_md.strip()
-        if not body:
+        obj = answer.group.objects[0] if answer.group.objects else None
+        docs.append(
+            ResponderDocDigest(
+                label=f"D{n}",
+                level=answer.group.level,
+                object_title=_object_title(obj),
+                excerpt=body[:RESPONDER_EXCERPT_CHARS],
+                body_chars=len(body),
+                truncated=answer.truncated,
+                summary_payload=answer.summary_payload,
+            )
+        )
+    # §8 — the already-delivered set is appended AFTER this leg's answers so
+    # ``D1`` keeps meaning "the first document this leg opened", which is what
+    # ``fanout_index``, the bubble order and the responder's framing all agree
+    # on. Their ``already_delivered="true"`` attribute, not their position, is
+    # what tells the responder they are context rather than new work.
+    for n, group in enumerate(delivered_groups or [], len(live) + 1):
+        docs.append(
+            ResponderDocDigest(
+                label=f"D{n}",
+                level=group.level,
+                object_title=_object_title(group.objects[0] if group.objects else None),
+                excerpt="",
+                body_chars=0,
+                already_delivered=True,
+            )
+        )
+
+    # ── 4. The call. Everything above is input; nothing below runs first. ───
+    responder: ResponderOutput | None = None
+    summary = ""
+    suggestion = ""
+    if live:
+        try:
+            # Built HERE, per turn — never a module-level singleton. The house
+            # test harness stubs agents by patching each module's
+            # ``get_agent_model`` (``tests/_fmodels.py``), and a cached instance
+            # would bind a live model at import and make this path untestable.
+            agent = create_responder_agent()
+            result = await run_tracked(
+                agent,
+                build_responder_user_message(
+                    question,
+                    docs,
+                    recent_messages=recent_messages,
+                    # The delivered digests count as answered in the prompt's
+                    # `<turn>` tag, so they must count as dispatched too, or a
+                    # resume leg reports a dropped synthesizer that never was.
+                    # The builder clamps this up to `len(docs)`; it never lies
+                    # downward.
+                    dispatched=int(dispatched or 0) + (len(docs) - len(live)),
+                    unselected_candidates=unselected_candidates,
+                    welcome_instruction=welcome_instruction,
+                    suppress_suggestion=suppress_suggestion,
+                ),
+                deps=ResponderDeps(
+                    conversation_id=conversation_id,
+                    case_id=case_id,
+                    # EXACTLY the labels rendered above: the output validator
+                    # retries any `doc` outside this tuple, so a mismatch here
+                    # turns every verdict into an unwinnable retry loop.
+                    doc_labels=tuple(d.label for d in docs),
+                ),
+                stage="simple_search.respond",
+                slot=RESPONDER_SLOT,
+                agent_family=AGENT_FAMILY,
+                usage_limits=RESPONDER_LIMITS,
+            )
+            output = result.output
+            if not isinstance(output, ResponderOutput):  # defensive; salvager returns one
+                raise TypeError(
+                    f"responder returned {type(output).__name__}, not ResponderOutput"
+                )
+            summary = output.chat_summary_md.strip()
+            if not summary:
+                # An empty lead-in with every body carded is an EMPTY bubble —
+                # the one outcome no branch here may produce. Treated as a
+                # failure rather than papered over: the responder's whole job is
+                # the opening, and D7 says the safe direction is text without
+                # cards, never cards without text.
+                raise ValueError("responder returned an empty chat_summary_md")
+            suggestion = output.suggestion_md.strip()
+            responder = output
+        except Exception as exc:  # noqa: BLE001 — D7: degrade, never raise
+            logger.warning(
+                "simple_search: responder failed for conversation %s (%d answer(s), "
+                "%d dispatched) — delivering every body uncarded and publishing "
+                "nothing (D7): %s",
+                conversation_id, len(live), dispatched, exc, exc_info=True,
+            )
+            responder = None
+            # §9 moved the greeting off the synthesizer, which made the
+            # responder its ONLY writer — and D7 lets the responder fail while
+            # the bodies still ship. The orchestrator sees a delivered answer
+            # and marks the welcome spent (``orchestrator.py`` tail), so a
+            # greeting that was never written is burned for good: one user, one
+            # chance, gone to an exception they never saw. The composed line is
+            # literal Arabic text, so code can open with it exactly as the model
+            # was going to.
+            summary = welcome_opening
+            suggestion = ""
+
+    # ── 5/6. Vetoes, then the gated publish. ────────────────────────────────
+    # ``zip`` stops at ``live``: the delivered digests that trail ``docs`` have
+    # no answer behind them, which is exactly how §8's "never re-card" is
+    # enforced — there is nothing here to publish them from.
+    bodies: list[str] = []
+    for answer, digest in zip(live, docs):
+        body = answer.output.synthesis_md.strip()
+        verdict = responder.verdict_for(digest.label) if responder is not None else None
+        card = bool(verdict is not None and verdict.card)
+        if card and answer.refused:
+            # Hard veto, D3. The ledger said no; there is no body to card.
+            logger.info(
+                "simple_search: vetoing the card for refused judgment %s — the "
+                "responder granted one over a refusal line (§13l.5)",
+                answer.group.key,
+            )
+            card = False
+        if not card:
+            bodies.append(_strip_citation_markers(body))
             continue
-        if not answer.output.wi_warranted:
-            # No card ⇒ no ``workspace_item_references`` rows ⇒ every ``[n]`` in
-            # this body points at nothing. The two fields are independent by
-            # design: ``_CITATION_RULES`` requires ``[n]`` unconditionally while
-            # ``wi_warranted`` is the synthesizer's own "is this worth a card"
-            # call — so a not-worth-a-card answer is *invited* to cite and then
-            # ships uncarded. Observed live in the Case-B eval: a ``[1]`` in a
-            # chat reply with no panel behind it. Strip the markers rather than
-            # suppress the answer: the prose is still correct, and a dead
-            # citation is worse than none.
-            chat_messages.append(_strip_citation_markers(body))
-            continue
-        chat_messages.append(body)
+
+        obj = answer.group.objects[0] if answer.group.objects else None
         try:
             published = await publish_simple_search_result(
                 supabase,
@@ -1324,7 +1784,10 @@ async def _finalise(
                 conversation_id=conversation_id,
                 case_id=case_id,
                 message_id=None,
-                title=answer.output.wi_title or answer.group.objects[0].title,
+                # The fallback chain §6 pins: the responder's title, the
+                # object's own, then the level noun. The publisher has one more
+                # («نتيجة بحث») behind all three.
+                title=(verdict.title or "").strip() or _object_title(obj),
                 content_md=body,
                 references=answer.references,
                 cited_numbers=list(answer.output.used_refs),
@@ -1332,14 +1795,31 @@ async def _finalise(
             )
         except Exception as exc:  # noqa: BLE001 — the answer is already written
             logger.warning("simple_search: publish failed for %s: %s", answer.group.key, exc)
+            # No card ⇒ the body has nowhere else to live. Trap §11.4 again:
+            # the answer ships either way, and its `[n]` now point at nothing.
+            bodies.append(_strip_citation_markers(body))
             continue
         if published.item_id:
             created_item_ids.append(published.item_id)
             sse_events.extend(published.sse_events)
+        else:
+            bodies.append(_strip_citation_markers(body))
+
+    # ── 7. Assembly (§9). ───────────────────────────────────────────────────
+    chat_messages: list[str] = []
+    if summary:
+        chat_messages.append(summary)
+    chat_messages.extend(bodies)
+    # Suppressed twice on purpose: the prompt is told to leave it empty (a model
+    # instruction), and a suggestion that arrives anyway is dropped here (the
+    # guarantee). The searcher's question is about to follow this message.
+    if suggestion and not suppress_suggestion:
+        chat_messages.append(suggestion)
 
     if not chat_messages and degraded_fallback:
-        # Every round rejected, or every synthesizer failed. Say so in Arabic
-        # rather than returning an empty turn.
+        # Every round rejected, or every synthesizer failed — so the responder
+        # was never called (trap §11.3) and there is nothing to assemble. Say so
+        # in a line written HERE, in Arabic, rather than returning an empty turn.
         chat_messages.append(degraded_text)
 
     unlock_notes = unlock_notes_payload(unlock_records or [])
@@ -1456,6 +1936,9 @@ async def resume_simple_search(
     prefs = user_preferences or {}
     detail_level = str(prefs.get("detail_level") or "")
     welcome_instruction = render_welcome_instruction(welcome) or None
+    # The same greeting as literal text — D7's fallback opens with it when
+    # the responder never gets to (see `_finalise`).
+    welcome_opening = compose_opening(welcome) if welcome else ""
     grant_judgment_access = judgment_access_resolver(supabase, user_id)
 
     deps = SearcherDeps(
@@ -1523,6 +2006,7 @@ async def resume_simple_search(
             case_id=case_id,
             deps=deps,
             welcome_instruction=welcome_instruction,
+            welcome_opening=welcome_opening,
             detail_level=detail_level,
             judgment_access=grant_judgment_access,
             recent_messages=recent_messages,
@@ -1547,5 +2031,6 @@ __all__ = [
     "resolved_from_attachment",
     "unlock_acknowledgement",
     "unlock_notes_payload",
+    "unselected_candidate_lines",
     "pause_slot_is_taken",
 ]

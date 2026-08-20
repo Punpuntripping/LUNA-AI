@@ -33,11 +33,12 @@ from adv_ms_common import (  # noqa: E402
 from agents.simple_search import runner as R  # noqa: E402
 from agents.simple_search.models import ResolvedObject, UnfoldResult  # noqa: E402
 from agents.simple_search.publisher import SimpleSearchPublishResult  # noqa: E402
+from agents.simple_search.responder import CardVerdict, ResponderOutput  # noqa: E402
 from agents.simple_search.searcher import SearcherDecision  # noqa: E402
 from agents.simple_search.synthesizer import SynthesizerOutput  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-from _fmodels import ScriptedModel, sequence_model  # noqa: E402
+from _fmodels import ScriptedModel, output_model, sequence_model  # noqa: E402
 from pydantic_ai.messages import ModelResponse, ToolCallPart  # noqa: E402
 
 FIXTURE = "unlock-02b"
@@ -94,6 +95,7 @@ async def main() -> int:
         return SimpleSearchPublishResult(item_id=f"stub-wi-{len(published)}",
                                          sse_events=[])
 
+    import agents.simple_search.responder as RSP
     import agents.simple_search.searcher as S
     import agents.simple_search.synthesizer as SY
 
@@ -102,9 +104,21 @@ async def main() -> int:
     # then reg-B REJECTS — which is what forces cycle 2.
     synth_script = sequence_model(
         SynthesizerOutput(synthesis_md="جواب النظام الأول الكامل [1].",
-                          used_refs=[1], wi_warranted=True, wi_title="النظام الأول"),
+                          used_refs=[1]),
         SynthesizerOutput(rejected=True, rejection_reason="ليس النظام المطلوب."),
     )
+    # The card verdict moved off ``SynthesizerOutput`` and onto the responder
+    # (responder plan §5/§6), and it is scripted rather than dropped because
+    # ``no_card_published`` below is the check it feeds: "the accepted answer's
+    # card is never published either" measures nothing if nobody asked for a
+    # card in the first place. `D1` is the accepted answer — the rejected one
+    # carries no body, so it never reaches the digest. Scripting it also keeps
+    # trap §11.9 shut: with only the searcher and synthesizer patched, the
+    # responder this probe now runs would go to a live model.
+    responder_script = output_model(ResponderOutput(
+        chat_summary_md="فتحت لك النظام الأول.",
+        cards=[CardVerdict(doc="D1", card=True, title="النظام الأول")],
+    ))
 
     real_unfold, real_publish = R.unfold, R.publish_simple_search_result
     real_record = R._record_searcher_pause
@@ -121,6 +135,7 @@ async def main() -> int:
         R._record_searcher_pause = _no_write_pause           # type: ignore[assignment]
         S.get_agent_model = lambda *_a, **_k: searcher_script.model   # type: ignore[assignment]
         SY.get_agent_model = lambda *_a, **_k: synth_script.model     # type: ignore[assignment]
+        RSP.get_agent_model = lambda *_a, **_k: responder_script.model  # type: ignore[assignment]
 
         hr("RUN — accept + reject on cycle 1, ask_user on cycle 2")
         result = await R.run_simple_search(
@@ -133,7 +148,8 @@ async def main() -> int:
         R._record_searcher_pause = real_record               # type: ignore[assignment]
 
     hr("OBSERVED")
-    print(f"searcher rounds: {searcher_script.calls} · synthesizer runs: {synth_script.calls}")
+    print(f"searcher rounds: {searcher_script.calls} · synthesizer runs: {synth_script.calls} "
+          f"· responder runs: {responder_script.calls}")
     print(f"objects unfolded (i.e. PAID FOR, had they been rulings): {unfolded}")
     print(f"publishes attempted: {len(published)}")
     print(f"\nresult.paused          = {result.paused}")
@@ -176,6 +192,7 @@ async def main() -> int:
         objects="chunk level — D12 unmetered, so the ledger cannot move",
         searcher_rounds=searcher_script.calls,
         synthesizer_runs=synth_script.calls,
+        responder_runs=responder_script.calls,
         objects_unfolded=unfolded,
         publishes_attempted=len(published),
         result={"paused": result.paused, "question_text": result.question_text,

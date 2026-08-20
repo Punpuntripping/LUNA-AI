@@ -15,9 +15,13 @@ The family:
 * :mod:`~agents.simple_search.searcher` — Layer 2. Resolves WHICH object the
   user means; owns ``ask_user``; hands off identity, never content.
 * :mod:`~agents.simple_search.synthesizer` — Layer 3. Validates the object,
-  answers in Arabic, decides whether a card is warranted, cites.
+  answers in Arabic, cites. One per document, blind to the others.
+* :mod:`~agents.simple_search.responder` — Layer 3. Runs ONCE per turn, after
+  every synthesizer: writes the message the user reads and owns the publish
+  gate. Design: ``.claude/plans/simple_search_responder.md``.
 * :mod:`~agents.simple_search.prompts` — six per-level synthesizer prompts +
-  the searcher prompt. Edited HERE, not in ``agents/prompts/*.md``.
+  the searcher prompt + the responder prompt. Edited HERE, not in
+  ``agents/prompts/*.md``.
 * :mod:`~agents.simple_search.runner` — the turn: the 3-cycle shared pool, the
   3-document fan-out, case B's searcher bypass. Entry point
   ``run_simple_search`` (plan §12a C1).
@@ -37,6 +41,7 @@ __all__ = [
     "prompts",
     "searcher",
     "synthesizer",
+    "responder",
     "runner",
     "publisher",
 ]

@@ -7,12 +7,20 @@ the carrier fixes and the second router patch; nothing in either should have
 touched it, which is exactly why it is re-run.
 
 Leg 2 is the uncarded `[1]`: the original eval saw a chat reply ship
-«…لذلك [1].» with `wi_warranted=False`, so no card, no
-`workspace_item_references` rows, and a dead marker on the user's screen. The
-fix lives in `runner._finalise` (`:796-806`) + `_strip_citation_markers`
-(`:126`). Verified two ways — the function directly on the exact string the
-original eval captured, and against every chat message the live runs above
-produced.
+«…لذلك [1].» with no card behind it — no `workspace_item_references` rows, and
+a dead marker on the user's screen. The agent that makes that call has since
+changed: the card decision left `SynthesizerOutput` and became the responder's
+`CardVerdict.card` (responder plan §5/§6), so an uncarded body is now one the
+**responder declined** — either `card=False`, or no verdict at all, which
+`ResponderOutput.verdict_for` returns as `None` and `_finalise` reads as "no
+card". The seam is the same and so is the fix: `runner._finalise` (`:1734-1777`)
+runs every body it is about to paste into the bubble through
+`_strip_citation_markers` (`:173`) on exactly that branch. Verified two ways —
+the function directly on the exact string the original eval captured, and
+against every chat message the live runs above produced. Note the live check's
+`carded or not has_marker` is now slack on the carded side: a carded answer
+contributes nothing to the bubble at all (§9), so its markers ship on the card
+where they resolve, and the bubble has no body to carry a dead one.
 
     .venv/Scripts/python.exe agents/simple_search/eval/rerun_b_regression.py
 """

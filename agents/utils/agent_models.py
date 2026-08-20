@@ -257,6 +257,17 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # one holds a single document and the reasoning is bounded, which is the
     # whole point of the family costing less.
     "simple_search_synthesizer":  _FLASH_MEDIUM,
+    # Layer-3 Task. Runs ONCE per lookup turn, after every synthesizer has
+    # settled: it writes the chat bubble's lead-in and owns the publish gate for
+    # the whole fan-out (the card decision used to be `wi_warranted`, emitted
+    # per-document by a synthesizer that could not see the other documents —
+    # .claude/plans/simple_search_responder.md §1.4/D2). Plain _FLASH, not
+    # _FLASH_MEDIUM like the two agents around it: the searcher reasons about
+    # ambiguous identity and the synthesizer about a whole document, while this
+    # one holds bounded digests (1600 chars each) and emits two short Arabic
+    # strings plus N card verdicts. Same policy as its deep_search counterpart,
+    # `planner_responder`, which does the same job at the same shape.
+    "simple_search_responder":    _FLASH,
     # Layer-3 task agent invoked as a router tool (edit_artifact) — one flash
     # call over a full injected artifact emitting a batched surgical-edit tool
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the

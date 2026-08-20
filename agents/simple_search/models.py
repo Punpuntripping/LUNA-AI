@@ -3,8 +3,10 @@
 ``simple_search`` puts ONE legal object in front of the user (plan
 ``.claude/plans/simple_search_family.md``). This module holds the vocabulary the
 whole family agrees on: the **six entry levels** (§4), the **resolved object**
-the searcher hands the synthesizer (§2.1.6), the **ladder decision** (§5), and
-the **unfold result** the synthesizer is prompted with (§2.2).
+the searcher hands the synthesizer (§2.1.6), the **ladder decision** (§5), the
+**unfold result** the synthesizer is prompted with (§2.2), and the **responder
+digest** the runner hands the turn's closer
+(``.claude/plans/simple_search_responder.md`` §6).
 
 This module is **pure** — it imports only ``pydantic`` and the stdlib, never
 ``pydantic_ai``, never ``supabase``, never any executor package. That is the
@@ -19,6 +21,7 @@ model cost ``tier_1``/``tier_2`` — see ``CLAUDE.md`` § "Layer vs Tier".
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -338,6 +341,80 @@ class UnfoldResult(BaseModel):
         return None
 
 
+# --------------------------------------------------------------------------- #
+# The responder's per-document digest — its input (responder plan §6).
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class ResponderDocDigest:
+    """ONE answered document, reduced to what the responder needs to judge it.
+
+    The responder (``.claude/plans/simple_search_responder.md`` §6) runs once per
+    turn, after every synthesizer has settled, and does two things with this
+    list: it frames the turn in one Arabic message, and it rules on which
+    answers deserve a durable workspace card. Both jobs are about *what a
+    document is and how much of it came back* — neither needs the document.
+
+    So this is a **digest, not a payload**, and that is trap §11.8: three whole
+    أنظمة shipped into a flash context erases the family's cost premise, which
+    is the only reason the family exists. :attr:`excerpt` is clipped at
+    ``responder.RESPONDER_EXCERPT_CHARS`` (1600, following the deep_search
+    responder's ``_SYNTHESIS_DIGEST_CHARS`` — ``planner/prompts.py:277``) and
+    :attr:`body_chars` carries the *full* length beside it, so "is this a
+    two-sentence pointer or a whole نظام?" — the actual card question — is
+    answerable from the digest without ever shipping the body.
+
+    A ``dataclass``, not a ``BaseModel``: nothing crosses a wire or an LLM
+    boundary here. The runner builds these from its own ``_Answer`` objects
+    (``runner.py:504``) and hands them straight to
+    :func:`agents.simple_search.prompts.build_responder_user_message`; there is
+    no untrusted input to validate, and the model's *output* schema
+    (``responder.CardVerdict``) is the pydantic half of the contract.
+
+    Attributes:
+        label: the stable ``D1``/``D2``/``D3`` handle the runner assigns in
+            **dispatch order** — never a ``document_key`` and never a UUID.
+            Dispatch order matters because ``answers`` is keyed by
+            ``document_key`` and insertion-ordered by *round*, so a document
+            answered in cycle 2 (after a rejection) would otherwise be framed
+            after documents the user asked for later (§7 "Order"). This is the
+            same alias discipline as the router's ``WI-{n}``, and
+            ``responder.ResponderDeps.doc_labels`` is the allow-list the output
+            validator retries against.
+        level: which of the six §4 entry levels this document was opened at —
+            the responder names the *kind* of object («النظام وأمامه لائحته
+            التنفيذية»), and the level is how it knows.
+        object_title: the display title the user would recognise, from
+            ``ResolvedObject.title``.
+        excerpt: a bounded head slice of ``synthesis_md``. Enough to frame the
+            answer and judge its substance; never enough to retype it (D4).
+        body_chars: the full ``len(synthesis_md)``. The one number that makes
+            "a card for two sentences is clutter" (§6) a judgeable call rather
+            than a guess about how much the excerpt left out.
+        truncated: ``UnfoldResult.truncated`` — the unfold dropped units or
+            chars. A body so truncated that a card would mislead is an explicit
+            decline case (§6), so this must be visible (D3).
+        summary_payload: the §5 ladder served summaries in place of the full
+            text (``UnfoldResult.payload == "summary"``). Same reason as
+            ``truncated``, different failure: the text is whole but it is not
+            the document.
+        already_delivered: this document shipped on the leg that paused (§8).
+            The responder must not re-announce it, and it must not re-grant it a
+            card — the paused leg already published one, and a second publish is
+            a duplicate row in a 15-item-capped workspace.
+    """
+
+    label: str
+    level: SimpleSearchLevel
+    object_title: str
+    excerpt: str
+    body_chars: int
+    truncated: bool = False
+    summary_payload: bool = False
+    already_delivered: bool = False
+
+
 __all__ = [
     "SimpleSearchLevel",
     "SIMPLE_SEARCH_LEVELS",
@@ -350,6 +427,7 @@ __all__ = [
     "LadderPayload",
     "UnfoldSection",
     "UnfoldResult",
+    "ResponderDocDigest",
     "RUNG_NOT_APPLICABLE",
     "RUNG_FULL_CONTENT",
     "RUNG_SUMMARIES",

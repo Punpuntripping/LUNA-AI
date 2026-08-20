@@ -4,25 +4,32 @@ The fixture's own words: *DESIGN QUESTION, surfaced not assumed.* So this script
 asserts the CURRENT behaviour precisely rather than judging it, and the report
 turns the measurement into the decision.
 
-**What is scripted, and what is emphatically not.** The searcher and synthesizer
-models are ``FunctionModel``s (``tests/_fmodels.py`` pattern) because the trap is
-*structural* — we need a guaranteed reject-then-resolve-something-else turn, and
-no prompt can be relied on to produce one on demand. Everything downstream of
-the decision is REAL: ``unfold`` really runs, ``judgment_access_resolver`` really
-calls ``library_service.resolve_access``, and the ledger really gets written.
+**What is scripted, and what is emphatically not.** All three of the family's
+models — searcher, synthesizer, **responder** — are ``FunctionModel``s
+(``tests/_fmodels.py`` pattern) because the trap is *structural*: we need a
+guaranteed reject-then-resolve-something-else turn, and no prompt can be relied
+on to produce one on demand. Scripting two of the three would also send the
+third to a live model (responder plan trap §11.9) — real money, real Arabic in
+the assertions below. Everything downstream of the decisions is REAL:
+``unfold`` really runs, ``judgment_access_resolver`` really calls
+``library_service.resolve_access``, the ledger really gets written, and the
+responder's ``card=True`` verdict really publishes through the publisher.
 
     cycle 1  searcher → ruling X   → synthesizer REJECTS   → X's unlock charged
     cycle 2  searcher → ruling Y   → synthesizer ACCEPTS   → Y's unlock charged
+    finalise responder → D1 carded → Y's body lives on the card, not the bubble
 
-**The honest form of "the reply never mentions X".** The synthesizer's prose is
-scripted here, so asserting "the text doesn't mention X" would be circular — I
-wrote the text. What is *not* circular, and is what the fixture is really about,
-is whether the system has any **mechanism** to surface it. Three structural
-facts are measured instead:
+**The honest form of "the reply never mentions X".** The prose is scripted here,
+so asserting "the text doesn't mention X" would be circular — I wrote the text.
+What is *not* circular, and is what the fixture is really about, is whether the
+system has any **mechanism** to surface it. Three structural facts are measured
+instead:
 
 1. the ledger delta for the turn (the money actually spent);
-2. what the surviving synthesizer was handed — if X's charge is not in its input,
-   no prompt of any kind could mention it;
+2. what the agents that write to the user were handed — the surviving
+   synthesizer (whose body is now the CARD) and the responder (whose
+   ``chat_summary_md`` is now the bubble's lead-in, responder plan §9). If X's
+   charge is in neither input, no prompt of any kind could mention it;
 3. whether ``SimpleSearchRunResult`` carries any field an SSE layer or UI could
    read to tell the user. If the dataclass has no such field, the silence is
    structural rather than a wording choice.
@@ -46,6 +53,7 @@ from adv_ms_common import (  # noqa: E402
 
 from agents.simple_search import runner as R  # noqa: E402
 from agents.simple_search.models import ResolvedObject  # noqa: E402
+from agents.simple_search.responder import CardVerdict, ResponderOutput  # noqa: E402
 from agents.simple_search.searcher import SearcherDecision  # noqa: E402
 from agents.simple_search.synthesizer import SynthesizerOutput  # noqa: E402
 
@@ -53,7 +61,7 @@ import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-from _fmodels import sequence_model  # noqa: E402
+from _fmodels import output_model, sequence_model  # noqa: E402
 
 FIXTURE = "unlock-01"
 QUESTION = "اعطيني تفاصيل حكم تعيين حارس قضائي على مؤسسة المورث"
@@ -136,6 +144,31 @@ async def main() -> int:
         })
         return msg
 
+    # The same capture, one agent later. The reply-writing agent MOVED: the
+    # surviving synthesizer used to write the chat text, so «could the reply
+    # have named X?» was a question about ITS input. Now that body is the
+    # card's, and the bubble's lead-in is the responder's (responder plan §9) —
+    # so the structural question has to be asked of the responder's input too,
+    # or this section grades an agent that no longer speaks to the user.
+    responder_inputs: list[dict] = []
+    real_responder_builder = R.build_responder_user_message
+
+    def _watched_responder_builder(question, docs, **kw):
+        msg = real_responder_builder(question, docs, **kw)
+        responder_inputs.append({
+            "labels": [d.label for d in docs],
+            "dispatched": kw.get("dispatched"),
+            "message_chars": len(msg),
+            "mentions_X_caseid": xid in msg,
+            "mentions_X_caseref": xref in msg,
+            "mentions_Y_caseref": yref in msg,
+            "mentions_charge_word": any(
+                w in msg for w in ("رصيد", "unlock", "فتح المصادر", "charged")
+            ),
+        })
+        return msg
+
+    import agents.simple_search.responder as RSP
     import agents.simple_search.searcher as S
     import agents.simple_search.synthesizer as SY
 
@@ -153,16 +186,29 @@ async def main() -> int:
         SynthesizerOutput(rejected=True,
                           rejection_reason="هذا ليس الحكم المقصود — المطلوب حكم التصفية."),
         SynthesizerOutput(synthesis_md="هذا هو الحكم المطلوب وتفاصيله [1].",
-                          used_refs=[1], wi_warranted=True, wi_title="حكم التصفية"),
+                          used_refs=[1]),
     )
+    # The card decision left ``SynthesizerOutput`` (responder plan §5) and became
+    # the responder's, per document. It is scripted rather than dropped because
+    # the publisher is REAL in this probe — the workspace item it writes is what
+    # `record_workspace_items` below exists to clean up, and a paid-for ruling
+    # that leaves no artifact is not the money path D12 describes. `D1` is the
+    # only label there is: X was REJECTED, so its body never reaches `_finalise`
+    # and Y's answer is this turn's first and only document.
+    responder_script = output_model(ResponderOutput(
+        chat_summary_md="هذا هو الحكم الذي طلبته، وتفاصيله في البطاقة.",
+        cards=[CardVerdict(doc="D1", card=True, title="حكم التصفية")],
+    ))
 
     written_before_run = {r["unlock_id"] for r in load()["ledger_rows_created"]}
     result = None
     try:
         R.unfold = _watched_unfold                                  # type: ignore[assignment]
         R.build_synthesizer_user_message = _watched_builder         # type: ignore[assignment]
+        R.build_responder_user_message = _watched_responder_builder  # type: ignore[assignment]
         S.get_agent_model = lambda *_a, **_k: searcher_script.model  # type: ignore[assignment]
         SY.get_agent_model = lambda *_a, **_k: synth_script.model    # type: ignore[assignment]
+        RSP.get_agent_model = lambda *_a, **_k: responder_script.model  # type: ignore[assignment]
 
         hr("RUN — reject-then-resolve-another")
         result = await R.run_simple_search(
@@ -173,14 +219,17 @@ async def main() -> int:
     finally:
         R.unfold = real_unfold                                      # type: ignore[assignment]
         R.build_synthesizer_user_message = real_builder             # type: ignore[assignment]
+        R.build_responder_user_message = real_responder_builder     # type: ignore[assignment]
 
     # ── What happened ───────────────────────────────────────────────────────
     hr("OBSERVED")
     after_j = ledger(sb, "judgment")
     turn_new = [r for r in after_j if str(r["unlock_id"]) not in ids(base_j)]
     charged_case_ids = {str(r["content_id"]) for r in turn_new}
-    print(f"searcher rounds: {searcher_script.calls} · synthesizer runs: {synth_script.calls}")
+    print(f"searcher rounds: {searcher_script.calls} · synthesizer runs: {synth_script.calls} "
+          f"· responder runs: {responder_script.calls}")
     print(f"unfolds performed: {len(unfold_log)}")
+    print(f"cards published: {len(result.created_item_ids)}")
     print(f"ledger judgment rows: {len(base_j)} → {len(after_j)}  (Δ +{len(turn_new)})")
     for r in turn_new:
         who = "X (rejected)" if str(r["content_id"]) == xid else (
@@ -197,6 +246,11 @@ async def main() -> int:
     print(f"synthesizer inputs captured: {len(synth_inputs)}")
     for i, s in enumerate(synth_inputs, 1):
         print(f"  [{i}] objects={s['n_objects']} refs={s['ref_ids']} "
+              f"X_ref_in_msg={s['mentions_X_caseref']} charge_word={s['mentions_charge_word']}")
+    spokesman = responder_inputs[-1] if responder_inputs else {}
+    print(f"responder inputs captured: {len(responder_inputs)}")
+    for i, s in enumerate(responder_inputs, 1):
+        print(f"  [{i}] docs={s['labels']} dispatched={s['dispatched']} "
               f"X_ref_in_msg={s['mentions_X_caseref']} charge_word={s['mentions_charge_word']}")
 
     result_fields = [f.name for f in dataclasses.fields(R.SimpleSearchRunResult)]
@@ -224,6 +278,11 @@ async def main() -> int:
             "the accepted synthesizer's input contains no trace of X's charge",
          "ok": bool(surviving) and not surviving["mentions_X_caseref"]
                and not surviving["mentions_charge_word"]},
+        {"id": "responder_cannot_know", "want":
+            "nor does the responder's — the agent that writes the bubble sees "
+            "only the answers that survived, never the ledger",
+         "ok": bool(spokesman) and not spokesman["mentions_X_caseref"]
+               and not spokesman["mentions_charge_word"]},
         {"id": "result_has_no_unlock_field", "want":
             "SimpleSearchRunResult exposes nothing an SSE/UI layer could surface",
          "ok": not unlock_field},
@@ -238,10 +297,12 @@ async def main() -> int:
         verdict="CONFIRMED — 2 unlocks charged, the rejected one is unrefunded and unmentioned"
         if all(c["ok"] for c in checks) else "PARTIAL — see checks",
         question=QUESTION,
-        scripted=["searcher (2 rounds)", "synthesizer (reject, accept)"],
+        scripted=["searcher (2 rounds)", "synthesizer (reject, accept)",
+                  "responder (1 call — D1 carded)"],
         real=["unfold", "judgment_access_resolver", "library_unlocks", "publisher"],
         searcher_rounds=searcher_script.calls,
         synthesizer_runs=synth_script.calls,
+        responder_runs=responder_script.calls,
         unfolds=unfold_log,
         ledger_before_judgment=len(base_j),
         ledger_after_judgment=len(after_j),
@@ -250,7 +311,9 @@ async def main() -> int:
         X={"case_id": xid, "case_ref": xref, "charged": x_charged, "outcome": "REJECTED"},
         Y={"case_id": yid, "case_ref": yref, "charged": y_charged, "outcome": "ANSWERED"},
         chat_messages=list(result.chat_messages),
+        cards_published=list(result.created_item_ids),
         synthesizer_inputs=synth_inputs,
+        responder_inputs=responder_inputs,
         result_dataclass_fields=result_fields,
         unlock_accounting_fields=unlock_field,
         checks=checks,
