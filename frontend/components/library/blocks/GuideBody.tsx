@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
 import {
+  normalizeServiceFactsTable,
   prettifyGuideUrls,
   splitGuideMarkdown,
   stripDuplicatedLead,
@@ -45,7 +46,13 @@ export function GuideBody({
   dedupeLead?: string;
   className?: string;
 }) {
-  const segments = splitGuideMarkdown(guideMd);
+  // ⚠ BEFORE the split, deliberately. Every guide states the same five facts
+  // (اسم الخدمة، الجهة المقدمة، الفئة المستفيدة، قناة التقديم، الرابط الرسمي) but
+  // only 21 of 169 wrote them as a table — the rest used bold label lines, so
+  // the page changed shape from guide to guide. This folds all of them onto the
+  // one «العنصر» table. Whole-body (not per-segment) because the block sits
+  // wherever the author put it, and only the FIRST block is ever converted.
+  const segments = splitGuideMarkdown(normalizeServiceFactsTable(guideMd));
   const byRef = new Map(
     (images ?? []).map((image) => [image.image_ref, image] as const),
   );

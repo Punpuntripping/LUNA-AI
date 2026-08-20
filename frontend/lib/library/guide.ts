@@ -210,6 +210,377 @@ export function prettifyGuideUrls(md: string): string {
     });
 }
 
+/* ---------------------------------------------------------------- *
+ * «العنصر» — the service-facts card, in ONE shape for all 169 guides
+ * ---------------------------------------------------------------- */
+
+/**
+ * The canonical rows, in the order every guide prints them.
+ *
+ * ⚠ MEASURED AGAINST THE WHOLE CORPUS, not invented. Only 21 of 169 bodies open
+ * with a facts TABLE; 130 write the very same facts as a run of bold label
+ * lines (`**الخدمة:** …`) and 18 carry no facts block at all. Worse, the shapes
+ * disagree on the label wording — الخدمة / اسم الخدمة, المستفيد / المستفيدون /
+ * الفئة المستفيدة, القناة / قناة التقديم — and the tables disagree on the header
+ * too (العنصر|الوصف, العنصر|التفاصيل, معلومات الخدمة|التفاصيل). The reader met a
+ * differently-shaped page per guide.
+ *
+ * `aliases` are the labels the corpus actually uses (counted over every bold
+ * line in every body); `canon` is the wording the guides that already ship a
+ * table agree on. Folding one onto the other is what makes the card identical
+ * everywhere.
+ */
+const SERVICE_FACT_ROWS: ReadonlyArray<{
+  canon: string;
+  aliases: readonly string[];
+}> = [
+  { canon: "اسم الخدمة", aliases: ["اسم الخدمة", "الخدمة", "عنوان الخدمة"] },
+  {
+    canon: "عن الخدمة",
+    aliases: ["ما هي الخدمة", "وصف الخدمة", "تعريف الخدمة", "نبذة عن الخدمة"],
+  },
+  {
+    canon: "الجهة المقدمة",
+    aliases: [
+      "الجهة المقدمة",
+      "الجهة",
+      "الجهة المسؤولة",
+      "جهة تقديم الخدمة",
+      "مقدم الخدمة",
+    ],
+  },
+  {
+    canon: "الفئة المستفيدة",
+    aliases: [
+      "الفئة المستفيدة",
+      "الفئات المستفيدة",
+      "المستفيد",
+      "المستفيدون",
+      "المستفيدين",
+      "المستفيد من الخدمة",
+      "الفئة المستهدفة",
+    ],
+  },
+  {
+    canon: "قناة التقديم",
+    aliases: ["قناة التقديم", "قنوات التقديم", "القناة", "قناة الخدمة"],
+  },
+  {
+    canon: "الرابط الرسمي",
+    aliases: ["الرابط الرسمي", "الرابط", "رابط الخدمة", "الموقع الرسمي"],
+  },
+];
+
+/** First-column header wordings that mark a table as THE facts table. */
+const FACTS_TABLE_HEADS: readonly string[] = [
+  "العنصر",
+  "العناصر",
+  "معلومات الخدمة",
+  "معلومات أساسية",
+  "بطاقة الخدمة",
+  "البند",
+  "البيان",
+  "المعلومة",
+];
+
+/**
+ * A `**label:** value` / `- **label**: value` line — both colon placements, and
+ * the value is OPTIONAL: 4 guides put the label on its own line and the value
+ * on the lines below it. The line must OPEN with the bold run (after an
+ * optional bullet), which is what keeps `1. …اضغط على **"ابدأ الخدمة"**` — a
+ * step with bold inside it — from ever being read as a label.
+ */
+const BOLD_LABEL_LINE =
+  /^\s*(?:[-*+]\s+)?\*\*\s*([^*\n]+?)\s*\*\*\s*[:：]?\s*(.*?)\s*$/;
+
+/**
+ * A line that ends a label's value block. Bullets are deliberately absent —
+ * `- الأشخاص ذوو الإعاقة` IS the value of «المستفيدون» in 4 guides.
+ */
+function isStructuralLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("|") ||
+    /^-{3,}$/.test(trimmed) ||
+    /^\d+[._)]/.test(trimmed)
+  );
+}
+/** «**بطاقة تعريفية بالخدمة**» — a caption the table's own header replaces. */
+const FACTS_CAPTION_LINE = /^\s*\*{1,2}\s*بطاقة[^*\n]*\*{1,2}\s*$/;
+/** Any `| … |` row. A table needs this PLUS a separator on the next line. */
+const TABLE_ROW = /^\s*\|(.*)\|\s*$/;
+const TABLE_SEPARATOR = /^\s*\|[\s:|-]+\|\s*$/;
+
+/**
+ * Strip the decoration a label can carry so two spellings compare equal: bold
+ * stars, a trailing colon (inside OR outside the stars) and the question mark
+ * that «ما هي الخدمة؟» ends with.
+ *
+ * DISPLAY-SAFE — the result is what an unrecognised row prints, so it must not
+ * alter the Arabic itself. Folding for LOOKUP is `factLookupKey`'s job.
+ */
+function factLabelKey(raw: string): string {
+  return (raw ?? "")
+    .replace(/\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[:：؛]+$/, "")
+    .replace(/[؟?]+$/, "")
+    .trim();
+}
+
+/**
+ * ⚠ TASHKEEL IS WHY THIS EXISTS. The corpus writes «الجهة المقدّمة» with a
+ * shadda and «الُمستفيدون» with a damma — visually the alias, but a different
+ * string, so a plain comparison misses them and the row falls through as
+ * unrecognised and sorts to the bottom of the card. Folds the harakat, the
+ * tatweel and the alef hamza forms. LOOKUP ONLY: never printed.
+ */
+function factLookupKey(label: string): string {
+  return label
+    .replace(/[ً-ْٰـ]/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** `rank` orders the canonical rows; -1 keeps an unrecognised row as authored. */
+function canonicalFact(raw: string): { label: string; rank: number } {
+  const label = factLabelKey(raw);
+  const key = factLookupKey(label);
+  for (let index = 0; index < SERVICE_FACT_ROWS.length; index += 1) {
+    const aliases = SERVICE_FACT_ROWS[index].aliases;
+    if (aliases.some((alias) => factLookupKey(alias) === key)) {
+      return { label: SERVICE_FACT_ROWS[index].canon, rank: index };
+    }
+  }
+  return { label, rank: -1 };
+}
+
+/**
+ * ⚠ THE ONE LINE SHAPE THAT MUST NEVER BECOME A TABLE ROW. `**الخطوة 3:** …` is
+ * how the corpus writes its STEPS — ~250 of them across the wing, far more than
+ * there are facts. They match `BOLD_FACT_LINE` perfectly, so without this guard
+ * the normaliser would eat a guide's entire procedure into a table.
+ */
+function isStepLabel(raw: string): boolean {
+  return /^الخطوة\b/.test(factLookupKey(factLabelKey(raw)));
+}
+
+interface FactRow {
+  label: string;
+  value: string;
+  rank: number;
+}
+
+/**
+ * Canonical rows first, in canonical order; anything unrecognised keeps its
+ * authored position AFTER them — dropping it would lose real content («الرسوم»,
+ * «مدة التنفيذ» appear in a handful of tables).
+ */
+function orderFactRows(rows: readonly FactRow[]): FactRow[] {
+  const seen = new Set<string>();
+  const unique = rows.filter((row) => {
+    if (!row.label || !row.value) return false;
+    if (seen.has(row.label)) return false;
+    seen.add(row.label);
+    return true;
+  });
+  const known = unique
+    .filter((row) => row.rank >= 0)
+    .sort((a, b) => a.rank - b.rank);
+  const rest = unique.filter((row) => row.rank < 0);
+  return [...known, ...rest];
+}
+
+/** A cell may not contain a raw `|`, and a hard break inside one breaks GFM. */
+function factCell(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+}
+
+function renderFactsTable(rows: readonly FactRow[]): string {
+  return [
+    "| العنصر | الوصف |",
+    "| --- | --- |",
+    ...rows.map((row) => `| ${factCell(row.label)} | ${factCell(row.value)} |`),
+  ].join("\n");
+}
+
+/**
+ * Split a line that carries the WHOLE card on it into one line per fact.
+ *
+ * Two guides (18905, 245508) write «**ما هي الخدمة؟** … **المستفيد:** …
+ * **قناة التقديم:** …» as a single paragraph. Line-oriented scanning sees one
+ * label whose value swallows the rest of the card.
+ *
+ * Returns null unless ≥2 RECOGNISED fact labels are on the line — the same
+ * guard the block scanners use, and the reason an ordinary sentence with two
+ * bold phrases in it is never touched.
+ */
+function explodeInlineFactLine(line: string): string[] | null {
+  const marks = [...line.matchAll(/\*\*\s*([^*\n]+?)\s*\*\*/g)];
+  if (marks.filter((m) => canonicalFact(m[1]).rank >= 0).length < 2) return null;
+
+  const pieces: string[] = [];
+  const first = marks[0].index ?? 0;
+  // Any prose before the first label stays a line of its own — it is the
+  // author's sentence, not a cell.
+  if (first > 0) pieces.push(line.slice(0, first).trim());
+  for (let k = 0; k < marks.length; k += 1) {
+    const start = marks[k].index ?? 0;
+    const end = k + 1 < marks.length ? (marks[k + 1].index ?? line.length) : line.length;
+    pieces.push(line.slice(start, end).trim());
+  }
+  return pieces.filter(Boolean);
+}
+
+function splitTableCells(line: string): string[] {
+  const inner = TABLE_ROW.exec(line)?.[1] ?? "";
+  return inner.split("|").map((cell) => cell.trim());
+}
+
+/**
+ * Rewrite a guide's service-facts block into the canonical «العنصر» table.
+ *
+ * Handles the two shapes the corpus uses — an existing (differently-headed)
+ * table, and a run of bold label lines — and converts only the FIRST block it
+ * finds, because a guide has exactly one. A body with no recognisable block is
+ * returned BYTE-FOR-BYTE UNCHANGED: 18 guides have no facts to tabulate, and
+ * inventing an empty card for them would be worse than the inconsistency.
+ *
+ * ⚠ TWO GUARDS CARRY THE WHOLE FUNCTION:
+ *   1. `isStepLabel` — see its note. Steps outnumber facts 2:1.
+ *   2. ≥2 RECOGNISED labels per block. One stray `**ملاحظة:** …` in prose is not
+ *      a facts card, and promoting it to a table would be a visible lie.
+ *
+ * Runs BEFORE `splitGuideMarkdown` (a facts block never contains an image hole)
+ * and before `prettifyGuideUrls`, so a URL moved into the الرابط الرسمي cell
+ * still gets its readable label.
+ */
+export function normalizeServiceFactsTable(md: string): string {
+  const source = md ?? "";
+  if (!source) return source;
+
+  const lines = source.split("\n");
+
+  for (let i = 0; i < lines.length; i += 1) {
+    // ---- Shape A: a table already there, headed some other way ----
+    if (
+      TABLE_ROW.test(lines[i]) &&
+      i + 1 < lines.length &&
+      TABLE_SEPARATOR.test(lines[i + 1])
+    ) {
+      const head = splitTableCells(lines[i]).filter(Boolean);
+      const headKey = factLookupKey(factLabelKey(head[0]));
+      const headIsColumnName = FACTS_TABLE_HEADS.some(
+        (name) => factLookupKey(name) === headKey,
+      );
+      // ⚠ SOME TABLES HAVE NO HEADER ROW. A handful open straight on
+      // `| **الخدمة** | … |` with the separator under it, so GFM treats the
+      // first FACT as the header. Detect that and keep the row as data —
+      // otherwise the service's own name is silently eaten as a column title.
+      const headIsFactRow = head.length >= 2 && canonicalFact(head[0]).rank >= 0;
+      if (head.length >= 2 && (headIsColumnName || headIsFactRow)) {
+        let end = i + 2;
+        const rows: FactRow[] = [];
+        if (headIsFactRow && !headIsColumnName) {
+          const { label, rank } = canonicalFact(head[0]);
+          rows.push({ label, value: head.slice(1).join(" — ").trim(), rank });
+        }
+        while (end < lines.length && TABLE_ROW.test(lines[end])) {
+          const cells = splitTableCells(lines[end]).filter(
+            (cell, index, all) =>
+              !(cell === "" && (index === 0 || index === all.length - 1)),
+          );
+          if (cells.length >= 2) {
+            const { label, rank } = canonicalFact(cells[0]);
+            rows.push({ label, value: cells.slice(1).join(" — ").trim(), rank });
+          }
+          end += 1;
+        }
+        if (rows.filter((row) => row.rank >= 0).length >= 2) {
+          lines.splice(i, end - i, renderFactsTable(orderFactRows(rows)));
+          return lines.join("\n");
+        }
+      }
+    }
+
+    // ---- Shape B: a run of bold label lines ----
+    //
+    // The corpus writes this run FOUR ways and all four have to land in the
+    // same table:
+    //   `**الخدمة:** قيمة`                    — value inline, lines adjacent
+    //   `- **الخدمة**: قيمة`                  — the same as a bullet list
+    //   `**المستفيد:** قيمة` + BLANK + next   — entries split by blank lines
+    //   `**المستفيدون:**` \n `- قيمة` \n `- قيمة` — value on the FOLLOWING lines
+    // A whole card on one line becomes one line per fact, then falls through to
+    // the scanner below. Safe to mutate: every failure path returns `source`,
+    // the untouched original, so a rejected block leaves nothing behind.
+    const exploded = explodeInlineFactLine(lines[i]);
+    if (exploded) lines.splice(i, 1, ...exploded);
+
+    if (BOLD_LABEL_LINE.test(lines[i])) {
+      const rows: FactRow[] = [];
+      let cursor = i;
+      let consumedTo = i; // exclusive; never includes a trailing blank
+
+      while (cursor < lines.length) {
+        // Tolerate ONE blank line between entries, but only between them: a
+        // wider gap stops being a card and starts being the document.
+        let probe = cursor;
+        if (rows.length > 0 && lines[probe]?.trim() === "") probe += 1;
+
+        const match = BOLD_LABEL_LINE.exec(lines[probe] ?? "");
+        if (!match || isStepLabel(match[1])) break;
+
+        const { label, rank } = canonicalFact(match[1]);
+        const inline = (match[2] ?? "").trim();
+        let value = inline;
+        let last = probe;
+
+        if (!value) {
+          // Label alone on its line ⇒ the value is the lines below it, up to
+          // the blank line that ends the entry. A bullet list collapses into
+          // one cell; that is the only faithful way to put it in a table.
+          const parts: string[] = [];
+          let scan = probe + 1;
+          while (scan < lines.length) {
+            const line = lines[scan];
+            if (line.trim() === "" || isStructuralLine(line)) break;
+            if (BOLD_LABEL_LINE.test(line)) break;
+            parts.push(line.replace(/^\s*[-*+]\s*/, "").trim());
+            scan += 1;
+          }
+          if (!parts.length) break;
+          value = parts.join(" • ");
+          last = scan - 1;
+        }
+
+        rows.push({ label, value, rank });
+        consumedTo = last + 1;
+        cursor = last + 1;
+      }
+
+      if (rows.filter((row) => row.rank >= 0).length >= 2) {
+        // Swallow «**بطاقة تعريفية بالخدمة**» sitting directly above the run —
+        // the table's own header now says what it said.
+        let start = i;
+        if (start > 0 && FACTS_CAPTION_LINE.test(lines[start - 1])) start -= 1;
+        lines.splice(
+          start,
+          consumedTo - start,
+          renderFactsTable(orderFactRows(rows)),
+        );
+        return lines.join("\n");
+      }
+      i = consumedTo > i ? consumedTo - 1 : i;
+    }
+  }
+
+  return source;
+}
+
 /**
  * Drop the guide's own title + abstract when the PAGE already rendered them.
  *
