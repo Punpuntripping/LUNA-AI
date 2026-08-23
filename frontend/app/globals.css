@@ -401,6 +401,21 @@
     opacity: 0.3;
     border-radius: 2px;
   }
+
+  /*
+   * Horizontal card strips (`RelatedStrip`) hide the scrollbar because the
+   * cut-off card at the edge is the affordance, not the bar. Scrolling itself
+   * stays fully intact — wheel, trackpad, touch, and keyboard (the track is
+   * `tabIndex={0}` so arrow keys reach it). This ONLY paints; never use it on a
+   * region that has no other visible cue that it scrolls.
+   */
+  .scrollbar-none {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 /*

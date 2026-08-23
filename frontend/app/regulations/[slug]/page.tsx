@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { LibraryUseBeacon } from "@/components/library/mine/LibraryUseBeacon";
 import { notFound } from "next/navigation";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Link2 } from "lucide-react";
 import {
   LibraryPageShell,
   TopicBreadcrumbs,
@@ -15,8 +15,10 @@ import {
   ArticleBody,
   GateBanner,
   OfficialSources,
+  RelatedStrip,
   AskRayhanWidget,
 } from "@/components/library/blocks";
+import { RegulationCard } from "@/components/library/hub/RegulationCard";
 import { FullContentGate } from "@/components/library/FullContentGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildLegislation, buildPaywallFragment } from "@/lib/seo/schema";
@@ -176,6 +178,25 @@ export default async function RegulationDocPage({ params }: PageProps) {
     }),
     ...(doc.gate === "gated" ? buildPaywallFragment(".gated-body") : {}),
   };
+
+  // The two related-items strips. UNGATED BY CONSTRUCTION: this page is baked
+  // once for everybody (24h ISR), so anon, free and paid readers get identical
+  // bytes here — there is nothing to branch on.
+  //
+  // Both lists are أنظمة on THIS wing, which is the one place D13's dedup bites:
+  // the backend removes every `cited_regulations` id from `related_next` before
+  // sending, so the same نظام can never appear in both strips.
+  //
+  // The `slug` filter is the ISR-staleness guard every wing uses — an entry
+  // without one is dropped rather than rendered as a dead card.
+  const citedRegulations = (doc.cited_regulations ?? []).filter((item) =>
+    Boolean(item.slug),
+  );
+  const relatedRegulations = (doc.related_next ?? []).filter((item) =>
+    Boolean(item.slug),
+  );
+  const hasRelated =
+    citedRegulations.length > 0 || relatedRegulations.length > 0;
 
   return (
     <LibraryPageShell maxWidth="hub">
@@ -337,6 +358,31 @@ export default async function RegulationDocPage({ params }: PageProps) {
           )}
         </div>
       </div>
+
+      {/* Related items — the last in-flow content, above the CTA and the footer.
+          «الأنظمة المذكورة» leads because it is factual (this نظام really does
+          cite those); «اقرأ تاليًا» is a similarity guess and follows. Full page
+          width, outside the reading column: cards to scan, not text to read.
+
+          No `sectorSlugs`: `getSectorSlugMap()` fetches on a 1h window and Next
+          takes the MINIMUM revalidate across a render, so passing it would cut
+          this page's ISR window from 24h to 1h — 24× the re-renders across the
+          whole baked corpus, to link a chip. The pills render as plain text. */}
+      {hasRelated && (
+        <div className="mt-12 space-y-8">
+          <RelatedStrip title="الأنظمة المذكورة" icon={Link2}>
+            {citedRegulations.map((item) => (
+              <RegulationCard key={item.slug} item={item} />
+            ))}
+          </RelatedStrip>
+
+          <RelatedStrip title="اقرأ تاليًا">
+            {relatedRegulations.map((item) => (
+              <RegulationCard key={item.slug} item={item} />
+            ))}
+          </RelatedStrip>
+        </div>
+      )}
 
       <AskRayhanWidget
         pageType="regulation"

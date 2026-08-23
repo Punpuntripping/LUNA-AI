@@ -17,6 +17,21 @@ truncation or hidden bytes. The load-bearing assertions are the other three:
   * The wing is OPEN — ``get_compliance_guide`` resolves no gate and truncates
     nothing (pinned by a test that makes ``resolve_gate`` explode).
 
+⚠ «nothing here asserts about truncation» NEEDED A CAVEAT ON 2026-08-23. It still
+holds for BYTES — no guide is ever cut, and that is the whole SEO bet. But the
+hub's ``q`` stopped being a Python substring pass over ``title + summary`` that
+day and became BM25 over the ``compliance`` corpus in ``search_index``
+(``.claude/plans/compliance_entity_sections.md`` §6.5, migration 144). So the
+suite now DOES assert about a truncated RESULT SET: a ranked id list cut at
+``search_service.HUB_SEARCH_LIMIT`` makes ``total_count`` a floor rather than a
+total. Two unrelated kinds of truncation; only the second one exists in this
+wing, and the ``rpc`` stand-in below is what makes it reachable.
+
+⚠ And the corpus is no longer the 169 guides named above — plan §1 verified 337
+on 2026-08-22, every one published. That growth is not trivia here: at 169 rows a
+200-hit cap could never be hit, so «the count is always exact» was true by
+accident as much as by design. It is 337 now, and the cap is reachable.
+
 No live DB. Supabase is the same in-memory PostgREST stand-in the other library
 suites use (``FakeSupabase``): real row dicts per table, with the filters,
 ordering, ``in.()`` chunking and range actually applied — a scripted result queue
@@ -40,6 +55,7 @@ from backend.app.errors import LunaHTTPException, luna_exception_handler
 from backend.app.middleware.route_limits import library_rate_limit
 from backend.app.services import library_budget_service as lb
 from backend.app.services import library_service as ls
+from backend.app.services import search_service
 from shared.config import get_settings
 
 
@@ -198,14 +214,140 @@ class FakeSupabase:
         # reach the RPC. Its ``compliance`` column counts the ``services`` corpus
         # — a DIFFERENT number from this wing's guides — so it is seeded absurd on
         # purpose: any test that sees 9_999 has read the wrong source.
+        #
+        # ⚠ THIS IS THE SECTOR-COUNTS RPC ONLY. ``bm25_search`` hits are NOT
+        # seeded here and must not be: ``_bm25_search`` DERIVES them from the
+        # seeded ``library_compliance_v`` + ``seo_item_meta`` rows, exactly as
+        # migration 144's index build does, so a search test seeds GUIDES and
+        # never a pre-baked result list it could accidentally agree with.
         self.rpc_rows: list[dict[str, Any]] = []
 
     def table(self, name: str) -> _Chain:
         return _Chain(self, name)
 
     def rpc(self, name: str, params: dict[str, Any]) -> _RpcResult:
+        """The two RPCs this wing reaches — and the second one is new.
+
+        ⚠ ``bm25_search`` WAS AN ``assert`` FAILURE HERE UNTIL 2026-08-23, and
+        that was correct at the time, not an oversight: the guides were
+        deliberately absent from ``search_index``, the hub's ``q`` was a Python
+        substring pass over ``title + summary``, and a call to the ranking RPC
+        from this wing would have been a bug worth failing loudly on. §6.5 of
+        ``.claude/plans/compliance_entity_sections.md`` REVERSED that premise —
+        the 337 guides joined the index as the ``compliance`` corpus (migration
+        144) and ``q`` now takes the same ``corpus_search_ids`` → ``rank_map``
+        path every other wing takes. So the assert became a BRANCH; the
+        sector-counts behaviour below is untouched and still hard-asserts, so an
+        unexpected THIRD RPC name is as loud as it ever was.
+        """
+        if name == "bm25_search":
+            return _RpcResult(self._bm25_search(params))
         assert name == ls._SECTOR_COUNTS_RPC, name
         return _RpcResult(self.rpc_rows)
+
+    def _bm25_search(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Stand-in for ``public.bm25_search()`` (migrations 111 + 144).
+
+        ⚠ THIS IS A WEIGHTED TERM COUNT, NOT BM25, and it is not trying to be.
+        What these tests own is the WIRING: that ``q`` leaves the service through
+        the RPC, that the ranked ORDER survives the corpus fetch instead of being
+        re-sorted by ``most_used_rank``, that the wing's own predicates run as
+        POST-filters over the ranked set, and that the ``HUB_SEARCH_LIMIT`` cut is
+        reported honestly. Ranking QUALITY is a property of the SQL and is
+        calibrated against a real query set — never against a Python fake, which
+        could only ever prove it agrees with itself. (The judgments suite's fake
+        carries the same disclaimer, for the same reason.)
+
+        THE INDEXED DOCUMENT MIRRORS MIGRATION 144's ``elsif p_corpus =
+        'compliance'`` BRANCH FIELD FOR FIELD — a fake that indexes something
+        else, or answers with different row keys, passes for the wrong reason:
+
+          * ``title`` → weight A, hence the ``× 3`` below: the RPC multiplies
+            A-weighted term frequency by ``p_title_boost`` (default 3.0), which
+            no caller overrides.
+          * ``provider_name`` → B. ``service_ref`` + ``sectors`` → the facets
+            text. The WHOLE ``guide_md`` → D (the wing is ungated end to end, so
+            unlike ``circular`` there is no free-floor to compute).
+          * The image-hole LINES are stripped from the body with
+            ``ls._GUIDE_HOLE_RE`` — the same rule, in the same role, as the SQL's
+            ``regexp_replace(..., '^[ \\t]*\\d+_\\d+[ \\t]*$', '', 'gn')`` (§6.2:
+            a bare ``223719_1`` is otherwise a searchable term on text no reader
+            can ever see, and it inflates ``doc_len``).
+          * ``summary`` is NOT indexed. §6.2 measured it a VERBATIM substring of
+            ``guide_md`` on 337/337 guides, so the index reaches it through the
+            body or not at all.
+
+        Only guides carrying a slugged ``seo_item_meta`` row are in the index
+        (the migration's ``join``) — which is precisely what lets
+        ``_bm25_hub_rows`` skip the ``_published_ids`` intersection in search
+        mode, so the fake has to honour it too.
+
+        Row KEYS are the RPC's ``returns table``: ``corpus, content_id, slug,
+        title, facets, score, total_count``. ``total_count`` is a window over the
+        whole scored set, so it is stamped BEFORE the limit/offset slice; and
+        ``p_limit`` / ``p_offset`` are honoured, which is what makes the 200-hit
+        cap reachable in a test rather than theoretical.
+        """
+        if "compliance" not in list(params.get("p_corpora") or []):
+            return []
+        # One call is wholly public or wholly one owner's — never both (the RPC
+        # matches ``owner_user_id IS NULL`` when ``p_owner`` is null). A guide is
+        # never owned, so an owner-scoped call finds nothing here either.
+        if params.get("p_owner"):
+            return []
+        terms = [t for t in str(params.get("p_query") or "").split() if t]
+        if not terms:
+            return []
+
+        slugs = {
+            str(m.get("content_id")): m.get("slug")
+            for m in self.tables.get("seo_item_meta", [])
+            if m.get("content_type") == "compliance" and m.get("slug")
+        }
+        scored: list[dict[str, Any]] = []
+        for g in self.tables.get("library_compliance_v", []):
+            slug = slugs.get(str(g.get("id")))
+            if not slug:
+                continue
+            title = str(g.get("title") or "")
+            rest = " ".join(
+                [
+                    str(g.get("provider_name") or ""),
+                    str(g.get("service_ref") or ""),
+                    " ".join(str(s) for s in (g.get("sectors") or [])),
+                    ls._GUIDE_HOLE_RE.sub("", str(g.get("guide_md") or "")),
+                ]
+            )
+            # AND semantics, like the RPC's ``tsq`` CTE: «تجديد السجل» means both
+            # terms, not either.
+            if any(t not in title and t not in rest for t in terms):
+                continue
+            scored.append(
+                {
+                    "corpus": "compliance",
+                    "content_id": str(g.get("id")),
+                    "slug": slug,
+                    "title": title,
+                    "facets": {
+                        "provider_name": g.get("provider_name"),
+                        "service_ref": g.get("service_ref"),
+                        "sectors": list(g.get("sectors") or []),
+                    },
+                    "score": float(
+                        sum(3 * title.count(t) + rest.count(t) for t in terms)
+                    ),
+                    "total_count": 0,
+                }
+            )
+        # ``order by s.score desc, s.content_id`` — the RPC's tiebreak verbatim,
+        # because an unstable ranking would make the ordering assertions below
+        # flap for a reason that has nothing to do with the wing.
+        scored.sort(key=lambda r: (-r["score"], r["content_id"]))
+        for row in scored:
+            row["total_count"] = len(scored)
+        offset = max(0, int(params.get("p_offset") or 0))
+        limit = int(params.get("p_limit") or 20)
+        return scored[offset : offset + limit]
 
 
 @pytest.fixture(autouse=True)
@@ -523,33 +665,118 @@ def test_hub_filters_by_sector_containment() -> None:
     assert [it["title"] for it in items] == [f"{TITLE} 1"]
 
 
-def test_hub_q_matches_title_and_summary() -> None:
-    """``q`` is registered-only — the ROUTE drops it for anon before this module
-    sees it (``_search_query``), which is why there is no anon check here."""
-    by_title = _guide(1, title="تجديد السجل التجاري")
-    by_summary = _guide(2, summary="خطوات تجديد السجل خطوة بخطوة.")
-    neither = _guide(3, title="إصدار رخصة", summary="لا علاقة.")
-    fake = _wing(
-        [by_title, by_summary, neither],
-        [_meta(by_title), _meta(by_summary), _meta(neither)],
-    )
+def test_hub_q_returns_the_bm25_ranking_not_a_title_and_summary_substring() -> None:
+    """§6.5 — THE REVERSAL, 2026-08-23.
+
+    SUPERSEDED PREMISE, kept on the record rather than deleted: this test was
+    ``test_hub_q_matches_title_and_summary``, and it asserted a Python substring
+    pass over ``title + summary`` — the behaviour the source guarded with «``q``
+    HERE IS NOT BM25 AND MUST NOT BECOME IT». That was the honest answer for
+    exactly as long as the guides were absent from ``search_index``. They joined
+    it as the ``compliance`` corpus on 2026-08-23 (migration 144, plan §6), so
+    ``q`` is now the same ``corpus_search_ids`` → ``rank_map`` path every other
+    wing takes — and the two things that changed are the two things asserted
+    here:
+
+      * ORDER IS RELEVANCE, AND IT OVERRIDES ``most_used_rank``. The seed is
+        adversarial on purpose — the strongest match is the LEAST-used guide — so
+        a lister that quietly re-sorted the ranked set by the browse contract
+        would hand these back the other way round. The second half of the test
+        pins the browse order to the OPPOSITE sequence over the same rows, which
+        is what makes "one contract per mode" an assertion and not a comment.
+      * THE WHOLE ``guide_md`` BODY IS SEARCHABLE. ``body_only`` carries the term
+        nowhere but its body — a column the hub select does not even fetch — so
+        the old substring could not have found it, and the index is the only
+        thing that can. (Its ``summary`` is deliberately silent on the term:
+        §6.2 keeps ``summary`` out of the index because it is a verbatim
+        substring of the body on all 337 live guides.)
+
+    ``q`` is registered-only, then and now: the ROUTE drops it for an anonymous
+    caller before this module sees it (``_search_query``), which is why there is
+    still no anon check here.
+    """
+    body_only = _guide(1, title="حجز موعد", guide_md="خطوات تجديد السجل التجاري.")
+    title_hit = _guide(30, title="تجديد السجل التجاري", guide_md="تجديد السجل.")
+    neither = _guide(2, title="إصدار رخصة", summary="لا علاقة.", guide_md="لا علاقة.")
+    guides = [body_only, title_hit, neither]
+    fake = _wing(guides, [_meta(g) for g in guides])
 
     items = ls.list_compliance_hub(fake, q="تجديد")["items"]
 
-    assert {it["title"] for it in items} == {"تجديد السجل التجاري", f"{TITLE} 2"}
+    assert [it["title"] for it in items] == ["تجديد السجل التجاري", "حجز موعد"]
+    # …and BROWSE is untouched: ``most_used_rank`` ASC, which for this seed is the
+    # exact reverse. Search did not become the wing's ordering contract; it
+    # replaces it for one request.
+    browsed = ls.list_compliance_hub(fake)["items"]
+    assert [it["title"] for it in browsed] == [
+        "حجز موعد",
+        "إصدار رخصة",
+        "تجديد السجل التجاري",
+    ]
 
 
-def test_hub_search_reports_an_exact_total() -> None:
-    """This wing's ``q`` is an exhaustive pass over 169 published rows, never a
-    BM25 set truncated at ``HUB_SEARCH_LIMIT`` — so the count is always exact and
-    a UI may print it as «N نتيجة»."""
+def test_hub_search_reports_an_exact_total_below_the_cap() -> None:
+    """§6.5 (2026-08-23) — SUPERSEDED PREMISE, kept in place.
+
+    This docstring used to read: «this wing's ``q`` is an exhaustive pass over
+    169 published rows, NEVER a BM25 set truncated at ``HUB_SEARCH_LIMIT`` — so
+    the count is always exact». Every clause of that is now backwards. ``q`` IS a
+    BM25 set and it IS cut at ``HUB_SEARCH_LIMIT``; the count is exact only
+    BELOW the cut, which is the half this test pins and the half the sibling test
+    pins from the other side. A UI may print «N نتيجة» only while
+    ``total_count_is_exact`` is True.
+    """
     guides = [_guide(n) for n in range(1, 4)]
     fake = _wing(guides, [_meta(g) for g in guides])
 
-    data = ls.list_compliance_hub(fake, q="ملخص الدليل")
+    data = ls.list_compliance_hub(fake, q="تأشيرة")
 
     assert data["total_count"] == 3
     assert data["total_count_is_exact"] is True
+    assert len(data["items"]) == 3
+
+
+def test_hub_search_at_the_cap_reports_a_floor_not_a_total() -> None:
+    """The other half of the §6.5 reversal (2026-08-23), and the whole reason
+    ``_compliance_published_rows`` grew a ``truncated`` return value.
+
+    While ``q`` was an exhaustive substring pass, truncation was UNREACHABLE on
+    this wing and ``total_count_is_exact`` was a constant True. It is reachable
+    now: the ranked id set stops at ``search_service.HUB_SEARCH_LIMIT`` (200)
+    over a 337-guide corpus, so a broad query gets a FLOOR — strictly fewer than
+    the guides that actually match — and the envelope has to say which of the two
+    it is handing over. A card grid printing 200 as «200 نتيجة» would be
+    asserting a number the backend does not know.
+
+    Seeded ONE FULL PAGE above the cap on purpose. At exactly the cap the flag
+    would flip for an ambiguous reason (``len(ids) >= HUB_SEARCH_LIMIT`` is true
+    both when the set was cut and when it merely happened to fill), and a smaller
+    overshoot would leave the searched and browsed page counts numerically equal
+    — which is a test that cannot tell the two totals apart.
+    """
+    over_cap = search_service.HUB_SEARCH_LIMIT + ls.HUB_PAGE_SIZE
+    guides = [_guide(n) for n in range(1, over_cap + 1)]
+    fake = _wing(guides, [_meta(g) for g in guides])
+
+    data = ls.list_compliance_hub(fake, q="تأشيرة")
+
+    assert data["total_count"] == search_service.HUB_SEARCH_LIMIT
+    assert data["total_count"] < over_cap          # a floor, and it says so
+    assert data["total_count_is_exact"] is False
+    # The paginator walks the RANKED set, not the corpus: 200 hits at 9 a page.
+    assert data["total_pages"] == math.ceil(
+        search_service.HUB_SEARCH_LIMIT / ls.HUB_PAGE_SIZE
+    )
+    assert len(data["items"]) == ls.HUB_PAGE_SIZE
+    # A browse over the SAME rows is unaffected — no cap, no floor, all 209 —
+    # and it is a page LONGER than the search, which is the visible shape of the
+    # cut. (Browse pages the whole published set; only ``q`` goes through BM25.)
+    ls._published_ids_cache.clear()
+    browsed = ls.list_compliance_hub(fake)
+    assert browsed["total_pages"] == math.ceil(over_cap / ls.HUB_PAGE_SIZE)
+    assert browsed["total_pages"] > data["total_pages"]
+    assert browsed["total_count"] is None
+    assert browsed["total_count_is_exact"] is True
 
 
 def test_hub_paginates_at_nine_and_counts_agree() -> None:
@@ -671,7 +898,14 @@ def test_guide_payload_shape_is_exactly_the_contract() -> None:
         "image_count",
         "guide_md",
         "images",
+        # «اقرأ تاليًا» (read_next_related_items.md §5.1). NOTE what is still
+        # absent: `cited_regulations`. تعاميم and خدمات carry no citation data
+        # anywhere in the corpus (D14), so the field does not exist on this
+        # wing — it is not an empty list.
+        "related_next",
     }
+    # No `related_items` rows in the fake → an EMPTY STRIP, never an error.
+    assert doc["related_next"] == []
     assert doc["slug"] == SLUG
     assert doc["title"] == TITLE
     assert doc["summary"] == GUIDE_ROW["summary"]

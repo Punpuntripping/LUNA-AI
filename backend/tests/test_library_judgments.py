@@ -40,6 +40,22 @@ class _Result:
         self.count = count
 
 
+def _sort_key(col: str):
+    """Ordering key for one column: numeric when the cell is a number, else text.
+
+    The leading discriminator keeps a mixed column from raising — a fake that
+    blows up on heterogeneous data is worse than one that sorts it arbitrarily.
+    """
+
+    def key(row: dict[str, Any]):
+        v = row.get(col)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return (1, 0.0, str(v))
+        return (0, float(v), "")
+
+    return key
+
+
 class _Chain:
     """Applies the subset of PostgREST semantics this wing uses."""
 
@@ -63,9 +79,16 @@ class _Chain:
         return self
 
     def in_(self, col: str, vals: list[Any]) -> "_Chain":
+        # ⚠ HONOURS ``not_``. postgrest-py's ``not_`` sets a one-shot negate flag
+        # that the NEXT filter consumes, whichever it is — so ``.not_.in_()`` is
+        # a real query shape (the related-items reader excludes the ids the
+        # citation strip already rendered with it). A fake that ignored the flag
+        # here would silently invert the filter and assert the exact opposite of
+        # what production does.
         vals = list(vals)
         self._fake.in_calls.append((self._table, col, vals))
-        self._filters.append(("in", col, vals))
+        self._filters.append(("not_in" if self._negate else "in", col, vals))
+        self._negate = False
         return self
 
     def ilike(self, col: str, pattern: str) -> "_Chain":
@@ -120,6 +143,9 @@ class _Chain:
             elif op == "in":
                 if cell is None or str(cell) not in {str(v) for v in val}:
                     return False
+            elif op == "not_in":
+                if cell is not None and str(cell) in {str(v) for v in val}:
+                    return False
             elif op == "ilike":
                 needle = str(val).strip("%").lower()
                 if needle and needle not in str(cell or "").lower():
@@ -145,7 +171,11 @@ class _Chain:
             nf = desc if nullsfirst is None else nullsfirst
             non_null = [r for r in rows if r.get(col) is not None]
             nulls = [r for r in rows if r.get(col) is None]
-            non_null.sort(key=lambda r: str(r.get(col)), reverse=desc)
+            # NUMBERS SORT AS NUMBERS. Dates and titles are strings and sort
+            # lexically, which is what Postgres does for them too — but
+            # `related_items.score` is a real, and `"10.0" < "3.5"` as text would
+            # rank the best edge last.
+            non_null.sort(key=_sort_key(col), reverse=desc)
             rows = (nulls + non_null) if nf else (non_null + nulls)
 
         count = len(rows) if self._count == "exact" else None
@@ -730,9 +760,14 @@ def test_doc_payload_keys_are_the_frontend_contract() -> None:
         "city", "case_number", "judgment_number", "date_hijri", "date_gregorian",
         "hijri_year", "appeal_result", "domains", "metadata", "summary_md",
         "has_summary", "sections", "cited_regulations", "cited_total",
+        "related_next",
         "official_sources", "gate_effective", "indexable", "hidden_section_count",
         "withheld_chars", "withheld_pct",
     }
+    # No `related_items` rows in the fake → an EMPTY STRIP, never an error.
+    # That is also what a real commercial-court judgment gets: nothing clears
+    # the floor (read_next_related_items.md §3.6).
+    assert doc["related_next"] == []
 
 
 def test_derived_naming_comes_from_the_shared_module() -> None:
@@ -987,7 +1022,17 @@ def test_rayhan_summary_strips_the_pipeline_sections() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The cited-regulations mesh
+# «الأنظمة المذكورة» — the cited-regulations mesh
+#
+# REWRITTEN for read_next_related_items.md §5.3. What the section used to be and
+# is no longer, because every assertion below turns on it:
+#
+#   * one entry per cited مادة → ONE CARD PER نظام, deduped by ``reg_ref`` alone
+#     (D8 — the heading is الأنظمة المذكورة, not المواد المذكورة)
+#   * unresolved refs listed as dead text with ``reg_slug=None`` → DROPPED (D9)
+#   * ``{title, article_no, reg_slug, article_slug}`` → ``RegHubItem`` cards,
+#     built by the SAME ``_reg_hub_item`` the /regulations grid uses
+#   * ``JUDGMENT_CITED_FREE_LIMIT`` None → 7, and applied AFTER the publish filter
 # ---------------------------------------------------------------------------
 
 REG_UUID = "22222222-2222-2222-2222-222222222222"
@@ -996,6 +1041,24 @@ REG_ROW = {
     "reg_ref": "17642_reg_037",
     "clean_title": "نظام التحكيم",
     "title": "نظام التحكيم الخام",
+    "entity_name": "وزارة العدل",
+    "status_class": "in_force",
+    "doc_type_bucket": "law",
+    "summary": "ملخص نظام التحكيم.",
+    "sectors": ["القضاء والمحاكم"],
+}
+REG_SLUG = "نظام-التحكيم"
+
+# The card the /regulations hub renders for REG_ROW — the mesh must produce
+# EXACTLY this, byte for byte, because both go through ``_reg_hub_item``.
+REG_CARD = {
+    "slug": REG_SLUG,
+    "title": "نظام التحكيم",
+    "entity_name": "وزارة العدل",
+    "status": "active",
+    "doc_type": ls.map_doc_type_bucket("law"),
+    "summary_snippet": "ملخص نظام التحكيم.",
+    "sectors": ["القضاء والمحاكم"],
 }
 
 
@@ -1003,119 +1066,138 @@ def _ref(reg_id: Optional[str], no: Optional[str], name: str) -> dict[str, Any]:
     return {"النظام": name, "الرقم": no, "regulation_id": reg_id}
 
 
-def _mesh_fake(refs: list[dict[str, Any]], *, meta_extra: list[dict] = ()):
+def _mesh_fake(
+    refs: list[dict[str, Any]],
+    *,
+    regulations: list[dict[str, Any]] = (REG_ROW,),
+    published: Optional[dict[str, str]] = None,
+):
+    """Judgment + corpus + the PUBLISHED-ONLY ranked view the mesh hydrates through.
+
+    ``published`` maps ``regulation id → slug``. Seeding it is what makes a نظام
+    linkable: the mesh reads ``library_regulations_ranked`` (corpus ⋈ sidecar on
+    ``slug is not null``), so an id missing from this map is exactly an
+    unpublished نظام and its card never exists. Default: nothing published.
+    """
     case = {**FULL_CASE, "referenced_regulations": refs}
+    pub = dict(published or {})
+    ranked = [dict(r, slug=pub[r["id"]]) for r in regulations if r["id"] in pub]
+    meta = [META_ROW] + [
+        {"content_type": "regulation", "content_id": rid, "slug": s}
+        for rid, s in pub.items()
+    ]
     return FakeSupabase(
         cases=[case],
-        seo_item_meta=[META_ROW, *meta_extra],
-        regulations_v2=[REG_ROW],
+        seo_item_meta=meta,
+        regulations_v2=list(regulations),
+        library_regulations_ranked=ranked,
     )
 
 
-def test_mesh_resolves_regulation_and_article_slugs() -> None:
+def test_mesh_emits_the_same_card_the_regulations_hub_renders() -> None:
     fake = _mesh_fake(
         [_ref("17642_reg_037", "50", "نظام التحكيم")],
-        meta_extra=[
-            {"content_type": "regulation", "content_id": REG_UUID, "slug": "نظام-التحكيم"},
-            {"content_type": "article", "content_id": f"{REG_UUID}#50", "slug": "المادة-50"},
-        ],
+        published={REG_UUID: REG_SLUG},
     )
     doc = ls.get_judgment_doc(fake, SLUG)
     assert doc["cited_total"] == 1
-    assert doc["cited_regulations"] == [
-        {
-            "title": "نظام التحكيم",
-            "article_no": "50",
-            "reg_slug": "نظام-التحكيم",
-            "article_slug": "المادة-50",
-        }
-    ]
+    assert doc["cited_regulations"] == [REG_CARD]
+    # No مادة axis survives: the section is الأنظمة المذكورة (D8).
+    assert "article_no" not in doc["cited_regulations"][0]
+    assert "article_slug" not in doc["cited_regulations"][0]
 
 
-def test_mesh_dedupes_repeated_citations_preserving_order() -> None:
+def test_mesh_dedupes_by_regulation_not_by_article() -> None:
+    """Three مواد of one نظام are ONE card — the old key was (reg, article)."""
     refs = [
         _ref("17642_reg_037", "50", "نظام التحكيم"),
         _ref("17642_reg_037", "11", "نظام التحكيم"),
-        _ref("17642_reg_037", "50", "نظام التحكيم"),  # dup
-        _ref(None, "245", "لائحة نظام المحاكم التجارية"),
-        _ref(None, "245", "لائحة نظام المحاكم التجارية"),  # dup
-        _ref(None, "245", "نظام آخر بلا معرّف"),  # same article_no, different نظام
+        _ref("17642_reg_037", "50", "نظام التحكيم"),
     ]
-    items, total = ls._judgment_cited_regulations(_mesh_fake(refs), {"referenced_regulations": refs})
-    assert total == 4
-    assert [(i["title"], i["article_no"]) for i in items] == [
-        ("نظام التحكيم", "50"),
-        ("نظام التحكيم", "11"),
-        ("لائحة نظام المحاكم التجارية", "245"),
-        ("نظام آخر بلا معرّف", "245"),
-    ]
+    items, total = ls._judgment_cited_regulations(
+        _mesh_fake(refs, published={REG_UUID: REG_SLUG}),
+        {"referenced_regulations": refs},
+    )
+    assert total == 1
+    assert items == [REG_CARD]
 
 
-def test_mesh_unresolved_reference_still_listed_without_links() -> None:
+def test_mesh_preserves_first_seen_citation_order() -> None:
+    other = {**REG_ROW, "id": "33333333-3333-3333-3333-333333333333",
+             "reg_ref": "17642_reg_099", "clean_title": "نظام العمل"}
+    refs = [
+        _ref("17642_reg_099", "5", "نظام العمل"),
+        _ref("17642_reg_037", "50", "نظام التحكيم"),
+        _ref("17642_reg_099", "6", "نظام العمل"),
+    ]
+    items, _total = ls._judgment_cited_regulations(
+        _mesh_fake(
+            refs,
+            regulations=[REG_ROW, other],
+            published={other["id"]: "نظام-العمل", REG_UUID: REG_SLUG},
+        ),
+        {"referenced_regulations": refs},
+    )
+    assert [i["slug"] for i in items] == ["نظام-العمل", REG_SLUG]
+
+
+def test_mesh_drops_unresolved_references() -> None:
+    """D9: 5,469 entries name a قرار وزاري / فقه ruling with no page to link to.
+
+    A card in a scroller is an affordance. One that does not navigate is a broken
+    link with extra steps, so an unmatched citation is not rendered at all."""
     refs = [_ref(None, "58", "اللائحة التنفيذية لنظام المحاكم التجارية")]
     doc = ls.get_judgment_doc(_mesh_fake(refs), SLUG)
-    assert doc["cited_regulations"] == [
-        {
-            "title": "اللائحة التنفيذية لنظام المحاكم التجارية",
-            "article_no": "58",
-            "reg_slug": None,
-            "article_slug": None,
-        }
-    ]
+    assert doc["cited_regulations"] == []
+    assert doc["cited_total"] == 0
 
 
-def test_mesh_unpublished_regulation_has_no_slugs() -> None:
-    """Resolved to a corpus row, but nothing published → canonical title, no link."""
-    doc = ls.get_judgment_doc(_mesh_fake([_ref("17642_reg_037", "50", "نظام تحكيم")]), SLUG)
-    assert doc["cited_regulations"] == [
-        {"title": "نظام التحكيم", "article_no": "50", "reg_slug": None, "article_slug": None}
-    ]
+def test_mesh_drops_unpublished_regulations() -> None:
+    """Resolved to a corpus row, but nothing published → no card (D5).
 
+    Publishing that نظام later lights the card up on the next ISR bake, with no
+    recompute of anything — the publish filter is a read-time join, not stored
+    state."""
+    refs = [_ref("17642_reg_037", "50", "نظام تحكيم")]
+    doc = ls.get_judgment_doc(_mesh_fake(refs), SLUG)
+    assert doc["cited_regulations"] == []
+    assert doc["cited_total"] == 0
 
-def test_mesh_article_slug_requires_a_published_parent() -> None:
-    """A مادة URL is nested under the reg slug — an orphan article slug is dropped."""
-    fake = _mesh_fake(
-        [_ref("17642_reg_037", "50", "نظام التحكيم")],
-        meta_extra=[
-            {"content_type": "article", "content_id": f"{REG_UUID}#50", "slug": "المادة-50"}
-        ],
+    lit = ls.get_judgment_doc(
+        _mesh_fake(refs, published={REG_UUID: REG_SLUG}), SLUG
     )
-    doc = ls.get_judgment_doc(fake, SLUG)
-    assert doc["cited_regulations"][0]["reg_slug"] is None
-    assert doc["cited_regulations"][0]["article_slug"] is None
-
-
-def test_mesh_paragraph_citation_links_to_its_article() -> None:
-    """«16/1» displays verbatim but resolves to المادة 16."""
-    fake = _mesh_fake(
-        [_ref("17642_reg_037", "50/1", "نظام التحكيم")],
-        meta_extra=[
-            {"content_type": "regulation", "content_id": REG_UUID, "slug": "نظام-التحكيم"},
-            {"content_type": "article", "content_id": f"{REG_UUID}#50", "slug": "المادة-50"},
-        ],
-    )
-    item = ls.get_judgment_doc(fake, SLUG)["cited_regulations"][0]
-    assert item["article_no"] == "50/1"
-    assert item["article_slug"] == "المادة-50"
-
-
-def test_mesh_arabic_indic_article_number_resolves() -> None:
-    assert ls._judgment_article_int("٥٠") == 50
-    assert ls._judgment_article_int("16/1") == 16
-    assert ls._judgment_article_int("") is None
-    assert ls._judgment_article_int("مكرر") is None
+    assert lit["cited_regulations"] == [REG_CARD]
 
 
 def test_mesh_batches_and_chunks_every_lookup() -> None:
     """One query per lookup table, in.() chunked at 150 (URL-length trap)."""
-    refs = [_ref(f"17642_reg_{i:03d}", str(i), f"نظام {i}") for i in range(200)]
-    fake = _mesh_fake(refs)
+    regs = [
+        {
+            **REG_ROW,
+            "id": f"{i:08d}-4444-4444-4444-444444444444",
+            "reg_ref": f"17642_reg_{i:03d}",
+        }
+        for i in range(200)
+    ]
+    refs = [_ref(r["reg_ref"], str(i), f"نظام {i}") for i, r in enumerate(regs)]
+    fake = _mesh_fake(
+        refs,
+        regulations=regs,
+        published={r["id"]: f"نظام-{i}" for i, r in enumerate(regs)},
+    )
     ls.get_judgment_doc(fake, SLUG)
 
     reg_chunks = [vals for tbl, col, vals in fake.in_calls if tbl == "regulations_v2"]
     assert len(reg_chunks) == 2  # 200 refs → 150 + 50, not 200 round-trips
     assert all(len(c) <= 150 for c in reg_chunks)
     assert sum(len(c) for c in reg_chunks) == 200
+
+    # …and the hydration through the ranked view chunks identically.
+    hub_chunks = [
+        vals for tbl, col, vals in fake.in_calls
+        if tbl == "library_regulations_ranked"
+    ]
+    assert hub_chunks and all(len(c) <= 150 for c in hub_chunks)
 
 
 def test_mesh_handles_missing_and_malformed_reference_payloads() -> None:
@@ -1129,24 +1211,65 @@ def test_mesh_handles_missing_and_malformed_reference_payloads() -> None:
 def test_mesh_parses_jsonb_delivered_as_a_string() -> None:
     refs = [_ref("17642_reg_037", "50", "نظام التحكيم")]
     items, total = ls._judgment_cited_regulations(
-        _mesh_fake(refs), {"referenced_regulations": json.dumps(refs, ensure_ascii=False)}
+        _mesh_fake(refs, published={REG_UUID: REG_SLUG}),
+        {"referenced_regulations": json.dumps(refs, ensure_ascii=False)},
     )
-    assert total == 1 and items[0]["article_no"] == "50"
+    assert total == 1 and items == [REG_CARD]
 
 
-def test_cited_free_limit_default_shows_the_whole_mesh() -> None:
-    """The list is names + numbers only — gating it would gate our own crawl graph."""
-    assert ls.JUDGMENT_CITED_FREE_LIMIT is None
+def test_cited_limit_is_the_strip_size() -> None:
+    """7 cards, 3 in view, side-scroll (D7) — shared with «اقرأ تاليًا»."""
+    assert ls.JUDGMENT_CITED_FREE_LIMIT == 7
 
 
-def test_cited_free_limit_caps_items_but_not_the_total(monkeypatch) -> None:
-    monkeypatch.setattr(ls, "JUDGMENT_CITED_FREE_LIMIT", 3)
-    refs = [_ref(None, str(i), f"نظام {i}") for i in range(10)]
+def test_cited_limit_caps_items_but_not_the_total() -> None:
+    """And it is applied AFTER resolution and the publish filter, not before.
+
+    Capping the raw ref list first is how a ruling citing nine أنظمة of which
+    four are published would have rendered three cards."""
+    regs = [
+        {
+            **REG_ROW,
+            "id": f"{i:08d}-5555-5555-5555-555555555555",
+            "reg_ref": f"17642_reg_1{i:02d}",
+        }
+        for i in range(10)
+    ]
+    refs = [_ref(r["reg_ref"], str(i), f"نظام {i}") for i, r in enumerate(regs)]
     items, total = ls._judgment_cited_regulations(
-        _mesh_fake(refs), {"referenced_regulations": refs}
+        _mesh_fake(
+            refs,
+            regulations=regs,
+            published={r["id"]: f"نظام-{i}" for i, r in enumerate(regs)},
+        ),
+        {"referenced_regulations": refs},
     )
-    assert len(items) == 3
+    assert len(items) == 7
     assert total == 10
+
+
+def test_cited_total_counts_only_what_could_be_shown() -> None:
+    """5 cited, 2 published → total 2. «و N مرجعاً آخر» must not promise pages
+    that do not exist."""
+    regs = [
+        {
+            **REG_ROW,
+            "id": f"{i:08d}-6666-6666-6666-666666666666",
+            "reg_ref": f"17642_reg_2{i:02d}",
+        }
+        for i in range(5)
+    ]
+    refs = [_ref(r["reg_ref"], str(i), f"نظام {i}") for i, r in enumerate(regs)]
+    items, total = ls._judgment_cited_regulations(
+        _mesh_fake(
+            refs,
+            regulations=regs,
+            published={regs[1]["id"]: "نظام-1", regs[3]["id"]: "نظام-3"},
+        ),
+        {"referenced_regulations": refs},
+    )
+    assert total == 2
+    assert [i["slug"] for i in items] == ["نظام-1", "نظام-3"]
 
 
 # ---------------------------------------------------------------------------

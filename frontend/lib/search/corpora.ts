@@ -35,6 +35,7 @@ export const SEARCH_CORPORA = [
   "regulation",
   "judgment",
   "circular",
+  "compliance",
 ] as const;
 
 export type SearchCorpus = (typeof SEARCH_CORPORA)[number];
@@ -42,26 +43,36 @@ export type SearchCorpus = (typeof SEARCH_CORPORA)[number];
 /**
  * corpus (the storage token) → library type (the URL/label token).
  *
- * ⚠ `service` (الخدمات الحكومية) IS GONE, 2026-08-03 — the compliance wing was
- * retired, so there is no `/compliance/{slug}` for a service hit to link to and
- * a `service` chip would offer a filter whose every result 404s. The backend
- * dropped it from `search_service.PUBLIC_CORPORA` in the same change; if it ever
- * comes back, both layers move together.
+ * ⚠ THE GOVERNMENT-SERVICES CORPUS CAME BACK ON 2026-08-23, UNDER A NEW NAME.
+ * This note used to record its removal: `service` (الخدمات الحكومية) was dropped
+ * on 2026-08-03 when the old compliance wing was retired, because there was no
+ * `/compliance/{slug}` left for a hit to link to and a chip whose every result
+ * 404s is worse than no chip. The restore condition it named — a wing behind the
+ * links — is now met: `/compliance` publishes 337 service GUIDES, ours,
+ * ungated, and `compliance_entity_sections.md` §6 put them in `search_index` as
+ * the `compliance` corpus with Latin slugs keyed on `service_guides.id`.
+ *
+ * So the member here is `compliance`, NOT the old `service`. Those 100 legacy
+ * rows still sit in `search_index` — inert, out of `PUBLIC_CORPORA`, kept only
+ * for `manual_search`'s exact-title pin — and adding them here would still build
+ * a chip for a filter the endpoint drops. One corpus name, one wing, one URL
+ * prefix; both layers moved together, exactly as this note promised.
  */
 export const CORPUS_LIBRARY_TYPE: Record<SearchCorpus, LibraryType> = {
   regulation: "regulations",
   judgment: "judgments",
   circular: "circulars",
+  compliance: "compliance",
 };
 
 /**
  * The chip label for a corpus.
  *
  * Taken from `LIBRARY_TYPE_META` rather than spelled out again, because the
- * SAME page renders `LibraryTypeChips` (الأنظمة · الأحكام · التعاميم) a few
- * pixels away. Two chip rows on one page naming the same three things
+ * SAME page renders `LibraryTypeChips` (الأنظمة · الأحكام · التعاميم ·
+ * الخدمات) a few pixels away. Two chip rows on one page naming the same things
  * differently is a bug, not a style choice — and the label set already has an
- * owner.
+ * owner. `compliance` reads «الخدمات» from that owner for exactly this reason.
  */
 export function corpusLabel(corpus: SearchCorpus): string {
   return LIBRARY_TYPE_META[CORPUS_LIBRARY_TYPE[corpus]].label;
@@ -215,6 +226,13 @@ export function hitMeta(corpus: SearchCorpus, facets: FacetBag): string[] {
       // `circ_ref`/`entity_ref`, which are NUMERIC source tokens, and `doc_type`,
       // a raw enum. Still do not print either of those.
       return [facetText(facets, "entity_name")].filter(Boolean);
+    case "compliance":
+      // `provider_name` is the issuing body, already a canonical Arabic name in
+      // the corpus (28 of them — `lib/library/entities.ts`), which is what makes
+      // it printable while its neighbours are not. `service_ref` is the OTHER
+      // facet on this corpus and it is a source IDENTIFIER, the same kind of
+      // token as `circ_ref` — it filters, it never labels.
+      return [facetText(facets, "provider_name")].filter(Boolean);
   }
 }
 

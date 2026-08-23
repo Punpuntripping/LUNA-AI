@@ -357,6 +357,23 @@ export interface RegulationDoc {
   hidden_section_count: number;
   official_sources: RegulationOfficialSource[];
   draft_notice: boolean;
+  /**
+   * «اقرأ تاليًا» — up to 7 OTHER أنظمة, same type only (D2), already publish-
+   * filtered by the backend and identical for anon, free and paid readers.
+   *
+   * OPTIONAL ON THE WIRE, like every additive field on these payloads: this page
+   * is ISR-baked for 24h, so an entry baked before the backend shipped carries
+   * no field at all. Absent ⇒ no strip, never a crash.
+   */
+  related_next?: RegulationHubItem[];
+  /**
+   * «الأنظمة المذكورة» — أنظمة this one CITES (`cross_references_v2`,
+   * `source_type='reg_chunk'`), slug-filtered, capped at 7. Factual citations,
+   * not a similarity guess, which is why this is the only cross-document list
+   * allowed to claim a relationship. Deduped against `related_next` (D13) —
+   * on a نظام page both lists are أنظمة and this one wins.
+   */
+  cited_regulations?: RegulationHubItem[];
 }
 
 // ------------------------------------------------------------------
@@ -459,6 +476,22 @@ export interface ComplianceFilters {
   sector?: string;
   /** Latin sector slug — see `RegulationsFilters.sector_slug`. */
   sector_slug?: string;
+  /**
+   * One of the 28 Latin entity slugs (`lib/library/entities.ts`, mirroring
+   * `shared/library/entities.py`) — the «الجهة» SECTION axis behind
+   * `/compliance/{entity}`.
+   *
+   * ⚠ NOT THE SAME THING AS `provider`, and the two must never be merged.
+   * `provider` is a free-text `ilike` SUBSTRING filter over the same column;
+   * this is a closed, server-owned vocabulary matched with `eq`. A section is
+   * exact by construction or its counts stop being fixed — which is also why
+   * the backend keeps `entity_slug` out of its `filtered` flag (an oracle needs
+   * an open input), and therefore why an anonymous reader still sees the real
+   * `total_pages` inside a section.
+   *
+   * `buildQuery` forwards it verbatim like every other truthy key.
+   */
+  entity_slug?: string;
   q?: string;
 }
 
@@ -513,6 +546,20 @@ export interface ComplianceGuideDoc {
   /** Arabic markdown with `{guide_ref}_{n}` holes — render via `GuideBody`. */
   guide_md: string;
   images: ComplianceGuideImage[];
+  /**
+   * «اقرأ تاليًا» — up to 7 OTHER خدمات, same type only (D2), publish-filtered
+   * server-side. Thin on this wing until topic-BM25 lands (plan Wave E): with 29
+   * entity values and 1.56 sectors per guide there is little to rank on, so an
+   * absent strip is the common case, not a failure.
+   *
+   * NO `cited_regulations` SIBLING, deliberately (D14): the خدمات corpus carries
+   * no citation data at all — `cross_references_v2` only has `case` and
+   * `reg_chunk` sources — and mining نظام mentions out of guide prose is a
+   * separate project.
+   *
+   * OPTIONAL on the wire — 24h ISR means older bakes have no field.
+   */
+  related_next?: ComplianceHubItem[];
 }
 
 // ------------------------------------------------------------------
@@ -564,6 +611,17 @@ export interface CircularDoc {
   is_truncated: boolean;
   hidden_placeholder_lines: number;
   body_length: number;
+  /**
+   * «اقرأ تاليًا» — up to 7 OTHER تعاميم, same type only (D2), publish-filtered
+   * server-side. Bonus-only until topic-BM25 (plan Wave E): the corpus has 5
+   * distinct entity values, so entity is worth ~0 and shared sectors carry the
+   * whole score.
+   *
+   * NO `cited_regulations` SIBLING (D14) — تعاميم carry no citation data.
+   *
+   * OPTIONAL on the wire — 24h ISR means older bakes have no field.
+   */
+  related_next?: CircularHubItem[];
 }
 
 // ------------------------------------------------------------------
@@ -816,9 +874,61 @@ export function getComplianceHub(
 }
 
 /**
+ * One row of `GET /public/library/compliance/entities` — the per-entity guide
+ * count and page count for «الجهة».
+ *
+ * `label` is the Arabic `provider_name` and the SERVER owns it, exactly as it
+ * owns the court labels on the judgments side. The local mirror
+ * (`lib/library/entities.ts`) supplies the same string when this call is
+ * unavailable; it is a fallback, not a second source of truth.
+ */
+export interface ComplianceEntitySummary {
+  slug: string;
+  label: string;
+  count: number;
+  total_pages: number;
+}
+
+interface ComplianceEntitiesResponse {
+  entities: ComplianceEntitySummary[];
+}
+
+/**
+ * The 28 entity sections with their counts, in the server's browse order.
+ *
+ * ⚠ SOFT-FAILS TO `[]` WHERE ITS SIBLINGS THROW, exactly as `getJudgmentCourts`
+ * and `getSectors` do: this decorates every /compliance page, and a switcher is
+ * not worth taking a hub down over. An empty list degrades to «all 28 tiles, no
+ * counts» via `entityNavItems()` — the LINKS come from the local mirror, so the
+ * second browse axis survives a backend that has not shipped this endpoint yet
+ * (which is precisely the state during the deploy window between the two
+ * services).
+ *
+ * `cache()` makes it one request per render pass however many callers ask.
+ */
+export const getComplianceEntities = cache(
+  async (): Promise<ComplianceEntitySummary[]> => {
+    try {
+      const data = await fetchJson<ComplianceEntitiesResponse>(
+        `${SERVER_API_BASE}/api/v1/public/library/compliance/entities`,
+        HUB_REVALIDATE,
+      );
+      return data?.entities ?? [];
+    } catch {
+      return [];
+    }
+  },
+);
+
+/**
  * One service guide. Same 24h document window and the same null-on-404 /
  * throw-on-transient contract as `getCircularDoc` — a 429 or 5xx must never be
  * cached as a `notFound()` on a live, indexable guide page.
+ *
+ * ⚠ `entities` AND THE 28 ENTITY SLUGS ARE NOT GUIDES. The backend declares
+ * `/compliance/entities` ABOVE this path and refuses the reserved set here, so
+ * neither can ever resolve as a guide; the dispatcher in
+ * `app/compliance/[slug]/page.tsx` never asks about them in the first place.
  */
 export function getComplianceGuide(
   slug: string,

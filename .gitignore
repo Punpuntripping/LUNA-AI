@@ -93,6 +93,27 @@ backend/tests/*
 # every dated judgment behind ~11k dateless ones. It was local-only until
 # 2026-08-08, which is why the ranked-view rewire broke 8 of its tests with CI green.
 !backend/tests/test_library_judgments.py
+# related-items suite is durable — it pins the two invariants the «اقرأ تاليًا» /
+# «الأنظمة المذكورة» strips rest on, both of which fail SILENTLY rather than loudly.
+# (1) The publish filter: related_items stores edges over the FULL corpus and the
+# slug check happens at read time, so a regression that drops it renders dead links
+# to unpublished أنظمة on every library page at once. (2) Fail-soft on a missing
+# table: the backend must ship before or after migration 143 without 500ing, so
+# there is a test that asserts a doc page survives `related_items` not existing.
+# Neither shows up in a smoke test — the page still renders in both failure modes.
+!backend/tests/test_library_related_items.py
+# entity-sections suite is durable — it pins the two NON-EDITS that ARE the
+# /compliance entity axis (compliance_entity_sections.md §2/D1), both of which
+# fail SILENTLY. (1) `entity` stays out of `section_scoped`, which is what lets
+# anon and free read an entity page at all — while the SECTOR axis on the same
+# handler stays paid-only, and the suite asserts both halves, because
+# "harmonising" them is the obvious wrong fix. (2) `entity` stays out of
+# `filtered`, or the enumeration clamp pins anon total_pages to 2 and prints
+# «1 2» over وزارة العدل's 115 guides with page 1 still rendering perfectly. It
+# also carries the LIVE drift check against `services.provider_name`: the
+# predicate is `eq`, so one retyped character is an empty section and a «0» tile
+# — the plan's own §3 table had already lost a fatha, caught only by this file.
+!backend/tests/test_library_entities.py
 # case-provenance suite is durable — it pins the GATE SPLIT that D-CROSSWALK rests on:
 # «المجلد»/«الصفحات» may render on an anonymous /judgments page, the مجلد PDF and
 # collection URLs may not. One bound-volume PDF is ~50 full gated rulings, so a URL that
@@ -179,3 +200,8 @@ graphify-out/
 # mistake in 0ff6f6f — ~1MB of dumps — and removed in the follow-up.
 agents/simple_search/eval/*.json
 agents/simple_search/eval/*.log
+
+# Supabase CLI scratch state. `supabase/.temp/cli-latest` is a version-check
+# marker the CLI writes on every invocation — machine-local, zero bytes of
+# project content, and it reappears the moment anyone runs the CLI again.
+supabase/.temp/

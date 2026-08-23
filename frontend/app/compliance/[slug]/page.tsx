@@ -9,12 +9,21 @@ import {
   TocRail,
   TocFloating,
   OfficialSources,
+  RelatedStrip,
   AskRayhanWidget,
 } from "@/components/library/blocks";
+import { ComplianceCard } from "@/components/library/hub/ComplianceCard";
+import { ComplianceHubView } from "@/components/library/hub/ComplianceHubView";
 import { GuideBody } from "@/components/library/blocks/GuideBody";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle } from "@/lib/seo/schema";
 import { getComplianceGuide, toSnippet } from "@/lib/library/api";
+import {
+  entityHeading,
+  entityLabel,
+  entityPath,
+  isEntitySlug,
+} from "@/lib/library/entities";
 import { guideDisplayTitle, guideTocHeadings } from "@/lib/library/guide";
 import type {
   BreadcrumbItem,
@@ -39,6 +48,27 @@ import type {
 //
 // Server component, ISR via the fetch revalidate window in `lib/library/api.ts`
 // (NO force-dynamic).
+//
+// ── THIS SEGMENT SERVES TWO KINDS OF THING (compliance_entity_sections D2) ──
+// `/compliance/{slug}` is EITHER one of the 28 entity SECTIONS
+// (`/compliance/ministry-of-justice`) or one of the 337 GUIDES. One dynamic
+// segment, two vocabularies — which is legal in Next precisely because it is one
+// segment and not two dynamic names at one level (the build error that forced
+// `courts` into the /judgments URL).
+//
+// THE ENTITY VOCABULARY IS CHECKED FIRST, and it is free to check: an in-process
+// dict lookup against the closed 28-value mirror, no fetch. That ordering is
+// only safe because the two namespaces are proven disjoint — the 28 slugs plus
+// `page`/`entities`/`mine` are reserved in `scripts/build_compliance_slugs.py`,
+// asserted against live `seo_item_meta`, and refused by `get_compliance_guide`
+// server-side. Were an entity slug ever minted as a guide slug, this order would
+// 404 a URL that is in the sitemap.
+//
+// ⚠ NO `generateStaticParams` HERE, AND THAT IS DELIBERATE — the route has never
+// had one. On-demand ISR means the 28 entity pages are not baked at build time,
+// so they cannot bake as 404s if the frontend image is built while the backend
+// still lacks `entity_slug` (memory `isr-bake-trap`, and the reason the rollout
+// order deploys the backend first).
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -59,6 +89,48 @@ export async function generateMetadata({
   params,
 }: PageProps): Promise<Metadata> {
   const { slug } = await params;
+
+  // Entity FIRST, same order as the page body — and with no `robots` key at
+  // all. An entity section is INDEXABLE like the guides beside it (D1/D3): the
+  // wing is 100% published and ungated, its guide URLs are already in the
+  // sitemap, and an anonymous reader genuinely sees page 1's cards. The DEEP
+  // entity pages carry the ordinary `noindex, follow` when the anon depth cap
+  // walls them — that rule lives in the `page/[n]` sibling, which is the only
+  // place there is a wall to hide.
+  const entityName = entityLabel(slug);
+  if (entityName) {
+    const heading = entityHeading(entityName);
+    const entityTitle = `${heading} | ريحان`;
+    const entityDescription = `أدلة الخدمات التي تقدّمها ${entityName} — خطوات كل خدمة وأين تُنجز على موقع الجهة الرسمي، عبر ريحان.`;
+    // `entityPath` owns the URL shape, and the slugs are ASCII — so unlike the
+    // guide branch below there is nothing for `encodeURIComponent` to do here
+    // (the header note in `lib/library/entities.ts` explains why).
+    const entityCanonical = entityPath(slug);
+    const entityOgImage = `/og?title=${encodeURIComponent(heading)}`;
+    return {
+      title: entityTitle,
+      description: entityDescription,
+      alternates: { canonical: entityCanonical },
+      openGraph: {
+        title: entityTitle,
+        description: entityDescription,
+        siteName: "ريحان",
+        type: "website",
+        locale: "ar_SA",
+        url: entityCanonical,
+        images: [
+          { url: entityOgImage, width: 1200, height: 630, alt: heading },
+        ],
+      },
+      twitter: {
+        card: "summary_large_image",
+        title: entityTitle,
+        description: entityDescription,
+        images: [entityOgImage],
+      },
+    };
+  }
+
   const doc = await getComplianceGuide(slug);
 
   if (!doc) {
@@ -106,6 +178,14 @@ export async function generateMetadata({
 // eslint-disable-next-line import/no-default-export
 export default async function ComplianceGuidePage({ params }: PageProps) {
   const { slug } = await params;
+
+  // ⚠ THE DISPATCH, AND ITS ORDER (see the header note). A dict lookup against
+  // the closed entity vocabulary costs nothing, so it happens BEFORE the guide
+  // fetch — probing the namespace can never spend a backend round trip.
+  if (isEntitySlug(slug)) {
+    return <ComplianceHubView page={1} entitySlug={slug} />;
+  }
+
   const doc = await getComplianceGuide(slug);
   if (!doc) notFound();
 
@@ -164,6 +244,18 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
     datePublished: now,
     dateModified: now,
   });
+
+  // «اقرأ تاليًا» — same-type only (D2). NO «الأنظمة المذكورة» on this wing
+  // (D14): the خدمات corpus carries no citation data at all.
+  //
+  // Expect this to be ABSENT on most guides until topic-BM25 lands (plan Wave
+  // E) — 337 guides across 29 entity values leaves almost nothing above the
+  // relevance floor, and a missing strip beats three unrelated services.
+  //
+  // Ungated by construction; the `slug` filter is the ISR-staleness guard.
+  const relatedGuides = (doc.related_next ?? []).filter((item) =>
+    Boolean(item.slug),
+  );
 
   // `hub`, NOT `doc` — and the two-column grid below is the whole reason.
   // `doc` is max-w-3xl (768px), which is the right measure for a page whose body
@@ -252,6 +344,15 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
           )}
         </div>
       </div>
+
+      {/* Related items — the last in-flow content, above the CTA and the footer.
+          Full page width, outside the reading column: cards to scan, not text to
+          read. Renders nothing at all when the list is empty. */}
+      <RelatedStrip title="اقرأ تاليًا" className="mt-12">
+        {relatedGuides.map((item) => (
+          <ComplianceCard key={item.slug} item={item} />
+        ))}
+      </RelatedStrip>
 
       <AskRayhanWidget
         pageType={ASK_PAGE_TYPE}

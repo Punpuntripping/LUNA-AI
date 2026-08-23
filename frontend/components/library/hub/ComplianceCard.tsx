@@ -1,5 +1,7 @@
+import Link from "next/link";
 import { CardShell } from "@/components/library/hub/CardShell";
 import { type ComplianceHubItem } from "@/lib/library/api";
+import { entityPath, entitySlugForName } from "@/lib/library/entities";
 import { guideDisplayTitle } from "@/lib/library/guide";
 
 /**
@@ -16,10 +18,13 @@ function stepsHint(count: number): string {
   return `${count} خطوة مصوّرة`;
 }
 
+const ENTITY_CHIP_CLASS =
+  "inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg";
+
 /**
- * One card in the /compliance guide grid: issuing entity, the guide's title, one
- * line of our own orientation text, and how many screenshots the guide walks
- * through.
+ * One card in the /compliance guide grid: the guide's title, one line of our own
+ * orientation text, how many screenshots it walks through, and — at the foot —
+ * the issuing entity, linked to that entity's section.
  *
  * WHAT SITS BEHIND IT: our own authored rewrite of that entity's official PDF
  * user-guide, published in full and ungated. What does NOT sit behind it is the
@@ -32,6 +37,22 @@ function stepsHint(count: number): string {
  * The title goes through `guideDisplayTitle` for the same reason the guide page
  * does: every corpus title starts «الدليل الشامل:», and a card that says
  * «الشامل» over a page that says «الشامل بالصور» reads as two different guides.
+ *
+ * ── WHY THE ENTITY CHIP MOVED TO THE FOOT (2026-08-23) ──────────────────────
+ * It used to be a dead `<span>` above the title. The card is where a reader
+ * LEARNS an entity's name, so it is where the «الجهة» axis should be
+ * discoverable without opening the switcher — and a link cannot live in the card
+ * BODY, because `CardShell` wraps the body in the card's own anchor and nesting
+ * `<a>` inside `<a>` is invalid HTML the parser silently un-nests. `footer` is
+ * the slot that exists for exactly this, a sibling of the anchor rather than a
+ * child, and it is the same place `JudgmentCard` puts its `SectorPills`. Its
+ * position under the summary also keeps it visually SUBORDINATE to the title:
+ * one card, one headline, and a quiet second exit at the bottom.
+ *
+ * ⚠ AN UNKNOWN PROVIDER RENDERS AS PLAIN TEXT, NEVER A GUESSED HREF. The slug
+ * comes from the closed 28-value mirror; a corpus re-ingest that introduces a
+ * new `provider_name` degrades to exactly the chip that shipped before, not to a
+ * 404. Same rule `SectorPills` applies to a sector name with no slug.
  */
 export function ComplianceCard({
   item,
@@ -43,16 +64,29 @@ export function ComplianceCard({
   // `href === undefined` keeps the hub's own link; `null` renders unlinked.
   const target = href === undefined ? `/compliance/${item.slug}` : href;
   const imageCount = item.image_count ?? 0;
-  return (
-    <CardShell href={target}>
-      {item.provider_name && (
-        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center rounded-full bg-pill px-2 py-0.5 text-xs font-medium text-pill-fg">
-            {item.provider_name}
-          </span>
-        </div>
-      )}
+  const provider = item.provider_name?.trim() ?? "";
+  const entitySlug = provider ? entitySlugForName(provider) : null;
 
+  return (
+    <CardShell
+      href={target}
+      footer={
+        provider ? (
+          <div className="flex flex-wrap gap-1.5 pt-3">
+            {entitySlug ? (
+              <Link
+                href={entityPath(entitySlug)}
+                className={`${ENTITY_CHIP_CLASS} transition-colors hover:bg-accent-soft hover:text-accent-brand`}
+              >
+                {provider}
+              </Link>
+            ) : (
+              <span className={ENTITY_CHIP_CLASS}>{provider}</span>
+            )}
+          </div>
+        ) : undefined
+      }
+    >
       <h2 className="line-clamp-2 text-base font-bold leading-snug text-foreground transition-colors group-hover:text-primary">
         {guideDisplayTitle(item.title, imageCount)}
       </h2>
@@ -63,7 +97,7 @@ export function ComplianceCard({
         </p>
       )}
 
-      {/* Hidden on the 10 text-only guides rather than shown as a zero — and on
+      {/* Hidden on the text-only guides rather than shown as a zero — and on
           any card baked by a backend older than the guides release, whose
           payload carries no `image_count` at all. */}
       {imageCount > 0 && (

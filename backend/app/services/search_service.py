@@ -58,19 +58,37 @@ logger = logging.getLogger(__name__)
 # VOCABULARY
 # ==========================================================================
 
-# The six corpora the index carries (migration §4 CHECK constraint). Split by
+# The corpora the index carries (migration §4 CHECK constraint). Split by
 # OWNERSHIP rather than by wing, because the split is what decides how
 # ``bm25_search`` is called: ``p_owner IS NULL`` matches PUBLIC rows only, and a
 # non-null ``p_owner`` matches THAT owner's rows only. The RPC cannot return both
 # in one call — by design, so a private row can never fall out of a public
 # search — which is why a mixed request is two calls, merged here.
-# ⚠ ``service`` LEFT PUBLIC_CORPORA ON 2026-08-03. The rows are still in
-# ``search_index`` (``refresh_search_index()`` still writes them, and the agent
-# pipeline still searches the services corpus through its own adapters) — they
-# are simply not RANKED for navigation search any more, because the /compliance
-# wing they linked into was retired and every hit would have resolved to a 404.
-# ``public_url`` has no prefix for it either; the two must move together.
-PUBLIC_CORPORA: tuple[str, ...] = ("regulation", "judgment", "circular")
+#
+# ⚠ ``compliance`` AND ``service`` ARE TWO DIFFERENT THINGS. Read this before
+# touching either, because the names invite exactly the wrong guess:
+#
+#   · ``compliance`` IS the government-services NAVIGATION corpus (joined
+#     2026-08-23, ``.claude/plans/compliance_entity_sections.md`` §6). It carries
+#     the 337 SERVICE GUIDES — ريحان's own authored rewrite of each entity's
+#     official PDF — keyed by ``service_guides.id``, with the Latin slugs the
+#     /compliance wing publishes. Every hit resolves to a real, ungated,
+#     fully-published page, which is precisely what the corpus's absence used to
+#     make impossible.
+#   · ``service`` is the INERT LEGACY ROW-SET: 100 rows keyed by ``services.id``
+#     carrying the RETIRED wing's Arabic slugs. It left ``PUBLIC_CORPORA`` on
+#     2026-08-03 because the wing it linked into was retired and every hit would
+#     have resolved to a 404, and it stays out. It is NOT "the agents' corpus"
+#     either — it is kept alive for ONE thing: ``manual_search.py`` maps its
+#     ``services`` data_type onto it as rung ③, the exact-title pin behind
+#     ``search_topics`` and a full-table ILIKE over all 4,746 services. Retiring
+#     those rows is a separate decision (plan §10), not a side effect of this one.
+#
+# ``public_url`` gained a ``/compliance`` prefix in the same edit; a corpus and
+# its prefix must always move together, or a ranked hit becomes an unlinkable one.
+PUBLIC_CORPORA: tuple[str, ...] = (
+    "regulation", "judgment", "circular", "compliance",
+)
 PRIVATE_CORPORA: tuple[str, ...] = ("blog", "template")
 ALL_CORPORA: tuple[str, ...] = PUBLIC_CORPORA + PRIVATE_CORPORA
 
@@ -82,6 +100,13 @@ CORPUS_SECTION: dict[str, str] = {
     "regulation": "regulations",
     "judgment": "judgments",
     "circular": "circulars",
+    # ⚠ The corpus is ``compliance`` and so is the SECTION — the one place in this
+    # map where the two words coincide, which makes it look like a typo waiting to
+    # be "fixed". It is not. ``_charge_hub_yield`` keys the /compliance hub's item
+    # budget on ``"compliance"``, so this entry is what makes a search hit and a
+    # browse hit on the SAME guide charge ONE item. Rename it and the budget forks
+    # silently: nothing errors, and a caller quietly gets twice the reach.
+    "compliance": "compliance",
 }
 
 # corpus → public URL prefix. Same table as ``library_items_service._URL_PREFIX``
@@ -91,9 +116,14 @@ _URL_PREFIX: dict[str, str] = {
     "regulation": "/regulations",
     "judgment": "/judgments",
     "circular": "/circulars",
+    "compliance": "/compliance",
     "blog": "/blog",
     "template": "/templates",
 }
+# ⚠ There is still NO prefix for ``service`` and there must not be one: those 100
+# rows carry the retired wing's slugs and every URL built from them is a 404. The
+# guides live at ``/compliance/{slug}`` and are reached through the ``compliance``
+# corpus above.
 
 # Filterable facet keys per corpus — the EXACT keys ``refresh_search_index()``
 # writes into ``search_index.facets`` (migration §8). Anything outside this map
@@ -109,6 +139,11 @@ FACET_KEYS: dict[str, frozenset[str]] = {
         {"court", "court_level", "city", "case_number", "legal_domains"}
     ),
     "circular": frozenset({"entity_ref", "doc_type", "circ_ref", "sectors"}),
+    # The three keys ``refresh_search_index('compliance')`` writes (plan §6.1).
+    # ``provider_name`` is the ENTITY axis expressed as a facet — the same closed
+    # 28-value vocabulary ``shared/library/entities.py`` owns — so a cross-wing
+    # search can be scoped to one issuing body without a second code path.
+    "compliance": frozenset({"provider_name", "service_ref", "sectors"}),
     "blog": frozenset({"subtype", "display_mode", "is_public", "is_published"}),
     "template": frozenset({"created_by"}),
 }

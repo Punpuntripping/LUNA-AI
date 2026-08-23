@@ -14,6 +14,12 @@ import { formatCount } from "@/lib/library/sectors";
 /**
  * The public wings that carry a search box today.
  *
+ * `compliance` JOINED ON 2026-08-23, when the 337 service guides entered
+ * `search_index` as their own corpus (compliance_entity_sections §6). It was
+ * absent for the same reason `/forms` still is — the hub's own comment refused a
+ * live-looking box that could only ever return nothing — and the wing endpoint
+ * has taken `?q=` all along, so this member is the box, not a new contract.
+ *
  * `/forms` and `/calculators` are deliberately ABSENT — D7 puts them out of
  * scope (not indexed, not wired), and a placeholder here would be a promise the
  * backend cannot keep.
@@ -27,7 +33,11 @@ import { formatCount } from "@/lib/library/sectors";
  * from `SEARCH_LIBRARY_COPY` below. Same reasoning that keeps
  * `PrivateSearchSurface` separate.
  */
-export type SearchSurface = "regulations" | "judgments" | "circulars";
+export type SearchSurface =
+  | "regulations"
+  | "judgments"
+  | "circulars"
+  | "compliance";
 
 // ------------------------------------------------------------------
 // The 3-character floor
@@ -117,14 +127,19 @@ export function searchResultsHeading(query: string): string {
  */
 export const SEARCH_LIBRARY_COPY = {
   placeholder: "ابحث في المكتبة القانونية كاملة…",
-  ariaLabel: "ابحث في الأنظمة والأحكام والتعاميم في وقت واحد",
+  ariaLabel: "ابحث في الأنظمة والأحكام والتعاميم والخدمات في وقت واحد",
   /**
    * One line under the box. It describes what the BOX does, not what the
    * library contains — the H1's own paragraph directly above already lists the
-   * three corpora, and repeating them here would be the same sentence twice on
-   * one screen.
+   * corpora, and repeating them here would be the same sentence twice on one
+   * screen.
+   *
+   * ⚠ IT MUST NOT NAME A COUNT. It said «الأقسام الثلاثة» until 2026-08-23 and
+   * went stale the moment `compliance` joined `SEARCH_CORPORA` — that array owns
+   * how many chips render, and a number spelled out here can only ever drift
+   * behind it. Same lesson `SearchShowcase` records about «ثلاثة».
    */
-  lead: "اكتب اسم النظام أو موضوع المسألة — يبحث ريحان في الأقسام الثلاثة دفعةً واحدة ويرتّب النتائج حسب المطابقة.",
+  lead: "اكتب اسم النظام أو موضوع المسألة — يبحث ريحان في أقسام المكتبة دفعةً واحدة ويرتّب النتائج حسب المطابقة.",
   /** The `<fieldset>`-style accessible name for the wing chip row. */
   scopeLabel: "نطاق البحث",
   /** The «no wing filter» chip — the state that searches all three. */
@@ -186,6 +201,13 @@ export const SEARCH_SURFACE_COPY = {
   circulars: {
     placeholder: "ابحث في التعاميم…",
     ariaLabel: "ابحث في التعاميم التنظيمية",
+  },
+  compliance: {
+    // «الخدمات», the word the wing's own chip and cards use — never «الأدلة».
+    // A reader arrives looking for a SERVICE; that the answer is a guide is our
+    // format, not their question.
+    placeholder: "ابحث في الخدمات الحكومية…",
+    ariaLabel: "ابحث في أدلة الخدمات الحكومية",
   },
 } satisfies Record<SearchSurface, SurfaceCopy>;
 

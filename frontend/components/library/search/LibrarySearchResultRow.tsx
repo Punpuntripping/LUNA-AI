@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FileText, Gavel, Landmark } from "lucide-react";
+import { ClipboardList, FileText, Gavel, Landmark } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SectorPills } from "@/components/library/hub/SectorPills";
 import {
@@ -40,16 +40,22 @@ import type { LibrarySearchHit } from "@/hooks/use-search";
 
 /**
  * A glyph per wing, so a mixed-corpus list is scannable without reading every
- * badge. Deliberately the ONLY per-corpus visual difference: three accent colours
+ * badge. Deliberately the ONLY per-corpus visual difference: accent colours
  * would have to come out of the semantic palette (`success` / `warning`), where
  * green already means «ساري» and amber «معدَّل» — a تعميم tinted like a repealed
  * نظام is worse than no colour at all. Icons carry no such meaning in either
  * theme.
+ *
+ * `compliance` (2026-08-23) takes `ClipboardList`, the step-list glyph
+ * `referenceKind` already gives نماذج, because a service guide IS a numbered
+ * walkthrough. NOT `Landmark`: that one is already spent on نظام here, and a
+ * second row wearing it would undo the one job this map has.
  */
 const CORPUS_ICON: Record<SearchCorpus, typeof Landmark> = {
   regulation: Landmark,
   judgment: Gavel,
   circular: FileText,
+  compliance: ClipboardList,
 };
 
 export function LibrarySearchResultRow({
@@ -60,7 +66,7 @@ export function LibrarySearchResultRow({
   /** `name_ar → slug` for the sector pills (D11). Omit ⇒ plain-text pills. */
   sectorSlugs?: Record<string, string>;
 }) {
-  // The wire type is `string`: `/api/v1/search` only ever answers with the three
+  // The wire type is `string`: `/api/v1/search` only ever answers with the
   // public corpora, but a row that cannot name its wing still renders — titled,
   // linked and unlabelled — rather than crashing the whole result list.
   const corpus = isSearchCorpus(hit.corpus) ? hit.corpus : null;

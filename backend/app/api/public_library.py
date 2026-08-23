@@ -80,6 +80,14 @@ from shared.library.courts import (
     COURT_SLUG_VOCAB,
     variants_for_slug,
 )
+from shared.library.entities import (
+    ENTITY_LABELS,
+    ENTITY_ORDER,
+    ENTITY_SLUG_VOCAB,
+    RESERVED_SLUGS as RESERVED_ENTITY_SLUGS,
+    name_for_slug as entity_name_for_slug,
+    slug_for_name as entity_slug_for_name,
+)
 from shared.library.sectors import (
     SECTOR_SLUGS,
     sector_for_slug,
@@ -615,9 +623,30 @@ _court_counts_memo: dict[str, int] = {}
 _court_total_pages_memo: dict[str, int] = {}
 _court_memo_at: dict[str, float] = {"at": 0.0}
 
+# ── Entity counts (compliance_entity_sections §4.1) ─────────────────────────
+# The 28 per-entity published guide counts and the page counts derived from
+# them, on the SAME 5-minute TTL as the sector and court memos, and for the same
+# reason: an entity is a SECTION, so its wall reports a real number, and a real
+# number on the anon path must not cost a query per request.
+#
+# ⚠ THIS AXIS IS READ BY ANONYMOUS CALLERS, unlike the sector and court memos
+# (D1 — the wing is 100% published, ungated, and all 337 guide URLs are already
+# in the sitemap, so a section slice accumulates nothing a crawler could not
+# already reach). That makes the memo MORE load-bearing here, not less: it is the
+# only thing between /compliance/{entity} page-1 traffic and one grouped read per
+# request. One refresh fills both dicts — ``library_service.compliance_entity_counts``
+# reads the published set once and groups it in Python.
+#
+# Separate memos rather than extra keys on the sector dicts: the axes are
+# independent, and one shared refresh timestamp would make an entity-page hit
+# refresh the sector counts and vice versa.
+_entity_counts_memo: dict[str, int] = {}
+_entity_total_pages_memo: dict[str, int] = {}
+_entity_memo_at: dict[str, float] = {"at": 0.0}
+
 
 def _reset_sector_memos() -> None:
-    """Drop every sector/court/corpus memo. Test helper — never called in
+    """Drop every sector/court/entity/corpus memo. Test helper — never called in
     production."""
     _sector_counts_memo.clear()
     _sector_total_pages_memo.clear()
@@ -627,6 +656,9 @@ def _reset_sector_memos() -> None:
     _court_counts_memo.clear()
     _court_total_pages_memo.clear()
     _court_memo_at["at"] = 0.0
+    _entity_counts_memo.clear()
+    _entity_total_pages_memo.clear()
+    _entity_memo_at["at"] = 0.0
 
 
 async def _unfiltered_total_pages(
@@ -748,6 +780,54 @@ async def _court_total_pages(supabase: SupabaseClient, court_slug: str) -> int:
     return _court_total_pages_memo.get(court_slug, 1)
 
 
+async def _entity_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """The 28 per-entity PUBLISHED guide counts, memoised for 5 minutes (§4.1).
+
+    ONE refresh fills the item counts returned here and the derived page counts
+    the paginator and the CTA wall read. Cost: one read of the published guide
+    set (337 rows, two ``id IN (...)`` chunks) grouped in Python —
+    ``library_service.compliance_entity_counts``. That is the same read any hub
+    page already performs, so the browse grid is effectively free.
+
+    Returns a COPY — handing out the module dict lets one handler corrupt what
+    every other request reads for the rest of the TTL (the F5 fix on the sector
+    memo, which cost a real bug hunt once).
+    """
+    now = time.monotonic()
+    if _entity_counts_memo and now - _entity_memo_at["at"] < _TOTAL_PAGES_TTL_SECONDS:
+        return dict(_entity_counts_memo)
+
+    counts = await run_db(library_service.compliance_entity_counts, supabase)
+
+    page_size = library_service.HUB_PAGE_SIZE
+    _entity_counts_memo.clear()
+    _entity_counts_memo.update(counts)
+    _entity_total_pages_memo.clear()
+    for slug, items in counts.items():
+        # An empty entity still reports 1 page — the hub listers do the same
+        # (``max(1, ...) if total else 1``), so an entity whose guides all lost
+        # their slugs renders a single "no results" page rather than a zero-page
+        # paginator. Nine of the 28 hold exactly one guide, so the small end of
+        # this range is the normal case, not a defensive branch.
+        _entity_total_pages_memo[slug] = (
+            max(1, math.ceil(items / page_size)) if items else 1
+        )
+    _entity_memo_at["at"] = now
+    return dict(_entity_counts_memo)
+
+
+async def _entity_total_pages(supabase: SupabaseClient, entity_slug: str) -> int:
+    """Memoised real page count for one entity section (§4.1).
+
+    Counts what the wing can actually SERVE — ``compliance_entity_counts`` reads
+    the same published set ``list_compliance_hub`` pages — so the page-1 body's
+    total and the page-2 wall's cannot disagree. §12.2 failed on exactly that
+    mismatch on another wing.
+    """
+    await _entity_counts(supabase)
+    return _entity_total_pages_memo.get(entity_slug, 1)
+
+
 async def _sector_total_pages(
     supabase: SupabaseClient, section: str, sector_slug: str
 ) -> int:
@@ -773,27 +853,35 @@ async def _wall_total_pages(
     filtered: bool,
     sector_slug: Optional[str] = None,
     court_slug: Optional[str] = None,
+    entity_slug: Optional[str] = None,
     **kwargs,
 ) -> int:
     """``total_pages`` for a cap_reached body — see the block comment above.
 
     Anon + a filter is the only case that gets the flat ceiling; the count query
-    is skipped entirely there. Anon + a validated SECTION — ``court_slug`` or
-    ``sector_slug``, and no other narrowing — gets that section's memoised real
-    count instead. That is the §5 amendment (and §2.3.3 for courts), and it is
-    the whole difference between a section page whose paginator reads «1 2» and
-    one that reads «1 2 3 … 2243».
+    is skipped entirely there. Anon + a validated SECTION — ``court_slug``,
+    ``sector_slug`` or ``entity_slug``, and no other narrowing — gets that
+    section's memoised real count instead. That is the §5 amendment (§2.3.3 for
+    courts, ``compliance_entity_sections`` §4.1 for entities), and it is the
+    whole difference between a section page whose paginator reads «1 2» and one
+    that reads «1 2 3 … 13».
 
-    The two section axes are mutually exclusive HERE only because a caller that
-    supplies both has already been marked ``filtered`` (12 × 38 combinations are
+    The section axes are mutually exclusive HERE only because a caller that
+    supplies two has already been marked ``filtered`` (12 × 38 combinations are
     not memoised — see the block comment), so the branch order never decides a
-    real answer.
+    real answer. ⚠ ``entity_slug`` is checked BEFORE ``sector_slug`` for the same
+    reason ``court_slug`` is: on /compliance the two can arrive together, and a
+    caller who did that is already ``filtered``, so this branch is unreachable in
+    that case — but if the flag were ever loosened, the entity memo is the one
+    keyed to the narrower set and is the safer answer.
     """
     if tier == "anon":
         if filtered:
             return _ANON_WALL_TOTAL_PAGES
         if court_slug:
             return await _court_total_pages(supabase, court_slug)
+        if entity_slug:
+            return await _entity_total_pages(supabase, entity_slug)
         if sector_slug:
             return await _sector_total_pages(supabase, section, sector_slug)
         return await _unfiltered_total_pages(counter, supabase, section)
@@ -933,6 +1021,13 @@ MSG_SECTOR_NOT_FOUND = "القطاع غير موجود"
 # feed, so this facet and the ``court_level`` chips compose rather than
 # contradict — the wording is what keeps that legible to a reader.
 MSG_INVALID_COURT = "جهة قضائية غير معروفة"
+# «الجهة», the /compliance ENTITY SECTION axis — a different thing from
+# ``MSG_INVALID_ENTITY`` above, which belongs to the /regulations ``entity``
+# token (a numeric ``entity_ref`` or a UUID). Two axes, two vocabularies, two
+# messages; the definite article is the only visible difference and it is worth
+# keeping, because a reader who follows a stale /compliance/{entity} link should
+# not be told about a filter they never used.
+MSG_INVALID_ENTITY_SECTION = "الجهة غير معروفة"
 
 # THE REAL VOCABULARIES — every one of these is imported from the module that
 # owns it, never retyped, so a new pipeline bucket or court level cannot become a
@@ -951,6 +1046,14 @@ _COURT_LEVEL_VOCAB = frozenset(COURT_LEVEL_LABELS)
 # Arabic court strings must never be retyped into this module (30 distinct free
 # text values, several differing only by an invisible double space).
 _COURT_VOCAB = COURT_SLUG_VOCAB
+# The 28 /compliance ENTITY SECTION slugs. IMPORTED from
+# ``shared/library/entities.py``, which owns the slug ⇄ ``provider_name`` pairing
+# — a 29th issuing body added there must not need a second edit here to become
+# servable, and the Arabic provider names must NEVER be retyped into this module
+# (one of them, «الهيئة السعودية للمقَيّمين المعتمدين (تقييم)», carries a fatha the
+# plan's own table lost; an exact ``eq`` against a retyped copy matches nothing
+# and the section renders silently empty).
+_ENTITY_VOCAB = ENTITY_SLUG_VOCAB
 # ``forms.category`` — the wing's own tuple (the forms table is the only writer).
 _FORM_CATEGORY_VOCAB = frozenset(library_service.FORM_CATEGORIES)
 # The RAW Arabic sector names stored in ``regulations_v2.sectors[]`` /
@@ -1198,6 +1301,46 @@ def _court_section(
     return variants, slug
 
 
+def _entity_section(entity_slug: Optional[str]) -> Optional[str]:
+    """Resolve the ENTITY axis of a /compliance request → the ``provider_name``.
+
+    ``None`` means no entity was requested — the normal, unfiltered hub.
+    Otherwise the return value is the EXACT ``services.provider_name`` string the
+    slug claims, ready for an ``==`` comparison in ``_compliance_matches``.
+
+    IN-MEMORY, AND THAT IS THE POINT (mirrors ``_sector_section`` / ``_court_section``,
+    §12.7). The whole decision — is this a real entity, is it reserved, what does
+    it match — is a dict lookup in ``shared/library/entities.py``. Probing the
+    namespace therefore costs no DB round-trip, and a refusal cannot become its
+    own load generator. Call this BEFORE tier resolution and before any query.
+
+    Raises 400 «الجهة غير معروفة» for a value outside the 28 and for a RESERVED
+    segment (``page`` / ``entities`` / ``mine`` — ``name_for_slug`` returns None
+    for those even if a future edit adds them to the map, so `/compliance/page/2`
+    can never resolve as an entity in either namespace).
+
+    ⚠ ONE SPELLING ONLY, like the court axis and unlike the sector axis. There is
+    no raw ``?provider_name=`` param and there must not be one: it would be a
+    second spelling of a SECTION, i.e. spelling arbitrage against everything §5's
+    T4 closed for sectors (ask by slug and get the section rules, ask by raw name
+    and get… what?).
+
+    ⚠ ``provider`` IS A DIFFERENT AXIS AND STAYS EXACTLY AS IT IS. That param is a
+    free-text ``ilike`` SUBSTRING facet over the same column, >= 3 chars,
+    available to anon, and it belongs in the ``filtered`` flag precisely because
+    its value space is unbounded. ``entity_slug`` is a closed 28-value
+    server-owned vocabulary and is a SECTION. Same column, opposite treatment —
+    do not merge them, and do not make ``entity`` an ``ilike`` "for consistency".
+    """
+    slug = _clean(entity_slug)
+    if slug is None:
+        return None
+    name = entity_name_for_slug(slug)
+    if name is None:
+        raise _reject(MSG_INVALID_ENTITY_SECTION)
+    return name
+
+
 def _entity_name_or_id(value: Optional[str]) -> Optional[str]:
     """Validate the /circulars ``entity`` filter.
 
@@ -1240,7 +1383,14 @@ class SitemapResponse(BaseModel):
 
 
 class RegHubItem(BaseModel):
-    """One card on the /regulations hub grid."""
+    """One card on the /regulations hub grid.
+
+    ⚠ ALSO THE CARD SHAPE OF BOTH RELATED-ITEM STRIPS
+    (`.claude/plans/read_next_related_items.md` §5.1): «اقرأ تاليًا» on a نظام
+    page and «الأنظمة المذكورة» on both نظام and حكم pages are lists of THIS
+    model, so the frontend feeds them into the existing ``RegulationCard`` with
+    no new card work. `library_service._reg_hub_item` is the single builder.
+    """
 
     slug: str
     title: str
@@ -1339,7 +1489,19 @@ class RegulationDocResponse(BaseModel):
     the first 3 sections, truncated, when ``gate='gated'``. ``status`` is the
     mapped label; ``draft_notice`` flags non-enacted (مشروع نظام) regulations for
     the frontend warning. ``article_index`` links each مادة page (additive; empty
-    until the seo_articles index is built)."""
+    until the seo_articles index is built).
+
+    ``cited_regulations`` («الأنظمة المذكورة») and ``related_next``
+    («اقرأ تاليًا») are the two card strips at the foot of the page
+    (`.claude/plans/read_next_related_items.md`). Both are lists of ``RegHubItem``
+    — the same cards the /regulations grid renders — both are capped at 7, both
+    list ONLY published أنظمة, and the two are DISJOINT: the citation strip
+    renders first and wins, and its ids are excluded from ``related_next`` (D13).
+
+    ⚠ NEITHER IS GATED, AND NEITHER CAN BE. This page is ISR-baked and serves one
+    html artifact to anon, free and paid alike, so a per-tier strip is not
+    expressible. What they carry is titles, links and the snippet the hub cards
+    already show anonymously — no body content, no change to the gate."""
 
     slug: str
     title: str
@@ -1354,6 +1516,14 @@ class RegulationDocResponse(BaseModel):
     hidden_section_count: int
     official_sources: list[OfficialSource] = Field(default_factory=list)
     draft_notice: bool = False
+    # «الأنظمة المذكورة» — أنظمة this نظام cites (`cross_references_v2`,
+    # `source_type='reg_chunk'`), ONE CARD PER نظام (D8), unresolved refs
+    # dropped (D9), <= 7. Empty when it cites nothing we can link to.
+    cited_regulations: list[RegHubItem] = Field(default_factory=list)
+    # «اقرأ تاليًا» — same-type neighbours from `related_items` (migration 143),
+    # best score first, <= 7. Empty is normal: ~50% of أنظمة have no curated
+    # edge, and below the floor the strip is hidden rather than padded.
+    related_next: list[RegHubItem] = Field(default_factory=list)
 
 
 # --- Article (مادة) page --------------------------------------------------
@@ -1509,6 +1679,13 @@ class ComplianceGuideDoc(BaseModel):
 
     ``image_count`` is what this payload actually carries (``len(images)``), so a
     title reading «بالصور» is always backed by bytes.
+
+    ⚠ THERE IS NO ``cited_regulations`` FIELD ON THIS WING AND THERE MUST NOT BE
+    ONE (D14). `cross_references_v2` carries `case` and `reg_chunk` sources and
+    nothing else, so a خدمة has no citation data at all. An empty list would read
+    as «this guide cites no أنظمة», which is a claim the corpus cannot support —
+    the field is ABSENT, not empty. Extracting نظام mentions from guide prose is
+    a separate project.
     """
 
     slug: str
@@ -1519,6 +1696,10 @@ class ComplianceGuideDoc(BaseModel):
     image_count: int = 0
     guide_md: str = ""
     images: list[ComplianceGuideImage] = Field(default_factory=list)
+    # «اقرأ تاليًا» — same-type (خدمات) neighbours, <= 7, published only. Runs
+    # bonus-only (entity + sectors) until Wave E's topic-BM25 base axis, so
+    # expect a thin strip. Ungated, identical bytes for anon and paid.
+    related_next: list[ComplianceHubItem] = Field(default_factory=list)
 
 
 # --- Circulars hub + document page ----------------------------------------
@@ -1566,7 +1747,11 @@ class CircularDocResponse(BaseModel):
     ='gated'`` and the body exceeds the free budget, ``is_truncated=True`` and the
     hidden bytes are NOT in this payload (server-side gate); ``hidden_placeholder_
     lines`` sizes the placeholder bars. ``body_length`` is the full character
-    count."""
+    count.
+
+    ⚠ NO ``cited_regulations`` HERE EITHER, for the same reason as
+    ``ComplianceGuideDoc`` (D14): تعاميم carry no citation data anywhere in the
+    corpus. The field is absent, not empty."""
 
     slug: str
     title: str
@@ -1579,6 +1764,11 @@ class CircularDocResponse(BaseModel):
     is_truncated: bool
     hidden_placeholder_lines: int
     body_length: int
+    # «اقرأ تاليًا» — same-type (تعاميم) neighbours, <= 7, published only. The
+    # cards carry the always-free 160-char lead, never a gated byte, so this
+    # strip is identical for anon and paid — which is what keeps the page
+    # ISR-cacheable.
+    related_next: list[CircularHubItem] = Field(default_factory=list)
 
 
 # --- Judgments hub + document page (Phase 5) ------------------------------
@@ -1653,19 +1843,21 @@ class JudgmentSection(BaseModel):
     is_free: bool
 
 
-class JudgmentCitedRegulation(BaseModel):
-    """One entry of the cited-regulations mesh on a judgment page.
-
-    Regulation NAME + article NUMBER only — never a line of the regulation's
-    content, which is why the list is not gated (it is the internal-linking mesh
-    into /regulations and the مادة pages). ``reg_slug`` / ``article_slug`` are null
-    when the citation could not be matched to a PUBLISHED page; the مادة URL is
-    nested, so ``article_slug`` is only ever set alongside ``reg_slug``."""
-
-    title: str
-    article_no: Optional[str] = None
-    reg_slug: Optional[str] = None
-    article_slug: Optional[str] = None
+# ⚠ ``JudgmentCitedRegulation`` USED TO BE DEFINED HERE and is retired
+# (`.claude/plans/read_next_related_items.md` §5.1 · §5.3). It was
+# ``{title, article_no, reg_slug, article_slug}`` — one entry PER CITED مادة,
+# including unresolved citations carried as dead text with ``reg_slug=None``.
+# ``JudgmentDocResponse.cited_regulations`` is now ``list[RegHubItem]``: one card
+# per نظام (D8), unresolved and unpublished citations dropped (D9/D5), rendered
+# by the same ``RegulationCard`` the /regulations grid uses.
+#
+# Two things were given up on purpose. ``article_no`` is gone because the section
+# is «الأنظمة المذكورة», not المواد المذكورة. ``article_slug`` is gone with it,
+# which costs 5 outbound links — that is the total number of slugged مواد in the
+# corpus today, measured, not estimated.
+#
+# `frontend/types/library.ts` may still declare the old TS interface; it is a
+# separate declaration and deleting this class does not touch it.
 
 
 class JudgmentDocResponse(BaseModel):
@@ -1680,8 +1872,24 @@ class JudgmentDocResponse(BaseModel):
     reports 'open' and ships whole. ``hidden_section_count`` counts the sections
     ACTUALLY truncated and sizes the CTA; ``withheld_chars`` / ``withheld_pct``
     are the real exposure measure — a section count goes to 0 on exactly the
-    documents that are giving everything away. ``cited_total`` is the deduped
-    citation count before any free-cap."""
+    documents that are giving everything away.
+
+    THE TWO CARD STRIPS AT THE FOOT OF THE PAGE
+    (`.claude/plans/read_next_related_items.md`):
+
+      * ``cited_regulations`` («الأنظمة المذكورة») — the أنظمة this ruling cites,
+        as ``RegHubItem`` cards. ONE PER نظام (D8), unresolved and unpublished
+        citations dropped (D9), <= 7. ``cited_total`` is how many published أنظمة
+        it cites BEFORE that cap, so the page can say «و3 مراجع أخرى»; the cap
+        does not bind on the current corpus (no judgment cites more than 10).
+      * ``related_next`` («اقرأ تاليًا») — SAME-TYPE neighbours (D2), so أحكام.
+        Usually EMPTY, by design: 7,483 of the 10,000 slugged أحكام sit in
+        المحكمة التجارية where no signal clears the floor, and a missing strip
+        beats six arbitrary commercial rulings.
+
+    Neither strip is gated — they carry titles, links and the always-free lead
+    the hub cards already show anonymously, and this page is ISR-baked, so anon
+    and paid receive identical bytes."""
 
     slug: str
     title: str
@@ -1705,8 +1913,12 @@ class JudgmentDocResponse(BaseModel):
     # (``LibraryFullResponse.summary_md``).
     has_summary: bool = False
     sections: list[JudgmentSection] = Field(default_factory=list)
-    cited_regulations: list[JudgmentCitedRegulation] = Field(default_factory=list)
+    # ⚠ TYPE CHANGED from ``list[JudgmentCitedRegulation]`` — see the tombstone
+    # above that model. One RegHubItem card per cited نظام, <= 7.
+    cited_regulations: list[RegHubItem] = Field(default_factory=list)
     cited_total: int = 0
+    # «اقرأ تاليًا» — same-type (أحكام) neighbours, <= 7, published only.
+    related_next: list[JudgmentHubItem] = Field(default_factory=list)
     official_sources: list[OfficialSource] = Field(default_factory=list)
     gate_effective: str  # 'open' | 'gated'
     # May a crawler have this ruling — `seo_item_meta.indexable` (migration 130).
@@ -1876,6 +2088,40 @@ class CourtListResponse(BaseModel):
     sit under المحكمة العامة (69)."""
 
     courts: list[CourtSummary] = Field(default_factory=list)
+
+
+class EntitySummary(BaseModel):
+    """One tile of the «تصفّح حسب الجهة» grid on /compliance.
+
+    ``slug`` is the URL segment (`/compliance/{slug}`) and is LATIN here, unlike
+    the court axis — /compliance is the INDEXED wing, so the "structural segments
+    are Latin" rule has its SEO neutrality back and there is no percent-encoding
+    to get wrong on the way through ISR revalidation
+    (``shared/library/entities.py`` records the decision).
+
+    ``label`` is the issuing body's Arabic name and is ALSO the exact
+    ``provider_name`` stored in the corpus — one string doing both jobs, because
+    a section whose display name could drift from its predicate is a section
+    whose counts stop meaning anything.
+
+    ``count`` is PUBLISHED guides, not corpus rows — it sizes a paginator that
+    walks exactly that set — and ``total_pages`` is that count at 9/page, floored
+    at 1 so a one-guide entity still renders one page rather than zero."""
+
+    slug: str
+    label: str
+    count: int = 0
+    total_pages: int = 1
+
+
+class EntityListResponse(BaseModel):
+    """``GET /public/library/compliance/entities`` — all 28, memoised 5 minutes.
+
+    ⚠ THE SERVER OWNS THE ORDER: corpus volume descending (``ENTITY_ORDER``). Do
+    not re-sort on the client — alphabetically وزارة العدل (115 guides) would
+    land among nine authorities holding one guide each."""
+
+    entities: list[EntitySummary] = Field(default_factory=list)
 
 
 class SectorPreview(BaseModel):
@@ -2479,6 +2725,14 @@ async def list_compliance(
     sector_slug: Optional[str] = Query(
         None, description="Latin sector slug — the SECTION axis (§5)"
     ),
+    entity_slug: Optional[str] = Query(
+        None,
+        description=(
+            "Latin entity slug — the «الجهة» SECTION axis; one of the 28 in "
+            "shared/library/entities.py. Exact match on provider_name (NOT the "
+            "free-text `provider` facet)."
+        ),
+    ),
     q: Optional[str] = Query(
         None, description="BM25 search, signed-in only (>= 3 chars; ignored for anon)"
     ),
@@ -2487,27 +2741,59 @@ async def list_compliance(
 ):
     """/compliance hub list (9 cards/page) — «دليل مبسط لأكثر الخدمات استخداماً».
 
-    Lists the 169 SERVICE GUIDES, most-used first (``most_used_rank`` ascending —
+    Lists the 337 SERVICE GUIDES, most-used first (``most_used_rank`` ascending —
     the portal's own popularity order, so page 1 is the services people actually
     file). A guide is ريحان's own authored rewrite of the issuing entity's
     official PDF user-guide; the wing publishes it in full and ungated.
 
     ``provider`` is a free-text substring of the issuing entity's name (>= 3
-    chars — same floor as every other free-text facet); ``sector_slug`` is the
-    SECTION axis (§5), not a filter for cap purposes; ``q`` is registered-only and
-    dropped for anon (D9).
+    chars — same floor as every other free-text facet); ``entity_slug`` is the
+    «الجهة» SECTION axis, an EXACT match on ``provider_name`` drawn from a closed
+    28-value vocabulary; ``sector_slug`` is the sector SECTION axis (§5); ``q`` is
+    registered-only and dropped for anon (D9).
+
+    ``entity_slug`` is what `/compliance/{entity}` travels as. THERE IS NO
+    SEPARATE ENTITY HUB ENDPOINT, deliberately: an entity page is this handler
+    with one validated param, which is what makes it inherit the item budget, the
+    depth caps and the cache rule unchanged. Forking a hub per entity would fork
+    all of that 28 ways, and the copies would drift.
 
     THE CARDS ARE NOT GATED AND NEITHER IS THE PAGE THEY LINK TO — this wing has
     no gate resolution anywhere. What still applies is everything that is about
     the CALLER rather than the content: the filters are validated before any query
     (§2.1), the browse-depth cap bounds anon at page 1 (§2.2 — SEO does not depend
-    on hub depth; the sitemap carries all 169 detail URLs), and a signed-in
+    on hub depth; the sitemap carries all 337 detail URLs), and a signed-in
     caller's yielded items are metered."""
     provider = _search_text(provider)
     sector, sector_key = _sector_section(sector_slug, sector)
+    entity = _entity_section(entity_slug)
+    # The CANONICAL slug, taken back OUT of the vocabulary rather than off the
+    # query string: the memo below is keyed by the map's own spelling, and
+    # ``?entity_slug=ZATCA `` must hit the same entry as ``?entity_slug=zatca``
+    # instead of missing it and silently reporting «1 page».
+    entity_key = entity_slug_for_name(entity) if entity else None
     search_dropped = _search_was_dropped(q, current_user)
     q = _search_query(q, current_user)
-    # ``sector`` is a SECTION, not a filter — see the CTA-wall block comment (§5).
+    # ⚠⚠ ``entity`` IS DELIBERATELY ABSENT FROM THIS EXPRESSION — DO NOT ADD IT.
+    # ``sector`` is absent for the reason the CTA-wall block comment gives (§5 /
+    # D8) and ``entity`` is absent for the same one, restated because it is the
+    # line a future reader is most likely to "fix":
+    #
+    # A CLOSED, SERVER-OWNED 28-VALUE VOCABULARY IS A SECTION, NOT AN ORACLE.
+    # ``filtered`` exists to shut the counting oracle that a free-text ``q`` (or
+    # the unbounded ``provider`` substring right above) opens: an answer that
+    # MOVES with attacker-chosen input, one probe per slice. ``entity_slug``
+    # yields 28 FIXED numbers that move only when the corpus does, and they are
+    # memoised — so it belongs with ``sector_key`` and ``court``, not with
+    # ``provider``. Put it in this flag and ``_visible_total_pages`` /
+    # ``_wall_total_pages`` pin anon ``total_pages`` to 2 on every entity page:
+    # «1 2» printed over وزارة العدل's 115 guides and 13 real pages, with nothing
+    # erroring and page 1 still rendering perfectly. That is a silent, total
+    # defeat of the feature.
+    #
+    # ⚠ ENTITY **+** PROVIDER/``q`` IS FILTERED AGAIN, and it already is: the
+    # section is the base set, the free-text is still a probe. That is what
+    # ``bool(provider or q)`` below already does — no extra term needed.
     filtered = bool(provider or q) or _sector_is_unslugged(sector, sector_key)
 
     tier, user_id = await _hub_caller(supabase, current_user)
@@ -2516,6 +2802,39 @@ async def list_compliance(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
+        # ⚠⚠ ``entity`` IS DELIBERATELY ABSENT FROM ``section_scoped`` — DO NOT
+        # ADD IT. THIS OMISSION *IS* DECISION D1
+        # (`.claude/plans/compliance_entity_sections.md` §2/D1). The entity axis
+        # must be readable by anon and free; the sector axis on this same wing
+        # stays paid-only, and both facts live on this one line.
+        #
+        # The section gate exists because a section axis MULTIPLIES the depth cap
+        # over a corpus that is otherwise METERED — 27 free items per slice × 152
+        # slices ≈ 4,100 items reachable by walking links. Every term of that
+        # argument is absent here, which is why this is an exemption granted by a
+        # property of the wing, not a change of mind about the rule:
+        #
+        #   · /compliance is 100% PUBLISHED (337 of 337) and UNGATED end to end —
+        #     ``library_service`` deliberately omits 'compliance' from the gate
+        #     map and ``get_compliance_guide`` resolves no gate and charges
+        #     nothing. There is no partial content for a slice to accumulate.
+        #   · ALL 337 GUIDE URLS ARE ALREADY IN THE SITEMAP (since 2026-08-19). A
+        #     crawler does not need the hub, at any depth, to reach every guide.
+        #     An anon reader who walks 28 entity page-1s sees 252 cards whose
+        #     bodies were already fully public.
+        #   · The guides are OURS — our own authored rewrite of each entity's PDF.
+        #     The PDPL argument that closed the courts axis has no counterpart.
+        #
+        # What this does NOT change, each confirmable in one grep:
+        #   · The anon DEPTH cap still applies per URL — anon gets page 1 of an
+        #     entity and the CTA wall at page 2. ``hub_page_allowed`` is untouched.
+        #     وزارة العدل's 13 pages are not an anon-readable 115-card list.
+        #   · ``section_scope_allowed()`` (:453) and ``_SECTION_SCOPE_TIERS``
+        #     (:449) are NOT edited. No other wing changes behaviour.
+        #   · ``sector`` KEEPS feeding ``section_scoped`` below. Sector is the
+        #     cross-wing axis governed by the shared rule; entity is one wing's
+        #     own. Do not "harmonise" them without redoing §2.
+        #
         # The resolved NAME, not the slug — see the section-gate block comment.
         section_scoped=bool(sector),
     ):
@@ -2526,9 +2845,11 @@ async def list_compliance(
             provider,
             sector,
             q,
+            entity,
             section="compliance",
             filtered=filtered,
             sector_slug=sector_key,
+            entity_slug=entity_key,
         )
         return ComplianceHubResponse(
             items=[], page=page, total_pages=total_pages, cap_reached=True,
@@ -2544,6 +2865,7 @@ async def list_compliance(
         provider=provider,
         sector=sector,
         q=q,
+        entity=entity,
     )
     await _charge_hub_yield(request, supabase, user_id, "compliance", data["items"], tier)
     return ComplianceHubResponse(
@@ -2555,6 +2877,55 @@ async def list_compliance(
         total_count=data.get("total_count"),
         total_count_is_exact=bool(data.get("total_count_is_exact", True)),
         **_hub_caps(tier),
+    )
+
+
+# ⚠ THIS ROUTE MUST STAY ABOVE ``/public/library/compliance/{slug}``. FastAPI
+# matches in DECLARATION order, so a ``/compliance/entities`` declared after the
+# guide route would be swallowed by ``{slug}`` and answer 404 «الدليل غير موجود»
+# — the same static-before-dynamic rule the courts route documents, and the same
+# rule that lets `/compliance/page/2` coexist with `/compliance/{guide-slug}` on
+# the frontend. ``entities`` is in ``RESERVED_SLUGS`` for the other half of it:
+# no guide may ever be minted at that name.
+@router.get(
+    "/public/library/compliance/entities", response_model=EntityListResponse
+)
+async def list_compliance_entities(
+    response: Response,
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """All 28 «الجهة» sections with their PUBLISHED guide counts (§4.1).
+
+    Feeds the entity browse grid rendered on /compliance, on `/compliance/page/{n}`
+    and on every entity page.
+
+    ORDER IS THE SERVER'S — corpus volume descending (``ENTITY_ORDER``) — and the
+    frontend renders it as given. The slugs and the labels come from
+    ``shared/library/entities.py``, never from the corpus, so a ``provider_name``
+    no slug claims (none today) simply is not listed while its guides stay
+    reachable through the unfiltered hub, the sitemap and search.
+
+    ⚠ THE COUNTS COME FROM THE CORPUS, NOT FROM THE PLAN'S §3 TABLE. That table
+    is documentation, measured once on 2026-08-22; these numbers each size a
+    paginator that walks exactly the published set, so they are read from
+    ``compliance_entity_counts`` and memoised for 5 minutes.
+
+    ANON-VISIBLE, like the wing it describes (D1). No items are yielded, so
+    nothing is metered, and the shared hour-cache applies to an anonymous caller
+    exactly as it does on every other public library GET."""
+    counts = await _entity_counts(supabase)
+    _apply_hub_cache_headers(response, current_user)
+    return EntityListResponse(
+        entities=[
+            EntitySummary(
+                slug=slug,
+                label=ENTITY_LABELS[slug],
+                count=int(counts.get(slug, 0)),
+                total_pages=_entity_total_pages_memo.get(slug, 1),
+            )
+            for slug in ENTITY_ORDER
+        ]
     )
 
 
@@ -2580,7 +2951,25 @@ async def get_compliance_guide(
     vary by tier and which therefore switch headers per caller.
 
     404 «الدليل غير موجود» when the slug is unknown — including a guide that
-    exists but has no slug yet, which has no public page by definition."""
+    exists but has no slug yet, which has no public page by definition, and
+    including the reserved segments below.
+
+    ⚠ THE SLUG NAMESPACE IS SHARED WITH THE ENTITY SECTIONS (plan D2). One
+    dynamic segment serves two kinds of thing: `/compliance/{entity}` and
+    `/compliance/{guide}`. The frontend dispatches entity-FIRST (an in-process
+    dict lookup, no fetch), so an entity slug would SHADOW a same-named guide —
+    404ing a URL that is in the sitemap. This handler refuses the same set
+    server-side so the two layers cannot drift into disagreeing about what a slug
+    means: ``build_compliance_slugs.py`` must never mint one of these, this route
+    proves it never did, and `backend/tests/test_library_entities.py` asserts the
+    live sidecar against both. ∅ collisions verified 2026-08-23 over all 337
+    published slugs — this is a fail-safe, not a live filter."""
+    if (slug or "").strip().lower() in RESERVED_ENTITY_SLUGS | _ENTITY_VOCAB:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="الدليل غير موجود",
+        )
     doc = await run_db(library_service.get_compliance_guide, supabase, slug)
     if doc is None:
         raise LunaHTTPException(

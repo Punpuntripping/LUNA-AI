@@ -8,8 +8,10 @@ import {
   MetadataCard,
   ArticleBody,
   OfficialSources,
+  RelatedStrip,
   AskRayhanWidget,
 } from "@/components/library/blocks";
+import { CircularCard } from "@/components/library/hub/CircularCard";
 import { FullContentGate } from "@/components/library/FullContentGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
@@ -115,6 +117,17 @@ export default async function CircularDocPage({ params }: PageProps) {
       : {}),
   };
 
+  // «اقرأ تاليًا» — same-type only (D2). NO «الأنظمة المذكورة» on this wing
+  // (D14): the تعاميم corpus carries no citation data whatsoever, and guessing
+  // نظام mentions out of prose is a separate project.
+  //
+  // Ungated by construction — one 24h ISR bake serves anon, free and paid
+  // alike. The `slug` filter is the staleness guard: an entry without one is
+  // dropped rather than rendered as a dead card.
+  const relatedCirculars = (doc.related_next ?? []).filter((item) =>
+    Boolean(item.slug),
+  );
+
   return (
     <LibraryPageShell maxWidth="doc">
       <LibraryUseBeacon contentType="circular" slug={doc.slug} gate={doc.gate_effective === "gated" || doc.is_truncated ? "gated" : "open"} />
@@ -154,6 +167,21 @@ export default async function CircularDocPage({ params }: PageProps) {
           <OfficialSources sources={officialSources} />
         )}
       </div>
+
+      {/* Related items — the last in-flow content, above the CTA and the footer.
+          `maxWidth="doc"` here, so the track is 3 cards across a max-w-3xl
+          column rather than max-w-6xl; the card is narrower, its `line-clamp`
+          rules do the rest.
+
+          No `sectorSlugs`: `getSectorSlugMap()` fetches on a 1h window and Next
+          takes the MINIMUM revalidate across a render — passing it would cut
+          this page's ISR window from 24h to 1h. The pills render as plain
+          text. */}
+      <RelatedStrip title="اقرأ تاليًا" className="mt-12">
+        {relatedCirculars.map((item) => (
+          <CircularCard key={item.slug} item={item} />
+        ))}
+      </RelatedStrip>
 
       <AskRayhanWidget
         pageType="circular"

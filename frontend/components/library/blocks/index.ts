@@ -21,9 +21,12 @@ export { GateBanner } from "./GateBanner";
 export { CalculatorBlock } from "./CalculatorBlock";
 export { FaqBlock } from "./FaqBlock";
 export { ReferencesMesh } from "./ReferencesMesh";
-export { CitedRegulations } from "./CitedRegulations";
 export { OfficialSources } from "./OfficialSources";
 export { ReadAfter } from "./ReadAfter";
+// `CitedRegulations` (the judgment-only «الأنظمة المستند إليها» list) was
+// retired: «الأنظمة المذكورة» is now a `RelatedStrip` of real hub cards, shared
+// with «اقرأ تاليًا» across all four wings.
+export { RelatedStrip } from "./RelatedStrip";
 export { MediaBlock } from "./MediaBlock";
 export { AskRayhanWidget } from "./AskRayhanWidget";
 export { ChatWithPageCta, isCarryablePageType } from "./ChatWithPageCta";

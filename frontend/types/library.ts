@@ -6,6 +6,16 @@
 // Spec: .claude/plans/seo_public_library.md — "PAGE TEMPLATES & BLOCK SYSTEM".
 
 import type { ReactNode } from "react";
+import type { LucideIcon } from "lucide-react";
+
+// Type-only, and it must stay that way: `lib/library/api.ts` imports the
+// judgment shapes FROM this file, so a value import in either direction would
+// be a runtime cycle. `import type` is erased at compile time, so the two
+// modules only ever meet in the type checker. The three hub-item shapes live
+// there because they are wire types owned by the fetchers; the doc payloads
+// below reference them because a related-items strip is literally a list of hub
+// cards (read_next_related_items §5.1).
+import type { RegulationHubItem } from "@/lib/library/api";
 
 // ------------------------------------------------------------------
 // Shared data primitives
@@ -201,20 +211,6 @@ export interface JudgmentSection {
 }
 
 /**
- * One «الأنظمة المستند إليها» citation — the judgment page's SEO payload: a link
- * INTO the /regulations wing. `reg_slug` is null when the cited نظام has no
- * published page yet (the row then renders as plain, non-link text);
- * `article_slug` is null when the citation is regulation-level, not مادة-level.
- */
-export interface JudgmentCitedRegulation {
-  title: string;
-  /** Rendered verbatim into «المادة {n}». */
-  article_no: number | null;
-  reg_slug: string | null;
-  article_slug: string | null;
-}
-
-/**
  * Full /judgments/{slug} payload. `subject` is the H1; `title` is the longer
  * composed listing/meta title (subject + court + year). `summary_md` is ALWAYS
  * free (the ranking lead); `sections` carry the gated body.
@@ -245,9 +241,36 @@ export interface JudgmentDoc {
    */
   has_summary: boolean;
   sections: JudgmentSection[];
-  cited_regulations: JudgmentCitedRegulation[];
-  /** Total citations found — the surplus over `cited_regulations` is gated. */
-  cited_total: number;
+  /**
+   * «اقرأ تاليًا» — up to 7 OTHER أحكام, same type only (D2), already publish-
+   * filtered and ungated. Absent/empty on most rulings by design: 7,483 of the
+   * 10,000 slugged judgments sit in المحكمة التجارية, where nothing clears the
+   * relevance floor, and a missing strip beats six arbitrary neighbours.
+   *
+   * OPTIONAL on the wire — a page baked before the backend shipped simply has
+   * no field, and that must cost the strip, never the render.
+   */
+  related_next?: JudgmentHubItem[];
+  /**
+   * «الأنظمة المذكورة» — one card per cited نظام, resolved and slug-filtered
+   * server-side, capped at 7. One entry PER REGULATION, not per مادة (D8), and
+   * unresolved citations are dropped (D9), so every entry has a page to point
+   * at. Nothing here appears in `related_next` too (D13).
+   *
+   * OPTIONAL for a second reason as well: the payload SHAPE changed. It used to
+   * be `{title, article_no, reg_slug, article_slug}[]`, and a page baked before
+   * the backend shipped carries the OLD objects for a further 24h of ISR. The
+   * judgment page filters on `slug` for exactly that reason — a stale entry has
+   * none, so the strip degrades to absent instead of to broken hrefs.
+   */
+  cited_regulations?: RegulationHubItem[];
+  /**
+   * @deprecated Total citations found. Was the «+{n} … سجّل» tail on the old
+   * `CitedRegulations` list; «الأنظمة المذكورة» has no gated tail, so nothing
+   * reads it. Kept typed (optional) only so a payload that still sends it type-
+   * checks.
+   */
+  cited_total?: number;
   official_sources: JudgmentOfficialSource[];
   /**
    * The gate AFTER the exposure budget decides: a ruling too short to gate
@@ -463,17 +486,21 @@ export interface ReferencesMeshProps {
   className?: string;
 }
 
-export interface CitedRegulationsProps {
-  items: JudgmentCitedRegulation[];
-  /**
-   * TOTAL citations found for the document. The surplus over `items.length`
-   * renders the gated «+{n} … سجّل» tail. Omit for no tail.
-   */
-  total?: number;
-  /** Heading. Default «الأنظمة المستند إليها». */
-  title?: string;
-  /** CTA target for the gated tail. Default "/login". */
-  gateCtaHref?: string;
+/**
+ * `RelatedStrip` — the shared frame behind «الأنظمة المذكورة» and «اقرأ تاليًا».
+ *
+ * It takes CARDS, not data: `children` is one existing hub card per related
+ * item, so the strip never learns the four wire shapes and no second card
+ * design exists. Replaced `CitedRegulationsProps` (the judgment-only citation
+ * list) — see `RelatedStrip.tsx`.
+ */
+export interface RelatedStripProps {
+  /** Heading text. Fixed per surface (D11) — never composed from the document. */
+  title: string;
+  /** One hub card per related item. An empty list renders NOTHING at all. */
+  children: ReactNode;
+  /** Heading icon. Default `BookMarked`. */
+  icon?: LucideIcon;
   className?: string;
 }
 

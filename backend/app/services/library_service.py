@@ -59,6 +59,8 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import search_service
 from shared.config import get_settings
 from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
+from shared.library.entities import ENTITY_ORDER
+from shared.library.entities import slug_for_name as slug_for_provider
 from shared.library.sectors import SECTOR_SLUGS, slug_for_sector
 from shared.library.case_sources import entity_name as _judgment_entity_name
 from shared.library.case_sources import judgment_provenance
@@ -229,6 +231,7 @@ __all__ = [
     "COMPLIANCE_WING_READY",
     "list_compliance_hub",
     "compliance_hub_total_pages",
+    "compliance_entity_counts",
     "get_compliance_guide",
     # Phase 3 — مادة (article) pages
     "ARTICLE_FREE_CHARS",
@@ -264,6 +267,10 @@ __all__ = [
     "SECTOR_COUNT_SECTIONS",
     "library_corpus_counts",
     "sector_counts",
+    # read_next_related_items.md §5 — «اقرأ تاليًا» + «الأنظمة المذكورة»
+    "RELATED_NEXT_LIMIT",
+    "REGULATION_CITED_LIMIT",
+    "get_related_next",
 ]
 
 
@@ -2295,6 +2302,35 @@ _REG_HUB_SELECT = (
 )
 
 
+# ⚠ THE FOUR ``_*_hub_item`` BUILDERS BELOW ARE THE ONLY DEFINITIONS OF THEIR
+# WING'S CARD SHAPE, and they are shared by TWO readers: the hub lister, and the
+# «اقرأ تاليًا» / «الأنظمة المذكورة» strips on the document pages
+# (`.claude/plans/read_next_related_items.md` §5.1). The strips feed the SAME
+# frontend card component the hub grid does, so the two payloads must be
+# byte-identical — and a duplicated dict literal is exactly how they would drift
+# (one wing gains a field, the other silently does not, and the card renders
+# blank on half the site). Extend the shape HERE or nowhere.
+
+
+def _reg_hub_item(row: dict[str, Any]) -> dict[str, Any]:
+    """One /regulations card from a ``_REG_HUB_SELECT`` row.
+
+    ``slug`` is read straight off the row: every source of these rows is
+    ``library_regulations_ranked``, a published-only view that carries it (the
+    caller still guards on it as a cheap invariant check). ``clean_title`` is
+    NULL on 43% of the corpus, hence the ``coalesce`` to ``title``.
+    """
+    return {
+        "slug": row.get("slug"),
+        "title": (row.get("clean_title") or row.get("title") or "").strip(),
+        "entity_name": row.get("entity_name"),
+        "status": map_reg_status(row.get("status_class")),
+        "doc_type": map_doc_type_bucket(row.get("doc_type_bucket")),
+        "summary_snippet": _text_snippet(row.get("summary"), 160),
+        "sectors": row.get("sectors") or [],
+    }
+
+
 def regulations_hub_total_pages(
     supabase: SupabaseClient,
     entity: Optional[str] = None,
@@ -2403,20 +2439,9 @@ def list_regulations_hub(
     for r in raw_rows:
         # The view is an INNER JOIN on a non-null slug, so this cannot be empty;
         # the guard stays as a cheap invariant check rather than a filter.
-        slug = r.get("slug")
-        if not slug:
+        if not r.get("slug"):
             continue
-        items.append(
-            {
-                "slug": slug,
-                "title": (r.get("clean_title") or r.get("title") or "").strip(),
-                "entity_name": r.get("entity_name"),
-                "status": map_reg_status(r.get("status_class")),
-                "doc_type": map_doc_type_bucket(r.get("doc_type_bucket")),
-                "summary_snippet": _text_snippet(r.get("summary"), 160),
-                "sectors": r.get("sectors") or [],
-            }
-        )
+        items.append(_reg_hub_item(r))
 
     return _hub_result(
         items, page, total_pages, q=q, total=total, truncated=truncated
@@ -2765,6 +2790,14 @@ def get_regulation_doc(
 
     ``article_index`` lists ONLY the PUBLISHED مواد (opt-in; empty by default) and
     is additive to either path.
+
+    TWO CARD STRIPS ride at the foot of the payload, both lists of reg hub cards
+    and both UNGATED (`.claude/plans/read_next_related_items.md`):
+    ``cited_regulations`` («الأنظمة المذكورة» — أنظمة this نظام cites, one card
+    per نظام, <= 7) and ``related_next`` («اقرأ تاليًا» — same-type neighbours,
+    <= 7). They are DISJOINT: the citation strip resolves first and its ids are
+    excluded from the other (D13), which is load-bearing precisely here because
+    this is the one page where both strips hold أنظمة.
     """
     slug = (slug or "").strip()
     if not slug:
@@ -2941,6 +2974,22 @@ def get_regulation_doc(
     if is_open and reg.get("landing_url"):
         official_sources.append({"title": "الموقع الرسمي", "href": reg["landing_url"]})
 
+    # THE TWO STRIPS, AND THE ORDER IS THE CONTRACT (§5.4 · D13). «الأنظمة
+    # المذكورة» resolves FIRST and wins; «اقرأ تاليًا» is told what it already
+    # rendered and backfills past it. THIS IS THE ONE PAGE WHERE THAT DEDUP DOES
+    # ANYTHING — both strips hold أنظمة here, and a نظام that cites its
+    # لائحة is also the نظام most likely to be its top related neighbour, so
+    # without the exclusion the same card renders twice, one above the other.
+    #
+    # Both are ungated and both are fail-soft: they return `[]`, never raise, so
+    # a related-items outage costs two strips and not the statute.
+    cited_regulations, cited_ids = _regulation_cited_regulations(
+        supabase, str(content_id)
+    )
+    related_next = get_related_next(
+        supabase, "regulation", str(content_id), exclude_ids=cited_ids
+    )
+
     return {
         "slug": slug,
         "title": (reg.get("clean_title") or reg.get("title") or "").strip(),
@@ -2961,6 +3010,10 @@ def get_regulation_doc(
         "hidden_section_count": hidden_section_count,
         "official_sources": official_sources,
         "draft_notice": status == "draft",
+        # «الأنظمة المذكورة» — أنظمة this نظام cites, one card per نظام, <= 7.
+        "cited_regulations": cited_regulations,
+        # «اقرأ تاليًا» — same-type neighbours, <= 7, published only.
+        "related_next": related_next,
     }
 
 
@@ -3100,34 +3153,49 @@ def _compliance_matches(
     row: dict[str, Any],
     provider: Optional[str],
     sector: Optional[str],
-    q: Optional[str],
+    entity: Optional[str] = None,
 ) -> bool:
     """The hub filters, in Python — see ``_compliance_published_rows``.
 
-    ``provider`` = case-insensitive substring of ``provider_name`` (the ``ilike``
-    the other wings push into PostgREST); ``sector`` = array containment on
-    ``sectors``, the §7.1 convention every wing spells the same way (the value is
-    the RAW Arabic sector name, already resolved from its Latin slug by the
-    route); ``q`` = substring over ``title`` + ``summary``.
+    ``sector`` = array containment on ``sectors``, the §7.1 convention every wing
+    spells the same way (the value is the RAW Arabic sector name, already
+    resolved from its Latin slug by the route).
 
-    ⚠ ``q`` HERE IS NOT BM25 AND MUST NOT BECOME IT. The other wings route ``q``
-    through ``bm25_search()``, which ranks over ``search_index`` — and the guides
-    are deliberately NOT in that index (plan §9: the BM25 navigation corpus for
-    guides is its own decision, not a side effect of this wing). A substring match
-    over 169 titles is honest and cheap; a wing silently absent from the shared
-    index would just return nothing. ``q`` is registered-only either way — the
-    ROUTE drops it for anon before this module ever sees it.
+    ⚠ ``provider`` AND ``entity`` ARE TWO AXES OVER ONE COLUMN, WITH TWO
+    DELIBERATELY DIFFERENT PREDICATES. Do not collapse them:
+
+      * ``provider`` is a FREE-TEXT FACET — a case-insensitive SUBSTRING of
+        ``provider_name`` (the ``ilike`` the other wings push into PostgREST),
+        >= 3 chars, anon-available, unbounded in value space. «التجارة» matching
+        both وزارة التجارة and المركز السعودي للأعمال الاقتصادية is correct
+        behaviour for a facet.
+      * ``entity`` is a SECTION — the EXACT ``provider_name`` a slug from the
+        closed 28-value vocabulary (``shared/library/entities.py``) claims,
+        compared with ``==``. It is exact BY CONSTRUCTION, and that is the whole
+        argument that lets the axis report real counts to an anonymous caller
+        (`.claude/plans/compliance_entity_sections.md` §2/D1): 28 fixed numbers
+        that move only when the corpus does are not an enumeration oracle. Make
+        this a substring and the counts stop being fixed — «وزارة» would fold
+        eleven ministries into one «section» whose total drifts with the query —
+        and the exemption that keeps this axis out of the ``filtered`` flag no
+        longer holds.
+
+    ``q`` IS NO LONGER HANDLED HERE — see ``_compliance_published_rows``, which
+    now takes the BM25 path. This function is the POST-FILTER applied to whatever
+    candidate set that produced.
     """
     if provider:
         if provider.lower() not in (row.get("provider_name") or "").lower():
             return False
+    if entity:
+        # Exact, not ``ilike``. See the block above; and note the comparison is on
+        # the STRIPPED value because the vocabulary stores the corpus string
+        # verbatim, harakat included (`taqeem`'s fatha is a live example).
+        if (row.get("provider_name") or "").strip() != entity:
+            return False
     if sector:
         sectors = [str(s) for s in (row.get("sectors") or [])]
         if sector not in sectors:
-            return False
-    if q:
-        haystack = f"{row.get('title') or ''} {row.get('summary') or ''}".lower()
-        if q.lower() not in haystack:
             return False
     return True
 
@@ -3138,18 +3206,58 @@ def _compliance_published_rows(
     provider: Optional[str] = None,
     sector: Optional[str] = None,
     q: Optional[str] = None,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """``(filtered+sorted published rows, {id: slug})`` for the whole wing.
+    entity: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
+    """``(filtered+ordered published rows, {id: slug}, truncated)`` for the wing.
 
-    SAMPLE MODE ALL THE WAY DOWN, and permanently so: the wing is 169 rows — one
-    guide per guided service — which is an order of magnitude below
-    ``SAMPLE_MODE_MAX_IDS``. So the published set comes from the sidecar
-    (``_published_ids('compliance')``), the rows come back in one or two
+    BROWSE (``q`` absent) — SAMPLE MODE ALL THE WAY DOWN, and permanently so: the
+    wing is 337 rows, one guide per guided service, which is an order of
+    magnitude below ``SAMPLE_MODE_MAX_IDS``. So the published set comes from the
+    sidecar (``_published_ids('compliance')``), the rows come back in one or two
     ``id IN (...)`` chunks, and the filtering, ordering and 9-item slicing all
     happen in Python. That is the same shape ``list_circulars_hub`` uses for its
     sample, and it is what guarantees a page is never mysteriously empty (the
     failure that made sample mode exist: paginating a corpus whose first pages
-    hold none of the published rows).
+    hold none of the published rows). Ordering is ``_compliance_sort_key``.
+
+    ⚠ SEARCH (``q`` present) — THE PREMISE REVERSED ON 2026-08-23. This function
+    used to hand ``q`` to ``_compliance_matches`` as a substring over
+    ``title + summary``, under a comment that read «``q`` HERE IS NOT BM25 AND
+    MUST NOT BECOME IT», because the guides were deliberately absent from
+    ``search_index`` (the wing's own plan §9 held the corpus decision back). THAT
+    PREMISE IS NOW VOID: the guides joined ``search_index`` as the ``compliance``
+    corpus (`.claude/plans/compliance_entity_sections.md` §6, migration applied
+    2026-08-23), so ``q`` takes the SAME ``corpus_search_ids`` → ``rank_map``
+    path every other wing takes, via ``_bm25_hub_rows``. The comment is rewritten
+    rather than deleted so the reversal, and its date, stay on the record — the
+    substring was never a style choice, it was the honest answer while the corpus
+    was missing.
+
+    What the swap changes, and what it deliberately does not:
+
+      * ORDER. A search result set comes back in BM25 score order and the
+        ``most_used_rank`` contract does NOT apply to it — a result list ordered
+        by anything other than relevance is not a result list. Browse ordering is
+        untouched.
+      * MATCHING. Arabic normalization + IDF instead of a literal substring, and
+        the whole ``guide_md`` body is now searchable rather than just
+        ``title + summary``.
+      * FILTERS. ``provider`` / ``sector`` / ``entity`` stay POST-FILTERS over the
+        ranked candidates, exactly as on the other wings — the RPC's facets are
+        not a superset of what these predicates mean, and pushing them down would
+        quietly change them.
+      * PUBLICATION. Only slugged rows are in the index, so the ranked set is
+        already the published set; the ``slugs`` map below still drops anything
+        unslugged, which costs one dict lookup and removes a whole failure mode.
+      * ``truncated`` is True when the ranked id set came back AT
+        ``HUB_SEARCH_LIMIT`` (200) — reachable now that the wing is 337 guides,
+        which is why the third tuple element exists at all. It feeds
+        ``total_count_is_exact``: ``len(rows)`` is then a FLOOR, and a UI printing
+        it as «200 نتيجة» would be inventing a number.
+
+    ``q`` is registered-only either way — the ROUTE drops it for anon before this
+    module ever sees it (``public_library._search_query``), which is why there is
+    no anon branch here and must not be a second, drifting check.
 
     The slug map is computed over the CANDIDATE set rather than the served page,
     because it does double duty — it carries the card's ``slug`` AND it is the
@@ -3158,31 +3266,73 @@ def _compliance_published_rows(
     the unslugged rows are dropped here). Both paths therefore list exactly the
     slugged guides, never a row with no public URL.
     """
-    pub_ids = _published_ids(supabase, "compliance")
-    if pub_ids is not None:
-        rows = (
-            _fetch_corpus_by_ids(
-                supabase, _COMPLIANCE_HUB_TABLE, select_cols, pub_ids, lambda qb: qb
-            )
-            if pub_ids
-            else []
+    truncated = False
+
+    if q:
+        # SEARCH MODE — relevance order (see the ``_bm25_hub_rows`` block
+        # comment). The candidate fetch is by id, so ``apply_filters`` is a no-op
+        # and every predicate runs as a post-filter below, unchanged.
+        rows, truncated = _bm25_hub_rows(
+            supabase,
+            corpus="compliance",
+            table=_COMPLIANCE_HUB_TABLE,
+            select_cols=select_cols,
+            q=q,
+            apply_filters=lambda qb: qb,
         )
     else:
-        try:
-            res = supabase.table(_COMPLIANCE_HUB_TABLE).select(select_cols).execute()
-            rows = res.data or []
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Error reading %s: %s", _COMPLIANCE_HUB_TABLE, e)
-            raise _hub_error()
+        pub_ids = _published_ids(supabase, "compliance")
+        if pub_ids is not None:
+            rows = (
+                _fetch_corpus_by_ids(
+                    supabase, _COMPLIANCE_HUB_TABLE, select_cols, pub_ids, lambda qb: qb
+                )
+                if pub_ids
+                else []
+            )
+        else:
+            try:
+                res = (
+                    supabase.table(_COMPLIANCE_HUB_TABLE).select(select_cols).execute()
+                )
+                rows = res.data or []
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Error reading %s: %s", _COMPLIANCE_HUB_TABLE, e)
+                raise _hub_error()
 
     slugs = _slug_map(supabase, "compliance", [r.get("id") for r in rows])
     kept = [
         r
         for r in rows
-        if slugs.get(str(r.get("id"))) and _compliance_matches(r, provider, sector, q)
+        if slugs.get(str(r.get("id")))
+        and _compliance_matches(r, provider, sector, entity)
     ]
-    kept.sort(key=_compliance_sort_key)
-    return kept, slugs
+    if not q:
+        # BROWSE only. Re-sorting a search result by ``most_used_rank`` would
+        # throw away the ranking ``_bm25_hub_rows`` just imposed.
+        kept.sort(key=_compliance_sort_key)
+    return kept, slugs, truncated
+
+
+def _compliance_hub_item(row: dict[str, Any], slug: str) -> dict[str, Any]:
+    """One /compliance card from a ``_COMPLIANCE_HUB_SELECT`` row.
+
+    See the block comment above ``_reg_hub_item`` — one definition, two readers.
+    ``slug`` is PASSED IN rather than read off the row: ``library_compliance_v``
+    carries no slug column, so both readers resolve it through the sidecar
+    (``_slug_map`` / ``_compliance_published_rows``) and hand it here.
+    """
+    try:
+        image_count = int(row.get("image_count") or 0)
+    except (TypeError, ValueError):
+        image_count = 0
+    return {
+        "slug": slug,
+        "title": (row.get("title") or "").strip(),
+        "provider_name": row.get("provider_name"),
+        "summary": _text_snippet(row.get("summary"), 220),
+        "image_count": image_count,
+    }
 
 
 def compliance_hub_total_pages(
@@ -3190,19 +3340,26 @@ def compliance_hub_total_pages(
     provider: Optional[str] = None,
     sector: Optional[str] = None,
     q: Optional[str] = None,
+    entity: Optional[str] = None,
 ) -> int:
     """Total hub pages for the filtered guide set (for the anon-cap body).
 
     Counts exactly the set ``list_compliance_hub`` paginates — same published
-    ids, same Python filters — so the page count and the pages actually served
-    cannot disagree (§12.2's failure was a wall reporting one total while the
-    paginator walked another). ``ceil(n / 9)``, floored at ``1``: the paginator
-    and the CTA wall both read this as "how many pages exist", and zero pages
-    renders as a broken paginator rather than as one empty page.
+    ids, same Python filters, same ``entity`` predicate — so the page count and
+    the pages actually served cannot disagree (§12.2's failure was a wall
+    reporting one total while the paginator walked another). ``ceil(n / 9)``,
+    floored at ``1``: the paginator and the CTA wall both read this as "how many
+    pages exist", and zero pages renders as a broken paginator rather than as one
+    empty page.
     """
     try:
-        rows, _slugs = _compliance_published_rows(
-            supabase, "id, title, summary, provider_name, sectors", provider, sector, q
+        rows, _slugs, _truncated = _compliance_published_rows(
+            supabase,
+            "id, title, summary, provider_name, sectors",
+            provider,
+            sector,
+            q,
+            entity,
         )
         total = len(rows)
     except LunaHTTPException:
@@ -3220,15 +3377,27 @@ def list_compliance_hub(
     provider: Optional[str] = None,
     sector: Optional[str] = None,
     q: Optional[str] = None,
+    entity: Optional[str] = None,
 ) -> dict[str, Any]:
     """One page (9 cards) of the /compliance hub — «دليل الخدمات».
 
     Ordering = ``most_used_rank`` ascending (most-used service first), tiebroken
     ``(title, id)`` — see ``_compliance_sort_key``. Filters: ``provider``
-    (substring of the issuing entity's name), ``sector`` (§7.1 containment on the
-    joined ``services.sectors``) and ``q`` (title + summary substring,
-    registered-only — the route drops it for anon). Only slugged (published)
-    guides are listed.
+    (free-text SUBSTRING of the issuing entity's name), ``entity`` (the EXACT
+    ``provider_name`` of one of the 28 sections — a different axis with a
+    different predicate; see ``_compliance_matches``), ``sector`` (§7.1
+    containment on the joined ``services.sectors``) and ``q`` (BM25 over the
+    ``compliance`` corpus since 2026-08-23, registered-only — the route drops it
+    for anon). Only slugged (published) guides are listed.
+
+    ⚠ ``entity`` DOES NOT CHANGE THE ORDERING. A section is the same wing with a
+    narrower base set: ``most_used_rank`` still decides page 1, so
+    /compliance/ministry-of-justice opens on the 115 justice guides people
+    actually file. The section does not get its own sort contract.
+
+    SEARCH MODE (``q`` present, therefore an authenticated caller — D9): ids come
+    from ``bm25_search()`` in score order and the rank contract does not apply;
+    ``provider``/``entity``/``sector`` still post-filter those candidates.
 
     Card = ``{slug, title, provider_name, summary, image_count}``. ``summary`` is
     the guide's own one-paragraph abstract, cut to a card-sized snippet at a word
@@ -3248,8 +3417,8 @@ def list_compliance_hub(
     ps = HUB_PAGE_SIZE
     offset = (page - 1) * ps
 
-    all_rows, slugs = _compliance_published_rows(
-        supabase, _COMPLIANCE_HUB_SELECT, provider, sector, q
+    all_rows, slugs, truncated = _compliance_published_rows(
+        supabase, _COMPLIANCE_HUB_SELECT, provider, sector, q, entity
     )
     total = len(all_rows)
     total_pages = max(1, math.ceil(total / ps)) if total else 1
@@ -3260,24 +3429,61 @@ def list_compliance_hub(
         slug = slugs.get(str(r.get("id")))
         if not slug:
             continue
-        try:
-            image_count = int(r.get("image_count") or 0)
-        except (TypeError, ValueError):
-            image_count = 0
-        items.append(
-            {
-                "slug": slug,
-                "title": (r.get("title") or "").strip(),
-                "provider_name": r.get("provider_name"),
-                "summary": _text_snippet(r.get("summary"), 220),
-                "image_count": image_count,
-            }
-        )
+        items.append(_compliance_hub_item(r, slug))
 
-    # ``total_count`` rides the envelope only for a search, and this wing's search
-    # is an exhaustive substring pass over the published set — never truncated,
-    # so the count is always exact (unlike a BM25 wing capped at HUB_SEARCH_LIMIT).
-    return _hub_result(items, page, total_pages, q=q, total=total)
+    # ``total_count`` rides the envelope only for a search. ⚠ IT IS NO LONGER
+    # ALWAYS EXACT: this wing's ``q`` was an exhaustive substring pass until
+    # 2026-08-23 and is now a BM25 set cut at ``HUB_SEARCH_LIMIT`` (200) over 337
+    # guides, so ``truncated`` is reachable and has to be carried — a UI printing
+    # a ceiling as «200 نتيجة» is asserting a number the backend does not know.
+    return _hub_result(
+        items, page, total_pages, q=q, total=total, truncated=truncated
+    )
+
+
+def compliance_entity_counts(supabase: SupabaseClient) -> dict[str, int]:
+    """PUBLISHED guide count per entity slug — all 28, in ``ENTITY_ORDER``.
+
+    Feeds the «تصفّح حسب الجهة» grid and every entity section's ``total_pages``
+    (`.claude/plans/compliance_entity_sections.md` §4.1). ONE read of the whole
+    published set (337 rows, two ``id IN (...)`` chunks) grouped in Python, then
+    behind the route's 5-minute memo — NOT 28 ``count='exact'`` head queries the
+    way ``court_counts`` does it. The two wings differ because their listers do:
+    /judgments pages a ranked DB view, so a per-bucket count is one index-only
+    query; /compliance is sample-mode all the way down and already fetches every
+    published row for any hub page, so grouping that same read is strictly
+    cheaper than 28 round-trips and cannot disagree with the lister by
+    construction.
+
+    ⚠ THESE ARE COUNTS OF WHAT IS SERVABLE — the same ``_compliance_published_rows``
+    set ``list_compliance_hub`` paginates, so «وزارة العدل 115» and that section's
+    last page agree. The guide numbers in ``shared/library/entities.py``'s
+    comments document the CORPUS as of 2026-08-22 and are not read by anything;
+    they will drift, and that is fine.
+
+    Every slug is present, seeded to zero: an entity whose guides all lost their
+    slugs still renders (at zero) rather than vanishing from the grid — the
+    contract ``court_counts`` and ``sector_counts`` both hold. A ``provider_name``
+    the vocabulary does not claim is counted into NO bucket and logged once by
+    ``shared.library.entities`` at import; its guides stay reachable through the
+    unfiltered hub, the sitemap and search.
+
+    Fail-soft: a read error costs the grid's numbers, never the page — the caller
+    memoises whatever comes back and the tiles render without counts.
+    """
+    counts: dict[str, int] = {slug: 0 for slug in ENTITY_ORDER}
+    try:
+        rows, _slugs, _truncated = _compliance_published_rows(
+            supabase, "id, provider_name"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("compliance entity counts failed: %s", e)
+        return counts
+    for row in rows:
+        slug = slug_for_provider(row.get("provider_name"))
+        if slug is not None:
+            counts[slug] += 1
+    return counts
 
 
 def get_compliance_guide(
@@ -3294,7 +3500,12 @@ def get_compliance_guide(
     Returns::
 
         {slug, title, summary, provider_name, service_url, image_count,
-         guide_md, images: [{image_ref, description, url, width, height}]}
+         guide_md, images: [{image_ref, description, url, width, height}],
+         related_next: [ComplianceHubItem]}
+
+    ``related_next`` is «اقرأ تاليًا» — <= 7 published خدمات, same-type only
+    (D2). THERE IS NO ``cited_regulations`` KEY on this wing and there must not
+    be one: no corpus carries نظام citations for a خدمة (D14).
 
     Three properties of that payload are decisions, not details:
 
@@ -3390,6 +3601,14 @@ def get_compliance_guide(
         guide.get("guide_md") or "", {im["image_ref"] for im in images}
     )
 
+    # «اقرأ تاليًا» — خدمات only (D2). THERE IS NO «الأنظمة المذكورة» ON THIS WING
+    # and there must not be one: `cross_references_v2` carries `case` and
+    # `reg_chunk` sources and nothing else, so a خدمة has no citation data at all
+    # (D14). The field is ABSENT from `ComplianceGuideDoc`, not shipped empty —
+    # an empty list would read as "this guide cites nothing", which is a claim we
+    # cannot make. Extracting نظام mentions from guide prose is a separate project.
+    related_next = get_related_next(supabase, "compliance", str(content_id))
+
     return {
         "slug": slug,
         "title": (guide.get("title") or "").strip(),
@@ -3399,6 +3618,7 @@ def get_compliance_guide(
         "image_count": len(images),
         "guide_md": guide_md,
         "images": images,
+        "related_next": related_next,
     }
 
 
@@ -3907,6 +4127,31 @@ def _circular_hub_sort_key(r: dict[str, Any]) -> tuple[str, str]:
     return ((r.get("title") or ""), str(r.get("id") or ""))
 
 
+def _circular_hub_item(
+    row: dict[str, Any], slug: str, entity_name: Optional[str]
+) -> dict[str, Any]:
+    """One /circulars card from a ``_CIRCULAR_HUB_SELECT`` row.
+
+    See the block comment above ``_reg_hub_item`` — one definition, two readers.
+    ``slug`` and ``entity_name`` are PASSED IN: neither rides on ``circulars``
+    (the slug lives in the sidecar, the name in ``entities``), and both readers
+    resolve them in ONE batched lookup per page rather than per row.
+
+    ``body_snippet`` is the first ~160 chars of the ALWAYS-FREE ``content`` —
+    the same never-gated lead the hub prints. A card never carries gated bytes.
+    """
+    source_label, _ = _normalize_circular_source(row.get("source"))
+    content = row.get("content") or ""
+    return {
+        "slug": slug,
+        "title": (row.get("title") or "").strip(),
+        "entity_name": entity_name,
+        "source_label": source_label,
+        "body_snippet": _text_snippet(content, 160),
+        "body_length": len(content),
+    }
+
+
 def circulars_hub_total_pages(
     supabase: SupabaseClient,
     entity: Optional[str] = None,
@@ -4030,17 +4275,8 @@ def list_circulars_hub(
         slug = slugs.get(str(r.get("id")))
         if not slug:
             continue
-        source_label, _ = _normalize_circular_source(r.get("source"))
-        content = r.get("content") or ""
         items.append(
-            {
-                "slug": slug,
-                "title": (r.get("title") or "").strip(),
-                "entity_name": names.get(str(r.get("entity_id"))),
-                "source_label": source_label,
-                "body_snippet": _text_snippet(content, 160),
-                "body_length": len(content),
-            }
+            _circular_hub_item(r, slug, names.get(str(r.get("entity_id"))))
         )
 
     return _hub_result(
@@ -4064,6 +4300,11 @@ def get_circular_doc(
     server). ``metadata`` = الجهة المصدرة (entity name) + المرجع (circ_ref);
     ``source`` is normalized (label → ``source_label``; URL → ``official_sources``
     — always the label branch in the current corpus). Read-only, no counters.
+
+    ``related_next`` is «اقرأ تاليًا» — <= 7 published تعاميم, same-type only
+    (D2), ungated (the cards carry the always-free lead, never a gated byte).
+    NO ``cited_regulations`` key on this wing (D14): تعاميم carry no citation
+    data anywhere in the corpus.
     """
     slug = (slug or "").strip()
     if not slug:
@@ -4139,6 +4380,12 @@ def get_circular_doc(
     if circ.get("circ_ref"):
         metadata.append({"label": "المرجع", "value": str(circ["circ_ref"])})
 
+    # «اقرأ تاليًا» — تعاميم only (D2), and no «الأنظمة المذكورة» on this wing
+    # either (D14): a تعميم has no citation data anywhere in the corpus. Runs
+    # bonus-only (entity + sectors) until the topic-BM25 base axis of Wave E, so
+    # expect a thin strip here or none at all. Ungated and fail-soft.
+    related_next = get_related_next(supabase, "circular", str(content_id))
+
     return {
         "slug": slug,
         "title": (circ.get("title") or "").strip(),
@@ -4151,6 +4398,9 @@ def get_circular_doc(
         "is_truncated": cut["is_truncated"],
         "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
         "body_length": body_length,
+        # «اقرأ تاليًا» — <= 7 published تعاميم. Never gated bytes: a card is a
+        # title plus the always-free 160-char lead the hub already shows anon.
+        "related_next": related_next,
     }
 
 
@@ -4684,13 +4934,22 @@ def _rayhan_summary(row: dict[str, Any]) -> Optional[str]:
     return cleaned or None
 
 
-# How many cited-regulation mesh links an ANON judgment page shows. ``None`` =
-# show all, which is the deliberate default: the list carries only the regulation
-# NAME + the article NUMBER (never a line of the regulation's content), and it IS
-# the internal-linking mesh — the whole reason this wing exists is to push link
-# equity into /regulations and the ~50k مادة pages. Gating it would gate our own
-# crawl graph, not the user's value. Set to 3 to restore the plan's free-3 cap.
-JUDGMENT_CITED_FREE_LIMIT: Optional[int] = None
+# How many «الأنظمة المذكورة» cards a judgment page shows. NOT a gate — the list
+# carries only the نظام's title and the snippet its hub card already shows anon
+# (never a line of the regulation's content), and it IS the internal-linking mesh
+# this wing exists to build. 7 is the STRIP SIZE (D7: 7 cards, 3 in view,
+# horizontal RTL scroller), shared with «اقرأ تاليًا», and it never binds: 0 of
+# 30,531 judgments cite more than 10 distinct أنظمة and the mean is 2.65 entries.
+#
+# ⚠ IT IS APPLIED AFTER RESOLUTION AND AFTER THE PUBLISH FILTER, not before.
+# Capping the raw ref list first would let a judgment citing nine أنظمة of which
+# four are published render three cards.
+#
+# ``None`` still means "no cap" for anyone who wants it back. Kept as a literal
+# rather than an alias of ``RELATED_NEXT_LIMIT``: that constant is declared with
+# the related-items reader far below this line, and a module-level alias would
+# be a NameError at import.
+JUDGMENT_CITED_FREE_LIMIT: Optional[int] = 7
 
 # Exposure dial for a GATED judgment — a fraction of the RULING, not a budget
 # per section. See `GateBudget` / `gate_decision` for the mechanism and
@@ -4751,9 +5010,13 @@ _JUDGMENT_DOC_SELECT = (
 # punctuation once collapsed into a one-line card snippet.
 _JUDGMENT_BULLET_RE = re.compile(r"^[ \t]*[-*•·—–]+[ \t]*", re.MULTILINE)
 
-# الرقم on a cited-regulation ref may be «16/1» (article/paragraph) or use
-# Arabic-Indic digits; the مادة sidecar key only ever holds the article integer.
-_JUDGMENT_ARABIC_INDIC = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+# ⚠ ``_JUDGMENT_ARABIC_INDIC`` / ``_judgment_article_int`` USED TO LIVE HERE and
+# are deliberately gone. They normalized a cited «الرقم» («16/1», Arabic-Indic
+# digits) into the article integer that keys a مادة page's sidecar row, because
+# the cited-regulations mesh used to emit one card PER مادة. It now emits ONE
+# CARD PER نظام (D8 — the section is «الأنظمة المذكورة», not المواد المذكورة), so
+# nothing resolves an article number any more. The measured cost of dropping the
+# مادة links is 5 URLs: only 5 مواد are slugged corpus-wide.
 
 
 def _strip_bullets(text: Optional[str]) -> str:
@@ -4911,6 +5174,33 @@ def judgments_hub_total_pages(
     return max(1, math.ceil(total / HUB_PAGE_SIZE)) if total else 1
 
 
+def _judgment_hub_item(row: dict[str, Any]) -> dict[str, Any]:
+    """One /judgments card from a ``_JUDGMENT_HUB_SELECT`` row.
+
+    See the block comment above ``_reg_hub_item`` — one definition, two readers.
+    ``slug`` is read off the row (``library_judgments_ranked`` is published-only
+    and carries it). ``title`` is DERIVED — ``cases`` has no title column — and
+    it must be the same string the doc page's H1 prints, which is why the select
+    list carries the whole ``short_summary → summary → facts → ruling`` chain
+    ``judgment_display_title`` walks. ``snippet`` is the bullet-stripped
+    always-free lead, NEVER a gated section.
+    """
+    court = (row.get("court") or "").strip()
+    return {
+        "slug": row.get("slug"),
+        "title": judgment_display_title(row),
+        "court": court,
+        "court_slug": slug_for_court(court),
+        "court_level": row.get("court_level"),
+        "court_level_label": court_level_label(row.get("court_level")),
+        "city": row.get("city"),
+        "date_hijri": row.get("date_hijri"),
+        "date_gregorian": _iso_date(row.get("date_gregorian")),
+        "domains": [d for d in (row.get("legal_domains") or []) if d],
+        "snippet": _text_snippet(_strip_bullets(row.get("short_summary")), 160),
+    }
+
+
 def list_judgments_hub(
     supabase: SupabaseClient,
     *,
@@ -5004,25 +5294,9 @@ def list_judgments_hub(
     for r in rows:
         # The view is an INNER JOIN on a non-null slug, so this cannot be empty;
         # the guard stays as a cheap invariant check rather than a filter.
-        slug = r.get("slug")
-        if not slug:
+        if not r.get("slug"):
             continue
-        court = (r.get("court") or "").strip()
-        items.append(
-            {
-                "slug": slug,
-                "title": judgment_display_title(r),
-                "court": court,
-                "court_slug": slug_for_court(court),
-                "court_level": r.get("court_level"),
-                "court_level_label": court_level_label(r.get("court_level")),
-                "city": r.get("city"),
-                "date_hijri": r.get("date_hijri"),
-                "date_gregorian": _iso_date(r.get("date_gregorian")),
-                "domains": [d for d in (r.get("legal_domains") or []) if d],
-                "snippet": _text_snippet(_strip_bullets(r.get("short_summary")), 160),
-            }
-        )
+        items.append(_judgment_hub_item(r))
 
     return _hub_result(
         items, page, total_pages, q=q, total=total, truncated=truncated
@@ -5063,54 +5337,45 @@ def court_counts(supabase: SupabaseClient) -> dict[str, int]:
     return counts
 
 
-def _judgment_article_int(article_no: str) -> Optional[int]:
-    """Leading article integer of a cited «الرقم» («16/1» → 16), or ``None``.
-
-    A citation may point at a PARAGRAPH («16/1», «185/4» — ~8% of refs): the مادة
-    sidecar key only ever holds the article integer, so the link resolves to
-    المادة 16 while the DISPLAYED ``article_no`` keeps the precise «16/1» the
-    judgment actually cited. Arabic-Indic digits are normalized first.
-    """
-    s = str(article_no or "").translate(_JUDGMENT_ARABIC_INDIC).strip()
-    m = re.match(r"(\d+)", s)
-    return int(m.group(1)) if m else None
-
-
 def _judgment_cited_regulations(
     supabase: SupabaseClient, row: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], int]:
-    """Resolve ``cases.referenced_regulations`` into the internal-linking mesh.
+    """«الأنظمة المذكورة» on a judgment page — ``(reg hub cards, total)``.
 
-    Returns ``(items, total)`` where each item is ``{title, article_no, reg_slug,
-    article_slug}`` and ``total`` is the deduped citation count BEFORE
-    ``JUDGMENT_CITED_FREE_LIMIT`` is applied (so the frontend can say «و12 مرجعاً
-    آخر» if a cap is ever switched on).
+    Resolves ``cases.referenced_regulations`` (jsonb; 8,411 slugged judgments
+    carry entries, 22,278 entries, avg 2.65) into the internal-linking mesh into
+    /regulations. ``total`` is how many PUBLISHED أنظمة this ruling cites, BEFORE
+    ``JUDGMENT_CITED_FREE_LIMIT`` — so a page can say «و3 مراجع أخرى» if the cap
+    ever binds (it does not today: 0 judgments cite more than 10 distinct أنظمة).
 
-    THE JOIN (verified live): a ref's ``regulation_id`` is the corpus's
-    ``reg_ref`` TEXT key («17642_reg_037»), NOT a uuid — it joins to
-    ``regulations_v2.reg_ref``; that row's ``id::text`` is the sidecar key for the
-    regulation page's slug, and ``'{id}#{article_no}'`` is the sidecar key for the
-    مادة page's slug (same key shape ``_regulation_article_index`` publishes).
-    ~30% of refs carry NO ``regulation_id`` (لائحة/executive-regulation citations
-    the pipeline could not match) — those still appear in the list, with the cited
-    name and article number and ``reg_slug=None``: a citation is worth showing
-    even when we have no page to link it to.
+    ⚠ THE JOIN IS NON-OBVIOUS AND VERIFIED LIVE. A ref's ``regulation_id`` is the
+    corpus's ``reg_ref`` TEXT key («17642_reg_037»), **NOT a uuid** — it joins to
+    ``regulations_v2.reg_ref``, and THAT row's ``id::text`` is the
+    ``seo_item_meta`` key carrying the regulation page's slug. Two lookups, in
+    that order, and neither is skippable.
 
-    ``title`` prefers the RESOLVED regulation's ``clean_title`` over the name as
-    cited in the judgment, so the anchor text matches the H1 of the page it links
-    to («لائحة نظام المحاكم التجارية» cited → «اللائحة التنفيذية لنظام المحاكم
-    التجارية» as the target page titles itself). Unresolved refs keep the cited
-    name verbatim.
+    THREE THINGS THIS USED TO DO AND NO LONGER DOES
+    (`.claude/plans/read_next_related_items.md` §5.3):
 
-    Dedupe is by ``(regulation_id, article_no)`` preserving first-seen order (the
-    same مادة is commonly cited a dozen times in one judgment); refs with no
-    ``regulation_id`` dedupe on their cited NAME instead, so two different
-    unmatched نظام names citing المادة 5 do not collapse into one.
+      * it deduped by ``(regulation_id, article_no)`` and emitted one entry per
+        cited مادة → it now dedupes by ``reg_ref`` ALONE: **one card per نظام,
+        no مادة cards** (D8). The heading is الأنظمة المذكورة.
+      * it kept UNRESOLVED refs (~30% — لائحة / قرار وزاري / فقه citations the
+        pipeline could not match) as text with ``reg_slug=None`` → they are now
+        **dropped entirely** (D9). A card in a scroller is an affordance; one
+        that does not navigate is a broken link with extra steps.
+      * it returned ``{title, article_no, reg_slug, article_slug}`` → it now
+        returns **``RegHubItem``-shaped dicts**, the same cards the /regulations
+        hub renders, built by the same ``_reg_hub_item``.
 
-    EVERY lookup is batched — one query per lookup table, ``in.()`` chunked at
-    ``_ID_IN_CHUNK`` (150). A large ``in.()`` blows PostgREST's URL length into a
-    400; this has bitten the hub listers before. Fail-soft throughout: a lookup
-    error costs the links, not the page.
+    Publication is decided by the hydration step, which reads the published-only
+    ranked view — so an unslugged نظام drops out exactly like an unresolved ref.
+    First-seen citation order is preserved.
+
+    EVERY lookup is batched, and chunked at ``_ID_IN_CHUNK`` (150): a long
+    PostgREST ``in.()`` blows the URL length into a 400, which has bitten the hub
+    listers before. Fail-soft throughout — a lookup error costs the strip, never
+    the page.
     """
     refs = row.get("referenced_regulations")
     if isinstance(refs, str):
@@ -5122,39 +5387,29 @@ def _judgment_cited_regulations(
     if not isinstance(refs, list):
         return [], 0
 
-    entries: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    # Dedupe by reg_ref alone, first-seen order. Refs with no ``regulation_id``
+    # are unresolved and never reach a page — dropped here (D9).
+    reg_refs: list[str] = []
+    seen: set[str] = set()
     for ref in refs:
         if not isinstance(ref, dict):
             continue
-        reg_ref = str(ref.get("regulation_id") or "").strip() or None
-        cited_title = str(ref.get("النظام") or "").strip()
-        article_no = str(ref.get("الرقم") or "").strip()
-        if not reg_ref and not cited_title:
+        reg_ref = str(ref.get("regulation_id") or "").strip()
+        if not reg_ref or reg_ref in seen:
             continue
-        key = (reg_ref or cited_title, article_no)
-        if key in seen:
-            continue
-        seen.add(key)
-        entries.append(
-            {"reg_ref": reg_ref, "cited_title": cited_title, "article_no": article_no}
-        )
+        seen.add(reg_ref)
+        reg_refs.append(reg_ref)
+    if not reg_refs:
+        return [], 0
 
-    total = len(entries)
-    if JUDGMENT_CITED_FREE_LIMIT is not None:
-        entries = entries[: max(0, JUDGMENT_CITED_FREE_LIMIT)]
-    if not entries:
-        return [], total
-
-    # 1. reg_ref → regulations_v2 row (id + canonical title), batched + chunked.
-    reg_refs = list(dict.fromkeys(e["reg_ref"] for e in entries if e["reg_ref"]))
-    reg_by_ref: dict[str, dict[str, Any]] = {}
+    # 1. reg_ref → regulations_v2.id, batched + chunked.
+    id_by_ref: dict[str, str] = {}
     for i in range(0, len(reg_refs), _ID_IN_CHUNK):
         chunk = reg_refs[i : i + _ID_IN_CHUNK]
         try:
             res = (
                 supabase.table("regulations_v2")
-                .select("id, reg_ref, clean_title, title")
+                .select("id, reg_ref")
                 .in_("reg_ref", chunk)
                 .execute()
             )
@@ -5163,49 +5418,27 @@ def _judgment_cited_regulations(
             continue
         for r in res.data or []:
             rr = r.get("reg_ref")
-            if rr:
-                reg_by_ref[str(rr)] = r
+            rid = r.get("id")
+            if rr and rid:
+                id_by_ref[str(rr)] = str(rid)
 
-    # 2. regulation page slugs (one batched sidecar lookup, itself chunked).
-    reg_slugs = _slug_map(
-        supabase, "regulation", [r.get("id") for r in reg_by_ref.values()]
+    ordered_ids = list(
+        dict.fromkeys(id_by_ref[rr] for rr in reg_refs if rr in id_by_ref)
     )
+    if not ordered_ids:
+        return [], 0
 
-    # 3. مادة page slugs — sidecar key '{regulation uuid}#{article int}'.
-    article_keys: list[str] = []
-    for e in entries:
-        reg = reg_by_ref.get(e["reg_ref"]) if e["reg_ref"] else None
-        art_int = _judgment_article_int(e["article_no"])
-        if reg and reg.get("id") and art_int is not None:
-            article_keys.append(f"{reg['id']}#{art_int}")
-    article_slugs = _slug_map(supabase, "article", article_keys)
+    # 2. id → the PUBLISHED hub card (the publish filter, and the same bytes the
+    #    /regulations grid renders).
+    cards = _reg_hub_items_by_ids(supabase, ordered_ids)
+    kept = [rid for rid in ordered_ids if rid in cards]
 
-    items: list[dict[str, Any]] = []
-    for e in entries:
-        reg = reg_by_ref.get(e["reg_ref"]) if e["reg_ref"] else None
-        title = e["cited_title"]
-        reg_slug: Optional[str] = None
-        article_slug: Optional[str] = None
-        if reg:
-            title = (reg.get("clean_title") or reg.get("title") or title or "").strip()
-            reg_slug = reg_slugs.get(str(reg.get("id")))
-            art_int = _judgment_article_int(e["article_no"])
-            if art_int is not None:
-                article_slug = article_slugs.get(f"{reg.get('id')}#{art_int}")
-        # A مادة URL is nested under its regulation's slug
-        # (/regulations/{reg_slug}/articles/{article_slug}), so an article slug
-        # without a published parent is not a linkable address — drop it.
-        if not reg_slug:
-            article_slug = None
-        items.append(
-            {
-                "title": title,
-                "article_no": e["article_no"] or None,
-                "reg_slug": reg_slug,
-                "article_slug": article_slug,
-            }
-        )
-    return items, total
+    total = len(kept)
+    # The cap is applied LAST — after resolution and after the publish filter —
+    # so a ruling citing nine أنظمة of which four are published shows four.
+    if JUDGMENT_CITED_FREE_LIMIT is not None:
+        kept = kept[: max(0, JUDGMENT_CITED_FREE_LIMIT)]
+    return [cards[rid] for rid in kept], total
 
 
 def _judgment_metadata(row: dict[str, Any]) -> list[dict[str, str]]:
@@ -5324,8 +5557,16 @@ def get_judgment_doc(
         hidden client-side. ``id`` is positional (``s1``, ``s2``…) and matches the
         authed ``get_full_judgment`` payload, so the client-side enhancer can
         swap section-for-section.
-      * ``cited_regulations`` = the internal-linking mesh (see
-        ``_judgment_cited_regulations``); ``cited_total`` is its pre-cap size.
+      * ``cited_regulations`` = «الأنظمة المذكورة» — the internal-linking mesh
+        into /regulations, as ``RegHubItem`` CARDS: one per cited نظام (D8),
+        unresolved and unpublished citations dropped (D9/D5), <= 7. See
+        ``_judgment_cited_regulations``; ``cited_total`` is its pre-cap size.
+      * ``related_next`` = «اقرأ تاليًا» — same-type (أحكام) neighbours from the
+        precomputed graph, <= 7, published only. USUALLY EMPTY and that is the
+        design (§3.6): three quarters of the slugged corpus sits in المحكمة
+        التجارية, where nothing clears the floor.
+        Neither strip is gated — both carry the same bytes anon and paid, which
+        is forced anyway by this page being ISR-baked.
       * ``hidden_section_count`` counts the sections ACTUALLY truncated — it
         sizes the placeholder bars and the CTA. It is NOT the exposure measure:
         ``withheld_chars`` / ``withheld_pct`` are, and they are what the §5 audit
@@ -5380,7 +5621,18 @@ def get_judgment_doc(
             }
         )
 
+    # THE TWO STRIPS, in the §5.4 order: «الأنظمة المذكورة» first, «اقرأ تاليًا»
+    # after it. The exclusion D13 asks for is a NO-OP on this page and is
+    # deliberately not wired: the cited list holds أنظمة while «اقرأ تاليًا» is
+    # same-type (D2), so it holds أحكام — the two can never collide, and
+    # `get_related_next` already filters `target_type = 'judgment'` in the query.
+    #
+    # ⚠ EXPECT NO STRIP ON MOST JUDGMENT PAGES, and that is the intended outcome
+    # (§3.6). 7,483 of the 10,000 slugged أحكام sit in المحكمة التجارية, where the
+    # court scarcity weight is 0.0002 and entity is worth ~0, so nothing clears
+    # the floor. Better a missing strip than six arbitrary commercial rulings.
     cited, cited_total = _judgment_cited_regulations(supabase, row)
+    related_next = get_related_next(supabase, "judgment", str(content_id))
 
     # Withheld for GATED أحكام only — see the note in get_regulation_doc. Keyed
     # on ``gate_effective``, matching what `get_circular_doc` has always done: a
@@ -5418,8 +5670,13 @@ def get_judgment_doc(
         # leaks nothing: 99.9% of rulings answer true.
         "has_summary": _rayhan_summary(row) is not None,
         "sections": sections,
+        # «الأنظمة المذكورة» — one card per cited نظام, published only, <= 7.
+        # ``cited_total`` is how many published أنظمة this ruling cites, before
+        # the cap (which never binds on the current corpus).
         "cited_regulations": cited,
         "cited_total": cited_total,
+        # «اقرأ تاليًا» — same-type (أحكام) neighbours, <= 7, published only.
+        "related_next": related_next,
         "official_sources": official_sources,
         "gate_effective": gate_effective,
         # May a crawler have this ruling — `seo_item_meta.indexable` (migration
@@ -5442,6 +5699,416 @@ def get_judgment_doc(
             round(100.0 * withheld_chars / total_chars, 1) if total_chars else 0.0
         ),
     }
+
+
+# ==========================================================================
+# «اقرأ تاليًا» + «الأنظمة المذكورة» — THE RELATED-ITEM STRIPS
+# (.claude/plans/read_next_related_items.md §5)
+#
+# Two card strips at the bottom of every public library object page. Both are
+# UNGATED and carry no per-user bytes — not a preference, a constraint: all four
+# detail pages are ISR-baked and serve ONE html artifact to anon, free and paid
+# alike, so a per-tier strip is not expressible. What they publish is titles,
+# links and the snippet the hub cards already show anonymously (D1). The gate,
+# the character budgets and the enumeration meter are untouched by any of this.
+#
+#   «الأنظمة المذكورة»  — a factual citation list, resolved LIVE from the corpus.
+#                         حكم→نظام (`cases.referenced_regulations`) and
+#                         نظام→نظام (`cross_references_v2`). ABSENT on تعاميم and
+#                         خدمات: neither corpus has citation data at all (D14),
+#                         and the field is omitted from those response models
+#                         rather than shipped empty.
+#   «اقرأ تاليًا»       — SAME-TYPE ONLY (D2), read from the precomputed
+#                         `public.related_items` edge store (migration 143).
+#
+# THREE PROPERTIES OF THE READ ARE DECISIONS, NOT DETAILS:
+#
+#   * THE PUBLISH FILTER LIVES HERE, NOT IN THE TABLE (D5). The graph is
+#     computed over the FULL corpus and every edge above the floor is stored,
+#     ranked, with no top-N per source (D6) — so publishing one نظام lights it up
+#     in every neighbour's strip within the 24h ISR window, with NO recompute.
+#     The cost is that the top rows of a source's edge list may all be
+#     unpublished, which is why the read over-fetches (`_RELATED_SCAN_LIMIT`)
+#     and only then cuts to 7.
+#   * DEDUP ACROSS THE TWO STRIPS (D13). الأنظمة المذكورة renders first and wins;
+#     its target ids are excluded from اقرأ تاليًا, which backfills. This only
+#     ever bites on نظام pages — everywhere else the two strips hold disjoint
+#     types — and it is the reason §5.4 fixes the CALL ORDER.
+#   * FAIL SOFT, ALWAYS. A lookup error costs the strip, never the page; an
+#     empty strip is `[]`, never an error. That also means this code does not
+#     500 when migration 143 has not been applied yet — it logs and returns
+#     nothing. Apply 143 to prod BEFORE pushing the backend all the same, or
+#     every doc render writes a warning.
+#
+# ⚠ NO RELATION-TYPE CHIP AND NO RANK. `related_items.reason` is audit-only and
+# is never selected here (D10 — 585 of 746 relation rows are single-method
+# guesses, good enough to RANK on, not good enough to ASSERT). There is no stored
+# `rank` column either: rank is meaningless before the publish filter runs, so
+# the order is `score desc` at read time and nothing else.
+# ==========================================================================
+
+_RELATED_ITEMS_TABLE = "related_items"
+
+# The four corpora the graph covers — `related_items.source_type` /
+# `target_type`. Anything else asks for a strip that cannot exist.
+_RELATED_CORPORA: frozenset[str] = frozenset(
+    {"regulation", "compliance", "circular", "judgment"}
+)
+
+# Cards per strip (D7). Both strips share it: 3 in view, horizontal RTL
+# side-scroll, so 7 is a little over two screens of scroller.
+# The judgment wing's own copy of this number is ``JUDGMENT_CITED_FREE_LIMIT``,
+# declared with that wing far above — it has to be a literal there because this
+# line has not run yet at import time. Change both together.
+RELATED_NEXT_LIMIT = 7
+REGULATION_CITED_LIMIT = 7
+
+# How deep to walk a source's edge list looking for PUBLISHED targets. The plan's
+# §5.2 query does the publish join in SQL and takes 40; PostgREST cannot express
+# that join (`related_items` has no FK to the sidecar), so the filter runs in
+# Python over a wider window instead. Average degree is ~2 and the largest
+# corpora are the least connected, so this almost never binds — but when a
+# source's best neighbours are all unpublished, this is the number that decides
+# whether the strip backfills or comes back empty.
+_RELATED_SCAN_LIMIT = 200
+
+# At most this many of the 7 may be BONUS-ONLY (`base = 0`) — a pair that shares
+# only an entity or a sector, with no curated relation and no topic match behind
+# it. Without the guard a source with one real neighbour renders it alongside six
+# "same ministry" coincidences and the strip reads as noise.
+_RELATED_BONUS_ONLY_MAX = 2
+
+# …and the guard is OFF for أحكام, where `base = 0` is not a weak signal but the
+# only possible value: judgments have no base axis at all (§3.3), court carries
+# everything through the bonus. Applying the guard there would cap every judgment
+# strip at 2 cards for no reason.
+_RELATED_GUARD_EXEMPT: frozenset[str] = frozenset({"judgment"})
+
+
+def _reg_hub_items_by_ids(
+    supabase: SupabaseClient, reg_ids: Sequence[Any]
+) -> dict[str, dict[str, Any]]:
+    """``{regulation id: reg hub card}`` for the PUBLISHED subset of ``reg_ids``.
+
+    Reads ``library_regulations_ranked`` — the same published-only view the
+    /regulations hub pages — through ``_reg_hub_item``, so a strip card and a hub
+    card are the same bytes. An unpublished نظام simply has no entry: that single
+    drop is BOTH D5's publish filter and D9's "unresolved citations are skipped".
+
+    Batched and chunked at ``_ID_IN_CHUNK`` (150) — a long PostgREST ``in.()``
+    blows the URL length into a 400. Fail-soft: a failed chunk costs its cards.
+    """
+    ids = list(dict.fromkeys(str(i) for i in reg_ids if i))
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(ids), _ID_IN_CHUNK):
+        chunk = ids[i : i + _ID_IN_CHUNK]
+        try:
+            res = (
+                supabase.table(_REG_HUB_TABLE)
+                .select(_REG_HUB_SELECT)
+                .in_("id", chunk)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("related regulation hydration failed: %s", e)
+            continue
+        for r in res.data or []:
+            if r.get("slug"):
+                out[str(r.get("id"))] = _reg_hub_item(r)
+    return out
+
+
+def _judgment_hub_items_by_ids(
+    supabase: SupabaseClient, case_ids: Sequence[Any]
+) -> dict[str, dict[str, Any]]:
+    """``{case id: judgment hub card}`` for the PUBLISHED subset of ``case_ids``.
+
+    ``library_judgments_ranked`` — published-only, carries the slug and the whole
+    title chain ``judgment_display_title`` walks. Same chunking + fail-soft
+    contract as ``_reg_hub_items_by_ids``.
+    """
+    ids = list(dict.fromkeys(str(i) for i in case_ids if i))
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(ids), _ID_IN_CHUNK):
+        chunk = ids[i : i + _ID_IN_CHUNK]
+        try:
+            res = (
+                supabase.table(_JUDGMENT_HUB_TABLE)
+                .select(_JUDGMENT_HUB_SELECT)
+                .in_("id", chunk)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("related judgment hydration failed: %s", e)
+            continue
+        for r in res.data or []:
+            if r.get("slug"):
+                out[str(r.get("id"))] = _judgment_hub_item(r)
+    return out
+
+
+def _compliance_hub_items_by_ids(
+    supabase: SupabaseClient,
+    guide_ids: Sequence[Any],
+    slugs: Optional[dict[str, str]] = None,
+) -> dict[str, dict[str, Any]]:
+    """``{guide id: compliance hub card}`` for the PUBLISHED subset of ``guide_ids``.
+
+    ``library_compliance_v`` carries no slug column, so publication is decided by
+    the sidecar. ``slugs`` lets a caller that already resolved the map (the
+    related-items read does) hand it in rather than pay for it twice.
+    """
+    ids = list(dict.fromkeys(str(i) for i in guide_ids if i))
+    out: dict[str, dict[str, Any]] = {}
+    if not ids:
+        return out
+    slug_map = slugs if slugs is not None else _slug_map(supabase, "compliance", ids)
+    for i in range(0, len(ids), _ID_IN_CHUNK):
+        chunk = ids[i : i + _ID_IN_CHUNK]
+        try:
+            res = (
+                supabase.table(_COMPLIANCE_HUB_TABLE)
+                .select(_COMPLIANCE_HUB_SELECT)
+                .in_("id", chunk)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("related compliance hydration failed: %s", e)
+            continue
+        for r in res.data or []:
+            slug = slug_map.get(str(r.get("id")))
+            if slug:
+                out[str(r.get("id"))] = _compliance_hub_item(r, slug)
+    return out
+
+
+def _circular_hub_items_by_ids(
+    supabase: SupabaseClient,
+    circ_ids: Sequence[Any],
+    slugs: Optional[dict[str, str]] = None,
+) -> dict[str, dict[str, Any]]:
+    """``{circular id: circular hub card}`` for the PUBLISHED subset of ``circ_ids``.
+
+    Reads the ``circulars`` corpus (this wing has no ranked view), so the sidecar
+    decides publication exactly as ``list_circulars_hub`` does, and the issuing
+    authority's name comes from ONE batched ``entities`` lookup over the page.
+    """
+    ids = list(dict.fromkeys(str(i) for i in circ_ids if i))
+    out: dict[str, dict[str, Any]] = {}
+    if not ids:
+        return out
+    slug_map = slugs if slugs is not None else _slug_map(supabase, "circular", ids)
+    rows: list[dict[str, Any]] = []
+    for i in range(0, len(ids), _ID_IN_CHUNK):
+        chunk = ids[i : i + _ID_IN_CHUNK]
+        try:
+            res = (
+                supabase.table("circulars")
+                .select(_CIRCULAR_HUB_SELECT)
+                .in_("id", chunk)
+                .execute()
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("related circular hydration failed: %s", e)
+            continue
+        rows.extend(res.data or [])
+    names = _entity_name_map(supabase, [r.get("entity_id") for r in rows])
+    for r in rows:
+        slug = slug_map.get(str(r.get("id")))
+        if slug:
+            out[str(r.get("id"))] = _circular_hub_item(
+                r, slug, names.get(str(r.get("entity_id")))
+            )
+    return out
+
+
+def _related_hub_items(
+    supabase: SupabaseClient,
+    content_type: str,
+    ids: Sequence[Any],
+    slugs: Optional[dict[str, str]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Hydrate ``ids`` of one corpus into that corpus's hub cards.
+
+    The dispatch that makes «اقرأ تاليًا» corpus-agnostic: the reader never knows
+    which wing it is on, it just hands the ids back here. Unknown corpus → ``{}``
+    (no strip), never an exception.
+    """
+    if content_type == "regulation":
+        return _reg_hub_items_by_ids(supabase, ids)
+    if content_type == "judgment":
+        return _judgment_hub_items_by_ids(supabase, ids)
+    if content_type == "compliance":
+        return _compliance_hub_items_by_ids(supabase, ids, slugs)
+    if content_type == "circular":
+        return _circular_hub_items_by_ids(supabase, ids, slugs)
+    return {}
+
+
+def get_related_next(
+    supabase: SupabaseClient,
+    content_type: str,
+    content_id: Any,
+    exclude_ids: Optional[Sequence[Any]] = None,
+) -> list[dict[str, Any]]:
+    """The «اقرأ تاليًا» strip: <= 7 SAME-TYPE published neighbours, best first.
+
+    ``content_id`` is the ``seo_item_meta.content_id`` (``uuid::text``) of the
+    page being rendered — the same key ``related_items.source_id`` holds.
+    ``exclude_ids`` are the ids «الأنظمة المذكورة» already rendered above this
+    strip (D13); on a نظام page that dedup is load-bearing, elsewhere the two
+    strips hold different corpora and it is a no-op.
+
+    Returns a list of that corpus's HUB CARD dicts — ``RegHubItem`` /
+    ``ComplianceHubItem`` / ``CircularHubItem`` / ``JudgmentHubItem`` shaped —
+    so the frontend feeds them straight into the existing cards. **Empty list on
+    anything at all: no edges, nothing published, an unknown corpus, a missing
+    table, a DB error.** This function does not raise.
+
+    THE READ, in four steps:
+
+      1. ``related_items`` ordered by ``score desc``, capped at
+         ``_RELATED_SCAN_LIMIT``. ``target_type = source_type`` is asserted in
+         the query, not assumed — D2 makes the graph same-type by construction
+         and a cross-type row would hydrate against the wrong corpus.
+      2. THE PUBLISH FILTER (D5) — one batched sidecar lookup over the window,
+         dropping every target with no ``slug``. It lives here and not in the
+         table so that publishing an item lights it up everywhere with no
+         recompute of the graph.
+      3. THE BONUS-ONLY GUARD — at most ``_RELATED_BONUS_ONLY_MAX`` survivors may
+         carry ``base = 0``; the rest are skipped and the strip backfills from
+         further down the ranking. OFF for أحكام (see ``_RELATED_GUARD_EXEMPT``).
+      4. Cut to 7 and hydrate through the hub-card builders in one batched
+         lookup, preserving score order.
+    """
+    ct = (content_type or "").strip()
+    cid = str(content_id or "").strip()
+    if ct not in _RELATED_CORPORA or not cid:
+        return []
+
+    excluded = {str(x) for x in (exclude_ids or []) if x}
+    excluded.add(cid)  # belt-and-braces against a self-edge in the store
+
+    try:
+        qb = (
+            supabase.table(_RELATED_ITEMS_TABLE)
+            # `reason` is audit-only and deliberately not read (D10).
+            .select("target_id, score, base")
+            .eq("source_type", ct)
+            .eq("source_id", cid)
+            .eq("target_type", ct)
+            .order("score", desc=True)
+            .limit(_RELATED_SCAN_LIMIT)
+        )
+        # Only push the exclusion down when it is small enough to be safe in a
+        # query string — it is <= 7 ids in practice (the cited-أنظمة strip), and
+        # step 3 below re-applies it in Python regardless.
+        small = sorted(excluded - {cid})
+        if small and len(small) <= _ID_IN_CHUNK:
+            qb = qb.not_.in_("target_id", small)
+        rows = qb.execute().data or []
+    except Exception as e:  # noqa: BLE001
+        # Includes "relation related_items does not exist" — migration 143 not
+        # applied yet. A missing strip, never a missing page.
+        logger.warning("related-items lookup failed (%s/%s): %s", ct, cid, e)
+        return []
+
+    ranked: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for r in rows:
+        tid = str(r.get("target_id") or "").strip()
+        if not tid or tid in excluded or tid in seen:
+            continue
+        seen.add(tid)
+        try:
+            base = float(r.get("base") or 0.0)
+        except (TypeError, ValueError):
+            base = 0.0
+        ranked.append((tid, base))
+    if not ranked:
+        return []
+
+    # THE PUBLISH FILTER (D5) — cheap: content_id + slug only, chunked.
+    slugs = _slug_map(supabase, ct, [t for t, _ in ranked])
+
+    guard = ct not in _RELATED_GUARD_EXEMPT
+    picked: list[str] = []
+    bonus_only = 0
+    for tid, base in ranked:
+        if not slugs.get(tid):
+            continue
+        if guard and base <= 0.0:
+            if bonus_only >= _RELATED_BONUS_ONLY_MAX:
+                continue
+            bonus_only += 1
+        picked.append(tid)
+        if len(picked) >= RELATED_NEXT_LIMIT:
+            break
+    if not picked:
+        return []
+
+    try:
+        cards = _related_hub_items(supabase, ct, picked, slugs)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("related-items hydration failed (%s/%s): %s", ct, cid, e)
+        return []
+    return [cards[t] for t in picked if t in cards]
+
+
+def _regulation_cited_regulations(
+    supabase: SupabaseClient, reg_id: Any
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """«الأنظمة المذكورة» on a نظام page — ``(reg hub cards, their ids)``.
+
+    Resolved LIVE from ``public.cross_references_v2`` (``source_type='reg_chunk'``)
+    rather than precomputed: it is a factual citation list, not a similarity
+    guess (D3), and it changes only when the corpus is re-ingested.
+
+    The rows are at مادة granularity — one per «تنص المادة (12) من نظام…» inside a
+    chunk — so they are collapsed to DISTINCT ``target_regulation_id``:
+    ONE CARD PER نظام, NO مادة CARDS (D8). The section is الأنظمة المذكورة.
+
+    Unpublished targets vanish in hydration (D9/D5), first-seen order is
+    preserved, and the list is capped at ``REGULATION_CITED_LIMIT``. Expect 0–7:
+    580 أنظمة have any outbound citation at all, avg 1.24 distinct targets, max 7.
+
+    The ids ride back alongside the cards because «اقرأ تاليًا» on this same page
+    is ALSO أنظمة and must not repeat them (D13, §5.4).
+    """
+    rid = str(reg_id or "").strip()
+    if not rid:
+        return [], []
+
+    try:
+        res = (
+            supabase.table("cross_references_v2")
+            .select("target_regulation_id")
+            .eq("source_type", "reg_chunk")
+            .eq("source_regulation_id", rid)
+            .not_.is_("target_regulation_id", "null")
+            .limit(1000)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("regulation cited-regulations lookup failed (%s): %s", rid, e)
+        return [], []
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for r in rows:
+        tid = str(r.get("target_regulation_id") or "").strip()
+        # A نظام citing its own مواد is not a cross-reference to show.
+        if not tid or tid == rid or tid in seen:
+            continue
+        seen.add(tid)
+        ordered.append(tid)
+    if not ordered:
+        return [], []
+
+    cards = _reg_hub_items_by_ids(supabase, ordered)
+    kept = [t for t in ordered if t in cards][:REGULATION_CITED_LIMIT]
+    return [cards[t] for t in kept], kept
 
 
 # ==========================================================================

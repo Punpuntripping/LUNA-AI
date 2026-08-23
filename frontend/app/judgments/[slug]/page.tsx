@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { LibraryUseBeacon } from "@/components/library/mine/LibraryUseBeacon";
 import { notFound } from "next/navigation";
-import { Gavel } from "lucide-react";
+import { Gavel, Link2 } from "lucide-react";
 import {
   LibraryPageShell,
   TopicBreadcrumbs,
@@ -16,10 +16,12 @@ import {
   TocFloating,
   ArticleBody,
   GateBanner,
-  CitedRegulations,
   OfficialSources,
+  RelatedStrip,
   AskRayhanWidget,
 } from "@/components/library/blocks";
+import { RegulationCard } from "@/components/library/hub/RegulationCard";
+import { JudgmentCard } from "@/components/library/hub/JudgmentCard";
 import { FullContentGate } from "@/components/library/FullContentGate";
 import { LibraryRevealProvider } from "@/components/library/LibraryReveal";
 import { JsonLd } from "@/components/seo/JsonLd";
@@ -212,6 +214,24 @@ export default async function JudgmentDocPage({ params }: PageProps) {
     doc.hidden_section_count > 0 ||
     doc.sections.some((section) => section.is_truncated);
 
+  // The two related-items strips. UNGATED BY CONSTRUCTION: this page is baked
+  // once for everybody (24h ISR), so anon, free and paid readers get the exact
+  // same bytes here — there is nothing to branch on and nothing may be read
+  // from cookies or headers to make one.
+  //
+  // ⚠ FILTER ON `slug`, DO NOT TRUST THE ARRAY. `cited_regulations` changed
+  // shape (per-مادة rows with `reg_slug` → hub items with `slug`), and a page
+  // baked before the backend shipped keeps serving the OLD objects for up to
+  // 24h. Those have no `slug`, so they drop out here and the strip is simply
+  // absent — instead of a row of cards pointing at `/regulations/undefined`.
+  const citedRegulations = (doc.cited_regulations ?? []).filter(
+    (item) => Boolean(item.slug),
+  );
+  const relatedJudgments = (doc.related_next ?? []).filter((item) =>
+    Boolean(item.slug),
+  );
+  const hasRelated = citedRegulations.length > 0 || relatedJudgments.length > 0;
+
   return (
     <LibraryPageShell maxWidth="hub">
       <LibraryUseBeacon
@@ -377,13 +397,6 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                 )}
               </FullContentGate>
 
-              {/* The citation mesh — every ruling is an inbound link into the
-                  /regulations corpus, and the reason this wing exists for SEO. */}
-              <CitedRegulations
-                items={doc.cited_regulations}
-                total={doc.cited_total}
-              />
-
               {officialSources.length > 0 && (
                 <OfficialSources sources={officialSources} />
               )}
@@ -409,6 +422,38 @@ export default async function JudgmentDocPage({ params }: PageProps) {
           )}
         </div>
       </div>
+
+      {/* Related items — the LAST in-flow content on the page, above the CTA and
+          the footer. «الأنظمة المذكورة» leads because it is factual (a ruling
+          really does cite those أنظمة); «اقرأ تاليًا» is a similarity guess and
+          follows. Full page width, outside the reading column: these are cards
+          to scan, not text to read.
+
+          The citation mesh is why the judgments wing exists for SEO — 30k
+          otherwise-isolated rulings each become inbound internal links on the
+          /regulations corpus. It used to render inside the reading column as a
+          text list; it is the same links, now as cards.
+
+          No `sectorSlugs` is passed, so the cards' القطاع chips render as plain
+          text. That is deliberate: `getSectorSlugMap()` fetches on a 1h window,
+          and adding it here would drag THIS page's ISR window from 24h down to
+          1h (Next takes the minimum across a render) — 24× the re-renders on
+          every one of ~13.8k baked document pages, to link a decoration. */}
+      {hasRelated && (
+        <div className="mt-12 space-y-8">
+          <RelatedStrip title="الأنظمة المذكورة" icon={Link2}>
+            {citedRegulations.map((item) => (
+              <RegulationCard key={item.slug} item={item} />
+            ))}
+          </RelatedStrip>
+
+          <RelatedStrip title="اقرأ تاليًا">
+            {relatedJudgments.map((item) => (
+              <JudgmentCard key={item.slug} item={item} />
+            ))}
+          </RelatedStrip>
+        </div>
+      )}
 
       <AskRayhanWidget
         pageType="judgment"

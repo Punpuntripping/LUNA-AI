@@ -2,6 +2,7 @@ import {
   fetchBlogUrls,
   fetchSectionUrls,
   getCalculatorUrls,
+  getComplianceEntityUrls,
   getSectorUrls,
   getStaticUrls,
   renderUrlset,
@@ -13,11 +14,12 @@ import {
 //
 //   static                   → hardcoded marketing + legal pages (no backend).
 //   calculators              → local code registry (no backend).
+//   compliance-entities      → local code registry, the 28 «الجهة» page-1 URLs.
 //   sectors                  → the 38 sector OVERVIEW pages, from `/sectors`.
 //   blog                     → backend feed `.../sitemap/blog?page=N`.
 //   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
 //   judgments                → backend feed, `indexable` rows only (3k of 10k).
-//   compliance               → backend feed, the 169 service guides.
+//   compliance               → backend feed, the service guides themselves.
 //   other                    → 404.
 //
 // Fail-safe rule: if the backend is unreachable we return an EMPTY but VALID
@@ -51,6 +53,16 @@ export async function GET(
     case "calculators":
       // Local registry — no backend, never throws.
       urls = getCalculatorUrls();
+      break;
+    case "compliance-entities":
+      // The 28 `/compliance/{entity}` SECTION pages, page 1 only. Local code
+      // registry like `calculators` — the vocabulary is code on both sides, so
+      // this never throws and never serves an empty urlset. It is listed while
+      // `courts` is not because this axis is deliberately NOT a paid section
+      // (compliance_entity_sections D1): an anonymous visitor gets the cards
+      // here, not a wall, so there is no `noindex` for the sitemap to
+      // contradict. See `getComplianceEntityUrls`.
+      urls = getComplianceEntityUrls();
       break;
     // `courts` was a case here until 2026-08-11. A court section is paid-only
     // now, so its pages are `noindex` and there is nothing to list — the section
