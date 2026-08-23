@@ -179,7 +179,13 @@ class RouterRunResult:
 
 ROUTER_LIMITS = UsageLimits(
     output_tokens_limit=6000,
-    request_limit=5,
+    # 15, not 5: an artifact-edit turn legitimately runs an edit → verify →
+    # edit-again loop (unfold + N×edit_artifact + final ChatResponse). At 5 the
+    # limit bit on the FINAL response request — after the edits had already been
+    # committed — so the user was told the turn failed while the artifact was
+    # in fact updated (convo 6d06d5a5, 2026-08-21). tool_calls_limit stays the
+    # real loop bound.
+    request_limit=15,
     tool_calls_limit=8,
 )
 
