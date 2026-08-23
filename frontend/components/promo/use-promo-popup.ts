@@ -27,12 +27,11 @@ export function usePromoPopupOwed(): boolean {
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const seen = usePreferencesStore((s) => s.promoCodePopupSeen);
 
-  // ⚠ WITHOUT THIS THE POPUP NEVER OPENS ON THE SESSION IT IS FOR. `plan_id`
-  // is `undefined` for the whole first session after an email/password login —
-  // `/auth/login` does not read `user_subscriptions` — and the gate below tests
-  // for exactly `"free"`. So a brand-new signup would be handed the popup only
-  // on their SECOND cold boot, long after the WhatsApp code went stale in their
-  // clipboard. Ask once; the store no-ops when the plan is already known.
+  // ⚠ WITHOUT THIS THE POPUP NEVER OPENS ON THE SESSION IT IS FOR. The login
+  // payload reports `plan_id: null` (it does not read `user_subscriptions`),
+  // and the gate below tests for exactly `"free"` — so a brand-new signup would
+  // be handed the popup only on their SECOND cold boot, long after the WhatsApp
+  // code went stale in their clipboard. Ask once; the store no-ops after that.
   useEffect(() => {
     if (!isAuthenticated) return;
     void useAuthStore.getState().ensureSubscriptionLoaded();

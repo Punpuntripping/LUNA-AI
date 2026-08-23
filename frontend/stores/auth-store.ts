@@ -80,12 +80,16 @@ interface AuthState {
   /**
    * Backfill the subscription-derived fields that `/auth/login` omits.
    *
-   * ⚠ `POST /auth/login` deliberately never reads `user_subscriptions` (see the
-   * route: it returns `subscription_tier: "free"` and no `plan_id` at all), so
-   * for the whole first session after an email/password sign-in `user.plan_id`
-   * is `undefined` — not `"free"`. Anything that branches on the plan therefore
-   * has to ask for it, or it silently reads "unknown" until the next cold boot
-   * runs the restore probe. No-op once the field is known.
+   * ⚠ `POST /auth/login` deliberately never reads `user_subscriptions`, and it
+   * does NOT omit the key — Pydantic serializes the unset field, so the login
+   * payload carries a literal `"plan_id": null`. MEASURED, not assumed: a fresh
+   * account's login response says `null` while `/auth/me` says `"free"`.
+   *
+   * That means `null` on the wire is ambiguous: it is both "nobody looked it
+   * up" and "genuinely locked, no subscription row". The two are
+   * indistinguishable, so ONLY a string counts as an answer, and anything else
+   * means ask. `subscriptionProbed` — not the value — is what stops the retry,
+   * so a truly locked account asks exactly once.
    */
   ensureSubscriptionLoaded: () => Promise<void>;
   /**
@@ -139,12 +143,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   subscriptionProbed: false,
 
   ensureSubscriptionLoaded: async () => {
-    const { isAuthenticated, user } = get();
-    // `undefined` is the only value worth a request: `null` is a real answer
-    // (a locked account with no subscription row), and a string is the plan.
-    if (!isAuthenticated) return;
-    if (user?.plan_id !== undefined) {
-      if (!get().subscriptionProbed) set({ subscriptionProbed: true });
+    const { isAuthenticated, user, subscriptionProbed } = get();
+    if (!isAuthenticated || subscriptionProbed) return;
+    // Only a string is an answer — see the ambiguity note on the interface.
+    if (typeof user?.plan_id === "string") {
+      set({ subscriptionProbed: true });
       return;
     }
     if (subscriptionProbeInFlight) return;
@@ -275,7 +278,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Ignore errors on logout
     }
     await teardownSession();
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, isAuthenticated: false, subscriptionProbed: false });
   },
 
   logoutAll: async () => {
@@ -285,13 +288,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // This device's refresh token is dead too — a clean local logout is the
     // honest UX.
     await teardownSession();
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, isAuthenticated: false, subscriptionProbed: false });
   },
 
   deleteAccount: async (password) => {
     await authApi.deleteAccount(password);
     await teardownSession();
-    set({ user: null, isAuthenticated: false });
+    set({ user: null, isAuthenticated: false, subscriptionProbed: false });
   },
 
   restoreAccount: async () => {
@@ -354,7 +357,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!session) {
           // No valid session to restore — treat as signed out.
           clearTokens();
-          set({ user: null, isAuthenticated: false, isLoading: false });
+          set({ user: null, isAuthenticated: false, isLoading: false, subscriptionProbed: false });
           return;
         }
         setTokens({
@@ -369,7 +372,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user, isAuthenticated: true, isLoading: false });
     } catch {
       clearTokens();
-      set({ user: null, isAuthenticated: false, isLoading: false });
+      set({ user: null, isAuthenticated: false, isLoading: false, subscriptionProbed: false });
     }
   },
 
@@ -404,7 +407,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         cancelProactiveRefresh();
         clearTokens();
         usePreferencesStore.getState().reset();
-        set({ user: null, isAuthenticated: false });
+        set({ user: null, isAuthenticated: false, subscriptionProbed: false });
         return;
       }
       setTokens({

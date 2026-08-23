@@ -40,20 +40,13 @@ export interface PromoPopupGateInput {
 /**
  * Is the popup owed to this account right now?
  *
- * ⚠ `planId === "free"` is an EXACT string test, and both other values are
- * deliberately excluded rather than folded in:
- *
- * - `undefined` means "we have not read a subscription yet" — the /login
- *   payload does not touch `user_subscriptions` at all, so a paid user is
- *   momentarily indistinguishable from a free one right after signing in.
- *   Prompting them for an activation code they neither have nor need is the
- *   worse error, so unknown reads as NO until /auth/me lands.
- * - `null` means LOCKED (no subscription row). Those accounts already get
- *   their own dedicated screen; stacking a promo modal on top of it helps
- *   nobody.
- *
- * Everything else — pro, max, basic, dev, marketing_lawyer — already holds a
- * plan. A code would be refused with «باقتك مفعّلة بالفعل», so we never ask.
+ * ⚠ `planId === "free"` is an EXACT string test. Everything else reads as no:
+ * pro, max, basic, dev and marketing_lawyer already hold a plan (a code would
+ * be refused with «باقتك مفعّلة بالفعل»), and `null`/`undefined` mean the plan
+ * is not known yet — see `isPromoPopupUndecided`, which is what covers the gap
+ * rather than a guess here. Prompting a paying subscriber for an activation
+ * code they neither have nor need is the worse error, so unknown is never
+ * optimistically treated as free.
  */
 export function isPromoPopupOwed({
   isAuthenticated,
@@ -71,15 +64,18 @@ export function isPromoPopupOwed({
 /**
  * Do we not YET know whether the popup is owed?
  *
- * ⚠ THIS IS WHAT KEEPS THE TWO DIALOGS FROM STACKING. `plan_id` is `undefined`
- * for the whole first session after an email/password login, so `owed` above is
- * false at first even for the brand-new free account the campaign exists for.
- * Without this, «اتعرف على ريحان» would open into that gap and the promo popup
- * would land on top of it a moment later, once /auth/me answered.
+ * ⚠ THIS IS WHAT KEEPS THE TWO DIALOGS FROM STACKING. The login payload carries
+ * `"plan_id": null` (MEASURED — it is serialized, not omitted), so `owed` above
+ * is false at first even for the brand-new free account the campaign exists
+ * for. Without this, «اتعرف على ريحان» opens into that gap and the promo popup
+ * lands on top of it a moment later, once /auth/me answers `"free"`.
  *
- * Bounded by `subscriptionProbed`: once the probe has settled, an unknown plan
- * stops being "wait" and becomes a plain no, so a failed /auth/me can never
- * hold onboarding shut for the rest of the campaign.
+ * ⚠ NOT `planId === undefined`. That was the first attempt and it never fired:
+ * the wire value is `null`, and `null` is ALSO what a genuinely locked account
+ * reports, so the two cannot be told apart from the value alone. Only a string
+ * settles it; `subscriptionProbed` settles the rest. Once the probe returns,
+ * an unknown plan stops being "wait" and becomes a plain no, so a failed
+ * /auth/me can never hold onboarding shut for the rest of the campaign.
  */
 export function isPromoPopupUndecided({
   isAuthenticated,
@@ -91,7 +87,7 @@ export function isPromoPopupUndecided({
 }: PromoPopupGateInput & { subscriptionProbed: boolean }): boolean {
   if (!isAuthenticated || !isHydrated) return false;
   if (seen) return false;
-  if (planId !== undefined) return false;
+  if (typeof planId === "string") return false;
   if (subscriptionProbed) return false;
   return isPromoWindowOpen(now);
 }
