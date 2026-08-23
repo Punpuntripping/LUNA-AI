@@ -19,7 +19,8 @@ Six levels (§4)::
     L3 article         articles_v2.content     (+ owns/MADDA fallback)
     L4 judgment        cases.content           — the FULL ruling, not the summary
     L5 circular        circulars.content       + issuing entity + source link
-    L6 service         the structured services payload
+    L6 service         the structured services payload + «الدليل الشامل»
+                       (``service_guides``, screenshots as their descriptions)
 
 Structure — the house pure-layer split (mirrors
 ``agents/tool_repository/fetch_article.py``):
@@ -52,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -167,6 +169,51 @@ assert SIMPLE_SEARCH_SERVICE_CONTEXT_CHARS == _URA_SERVICE_CONTEXT_CHARS, (
     "services_unfold.MAX_SERVICE_CONTEXT_CHARS changed — re-calibrate "
     "SIMPLE_SEARCH_SERVICE_CONTEXT_CHARS deliberately rather than tracking it."
 )
+
+# §4 L6 — «الدليل الشامل», OUR OWN guide to a government service
+# (``service_guides``, the /compliance wing). Budgeted separately from the
+# services card because it is a different document in kind: the card is the
+# entity's structured payload, the guide is a document ريحان wrote.
+#
+# Measured live 2026-08-23 over all 337 canonical guides as
+# ``length(guide_md) + Σ length(description)`` — which is what the RENDERED
+# guide actually costs, since :func:`render_service_guide` replaces every
+# screenshot hole with that screenshot's Arabic description:
+#   p50 8,655 · p90 20,671 · p99 95,277 · max 121,133 · 13 over 40k · 8 over 60k.
+# 60,000 keeps 329 of the 337 whole and bounds the guide at ~21.8k tokens.
+#
+# It is deliberately NOT ``REAL_CONTENT_MAX_CHARS``: the services card renders
+# alongside the guide, and its corpus max is 8,046 chars, so 60,000 + 8,046 =
+# 68,046 sits under the level's 68,750 ceiling. The card is then budgeted the
+# REMAINDER rather than a constant of its own, which keeps that arithmetic true
+# by construction instead of by this comment.
+MAX_SERVICE_GUIDE_CHARS = 60_000
+
+# THE ONE REGEX — a screenshot hole is a LINE that is ONLY a ``{guide_ref}_{n}``
+# token. COPIED from ``backend/app/services/library_service._GUIDE_HOLE_RE``
+# (itself the ingestion contract, REFERENCE.md §3.1) because this module never
+# imports from ``backend/`` — the same copy-with-attribution rule as
+# ``sort_document_order``. Two things it must never become:
+#   * anchored on «الصورة {n}» — thousands of those sit INSIDE prose sentences,
+#     and substituting there would rewrite normal Arabic into image captions;
+#   * keyed on position — 28% of guides place their holes out of numeric order,
+#     so "the 3rd hole" is not ``image_index = 3``.
+# Resolution is by ``image_ref`` and by nothing else. ``image_ref`` is UNIQUE
+# corpus-wide (``service_guide_images_image_ref_key``), so a token resolves to
+# exactly one screenshot.
+_GUIDE_HOLE_RE = re.compile(r"^[ \t]*(\d+_\d+)[ \t]*$", re.M)
+
+# What a resolved hole becomes. The model cannot see the screenshot — the
+# description IS the content at that point in the guide, so it is rendered as a
+# labelled blockquote: labelled so the model never mistakes it for the guide's
+# own prose, blockquoted so a multi-line description cannot break the markdown
+# around it (the description is whitespace-collapsed for the same reason).
+_GUIDE_IMAGE_LABEL_AR = "> 🖼 **صورة من الدليل:** "
+
+# The one line that separates the entity's card from our guide. It says WHOSE
+# document follows, which is the fact the answer's framing turns on: the card is
+# the issuing entity's payload, the guide is ours.
+_GUIDE_SECTION_LABEL_AR = "**«الدليل الشامل» لهذه الخدمة — دليل من إعداد ريحان:**"
 
 # PostgREST page size for the per-regulation chunk sweep. The largest regulation
 # carries 672 chunks (live max), so one page covers the corpus today; paging
@@ -1092,20 +1139,122 @@ def render_circular(
 # --- L6 · Service -----------------------------------------------------------
 
 
-def render_service(service_row: dict[str, Any]) -> UnfoldResult:
-    """Render ONE ``services`` row as the rich structured payload (§4 L6).
+def render_service_guide(
+    guide_row: dict[str, Any] | None,
+    image_rows: list[dict[str, Any]] | None,
+) -> tuple[str, int]:
+    """Render «الدليل الشامل» — one ``service_guides`` row — as agent-facing text.
 
-    Reuses ``build_service_aggregator_content`` (``ura/services_unfold.py``)
-    wholesale — intro, steps, requirements, required documents, link — and falls
-    back to the compact ``service_context`` when the structured fields are absent.
+    This is the half of L6 that ريحان wrote. ``guide_md`` is our own authored
+    rewrite of the issuing entity's official PDF user guide, and it is published
+    whole and ungated at ``/compliance/{slug}``, which is what makes it ours to
+    put in front of an agent at all (the entity's own procedure text is a
+    different thing in kind — see the wing plan §0).
 
-    > **Output constraint, carried forward and not re-litigated (2026-08-03).**
-    > The UNFOLD carries the rich payload; the ANSWER must stay a well-framed
-    > pointer. We do not restate a procedure's steps under ريحان's chrome — it
-    > makes us the apparent authority on a process we do not own, and steps go
-    > stale when the issuing entity edits them. That constraint belongs to level
-    > 6's synthesizer prompt, which is why it is only a note here: this function
-    > must still hand the model the full payload so it can frame accurately.
+    **The screenshots arrive as WORDS, not pixels.** The guide is written around
+    its screenshots: 324 of the 337 guides carry lines that are nothing but a
+    bare image token, each one a hole the page renderer swaps for the matching
+    ``<img>``. A language model cannot see an image, so what is substituted here
+    is ``service_guide_images.description`` — the Arabic sentence written for
+    exactly this purpose (188–1,031 chars, never empty), the same text the page
+    uses as alt. Nothing about the image itself travels: no URL, no bucket path,
+    no bytes. The description sits at the hole's own position because that
+    position is load-bearing — it is the step the screenshot illustrates.
+
+    A hole whose token has no image row is REMOVED, never left in place. That is
+    the failure mode this whole design exists to prevent, and it is the same
+    rule ``library_service._strip_unresolved_holes`` enforces server-side for the
+    page: a raw token reaching a reader. Here the reader is a model, which would
+    do something worse than print it — it would try to interpret it. Live the
+    unresolved set is empty on every guide (the ingest pairs every hole), which
+    is precisely why this must be code rather than a comment.
+
+    Args:
+        guide_row: a ``service_guides`` row (``title``, ``summary``, ``guide_md``)
+            or ``{}``/``None`` when the service has no guide — 4,409 of the
+            4,746 services do not.
+        image_rows: that guide's ``service_guide_images`` rows, each carrying
+            ``image_ref`` + ``description``. Order is irrelevant: resolution is
+            by token, never by position.
+
+    Returns:
+        ``(text, unresolved_holes)`` — the rendered guide (``""`` when there is
+        no guide) and how many holes had no image row, which the caller turns
+        into a telemetry note rather than swallowing.
+    """
+    guide_md = ((guide_row or {}).get("guide_md") or "").strip()
+    if not guide_md:
+        return "", 0
+
+    by_ref: dict[str, str] = {}
+    for row in image_rows or []:
+        ref = str(row.get("image_ref") or "").strip()
+        # Whitespace-collapsed: a description is alt text, so its line breaks
+        # carry no meaning, and folding them is what lets the whole thing sit on
+        # one blockquote line without escaping.
+        description = " ".join(str(row.get("description") or "").split())
+        if ref and description:
+            by_ref[ref] = description
+
+    unresolved = 0
+
+    def _fill(match: "re.Match[str]") -> str:
+        nonlocal unresolved
+        description = by_ref.get(match.group(1))
+        if description:
+            return f"{_GUIDE_IMAGE_LABEL_AR}{description}"
+        unresolved += 1
+        return ""
+
+    body = _GUIDE_HOLE_RE.sub(_fill, guide_md).strip()
+
+    # The guide NAMES ITSELF. Verified live 2026-08-23 across all 337 canonical
+    # guides: 336 open with `# {title}` character for character, and all 337
+    # carry ``summary`` verbatim inside the body. So a rendered title and a
+    # rendered summary here are not a header — they are the same two paragraphs
+    # printed twice, which is how a model learns that repetition is the house
+    # style. Only the label is added, and the title only for the one guide that
+    # does not introduce itself.
+    lines: list[str] = [_GUIDE_SECTION_LABEL_AR]
+    title = ((guide_row or {}).get("title") or "").strip()
+    if title and not body.startswith("# "):
+        lines += ["", f"# {title}"]
+    lines += ["", body]
+    return "\n".join(lines).strip(), unresolved
+
+
+def render_service(
+    service_row: dict[str, Any],
+    guide_row: dict[str, Any] | None = None,
+    image_rows: list[dict[str, Any]] | None = None,
+) -> UnfoldResult:
+    """Render ONE ``services`` row — plus its guide, when it has one (§4 L6).
+
+    Two documents, in this order:
+
+    1. **The service card** — ``build_service_aggregator_content``
+       (``ura/services_unfold.py``) wholesale: intro, steps, requirements,
+       required documents, and the official link, falling back to the compact
+       ``service_context`` when the structured fields are absent. This is the
+       issuing entity's own payload, and the link on it is the one the answer
+       cites.
+    2. **«الدليل الشامل»** — :func:`render_service_guide`, present for the 337
+       services that have one. Second because the card is the identity and the
+       link; the guide is the body.
+
+    Budget: the guide takes ``MAX_SERVICE_GUIDE_CHARS`` and the card takes what
+    is LEFT of ``REAL_CONTENT_MAX_CHARS`` after it, so the two can never
+    together overrun the level's ceiling. On the live corpus the remainder
+    (≥ 8,750) exceeds the largest card (8,046), so the card is never actually
+    the thing that clips.
+
+    Note what is NOT here any more. Until 2026-08-23 this docstring carried a
+    standing instruction that the ANSWER must stay a well-framed pointer and
+    must never restate a procedure's steps. That constraint was written when a
+    service was only ever the entity's payload; it was removed with the guide
+    wiring (user, 2026-08-23), and the L6 synthesizer prompt was rewritten to
+    match. Do not reintroduce it here as a note — a rule that lives in a
+    docstring and not in the prompt is a rule the model never reads.
     """
     fallback = build_service_context(service_row)
     content = build_service_aggregator_content(
@@ -1120,21 +1269,50 @@ def render_service(service_row: dict[str, Any]) -> UnfoldResult:
         url=service_row.get("url") or "",
         fallback_context=fallback,
     )
-    kept = _clip(content, REAL_CONTENT_MAX_CHARS)
+    guide, unresolved_holes = render_service_guide(guide_row, image_rows)
+    guide_kept = _clip(guide, MAX_SERVICE_GUIDE_CHARS)
+
+    # The card gets the REMAINDER, never a constant — see the budget note above.
+    kept = _clip(content, REAL_CONTENT_MAX_CHARS - len(guide_kept))
 
     lines: list[str] = [kept if kept else "(لا توجد تفاصيل لهذه الخدمة)"]
     if content and len(kept) < len(content):
         lines += ["", _TRUNCATION_NOTE_AR]
+    if guide_kept:
+        lines += ["", "---", "", guide_kept]
+        if len(guide_kept) < len(guide):
+            lines += ["", _TRUNCATION_NOTE_AR]
 
-    section = UnfoldSection(
-        name="content",
-        units_total=1,
-        units_kept=1 if kept else 0,
-        chars_total=len(content),
-        chars_kept=len(kept),
-    )
+    sections = [
+        UnfoldSection(
+            name="content",
+            units_total=1,
+            units_kept=1 if kept else 0,
+            chars_total=len(content),
+            chars_kept=len(kept),
+        )
+    ]
     notes = ["content_over_ceiling"] if content and len(kept) < len(content) else []
-    return _finalise(level="service", lines=lines, sections=[section], notes=notes)
+
+    if guide:
+        sections.append(
+            UnfoldSection(
+                name="guide",
+                units_total=1,
+                units_kept=1 if guide_kept else 0,
+                chars_total=len(guide),
+                chars_kept=len(guide_kept),
+            )
+        )
+        notes.append("service_guide")
+        if len(guide_kept) < len(guide):
+            notes.append("guide_over_ceiling")
+    if unresolved_holes:
+        # Zero on every guide live. Non-zero means the ingest broke the
+        # hole↔image pairing, and a silent count is how that goes unnoticed.
+        notes.append(f"guide_holes_unresolved={unresolved_holes}")
+
+    return _finalise(level="service", lines=lines, sections=sections, notes=notes)
 
 
 # =========================================================================== #
@@ -1175,6 +1353,22 @@ SERVICE_SELECT = (
     "intro_title, intro_description, steps, requirements, required_documents, "
     "service_url, url"
 )
+
+# §4 L6 — «الدليل الشامل». NO ``source_pdf_url``: the entity's PDF is never
+# surfaced anywhere, and an agent context is not the exception (wing plan §0,
+# decision 4). The only outbound link for a خدمة stays ``services.service_url``,
+# which the card above already carries.
+#
+# No ``summary`` either, and that one is not a policy — it is a measurement: all
+# 337 guides carry their summary verbatim inside ``guide_md``, so selecting it
+# would fetch a paragraph only to print it twice. ``title`` survives for the one
+# guide of 337 whose body does not open with its own ``# {title}``.
+SERVICE_GUIDE_SELECT = "id, title, guide_md"
+
+# Descriptions only. An ``image_ref`` to resolve the hole by and the Arabic
+# sentence that stands in for the picture — no ``storage_path``, no bucket, no
+# URL. The model cannot open an image, so shipping one is pure cost.
+SERVICE_GUIDE_IMAGE_SELECT = "image_ref, description"
 
 
 def _rows(resp: Any) -> list[dict[str, Any]]:
@@ -1242,6 +1436,63 @@ def _fetch_chunks_for_regulation(
             break
         offset += _CHUNK_PAGE
     return out
+
+
+def _fetch_service_guide(supabase, service_id: str) -> dict[str, Any]:
+    """§4 L6 — the canonical ``service_guides`` row for one service; ``{}`` on miss.
+
+    ``service_guides.service_id`` is UNIQUE (``service_guides_service_id_key``),
+    so this is a point read and ``.limit(1)`` is exact rather than arbitrary. The
+    ``is_canonical`` filter is therefore belt-and-braces — the schema keeps a
+    ``canonical_service_ref`` alias column, and the day an ingest marks a row
+    superseded we must not serve it as the guide.
+
+    A miss is the NORMAL case (4,409 of 4,746 services have no guide) and returns
+    ``{}``, which :func:`render_service` renders as today's card-only unfold.
+    """
+    if not service_id:
+        return {}
+    try:
+        resp = (
+            supabase.table("service_guides")
+            .select(SERVICE_GUIDE_SELECT)
+            .eq("service_id", str(service_id))
+            .eq("is_canonical", True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort read
+        logger.warning(
+            "simple_search unfold: service_guide for %s failed: %s", service_id, exc
+        )
+        return {}
+    return _one(resp)
+
+
+def _fetch_service_guide_images(supabase, guide_id: str) -> list[dict[str, Any]]:
+    """§4 L6 — one guide's screenshots, as ``(image_ref, description)`` rows.
+
+    Unordered on purpose. The page orders by ``image_index`` for a predictable
+    listing, but nothing here reads a list: the rows become a ``{ref: description}``
+    map and each description lands at its own hole. The largest guide carries 192
+    screenshots, far under PostgREST's 1,000-row default, so one page is the
+    whole guide.
+    """
+    if not guide_id:
+        return []
+    try:
+        resp = (
+            supabase.table("service_guide_images")
+            .select(SERVICE_GUIDE_IMAGE_SELECT)
+            .eq("guide_id", str(guide_id))
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "simple_search unfold: guide images for %s failed: %s", guide_id, exc
+        )
+        return []
+    return _rows(resp)
 
 
 def _fetch_entity_name(supabase, entity_id: str) -> str:
@@ -1546,13 +1797,29 @@ async def unfold_circular(supabase, resolved: ResolvedObject) -> UnfoldResult:
 
 
 async def unfold_service(supabase, resolved: ResolvedObject) -> UnfoldResult:
-    """L6 — one government service, the rich structured payload (§4 L6)."""
+    """L6 — one government service: the structured payload + «الدليل الشامل».
+
+    Up to three reads, and the second two only earn their place when there is a
+    guide. The guide lookup fires for every service and misses on most of them
+    (337 guides against 4,746 services) — one indexed point read on a 337-row
+    table. The images fetch fires only after a hit, so a guide-less service
+    costs exactly one read more than it did before the wing existed.
+    """
     service = await asyncio.to_thread(
         _fetch_row, supabase, "services", "id", resolved.service_id, SERVICE_SELECT
     )
     if not service:
         return _not_found("service", "الخدمة", "service_row_not_found")
-    return render_service(service)
+
+    guide = await asyncio.to_thread(
+        _fetch_service_guide, supabase, resolved.service_id
+    )
+    images: list[dict[str, Any]] = []
+    if guide.get("id"):
+        images = await asyncio.to_thread(
+            _fetch_service_guide_images, supabase, str(guide.get("id"))
+        )
+    return render_service(service, guide_row=guide, image_rows=images)
 
 
 # =========================================================================== #
@@ -1645,6 +1912,7 @@ __all__ = [
     "MAX_REG_INTRO_CHARS",
     "MAX_REG_ABSTRACT_CHARS",
     "SIMPLE_SEARCH_SERVICE_CONTEXT_CHARS",
+    "MAX_SERVICE_GUIDE_CHARS",
     "SIMPLE_CHUNK_SELECT",
     "CHUNK_METADATA_SELECT",
     "REGULATION_SELECT",
@@ -1652,6 +1920,8 @@ __all__ = [
     "CASE_SELECT",
     "CIRCULAR_SELECT",
     "SERVICE_SELECT",
+    "SERVICE_GUIDE_SELECT",
+    "SERVICE_GUIDE_IMAGE_SELECT",
     # D12 / §7.3 — the ruling entitlement seam
     "JudgmentAccess",
     "JudgmentAccessResolver",
@@ -1673,6 +1943,7 @@ __all__ = [
     "render_article",
     "render_judgment",
     "render_circular",
+    "render_service_guide",
     "render_service",
     # entry points
     "unfold",

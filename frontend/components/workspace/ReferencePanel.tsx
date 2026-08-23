@@ -1250,9 +1250,16 @@ function SourceViewContent({
     // GUIDE, our own authored rewrite of the entity's official PDF user guide,
     // in full and ungated. It is reached by LEAVING to its own page via the
     // action bar's «افتح الدليل الشامل للخدمة في ريحان», which the backend adds
-    // only for the ~169 services that have one. Nothing from the guide is
-    // inlined into this body, and nothing from it enters agent context — both
-    // are deliberate, and the second is a separate later project.
+    // only for the 337 services that have one. Nothing from the guide is
+    // inlined into THIS body — that part is still deliberate, and it is why the
+    // popup stays a link.
+    //
+    // The guide DOES reach the agent, as of 2026-08-23: `unfold_service`
+    // (`agents/simple_search/unfold.py`) hands `guide_md` plus each screenshot's
+    // description to the L6 synthesizer, so an answer about a خدمة can now walk
+    // our guide. That is a different surface from this popup and does not change
+    // anything here — a rendered body and a model's context are not the same
+    // question.
     //
     // So the line below stays deliberately about the OFFICIAL source: it names
     // where the authoritative procedure lives, which is the entity's site, not

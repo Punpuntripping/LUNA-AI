@@ -573,8 +573,9 @@ service sees it — unchanged.
   the 100 rows still do is give `manual_search` rung ③ an exact-title pin
   (`:838-841`), and the guides may serve that better. Not a coverage problem —
   rung ② already ILIKEs the full 4,746-row table.
-- **Guide RAG into agent context** — still the user's "separate later step"
-  (the wing plan §9).
+- ~~**Guide RAG into agent context**~~ — SHIPPED 2026-08-23 into `simple_search`
+  L6 (`unfold_service`); see the wing plan §0 decision 5. Only `deep_search`'s
+  services executor still answers without the guide.
 - HowTo/VideoObject JSON-LD; the stale `seo_item_meta` `'service'` rows;
   `services.steps/requirements/required_documents` (retrieval-only).
 - An entity OVERVIEW page (`/compliance/{entity}` as an entity profile with

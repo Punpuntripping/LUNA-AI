@@ -535,11 +535,25 @@ The real content: `intro_title`, `intro_description`, `steps`, `requirements`,
 > `ura/services_unfold.py:30`. Importing both into one module is a live hazard. Alias at
 > the import site or define a third, local constant.
 
-**Output constraint (carried forward, not re-litigated).** The standing 2026-08-03 decision
-is that we do **not** restate a procedure's steps under ريحان's chrome — it makes us the
-apparent authority on a process we do not own, and steps go stale when the issuing entity
-edits them (`source_viewer.py:190-196`). The **unfold** carries the rich payload; the
-**answer** stays a well-framed pointer. Level 6's prompt must encode this.
+**Output constraint — REVERSED 2026-08-23 (user).** This section used to carry the
+2026-08-03 decision that the answer stays a *well-framed pointer* and never restates a
+procedure's steps, because doing so made us the apparent authority on a process we do not
+own. That was written when a خدمة was only ever the issuing entity's payload. `/compliance`
+changed the premise: **`service_guides` is our own authored guide**, published whole and
+ungated, and `unfold_service` now hands it to the synthesizer alongside the card
+(`.claude/plans/compliance_service_guides.md` §0). The L6 prompt tells the model to walk it.
+
+What did NOT reverse is `ServiceSourceView` (`source_viewer.py:203-218`): the reference
+**popup** is still title-and-link only. That is a different surface with a different reason
+— it renders the entity's own steps under our chrome — and it stays bodyless.
+
+**The screenshots reach the model as WORDS.** `guide_md` is written around its screenshots:
+324 of 337 guides carry lines that are only a `{guide_ref}_{n}` token. `render_service_guide`
+replaces each with `service_guide_images.description` — the Arabic sentence written for this
+purpose — at the hole's own position, and DELETES any hole with no image row. No URL, no
+storage path, no bytes: a model cannot open an image, and one that thinks it can will invent
+what it saw. Budget: `MAX_SERVICE_GUIDE_CHARS` (60,000) for the guide, the remainder of the
+68,750 ceiling for the card, so the two can never overrun the level together.
 
 ---
 

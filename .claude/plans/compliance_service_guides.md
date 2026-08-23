@@ -32,10 +32,16 @@ confirmed: "we rewrote it." Every comment in the codebase that still tells the
 4. **`source_pdf_url` is NEVER shown.** The only outbound link is the service's
    own page (`services.service_url`). Enforced structurally: the API payload
    simply does not carry `source_pdf_url`.
-5. Chat integration now = **sources-level only**: when a cited service has a
-   guide, the reference dialog's library exit reads
+5. Chat integration at BUILD TIME = **sources-level only**: when a cited service
+   has a guide, the reference dialog's library exit reads
    **«افتح الدليل الشامل للخدمة في ريحان»** → `/compliance/{slug}`.
-   Full guide RAG into agent context is a LATER separate step.
+   ~~Full guide RAG into agent context is a LATER separate step.~~
+   **DONE 2026-08-23** — that later step shipped: `unfold_service`
+   (`agents/simple_search/unfold.py`) gives the `simple_search` L6 synthesizer
+   `guide_md` with every screenshot hole replaced by its
+   `service_guide_images.description`, and the L6 prompt was rewritten to walk
+   the guide (the 2026-08-03 "pointer, not procedure" constraint was deleted by
+   the user in the same change). The reference popup itself is unchanged.
 6. Wing lists ONLY services that have guides (~169) — that's the story:
    «دليل مبسط لأكثر الخدمات استخداماً». No fallback listing of guide-less services.
 7. **Every guide title carries «الدليل الشامل بالصور»** (user, 2026-08-19).
@@ -368,8 +374,10 @@ superseded at ship time.
 
 - **BM25 navigation corpus** for guides (SearchBar's registered surfaces) — the
   old `service` corpus was deliberately removed; re-adding is its own decision.
-- **Guide RAG into agent context** (chat answering from `guide_md` + showing
-  step screenshots) — the user's "separate later step".
+- ~~**Guide RAG into agent context**~~ — SHIPPED 2026-08-23 into `simple_search`
+  L6 (§0 decision 5). Note what shipped and what did not: the model gets
+  `guide_md` and the screenshots' DESCRIPTIONS. Showing the screenshots
+  themselves in a chat answer is still not built, and is its own decision.
 - HowTo/VideoObject JSON-LD (the retired wing had it; start with Article).
 - Touching the stale `seo_item_meta` `'service'` rows.
 - `services.steps/requirements/required_documents` — stay retrieval-only.
