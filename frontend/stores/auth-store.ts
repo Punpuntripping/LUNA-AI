@@ -13,6 +13,10 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 const REVALIDATE_THROTTLE_MS = 30 * 1000;
 let lastRevalidateAt = 0;
 
+// One-shot guard for `ensureSubscriptionLoaded` — several components may want
+// the plan on the same first render, and they must share a single /auth/me.
+let subscriptionProbeInFlight = false;
+
 function decodeTokenExp(token: string): number | null {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
@@ -73,6 +77,23 @@ interface AuthState {
   error: string | null;
 
   setUser: (user: User) => void;
+  /**
+   * Backfill the subscription-derived fields that `/auth/login` omits.
+   *
+   * ⚠ `POST /auth/login` deliberately never reads `user_subscriptions` (see the
+   * route: it returns `subscription_tier: "free"` and no `plan_id` at all), so
+   * for the whole first session after an email/password sign-in `user.plan_id`
+   * is `undefined` — not `"free"`. Anything that branches on the plan therefore
+   * has to ask for it, or it silently reads "unknown" until the next cold boot
+   * runs the restore probe. No-op once the field is known.
+   */
+  ensureSubscriptionLoaded: () => Promise<void>;
+  /**
+   * Has `ensureSubscriptionLoaded` finished, either way? Callers that must WAIT
+   * for the plan need a bound on the wait: on a failed /auth/me `plan_id` stays
+   * `undefined` forever, and "unknown" must not become "hold the UI forever".
+   */
+  subscriptionProbed: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (
     email: string,
@@ -114,6 +135,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   error: null,
 
   setUser: (user) => set({ user, isAuthenticated: true }),
+
+  subscriptionProbed: false,
+
+  ensureSubscriptionLoaded: async () => {
+    const { isAuthenticated, user } = get();
+    // `undefined` is the only value worth a request: `null` is a real answer
+    // (a locked account with no subscription row), and a string is the plan.
+    if (!isAuthenticated) return;
+    if (user?.plan_id !== undefined) {
+      if (!get().subscriptionProbed) set({ subscriptionProbed: true });
+      return;
+    }
+    if (subscriptionProbeInFlight) return;
+    subscriptionProbeInFlight = true;
+    try {
+      const fresh = await authApi.me();
+      set({ user: fresh, isAuthenticated: true });
+    } catch {
+      // Non-fatal and deliberately not retried here — the focus revalidation
+      // and the next cold boot both call /auth/me anyway. Callers must keep
+      // treating `undefined` as "unknown", never as "free".
+    } finally {
+      subscriptionProbeInFlight = false;
+      // Settled either way — see `subscriptionProbed`.
+      set({ subscriptionProbed: true });
+    }
+  },
 
   clearError: () => set({ error: null }),
 

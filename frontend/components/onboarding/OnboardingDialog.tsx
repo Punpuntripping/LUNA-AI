@@ -13,7 +13,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
-import { usePromoPopupOwed } from "@/components/promo/use-promo-popup";
+import { usePromoPopupHold } from "@/components/promo/use-promo-popup";
 import { cn } from "@/lib/utils";
 import { STEP_PROFESSION } from "./onboarding-content";
 import {
@@ -123,11 +123,17 @@ export function OnboardingDialog() {
   const onboardingSeen = usePreferencesStore((s) => s.onboardingSeen);
 
   // «عندك رمز تفعيل؟» outranks both branches below while the two-week campaign
-  // is open — see `components/promo/PromoCodePopup`. Derived from the same two
+  // is open — see `components/promo/PromoCodePopup`. Derived from the same
   // stores that popup reads, so the two agree on the FIRST render and never
-  // stack; it flips false the instant the popup is resolved, which re-runs the
-  // auto-open effect and opens the profession step right behind it.
-  const promoPopupOwed = usePromoPopupOwed();
+  // stack; it goes false the instant the popup is resolved, which re-runs this
+  // effect and opens the profession step right behind it.
+  //
+  // ⚠ HOLD, not "owed". It stays true through the window where we do not YET
+  // know the plan — `/auth/login` returns no `plan_id`, so a brand-new account
+  // reads as neither free nor paid until /auth/me answers. Gating on `owed`
+  // alone let onboarding open into exactly that gap, with the promo popup
+  // landing on top of it a moment later.
+  const promoPopupHold = usePromoPopupHold();
 
   const open = useOnboardingStore((s) => s.isOpen);
   const mode = useOnboardingStore((s) => s.mode);
@@ -172,7 +178,7 @@ export function OnboardingDialog() {
   // is not null.
   useEffect(() => {
     if (!isAuthenticated || !isHydrated) return;
-    if (promoPopupOwed) return;
+    if (promoPopupHold) return;
     if (professionGroup === null) {
       useOnboardingStore.getState().open("profession");
     } else if (justPaid && !onboardingSeen) {
@@ -184,7 +190,7 @@ export function OnboardingDialog() {
     justPaid,
     onboardingSeen,
     professionGroup,
-    promoPopupOwed,
+    promoPopupHold,
   ]);
 
   /** Persist the profession answer if it changed; a wholly untouched step on

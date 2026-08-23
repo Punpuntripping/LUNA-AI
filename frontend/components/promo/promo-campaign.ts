@@ -68,6 +68,34 @@ export function isPromoPopupOwed({
   return isPromoWindowOpen(now);
 }
 
+/**
+ * Do we not YET know whether the popup is owed?
+ *
+ * ⚠ THIS IS WHAT KEEPS THE TWO DIALOGS FROM STACKING. `plan_id` is `undefined`
+ * for the whole first session after an email/password login, so `owed` above is
+ * false at first even for the brand-new free account the campaign exists for.
+ * Without this, «اتعرف على ريحان» would open into that gap and the promo popup
+ * would land on top of it a moment later, once /auth/me answered.
+ *
+ * Bounded by `subscriptionProbed`: once the probe has settled, an unknown plan
+ * stops being "wait" and becomes a plain no, so a failed /auth/me can never
+ * hold onboarding shut for the rest of the campaign.
+ */
+export function isPromoPopupUndecided({
+  isAuthenticated,
+  isHydrated,
+  seen,
+  planId,
+  subscriptionProbed,
+  now,
+}: PromoPopupGateInput & { subscriptionProbed: boolean }): boolean {
+  if (!isAuthenticated || !isHydrated) return false;
+  if (seen) return false;
+  if (planId !== undefined) return false;
+  if (subscriptionProbed) return false;
+  return isPromoWindowOpen(now);
+}
+
 /** Copy — kept beside the window so the campaign is one file to read. */
 export const PROMO_POPUP_COPY = {
   title: "عندك رمز تفعيل؟",
