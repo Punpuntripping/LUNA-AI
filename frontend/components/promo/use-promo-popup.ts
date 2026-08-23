@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
+import { usePromoStore } from "@/stores/promo-store";
 import {
   isPromoPopupOwed,
   isPromoPopupUndecided,
@@ -60,9 +61,15 @@ export function usePromoPopupHold(): boolean {
   const subscriptionProbed = useAuthStore((s) => s.subscriptionProbed);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const seen = usePreferencesStore((s) => s.promoCodePopupSeen);
+  // ⚠ AND while it is still UP. Redeeming marks it seen at once, so the two
+  // predicates below both go false the instant a code activates — with the
+  // success card still on screen. Without this term onboarding opens through
+  // it and swallows the click on «ابدأ الاستخدام». See `promo-store`.
+  const isOpen = usePromoStore((s) => s.isOpen);
 
   const args = { isAuthenticated, isHydrated, seen, planId };
   return (
+    isOpen ||
     isPromoPopupOwed(args) ||
     isPromoPopupUndecided({ ...args, subscriptionProbed })
   );

@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { RedeemCodeForm } from "@/components/Settings/RedeemCodeForm";
 import { usePreferencesStore } from "@/stores/preferences-store";
+import { usePromoStore } from "@/stores/promo-store";
 import { PROMO_POPUP_COPY } from "@/components/promo/promo-campaign";
 import { usePromoPopupOwed } from "@/components/promo/use-promo-popup";
 
@@ -43,6 +44,15 @@ export function PromoCodePopup() {
   useEffect(() => {
     if (owed) setOpen(true);
   }, [owed]);
+
+  // Publish it so «اتعرف على ريحان» keeps standing down for as long as this is
+  // actually on screen — which outlasts `owed` by the whole success card.
+  useEffect(() => {
+    usePromoStore.getState().setOpen(open);
+  }, [open]);
+
+  // Navigating away with it open must not hold onboarding shut forever.
+  useEffect(() => () => usePromoStore.getState().setOpen(false), []);
 
   /** Every exit path lands here — see the once-only contract above. */
   const dismiss = () => {
