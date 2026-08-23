@@ -5744,7 +5744,8 @@ def get_judgment_doc(
 # is never selected here (D10 — 585 of 746 relation rows are single-method
 # guesses, good enough to RANK on, not good enough to ASSERT). There is no stored
 # `rank` column either: rank is meaningless before the publish filter runs, so
-# the order is `score desc` at read time and nothing else.
+# the order is `score desc, tiebreak desc` at read time and nothing else — see
+# `_RELATED_TIEBREAK_COLUMN` for why the second key is not optional.
 # ==========================================================================
 
 _RELATED_ITEMS_TABLE = "related_items"
@@ -5778,11 +5779,57 @@ _RELATED_SCAN_LIMIT = 200
 # "same ministry" coincidences and the strip reads as noise.
 _RELATED_BONUS_ONLY_MAX = 2
 
-# …and the guard is OFF for أحكام, where `base = 0` is not a weak signal but the
-# only possible value: judgments have no base axis at all (§3.3), court carries
-# everything through the bonus. Applying the guard there would cap every judgment
-# strip at 2 cards for no reason.
-_RELATED_GUARD_EXEMPT: frozenset[str] = frozenset({"judgment"})
+# ⚠ THE GUARD IS ARMED BY THE DATA, NOT BY A CORPUS LIST. Whoever reads this next
+# will want to "fix" it back into `if ct != "judgment"`. Don't.
+#
+# What the guard is FOR is «don't let weak filler crowd out strong evidence», and
+# that only means something when strong evidence CAN exist in this result set.
+# أحكام were exempted because `base = 0` there is not a weak signal but the only
+# possible value — §3.3 gives judgments no base axis at all, court carries
+# everything through the bonus — so capping them at 2 cards was arbitrary.
+# Measured on prod (2026-08-23) that reasoning applied verbatim to تعاميم and
+# خدمات as well: both are 100% bonus-only until their base axis lands, and the
+# hardcoded exemption list starved them. تعاميم averaged 1.97 cards and خدمات
+# 1.86, with 0 of 375 and 0 of 83 sources reaching the 4 cards a 3-in-view
+# scroller needs before anything overflows. The strip rendered and could not
+# scroll; with the guard off those wings average 6.34 and 4.14.
+#
+# So the condition is the PROPERTY, not the corpus: cap the bonus-only tail only
+# when this source's candidate set actually holds a `base > 0` PUBLISHED row that
+# the filler could crowd out. Evaluated per source, after the publish filter — an
+# unpublished strong neighbour protects nothing, it can never render.
+#
+# That is self-correcting, which is the whole point — and خدمات has already
+# proved it. Migration 145 gave that wing a `services.embedding` base, and on the
+# refresh 1,986 of its 2,232 edges came back with `base > 0`: the guard re-armed
+# on its own, source by source, with no code change here. تعاميم is still 100%
+# bonus-only and will re-arm the same way when Wave E lands its topic base. No
+# corpus list, and nothing for anyone to remember to edit.
+
+# --- `related_items.tiebreak` (migration 145) ------------------------------
+# A normalized [0,1] property of the TARGET, higher first, used purely as the
+# second sort key: `order by score desc, tiebreak desc`, matching the index
+# `(source_type, source_id, score desc, tiebreak desc)`.
+#
+# It exists because judgment scores are PERFECT ties — 22 courts clear the floor
+# and none holds more than one entity, so all 532 candidates in the largest
+# chamber score identically and «the top 7» was whichever 7 came back, differing
+# between two runs of the same query. That instability is not cosmetic: with
+# `_RELATED_SCAN_LIMIT` over-fetching 200 of 532 tied rows, WHICH 200 arrive is
+# arbitrary unless the order is total. Hence the tiebreak must be in the DB
+# `order` — a Python re-sort after the fetch would be sorting the wrong 200.
+#
+# ⚠ 143 IS LIVE AND 145 MAY NOT BE. A hard dependency on the column would take
+# every strip on all four wings dark the moment this deploys ahead of the
+# migration, so a missing column costs the TIEBREAK, not the strip: the read
+# falls back to score-only ordering and latches that for a few minutes instead of
+# re-probing on every render. The latch is evidence-based — the same query minus
+# the one order clause succeeding is the proof that the clause was the problem —
+# and it expires, so a running process picks the column up once 145 lands without
+# waiting for a redeploy.
+_RELATED_TIEBREAK_COLUMN = "tiebreak"
+_RELATED_TIEBREAK_RETRY_SECONDS = 300.0
+_related_tiebreak_state: dict[str, float] = {"missing_until": 0.0}
 
 
 def _reg_hub_items_by_ids(
@@ -5945,6 +5992,87 @@ def _related_hub_items(
     return {}
 
 
+def _related_edge_rows(
+    supabase: SupabaseClient,
+    content_type: str,
+    content_id: str,
+    exclude: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """One source's raw `related_items` window, best first. Never raises.
+
+    ``order by score desc, tiebreak desc`` — a TOTAL order, so the
+    ``_RELATED_SCAN_LIMIT`` window is the SAME window on every request even where
+    hundreds of candidates score identically (the judgment wing; see
+    ``_RELATED_TIEBREAK_COLUMN``).
+
+    Fail-soft in two layers, and the layers are different failures:
+      * ``tiebreak`` missing (migration 145 not applied) → drop the second sort
+        key, keep the strip, latch the fallback for
+        ``_RELATED_TIEBREAK_RETRY_SECONDS``.
+      * anything else — the table missing (143 not applied), a DB error → ``[]``.
+        A missing strip, never a missing page.
+    """
+
+    def _scan(with_tiebreak: bool) -> list[dict[str, Any]]:
+        qb = (
+            supabase.table(_RELATED_ITEMS_TABLE)
+            # `reason` is audit-only and deliberately not read (D10).
+            .select("target_id, score, base")
+            .eq("source_type", content_type)
+            .eq("source_id", content_id)
+            .eq("target_type", content_type)
+            .order("score", desc=True)
+        )
+        if with_tiebreak:
+            qb = qb.order(_RELATED_TIEBREAK_COLUMN, desc=True)
+        qb = qb.limit(_RELATED_SCAN_LIMIT)
+        # Only push the exclusion down when it is small enough to be safe in a
+        # query string — it is <= 7 ids in practice (the cited-أنظمة strip), and
+        # the caller re-applies it in Python regardless.
+        if exclude and len(exclude) <= _ID_IN_CHUNK:
+            qb = qb.not_.in_("target_id", list(exclude))
+        return qb.execute().data or []
+
+    if time.monotonic() < _related_tiebreak_state["missing_until"]:
+        try:
+            return _scan(False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "related-items lookup failed (%s/%s): %s", content_type, content_id, e
+            )
+            return []
+
+    tiebreak_error: Optional[Exception] = None
+    try:
+        return _scan(True)
+    except Exception as e:  # noqa: BLE001
+        # Could be the new column, could be the whole table. The retry below is
+        # what tells the two apart — do not decide it from the message.
+        tiebreak_error = e
+
+    try:
+        rows = _scan(False)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "related-items lookup failed (%s/%s): %s", content_type, content_id, e
+        )
+        return []
+
+    # Both queries differ by exactly one order clause and only one of them failed:
+    # the column is not there yet. Stop probing for a few minutes.
+    _related_tiebreak_state["missing_until"] = (
+        time.monotonic() + _RELATED_TIEBREAK_RETRY_SECONDS
+    )
+    logger.warning(
+        "related_items.%s unavailable (migration 145 not applied?) — ordering on "
+        "score alone for %.0fs: %s",
+        _RELATED_TIEBREAK_COLUMN,
+        _RELATED_TIEBREAK_RETRY_SECONDS,
+        tiebreak_error,
+    )
+    return rows
+
+
 def get_related_next(
     supabase: SupabaseClient,
     content_type: str,
@@ -5967,7 +6095,7 @@ def get_related_next(
 
     THE READ, in four steps:
 
-      1. ``related_items`` ordered by ``score desc``, capped at
+      1. ``related_items`` ordered by ``score desc, tiebreak desc``, capped at
          ``_RELATED_SCAN_LIMIT``. ``target_type = source_type`` is asserted in
          the query, not assumed — D2 makes the graph same-type by construction
          and a cross-type row would hydrate against the wrong corpus.
@@ -5977,7 +6105,9 @@ def get_related_next(
          recompute of the graph.
       3. THE BONUS-ONLY GUARD — at most ``_RELATED_BONUS_ONLY_MAX`` survivors may
          carry ``base = 0``; the rest are skipped and the strip backfills from
-         further down the ranking. OFF for أحكام (see ``_RELATED_GUARD_EXEMPT``).
+         further down the ranking. ARMED BY THE DATA, not by a corpus list: it
+         applies only where this source has a published ``base > 0`` candidate
+         to protect (see ``_RELATED_BONUS_ONLY_MAX``).
       4. Cut to 7 and hydrate through the hub-card builders in one batched
          lookup, preserving score order.
     """
@@ -5989,29 +6119,9 @@ def get_related_next(
     excluded = {str(x) for x in (exclude_ids or []) if x}
     excluded.add(cid)  # belt-and-braces against a self-edge in the store
 
-    try:
-        qb = (
-            supabase.table(_RELATED_ITEMS_TABLE)
-            # `reason` is audit-only and deliberately not read (D10).
-            .select("target_id, score, base")
-            .eq("source_type", ct)
-            .eq("source_id", cid)
-            .eq("target_type", ct)
-            .order("score", desc=True)
-            .limit(_RELATED_SCAN_LIMIT)
-        )
-        # Only push the exclusion down when it is small enough to be safe in a
-        # query string — it is <= 7 ids in practice (the cited-أنظمة strip), and
-        # step 3 below re-applies it in Python regardless.
-        small = sorted(excluded - {cid})
-        if small and len(small) <= _ID_IN_CHUNK:
-            qb = qb.not_.in_("target_id", small)
-        rows = qb.execute().data or []
-    except Exception as e:  # noqa: BLE001
-        # Includes "relation related_items does not exist" — migration 143 not
-        # applied yet. A missing strip, never a missing page.
-        logger.warning("related-items lookup failed (%s/%s): %s", ct, cid, e)
-        return []
+    # Fail-soft inside: a missing `related_items` (migration 143 not applied) or
+    # a missing `tiebreak` column (145 not applied) never reaches the caller.
+    rows = _related_edge_rows(supabase, ct, cid, sorted(excluded - {cid}))
 
     ranked: list[tuple[str, float]] = []
     seen: set[str] = set()
@@ -6031,7 +6141,13 @@ def get_related_next(
     # THE PUBLISH FILTER (D5) — cheap: content_id + slug only, chunked.
     slugs = _slug_map(supabase, ct, [t for t, _ in ranked])
 
-    guard = ct not in _RELATED_GUARD_EXEMPT
+    # THE BONUS-ONLY GUARD, ARMED BY THE DATA (§3.4 as re-derived — the long
+    # version is at `_RELATED_BONUS_ONLY_MAX`). Cap the bonus-only tail only when
+    # this source has a `base > 0` candidate that can actually RENDER. Where none
+    # can — أحكام always, تعاميم and خدمات until their base axis ships, and any
+    # individual source whose only based neighbours are unpublished — there is
+    # nothing for filler to crowd out and the cap would only starve the strip.
+    guard = any(base > 0.0 for tid, base in ranked if slugs.get(tid))
     picked: list[str] = []
     bonus_only = 0
     for tid, base in ranked:
