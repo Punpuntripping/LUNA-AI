@@ -391,10 +391,15 @@ async def run_expand_only(args, query: str, deps) -> None:
     print(f"\n{'=' * 60}")
 
     total_count = 0
-    for i, (query_text, (chunks, count)) in enumerate(zip(output.queries, results_raw), 1):
+    for i, (query_text, outcome) in enumerate(zip(output.queries, results_raw), 1):
+        count = outcome.count
         total_count += count
-        print(f"\n--- Query {i}: \"{query_text}\" ({count} results) ---")
-        preview = _render_chunks_summary(chunks)[:2000]
+        # max_score is the honest headline here: search_topics is k-NN with no
+        # threshold, so a count of 15 says nothing about relevance. Random
+        # unrelated pairs score ~0.24; on-topic material 0.55-0.79.
+        health = f"FAILED: {outcome.error}" if outcome.error else f"max_score={outcome.max_score:.3f}"
+        print(f"\n--- Query {i}: \"{query_text}\" ({count} results, {health}) ---")
+        preview = _render_chunks_summary(outcome.rows)[:2000]
         print(preview)
 
     print(f"\n{'=' * 60}")
@@ -426,17 +431,20 @@ async def run_expand_only(args, query: str, deps) -> None:
 
     # Per-query search markdowns
     search_log = []
-    for qi, (q_text, (chunks, count)) in enumerate(zip(output.queries, results_raw), 1):
+    for qi, (q_text, outcome) in enumerate(zip(output.queries, results_raw), 1):
         rationale = output.rationales[qi - 1] if qi <= len(output.rationales) else ""
         save_search_query_md(
             log_id=log_id, round_num=1, query_index=qi,
-            query=q_text, raw_markdown=_render_chunks_summary(chunks),
-            result_count=count, rationale=rationale,
+            query=q_text, raw_markdown=_render_chunks_summary(outcome.rows),
+            result_count=outcome.count, rationale=rationale,
         )
         search_log.append({
             "round": 1, "query": q_text, "rationale": rationale,
-            "result_count": count,
-            "chunks": chunks,
+            "result_count": outcome.count,
+            "chunks": outcome.rows,
+            "max_score": outcome.max_score,
+            "top_scores": list(outcome.top_scores),
+            "error": outcome.error,
         })
 
     # Overview + JSON
@@ -575,11 +583,22 @@ async def run_batch(args) -> None:
             )
             qt0 = time.perf_counter()
             chunks: list[dict] = []
+            max_score = 0.0
             try:
-                chunks, count = await search_regulations_pipeline(
+                outcome = await search_regulations_pipeline(
                     query=sq, deps=sq_deps, filter_sectors=filter_sectors,
                     precomputed_embedding=sq_emb,
                 )
+                chunks, count = outcome.rows, outcome.count
+                max_score = outcome.max_score
+                # The pipeline no longer smuggles failure out as an empty list
+                # — it names it. Surface it here the same way a raised
+                # exception was surfaced, so a batch run cannot read a dead
+                # socket as a genuine miss.
+                if outcome.error:
+                    err_msg = f"q{qi} {outcome.error}"
+                    search_errors.append(err_msg)
+                    print(f"    q{qi:>2} FAIL — {outcome.error}")
             except Exception as e:
                 count = 0
                 err_msg = f"q{qi} EXCEPTION: {e}"
@@ -601,11 +620,15 @@ async def run_batch(args) -> None:
             filter_label = "fallback" if fallback else ("yes" if filter_sectors else "no")
             detail = {"qi": qi, "query": sq[:55], "results": count,
                       "dur": round(qt_dur, 1), "filter": filter_label,
+                      "max_score": round(max_score, 4),
                       "chunks": chunks}
             search_details.append(detail)
 
             status_str = "OK  " if count > 0 else "MISS"
-            print(f"    q{qi:>2} {status_str} {qt_dur:>5.1f}s {count:>3} res  [{filter_label:<8}] {sq[:55]}")
+            print(
+                f"    q{qi:>2} {status_str} {qt_dur:>5.1f}s {count:>3} res  "
+                f"s={max_score:.3f} [{filter_label:<8}] {sq[:55]}"
+            )
 
         total_search_dur = time.perf_counter() - t1
         total_results = sum(d["results"] for d in search_details)

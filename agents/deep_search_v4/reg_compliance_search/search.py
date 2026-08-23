@@ -33,6 +33,22 @@ legacy — see ``planning/REG_SEARCH_V2_REFRAME.md`` and the upstream reference
 
 The Supabase client is sync; this module is async — every Supabase call is
 wrapped in ``asyncio.to_thread`` so it never blocks the event loop.
+
+**Failure is typed, not swallowed** (2026-08-22). The pipeline returns a
+:class:`~.models.SearchOutcome`, not a bare ``(rows, count)`` tuple. It still
+never raises — ``loop.py``'s ``asyncio.gather`` has no ``return_exceptions``,
+so one dead socket must not take down the whole fan-out, and per-sub-query
+isolation is the whole point of the fan-out. But a failed run now SAYS it
+failed (``outcome.error``) instead of being byte-identical to "the corpus has
+nothing". That confusion is what produced the 2026-08-22 incident: ten
+``httpx.ReadTimeout``s became ten empty result sets, the URA came back empty,
+and the lawyer was told «لم أعثر على نصوص نظامية» about well-covered material
+while the phase span reported ``outcome: "ok"``.
+
+The RPC also runs behind the shared DB concurrency gate
+(``agents/deep_search_v4/shared/db_gate.py``) — the per-phase
+``asyncio.Semaphore`` bounds pipeline-level work per executor, but three
+executors fan out at once and none of them was the database's ceiling.
 """
 from __future__ import annotations
 
@@ -41,7 +57,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from agents.deep_search_v4.sector_picker.consume import resolve_sector_filter
+from agents.deep_search_v4.shared.db_gate import SearchGateTimeout, search_gate
 
+from .models import SearchOutcome
 from .unfold_reranker import CHUNK_SELECT
 
 if TYPE_CHECKING:
@@ -97,7 +115,7 @@ async def search_regulations_pipeline(
     precomputed_embedding: list[float] | None = None,
     semaphore: asyncio.Semaphore | None = None,
     filter_sectors_future: "asyncio.Future[list[str] | None] | None" = None,
-) -> tuple[list[dict], int]:
+) -> SearchOutcome:
     """Search the unified topic layer for one sub-query.
 
     Args:
@@ -117,11 +135,18 @@ async def search_regulations_pipeline(
             Resolved ``None`` means "no filter" — run unfiltered.
 
     Returns:
-        ``(rows, result_count)``. Each ``row`` is a fetched content row
-        (``chunks_v2`` / ``circulars`` / ``services``) plus routing/provenance
-        keys: ``source_type``, ``_mode`` ("precise"/"simple"/"flat"), ``_rrf``
-        (= RPC score), and merged RPC fields (``topic_title``, ``doc_ref``,
-        ``doc_id``, ``entity_ref``, ``sectors``).
+        A :class:`~.models.SearchOutcome`. ``rows`` holds the fetched content
+        rows (``chunks_v2`` / ``circulars`` / ``services``) plus routing /
+        provenance keys: ``source_type``, ``_mode``
+        ("precise"/"simple"/"flat"), ``_rrf`` (= RPC score), and merged RPC
+        fields (``topic_title``, ``doc_ref``, ``doc_id``, ``entity_ref``,
+        ``sectors``). ``max_score`` / ``top_scores`` carry the retrieval score
+        head; ``error`` is non-None only when the run died in transit.
+
+        NEVER raises. A failed run yields ``rows=[]`` exactly as before — the
+        caller's ``asyncio.gather`` stays safe and one sub-query's dead socket
+        cannot cost the other nine their results. The difference from the old
+        contract is that the caller can now TELL.
     """
     if semaphore:
         async with semaphore:
@@ -141,9 +166,12 @@ async def _search_regulations_pipeline_inner(
     filter_sectors: list[str] | None,
     precomputed_embedding: list[float] | None,
     filter_sectors_future: "asyncio.Future[list[str] | None] | None" = None,
-) -> tuple[list[dict], int]:
+) -> SearchOutcome:
     """Inner implementation of ``search_regulations_pipeline`` (§2 steps 1-7)."""
     events = deps._events
+    # Accumulated across the (up to two) RPC calls this sub-query makes — the
+    # sector-filtered one plus, when that returns 0 rows, the unfiltered retry.
+    gate_wait_ms = 0.0
 
     try:
         topic_ev = {
@@ -184,7 +212,8 @@ async def _search_regulations_pipeline_inner(
             "type": "status",
             "text": "جاري البحث في قاعدة بيانات الأنظمة والتعاميم والخدمات...",
         })
-        rows = await _search_topics_rpc(deps.supabase, embedding, sectors)
+        rows, wait_ms = await _search_topics_rpc(deps.supabase, embedding, sectors)
+        gate_wait_ms += wait_ms
 
         # 0 rows WITH a sector filter → retry once unfiltered (+ Arabic notice).
         if not rows and sectors:
@@ -199,14 +228,21 @@ async def _search_regulations_pipeline_inner(
                     "جاري البحث بدون تصفية..."
                 ),
             })
-            rows = await _search_topics_rpc(deps.supabase, embedding, None)
+            rows, wait_ms = await _search_topics_rpc(deps.supabase, embedding, None)
+            gate_wait_ms += wait_ms
 
         if not rows:
             events.append({
                 "type": "status",
                 "text": "لم يتم العثور على نتائج مطابقة.",
             })
-            return [], 0
+            # A genuine zero from a healthy RPC: no rows, no score, no error.
+            # This is the ONE shape that honestly means "the corpus has
+            # nothing" — and it is rare, because search_topics is k-NN with no
+            # threshold and normally returns 59-60 rows however weak they are.
+            return SearchOutcome(
+                rows=[], count=0, gate_wait_ms=gate_wait_ms,
+            )
 
         # Step 4: Merge — ONE pool. Sort ALL rows by score DESC, cut top-15
         # (D1). The RPC already dedups per type by doc_id server-side (D8); the
@@ -214,6 +250,24 @@ async def _search_regulations_pipeline_inner(
         # uniqueness. ``score`` = 1 - cosine (same scale as the old best_sim);
         # no absolute gate.
         rows.sort(key=lambda r: float(r.get("score") or 0.0), reverse=True)
+
+        # Capture the score head HERE — this is the last point at which the
+        # RPC's ``score`` exists. Two things destroy it below: the TOP_K cut,
+        # and Step 5's per-type content fetch, which replaces every row dict
+        # with a fresh row selected from chunks_v2 / circulars / services —
+        # none of whose column lists contains ``score`` (it is computed by the
+        # RPC, not stored). Step 6 copies it onto ``_rrf``, but only for rows
+        # that survived BOTH the cut and the content-row lookup, so reading it
+        # back from the merged rows would silently under-report.
+        #
+        # ``score`` = 1 - cosine. Calibration against live prod (2026-08-22):
+        # random unrelated topic pairs p50 0.244 / p95 0.331 / max 0.378;
+        # genuinely on-topic material 0.55-0.79. Recorded only — nothing here
+        # gates on it.
+        all_scores = [float(r.get("score") or 0.0) for r in rows]
+        max_score = all_scores[0] if all_scores else 0.0
+        top_scores = all_scores[:5]
+
         seen_source_ids: set[str] = set()
         merged: list[dict] = []
         for r in rows:
@@ -289,14 +343,24 @@ async def _search_regulations_pipeline_inner(
                 "type": "status",
                 "text": "لم يتم العثور على نتائج مطابقة.",
             })
-            return [], 0
+            # Not a genuine zero: the RPC DID return candidates (``max_score``
+            # says how good they were) — every one of them lost its content row
+            # in Step 5. Carrying the score head out of here is the only way
+            # that stays visible downstream.
+            return SearchOutcome(
+                rows=[], count=0,
+                max_score=max_score, top_scores=top_scores,
+                gate_wait_ms=gate_wait_ms,
+            )
 
         n_chunk = sum(1 for r in result_rows if r.get("source_type") in _CHUNK_TYPES)
         n_circular = sum(1 for r in result_rows if r.get("source_type") == "circular")
         n_service = sum(1 for r in result_rows if r.get("source_type") == "service")
         logger.info(
-            "Topic search '%s': %d rows (%d chunk / %d circular / %d service)",
+            "Topic search '%s': %d rows (%d chunk / %d circular / %d service)"
+            " max_score=%.3f gate_wait=%.0fms",
             query[:60], len(result_rows), n_chunk, n_circular, n_service,
+            max_score, gate_wait_ms,
         )
         events.append({
             "type": "status",
@@ -306,19 +370,66 @@ async def _search_regulations_pipeline_inner(
             ),
         })
 
-        # Step 7: Return — same contract as before (list[dict], count).
-        return result_rows, len(result_rows)
+        # Step 7: Return — same rows as before, now with the score head and an
+        # explicit ``error=None`` saying the run completed.
+        return SearchOutcome(
+            rows=result_rows, count=len(result_rows),
+            max_score=max_score, top_scores=top_scores,
+            gate_wait_ms=gate_wait_ms,
+        )
+
+    except SearchGateTimeout as e:
+        # The gate could not seat this sub-query within GATE_WAIT_S. Spelled
+        # out as its own clause — not folded into the generic handler below —
+        # because it is the one failure this change INTRODUCES, and the
+        # temptation to treat "I never got a slot" as "I looked and found
+        # nothing" is exactly the laundering this whole change exists to kill.
+        # It is a retrieval failure: empty rows, ``error`` set, counted in
+        # ``failed_queries``, span goes ``degraded``. Same path as a
+        # ReadTimeout, deliberately.
+        #
+        # ``gate_wait_ms`` UNDER-reports on this path and cannot do otherwise:
+        # ``search_gate`` raises instead of yielding, so the ~GATE_WAIT_S the
+        # caller actually spent queueing is never handed to us. Read the
+        # ``SearchGateTimeout`` error name as "waited the full gate budget";
+        # the gate logs the real figure itself.
+        logger.error(
+            "Topic search gated out for '%s': %s", query[:80], e,
+        )
+        events.append({
+            "type": "status",
+            "text": "حدث خطأ أثناء البحث في الأنظمة والتعاميم والخدمات.",
+        })
+        return SearchOutcome(
+            rows=[], count=0,
+            error=type(e).__name__,
+            gate_wait_ms=gate_wait_ms,
+        )
 
     except Exception as e:
+        # Fail-soft, but TYPED (2026-08-22). Still no re-raise: ``loop.py``'s
+        # ``asyncio.gather`` runs without ``return_exceptions=True``, so
+        # raising here would let one dead socket cancel the entire fan-out —
+        # strictly worse than losing one sub-query. What changes is that the
+        # caller can now distinguish this from an honest empty: ``error``
+        # carries the exception TYPE (``ReadTimeout``, ``SearchGateTimeout``,
+        # …), which is the field the phase span's ``degraded`` outcome is
+        # derived from. Before this, ten timed-out RPCs and ten genuinely empty
+        # ones were the same ``([], 0)``.
         logger.error(
-            "Topic search failed for '%s': %s", query[:80], e,
+            "Topic search failed for '%s': %s: %s", query[:80],
+            type(e).__name__, e,
             exc_info=True,
         )
         events.append({
             "type": "status",
             "text": "حدث خطأ أثناء البحث في الأنظمة والتعاميم والخدمات.",
         })
-        return [], 0
+        return SearchOutcome(
+            rows=[], count=0,
+            error=type(e).__name__,
+            gate_wait_ms=gate_wait_ms,
+        )
 
 
 # -- Supabase helpers (all wrapped in asyncio.to_thread) ----------------------
@@ -328,7 +439,7 @@ async def _search_topics_rpc(
     supabase: Any,
     embedding: list[float],
     sectors: list[str] | None,
-) -> list[dict]:
+) -> tuple[list[dict], float]:
     """Call the unified ``search_topics`` RPC across all four source types.
 
     ``p_per_type`` = :data:`PER_TYPE` (per-type quota); ``p_types`` is omitted so
@@ -336,6 +447,25 @@ async def _search_topics_rpc(
     when ``sectors`` is a non-empty list — an empty list must never reach the RPC
     (``sectors && '{}'`` is always false → zero rows). Rows come back ordered by
     ``score`` DESC, already deduped per type by ``doc_id`` server-side.
+
+    Runs inside the shared DB concurrency gate (2026-08-22). The per-phase
+    ``asyncio.Semaphore(state.concurrency)`` in ``loop.py`` stays — it caps
+    pipeline-level work for THIS executor — but it was never the database's
+    ceiling: three executors fan out concurrently, each with its own semaphore,
+    and the RPC is the expensive end (an HNSW scan across four source types).
+    The gate is the one place that knows the global in-flight count. On
+    2026-08-22 every one of ten concurrent ``search_topics`` calls came back
+    ``httpx.ReadTimeout``.
+
+    Returns:
+        ``(rows, gate_wait_ms)`` — the RPC rows plus how long this call sat
+        queued on the gate before it was let through.
+
+    Raises:
+        Whatever the transport or the gate raises (``httpx.ReadTimeout``,
+        ``SearchGateTimeout``, …). The pipeline above is the single place that
+        converts a raise into a typed ``SearchOutcome``; keeping this helper
+        honest means the conversion happens exactly once.
     """
     def _call() -> list[dict]:
         params: dict = {
@@ -348,9 +478,18 @@ async def _search_topics_rpc(
         return result.data or []
 
     try:
-        return await asyncio.to_thread(_call)
+        async with search_gate() as gate_wait_ms:
+            return (await asyncio.to_thread(_call), gate_wait_ms)
+    except SearchGateTimeout:
+        # No traceback: the RPC never ran, and ``db_gate`` has already logged
+        # the wait and the limit. A stack trace here would only suggest the
+        # database misbehaved when in fact we chose not to ask it.
+        raise
     except Exception as e:
-        logger.error("search_topics RPC failed: %s", e, exc_info=True)
+        logger.error(
+            "search_topics RPC failed: %s: %s", type(e).__name__, e,
+            exc_info=True,
+        )
         raise
 
 

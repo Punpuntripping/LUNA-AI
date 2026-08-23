@@ -475,6 +475,42 @@ async def _run_reg_compliance_phase(
             sectors=sectors,
             rounds_used=state.round_count,
         )
+        # Retrieval health (incident 2026-08-22). Before this, the phase span
+        # reported outcome="ok" with rqr_count=10 while all ten search_topics
+        # RPCs were dying on httpx.ReadTimeout — every failure had been
+        # laundered into an empty result set, so nothing distinguished "the
+        # corpus is silent" from "the database never answered". `max_score` is
+        # the only mechanical relevance signal that survives an empty rerank:
+        # 0.0 with failed_queries=0 is a genuine miss, a high value with zero
+        # results kept means strong candidates were retrieved and then dropped.
+        try:
+            _failed = [sr for sr in state.all_search_results if getattr(sr, "error", None)]
+            _phase_span.set(
+                failed_queries=len(_failed),
+                total_queries=len(state.all_search_results),
+                max_score=round(
+                    max((getattr(sr, "max_score", 0.0) for sr in state.all_search_results),
+                        default=0.0),
+                    4,
+                ),
+                gate_wait_ms=round(
+                    max((getattr(sr, "gate_wait_ms", 0.0) for sr in state.all_search_results),
+                        default=0.0),
+                    1,
+                ),
+            )
+            if _failed:
+                # set_outcome is absent on the LUNA_TRACK_DISABLE no-op handle
+                # (agents/utils/tracking.py) — guarded like loop.py::_stamp_span.
+                try:
+                    _phase_span.set_outcome("degraded")
+                except Exception:  # noqa: BLE001 - telemetry is best-effort
+                    pass
+                _phase_span.set(
+                    failed_errors=sorted({sr.error for sr in _failed if sr.error}),
+                )
+        except Exception as exc:  # noqa: BLE001 - telemetry must never break retrieval
+            logger.debug("reg_search phase: retrieval telemetry failed: %s", exc)
         if error_msg:
             _phase_span.set(error=error_msg)
 
@@ -597,6 +633,16 @@ async def _run_case_phase(
     except Exception:
         pass
     rqrs = case_to_rqr(result)
+    # Retrieval health (incident 2026-08-22). NOTE this is a bare log record,
+    # not a track_stage span — unlike the reg phase, `_run_case_phase` was never
+    # wrapped, so it has no `outcome` field to be wrong: during the incident the
+    # case phase was SILENT rather than misreporting. `outcome` is emitted
+    # explicitly below so the two phases are queryable the same way; promoting
+    # this record to a real span is a separate change.
+    # `retrieval` is filled by run_case_search and is empty on the legacy
+    # (non-sectioned) path, which has no per-channel fan-out.
+    _retrieval = getattr(result, "retrieval", None) or {}
+    _failed_q = int(_retrieval.get("failed_queries", 0) or 0)
     _logfire.info(
         "deep_search.phase.case",
         query_id=query_id,
@@ -607,6 +653,15 @@ async def _run_case_phase(
         total_tokens_out=total_out,
         rqr_count=len(rqrs),
         case_max_keep=deps.case_max_keep,
+        outcome="degraded" if _failed_q else "ok",
+        failed_queries=_failed_q,
+        total_queries=int(_retrieval.get("total_queries", 0) or 0),
+        max_score=_retrieval.get("max_score", 0.0),
+        gate_wait_ms=_retrieval.get("gate_wait_ms", 0.0),
+        # Observation only — no branching reads this yet. Feeds the decision on
+        # where to trigger the thin-cases escalation (see
+        # .claude/plans/deep_search_retrieval_reliability.md §C2).
+        distinct_cases=_retrieval.get("distinct_cases"),
     )
     _emit_progress(
         deps, "searching", _PHASE_TEXT_AR["case"],

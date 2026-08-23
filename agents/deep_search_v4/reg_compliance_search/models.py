@@ -6,6 +6,8 @@ Regulations-only search loop (pydantic_graph):
 - RegSearchResult: Final result returned to caller
 - Citation: Regulations-only citation (no court field)
 - WeakAxis: Identified gap for retry
+- SearchOutcome: What one search pipeline call did — rows + score head + typed
+  failure (dataclass; replaced the old ``(rows, count)`` tuple 2026-08-22)
 - SearchResult: Programmatic search result (dataclass)
 - LoopState: Mutable graph state (dataclass)
 - RegComplianceSearchDeps: Dependencies injected into graph (dataclass)
@@ -290,6 +292,64 @@ class RegSearchResult(BaseModel):
 
 
 @dataclass
+class SearchOutcome:
+    """What one ``search_regulations_pipeline`` call actually did.
+
+    Replaces the old ``(rows, result_count)`` tuple (2026-08-22). The tuple
+    could not tell its caller the difference between the two things that
+    matter most:
+
+    * **the corpus has nothing** — the RPC answered, with weak or zero rows;
+    * **retrieval never happened** — the socket died, the gate timed out, the
+      content fetch blew up.
+
+    Both used to arrive as ``([], 0)``. On 2026-08-22 all ten ``search_topics``
+    calls of one production turn died with ``httpx.ReadTimeout``; ten empty
+    lists became ten empty ``RerankerQueryResult``s, the URA came back empty,
+    the aggregator short-circuited with no LLM call, and the lawyer was told
+    «لم أعثر على نصوص نظامية» about a question the corpus covers well. The
+    phase span said ``outcome: "ok"``.
+
+    ``error`` is the typed distinction: ``None`` = the pipeline ran to
+    completion (however few rows it found), a type name = it did not.
+
+    ``max_score`` / ``top_scores`` carry the ONLY mechanical relevance signal
+    the retrieval layer produces. ``search_topics`` is k-NN with no threshold
+    — it returns ``p_per_type`` rows per source type ranked by score whether or
+    not anything is relevant, so every probe comes back with 59-60 rows. Row
+    COUNT therefore carries no relevance information at all; SCORE carries all
+    of it. Calibrated against live prod on 2026-08-22: random unrelated topic
+    pairs score p50 0.244 / p95 0.331 / max 0.378, while genuinely on-topic
+    material sits at 0.55-0.79.
+
+    NOTE — these are recorded, not acted on. Nothing in this pipeline filters,
+    retries or re-ranks on ``max_score``; it is instrumentation.
+    """
+
+    rows: list[dict]
+    count: int
+    # Highest ``score`` (= 1 - cosine) over the WHOLE RPC pool for this
+    # sub-query, captured before the TOP_K cut and before the per-type content
+    # fetch rewrites the row dicts (the fetched rows do not carry ``score`` —
+    # only the copied ``_rrf``, and only for rows whose content row existed).
+    max_score: float = 0.0
+    # The top 5 of that same pool, in descending order. Five is enough to see
+    # the shape of the head — one strong hit followed by noise reads very
+    # differently from five hits clustered at 0.6.
+    top_scores: list[float] = field(default_factory=list)
+    # Exception type name when the call died in transit (``"ReadTimeout"``,
+    # ``"SearchGateTimeout"``, …); ``None`` on every completed run, including
+    # the legitimately-empty ones. Never the message — the message is already
+    # in the log line and the span.
+    error: str | None = None
+    # Milliseconds this sub-query spent queued on the shared DB concurrency
+    # gate, summed across the RPC calls it made (1, or 2 when the
+    # 0-rows-with-sectors unfiltered retry fired). A large value here means the
+    # gate — not the database — is the latency.
+    gate_wait_ms: float = 0.0
+
+
+@dataclass
 class SearchResult:
     """Result from a single search pipeline execution."""
 
@@ -298,6 +358,12 @@ class SearchResult:
     # source types: chunks_v2 / circulars / services, each carrying
     # ``source_type`` + ``_mode`` + ``_rrf`` + merged RPC provenance).
     result_count: int
+    # Retrieval-health fields, copied off the ``SearchOutcome`` this result was
+    # built from (2026-08-22). See :class:`SearchOutcome` for what they mean
+    # and why an empty ``chunks`` list is not self-explanatory without them.
+    max_score: float = 0.0
+    top_scores: list[float] = field(default_factory=list)
+    error: str | None = None
 
 
 @dataclass
@@ -313,6 +379,15 @@ class RerankerQueryResult:
     summary_note: str
     unfold_rounds: int = 0   # vestigial (single-pass now); always 0/1 — kept
     total_unfolds: int = 0   # for shared-RQR / adapter field compatibility only
+    # Highest retrieval score the SEARCH stage saw for this sub-query, carried
+    # across the reranker boundary (2026-08-22). Load-bearing: after reranking,
+    # ``results`` can be empty, and this is then the only surviving evidence
+    # that strong candidates ever existed. It is what separates "the corpus has
+    # nothing on this" (max_score ~0.25, i.e. the random-pair band) from "the
+    # corpus had it and the reranker dropped it" (max_score 0.55-0.79) — a
+    # distinction that is invisible once the kept list is empty. 0.0 also means
+    # "search failed"; read it together with ``SearchResult.error``.
+    max_score: float = 0.0
     caps_applied: dict = field(default_factory=dict)
     # ``caps_applied`` carries {"max_keep", "truncated_by_cap"} when the keep
     # cap was applied. Empty dict when the cap was not active.

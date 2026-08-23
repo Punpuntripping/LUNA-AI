@@ -30,8 +30,25 @@ logger = logging.getLogger(__name__)
 
 
 # Railway <-> Supabase ap-south-1: intra-region RTT ~1-5ms (same region) or
-# ~70-90ms cross-region. p99 PostgREST query well under 2s.
-POSTGREST_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
+# ~70-90ms cross-region. p99 PostgREST query well under 2s for ordinary CRUD.
+#
+# read/write RAISED 15.0 -> 25.0 on 2026-08-22. The 15s ceiling was CLIPPING
+# LEGITIMATE WORK: deep_search's vector RPCs (`search_topics`,
+# `search_case_topics`) were measured finishing at 10.3-13.4s under a 9-wide
+# fan-out on 2026-08-18/20/21 — inside the timeout, but with almost no margin.
+# On 2026-08-22 a 16-wide fan-out pushed the batch past 15s and all 16 calls
+# died at exactly 15.0s, taking the entire retrieval phase (and the turn's
+# sources) with them. 25s restores headroom over the observed worst case.
+#
+# This is only safe BECAUSE of the fan-out cap in
+# ``agents/deep_search_v4/shared/db_gate.py``. Ordering matters: raising the
+# timeout WITHOUT the admission cap does not fix anything — it converts fast
+# failures into slow ones while pinning `asyncio.to_thread` worker threads and
+# pooled connections for 10 extra seconds each, which deepens the very
+# contention that caused the overrun. Cap admission first, then extend the
+# timeout to cover a capped batch. Do not raise this further to "fix" a
+# timeout; a timeout above the cap means the cap is too high.
+POSTGREST_TIMEOUT = httpx.Timeout(connect=5.0, read=25.0, write=25.0, pool=5.0)
 # httpx read/write timeouts are PER socket operation (per chunk), not whole-
 # transfer — 60s/op is generous even for the 50 MB upload/download paths.
 STORAGE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=5.0)
@@ -110,9 +127,12 @@ def _client_options() -> SyncClientOptions:
     the LAST login of the hour on a backend process died.
     """
     return SyncClientOptions(
-        postgrest_client_timeout=httpx.Timeout(
-            connect=5.0, read=15.0, write=15.0, pool=5.0
-        ),
+        # Reference the module constant rather than a second literal: this used
+        # to hardcode its own copy of connect=5/read=15/write=15/pool=5, so the
+        # 2026-08-22 read-timeout bump had to be applied in two places or the
+        # belt would silently keep enforcing the old ceiling the suspenders had
+        # just relaxed. One source of truth — see POSTGREST_TIMEOUT above.
+        postgrest_client_timeout=POSTGREST_TIMEOUT,
         storage_client_timeout=60,  # storage_client_timeout is int seconds only
         auto_refresh_token=False,
         persist_session=False,

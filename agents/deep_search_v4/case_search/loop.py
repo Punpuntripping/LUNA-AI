@@ -24,6 +24,7 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.utils.tracking import track_stage
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
 # When the planner passes a ``result_budget``, the per-sub-query reranker keep
@@ -87,6 +88,7 @@ from .logger import (
 )
 from .models import (
     CaseSearchDeps,
+    CaseSearchOutcome,
     CaseSearchResult,
     ChannelCandidate,
     ExpanderOutput,
@@ -107,6 +109,28 @@ from .reranker import run_reranker_for_query
 from .search import search_case_section, search_cases_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _stamp_span(span, *, outcome: str | None = None, **attrs) -> None:
+    """Stamp attrs (and optionally an outcome) onto a span, swallowing all of it.
+
+    Two reasons this is not just ``span.set(...)``: telemetry must never be the
+    reason retrieval raises — instrumentation added to make a failure visible
+    that can itself fail the turn is worse than no instrumentation — and the
+    ``LUNA_TRACK_DISABLE`` no-op handle does not implement ``set_outcome`` at
+    all (``agents/utils/tracking.py:543``). Same helper as
+    ``reg_compliance_search/loop.py::_stamp_span``; deliberately duplicated
+    rather than imported, because one executor must not depend on another.
+    """
+    if outcome is not None:
+        try:
+            span.set_outcome(outcome)
+        except Exception:  # noqa: BLE001 - telemetry is best-effort
+            pass
+    try:
+        span.set(**attrs)
+    except Exception:  # noqa: BLE001 - telemetry is best-effort
+        pass
 
 
 # -- Channel merge helpers (sectioned path) ------------------------------------
@@ -685,24 +709,101 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
             "text": f"جاري تنفيذ {len(queries)} استعلامات مُقنّنة على {distinct_channels} قناة...",
         })
 
-        # Batch-embed all queries in one API call (Alibaba v4, 1024 dims)
-        from agents.utils.embeddings import embed_regulation_queries_alibaba
+        # Retrieval fan-out under its own span (incident 2026-08-22). Before
+        # this, a turn where every `search_case_topics` RPC died with
+        # `httpx.ReadTimeout` looked EXACTLY like a turn where the corpus had
+        # nothing: same empty lists, same `outcome: "ok"`, same `rqr_count`.
+        # The span below is where that stops being invisible — `failed_queries`
+        # names the transport deaths and `max_score` says how good the best
+        # thing the database found actually was.
+        with track_stage(
+            "case_search.sectioned_search",
+            agent_family="deep_search",
+            subtype="case_search",
+            query_id=deps._query_id or None,
+            total_queries=len(queries),
+            channels=sorted({q.channel for q in queries}),
+            concurrency=state.concurrency,
+        ) as _search_span:
+            # Batch-embed all queries in one API call (Alibaba v4, 1024 dims)
+            from agents.utils.embeddings import embed_regulation_queries_alibaba
 
-        query_texts = [q.text for q in queries]
-        embeddings = await embed_regulation_queries_alibaba(query_texts)
+            query_texts = [q.text for q in queries]
+            embeddings = await embed_regulation_queries_alibaba(query_texts)
 
-        sem = asyncio.Semaphore(state.concurrency)
-        tasks = [
-            search_case_section(
-                query=q,
-                deps=deps,
-                sectors=sectors,
-                precomputed_embedding=emb,
-                semaphore=sem,
+            # Pipeline-level fan-out cap. NOT the database ceiling — every RPC
+            # underneath also queues on `shared.db_gate.search_gate()`, which is
+            # process-wide and therefore the only cap that can see case_search
+            # and reg_compliance_search running at the same time. Leaving this
+            # semaphore in place is deliberate: it still bounds embedding calls
+            # and task objects, it just stopped being load-bearing for Postgres.
+            sem = asyncio.Semaphore(state.concurrency)
+            tasks = [
+                search_case_section(
+                    query=q,
+                    deps=deps,
+                    sectors=sectors,
+                    precomputed_embedding=emb,
+                    semaphore=sem,
+                )
+                for q, emb in zip(queries, embeddings)
+            ]
+            # Plain gather, NO `return_exceptions=True` — which is exactly why
+            # `search_case_section` returns its failure instead of raising it.
+            # If these tasks could raise, one dead socket would take down the
+            # whole node and lose the sub-queries that DID succeed.
+            outcomes: list[CaseSearchOutcome] = await asyncio.gather(*tasks)
+
+            per_query_candidates: list[list[ChannelCandidate]] = [
+                o.candidates for o in outcomes
+            ]
+
+            # -- Retrieval telemetry ------------------------------------------
+            failed = [o for o in outcomes if o.error]
+            state.total_queries = len(outcomes)
+            state.failed_queries = len(failed)
+            state.search_scores = [round(o.max_score, 4) for o in outcomes]
+            state.search_max_score = max(
+                (o.max_score for o in outcomes), default=0.0
             )
-            for q, emb in zip(queries, embeddings)
-        ]
-        per_query_candidates: list[list[ChannelCandidate]] = await asyncio.gather(*tasks)
+            # MAX, not sum: the question a gate wait answers is "did any
+            # sub-query sit in a queue long enough to matter?", and summing
+            # across a fan-out that ran concurrently would invent wall time
+            # nobody waited.
+            state.gate_wait_ms = max(
+                (o.gate_wait_ms for o in outcomes), default=0.0
+            )
+
+            _stamp_span(
+                _search_span,
+                # The 2026-08-22 span said `outcome: "ok"` with every single
+                # RPC dead. Partial retrieval is a DEGRADED turn, and it has to
+                # be labelled as one before any dashboard or alert can find it.
+                outcome="degraded" if failed else None,
+                total_queries=state.total_queries,
+                failed_queries=state.failed_queries,
+                failed_error_types=sorted({o.error for o in failed if o.error}),
+                max_score=round(state.search_max_score, 4),
+                scores=state.search_scores,
+                top_scores=(
+                    max(outcomes, key=lambda o: o.max_score).top_scores
+                    if outcomes else []
+                ),
+                gate_wait_ms=round(state.gate_wait_ms, 1),
+                topic_rows=sum(o.topic_rows for o in outcomes),
+                topic_rows_kept=sum(o.topic_rows_kept for o in outcomes),
+                candidates_total=sum(o.count for o in outcomes),
+            )
+            if failed:
+                logger.error(
+                    "SectionedSearchNode: %d/%d sub-queries FAILED in transit "
+                    "(%s) — the empty candidate lists below are transport "
+                    "failures, not an empty corpus",
+                    len(failed), len(outcomes),
+                    ", ".join(sorted({o.error or "?" for o in failed})),
+                )
+
+        state.per_query_outcomes = list(outcomes)
 
         # Merge per-sub-query lists into per-channel ranked lists (analytics /
         # fusion input): best-rank-wins per case, with the matched-topic lists
@@ -783,10 +884,61 @@ class SectionedSearchNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult])
         return FusionNode()
 
 
+def _emit_fusion_span(
+    state: LoopState,
+    *,
+    distinct_cases: int,
+    fused_bucket: int,
+) -> None:
+    """Emit the distinct-case count as its own span. Telemetry ONLY.
+
+    A zero-duration span rather than an attribute on the search span, because
+    the count is not knowable until fusion has run and spans close in node
+    order.
+
+    `failed_queries` rides along deliberately. A low distinct-case count means
+    two completely different things depending on it: with retrieval intact it
+    is thin coverage, and with sub-queries dead in transit it is a measurement
+    artefact. Anything that later consumes this number has to see both, or it
+    will read a transport failure as a statement about the corpus — the exact
+    2026-08-22 harm, re-introduced through a new door.
+    """
+    with track_stage(
+        "case_search.fusion",
+        agent_family="deep_search",
+        subtype="case_search",
+    ) as _span:
+        _stamp_span(
+            _span,
+            outcome="degraded" if state.failed_queries else None,
+            distinct_cases=distinct_cases,
+            fused_bucket=fused_bucket,
+            failed_queries=state.failed_queries,
+            total_queries=state.total_queries,
+            max_score=round(state.search_max_score, 4),
+        )
+
+
 class FusionNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
     """RRF fuse per-channel candidates into the 4-bucket output.
 
     Writes state.fused_buckets, then → SectionedRerankerNode.
+
+    Also the ONE place a distinct-case count can be taken correctly.
+    `group_topic_rows` groups per sub-query PER CHANNEL, so upstream of here
+    the same case appears once per sub-query it matched and once per channel it
+    matched in — counting at `SectionedSearchNode` overcounts by roughly the
+    fan-out width. `rrf_fuse` dedups by `case_id` across every channel and
+    returns the FULL deduped list (the 15-item cap lives in `assemble_buckets`,
+    below it), so `len(fused)` is the true count of distinct cases retrieval
+    produced. Waiting for it costs nothing measurable — fusion ran in under a
+    millisecond in the 2026-08-22 trace (15:49:00.856 → .8567).
+
+    The number is EMITTED, not acted on. `search.py:40-43` calibrates the
+    grouping floor so this "reliably yields >= 25 distinct cases — more than
+    the 15 the reranker is shown", but that figure has never been checked
+    against production traffic. Observe the real distribution first; any
+    threshold built on it belongs to a later increment.
     """
 
     async def run(
@@ -798,17 +950,25 @@ class FusionNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
         if not state.channel_candidates:
             logger.warning("FusionNode: no channel candidates")
             state.fused_buckets = {"principle": [], "facts": [], "basis": [], "fused": []}
+            state.distinct_cases = 0
+            _emit_fusion_span(state, distinct_cases=0, fused_bucket=0)
             return SectionedRerankerNode()
 
         fused = rrf_fuse(state.channel_candidates)
         buckets = assemble_buckets(state.channel_candidates, fused)
         state.fused_buckets = buckets
+        state.distinct_cases = len(fused)
 
         logger.info(
             "FusionNode: fused=%d (from %d unique cases), buckets per_channel=%s",
             len(buckets.get("fused", [])),
             len(fused),
             {ch: len(buckets.get(ch, [])) for ch in ("principle", "facts", "basis")},
+        )
+        _emit_fusion_span(
+            state,
+            distinct_cases=len(fused),
+            fused_bucket=len(buckets.get("fused", [])),
         )
         state.sse_events.append({
             "type": "status",
@@ -1136,9 +1296,27 @@ class SectionedRerankerNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
         ]
         all_results = await asyncio.gather(*tasks)
 
+        # Retrieval evidence, stamped from the matching CaseSearchOutcome.
+        #
+        # Done HERE and not inside `_process_one` on purpose: that function has
+        # three return points (no candidates / reranker crashed / success) and
+        # the first two are precisely the ones where the evidence matters most.
+        # One stamping site over the gathered results cannot miss a path.
+        #
+        # `state.per_query_outcomes` is index-aligned with
+        # `state.per_query_candidates`, which `capped_per_query` preserves
+        # order-for-order, so `qi - 1` is the right outcome. It is empty on the
+        # legacy path and on any run where SectionedSearchNode returned early.
+        outcomes = state.per_query_outcomes
+
         total_kept = 0
         total_dropped = 0
         for qi, (reranker_result, usage_entries, decision_log) in enumerate(all_results, 1):
+            if qi - 1 < len(outcomes):
+                oc = outcomes[qi - 1]
+                reranker_result.max_score = oc.max_score
+                reranker_result.top_scores = list(oc.top_scores)
+                reranker_result.retrieval_error = oc.error
             state.reranker_results.append(reranker_result)
             for ue in usage_entries:
                 ue["round"] = state.round_count
@@ -1342,6 +1520,20 @@ async def run_case_search(
     # Surface per-LLM-call usage to the orchestrator. Without this the
     # phase wrapper can only record wall time — token totals come out 0.
     output.inner_usage = list(state.inner_usage)
+
+    # Same trick for retrieval telemetry (incident 2026-08-22): the phase span
+    # in `orchestrator._run_case_phase` reported `outcome: "ok"` while all 6
+    # RPCs were dead, because nothing below it ever told it otherwise. This
+    # hands it the numbers; stamping them onto the phase span is the
+    # orchestrator's call to make, not this module's.
+    output.retrieval = {
+        "max_score": round(state.search_max_score, 4),
+        "scores": list(state.search_scores),
+        "failed_queries": state.failed_queries,
+        "total_queries": state.total_queries,
+        "gate_wait_ms": round(state.gate_wait_ms, 1),
+        "distinct_cases": state.distinct_cases,
+    }
 
     return output
 

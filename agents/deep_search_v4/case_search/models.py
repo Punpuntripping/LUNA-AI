@@ -254,6 +254,17 @@ class CaseSearchResult(BaseModel):
             "without a state reference."
         ),
     )
+    retrieval: dict = Field(
+        default_factory=dict,
+        description=(
+            "Retrieval telemetry for the phase span (incident 2026-08-22): "
+            "max_score, scores, failed_queries, total_queries, gate_wait_ms, "
+            "distinct_cases. Mirrors the LoopState fields the same way "
+            "`inner_usage` does, so the orchestrator can stamp its phase span "
+            "without holding a state reference. Empty on the legacy "
+            "(non-sectioned) path, which has no per-channel fan-out."
+        ),
+    )
 
 
 # -- Dataclasses (programmatic, not LLM output) -------------------------------
@@ -298,6 +309,72 @@ class ChannelCandidate:
 
 
 @dataclass
+class CaseSearchOutcome:
+    """One sub-query's trip to `search_case_topics` — the rows AND its fate.
+
+    WHY THIS TYPE EXISTS (incident 2026-08-22, conversation
+    `483b00d8-2651-442d-97ca-a524cd7f8b2a`)
+    ---------------------------------------------------------------------
+    `search_case_section` used to return a bare `list[ChannelCandidate]`, and
+    every failure path inside it returned `[]`. On 2026-08-22 all 6
+    `search_case_topics` RPCs of one turn died with `httpx.ReadTimeout` at
+    15.0s; six empty lists came back, six empty `RerankerQueryResult`s went
+    out, and the lawyer was told «لم أعثر على نصوص نظامية» — an assertion about
+    the CORPUS that the pipeline never established. (Direct query afterwards:
+    the corpus covers all three legs of that question, and the RPC answers in
+    862 ms when it is not being asked 16 times at once.)
+
+    An empty list is a claim about the world. This object separates the claim
+    from the transport: `error is None` means the database answered, and only
+    then does `count == 0` mean "nothing matched".
+
+    WHY A RETURN VALUE AND NOT AN EXCEPTION
+    ---------------------------------------------------------------------
+    `SectionedSearchNode` fans the sub-queries out through
+    `asyncio.gather(*tasks)` WITHOUT `return_exceptions=True`. Letting the
+    search helpers raise would take the whole node down on one dead socket —
+    strictly worse than the swallow it replaces, because the sub-queries that
+    DID succeed would be lost too. So the failure is typed, not thrown:
+    per-query isolation is preserved, `gather` stays safe, and the caller can
+    still tell the two apart. If that `gather` ever gains
+    `return_exceptions=True`, this type is still the better contract — an
+    exception object in a results list is not something the telemetry below
+    can aggregate.
+
+    SCORES
+    ---------------------------------------------------------------------
+    `max_score` / `top_scores` are captured from the raw RPC rows BEFORE the
+    `deps.score_threshold` filter and BEFORE `group_topic_rows` collapses
+    topics into cases — both of those destroy the signal. The similarity score
+    is the only MECHANICAL relevance evidence in the pipeline (everything
+    downstream is an LLM opinion), and it is the only thing that still says
+    "strong candidates existed here" after a reranker has dropped every one of
+    them. Measured calibration 2026-08-22 (topic↔topic, live prod): ≤0.378 is
+    indistinguishable from noise (p50 0.244, p95 0.331, n=60), 0.42–0.49 is
+    topical drift, ≥0.55 is genuinely on-topic. Those numbers are NOT yet a
+    threshold — the distribution for expander-generated sub-queries against
+    live case topics has not been observed, which is exactly what logging
+    these fields is for.
+    """
+
+    candidates: list = field(default_factory=list)  # list[ChannelCandidate]
+    count: int = 0                  # == len(candidates); distinct cases, post-grouping
+    max_score: float = 0.0          # best raw topic score, PRE-threshold
+    top_scores: list[float] = field(default_factory=list)  # top 5, PRE-threshold, desc
+    error: str | None = None        # exception TYPE NAME when the call died in transit
+    # -- diagnostics ------------------------------------------------------
+    # `topic_rows` vs `topic_rows_kept` is what separates "the RPC returned
+    # nothing" from "the score threshold ate everything". Without the split, a
+    # threshold that is too high reads identically to an empty corpus — the
+    # same conflation this whole type exists to break. Note that the case path
+    # DOES have an absolute gate (`deps.score_threshold`, default 0.005),
+    # unlike the reg-side `search_topics` k-NN which has none.
+    topic_rows: int = 0             # rows the RPC returned, before any filtering
+    topic_rows_kept: int = 0        # rows surviving `deps.score_threshold`
+    gate_wait_ms: float = 0.0       # time queued at `shared.db_gate.search_gate`
+
+
+@dataclass
 class FusedCandidate:
     """One case after reciprocal-rank fusion across channels.
 
@@ -333,6 +410,25 @@ class RerankerQueryResult:
     # {db_uuid, title, reasoning, drop_reason, source_type}. Reconstructed in
     # the loop (the markdown-based reranker is blind to cases.id). Empty on
     # the legacy non-sectioned path / reconstruction failure.
+
+    # -- Retrieval evidence, carried up from CaseSearchOutcome ---------------
+    # THE LOAD-BEARING FIELDS (incident 2026-08-22). By the time a
+    # RerankerQueryResult exists the raw rows are gone: the reranker has
+    # already dropped whatever it dropped, so `results == []` is the shape of
+    # BOTH "the corpus is silent", "the RPC never answered" and "strong
+    # candidates arrived and the reranker threw them away". `max_score` is the
+    # only surviving mechanical evidence that the third case is what happened,
+    # and `retrieval_error` is the only thing that distinguishes the second.
+    #
+    # Stamped in `SectionedRerankerNode` from the matching CaseSearchOutcome —
+    # in the OUTER loop, not inside `_process_one`, so every return path
+    # (including the reranker-crashed fallback) carries them.
+    max_score: float = 0.0
+    top_scores: list[float] = field(default_factory=list)
+    retrieval_error: str | None = None
+    # Exception type name when THIS sub-query's RPC died in transit. `None`
+    # means the database answered — and only then does an empty `results`
+    # list say anything at all about the corpus.
 
 
 @dataclass
@@ -372,6 +468,24 @@ class LoopState:
     # (mirroring reg_search's per-query reranker pattern) so no cross-query blending
     # happens at the LLM layer.
     per_query_candidates: list[tuple["TypedQuery", list[ChannelCandidate]]] = field(default_factory=list)
+    # Per-sub-query retrieval outcomes, aligned 1:1 (same order) with
+    # ``per_query_candidates``. Kept as a PARALLEL list rather than folded into
+    # the tuple above because the reranker truncates its candidate lists to
+    # ``_TOP_N_PER_QUERY`` and the outcome must survive that untouched — the
+    # scores it carries describe what RETRIEVAL found, not what the reranker
+    # was shown.
+    per_query_outcomes: list["CaseSearchOutcome"] = field(default_factory=list)
+    # -- Retrieval telemetry, aggregated across sub-queries (incident 2026-08-22)
+    # Written by SectionedSearchNode / FusionNode, read by ``run_case_search``
+    # when it stamps ``CaseSearchResult.retrieval``. Not consumed by any
+    # retrieval decision — observation only, until the real-world distribution
+    # of ``search_max_score`` and ``distinct_cases`` has been measured.
+    search_max_score: float = 0.0
+    search_scores: list[float] = field(default_factory=list)   # per-sub-query max
+    failed_queries: int = 0
+    total_queries: int = 0
+    gate_wait_ms: float = 0.0        # worst per-sub-query wait at the DB gate
+    distinct_cases: int = 0          # set by FusionNode — see its docstring
     # 4-bucket output of the fusion node (top-principle, top-facts, top-basis, top-fused)
     # — analytics only in the per-query rerank path; no longer feeds the reranker.
     fused_buckets: dict[str, list[FusedCandidate]] = field(default_factory=dict)

@@ -22,6 +22,7 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.utils.tracking import track_stage
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
 # When the planner passes a ``result_budget``, the per-sub-query reranker keep
@@ -63,11 +64,31 @@ from .models import (
     RegComplianceSearchDeps,
     RegSearchResult,
     RerankerQueryResult,
+    SearchOutcome,
     SearchResult,
 )
 from .search import search_regulations_pipeline
 
 logger = logging.getLogger(__name__)
+
+
+def _stamp_span(span, *, outcome: str | None = None, **attrs) -> None:
+    """Stamp attrs (and optionally an outcome) onto a span, swallowing all of it.
+
+    Two reasons this is not just ``span.set(...)``: telemetry must never be the
+    reason retrieval raises, and the ``LUNA_TRACK_DISABLE`` no-op handle does
+    not implement ``set_outcome`` at all (see ``agents/utils/tracking.py``).
+    Same pattern as ``agents/memory/convo_compactor/runner.py::_set_span``.
+    """
+    if outcome is not None:
+        try:
+            span.set_outcome(outcome)
+        except Exception:  # noqa: BLE001 - telemetry is best-effort
+            pass
+    try:
+        span.set(**attrs)
+    except Exception:  # noqa: BLE001 - telemetry is best-effort
+        pass
 
 
 # -- ExpanderNode --------------------------------------------------------------
@@ -250,82 +271,156 @@ class SearchNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]):
             "text": f"جاري تنفيذ {len(queries)} استعلامات بحث...",
         })
 
-        # Batch-embed all queries in one API call
-        from agents.utils.embeddings import embed_regulation_queries_alibaba
+        # Own span for the retrieval stage (2026-08-22). Until now the only
+        # span covering search was the orchestrator's
+        # ``deep_search.phase.reg_compliance``, which reports ``rqr_count`` and
+        # a flat ``outcome: "ok"`` — and on the incident turn it said exactly
+        # that while all ten search_topics RPCs were dead. A phase that
+        # produced zero rows and a phase whose sockets all timed out were
+        # indistinguishable in telemetry. This span carries the retrieval
+        # health signals themselves, and goes ``degraded`` the moment any
+        # sub-query fails. No conversation_id on ``RegComplianceSearchDeps`` —
+        # it rides on the parent phase span, which this one nests under.
+        with track_stage(
+            "deep_search.reg_compliance.search",
+            agent_family="deep_search",
+            subtype="search",
+            round=state.round_count,
+            total_queries=len(queries),
+            concurrency=state.concurrency,
+        ) as _search_span:
+            # Batch-embed all queries in one API call
+            from agents.utils.embeddings import embed_regulation_queries_alibaba
 
-        embeddings = await embed_regulation_queries_alibaba(queries)
+            embeddings = await embed_regulation_queries_alibaba(queries)
 
-        # Execute queries with concurrency limit and pre-computed embeddings.
-        # When the picker future is set, every parallel pipeline awaits the
-        # same future at its step-6 join point — they all read the resolved
-        # value once it lands.
-        sem = asyncio.Semaphore(state.concurrency)
-        tasks = [
-            search_regulations_pipeline(
-                query=q, deps=deps,
-                filter_sectors=static_filter_sectors,
-                filter_sectors_future=state.sectors_future,
-                precomputed_embedding=emb,
-                semaphore=sem,
-            )
-            for q, emb in zip(queries, embeddings)
-        ]
-
-        # search_regulations_pipeline now returns (chunk_rows, result_count)
-        results_raw: list[tuple[list[dict], int]] = await asyncio.gather(*tasks)
-
-        # Build rationale lookup from expander output
-        rationales = (
-            state.expander_output.rationales
-            if state.expander_output and state.expander_output.rationales
-            else []
-        )
-
-        # Create SearchResult for each and append to state
-        for qi, (query, (chunks, result_count)) in enumerate(
-            zip(queries, results_raw), 1
-        ):
-            rationale = rationales[qi - 1] if qi <= len(rationales) else ""
-
-            search_result = SearchResult(
-                query=query,
-                chunks=chunks,
-                result_count=result_count,
-            )
-            state.all_search_results.append(search_result)
-
-            # Log for debugging — chunk rows replace raw_markdown.
-            state.search_results_log.append({
-                "round": state.round_count,
-                "query": query,
-                "rationale": rationale,
-                "chunks": chunks,
-                "result_count": result_count,
-            })
-
-            # Per-query markdown log — render a compact summary of the chunk
-            # rows since save_search_query_md still expects a markdown body.
-            if deps._log_id:
-                save_search_query_md(
-                    log_id=deps._log_id,
-                    round_num=state.round_count,
-                    query_index=qi,
-                    query=query,
-                    raw_markdown=_render_chunks_summary(chunks),
-                    result_count=result_count,
-                    rationale=rationale,
+            # Execute queries with concurrency limit and pre-computed embeddings.
+            # When the picker future is set, every parallel pipeline awaits the
+            # same future at its step-6 join point — they all read the resolved
+            # value once it lands.
+            #
+            # This semaphore is NOT the database ceiling and never was: it
+            # bounds pipeline-level work for this executor only, while
+            # case_search fans out through its own on the same Postgres
+            # instance. The actual RPC now queues on the process-wide
+            # ``search_gate`` (agents/deep_search_v4/shared/db_gate.py); this
+            # stays because embed + merge + the three content fetches are real
+            # work worth capping per executor.
+            sem = asyncio.Semaphore(state.concurrency)
+            tasks = [
+                search_regulations_pipeline(
+                    query=q, deps=deps,
+                    filter_sectors=static_filter_sectors,
+                    filter_sectors_future=state.sectors_future,
+                    precomputed_embedding=emb,
+                    semaphore=sem,
                 )
+                for q, emb in zip(queries, embeddings)
+            ]
 
-        total_count = sum(rc for _, rc in results_raw)
-        logger.info(
-            "SearchNode: %d queries returned %d total results",
-            len(queries),
-            total_count,
-        )
-        state.sse_events.append({
-            "type": "status",
-            "text": f"تم استلام {total_count} نتيجة -- جاري التقييم والتحليل...",
-        })
+            # One SearchOutcome per sub-query. ``gather`` stays without
+            # ``return_exceptions=True`` on purpose: the pipeline is
+            # contractually non-raising (it converts its own failures into
+            # ``outcome.error``), so there is nothing here for gather to
+            # cancel the fan-out over.
+            results_raw: list[SearchOutcome] = await asyncio.gather(*tasks)
+
+            # Build rationale lookup from expander output
+            rationales = (
+                state.expander_output.rationales
+                if state.expander_output and state.expander_output.rationales
+                else []
+            )
+
+            # Create SearchResult for each and append to state
+            for qi, (query, outcome) in enumerate(zip(queries, results_raw), 1):
+                rationale = rationales[qi - 1] if qi <= len(rationales) else ""
+                chunks = outcome.rows
+                result_count = outcome.count
+
+                search_result = SearchResult(
+                    query=query,
+                    chunks=chunks,
+                    result_count=result_count,
+                    max_score=outcome.max_score,
+                    top_scores=list(outcome.top_scores),
+                    error=outcome.error,
+                )
+                state.all_search_results.append(search_result)
+
+                if outcome.error:
+                    # Loud, per-sub-query, at ERROR. The pipeline already
+                    # logged the traceback; this is the line that says which
+                    # sub-query of which round lost its retrieval.
+                    logger.error(
+                        "SearchNode q%d: retrieval FAILED (%s) — '%s'",
+                        qi, outcome.error, query[:60],
+                    )
+
+                # Log for debugging — chunk rows replace raw_markdown.
+                # ``max_score`` / ``error`` ride along so RerankerNode (which
+                # reads this log, not ``all_search_results``) can carry the
+                # score across the rerank boundary.
+                state.search_results_log.append({
+                    "round": state.round_count,
+                    "query": query,
+                    "rationale": rationale,
+                    "chunks": chunks,
+                    "result_count": result_count,
+                    "max_score": outcome.max_score,
+                    "top_scores": list(outcome.top_scores),
+                    "error": outcome.error,
+                })
+
+                # Per-query markdown log — render a compact summary of the chunk
+                # rows since save_search_query_md still expects a markdown body.
+                if deps._log_id:
+                    save_search_query_md(
+                        log_id=deps._log_id,
+                        round_num=state.round_count,
+                        query_index=qi,
+                        query=query,
+                        raw_markdown=_render_chunks_summary(chunks),
+                        result_count=result_count,
+                        rationale=rationale,
+                    )
+
+            total_count = sum(o.count for o in results_raw)
+            failed = [o for o in results_raw if o.error]
+            scores = [round(o.max_score, 4) for o in results_raw]
+            # ``gate_wait_ms`` is reported as the MAX across sub-queries, not
+            # the sum: the sub-queries queue concurrently, so a sum would count
+            # overlapping waits several times over and read as minutes of
+            # latency that never elapsed. The max answers the question actually
+            # being asked — "how long did the worst-queued sub-query sit before
+            # the database would take it".
+            gate_wait_ms = max((o.gate_wait_ms for o in results_raw), default=0.0)
+            max_score = max((o.max_score for o in results_raw), default=0.0)
+
+            logger.info(
+                "SearchNode: %d queries returned %d total results "
+                "(max_score=%.3f, %d failed, gate_wait_max=%.0fms)",
+                len(queries), total_count, max_score, len(failed), gate_wait_ms,
+            )
+
+            _stamp_span(
+                _search_span,
+                # "degraded" is the whole point: a phase that lost sub-queries
+                # to the transport must never again report itself as "ok".
+                outcome="degraded" if failed else None,
+                sources=total_count,
+                max_score=round(max_score, 4),
+                scores=scores,
+                failed_queries=len(failed),
+                total_queries=len(queries),
+                failed_errors=sorted({o.error for o in failed if o.error}),
+                gate_wait_ms=round(gate_wait_ms, 1),
+            )
+
+            state.sse_events.append({
+                "type": "status",
+                "text": f"تم استلام {total_count} نتيجة -- جاري التقييم والتحليل...",
+            })
 
         state.step_timings.setdefault("search", 0.0)
         state.step_timings["search"] += _time.perf_counter() - _t0
@@ -446,6 +541,15 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
             query = sr_log["query"]
             chunks = sr_log.get("chunks", []) or []
             rationale = rationales[qi] if qi < len(rationales) else ""
+            # Retrieval score head for this sub-query, from the SearchResult
+            # this log entry was built from. Carried onto EVERY
+            # RerankerQueryResult below — including the empty ones, which are
+            # precisely the cases where it is the only evidence left. An empty
+            # ``results`` with max_score 0.65 means the reranker dropped strong
+            # material; with max_score 0.24 (the random-pair band) it means the
+            # corpus genuinely has nothing; with max_score 0.0 AND an error it
+            # means retrieval never happened.
+            max_score = float(sr_log.get("max_score") or 0.0)
 
             if not chunks:
                 state.reranker_results.append(RerankerQueryResult(
@@ -454,7 +558,13 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                     sufficient=False,
                     results=[],
                     dropped_count=0,
+                    # Left verbatim even when ``sr_log["error"]`` is set:
+                    # ``summary_note`` is LLM-visible downstream, and this
+                    # change is instrumentation only. The failure is reported
+                    # on the span and in ``SearchResult.error``, not by
+                    # rewording a prompt.
                     summary_note="لا توجد نتائج بحث لهذا الاستعلام",
+                    max_score=max_score,
                 ))
                 return
 
@@ -482,12 +592,17 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                 query_result._decision_log = decision_log    # type: ignore[attr-defined]
                 query_result._round_trace = round_trace      # type: ignore[attr-defined]
 
+                # The reranker builds the RQR from candidates alone and has no
+                # view of the retrieval score, so the carry-over happens here —
+                # the one place that holds both halves.
+                query_result.max_score = max_score
+
                 state.reranker_results.append(query_result)
 
                 logger.info(
-                    "RerankerNode q%d: %d results kept, %d dropped, sufficient=%s",
+                    "RerankerNode q%d: %d results kept, %d dropped, sufficient=%s, max_score=%.3f",
                     qi + 1, len(query_result.results), query_result.dropped_count,
-                    query_result.sufficient,
+                    query_result.sufficient, max_score,
                 )
 
                 # Log per-query reranker output (md)
@@ -508,6 +623,10 @@ class RerankerNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                     results=[],
                     dropped_count=0,
                     summary_note=f"خطأ في إعادة الترتيب: {str(e)[:100]}",
+                    # Retrieval succeeded here — the RERANKER blew up. Keeping
+                    # the score says so: strong candidates existed and were
+                    # lost after search, not before it.
+                    max_score=max_score,
                 ))
 
         # Run all sub-queries in parallel
@@ -601,7 +720,12 @@ async def run_reg_search(
         aggregator_prompt_key: Which aggregator prompt variant to use.
         model_override: Registry key to override both expander and aggregator model.
         unfold_mode: "precise" (compact) or "detailed" (full content).
-        concurrency: Max concurrent search pipelines (default 3).
+        concurrency: Max concurrent search pipelines. Defaults to
+            ``DEFAULT_SEARCH_CONCURRENCY`` (10) — the docstring said 3 until
+            2026-08-22, which is how the fan-out width stayed unexamined. Note
+            this bounds PIPELINE work only; the ``search_topics`` RPC itself
+            queues on the process-wide gate in
+            ``agents/deep_search_v4/shared/db_gate.py``.
         result_budget: Optional target total results (dynamic-budget model,
             MODE_PROFILES.md §1). When set, the per-sub-query reranker keep is
             derived at runtime from the expander's actual query count. When
