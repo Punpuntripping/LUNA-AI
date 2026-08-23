@@ -13,6 +13,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
+import { usePromoPopupOwed } from "@/components/promo/use-promo-popup";
 import { cn } from "@/lib/utils";
 import { STEP_PROFESSION } from "./onboarding-content";
 import {
@@ -121,6 +122,13 @@ export function OnboardingDialog() {
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const onboardingSeen = usePreferencesStore((s) => s.onboardingSeen);
 
+  // «عندك رمز تفعيل؟» outranks both branches below while the two-week campaign
+  // is open — see `components/promo/PromoCodePopup`. Derived from the same two
+  // stores that popup reads, so the two agree on the FIRST render and never
+  // stack; it flips false the instant the popup is resolved, which re-runs the
+  // auto-open effect and opens the profession step right behind it.
+  const promoPopupOwed = usePromoPopupOwed();
+
   const open = useOnboardingStore((s) => s.isOpen);
   const mode = useOnboardingStore((s) => s.mode);
   const [step, setStep] = useState(0);
@@ -164,12 +172,20 @@ export function OnboardingDialog() {
   // is not null.
   useEffect(() => {
     if (!isAuthenticated || !isHydrated) return;
+    if (promoPopupOwed) return;
     if (professionGroup === null) {
       useOnboardingStore.getState().open("profession");
     } else if (justPaid && !onboardingSeen) {
       useOnboardingStore.getState().open("full");
     }
-  }, [isAuthenticated, isHydrated, justPaid, onboardingSeen, professionGroup]);
+  }, [
+    isAuthenticated,
+    isHydrated,
+    justPaid,
+    onboardingSeen,
+    professionGroup,
+    promoPopupOwed,
+  ]);
 
   /** Persist the profession answer if it changed; a wholly untouched step on
    *  a never-asked account records «declined» (dismissal = declining). */

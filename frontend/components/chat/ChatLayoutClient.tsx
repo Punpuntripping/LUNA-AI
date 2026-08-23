@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { PanelRightOpen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
+import { PromoCodePopup } from "@/components/promo/PromoCodePopup";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
@@ -186,6 +187,15 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           <WorkspacePane conversationId={conversationId} />
         </div>
       )}
+
+      {/* «عندك رمز تفعيل؟» — the two-week activation-code campaign, and the
+          HIGHEST-priority chrome in this file: it is the only surface here the
+          user may have arrived specifically to use, holding a code off a
+          WhatsApp message. Self-gating on plan, on a once-per-account
+          preference, and on a hard-coded window that expires the whole campaign
+          without a deploy (`components/promo/promo-campaign.ts`). Its sibling
+          below stands down while it is owed. */}
+      <PromoCodePopup />
 
       {/* first-run «اتعرف على ريحان» tour — self-gating, renders nothing once seen */}
       <OnboardingDialog />

@@ -54,6 +54,15 @@ interface PreferencesState {
    * conversation off a failed hydrate is worse than showing furniture twice.
    */
   demoConversationHidden: boolean;
+  /**
+   * «عندك رمز تفعيل؟» — the two-week activation-code popup has been resolved
+   * for this account (redeemed OR dismissed; see `PromoCodePopup`).
+   *
+   * Fail-closed like the two tour flags: defaults to true (= resolved) so a
+   * failed hydrate can never flash a promo modal at someone, and only an
+   * explicit absent/false from a SUCCESSFUL read opens it.
+   */
+  promoCodePopupSeen: boolean;
   isHydrated: boolean;
   isSaving: boolean;
   error: string | null;
@@ -72,6 +81,9 @@ interface PreferencesState {
   markTourWorkspaceSeen: () => Promise<void>;
   /** «إخفاء» the shared demo conversation for THIS user only (D8). */
   hideDemoConversation: () => Promise<void>;
+  /** Resolve the «عندك رمز تفعيل؟» popup — written on EVERY exit path, so the
+   *  campaign asks at most once per account. */
+  markPromoCodePopupSeen: () => Promise<void>;
   /** Clear the last error (e.g. after the user dismisses a toast). */
   clearError: () => void;
   /** Reset to defaults (used on logout). */
@@ -84,6 +96,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   onboardingSeen: true,
   tourWorkspaceSeen: true,
   demoConversationHidden: false,
+  promoCodePopupSeen: true,
   isHydrated: false,
   isSaving: false,
   error: null,
@@ -97,6 +110,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       onboardingSeen: true,
       tourWorkspaceSeen: true,
       demoConversationHidden: false,
+      promoCodePopupSeen: true,
       isHydrated: false,
       isSaving: false,
       error: null,
@@ -122,6 +136,7 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         onboardingSeen: prefs.onboarding_seen === true,
         tourWorkspaceSeen: prefs.tour_workspace_seen === true,
         demoConversationHidden: prefs.demo_conversation_hidden === true,
+        promoCodePopupSeen: prefs.promo_code_popup_seen === true,
         isHydrated: true,
         error: null,
       });
@@ -140,6 +155,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         tourWorkspaceSeen: true,
         // Fail-open: never hide the user's demo row off a failed hydrate.
         demoConversationHidden: false,
+        // Fail-closed again: never open the promo popup off a failed hydrate.
+        promoCodePopupSeen: true,
         isHydrated: true,
         error:
           err instanceof ApiClientError
@@ -208,6 +225,20 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       // Swallow, and deliberately do NOT roll back: «إخفاء» is a dismissal,
       // and a row springing back into the sidebar because a PATCH lost a race
       // reads as a bug. Worst case it returns next login.
+    }
+  },
+
+  markPromoCodePopupSeen: async () => {
+    if (get().promoCodePopupSeen) return;
+    set({ promoCodePopupSeen: true });
+    try {
+      // FLAT key — `merge_preferences` is a SHALLOW merge, so nesting this
+      // under a `promo: {…}` object would let this write clobber every sibling
+      // preference another tab set ([[project_edu_popups]]).
+      await preferencesApi.update({ promo_code_popup_seen: true });
+    } catch {
+      // Same contract as the tour flags: keep the local flag so the popup stays
+      // shut this session; worst case it offers itself once more next login.
     }
   },
 

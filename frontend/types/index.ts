@@ -1261,6 +1261,12 @@ export interface UserPreferencesData {
    */
   demo_conversation_hidden?: boolean;
   /**
+   * «عندك رمز تفعيل؟» — the two-week activation-code popup has been resolved
+   * (redeemed OR dismissed). Absent/false → it opens once, ahead of «اتعرف على
+   * ريحان», while `promo-campaign.ts` says the window is still open.
+   */
+  promo_code_popup_seen?: boolean;
+  /**
    * «سلسلة تعلّم ريحان» — lifetime count of user messages that completed a turn
    * (bumped on the `done` SSE event). Drives the every-4-messages lesson
    * cadence; see `stores/edu-store.ts` and `.claude/plans/edu_series.md`.
