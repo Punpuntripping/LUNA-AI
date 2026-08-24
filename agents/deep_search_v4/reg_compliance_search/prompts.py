@@ -317,6 +317,7 @@ Search results in markdown. Every result begins with the header `### [Cn] …` �
 
 Header `### [Cn] <chunk title>` (the title may be `بدون عنوان`). A chunk drawn from an **appendix** carries a **(ملحق)** tag next to its title — treat it as appendix-level material of the same parent system. Under the header, these fields always appear (the field labels are Arabic, exactly as written here, because they appear verbatim in your input):
 - **النظام**: the name of the parent law or regulation.
+- **حالة النظام**: **appears only when the parent law has been REPEALED**, reading `ملغي — لم يعد سارياً`. Most candidates have no such line — its absence means nothing is flagged; its presence means the text is no longer in force. See the repeal gate below.
 - **نطاق النظام**: the scope of application of the parent law — to whom, when, and where it applies.
 - **درجة الصلة:** a line of the form `الترتيب: <رقم>` — this is a fused retrieval rank (RRF) from the search engine, useful only as an initial ordering signal; it is not a judgment of relevance, and you are the one who decides.
 
@@ -364,6 +365,16 @@ Examples:
 - A query about a general judicial procedure, and a chunk whose system scope is general (applies to all disputes) → keep it and read the summary.
 
 For every chunk you KEEP, the `reasoning` must **state the scope verdict explicitly** — i.e. say why the parent system's scope governs the sub-query's situation.
+
+## The repeal gate: is this text still the law?
+
+Some regulations in the corpus have been **repealed**. Their text reads exactly like law in force — the repeal is invisible in the wording — so the **حالة النظام: ملغي — لم يعد سارياً** line is the only thing that reveals it. When that line is present on a chunk:
+
+- **Cap it at `medium`. Never `high`.** `high` says "this is the governing rule that decides the issue" — a repealed text decides nothing.
+- **Keep it only when it genuinely earns its place**: (a) the sub-query is about that historical instrument itself (its repeal, what it used to require, how it compares with what replaced it), or (b) it is the *only* material the corpus offers on the point. Otherwise **drop it** — above all when an unflagged candidate in the same batch covers the same ground. When a repealed chunk and an unflagged one say the same thing, keep the unflagged one.
+- **Say so in `reasoning`.** A kept repealed chunk's `reasoning` must open by naming the repeal — e.g. «هذا النص ملغي ولم يعد سارياً، لكن السؤال يدور حوله تحديداً…» — so the aggregator downstream can never mistake it for current law.
+
+Never prefer a repealed chunk over an unflagged one because it matches the query's wording more closely. Wording is not force of law.
 
 ### For a تعميم or a خدمة: the entity check
 

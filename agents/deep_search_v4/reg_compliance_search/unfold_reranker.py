@@ -53,6 +53,11 @@ from typing import Any
 
 from supabase import Client as SupabaseClient
 
+# The ONE repeal vocabulary («ملغي»). Shared with the URA enrichment so a
+# repealed law can never be phrased two different ways to two different agents
+# in the same turn. Returns "" for every non-repealed regulation.
+from shared.library.reg_status import status_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -97,18 +102,25 @@ def _truncate(text: str | None, max_chars: int) -> str:
 def _fetch_regulation_meta(
     supabase: SupabaseClient, regulation_id: str | None
 ) -> dict[str, str]:
-    """Return ``{"name", "scope"}`` for a regulation; empties on miss.
+    """Return ``{"name", "scope", "status"}`` for a regulation; empties on miss.
 
     ``name`` is ``clean_title`` (the normalised title) falling back to the raw
     ``title``. ``scope`` is ``regulations_v2.scope`` — left empty when null
     (~a few % of the corpus); callers / the formatter tolerate that.
+
+    ``status`` is the repeal line (``shared.library.reg_status.status_line``)
+    and is ``""`` for every regulation that was NOT repealed — which is almost
+    all of them. So this adds a field to the candidate block only where it
+    matters, and leaves the in-force block byte-identical to before. Without
+    it the reranker ranked a «ملغي» chunk against a live one on topical
+    similarity alone, with nothing in its input to tell the two apart.
     """
     if not regulation_id:
-        return {"name": "", "scope": ""}
+        return {"name": "", "scope": "", "status": ""}
     try:
         resp = (
             supabase.table("regulations_v2")
-            .select("clean_title, title, scope")
+            .select("clean_title, title, scope, status_class, status_raw")
             .eq("id", regulation_id)
             .maybe_single()
             .execute()
@@ -118,10 +130,13 @@ def _fetch_regulation_meta(
             return {
                 "name": d.get("clean_title") or d.get("title") or "",
                 "scope": d.get("scope") or "",
+                "status": status_line(
+                    d.get("status_class"), d.get("status_raw")
+                ),
             }
     except Exception as e:
         logger.warning("_fetch_regulation_meta(%s) failed: %s", regulation_id, e)
-    return {"name": "", "scope": ""}
+    return {"name": "", "scope": "", "status": ""}
 
 
 def _fetch_contexts(
@@ -178,6 +193,7 @@ def unfold_chunk_simple(
         "regulation_id": chunk.get("regulation_id"),
         "regulation_name": reg["name"],
         "regulation_scope": _truncate(reg["scope"], MAX_SCOPE_CHARS),
+        "regulation_status": reg["status"],
         "summary": _truncate(chunk.get("summary"), MAX_SUMMARY_CHARS),
     }
 
@@ -218,6 +234,7 @@ def unfold_chunk_precise(
         "regulation_id": chunk.get("regulation_id"),
         "regulation_name": reg["name"],
         "regulation_scope": _truncate(reg["scope"], MAX_SCOPE_CHARS),
+        "regulation_status": reg["status"],
         "prev_context": (
             _truncate(ctx.get(prev_id, ""), MAX_CONTEXT_CHARS)
             if prev_id else None
@@ -264,17 +281,26 @@ def format_chunk(result: dict[str, Any], label: str) -> str:
 
 
 def _format_header(result: dict[str, Any], label: str) -> list[str]:
-    """Shared header lines: title, regulation name, regulation scope, score.
+    """Shared header lines: title, regulation name, status, scope, score.
 
     Appendix chunks (``corpus == "appendix"``, D13) get a ``(ملحق)`` tag on the
     title line so the reranker knows the material is appendix-level, not the
     main statutory body.
+
+    **حالة النظام** appears ONLY when the parent regulation was repealed
+    (``status_line`` returns "" for every other state). An in-force candidate's
+    block is therefore unchanged, and the line's mere presence is the signal —
+    which is also why the prompt describes it as an exception rather than as a
+    field to compare candidates on.
     """
     apx = " (ملحق)" if result.get("corpus") == "appendix" else ""
     lines = [f"### [{label}] {result.get('title') or 'بدون عنوان'}{apx}"]
     name = result.get("regulation_name", "")
     if name:
         lines.append(f"**النظام:** {name}")
+    status = result.get("regulation_status", "")
+    if status:
+        lines.append(f"**حالة النظام:** {status}")
     scope = result.get("regulation_scope", "")
     if scope:
         lines.append(f"**نطاق النظام:** {scope}")

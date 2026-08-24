@@ -67,6 +67,7 @@ Your sole task: synthesize a clear Arabic answer to the user's original question
 - **Do not favor one reference type over another.** If a statutory article, a court ruling, and a government service all serve the same point, merge them together and do not neglect one in favor of another. A good answer leverages the diversity of sources: the statutory text defines the rule, the court ruling clarifies its application, the government service guides the procedure, and the official form supplies the practical template.
 - When referring to a reference other than a statutory article, briefly clarify its nature in the body (e.g. "according to the approved government service [3]" or "the court so ruled in a comparable precedent [5]" or "an official application form is available [7]").
 - If the only available reference for an aspect of the question is a service, a form, or a court ruling, that is sufficient to mention it — do not ignore it on the pretext of an absent explicit statutory text.
+- **A reference carrying a `<status>` element has been REPEALED** (`ملغي — لم يعد سارياً`) — its text is no longer in force. This is invisible in the wording, so the element is the only warning you get. Never state or imply that such a reference is the applicable rule today. If you cite it at all, say plainly in the same sentence that it is repealed (e.g. «وفق المادة 5 من النظام الملغي [3]…»), and prefer any reference without a `<status>` element that covers the same point. If a repealed reference is the *only* source on a point, answer from it but open with the fact that it was repealed and flag in the gaps section that the current text was not retrieved. References with no `<status>` element are not flagged as repealed — treat them normally and never call them repealed.
 - Do not include a "المراجع" (references) section in `synthesis_md` — it is appended automatically from the `<references>` list after generation.
 - `<context_blocks>` are supporting topical background, not a basis for the answer. The answer is built on `<references>` first; context adds framing knowledge not present in the references. Do not cite any context block as if it were a reference: `[n]` citations come exclusively from `<references>`. Do not write «according to the prior search summary» as a legal basis.
 """
@@ -776,6 +777,7 @@ def build_aggregator_user_message(
     )
 
     content_by_n: dict[int, str] = {}
+    status_by_n: dict[int, str] = {}
     ura = getattr(agg_input, "ura", None)
     if ura is not None:
         ura_results = collect_ordered_ura_results(ura)
@@ -784,9 +786,14 @@ def build_aggregator_user_message(
         # the aggregator view and the reference are keyed by one index.
         if len(ura_results) == len(references):
             for ref, ura_result in zip(references, ura_results):
-                content_by_n[ref.n] = render_aggregator_content(
-                    ura_result.for_aggregator(n=ref.n)
-                )
+                item = ura_result.for_aggregator(n=ref.n)
+                content_by_n[ref.n] = render_aggregator_content(item)
+                # Only a REPEALED regulation has a non-empty ``reg_status``;
+                # in-force regs and the other three domains leave it at its ""
+                # default, so this is a no-op for them rather than a per-domain
+                # branch here.
+                if item.reg_status:
+                    status_by_n[ref.n] = item.reg_status
 
     lines.append(f"<references count=\"{len(references)}\">")
     for ref in references:
@@ -794,6 +801,15 @@ def build_aggregator_user_message(
         lines.append(f"  <reference cite=\"[{ref.n}]\">")
         lines.append(f"    <type>{_esc(ref.source_type)}</type>")
         lines.append(f"    <regulation>{_esc(ref.regulation_title)}</regulation>")
+        # Repeal flag for the parent law. Present ONLY when the regulation was
+        # repealed — never on an in-force one, and never on a تعميم / خدمة /
+        # حكم (no regulations_v2 row). A SIBLING of <regulation>, never folded
+        # into <content>: <content> is what `build_snippet` truncates to 500
+        # chars for the UI hover, so a header there would evict the legal text
+        # from every regulation snippet.
+        status = status_by_n.get(ref.n, "")
+        if status:
+            lines.append(f"    <status>{_esc(status)}</status>")
         if ref.article_num:
             lines.append(f"    <article_num>{_esc(ref.article_num)}</article_num>")
         if ref.section_title:

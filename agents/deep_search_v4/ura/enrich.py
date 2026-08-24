@@ -37,6 +37,10 @@ from typing import Any
 
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 
+# Repeal vocabulary -- shared with the reranker's candidate blocks so a
+# repealed law is never described two different ways inside one turn.
+from shared.library.reg_status import status_line
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +76,14 @@ def _fetch_chunks(supabase, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def _fetch_regulations(supabase, regulation_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """`regulations_v2` rows keyed by id -- title/scope/landing_url/pdf_url/doc_type."""
+    """`regulations_v2` rows keyed by id -- title/scope/url/doc_type/STATUS.
+
+    ``status_class`` / ``status_raw`` carry REPEAL. They are fetched here, in
+    the one batched hop the URA stage already makes per regulation, because
+    this is the last point at which a kept chunk can still learn that its
+    parent law was repealed -- everything downstream (the aggregator prompt
+    above all) reads only what this fills in.
+    """
     ids = sorted({rid for rid in regulation_ids if rid})
     out: dict[str, dict[str, Any]] = {}
     for batch in _batched(ids, _ID_BATCH):
@@ -80,7 +91,8 @@ def _fetch_regulations(supabase, regulation_ids: list[str]) -> dict[str, dict[st
             resp = (
                 supabase.table("regulations_v2")
                 .select(
-                    "id, clean_title, title, scope, landing_url, pdf_url, doc_type_raw"
+                    "id, clean_title, title, scope, landing_url, pdf_url, "
+                    "doc_type_raw, status_class, status_raw"
                 )
                 .in_("id", batch)
                 .execute()
@@ -312,6 +324,12 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
         res.landing_url = reg.get("landing_url") or ""
         res.pdf_url = reg.get("pdf_url") or ""
         res.doc_type = _doc_type_label(reg.get("doc_type_raw"))
+        # Repeal. "" for every regulation the corpus does not record as
+        # repealed -- including the ``reg == {}`` case, where the chunk could
+        # not be fetched at all (such a result carries no content and is
+        # dropped by the empty-content filter below). A DB miss must never
+        # surface as a claim about a law's validity, in either direction.
+        res.reg_status = status_line(reg.get("status_class"), reg.get("status_raw"))
 
         # Build deduped cross-refs for this chunk (dedup by target_id).
         rows = cross_refs.get(chunk_id, []) if chunk_id else []

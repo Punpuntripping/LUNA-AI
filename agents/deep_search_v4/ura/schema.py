@@ -193,6 +193,14 @@ class AggregatorItem(BaseModel):
     # regulations
     reg_title: str = ""
     reg_scope: str = ""
+    # Repeal line for the parent law («ملغي — لم يعد سارياً»; "" when not
+    # repealed) — rendered into the prompt as a ``<status>`` sibling of
+    # ``<regulation>``, NOT folded into ``<content>``: ``build_snippet`` takes
+    # the first 500 chars of the rendered CONTENT for the UI hover, so a header
+    # prepended there would evict the actual legal text from every regulation
+    # snippet (the same trap already documented for circulars in
+    # ``build_snippet``).
+    reg_status: str = ""
     chunk_content: str = ""
     cross_refs: list[CrossRef] = Field(default_factory=list)
     corpus: str = ""  # "appendix" -> (ملحق) tag; "" for the main statutory body
@@ -296,6 +304,13 @@ class RegURAResult(URAResultBase):
     domain: Literal["regulations"] = "regulations"
     reg_title: str = ""
     reg_scope: str = ""
+    # REPEAL only: «ملغي — لم يعد سارياً» when ``regulations_v2.status_class``
+    # is 'cancelled', "" otherwise (``shared.library.reg_status.status_line``).
+    # Filled by ``ura/enrich.py``. UNLIKE ``doc_type`` this IS projected into
+    # ``for_aggregator()``: a repealed text presented as current law is the
+    # single worst failure this pipeline can produce, and that is worth the
+    # prompt-surface change (and the one-time cache miss) it costs.
+    reg_status: str = ""
     chunk_content: str = ""
     chunk_context: str = ""        # stored only
     cross_refs: list[CrossRef] = Field(default_factory=list)
@@ -316,6 +331,7 @@ class RegURAResult(URAResultBase):
             relevance=self.relevance,
             reg_title=self.reg_title,
             reg_scope=self.reg_scope,
+            reg_status=self.reg_status,
             chunk_content=self.chunk_content,
             cross_refs=list(self.cross_refs[:MAX_CROSS_REFS_AGG_REG]),
             corpus=self.corpus,
