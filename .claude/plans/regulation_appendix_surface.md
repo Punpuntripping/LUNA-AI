@@ -1,6 +1,6 @@
 # الملاحق on the reading surface — the article path drops them
 
-**Status:** BUILT 2026-08-24 — validated locally against prod data, NOT deployed
+**Status:** DEPLOYED 2026-08-24 (commit `0d53bf9`, both services) — verified live: the toy-safety لائحة now returns 129 TOC rows (40 مادة + 89 ملحق), page 175 KB → 422 KB
 (see §8 for what the build found that this plan did not predict)
 **Written:** 2026-08-24 · every number below MEASURED against prod
 (`dwgghvxogtwyaxmbgjod`) and the live site on that date
