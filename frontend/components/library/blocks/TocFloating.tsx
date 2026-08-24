@@ -13,7 +13,8 @@ import type { TocEntry, TocFloatingProps } from "@/types/library";
 const WINDOW_SIZE = 5;
 
 /**
- * Phone header is ~60px (LibraryPageShell: h-9 logo + py-3), not the desktop
+ * Phone header is 64px (`SiteHeader`'s h-16 bar, which `LibraryPageShell`
+ * composes), not the desktop
  * rail's 96px allowance — the spy's top inset is retuned to match, so the pill
  * names the مادة that is actually under the header.
  */
