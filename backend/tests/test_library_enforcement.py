@@ -1401,3 +1401,30 @@ def test_an_OPEN_tier_reveal_DOES_return_the_official_sources(monkeypatch) -> No
         {"title": "الموقع الرسمي", "href": "https://laws.boe.gov.sa/x/1"}
     ]
     assert fake.tables["library_unlocks"] == [], "an open item must not be charged"
+
+
+# ---------------------------------------------------------------------------
+# 10. THE ملاحق SURVIVE `response_model`
+# ---------------------------------------------------------------------------
+#
+# `TocEntry` is a Pydantic response model, so FastAPI DROPS every key the model
+# does not declare. The service emitted `kind` for three commits before anything
+# consumed it and the field never reached the browser — every ملحق read as a
+# مادة, which anchors it at a `sec-art-{position}` that does not exist and the
+# TOC rail scrolls nowhere. The payload looked right in a service test and was
+# wrong over HTTP, which is exactly the class of bug this file exists for.
+
+
+def test_the_toc_kind_field_survives_the_response_model() -> None:
+    from backend.tests.test_library_gating import _article_rows, _reg_with_appendix
+
+    fake = _reg_with_appendix(_article_rows([1, 2, 3]), 2)
+    res = _client(fake).get(f"/api/v1/public/library/regulations/nizam-test")
+    assert res.status_code == 200, res.text
+
+    toc = res.json()["toc"]
+    kinds = [t.get("kind") for t in toc]
+    assert kinds == ["article", "article", "article", "appendix", "appendix"], kinds
+    # …and the sections the appendix rows point at are actually in the payload.
+    ids = [s["id"] for s in res.json()["visible_sections"]]
+    assert ids[-2:] == ["apx-1", "apx-2"], ids

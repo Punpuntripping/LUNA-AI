@@ -132,35 +132,63 @@ export default async function RegulationDocPage({ params }: PageProps) {
   //     signed-in readers (FullContentGate swaps in the full document); for anon
   //     visitors the anchor target is absent and TocRail's click handler lands
   //     them on the signup gate (#library-doc-gate) instead.
+  //   * a ملحق → always a same-page anchor, and to `#sec-{id}` rather than
+  //     `#sec-art-{position}`: appendix sections are keyed `apx-{n}` and carry no
+  //     مادة number, so the position-derived anchor would target a `sec-art-{N}`
+  //     that does not exist and the rail would scroll nowhere. `kind` is absent
+  //     on a payload baked before the backend shipped it — read as "article",
+  //     which is what such a payload only ever contains.
+  // Chunk-fallback sections split at SIZE boundaries share one title, so the
+  // rail (and the page's section headings) would read «الفصل الأول الحجز
+  // التنفيذي» three times in a row. Every repeat of the PREVIOUS title is a
+  // continuation — labelled «(تابع)» — and keeps its own id/anchor so
+  // scroll-spy, gating and TOC jumps stay per-section.
+  const orderedToc = [...doc.toc].sort((a, b) => a.position - b.position);
+  const continuationIds = new Set<string>();
+  orderedToc.forEach((entry, index) => {
+    if (index > 0 && entry.title && entry.title === orderedToc[index - 1].title) {
+      continuationIds.add(entry.id);
+    }
+  });
+  const withContinuation = (id: string, title: string): string =>
+    continuationIds.has(id) ? `${title} (تابع)` : title;
+
   const tocEntries: TocEntry[] = articlesFirst
-    ? [...doc.toc]
-        .sort((a, b) => a.position - b.position)
-        .map((entry) =>
-          publishedSlugs.has(entry.id)
-            ? {
-                id: entry.id,
-                label: entry.title,
-                href: `/regulations/${doc.slug}/${entry.id}`,
-              }
-            : {
-                id: entry.id,
-                label: entry.title,
-                href: `#sec-art-${entry.position}`,
-              },
-        )
-    : [...doc.toc]
-        .sort((a, b) => a.position - b.position)
-        .map((entry) => ({
+    ? orderedToc.map((entry) => {
+        const isAppendix = (entry.kind ?? "article") === "appendix";
+        // A ملحق never has a page of its own (no seo_articles row, no slug),
+        // so it can never be in `publishedSlugs` — the guard states that.
+        if (!isAppendix && publishedSlugs.has(entry.id)) {
+          return {
+            id: entry.id,
+            label: withContinuation(entry.id, entry.title),
+            href: `/regulations/${doc.slug}/${entry.id}`,
+          };
+        }
+        return {
           id: entry.id,
-          label: entry.title,
-          href: `#sec-${entry.id}`,
-        }));
+          label: withContinuation(entry.id, entry.title),
+          href: isAppendix
+            ? `#sec-${entry.id}`
+            : `#sec-art-${entry.position}`,
+        };
+      })
+    : orderedToc.map((entry) => ({
+        id: entry.id,
+        label: withContinuation(entry.id, entry.title),
+        href: `#sec-${entry.id}`,
+      }));
 
   // Count pill for the TOC header: مادة when the live article index drives it,
-  // otherwise the chunk-fallback section count.
+  // otherwise the chunk-fallback section count. When the rail also holds ملاحق
+  // the مادة count no longer describes the list, so both are named — a reader
+  // scanning «40 مادة» over a 129-row rail is being told the wrong thing.
+  const appendixCount = doc.toc.filter((e) => e.kind === "appendix").length;
   const tocBadge =
     articleIndex.length > 0
-      ? `${articleIndex.length} مادة`
+      ? appendixCount > 0
+        ? `${articleIndex.length} مادة · ${appendixCount} ملحقًا`
+        : `${articleIndex.length} مادة`
       : tocEntries.length > 0
         ? `${tocEntries.length} قسمًا`
         : undefined;
@@ -280,7 +308,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
               hiddenSections={doc.hidden_section_count}
             >
               {doc.visible_sections.length > 0 && (
-                <div className="space-y-8">
+                <div className="space-y-10">
                   {doc.visible_sections.map((section) => {
                     const gate: GateInfo | undefined = section.is_truncated
                       ? {
@@ -298,7 +326,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
                         // screen short of its مادة.
                         className="scroll-mt-20 space-y-3.5"
                       >
-                        <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
+                        <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
                           {/* A merged fallback run covers several مواد but renders
                               once. Their TOC rows still target `#sec-art-{n}`, so
                               each swallowed مادة gets an empty inline anchor —
@@ -312,7 +340,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
                               className="scroll-mt-20"
                             />
                           ))}
-                          {section.title}
+                          {withContinuation(section.id, section.title)}
                         </h2>
                         <ArticleBody
                           visibleText={section.text}

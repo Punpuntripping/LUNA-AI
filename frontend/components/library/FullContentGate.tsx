@@ -407,17 +407,24 @@ function renderFull(kind: GateKind, full: FullContentPayload): ReactNode {
   if (kind === "sections") {
     const { sections } = full as FullRegulation;
     if (!sections?.length) return null;
+    // Section chrome MUST match the server render in app/regulations/[slug]
+    // (heading accent, scroll offset, spacing) — this markup REPLACES it for a
+    // signed-in reader, so any drift shows as a visible jump on reveal.
+    // Same continuation rule as the page: a chunk that repeats the previous
+    // title is «(تابع)» — the split is a size boundary, not a new chapter.
     return (
-      <div className="space-y-8">
-        {sections.map((section) => (
+      <div className="space-y-10">
+        {sections.map((section, index) => (
           <section
             key={section.id}
             id={`sec-${section.id}`}
-            className="scroll-mt-24 space-y-3"
+            className="scroll-mt-20 space-y-3.5"
           >
             {section.title && (
-              <h2 className="text-lg font-bold text-foreground">
-                {section.title}
+              <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
+                {index > 0 && sections[index - 1].title === section.title
+                  ? `${section.title} (تابع)`
+                  : section.title}
               </h2>
             )}
             <ArticleBody
@@ -457,9 +464,7 @@ function renderFull(kind: GateKind, full: FullContentPayload): ReactNode {
               />
               شرح المادة
             </h2>
-            <div className="text-sm leading-relaxed text-foreground">
-              <MarkdownRenderer content={sharh_md} />
-            </div>
+            <MarkdownRenderer content={sharh_md} prose />
           </section>
         )}
       </div>

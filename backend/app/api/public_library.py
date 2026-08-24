@@ -1452,6 +1452,16 @@ class TocEntry(BaseModel):
     id: str
     title: Optional[str] = None
     position: int
+    # مادة or ملحق. The page builds the row's href from this: a مادة anchors at
+    # `#sec-art-{position}` (or links out to its own page), a ملحق at `#sec-{id}`
+    # because appendix sections are keyed `apx-{n}` and have no article number.
+    #
+    # ⚠ MUST be declared here. ``response_model`` strips every undeclared key, so
+    # a service that emits `kind` and a model that does not list it produce a
+    # payload where every ملحق silently reads as a مادة — which anchors it at a
+    # `sec-art-{N}` that does not exist. Defaulted, so an older client and any
+    # payload built before this shipped both read it as "article".
+    kind: str = "article"
 
 
 class VisibleSection(BaseModel):

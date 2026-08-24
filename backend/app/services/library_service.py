@@ -1053,8 +1053,10 @@ def unlock_cost(
     ``regulation`` → priced off whichever surface it will actually RENDER, which
     is ``use_article_surface``'s call and never re-decided here:
 
-      * TRUSTED ``seo_articles`` index →
-        ``clamp(ceil(n_articles / ARTICLES_PER_UNLOCK), 1, 8)``.
+      * TRUSTED ``seo_articles`` index → ``clamp(ceil((n_articles +
+        n_appendix_chunks * ARTICLES_PER_CHUNK) / ARTICLES_PER_UNLOCK), 1, 8)``.
+        The ملاحق are part of what that surface renders (``_appendix_sections``),
+        so they are part of what it costs.
       * everything else — a chunk-only regulation AND one whose index the
         coverage check rejected — ``clamp(ceil(n_chunks / CHUNKS_PER_UNLOCK),
         1, 8)``, i.e. the 1-chunk-≈-3-مواد rate.
@@ -1105,7 +1107,20 @@ def unlock_cost(
         articles = []
 
     if use_article_surface(supabase, str(content_id), articles):
-        return _clamp_cost(math.ceil(len(articles) / ARTICLES_PER_UNLOCK))
+        # مواد + ملاحق. The article surface now renders the appendix stream too,
+        # and the rule this function already states is that the price follows the
+        # render — a reveal that ships 89 annex chunks priced as a 40-مادة
+        # document prices a surface it does not serve. Annex chunks convert at
+        # the SAME rate the chunk surface uses (ARTICLES_PER_CHUNK).
+        #
+        # Measured over the 188 affected أنظمة (2026-08-24): 137 unchanged, 26 up
+        # one point, 22 up two or three, 3 up by four or more — and those three
+        # are the documents that are mostly annex.
+        n_apx = _regulation_appendix_chunk_count(supabase, str(content_id))
+        weighted = len(articles) + n_apx * ARTICLES_PER_CHUNK
+        # Integer ceiling division, for the reason spelled out in the chunk
+        # branch below — do not reintroduce the float form.
+        return _clamp_cost(-(-weighted // ARTICLES_PER_UNLOCK))
 
     # Chunk-priced: the legacy chunk-only regulations AND every index the
     # coverage check just rejected, at one rate.
@@ -1614,7 +1629,14 @@ def _clean_article_display_text(text: str) -> str:
     single-مادة ``article_text`` at the display-assembly points — NEVER to
     multi-article chunk fallbacks (whose inner heading lines are real separators).
 
-    Two transforms:
+    Three transforms:
+      0. HTML comments (``_strip_html_comments``). 1,245 مواد across 491
+         regulations carry an ingestion marker inside ``article_text`` (measured
+         2026-08-24), and they render as literal HTML on the doc page AND on the
+         مادة page — this function is the display cleaner all three surfaces go
+         through. Runs FIRST: a leading «<!-- Page 19 -->» would otherwise sit in
+         front of the مادة heading and defeat transform (1), which matches the
+         first line only.
       1. LEADING heading line — the FIRST line only, and only when it matches the
          مادة-header shape: optional ``#``s + «المادة …» up to and including its
          colon (plus any Arabic-Indic/Western footnote digits and ``^{…}`` markers
@@ -1626,6 +1648,8 @@ def _clean_article_display_text(text: str) -> str:
     """
     if not text:
         return text
+
+    text = _strip_html_comments(text)
 
     nl = text.find("\n")
     first_line = text if nl == -1 else text[:nl]
@@ -1652,6 +1676,38 @@ def _clean_article_display_text(text: str) -> str:
 
     # Return the original object when nothing matched (no header, no markers).
     return body if (header_stripped or body != text) else text
+
+
+# Ingestion left HTML comments in the APPENDIX stream only — 4,695 of 5,388
+# appendix chunks carry at least one, and 0 of 43,002 body chunks do (measured
+# 2026-08-24). Forms, by occurrence: `<!-- end table -->` 7,733 ·
+# `<!-- converted table -->` 7,103 · `<!-- جدول محول من HTML -->` 2,230 ·
+# `<!-- نهاية الجدول -->` 2,194 · `<!-- Hyperlinks -->` · `<!-- Page N -->`.
+#
+# Nothing downstream parses them away: `ArticleBody plain` does no markdown
+# parsing and `toLegalBlocks` (`lib/library/legal-text.tsx`) treats an unknown
+# line as a paragraph, so each marker renders as a literal line of HTML in the
+# document. Strip ALL of them rather than an allowlist of the known four — an
+# HTML comment is never legal text, and the next ingestion run will invent a
+# fifth.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+# 3+ newlines → 2. Removing a comment that sat alone on its line leaves the
+# blank line above AND below it behind.
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
+
+def _strip_html_comments(text: str) -> str:
+    """Remove HTML comments (and the blank runs they leave) for DISPLAY. PURE.
+
+    The stored ``chunks_v2.content`` is never mutated — this runs at render
+    assembly, exactly like ``_clean_article_display_text``.
+
+    ⚠ Must run BEFORE ``truncate_for_gate``, or a gated section spends its
+    free-char budget on «<!-- Page 19 -->» instead of on the نص.
+    """
+    if not text or "<!--" not in text:
+        return text
+    return _BLANK_RUN_RE.sub("\n\n", _HTML_COMMENT_RE.sub("", text)).strip()
 
 
 def _slug_map(
@@ -2640,6 +2696,80 @@ def _ordered_chunk_query(
     )
 
 
+def _appendix_chunks_for_regulation(
+    supabase: SupabaseClient, regulation_id: str
+) -> list[dict[str, Any]]:
+    """One regulation's ملاحق, in reading order. SYNC, read-only, fail-soft → [].
+
+    The ARTICLE surface is built from ``seo_articles``, and ``seo_articles`` holds
+    ZERO rows derived from the appendix stream (measured 2026-08-24: 49,724 rows
+    from ``with_articles``, 1,200 from ``without_articles``, 0 from ``appendix``).
+    So without this the ملاحق of every article-rendered نظام are not merely
+    misordered — they are absent from the document, the TOC and the hidden-section
+    count alike. 188 published أنظمة were in that state.
+
+    Filters ON TOP of ``_ordered_chunk_query`` and never re-orders: that function
+    stays THE definition of chunk reading order (``corpus DESC, position,
+    chunk_ref``). Within the appendix stream alone ``corpus DESC`` is a constant,
+    so the effective sort is ``position, chunk_ref`` — the per-stream ordering,
+    which is exactly right here.
+
+    Fail-soft is deliberate and differs from the article path: an empty list means
+    «this نظام has no ملاحق», the overwhelmingly common case, so a PostgREST blip
+    costs the annexes and never the statute.
+
+    Unpaginated, like the chunk-fallback read it sits beside: the largest appendix
+    stream in the corpus is 207 chunks (2026-08-24) against PostgREST's 1000-row
+    default cap. If a future ingestion pushes one past that, this silently returns
+    a truncated نظام — page it then, and page the chunk path with it.
+    """
+    try:
+        res = (
+            _ordered_chunk_query(
+                supabase, str(regulation_id), "id, title, content"
+            )
+            .eq("corpus", _CHUNK_APPENDIX_CORPUS)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not load appendix chunks (%s): %s", regulation_id, e
+        )
+        return []
+
+
+def _regulation_appendix_chunk_count(
+    supabase: SupabaseClient, regulation_id: str
+) -> int:
+    """How many appendix chunks a regulation has. SYNC, read-only.
+
+    A ``count='exact'`` head query, NOT a body scan — this is a PRICE input
+    (``unlock_cost``) and paging 5k-char annex bodies over the wire to arrive at
+    an integer is the waste ``_regulation_chunk_count`` already refuses to commit.
+
+    ⚠ Fails soft to **0**, i.e. today's price. Every other failure in
+    ``unlock_cost`` is documented as failing UP; this one must fail DOWN. A
+    PostgREST blip must never charge a reader for annexes, and the item is
+    re-priced correctly on the next attempt.
+    """
+    try:
+        res = (
+            supabase.table("chunks_v2")
+            .select("id", count="exact")
+            .eq("regulation_id", str(regulation_id))
+            .eq("corpus", _CHUNK_APPENDIX_CORPUS)
+            .limit(1)
+            .execute()
+        )
+        return int(getattr(res, "count", 0) or 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not count appendix chunks (%s): %s", regulation_id, e
+        )
+        return 0
+
+
 def _chunk_row_map(
     supabase: SupabaseClient, chunk_ids: list[Any]
 ) -> dict[str, dict[str, str]]:
@@ -2726,7 +2856,10 @@ def _article_sections(
                 sections[run_index[chunk_id]]["also_ids"].append(f"art-{no}")
                 continue
             row = chunk_rows.get(chunk_id) or {}
-            body = row.get("content") or ""
+            # A fallback body is a multi-مادة chunk, so the heading/footnote
+            # cleanup above deliberately does NOT run on it — but ingestion
+            # markers are noise on any stream, so those still go.
+            body = _strip_html_comments(row.get("content") or "")
             title = a.get("article_label")
             if merge_chunk_runs and chunk_id:
                 # The chunk's own title names the مادة RANGE the merged section
@@ -2749,6 +2882,66 @@ def _article_sections(
         )
 
     return sections
+
+
+def _appendix_sections(
+    rows: list[dict[str, Any]],
+    *,
+    gate: str,
+    free_chars: int,
+    start_position: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Turn appendix chunks into ``(sections, toc_rows)``. Pure (no DB).
+
+    Section shape is IDENTICAL to ``_article_sections``' output, so every
+    downstream consumer — the page's section map, ``FullContentGate.renderFull``,
+    the ``.gated-body`` paywall JSON-LD target — works with no change.
+
+    Two ids matter here and they are not the same id:
+
+    * ``id = 'apx-{n}'`` — n is the 1-based ordinal in appendix reading order,
+      NEVER the chunk uuid. The frontend detects the article surface with
+      ``s.id.startsWith("art-")``; a uuid-id section sitting among ``art-*`` ones
+      would make that test read a mixed document as a chunk document.
+    * ``position = start_position + n`` — the TOC's sort key, continuing PAST the
+      last مادة. The page re-sorts the TOC by ``position``
+      (``app/regulations/[slug]/page.tsx``), so a ملحق numbered from 1 alongside
+      مواد 1..40 shuffles straight back into the body. This is the same failure
+      the chunk path fixed by renumbering server-side, arriving a second time
+      through a different door: a payload whose own sort key does not reproduce
+      its own order is the bug.
+
+    ``start_position`` MUST be ``max(article_no)``, not ``len(articles)`` — a
+    holed-but-trusted index has more apparent مواد than rows, and the ملاحق have
+    to sort past the LAST مادة rather than past the COUNT of them.
+    """
+    sections: list[dict[str, Any]] = []
+    toc_rows: list[dict[str, Any]] = []
+
+    for n, row in enumerate(rows, start=1):
+        # Strip BEFORE truncating — the free-char budget is for نص, not markers.
+        body = _strip_html_comments(row.get("content") or "")
+        cut = truncate_for_gate(body, gate, free_chars=free_chars)
+        sections.append(
+            {
+                "id": f"apx-{n}",
+                "title": row.get("title"),
+                "text": cut["visible_text"],
+                "is_truncated": cut["is_truncated"],
+                "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                "also_ids": [],
+            }
+        )
+        toc_rows.append(
+            {
+                "id": f"apx-{n}",
+                "title": row.get("title"),
+                "position": start_position + n,
+                "kind": "appendix",
+            }
+        )
+
+    return sections, toc_rows
 
 
 def get_regulation_doc(
@@ -2869,6 +3062,13 @@ def get_regulation_doc(
                 "id": str(a.get("slug") or ""),
                 "title": a.get("article_label"),
                 "position": int(a.get("article_no") or 0),
+                # `kind` tells the page how to build the row's href: a مادة
+                # anchors at `#sec-art-{position}` (or links out to its own
+                # page), a ملحق at `#sec-{id}`. Additive and optional on the
+                # wire — this page is ISR-baked for 24h, so a payload baked
+                # before this shipped carries no `kind` and the client reads the
+                # absent value as 'article', i.e. exactly today's behaviour.
+                "kind": "article",
             }
             for a in articles
         ]
@@ -2891,11 +3091,42 @@ def get_regulation_doc(
             merge_chunk_runs=is_open,
         )
         hidden_section_count = 0 if is_open else max(0, len(articles) - 3)
+
+        # THE ملاحق. `seo_articles` carries none of them (0 rows of 50,924 come
+        # from the appendix stream), so without this block an article-rendered
+        # نظام ships its مواد and silently drops its annexes — on
+        # `اللائحة الفنية الخليجية للعب الأطفال` that is 89 of 109 sections, and
+        # the CMR tables ARE the operative content of a لائحة فنية.
+        apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
+        if apx_rows:
+            # max(article_no), NOT len(articles): a holed-but-trusted index has
+            # more apparent مواد than rows, and the ملاحق must sort past the LAST
+            # مادة rather than past the count of them.
+            max_article_no = max(
+                (int(a.get("article_no") or 0) for a in articles), default=0
+            )
+            apx_sections, apx_toc = _appendix_sections(
+                apx_rows,
+                gate=gate,
+                free_chars=600,
+                start_position=max_article_no,
+            )
+            toc.extend(apx_toc)
+            if is_open:
+                # Open ⇒ end to end, ملاحق included.
+                visible_sections.extend(apx_sections)
+            else:
+                # The gated preview stays the first 3 مواد — a ملحق is never a
+                # teaser. But the CTA count must stop lying: what is behind the
+                # gate is now (مواد + ملاحق) minus what actually rendered.
+                hidden_section_count = max(
+                    0, len(articles) + len(apx_rows) - len(visible_sections)
+                )
     else:
         # CHUNK FALLBACK — the legacy chunk-based toc + first-3-chunk preview.
         try:
             toc_res = _ordered_chunk_query(
-                supabase, str(content_id), "id, title, position"
+                supabase, str(content_id), "id, title, position, corpus"
             ).execute()
             toc_rows = toc_res.data or []
 
@@ -2935,13 +3166,26 @@ def get_regulation_doc(
                 "id": str(r.get("id")),
                 "title": r.get("title"),
                 "position": i,
+                # This branch already renumbers into document order, so `kind`
+                # buys the client nothing about ORDER here — it is carried so the
+                # field means the same thing on both surfaces and a row can be
+                # labelled «ملحق» without re-deriving it from the corpus.
+                "kind": (
+                    "appendix"
+                    if (r.get("corpus") or "") == _CHUNK_APPENDIX_CORPUS
+                    else "article"
+                ),
             }
             for i, r in enumerate(toc_rows, start=1)
         ]
 
         visible_sections = []
         for r in vis_rows:
-            cut = truncate_for_gate(r.get("content") or "", gate, free_chars=600)
+            # HTML comments are an appendix-stream artifact and this branch is
+            # the one that already renders appendix chunks — 253 published أنظمة
+            # of them (see `_strip_html_comments`).
+            body = _strip_html_comments(r.get("content") or "")
+            cut = truncate_for_gate(body, gate, free_chars=600)
             visible_sections.append(
                 {
                     "id": str(r.get("id")),
@@ -6403,6 +6647,8 @@ def get_full_regulation(
     "text": article_text | owning-chunk content}, ...]}`` — except that a run of
     مواد sharing one multi-مادة fallback chunk collapses into a single section
     (see ``_article_sections``) instead of repeating that chunk once per مادة.
+    The ملاحق follow the last مادة as ``'apx-{n}'`` sections
+    (``_appendix_sections``); ``seo_articles`` carries none of them.
 
     CHUNK FALLBACK — a regulation with NO ``seo_articles`` rows (article-less /
     chunk-only) **or** one whose index has too many holes to be trusted — returns
@@ -6444,6 +6690,22 @@ def get_full_regulation(
                 free_chars=600,
                 merge_chunk_runs=True,
             )
+            # …then the ملاحق, which `seo_articles` does not carry. THIS is where
+            # the fix actually delivers: of the 188 published أنظمة that render
+            # from مواد and own an appendix, 187 are gated, so their annexes have
+            # only ever been reachable through this reveal — and it was returning
+            # a document that stopped at the last مادة.
+            #
+            # `gate="open"` because a reveal truncates nothing (same argument
+            # `_article_sections` is called with above), and `start_position=0`
+            # because this payload carries no TOC — the doc page owns that, and
+            # its positions come from `get_regulation_doc`.
+            apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
+            if apx_rows:
+                apx_sections, _ = _appendix_sections(
+                    apx_rows, gate="open", free_chars=600, start_position=0
+                )
+                sections.extend(apx_sections)
             return {"sections": sections}
 
         # CHUNK FALLBACK — every chunk in reading order (legacy continuous doc).
@@ -6463,7 +6725,10 @@ def get_full_regulation(
         {
             "id": str(r.get("id")),
             "title": r.get("title"),
-            "text": r.get("content") or "",
+            # Untruncated, but not unclean: this branch renders the appendix
+            # stream verbatim today, markers and all («<!-- converted table -->»
+            # reaching a paying reader).
+            "text": _strip_html_comments(r.get("content") or ""),
         }
         for r in rows
     ]

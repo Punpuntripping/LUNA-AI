@@ -307,6 +307,17 @@ export interface RegulationTocEntry {
   id: string;
   title: string;
   position: number;
+  /**
+   * What this row points at — a مادة or a ملحق. Decides the href: a مادة anchors
+   * at `#sec-art-{position}` (or links out to its own page), a ملحق at
+   * `#sec-{id}`, because appendix sections are keyed `apx-{n}` and have no
+   * article number to derive an anchor from.
+   *
+   * OPTIONAL ON THE WIRE, like every additive field on these payloads: the doc
+   * page is ISR-baked for 24h, so an entry baked before the backend shipped
+   * carries no `kind` at all. Absent ⇒ `"article"` ⇒ exactly today's behaviour.
+   */
+  kind?: "article" | "appendix";
 }
 
 export interface RegulationVisibleSection {

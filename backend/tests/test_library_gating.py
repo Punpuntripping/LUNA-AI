@@ -1623,3 +1623,193 @@ def test_a_gated_preview_shows_the_first_three_body_chunks_not_an_interleave() -
         "المادة 1", "المادة 2", "المادة 3",
     ]
     assert doc["hidden_section_count"] == 3
+
+
+# ---- 7.6 الملاحق ON THE ARTICLE SURFACE ------------------------------------
+#
+# `seo_articles` is built from مواد and carries NOTHING from the appendix stream
+# (measured 2026-08-24: 49,724 rows from `with_articles`, 1,200 from
+# `without_articles`, 0 from `appendix`). So an article-rendered نظام used to
+# ship its مواد and drop its ملاحق — on «اللائحة الفنية الخليجية للعب الأطفال»
+# that was 89 of 109 sections, and for a لائحة فنية the annexes ARE the
+# operative content. 188 published أنظمة were in that state.
+#
+# 7.5 above guards the CHUNK path's appendix ORDERING. This guards the ARTICLE
+# path's appendix EXISTENCE — a different failure with the same cause.
+
+
+def _appendix_chunks(n: int, *, content: Optional[str] = None) -> list[dict[str, Any]]:
+    """`n` appendix-stream chunk rows.
+
+    Single-digit `n` on purpose: the fake sorts by `str()`, where "10" sorts
+    before "2". Keeping the run to one digit makes the fake's ordering faithful
+    instead of asserting around it.
+    """
+    assert 1 <= n <= 9
+    return [
+        {"id": f"dddddddd-0000-0000-0000-{i:012d}", "regulation_id": REG_ID,
+         "title": f"ملحق ({i})", "position": i,
+         "content": content if content is not None else f"نص الملحق {i}",
+         "corpus": "appendix", "chunk_ref": f"17393_reg_029_apx_{i:03d}"}
+        for i in range(1, n + 1)
+    ]
+
+
+def _reg_with_appendix(
+    articles: list[dict[str, Any]],
+    n_apx: int,
+    *,
+    tier: Optional[str] = "open",
+    apx_content: Optional[str] = None,
+) -> FakeSupabase:
+    fake = _reg_doc_fake(articles, n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = tier
+    fake.tables["chunks_v2"] = _appendix_chunks(n_apx, content=apx_content)
+    return fake
+
+
+def test_the_appendix_lands_after_the_last_article() -> None:
+    """The whole point: ملاحق exist on the article surface, and they come last."""
+    doc = ls.get_regulation_doc(_reg_with_appendix(_article_rows([1, 2, 3]), 3),
+                                "nizam-test")
+    assert doc is not None
+    assert [s["id"] for s in doc["visible_sections"]] == [
+        "art-1", "art-2", "art-3", "apx-1", "apx-2", "apx-3",
+    ]
+    assert [s["title"] for s in doc["visible_sections"]][3:] == [
+        "ملحق (1)", "ملحق (2)", "ملحق (3)",
+    ]
+    # `apx-` must not collide with the frontend's article-surface probe
+    # (`s.id.startsWith("art-")`, app/regulations/[slug]/page.tsx).
+    assert not any(s["id"].startswith("art-")
+                   for s in doc["visible_sections"][3:])
+
+
+def test_appendix_toc_positions_continue_past_the_last_article() -> None:
+    """The TOC's own sort key must reproduce the TOC's own order.
+
+    The page re-sorts by `position`, so a ملحق numbered from 1 alongside مواد
+    1..N shuffles straight back into the body. `start_position` is
+    `max(article_no)` and NOT `len(articles)`: this index is HOLED but trusted
+    (3 rows, highest number 5), so the two differ and only one of them lands
+    past the last مادة.
+    """
+    fake = _reg_with_appendix(_article_rows([1, 2, 5]), 2)
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+
+    positions = [t["position"] for t in doc["toc"]]
+    assert positions == [1, 2, 5, 6, 7], positions
+    assert [t["kind"] for t in doc["toc"]] == [
+        "article", "article", "article", "appendix", "appendix",
+    ]
+    # Sorting the payload by its own key must not move anything.
+    assert [t["id"] for t in sorted(doc["toc"], key=lambda t: t["position"])] == \
+        [t["id"] for t in doc["toc"]]
+
+
+def test_a_gated_preview_is_still_three_articles() -> None:
+    """A ملحق is never a teaser — but the CTA count stops lying about it."""
+    fake = _reg_with_appendix(_article_rows([1, 2, 3, 4, 5]), 4, tier="gated")
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+
+    assert [s["id"] for s in doc["visible_sections"]] == ["art-1", "art-2", "art-3"]
+    # 5 مواد + 4 ملاحق - 3 rendered. Before this the count read 2 and the reader
+    # was told six sections did not exist.
+    assert doc["hidden_section_count"] == 6
+    # …and the ملاحق are still LISTED — the rail is the free layer.
+    assert [t["id"] for t in doc["toc"]][-4:] == ["apx-1", "apx-2", "apx-3", "apx-4"]
+
+
+def test_the_full_reveal_carries_the_appendix() -> None:
+    """Where 187 of the 188 affected أنظمة actually deliver: the paid reveal."""
+    payload = ls.get_full_regulation(
+        _reg_with_appendix(_article_rows([1, 2, 3]), 2, tier="gated"), "nizam-test"
+    )
+    assert payload is not None
+    assert [s["id"] for s in payload["sections"]] == [
+        "art-1", "art-2", "art-3", "apx-1", "apx-2",
+    ]
+    assert "نص الملحق 2" in json.dumps(payload, ensure_ascii=False)
+
+
+def test_the_public_page_and_the_reveal_agree_on_the_appendix() -> None:
+    """The broken-purchase guard, extended to the ملاحق.
+
+    `use_article_surface` exists so the crawler and the paying reader get the
+    same document. That guarantee is worth nothing if one surface appends the
+    annexes and the other stops at the last مادة.
+    """
+    articles = _article_rows([1, 2, 3])
+    doc = ls.get_regulation_doc(_reg_with_appendix(articles, 3), "nizam-test")
+    full = ls.get_full_regulation(_reg_with_appendix(articles, 3), "nizam-test")
+    assert doc is not None and full is not None
+    assert [s["id"] for s in doc["visible_sections"]] == \
+        [s["id"] for s in full["sections"]]
+
+
+def test_html_comments_never_reach_the_reader_on_the_article_surface() -> None:
+    """Ingestion markers are appendix-exclusive and render as literal HTML.
+
+    `ArticleBody plain` does no markdown parsing and `toLegalBlocks` treats an
+    unknown line as a paragraph, so «<!-- converted table -->» prints on the page.
+    """
+    dirty = ("<!-- Page 19 -->\n\n# الملحق (1)\n\n"
+             "<!-- converted table -->\n- بند: 1\n<!-- نهاية الجدول -->\n")
+    doc = ls.get_regulation_doc(
+        _reg_with_appendix(_article_rows([1]), 1, apx_content=dirty), "nizam-test"
+    )
+    assert doc is not None
+    body = doc["visible_sections"][-1]["text"]
+    assert "<!--" not in body and "-->" not in body, body
+    assert "الملحق (1)" in body and "بند: 1" in body
+
+
+def test_html_comments_never_reach_the_reader_on_the_chunk_surface() -> None:
+    """The same defect, live today on the 253 chunk-path regulations."""
+    fake = _reg_doc_fake(_holed(232, 68), n_chunks=0)
+    fake.tables["chunks_v2"] = [
+        {"id": "cccccccc-0000-0000-0000-000000000001", "regulation_id": REG_ID,
+         "title": "الفصل 1", "position": 1, "corpus": "with_articles",
+         "chunk_ref": "r_chunk_001",
+         "content": "نص\n\n<!-- converted table -->\n- بند\n<!-- end table -->"},
+    ]
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    assert "<!--" not in doc["visible_sections"][0]["text"]
+
+    full = ls.get_full_regulation(fake, "nizam-test")
+    assert full is not None
+    assert "<!--" not in full["sections"][0]["text"]
+
+
+def test_a_regulation_with_an_appendix_is_priced_for_it() -> None:
+    """The price follows the render — the rule `unlock_cost` already states.
+
+    40 مواد alone → 2. Add annex chunks and the same نظام serves a bigger
+    document for the same unlock unless the weighting sees them.
+    """
+    plain = _reg_doc_fake(_article_rows(list(range(1, 41))), n_chunks=0)
+    assert ls.unlock_cost(plain, "regulation", REG_ID) == 2
+
+    with_apx = _reg_with_appendix(_article_rows(list(range(1, 41))), 9)
+    # 40 + 9*3 = 67 → ceil(67/25) = 3.
+    assert ls.unlock_cost(with_apx, "regulation", REG_ID) == 3
+
+
+def test_an_appendix_lookup_failure_still_renders_the_regulation() -> None:
+    """Fail-soft costs the annexes, never the statute.
+
+    Opposite polarity to the article path on purpose: there an empty result means
+    «render chunks», here it means «this نظام has no ملاحق», which is the common
+    case. The price falls DOWN to today's number, never up.
+    """
+    fake = _reg_with_appendix(_article_rows([1, 2, 3]), 2)
+    fake.fail_tables = {"chunks_v2"}
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    assert [s["id"] for s in doc["visible_sections"]] == ["art-1", "art-2", "art-3"]
+    assert all(t["kind"] == "article" for t in doc["toc"])
+    assert ls.unlock_cost(fake, "regulation", REG_ID) == 1

@@ -7,8 +7,11 @@
  * `{ chip: "80", text: "المادة" }` so the rail can render the word on the RTL
  * start side and the number as a page-number-style chip on the end side —
  * without duplicating the number. Digits may be Western (0-9) or Arabic-Indic
- * (٠-٩). Any label that is not a bare «(ال)مادة N» keeps its full text and gets
- * no chip (chapter/باب titles, unnumbered sections).
+ * (٠-٩). A continuation section — a chunk-fallback title suffixed «(تابع)» by
+ * the page because it repeats the previous title — returns the suffix as the
+ * chip and the bare title as text: the row truncates at its END, so a suffix
+ * left inline is exactly the part a long title loses. Any other label keeps its
+ * full text and gets no chip (chapter/باب titles, unnumbered sections).
  */
 export function parseTocLabel(label: string): {
   chip: string | null;
@@ -16,5 +19,7 @@ export function parseTocLabel(label: string): {
 } {
   const match = label.match(/^\s*((?:ال)?مادة)\s+([0-9٠-٩]+)\s*$/);
   if (match) return { chip: match[2], text: match[1] };
+  const continuation = label.match(/^(.*\S)\s*\(تابع\)\s*$/);
+  if (continuation) return { chip: "تابع", text: continuation[1] };
   return { chip: null, text: label.trim() };
 }
