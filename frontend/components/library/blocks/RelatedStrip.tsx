@@ -1,5 +1,6 @@
 import { Children } from "react";
 import { BookMarked } from "lucide-react";
+import { RelatedStripTrack } from "@/components/library/blocks/RelatedStripTrack";
 import { cn } from "@/lib/utils";
 import type { RelatedStripProps } from "@/types/library";
 
@@ -22,12 +23,20 @@ import type { RelatedStripProps } from "@/types/library";
  * `truncate`. So the track is a plain scroll container with CSS scroll-snap.
  *
  * SIZING. 1.15 cards in view on mobile — the cut-off card at the inline end is
- * the entire scrollability affordance, since the scrollbar is painted away
- * (`.scrollbar-none`, `globals.css`) — then 2 from `sm`, 3 from `lg`. The
+ * the scrollability HINT, not the control — then 2 from `sm`, 3 from `lg`. The
  * negative inline margin lets the track bleed to the page gutter so a card can
  * sit flush with the reading column's edge; the matching padding keeps the
  * first card off it, and `scroll-ps-*` makes snap stops land on the padding
  * rather than under it.
+ *
+ * ⚠ THE PEEK IS NOT AN AFFORDANCE ON DESKTOP. The scrollbar is painted away
+ * (`.scrollbar-none`) and a vertical mouse wheel does not move a horizontal
+ * container, so on Windows a mouse-only reader had NO WAY AT ALL to reach cards
+ * 4-7 — measured on production: 870px of hidden cards, 0px of scrollbar, zero
+ * buttons. The prev/next controls and the wheel mapping live in
+ * `RelatedStripTrack`, a `"use client"` shell that takes this component's
+ * SERVER-RENDERED `<li>`s as `children`. That split is the point: the cards
+ * stay server components, only the scroll chrome ships JS.
  *
  * EMPTY ⇒ NOTHING. No children means no heading and no empty box: these strips
  * are genuinely absent on most أحكام pages (the relation floor clears on maybe
@@ -36,8 +45,18 @@ import type { RelatedStripProps } from "@/types/library";
  * Server component, and it must stay one: all four host pages are ISR-baked and
  * serve ONE HTML artifact to anon, free and paid readers alike. Nothing here
  * may read auth, cookies or headers — the strip is identical for everyone by
- * construction, not by policy.
+ * construction, not by policy. (`RelatedStripTrack` measures the DOM and reads
+ * nothing else, so the baked HTML stays reader-independent too.)
  */
+const TRACK_CLASS = cn(
+  "scrollbar-none flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth motion-reduce:scroll-auto",
+  // Bleed to the page gutter on mobile, a hair on desktop — the inline
+  // padding is what the hover lift + shadow-md need so the card chrome
+  // isn't clipped by the scroll container.
+  "-mx-4 scroll-ps-4 px-4 py-1 sm:-mx-2 sm:scroll-ps-2 sm:px-2",
+  "rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+);
+
 export function RelatedStrip({
   title,
   children,
@@ -57,21 +76,7 @@ export function RelatedStrip({
         {title}
       </h2>
 
-      <ul
-        aria-label={title}
-        // A scroll container that is not otherwise focusable is unreachable by
-        // keyboard in Chromium (WCAG 2.1.1). One tab stop buys arrow-key
-        // scrolling for the whole strip.
-        tabIndex={0}
-        className={cn(
-          "scrollbar-none flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth",
-          // Bleed to the page gutter on mobile, a hair on desktop — the inline
-          // padding is what the hover lift + shadow-md need so the card chrome
-          // isn't clipped by the scroll container.
-          "-mx-4 scroll-ps-4 px-4 py-1 sm:-mx-2 sm:scroll-ps-2 sm:px-2",
-          "rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        )}
-      >
+      <RelatedStripTrack label={title} trackClassName={TRACK_CLASS}>
         {cards.map((card, index) => (
           <li
             key={index}
@@ -93,18 +98,17 @@ export function RelatedStrip({
             // `CardShell`'s `h-full` (equal-height cards) honest.
             className={cn(
               "grid min-w-0 shrink-0 snap-start grid-cols-1",
-              // 3 cards fully in view on desktop plus a sliver of the 4th. The
-              // sliver is the ONLY affordance that cards 4-7 exist: the
-              // scrollbar is painted away and server components cannot add
-              // arrows or a fade. Mobile already peeks at 85%. Drop the .25 back
-              // to /3 for a hard three-up with no scroll cue.
+              // 3 cards fully in view on desktop plus a sliver of the 4th, and
+              // the sliver still earns its keep: it says "there is more" while
+              // the buttons say "here is how". Mobile peeks at 85%. Drop the
+              // .25 back to /3 for a hard three-up with no scroll cue.
               "basis-[85%] sm:basis-[calc((100%-0.75rem)/2)] lg:basis-[calc((100%-1.5rem)/3.25)]",
             )}
           >
             {card}
           </li>
         ))}
-      </ul>
+      </RelatedStripTrack>
     </section>
   );
 }

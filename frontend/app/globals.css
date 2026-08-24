@@ -404,10 +404,17 @@
 
   /*
    * Horizontal card strips (`RelatedStrip`) hide the scrollbar because the
-   * cut-off card at the edge is the affordance, not the bar. Scrolling itself
-   * stays fully intact — wheel, trackpad, touch, and keyboard (the track is
-   * `tabIndex={0}` so arrow keys reach it). This ONLY paints; never use it on a
-   * region that has no other visible cue that it scrolls.
+   * cut-off card at the edge plus the strip's own prev/next buttons carry the
+   * affordance instead. Scrolling itself stays fully intact — buttons, wheel,
+   * trackpad, touch, and keyboard (the track is `tabIndex={0}` so arrow keys
+   * reach it).
+   *
+   * ⚠ THIS ONLY PAINTS, AND THE PEEK ALONE IS NOT A CONTROL. `RelatedStrip`
+   * shipped for a while with the bar hidden and NOTHING else: measured at
+   * 1440×900 that left 870px of cards behind a 0px scrollbar with no buttons,
+   * and a vertical mouse wheel does not scroll a horizontal container, so a
+   * Windows mouse user could not reach them at all. Never put this class on a
+   * region that has no VISIBLE, CLICKABLE way to scroll it.
    */
   .scrollbar-none {
     scrollbar-width: none; /* Firefox */
