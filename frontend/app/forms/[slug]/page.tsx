@@ -144,16 +144,14 @@ export default async function FormDetailPage({ params }: PageProps) {
               <CalendarClock aria-hidden="true" className="h-5 w-5 shrink-0 text-primary" />
               متى تستخدم هذا النموذج
             </h2>
-            <div className="text-sm leading-relaxed text-foreground">
-              <MarkdownRenderer content={detail.use_case_md} />
-            </div>
+            <MarkdownRenderer content={detail.use_case_md} prose />
           </section>
         )}
 
         {/* شرح — free. */}
         {detail.intro_md && (
-          <section className="text-sm leading-relaxed text-foreground">
-            <MarkdownRenderer content={detail.intro_md} />
+          <section>
+            <MarkdownRenderer content={detail.intro_md} prose />
           </section>
         )}
 

@@ -63,6 +63,14 @@ interface MarkdownRendererProps {
    */
   headingAnchors?: boolean;
   /**
+   * Reading-surface type scale: body + list items on `text-read` (18px/1.7
+   * desktop, 17px phone), editorial heading ladder, wider paragraph gaps. For
+   * long-form pages — مدونة, library bodies, guides, AI summaries. Defaults to
+   * `headingAnchors` (an anchored surface is always a reading surface); chat
+   * leaves both off and renders byte-identically.
+   */
+  prose?: boolean;
+  /**
    * Streaming hot path: skip the rehype-highlight pass — it is the most
    * expensive plugin and its output is discarded on the next reveal frame.
    * The settled message re-renders once with the full chain.
@@ -73,6 +81,7 @@ interface MarkdownRendererProps {
 function buildMarkdownComponents(
   onCitationClick: ((n: number) => void) | undefined,
   headingAnchors: boolean,
+  reading: boolean,
 ): Components {
   return {
     // --- Citation markers ([n] / [n,m,...]) ---
@@ -197,7 +206,13 @@ function buildMarkdownComponents(
     // --- Lists ---
     ul({ children }) {
       return (
-        <ul className="my-2 list-disc pe-0 ps-0 me-5 ms-0 space-y-1">
+        <ul
+          className={
+            reading
+              ? "my-4 list-disc pe-0 ps-0 me-6 ms-0 space-y-2"
+              : "my-2 list-disc pe-0 ps-0 me-5 ms-0 space-y-1"
+          }
+        >
           {children}
         </ul>
       );
@@ -209,14 +224,22 @@ function buildMarkdownComponents(
         // ``start`` — dropping it would restart every fragment at 1.
         <ol
           start={start}
-          className="my-2 list-decimal pe-0 ps-0 me-5 ms-0 space-y-1"
+          className={
+            reading
+              ? "my-4 list-decimal pe-0 ps-0 me-6 ms-0 space-y-2"
+              : "my-2 list-decimal pe-0 ps-0 me-5 ms-0 space-y-1"
+          }
         >
           {children}
         </ol>
       );
     },
     li({ children }) {
-      return <li className="text-base leading-relaxed">{children}</li>;
+      return (
+        <li className={reading ? "text-read" : "text-base leading-relaxed"}>
+          {children}
+        </li>
+      );
     },
 
     // --- Headers ---
@@ -235,8 +258,8 @@ function buildMarkdownComponents(
         <h1
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-2xl font-bold mt-8 mb-3 text-foreground scroll-mt-24"
+            reading
+              ? "text-3xl font-bold mt-10 mb-4 text-foreground scroll-mt-24"
               : "text-xl font-bold mt-4 mb-2 text-foreground"
           }
         >
@@ -249,8 +272,8 @@ function buildMarkdownComponents(
         <h2
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-xl font-bold mt-7 mb-2.5 text-foreground border-t border-border/40 pt-4 scroll-mt-24"
+            reading
+              ? "text-2xl font-bold mt-9 mb-3 text-foreground border-t border-border/40 pt-5 scroll-mt-24"
               : "text-lg font-bold mt-3 mb-1.5 text-foreground"
           }
         >
@@ -263,8 +286,8 @@ function buildMarkdownComponents(
         <h3
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-lg font-semibold mt-5 mb-2 text-foreground scroll-mt-24"
+            reading
+              ? "text-xl font-bold mt-7 mb-2.5 text-foreground scroll-mt-24"
               : "text-base font-bold mt-3 mb-1 text-foreground"
           }
         >
@@ -277,8 +300,8 @@ function buildMarkdownComponents(
         <h4
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-base font-semibold mt-4 mb-1.5 text-foreground scroll-mt-24"
+            reading
+              ? "text-lg font-semibold mt-5 mb-2 text-foreground scroll-mt-24"
               : "text-sm font-bold mt-2 mb-1 text-foreground"
           }
         >
@@ -291,8 +314,8 @@ function buildMarkdownComponents(
         <h5
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-sm font-semibold mt-3 mb-1 text-foreground scroll-mt-24"
+            reading
+              ? "text-base font-semibold mt-4 mb-1.5 text-foreground scroll-mt-24"
               : "text-sm font-medium mt-2 mb-1 text-foreground"
           }
         >
@@ -305,8 +328,8 @@ function buildMarkdownComponents(
         <h6
           id={headingId(headingAnchors, children)}
           className={
-            headingAnchors
-              ? "text-sm font-semibold mt-3 mb-1 text-muted-foreground scroll-mt-24"
+            reading
+              ? "text-base font-semibold mt-4 mb-1.5 text-muted-foreground scroll-mt-24"
               : "text-sm font-medium mt-2 mb-1 text-muted-foreground"
           }
         >
@@ -318,7 +341,15 @@ function buildMarkdownComponents(
     // --- Paragraphs ---
     p({ children }) {
       return (
-        <p className="text-base leading-relaxed mb-2 last:mb-0">{children}</p>
+        <p
+          className={
+            reading
+              ? "text-read mb-5 last:mb-0"
+              : "text-base leading-relaxed mb-2 last:mb-0"
+          }
+        >
+          {children}
+        </p>
       );
     },
 
@@ -348,20 +379,24 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   className,
   onCitationClick,
   headingAnchors,
+  prose,
   streaming,
 }: MarkdownRendererProps) {
+  const reading = prose ?? headingAnchors ?? false;
   // Re-bind the component map only when the citation click handler or the
-  // heading-anchor toggle changes. Both are generally stable per render, so
-  // this is cheap.
+  // heading-anchor / reading toggles change. All are generally stable per
+  // render, so this is cheap.
   const components = useMemo(
-    () => buildMarkdownComponents(onCitationClick, headingAnchors ?? false),
-    [onCitationClick, headingAnchors],
+    () =>
+      buildMarkdownComponents(onCitationClick, headingAnchors ?? false, reading),
+    [onCitationClick, headingAnchors, reading],
   );
 
   return (
     <div
       className={cn(
-        "markdown-content text-base leading-relaxed",
+        "markdown-content",
+        reading ? "text-read" : "text-base leading-relaxed",
         // Ensure the markdown inherits the RTL direction from parent
         // but code blocks override to LTR via their own dir attribute
         className

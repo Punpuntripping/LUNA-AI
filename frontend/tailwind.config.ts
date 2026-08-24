@@ -185,6 +185,9 @@ const config: Config = {
         base: ["var(--fs-base)", { lineHeight: "var(--lh-base)" }],
         lg:   ["var(--fs-lg)",   { lineHeight: "var(--lh-lg)"   }],
         xl:   ["var(--fs-xl)",   { lineHeight: "var(--lh-xl)"   }],
+        /* Long-form reading tier: library bodies, blog, guides, summaries.
+           18px/1.7 desktop, 17px phone — see "Reading scale" in globals.css. */
+        read: ["var(--fs-read)", { lineHeight: "var(--lh-read)" }],
 
         display:   ["56px", { lineHeight: "1.05", letterSpacing: "-0.02em", fontWeight: "700" }],
         h1:        ["32px", { lineHeight: "1.20", letterSpacing: "-0.01em", fontWeight: "600" }],

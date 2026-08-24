@@ -1,17 +1,18 @@
 import { cn } from "@/lib/utils";
+import { LegalBlocks } from "@/components/library/blocks/LegalBlocks";
 import {
   toLegalBlocks,
-  renderInline,
   dropDuplicateLeadingHeading,
 } from "@/lib/library/legal-text";
 import type { LeadSummaryProps } from "@/types/library";
 
 /**
  * The summary lead — the AI-written description that ranks pages and dodges
- * duplicate-content penalties vs official gov text. Slightly larger, relaxed
- * type. Markdown heading lines («## النطاق») lift into styled sub-headers with a
- * start-side accent and `**bold**` terms render bold. Server component. Pass
- * EITHER `text` or `children` (children bypass the formatter).
+ * duplicate-content penalties vs official gov text. Same reading scale as the
+ * body, set apart by its secondary text colour rather than by size. Markdown
+ * heading lines («## النطاق») lift into styled sub-headers with a start-side
+ * accent and `**bold**` terms render bold. Server component. Pass EITHER `text`
+ * or `children` (children bypass the formatter).
  */
 export function LeadSummary({
   text,
@@ -19,35 +20,24 @@ export function LeadSummary({
   dedupeHeading,
   className,
 }: LeadSummaryProps) {
+  if (children) {
+    return (
+      <div
+        dir="rtl"
+        className={cn("text-read text-text-secondary", className)}
+      >
+        {children}
+      </div>
+    );
+  }
+
   const blocks = text
     ? dropDuplicateLeadingHeading(toLegalBlocks(text), dedupeHeading)
     : [];
 
   return (
-    <div
-      dir="rtl"
-      className={cn(
-        "space-y-4 text-base leading-loose text-text-secondary sm:text-[17px]",
-        className,
-      )}
-    >
-      {children ??
-        blocks.map((block, index) =>
-          block.type === "heading" ? (
-            // Styled visual sub-header (not a semantic <h#>) so the summary keeps
-            // the page's heading outline unchanged — presentation only.
-            <p
-              key={index}
-              className="border-s-[3px] border-primary/50 ps-3 text-base font-bold leading-snug text-foreground sm:text-lg"
-            >
-              {renderInline(block.text)}
-            </p>
-          ) : (
-            <p key={index} className="whitespace-pre-line">
-              {renderInline(block.text)}
-            </p>
-          ),
-        )}
+    <div dir="rtl" className={className}>
+      <LegalBlocks blocks={blocks} tone="lead" />
     </div>
   );
 }

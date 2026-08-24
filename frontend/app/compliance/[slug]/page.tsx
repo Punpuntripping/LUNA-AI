@@ -300,9 +300,7 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
             {/* Inside the column, exactly where /regulations/{slug} puts its
                 LeadSummary. Above the grid it would set a 1152px measure. */}
             {doc.summary && (
-              <p className="text-base leading-relaxed text-text-secondary">
-                {doc.summary}
-              </p>
+              <p className="text-read text-text-secondary">{doc.summary}</p>
             )}
 
             {showToc && (

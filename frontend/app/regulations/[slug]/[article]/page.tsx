@@ -257,7 +257,7 @@ export default async function RegulationArticlePage({ params }: PageProps) {
                     </p>
                   </div>
                 </div>
-                <p className="text-[15px] leading-[1.9] text-foreground">
+                <p className="text-read text-foreground">
                   {doc.sharh.teaser}
                 </p>
                 <GateBanner

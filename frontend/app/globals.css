@@ -134,6 +134,14 @@
     --fs-lg:   1.125rem;  --lh-lg:   1.75rem;
     --fs-xl:   1.25rem;   --lh-xl:   1.75rem;
 
+    /* Long-form reading tier (`text-read`) — library bodies, blog posts,
+     * compliance guides, AI summaries. Sized for Arabic article reading, not
+     * UI: 18px desktop / 17px phone at line-height 1.7. Arabic reads ~15%
+     * smaller than Latin at the same px, so the 16px UI tier read as chrome;
+     * Al Jazeera's 22px was judged too big for a statute column. Chat and
+     * chrome stay on `text-base`. Phone override further down. */
+    --fs-read: 1.125rem;  --lh-read: 1.7;
+
     /* ---------- Motion ---------- */
     --duration-fast: 150ms;
     --duration-base: 200ms;
@@ -167,6 +175,7 @@
       --fs-base: 1.0625rem;  --lh-base: 1.625rem;   /* 16 → 17 */
       --fs-lg:   1.1875rem;  --lh-lg:   1.8125rem;  /* 18 → 19 */
       --fs-xl:   1.3125rem;  --lh-xl:   1.875rem;   /* 20 → 21 */
+      --fs-read: 1.0625rem;  --lh-read: 1.7;        /* 18 → 17 (narrow column) */
     }
   }
 

@@ -1,6 +1,34 @@
 import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
+import { extendTailwindMerge } from "tailwind-merge";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
+
+// tailwind-merge only knows Tailwind's stock font-size keys. Our custom tiers
+// (tailwind.config.ts `fontSize`) look like `text-<word>`, which it reads as a
+// COLOUR — so `cn("text-read", "text-foreground")` silently dropped the size.
+// Registering them here makes `text-read` conflict with `text-base`, not with
+// `text-foreground`.
+const twMerge = extendTailwindMerge({
+  extend: {
+    classGroups: {
+      "font-size": [
+        {
+          text: [
+            "read",
+            "display",
+            "h1",
+            "h2",
+            "h3",
+            "body-lg",
+            "body",
+            "label",
+            "caption",
+            "meta",
+          ],
+        },
+      ],
+    },
+  },
+});
 
 // shadcn/ui class merge utility
 export function cn(...inputs: ClassValue[]) {

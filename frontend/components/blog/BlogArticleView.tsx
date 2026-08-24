@@ -179,7 +179,7 @@ export function BlogArticleView({ post, blogToken }: BlogArticleViewProps) {
               headings={headings}
               className="mb-6 rounded-xl border bg-card/50 p-4 lg:mb-0 lg:self-start lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0 lg:sticky lg:top-20"
             />
-            <article className="min-w-0 leading-loose">
+            <article className="min-w-0">
               <MarkdownRenderer
                 content={body}
                 onCitationClick={handleBodyCitationClick}
@@ -188,7 +188,7 @@ export function BlogArticleView({ post, blogToken }: BlogArticleViewProps) {
             </article>
           </div>
         ) : (
-          <article className="mx-auto mt-8 max-w-3xl leading-loose">
+          <article className="mx-auto mt-8 max-w-3xl">
             <MarkdownRenderer
               content={body}
               onCitationClick={handleBodyCitationClick}

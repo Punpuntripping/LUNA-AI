@@ -205,9 +205,7 @@ export function JudgmentSummaryPanel() {
         <Sparkles aria-hidden="true" className="h-5 w-5 shrink-0 text-primary" />
         {judgmentSummaryCopy.panelTitle}
       </h2>
-      <div className="text-sm leading-relaxed text-foreground">
-        <MarkdownRenderer content={summary} />
-      </div>
+      <MarkdownRenderer content={summary} prose />
     </section>
   );
 }

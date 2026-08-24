@@ -344,7 +344,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                 hiddenSections={doc.hidden_section_count}
               >
                 {doc.sections.length > 0 && (
-                  <div className="space-y-8">
+                  <div className="space-y-10">
                     {doc.sections.map((section) => {
                       const gate: GateInfo | undefined = section.is_truncated
                         ? {
@@ -362,7 +362,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
                           // its section heading.
                           className="scroll-mt-20 space-y-3.5"
                         >
-                          <h2 className="border-s-[3px] border-primary/50 ps-3 text-lg font-bold leading-snug text-foreground">
+                          <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
                             {section.title}
                           </h2>
                           <ArticleBody
