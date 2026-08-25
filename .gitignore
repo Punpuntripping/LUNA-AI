@@ -14,6 +14,12 @@ agents_reports/
 tests/
 # privacy codec tests are durable (masking validation Layers 1-2) — re-include
 !shared/privacy/tests/
+# shared/library suites are durable: chunk_tables pins a SECURITY boundary (the
+# table-HTML allowlist re-serializer feeding dangerouslySetInnerHTML) plus the
+# "no raw TBL_ token ever reaches a reader" invariant, and reg_status pins the
+# repeal vocabulary the reranker and aggregator read. Losing them loses the
+# contract, and a clean clone would ship the sanitizer with nothing guarding it.
+!shared/library/tests/
 # masking backend-wiring tests are durable too (rest of backend/tests stays local-only)
 !backend/tests/
 backend/tests/*

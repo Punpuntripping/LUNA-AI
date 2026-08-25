@@ -1475,6 +1475,25 @@ class VisibleSection(BaseModel):
     # the run renders once, and these are the مواد it swallowed. The page emits an
     # empty anchor per id so every TOC row still has a target to scroll to.
     also_ids: list[str] = Field(default_factory=list)
+    # The rendered tables of this section, keyed by the whole-line `TBL_…` token
+    # that stands in for each one INSIDE `text`
+    # (`.claude/plans/chunk_table_rendering.md` §3.3). `html` is sanitized
+    # server-side by an allowlist RE-SERIALIZER (D6), which is what makes the
+    # client's `dangerouslySetInnerHTML` trusted-by-construction; `md` is the
+    # prose the table was flattened into — alt text, copy text, and the gate
+    # weight (D8).
+    #
+    # ⚠ MUST be declared here. `response_model` strips every undeclared key, so a
+    # service that emits `tables` and a model that does not list it produce a
+    # payload whose `text` still carries the tokens and whose tables are GONE —
+    # naked `TBL_…` lines on a statute page, the exact failure D3 exists to
+    # prevent. (Same trap `kind` hit on `TocEntry` above.)
+    #
+    # `{}` — never null — when the section has no tables, which is the 82% case.
+    # An ISR page baked before this shipped carries no `tables` at all and its
+    # `text` is the prose body, so absent ⇒ exactly today's rendering with no
+    # token left dangling.
+    tables: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class OfficialSource(BaseModel):
@@ -2185,6 +2204,13 @@ class LibraryFullSection(BaseModel):
     id: str
     title: Optional[str] = None
     text: str
+    # Same contract as `VisibleSection.tables` — see the comment there. Declared
+    # HERE too because `response_model` strips undeclared keys, and a reveal that
+    # dropped the map while keeping the tokens would print raw `TBL_…` lines to
+    # the one reader who actually paid for the document.
+    #
+    # Judgment sections come through this same model and simply carry `{}`.
+    tables: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class LibraryFullResponse(BaseModel):

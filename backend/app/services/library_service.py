@@ -46,7 +46,7 @@ import time
 import urllib.parse
 import uuid as _uuid
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from supabase import Client as SupabaseClient
 
@@ -58,6 +58,20 @@ from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services import search_service
 from shared.config import get_settings
+# THE chunk-table renderer, shared with مراجع so the two surfaces cannot drift
+# (`.claude/plans/chunk_table_rendering.md` §2). `display_body` is the ONE
+# body-choosing rule (`content_display or content`); `split_body` turns that body
+# into alternating prose/table segments and DROPS any token it cannot resolve.
+# ⚠ `content_display` is DISPLAY-ONLY — its table content is REMOVED, so it must
+# never be embedded, indexed, or put in front of a model (D2).
+from shared.library.chunk_tables import (
+    ChunkTable,
+    display_body,
+    render_text_only,
+    split_body,
+    tables_by_ref,
+    visible_text,
+)
 from shared.library.courts import COURT_ORDER, COURT_VARIANTS, slug_for_court
 from shared.library.entities import ENTITY_ORDER
 from shared.library.entities import slug_for_name as slug_for_provider
@@ -209,6 +223,9 @@ __all__ = [
     "get_item_meta",
     "resolve_gate",
     "truncate_for_gate",
+    # …and its segment-aware twin, for chunk bodies carrying table tokens
+    "truncate_segments_for_gate",
+    "project_segments",
     "effective_circular_gate",
     # The exposure budget — gate on a fraction of the document, not per section
     "GateBudget",
@@ -616,6 +633,269 @@ def truncate_for_gate(
         "is_truncated": True,
         "hidden_placeholder_lines": hidden_placeholder_lines,
     }
+
+
+def _table_charge(seg: Mapping[str, Any]) -> int:
+    """What one table segment costs the free-char budget. READ, never computed.
+
+    ``weight`` is put on the segment by ``shared.library.chunk_tables`` — one
+    definition, so the library page and the مراجع popup cannot price the same
+    grid differently. See ``truncate_segments_for_gate`` for what it means and
+    why it is not ``len(md)``.
+
+    ⚠ A segment built by hand (rather than by ``split_body``) may carry no
+    ``weight``, and the fallback for that case re-derives the same ``max`` — it
+    is NOT ``len(md)``. Falling back to ``md`` alone would charge each of the 244
+    tables whose ``md`` is an ingestion error placeholder 31 chars for a 3.2 KB
+    penalty schedule. Degrade toward charging MORE, never toward the leak.
+    """
+    weight = seg.get("weight")
+    if isinstance(weight, int):
+        return max(0, weight)
+    return max(
+        len(seg.get("md") or ""), len(visible_text(seg.get("html") or ""))
+    )
+
+
+def truncate_segments_for_gate(
+    segments: list[dict[str, Any]],
+    gate: str,
+    *,
+    free_chars: int = GATE_FREE_CHARS_DEFAULT,
+) -> dict[str, Any]:
+    """``truncate_for_gate``'s contract, over SEGMENTS instead of a string. PURE.
+
+    A regulation chunk body is no longer a flat string once its tables come back:
+    it is a run of prose segments with ``TBL_…`` table segments between them
+    (``shared.library.chunk_tables.split_body``). Truncating the raw
+    ``content_display`` string instead would break in two directions at once —
+    measured over the 8,855 table-bearing chunks, 6,920 (78.1%) carry a token
+    inside the first 600 chars and on **191** of them a 600-char cut lands
+    MID-TOKEN, shipping a raw ``TBL_17630_reg_5…`` fragment to an anonymous
+    crawler that not even the renderer's own regex would recognise.
+
+    Walks segments in reading order against a remaining budget:
+
+      * a TEXT segment is charged ``len(text)``. If it does not fit, it is cut by
+        ``truncate_for_gate`` itself — the last whitespace inside the remaining
+        window, never mid-word, hard cut only when the window holds no whitespace
+        — and the walk STOPS.
+      * a TABLE segment is charged ``seg["weight"]`` and, when it does not fit,
+        **the GRID degrades — never the section**. Three cases against the
+        remaining budget ``R``:
+
+          1. ``weight <= R`` — render the grid, charge ``weight``, CONTINUE.
+          2. ``len(md) <= R`` — render ``md`` AS PROSE, charge ``len(md)``,
+             CONTINUE. A grid too heavy to draw whose prose still fits costs the
+             reader nothing, and the walk carries on to later segments that may
+             well fit as grids.
+          3. otherwise — render ``md`` cut at the last whitespace inside ``R``,
+             mark truncated, STOP.
+
+        ⚠ ATOMICITY IS NOT ABANDONED HERE — READ THIS BEFORE "SIMPLIFYING" IT.
+        What D8 protects is that a **GRID** is never cut through: half a fines
+        table reads as the whole schedule, so a partial grid misrepresents the
+        data. That still holds absolutely — cases 2 and 3 draw no grid at all.
+        What case 3 cuts is PROSE, which cuts fine and is exactly what
+        ``truncate_for_gate`` cuts today for that same region of the document.
+
+        The earlier rule ("withhold the table and stop the walk") punished the
+        whole SECTION for one oversized grid, and the granularity was the bug:
+        measured at ``free_chars=600`` it blanked **2,640 of 8,855** table-bearing
+        chunks outright and left another **2,077** showing a median of 83 prose
+        characters where ~600 ship today — 182 published أنظمة between them.
+        Degrading the one offending table dissolves both, because case 3 always
+        fills the budget.
+
+    WHAT A TABLE COSTS, AND WHY IT IS NOT THE TOKEN'S 30 CHARS — this is decision
+    D8, the load-bearing line of the whole feature. ``weight`` is
+    ``max(len(table_md), len(visible_text(table_html)))``, computed ONCE in
+    ``shared.library.chunk_tables.table_weight`` and read off the segment here;
+    never recomputed, so the library and مراجع cannot price the same grid
+    differently.
+
+      - ``table_md`` is *literally the prose that occupied those bytes* before
+        ingestion collapsed it to a token, so charging it buys the budget exactly
+        the quantity of law it bought before this feature existed — the original
+        D8, and it holds for 97.8% of the corpus (mean ``md`` 878 chars vs mean
+        rendered text 786: ``md`` usually charges MORE than the grid shows).
+      - It breaks at the tail, and the tail is the half that leaks. Measured
+        2026-08-25: **548 tables (2.2%) render >500 chars more than ``md``
+        charges**, 33 of them >2,000 more, worst case **3,382** — because **244
+        tables never got a prose conversion at all** and their ``md`` is the
+        ingestion error placeholder «[خطأ في التحويل - انتهت المهلة]», 31 chars.
+        On ``17405_reg_603_chunk_019`` that is two 3.2 KB violation-fine grids
+        whose entire prose form is that sentence, twice — a complete penalty
+        schedule served to an anonymous crawler for 31 chars of a 600-char
+        budget. The ``max`` costs nothing on the 97.8% and closes that exactly.
+      - ``len(html)`` would be wrong the other way: it charges for markup the
+        reader does not read (mean 1,182 chars). And the token's own ~30 chars
+        would let a 600-char preview render ~880 chars of law per table and
+        triple its own exposure — precisely what ``gate_exposure_budget.md``
+        exists to stop.
+
+    So the gate is exposure-neutral where the prose baseline was honest, and
+    deliberately STRICTER where that baseline was itself leaking a grid for free.
+
+    Returns ``{"visible_segments", "is_truncated", "hidden_placeholder_lines"}``.
+    ``hidden_placeholder_lines`` is sized off the WEIGHTED remainder (``len(text)``
+    / ``weight`` summed over everything not shown) with the same constants
+    ``truncate_for_gate`` uses, so the placeholder bars keep meaning what they
+    mean today. ``gate != 'gated'`` returns every segment untouched.
+
+    ⚠ ``truncate_for_gate`` itself is DELIBERATELY not refactored into this:
+    judgments, circulars, forms, guides and the شرح teaser all call it with a
+    plain string and must keep today's behaviour byte-for-byte. This function
+    CALLS it for the text case rather than re-deriving the cut, so the two can
+    never drift.
+    """
+    segs: list[dict[str, Any]] = list(segments or [])
+    free_chars = max(0, int(free_chars))
+
+    if gate != "gated":
+        return {
+            "visible_segments": segs,
+            "is_truncated": False,
+            "hidden_placeholder_lines": 0,
+        }
+
+    visible: list[dict[str, Any]] = []
+    remaining = free_chars
+    is_truncated = False
+    hidden_chars = 0
+    # Index of the first segment that was NOT shown in full. Everything from here
+    # on is weighed into the placeholder count below.
+    stopped_at = len(segs)
+
+    for i, seg in enumerate(segs):
+        # `split_body` consumes the newline on either side of a token as a LINE
+        # SEPARATOR, so those characters are in `content` — and charged by
+        # `truncate_for_gate` — but appear in no segment. `project_segments` puts
+        # one back between consecutive segments, and this is where it is paid
+        # for. Without it the walk arrives at each later segment a few chars
+        # richer than the string cut, which rounds up to a whole word and lets a
+        # section serve slightly MORE than it does today (measured: 8 of 108
+        # preview sections, up to +20 chars). Charging exactly 1 is also SAFE at
+        # the other end: a token is a whole line, so `content` always spent at
+        # least one newline at that boundary — never fewer than we charge.
+        sep_cost = 1 if visible else 0
+
+        if seg.get("kind") == "table":
+            weight = _table_charge(seg)
+            if sep_cost + weight <= remaining:
+                # (1) The grid fits: render it, charge it, carry on.
+                visible.append(seg)
+                remaining -= sep_cost + weight
+                continue
+            # (2)/(3) THE GRID DOES NOT FIT, SO THE GRID DEGRADES — not the
+            # section. Substituting the segment for the prose it replaced turns
+            # the rest of this iteration into the ordinary text path below, so
+            # `md` either fits whole (charged len(md), walk continues) or is cut
+            # at the last whitespace inside the remaining window (walk stops).
+            seg = {"kind": "text", "text": seg.get("md") or ""}
+
+        text = seg.get("text") or ""
+        if sep_cost + len(text) <= remaining:
+            visible.append(seg)
+            remaining -= sep_cost + len(text)
+            continue
+
+        # Named `shown`, not `visible_text` — that name is the imported
+        # table-measuring helper and shadowing it here would be a trap.
+        cut = truncate_for_gate(
+            text, "gated", free_chars=max(0, remaining - sep_cost)
+        )
+        shown = cut["visible_text"]
+        if shown:
+            visible.append({"kind": "text", "text": shown})
+        hidden_chars += len(text) - len(shown)
+        is_truncated = True
+        stopped_at = i + 1
+        break
+
+    for seg in segs[stopped_at:]:
+        hidden_chars += (
+            _table_charge(seg)
+            if seg.get("kind") == "table"
+            else len(seg.get("text") or "")
+        )
+
+    hidden_placeholder_lines = (
+        min(
+            _MAX_PLACEHOLDER_LINES,
+            math.ceil(hidden_chars / _PLACEHOLDER_CHARS_PER_LINE),
+        )
+        if hidden_chars > 0
+        else 0
+    )
+    return {
+        "visible_segments": visible,
+        "is_truncated": is_truncated,
+        "hidden_placeholder_lines": hidden_placeholder_lines,
+    }
+
+
+def project_segments(
+    segments: list[dict[str, Any]],
+) -> tuple[str, dict[str, dict[str, str]]]:
+    """``visible_segments`` → ``(text, tables)`` for the wire. PURE.
+
+    ⚠ THE TOKEN STAYS IN THE TEXT, and this is the part that is easy to get
+    backwards. The client has to know *where* in the prose each grid belongs, so
+    every surviving table is re-emitted as its own WHOLE-LINE ``TBL_…`` token
+    inside ``text`` and ``tables`` maps that token to its markup. Stripping the
+    token and shipping the tables beside it would render every grid at the foot
+    of the section instead of where the statute put it.
+
+    ``text`` is the text segments verbatim; a token is separated from its
+    neighbours with a single ``\\n`` only when they do not already supply one, so
+    a body that arrived as ``"…\\n\\nTBL_x\\n\\n…"`` comes back out identical
+    rather than gaining a blank line per table.
+
+    ``tables`` is ``{ref: {"html", "md"}}`` for exactly the surviving tables.
+    The HTML is already sanitized (allowlist re-serialize, D6) — this function
+    does not parse it and neither does the client.
+
+    THE INVARIANT, asserted by ``test_the_token_set_and_the_table_map_agree``:
+    every ``TBL_…`` token in ``text`` has a key in ``tables``, and every key in
+    ``tables`` appears as a token line in ``text``. A token with no entry renders
+    RAW on the page (D3, the failure this whole design exists to prevent); an
+    entry with no token renders nowhere and is dead weight on an ISR payload.
+    A segment missing its ``ref`` or its ``html`` is therefore dropped whole —
+    never half-emitted.
+    """
+    parts: list[str] = []
+    tables: dict[str, dict[str, str]] = {}
+
+    def _tail_is_newline() -> bool:
+        return bool(parts) and parts[-1].endswith("\n")
+
+    for seg in segments or []:
+        if seg.get("kind") == "table":
+            ref = str(seg.get("ref") or "")
+            html = seg.get("html") or ""
+            # D3 — emit NOTHING rather than a token the client cannot resolve.
+            if not ref or not html:
+                continue
+            if parts and not _tail_is_newline():
+                parts.append("\n")
+            parts.append(ref)
+            tables[ref] = {"html": html, "md": seg.get("md") or ""}
+            continue
+
+        text = seg.get("text") or ""
+        if not text:
+            continue
+        # True straight after a token, and also between two prose runs — the
+        # gate degrades an oversized grid into a text segment, so `split_body`'s
+        # "never two adjacent text segments" no longer holds by the time
+        # `visible_segments` gets here. A single newline is the right join for
+        # both: the `md` block sat on its own lines in `content` too.
+        if parts and not _tail_is_newline() and not text.startswith("\n"):
+            parts.append("\n")
+        parts.append(text)
+
+    return "".join(parts), tables
 
 
 # --- The exposure budget: gate on a FRACTION of the document ---------------
@@ -2696,6 +2976,215 @@ def _ordered_chunk_query(
     )
 
 
+# --- Chunk tables: the grid instead of the flattening ----------------------
+# (`.claude/plans/chunk_table_rendering.md` §3.2)
+#
+# Every table in the regulation corpus was OCR'd and then CONVERTED TO PROSE
+# before ingestion, because that is what BM25 indexes and what the model reads.
+# `chunks_v2.content` keeps that prose (the agent view). `content_display` is the
+# same text with each confidently-resolved table collapsed to a whole-line
+# `TBL_…` token (the user view), and `chunk_tables_v2` holds the sanitized HTML
+# behind each token. Rendering = walk the display body, swap each token line for
+# its grid. Measured 2026-08-24: 24,511 tables over 1,130 أنظمة, 532 of them
+# published — roughly one published نظام in three currently renders at least one
+# grid as a bulleted list.
+
+# The chunk-shaped select list, everywhere. `content_display` rides ALONGSIDE
+# `content` and never replaces it: the fail-soft path below needs the prose.
+_CHUNK_DISPLAY_COLUMNS = "content, content_display"
+
+
+class _ChunkTableMap(dict):
+    """``{chunk_id: {table_ref: ChunkTable}}`` that also knows if the READ worked.
+
+    A plain dict cannot tell «this نظام has no tables» (the 82% case) from «the
+    ``chunk_tables_v2`` read failed», and those two demand OPPOSITE display
+    bodies — see ``_chunk_display_body``. Subclassing dict rather than returning
+    tuple keeps every call site reading like the mapping it is.
+    """
+
+    __slots__ = ("ok",)
+
+    def __init__(
+        self,
+        mapping: Optional[Mapping[str, dict[str, ChunkTable]]] = None,
+        *,
+        ok: bool = True,
+    ) -> None:
+        super().__init__(mapping or {})
+        self.ok = ok
+
+
+# PostgREST clamps at 1000; page just under it so a full page is unambiguous.
+_CHUNK_TABLES_PAGE = 1000
+# Absolute ceiling on one document's tables — a runaway ingestion must not turn a
+# page render into an unbounded scan. Well clear of the 965-table maximum.
+_CHUNK_TABLES_MAX_ROWS = 10_000
+
+
+def _chunk_tables_for_regulation(
+    supabase: SupabaseClient, regulation_id: str
+) -> dict[str, dict[str, ChunkTable]]:
+    """``{chunk_id: {table_ref: ChunkTable}}`` for one نظام. SYNC, read-only.
+
+    ONE batched PostgREST read per DOCUMENT — filtered on ``regulation_id``,
+    which ``idx_chunk_tables_reg`` covers — never one per chunk. Selects
+    ``table_ref, chunk_id, table_html, table_md`` and nothing else: `table_html`
+    alone is 29.0 MB corpus-wide, and the provenance columns (`page`,
+    `resolution`, `source_file`, `line_start`…) are of no use to a renderer.
+
+    Resolution is by ``table_ref`` and ONLY by ``table_ref`` (D4). ``position``
+    is document order, not render order, and the token stem is a *sanitized*
+    ``chunk_ref`` with a hash appended whenever sanitizing changed anything —
+    deriving it is right 99.96% of the time, which is the worst possible hit rate.
+    ``tables_by_ref`` does that keying (and the HTML sanitizing) for us.
+
+    ⚠ PAGED, and not out of superstition. PostgREST clamps any response to
+    max-rows=1000 and the heaviest نظام in the corpus carries **965** tables
+    (measured 2026-08-24) — 35 rows of headroom. Past the clamp the missing rows
+    would not error, they would silently resolve to nothing, and D3 would turn
+    every unmatched token into a DELETED table. Costs one extra round trip on
+    exactly the أنظمة that would otherwise lose content.
+
+    Returns a ``_ChunkTableMap``: ``ok=False`` marks a FAILED read, which is not
+    the same thing as an empty one. Never raises.
+    """
+    rows: list[dict[str, Any]] = []
+    start = 0
+    try:
+        while True:
+            res = (
+                supabase.table("chunk_tables_v2")
+                .select("table_ref, chunk_id, table_html, table_md")
+                .eq("regulation_id", str(regulation_id))
+                .order("table_ref")
+                .range(start, start + _CHUNK_TABLES_PAGE - 1)
+                .execute()
+            )
+            page = res.data or []
+            rows.extend(page)
+            if len(page) < _CHUNK_TABLES_PAGE:
+                break
+            start += _CHUNK_TABLES_PAGE
+            if start >= _CHUNK_TABLES_MAX_ROWS:
+                logger.warning(
+                    "chunk_tables read for %s hit the %d-row ceiling — "
+                    "some tables will render as prose",
+                    regulation_id,
+                    _CHUNK_TABLES_MAX_ROWS,
+                )
+                break
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not load chunk tables (%s): %s", regulation_id, e)
+        return _ChunkTableMap(ok=False)
+
+    by_chunk: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        chunk_id = r.get("chunk_id")
+        if chunk_id is None:
+            continue
+        by_chunk.setdefault(str(chunk_id), []).append(r)
+    return _ChunkTableMap(
+        {cid: tables_by_ref(rs) for cid, rs in by_chunk.items()}, ok=True
+    )
+
+
+
+def _chunk_display_body(
+    row: Mapping[str, Any], tables: dict[str, dict[str, ChunkTable]]
+) -> tuple[str, dict[str, ChunkTable]]:
+    """One ``chunks_v2`` row → ``(body, that chunk's tables)``. PURE.
+
+    THE single place a chunk body is chosen for display. ``display_body`` picks
+    ``content_display or content``; ``_strip_html_comments`` runs BEFORE anything
+    splits it (the free-char budget is for نص, not for «<!-- Page 19 -->») and is
+    safe on a token — it removes comments and collapses blank runs, neither of
+    which can break a token off its own line.
+
+    ⚠ FAIL-SOFT, AND THE SAFE DIRECTION IS NOT THE OBVIOUS ONE. When the
+    ``chunk_tables_v2`` read FAILED we fall back to ``content`` — the prose, with
+    every table intact as the flattened list it has always been — and hand back
+    an EMPTY table map, which is consistent because that body carries no tokens.
+    The obvious move is the wrong one: rendering ``content_display`` with an
+    empty map lets every token resolve to nothing, which does not degrade the
+    نظام, it silently DELETES a table from it. A degradation may cost fidelity;
+    it must never cost content. (An empty map from a SUCCESSFUL read is a
+    different thing entirely — it means this نظام has no tables, the 82% case.)
+    """
+    if not getattr(tables, "ok", True):
+        return _strip_html_comments(row.get("content") or ""), {}
+    body = _strip_html_comments(display_body(row))
+    return body, (tables.get(str(row.get("id") or "")) or {})
+
+
+def _chunk_section_body(
+    row: Mapping[str, Any],
+    tables: dict[str, dict[str, ChunkTable]],
+    *,
+    gate: str,
+    free_chars: int,
+) -> dict[str, Any]:
+    """One chunk row → the rendered section body. THE chunk-rendering path.
+
+    Returns ``{"text", "tables", "is_truncated", "hidden_placeholder_lines"}`` —
+    the four keys every chunk-shaped section carries. All four section builders
+    (the doc page's chunk fallback, the ملاحق, the article surface's fallback
+    bodies, the paid reveal) go through here, so the walk, the projection and the
+    fallback below cannot be wired at three sites and forgotten at the fourth.
+
+    ⚠ THE BLANK GUARD BELOW IS A BACKSTOP, NOT THE MECHANISM. What actually
+    prevents a blank preview is ``truncate_segments_for_gate``'s case 3: an
+    oversized grid degrades to the prose it replaced and that prose is cut to
+    fill the budget, so a section serves ~``free_chars`` exactly as it does
+    today. An earlier rule withheld the grid and stopped the walk instead, which
+    blanked **2,640 of 8,855** table-bearing chunks at ``free_chars=600`` and
+    left another **2,077** showing a median of 83 characters — 182 published
+    أنظمة between them. That is fixed in the walk, where it belongs.
+
+    The guard remains because the two states it distinguishes are cheap to check
+    and expensive to get wrong, and because ``md`` is not structurally guaranteed
+    non-empty. It renders the PROSE form of the whole body under today's gate:
+    ``render_text_only`` puts ``table_md`` back in place of each token,
+    reproducing ``content``, so it is byte-for-byte what that section renders
+    today. ``test_the_blank_guard_is_unreachable_on_the_corpus`` asserts it never
+    fires on real data — if it starts firing, the walk has regressed and that is
+    the bug to fix, not this branch.
+
+    The full reveal (``gate='open'``) truncates nothing, so neither case 3 nor
+    this guard can be reached there: every grid renders.
+
+    ⚠ The 244 conversion-error rows show «[خطأ في التحويل - انتهت المهلة]» to the
+    reader whenever their grid degrades. That is ugly and it is PRECISELY what is
+    live today, so it is not a regression and it is deliberately NOT
+    special-cased — it is a corpus-side bug to file upstream (plan D8a).
+    """
+    body, chunk_tables = _chunk_display_body(row, tables)
+    cut = truncate_segments_for_gate(
+        split_body(body, chunk_tables), gate, free_chars=free_chars
+    )
+    text, payload = project_segments(cut["visible_segments"])
+
+    if not text and body.strip():
+        prose = truncate_for_gate(
+            render_text_only(body, chunk_tables), gate, free_chars=free_chars
+        )
+        return {
+            "text": prose["visible_text"],
+            "tables": {},
+            "is_truncated": prose["is_truncated"],
+            "hidden_placeholder_lines": prose["hidden_placeholder_lines"],
+        }
+
+    return {
+        "text": text,
+        # `{}`, never None — an absent map and an empty one must not be two
+        # different things on the wire.
+        "tables": payload,
+        "is_truncated": cut["is_truncated"],
+        "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+    }
+
+
 def _appendix_chunks_for_regulation(
     supabase: SupabaseClient, regulation_id: str
 ) -> list[dict[str, Any]]:
@@ -2726,7 +3215,9 @@ def _appendix_chunks_for_regulation(
     try:
         res = (
             _ordered_chunk_query(
-                supabase, str(regulation_id), "id, title, content"
+                supabase,
+                str(regulation_id),
+                f"id, title, {_CHUNK_DISPLAY_COLUMNS}",
             )
             .eq("corpus", _CHUNK_APPENDIX_CORPUS)
             .execute()
@@ -2773,17 +3264,22 @@ def _regulation_appendix_chunk_count(
 def _chunk_row_map(
     supabase: SupabaseClient, chunk_ids: list[Any]
 ) -> dict[str, dict[str, str]]:
-    """Batch-resolve ``{chunk_id: {"title", "content"}}`` from ``chunks_v2``.
+    """Batch-resolve ``{chunk_id: {"id", "title", "content", "content_display"}}``.
 
     An article whose ``extraction_status != 'extracted'`` renders its owning chunk
     as the body — this fetches those chunk rows in one (chunked) ``IN`` lookup.
     Dedupes ids and chunks the ``in.(...)`` at 150 (PostgREST URL-length trap).
     Fail-soft: a blip yields ``{}`` (those sections render empty rather than 500).
 
-    ``title`` is carried alongside ``content`` because a fallback chunk usually
+    ``title`` is carried alongside the body because a fallback chunk usually
     spans a RUN of مواد and titles itself accordingly («المادة (1) – المادة (4):
     التعاريف …») — ``_merge_article_sections`` uses it as the heading when it
     collapses such a run into one section.
+
+    ``content_display`` rides along beside ``content`` (never instead of it) and
+    ``id`` is echoed into the value so the row can be handed straight to
+    ``_chunk_section_body``, which needs the chunk id to find that chunk's tables
+    needs the prose for its fail-soft path.
     """
     ids = list(dict.fromkeys(str(c) for c in chunk_ids if c))
     if not ids:
@@ -2794,7 +3290,7 @@ def _chunk_row_map(
         try:
             res = (
                 supabase.table("chunks_v2")
-                .select("id, title, content")
+                .select(f"id, title, {_CHUNK_DISPLAY_COLUMNS}")
                 .in_("id", chunk)
                 .execute()
             )
@@ -2805,8 +3301,10 @@ def _chunk_row_map(
             cid = r.get("id")
             if cid is not None:
                 out[str(cid)] = {
+                    "id": str(cid),
                     "title": r.get("title") or "",
                     "content": r.get("content") or "",
+                    "content_display": r.get("content_display") or "",
                 }
     return out
 
@@ -2818,12 +3316,24 @@ def _article_sections(
     gate: str,
     free_chars: int,
     merge_chunk_runs: bool,
+    chunk_tables: Optional[dict[str, dict[str, ChunkTable]]] = None,
 ) -> list[dict[str, Any]]:
     """Turn ``seo_articles`` rows into rendered sections. Pure (no DB).
 
     One section per مادة — ``{id: 'art-{no}', title, text, is_truncated,
-    hidden_placeholder_lines, also_ids}`` — with the body taken from the extracted
-    ``article_text`` when there is one, and from the owning chunk otherwise.
+    hidden_placeholder_lines, tables, also_ids}`` — with the body taken from the
+    extracted ``article_text`` when there is one, and from the owning chunk
+    otherwise.
+
+    ``chunk_tables`` is the document's ``{chunk_id: {table_ref: ChunkTable}}``
+    map and reaches ONLY the chunk-fallback bodies. An EXTRACTED ``article_text``
+    is a slice cut out of ``content`` — the token is not in it and the chunk's
+    ``content_display`` cannot be applied to a fragment of a different string —
+    so those مواد keep going through ``truncate_for_gate`` on a plain string,
+    byte-for-byte as before, and emit ``tables={}``. That is plan §3.4's named
+    limit, not an oversight: 507 tables live inside extracted ``article_text``
+    and reaching them needs ``table_md``-substring matching, which is its own
+    small plan.
 
     ``merge_chunk_runs`` collapses a CHUNK-FALLBACK run. A fallback chunk is
     multi-مادة by nature (it titles itself «المادة (1) – المادة (4): …»), so
@@ -2833,10 +3343,14 @@ def _article_sections(
     chunk's own مادة-range title, and the مواد it swallowed ride along in
     ``also_ids`` so the page can still emit an anchor for every TOC row.
 
-    ``gate``/``free_chars`` are handed to ``truncate_for_gate``, so an ``'open'``
-    gate returns every section whole and the hidden bytes of a gated one are
-    dropped here, server-side, exactly as before.
+    ``gate``/``free_chars`` are handed to ``truncate_for_gate`` (extracted نص) or
+    ``truncate_segments_for_gate`` (chunk fallback), so an ``'open'`` gate returns
+    every section whole and the hidden bytes of a gated one are dropped here,
+    server-side, exactly as before.
     """
+    tables_map: dict[str, dict[str, ChunkTable]] = (
+        chunk_tables if chunk_tables is not None else _ChunkTableMap()
+    )
     sections: list[dict[str, Any]] = []
     # chunk_id → index in `sections` of the section already carrying that body.
     run_index: dict[str, int] = {}
@@ -2850,6 +3364,8 @@ def _article_sections(
             # noise for DISPLAY, and never merge (it belongs to this مادة alone).
             body = _clean_article_display_text(a.get("article_text") or "")
             title = a.get("article_label")
+            cut = truncate_for_gate(body, gate, free_chars=free_chars)
+            text, tables = cut["visible_text"], {}
         else:
             chunk_id = str(a.get("chunk_id") or "")
             if merge_chunk_runs and chunk_id and chunk_id in run_index:
@@ -2858,8 +3374,8 @@ def _article_sections(
             row = chunk_rows.get(chunk_id) or {}
             # A fallback body is a multi-مادة chunk, so the heading/footnote
             # cleanup above deliberately does NOT run on it — but ingestion
-            # markers are noise on any stream, so those still go.
-            body = _strip_html_comments(row.get("content") or "")
+            # markers are noise on any stream, so those still go (inside
+            # `_chunk_section_body`, BEFORE the split).
             title = a.get("article_label")
             if merge_chunk_runs and chunk_id:
                 # The chunk's own title names the مادة RANGE the merged section
@@ -2868,15 +3384,21 @@ def _article_sections(
                 # for one مادة and keeps its own label.
                 title = (row.get("title") or "").strip() or title
                 run_index[chunk_id] = len(sections)
+            cut = _chunk_section_body(
+                row, tables_map, gate=gate, free_chars=free_chars
+            )
+            text, tables = cut["text"], cut["tables"]
 
-        cut = truncate_for_gate(body, gate, free_chars=free_chars)
         sections.append(
             {
                 "id": f"art-{no}",
                 "title": title,
-                "text": cut["visible_text"],
+                "text": text,
                 "is_truncated": cut["is_truncated"],
                 "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                # `{}`, never None — an absent map and an empty one must not be
+                # two different things on the wire.
+                "tables": tables,
                 "also_ids": [],
             }
         )
@@ -2890,6 +3412,7 @@ def _appendix_sections(
     gate: str,
     free_chars: int,
     start_position: int,
+    chunk_tables: Optional[dict[str, dict[str, ChunkTable]]] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Turn appendix chunks into ``(sections, toc_rows)``. Pure (no DB).
 
@@ -2914,21 +3437,33 @@ def _appendix_sections(
     ``start_position`` MUST be ``max(article_no)``, not ``len(articles)`` — a
     holed-but-trusted index has more apparent مواد than rows, and the ملاحق have
     to sort past the LAST مادة rather than past the COUNT of them.
+
+    THE ملاحق ARE WHERE THE GRIDS LIVE. 1,396 + 1,465 of the 8,017 tables this
+    renderer reaches sit in the appendix stream, and on a لائحة فنية the CMR
+    tables and migration limits ARE the operative content — a ملحق rendered as a
+    bulleted list is the document's substance flattened. ``chunk_tables`` is this
+    نظام's ``{chunk_id: {table_ref: ChunkTable}}`` map; ``None`` means «render as
+    prose», which is what every caller that has no map to give should pass.
     """
+    tables_map: dict[str, dict[str, ChunkTable]] = (
+        chunk_tables if chunk_tables is not None else _ChunkTableMap()
+    )
     sections: list[dict[str, Any]] = []
     toc_rows: list[dict[str, Any]] = []
 
     for n, row in enumerate(rows, start=1):
-        # Strip BEFORE truncating — the free-char budget is for نص, not markers.
-        body = _strip_html_comments(row.get("content") or "")
-        cut = truncate_for_gate(body, gate, free_chars=free_chars)
+        # `_chunk_section_body` strips ingestion markers BEFORE the split, and
+        # the split happens BEFORE the truncate — the free-char budget is for نص,
+        # not for markers, and never for a half-eaten token.
+        cut = _chunk_section_body(row, tables_map, gate=gate, free_chars=free_chars)
         sections.append(
             {
                 "id": f"apx-{n}",
                 "title": row.get("title"),
-                "text": cut["visible_text"],
+                "text": cut["text"],
                 "is_truncated": cut["is_truncated"],
                 "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                "tables": cut["tables"],
                 "also_ids": [],
             }
         )
@@ -3081,6 +3616,25 @@ def get_regulation_doc(
         ]
         chunk_rows = _chunk_row_map(supabase, fallback_ids)
 
+        # THE ملاحق. `seo_articles` carries none of them (0 rows of 50,924 come
+        # from the appendix stream), so without this block an article-rendered
+        # نظام ships its مواد and silently drops its annexes — on
+        # `اللائحة الفنية الخليجية للعب الأطفال` that is 89 of 109 sections, and
+        # the CMR tables ARE the operative content of a لائحة فنية.
+        #
+        # Fetched BEFORE the sections are built so the tables read below can be
+        # decided once for the whole document.
+        apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
+
+        # ONE batched `chunk_tables_v2` read per DOCUMENT, and only when this
+        # نظام actually renders a chunk-shaped body: an all-extracted index with
+        # no ملاحق — the common shape — pays no round trip at all.
+        chunk_tables = (
+            _chunk_tables_for_regulation(supabase, str(content_id))
+            if (chunk_rows or apx_rows)
+            else _ChunkTableMap()
+        )
+
         visible_sections = _article_sections(
             rendered,
             chunk_rows,
@@ -3089,15 +3643,10 @@ def get_regulation_doc(
             # Merge only on the open full render (see `_article_sections`): the
             # gated 3-مادة preview stays byte-identical to what it shipped before.
             merge_chunk_runs=is_open,
+            chunk_tables=chunk_tables,
         )
         hidden_section_count = 0 if is_open else max(0, len(articles) - 3)
 
-        # THE ملاحق. `seo_articles` carries none of them (0 rows of 50,924 come
-        # from the appendix stream), so without this block an article-rendered
-        # نظام ships its مواد and silently drops its annexes — on
-        # `اللائحة الفنية الخليجية للعب الأطفال` that is 89 of 109 sections, and
-        # the CMR tables ARE the operative content of a لائحة فنية.
-        apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
         if apx_rows:
             # max(article_no), NOT len(articles): a holed-but-trusted index has
             # more apparent مواد than rows, and the ملاحق must sort past the LAST
@@ -3110,6 +3659,7 @@ def get_regulation_doc(
                 gate=gate,
                 free_chars=600,
                 start_position=max_article_no,
+                chunk_tables=chunk_tables,
             )
             toc.extend(apx_toc)
             if is_open:
@@ -3132,7 +3682,9 @@ def get_regulation_doc(
 
             # Open → every chunk (the whole نظام); gated → the 3-chunk preview.
             vis_qb = _ordered_chunk_query(
-                supabase, str(content_id), "id, title, position, content"
+                supabase,
+                str(content_id),
+                f"id, title, position, {_CHUNK_DISPLAY_COLUMNS}",
             )
             if not is_open:
                 vis_qb = vis_qb.limit(3)
@@ -3179,20 +3731,26 @@ def get_regulation_doc(
             for i, r in enumerate(toc_rows, start=1)
         ]
 
+        # ONE batched `chunk_tables_v2` read for the whole نظام. This branch is
+        # the bulk of the prize: 5,156 of the 8,017 tables v1 reaches sit in the
+        # `without_articles` body stream that renders here.
+        chunk_tables = _chunk_tables_for_regulation(supabase, str(content_id))
+
         visible_sections = []
         for r in vis_rows:
             # HTML comments are an appendix-stream artifact and this branch is
             # the one that already renders appendix chunks — 253 published أنظمة
-            # of them (see `_strip_html_comments`).
-            body = _strip_html_comments(r.get("content") or "")
-            cut = truncate_for_gate(body, gate, free_chars=600)
+            # of them (see `_strip_html_comments`, called inside
+            # `_chunk_section_body` BEFORE the body is split on its tokens).
+            cut = _chunk_section_body(r, chunk_tables, gate=gate, free_chars=600)
             visible_sections.append(
                 {
                     "id": str(r.get("id")),
                     "title": r.get("title"),
-                    "text": cut["visible_text"],
+                    "text": cut["text"],
                     "is_truncated": cut["is_truncated"],
                     "hidden_placeholder_lines": cut["hidden_placeholder_lines"],
+                    "tables": cut["tables"],
                     "also_ids": [],
                 }
             )
@@ -6679,6 +7237,15 @@ def get_full_regulation(
                 if a.get("extraction_status") != "extracted" or not a.get("article_text")
             ]
             chunk_rows = _chunk_row_map(supabase, fallback_ids)
+            apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
+            # ONE batched tables read per document — the same rule and the same
+            # condition as the anon page, so the two surfaces resolve the SAME
+            # grids from the SAME rows.
+            chunk_tables = (
+                _chunk_tables_for_regulation(supabase, str(content_id))
+                if (chunk_rows or apx_rows)
+                else _ChunkTableMap()
+            )
             # Same builder as the open anon render, so the reveal a reader paid for
             # and the public page agree section-for-section — including the merge
             # that stops a multi-مادة fallback chunk from repeating itself once per
@@ -6689,6 +7256,7 @@ def get_full_regulation(
                 gate="open",
                 free_chars=600,
                 merge_chunk_runs=True,
+                chunk_tables=chunk_tables,
             )
             # …then the ملاحق, which `seo_articles` does not carry. THIS is where
             # the fix actually delivers: of the 188 published أنظمة that render
@@ -6700,19 +7268,25 @@ def get_full_regulation(
             # `_article_sections` is called with above), and `start_position=0`
             # because this payload carries no TOC — the doc page owns that, and
             # its positions come from `get_regulation_doc`.
-            apx_rows = _appendix_chunks_for_regulation(supabase, str(content_id))
             if apx_rows:
                 apx_sections, _ = _appendix_sections(
-                    apx_rows, gate="open", free_chars=600, start_position=0
+                    apx_rows,
+                    gate="open",
+                    free_chars=600,
+                    start_position=0,
+                    chunk_tables=chunk_tables,
                 )
                 sections.extend(apx_sections)
             return {"sections": sections}
 
         # CHUNK FALLBACK — every chunk in reading order (legacy continuous doc).
         res = _ordered_chunk_query(
-            supabase, str(content_id), "id, title, position, content"
+            supabase,
+            str(content_id),
+            f"id, title, position, {_CHUNK_DISPLAY_COLUMNS}",
         ).execute()
         rows = res.data or []
+        chunk_tables = _chunk_tables_for_regulation(supabase, str(content_id))
     except Exception as e:  # noqa: BLE001
         logger.exception("Error loading full regulation (%s): %s", slug, e)
         raise LunaHTTPException(
@@ -6721,17 +7295,25 @@ def get_full_regulation(
             detail="حدث خطأ أثناء جلب النظام",
         )
 
-    sections = [
-        {
-            "id": str(r.get("id")),
-            "title": r.get("title"),
-            # Untruncated, but not unclean: this branch renders the appendix
-            # stream verbatim today, markers and all («<!-- converted table -->»
-            # reaching a paying reader).
-            "text": _strip_html_comments(r.get("content") or ""),
-        }
-        for r in rows
-    ]
+    sections = []
+    for r in rows:
+        # Untruncated, but not unclean: this branch renders the appendix stream
+        # verbatim today, markers and all («<!-- converted table -->» reaching a
+        # paying reader). `_chunk_section_body` strips those BEFORE the split.
+        #
+        # `gate="open"` — a reveal truncates nothing, so the walk is a
+        # pass-through, every table survives whole, and the blank-preview
+        # fallback can never fire. It still goes through the SAME renderer as the
+        # gated page so the reveal and the crawl cannot render a chunk differently.
+        cut = _chunk_section_body(r, chunk_tables, gate="open", free_chars=0)
+        sections.append(
+            {
+                "id": str(r.get("id")),
+                "title": r.get("title"),
+                "text": cut["text"],
+                "tables": cut["tables"],
+            }
+        )
     return {"sections": sections}
 
 

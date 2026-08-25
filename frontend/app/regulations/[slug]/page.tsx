@@ -346,6 +346,11 @@ export default async function RegulationDocPage({ params }: PageProps) {
                           visibleText={section.text}
                           gate={gate}
                           plain
+                          // Grids where the ingestion left a flattened list.
+                          // Undefined on any page baked before the backend
+                          // shipped `tables` — `visibleText` is then the prose
+                          // body, which carries no token to leave dangling.
+                          tables={section.tables}
                           dedupeHeading={section.title}
                           // When the document has a trailing hidden-section CTA
                           // card, every per-section gate renders bars-only so

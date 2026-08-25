@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { ChunkTable } from "@/components/library/blocks/ChunkTable";
 import { renderInline, type LegalBlock } from "@/lib/library/legal-text";
 
 /**
@@ -19,6 +20,7 @@ import { renderInline, type LegalBlock } from "@/lib/library/legal-text";
  *   list (أ- / 1-)       mt-3   marker column + hanging text, items 8px apart
  *   para                 mt-3.5
  *   repealed («ملغاة»)   mt-2   muted italic
+ *   table (TBL_…)        mt-4   ChunkTable — its own scroll box, never the page
  *
  * `tone="lead"` is the AI summary lead: same structure, secondary text colour.
  * Server component.
@@ -107,6 +109,14 @@ export function LegalBlocks({
                 {block.text}
               </p>
             );
+          case "table":
+            // The gap rides a wrapper so `ChunkTable` stays spacing-agnostic —
+            // the مراجع popup renders the same component in a different rhythm.
+            return (
+              <div key={index} className={gap}>
+                <ChunkTable html={block.html} />
+              </div>
+            );
           default:
             return (
               <p key={index} className={cn(gap, "whitespace-pre-line")}>
@@ -124,4 +134,5 @@ const GAP: Record<Exclude<LegalBlock["type"], "heading">, string> = {
   list: "mt-3",
   para: "mt-3.5",
   repealed: "mt-2",
+  table: "mt-4",
 };

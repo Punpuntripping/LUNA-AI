@@ -24,7 +24,31 @@ export type LegalBlock =
   | { type: "list"; items: { marker: string; text: string }[] }
   /** A repealed stub («ملغاة»). */
   | { type: "repealed"; text: string }
+  /**
+   * A table swapped back in for its `TBL_…` placeholder line. `html` is
+   * sanitized server-side and rendered as-is by `<ChunkTable>`; `ref` is the
+   * token it resolved from, kept for debugging and for keys.
+   */
+  | { type: "table"; ref: string; html: string }
   | { type: "para"; text: string };
+
+/**
+ * Sanitized tables keyed by the `TBL_…` token that stands in for each one
+ * inside the body text. The wire shape carries `md` too (the prose the table
+ * replaced — the copy string and the gate weight); the lifter only ever reads
+ * `html`, so it asks for the least it needs and the richer wire type is
+ * assignable to it.
+ */
+export type LegalTableMap = Record<string, { html: string }>;
+
+/**
+ * A whole line that is nothing but a `TBL_…` token — the placeholder the corpus
+ * writes where a table was lifted out of the prose. Whole line, nothing else on
+ * it. `[A-Za-z0-9_]+` and not something looser is what makes BOTH token shapes
+ * match (plain, and hash-suffixed when sanitizing the chunk ref changed it) —
+ * do not relax it.
+ */
+const TABLE_PLACEHOLDER = /^[ \t]*(TBL_[A-Za-z0-9_]+)[ \t]*$/;
 
 const ARABIC_ORDINALS = new Set([
   "الأولى", "الاولى", "الثانية", "الثالثة", "الرابعة", "الخامسة", "السادسة",
@@ -92,8 +116,29 @@ function bareChapterLevel(text: string): 1 | 2 | 3 | null {
  * bare chapter lines become headings; a lone clause number becomes a label;
  * runs of «أ- …» / «1- …» lines become one list (consecutive lists merge, so a
  * corpus that blank-line-separates every sub-clause still yields ONE list).
+ *
+ * `tables` (optional) turns each whole-line `TBL_…` placeholder into a `table`
+ * block. Two rules, both load-bearing:
+ *
+ *   - AN UNRESOLVED TOKEN EMITS NOTHING. A token whose ref is not in `tables`
+ *     (or whose entry carries empty markup, which is what the server's
+ *     sanitizer returns when nothing survived the allowlist) is DROPPED, not
+ *     printed. The server must never send an unresolvable token — but `text`
+ *     and `tables` are baked together into a 24h ISR payload, and if that pair
+ *     ever arrives half-formed, a raw `TBL_17261_reg_501_chunk_003_1` on a
+ *     statute page is the exact failure this feature exists to prevent.
+ *   - A token line FLUSHES the paragraph buffer, exactly like a blank line, so
+ *     the prose above a table never absorbs the table's position.
+ *
+ * WITHOUT `tables` the placeholder branch does not run at all, and the result
+ * is byte-identical to the pre-tables behaviour for every input — which is what
+ * lets every other caller (circulars, forms, judgments, guides, summaries) keep
+ * calling this with one argument and change nothing.
  */
-export function toLegalBlocks(text: string): LegalBlock[] {
+export function toLegalBlocks(
+  text: string,
+  tables?: LegalTableMap,
+): LegalBlock[] {
   const blocks: LegalBlock[] = [];
   let buffer: string[] = [];
 
@@ -157,6 +202,16 @@ export function toLegalBlocks(text: string): LegalBlock[] {
       } else {
         blocks.push({ type: "heading", text: heading.text, level: heading.level });
       }
+      continue;
+    }
+
+    const placeholder = tables ? line.match(TABLE_PLACEHOLDER) : null;
+    if (placeholder) {
+      flush();
+      const ref = placeholder[1];
+      const html = tables?.[ref]?.html;
+      // Resolved ⇒ the grid. Unresolved (or empty markup) ⇒ nothing at all.
+      if (html) blocks.push({ type: "table", ref, html });
     } else if (line.trim() === "") {
       flush();
     } else {

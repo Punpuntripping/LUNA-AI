@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any, Optional
 
 import pytest
@@ -1813,3 +1814,1033 @@ def test_an_appendix_lookup_failure_still_renders_the_regulation() -> None:
     assert [s["id"] for s in doc["visible_sections"]] == ["art-1", "art-2", "art-3"]
     assert all(t["kind"] == "article" for t in doc["toc"])
     assert ls.unlock_cost(fake, "regulation", REG_ID) == 1
+
+
+# ===========================================================================
+# 8. CHUNK TABLES — the grid instead of the flattening
+# `.claude/plans/chunk_table_rendering.md` §3.1 (D8), §3.2, §3.3 · §6 tests 7-11
+# ===========================================================================
+#
+# Every table in the regulation corpus was OCR'd and then CONVERTED TO PROSE
+# before ingestion — that prose is what BM25 indexes and what the model reads.
+# `chunks_v2.content_display` is the same text with each confidently-resolved
+# table collapsed to a whole-line `TBL_…` token, and `chunk_tables_v2` holds the
+# HTML behind each token. Measured 2026-08-24: 24,511 tables, 8,855 chunks
+# carrying a display body, 532 published أنظمة affected.
+#
+# Feeding that display body to `truncate_for_gate` breaks in TWO directions at
+# once, and both are measured:
+#
+#   * 6,920 of 8,855 chunks (78.1%) carry a token inside the first 600 chars,
+#     and on 191 of them a 600-char cut lands MID-TOKEN — a raw
+#     `TBL_17630_reg_5…` fragment shipped to an anonymous crawler, worse than a
+#     whole raw token because the renderer's own regex will not even match it.
+#   * A whole token costs ~30 chars of budget and renders ~880 chars of law
+#     (mean `table_md` 878, p95 2,483), so a 600-char preview holding two tables
+#     quietly TRIPLES its own exposure.
+#
+# `truncate_segments_for_gate` is the fix and this section is its proof.
+
+from shared.library.chunk_tables import (          # noqa: E402
+    TABLE_PLACEHOLDER,
+    split_body,
+    tables_by_ref,
+    visible_text,
+)
+
+# NOTE — there is no longer a slack constant here, and that is the point.
+# `split_body` consumes the newline on either side of a token as a line
+# separator, so the walk used to arrive at each later segment a few chars richer
+# than the string cut, which rounded up to a whole word. Charging that separator
+# in `truncate_segments_for_gate` removed the drift, so every comparison below
+# against `truncate_for_gate` is an EXACT equality.
+
+# 7 chars. The word length is load-bearing in `_neutrality_fixture` — see there.
+_W7 = "التعاقد"
+
+
+def _run(n_words: int) -> str:
+    """`n_words` space-separated 7-char words → exactly ``8 * n_words - 1`` chars."""
+    return " ".join([_W7] * n_words)
+
+
+TBL_1 = "TBL_17393_reg_029_chunk_001_1"
+TBL_2 = "TBL_17393_reg_029_chunk_001_2"
+
+# A real merged-cell grid — `rowspan`/`colspan` survive the sanitizer, so the
+# fixture exercises the same shape 34.1% of the corpus has.
+_HTML_1 = (
+    '<table><tr><th colspan="2">حدود الهجرة</th></tr>'
+    "<tr><td>الرصاص</td><td>90</td></tr>"
+    "<tr><td>الزئبق</td><td>60</td></tr></table>"
+)
+_HTML_2 = "<table><tr><th>البند</th></tr><tr><td>ملحق</td></tr></table>"
+
+
+def _wide_grid(*, rows: int) -> str:
+    """A violation-fine grid shaped like `17405_reg_603_chunk_019`'s.
+
+    م / المخالفة / حد قيمة الغرامة, with a `colspan` header group — the shape
+    that carries real law in its cells and nothing in its `table_md`.
+    """
+    body = "".join(
+        f"<tr><td>{i}</td><td>مخالفة رقم {i}</td><td>{i * 500} ريال</td></tr>"
+        for i in range(1, rows + 1)
+    )
+    return (
+        '<table><tr><th colspan="3">جدول الغرامات</th></tr>'
+        "<tr><th>م</th><th>المخالفة</th><th>حد قيمة الغرامة</th></tr>"
+        f"{body}</table>"
+    )
+
+
+def _table_row(
+    ref: str, md: str, *, html: str = _HTML_1, chunk_id: str = "", reg: str = REG_ID
+) -> dict[str, Any]:
+    """One ``chunk_tables_v2`` row, in the shape PostgREST actually returns."""
+    return {
+        "table_ref": ref,
+        "chunk_id": chunk_id,
+        "regulation_id": reg,
+        "table_html": html,
+        "table_md": md,
+    }
+
+
+def _display_chunk(
+    chunk_id: str,
+    *,
+    content: str,
+    content_display: Optional[str],
+    title: str = "الفصل 1",
+    corpus: str = "without_articles",
+    position: int = 1,
+) -> dict[str, Any]:
+    """A ``chunks_v2`` row carrying BOTH bodies — the agent view and the user view."""
+    return {
+        "id": chunk_id,
+        "regulation_id": REG_ID,
+        "title": title,
+        "position": position,
+        "corpus": corpus,
+        "chunk_ref": f"17393_reg_029_chunk_{position:03d}",
+        "content": content,
+        "content_display": content_display,
+    }
+
+
+CHUNK_ID = "eeeeeeee-0000-0000-0000-000000000001"
+
+
+def _reg_with_tables(
+    chunks: list[dict[str, Any]],
+    tables: list[dict[str, Any]],
+    *,
+    tier: str = "gated",
+) -> FakeSupabase:
+    """A CHUNK-SURFACE نظام (holed index → flip) carrying real table rows."""
+    fake = _reg_doc_fake(_holed(232, 68), n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = tier
+    fake.tables["chunks_v2"] = chunks
+    fake.tables["chunk_tables_v2"] = tables
+    return fake
+
+
+def _prose_chars(section: dict[str, Any]) -> int:
+    """The section's rendered prose, tokens removed.
+
+    A `TBL_…` token is not legal text — it is a placement instruction for the
+    client — so it is stripped before counting. The newlines that surrounded it
+    stay, because the prose body had them too.
+    """
+    return len(TABLE_PLACEHOLDER.sub("", section["text"]))
+
+
+def _visible_legal_chars(section: dict[str, Any]) -> int:
+    """Prose + the PROSE FORM of each rendered grid (``table_md``).
+
+    The measure D8 was originally written against: how much law the section
+    stands for, expressed in the same units `truncate_for_gate` spends.
+    """
+    return _prose_chars(section) + sum(
+        len(t["md"]) for t in section["tables"].values()
+    )
+
+
+def _reader_visible_chars(section: dict[str, Any]) -> int:
+    """Prose + the text a reader actually reads OFF each rendered grid.
+
+    The security measure, and the one with no tolerance on it. For the 244 tables
+    whose `table_md` is the ingestion error placeholder «[خطأ في التحويل - انتهت
+    المهلة]» this is the only honest count — `md` reports 31 characters for a
+    3.2 KB penalty schedule, which is the hole `table_weight`'s ``max`` closes.
+    """
+    return _prose_chars(section) + sum(
+        len(visible_text(t["html"])) for t in section["tables"].values()
+    )
+
+
+# ---- 8.1 D8 — THE GATE IS NEUTRAL TO TABLES -------------------------------
+
+
+def _neutrality_fixture() -> tuple[FakeSupabase, str]:
+    """A chunk whose two views hold the SAME law, sized for an EXACT comparison.
+
+    ``content``          = P + "\\n" + MD + "\\n" + S   (the prose, agent view)
+    ``content_display``  = P + "\\n" + TOKEN + "\\n" + S (the user view)
+
+    with ``MD`` = ``table_md``, i.e. byte-identical to the block the token
+    replaced. That identity is the whole basis of D8.
+
+    ``MD`` is a REAL conversion — long enough that ``table_weight``'s ``max``
+    resolves to ``len(md)`` — so this fixture measures the neutral 97.8% of the
+    corpus. The conversion-error tail gets its own test, and there the gate is
+    deliberately stricter than the prose baseline.
+
+    THE ARITHMETIC IS TUNED, ON PURPOSE, so the neutrality band is tight rather
+    than «about the same». `split_body` consumes the newline on either side of a
+    token as a line separator, so the segment walk is not charged those 2 chars
+    while the string cut is — the walk therefore reaches ``S`` with 2 chars MORE
+    budget. 7-char words put those 2 chars strictly inside a word (no space at
+    S[304] or S[305]), so both paths cut at the same space, S[303]. With
+    blank-line separation the string cut spends 2 newlines per boundary where
+    the walk is charged 1, so the walk stays at or BELOW today — never above,
+    which is the direction that matters.
+    """
+    p, md, s = _run(12), _run(25), _run(200)      # 95, 199, 1599 chars
+    content = f"{p}\n{md}\n{s}"
+    content_display = f"{p}\n{TBL_1}\n{s}"
+    fake = _reg_with_tables(
+        [_display_chunk(CHUNK_ID, content=content, content_display=content_display)],
+        [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
+    )
+    return fake, content
+
+
+def test_the_gate_is_neutral_to_tables() -> None:
+    """THE headline assertion — D8 made checkable, as the SAFE DIRECTION.
+
+    A table is charged ``max(len(table_md), len(visible_text(table_html)))``. The
+    ``md`` half is the original D8: ``table_md`` is *literally the prose that
+    occupied those bytes* before ingestion collapsed it to a token, so the
+    600-char preview buys the reader the same quantity of law it bought before
+    this feature existed. This is the assertion that answers «does this leak
+    more».
+
+    ⚠ IT IS `<=`, NOT `==`, AND THAT IS THE POINT. Strict equality was the
+    original spec and it is WRONG, because it would also have to hold for the
+    **244 tables whose ``table_md`` is the ingestion error placeholder** «[خطأ في
+    التحويل - انتهت المهلة]» — 31 characters standing in for a full penalty
+    schedule. There the prose baseline was itself leaking a grid for free, so
+    matching it is the last thing this gate should do; it is deliberately
+    STRICTER. Neutrality is the claim for the 97.8% where ``md`` is a real
+    conversion, and with the inter-segment separator charged it holds EXACTLY —
+    the assertion below is `==`, and the security claim above it is a hard `<=`.
+    """
+    fake, content = _neutrality_fixture()
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert doc is not None
+    section = doc["visible_sections"][0]
+
+    # The grid really did render — otherwise this test proves nothing.
+    assert section["tables"], "fixture rendered no table"
+    assert section["is_truncated"] is True
+
+    baseline = len(
+        ls.truncate_for_gate(content, "gated", free_chars=600)["visible_text"]
+    )
+    # (a) THE SECURITY CLAIM: what an anonymous crawler actually reads off the
+    #     page — prose plus the text inside each grid — never exceeds what the
+    #     prose gate served it. Hard `<=`, no tolerance.
+    assert _reader_visible_chars(section) <= baseline
+    # (b) THE NEUTRALITY CLAIM, in the units the budget is spent in. EXACT:
+    #     charging the inter-segment separator removed the last source of
+    #     drift between the segment walk and the string cut.
+    assert _visible_legal_chars(section) == baseline
+
+
+def test_the_gate_is_stricter_than_prose_on_a_conversion_error_table() -> None:
+    """The 244 tables that never got a prose conversion — the hole `max` closes.
+
+    Their ``table_md`` is «[خطأ في التحويل - انتهت المهلة]», 31 chars, standing
+    in for a real grid. `17405_reg_603_chunk_019` is one: two 3.2 KB
+    violation-fine grids (م / المخالفة / حد قيمة الغرامة) whose entire prose form
+    is that sentence, twice.
+
+    Charged at ``len(md)`` the token costs 31 characters of a 600-char budget and
+    ships a complete penalty schedule to an anonymous crawler. Charged at
+    ``max(len(md), len(visible))`` the GRID does not fit, so it degrades to the
+    prose it replaced — which for these rows is the error string, i.e. precisely
+    the bytes that are live today. Ugly, deliberately not special-cased, and a
+    corpus-side bug to file upstream (D8a).
+    """
+    err = "[خطأ في التحويل - انتهت المهلة]"
+    grid = _wide_grid(rows=60)               # ~900 chars of reader-visible law
+    assert len(visible_text(grid)) > 600 > len(err)
+
+    p, s = _run(7), _run(60)
+    content = p + "\n" + err + "\n" + s
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID, content=content, content_display=p + "\n" + TBL_1 + "\n" + s
+            )
+        ],
+        [_table_row(TBL_1, err, html=grid, chunk_id=CHUNK_ID)],
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    # Under a `len(md)` charge the grid costs 31 chars and sails through …
+    assert len(p) + len(err) < 600
+    # … under the corrected charge no grid ships at all, and the reader gets
+    # byte-for-byte what that section renders today.
+    assert section["tables"] == {}
+    assert "TBL_" not in section["text"]
+    assert section["text"] == ls.truncate_for_gate(
+        content, "gated", free_chars=600
+    )["visible_text"]
+    assert _reader_visible_chars(section) <= len(
+        ls.truncate_for_gate(content, "gated", free_chars=600)["visible_text"]
+    )
+
+
+@pytest.mark.parametrize("sep", ["\n", "\n\n"], ids=["one-newline", "blank-line"])
+def test_the_walk_never_spends_more_than_its_budget(sep: str) -> None:
+    """Neutrality in its BUDGET form — the same claim, at every cut position.
+
+    ``test_the_gate_is_neutral_to_tables`` pins the exact character count on one
+    tuned fixture. This is the general statement behind it: a table is charged
+    ``len(table_md)``, i.e. what its prose cost, so the walk can NEVER hand out
+    more weighted characters than ``free_chars`` — at any budget, on either
+    separator shape, with the cut landing before / inside / after a grid.
+
+    Stated as a spend rather than as a diff against ``truncate_for_gate`` on
+    purpose. `split_body` consumes the newlines around a token as line
+    separators, so the walk is not charged the 2–4 chars the string cut spends on
+    them, and `project_segments` puts a single one back; comparing the two
+    rendered lengths therefore wobbles by a word at the cut boundary while the
+    thing that actually governs exposure — the spend — does not wobble at all.
+    """
+    md1, md2 = _run(9), _run(113)
+    body = sep.join([_run(4), TBL_1, _run(7), TBL_2, _run(30)])
+    segments = split_body(
+        body,
+        # TBL_2 is a conversion-error table: `md` says 31 chars, the grid says
+        # ~900. The sweep therefore covers both charge regimes at once.
+        tables_by_ref(
+            [
+                _table_row(TBL_1, md1),
+                _table_row(TBL_2, md2, html=_wide_grid(rows=60)),
+            ]
+        ),
+    )
+    assert sum(1 for seg in segments if seg["kind"] == "table") == 2
+
+    ceiling = len(body) + sum(
+        seg["weight"] for seg in segments if seg["kind"] == "table"
+    )
+    for budget in range(0, ceiling + 2):
+        cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=budget)
+        spend = sum(
+            seg["weight"] if seg["kind"] == "table" else len(seg["text"])
+            for seg in cut["visible_segments"]
+        )
+        assert spend <= budget, (budget, spend)
+        # …and «is_truncated» is honest: false ⇒ every segment is represented,
+        # each either as itself or as the prose its grid degraded to. Identity
+        # is the WRONG assertion now — a grid that does not fit is replaced by a
+        # text segment carrying its `md`, and that is not a truncation.
+        if not cut["is_truncated"]:
+            assert len(cut["visible_segments"]) == len(segments), budget
+            for was, now in zip(segments, cut["visible_segments"]):
+                if was != now:
+                    assert was["kind"] == "table" and now["kind"] == "text"
+                    assert now["text"] == was["md"], budget
+
+    # THE FALLBACK PATH obeys the same ceiling. `_chunk_section_body` swaps in
+    # the prose body whenever the walk yields nothing, and a preview that
+    # restores content must not restore MORE than the budget buys.
+    over_budget = _run(230)                  # 1,839 chars — the p50 table_md
+    prose_row = _display_chunk(
+        CHUNK_ID,
+        content=sep.join([over_budget, _run(100)]),
+        content_display=sep.join([TBL_1, _run(100)]),
+    )
+    tmap = ls._ChunkTableMap(
+        {CHUNK_ID: tables_by_ref([_table_row(TBL_1, over_budget)])}
+    )
+    for budget in range(0, 1400):
+        out = ls._chunk_section_body(
+            prose_row, tmap, gate="gated", free_chars=budget
+        )
+        if out["tables"]:                    # the walk ran — weigh the grid
+            spent = len(TABLE_PLACEHOLDER.sub("", out["text"])) + sum(
+                max(len(t["md"]), len(visible_text(t["html"])))
+                for t in out["tables"].values()
+            )
+            # `project_segments` re-adds one separator newline per token that
+            # the walk never charged for; that is the whole of the slack.
+            assert spent <= budget + len(out["tables"]), (budget, spent)
+        else:                                # the fallback ran — plain prose
+            assert len(out["text"]) <= budget, (budget, len(out["text"]))
+
+
+# ---- 8.2 A table is atomic ------------------------------------------------
+
+
+def test_a_grid_is_never_cut_through() -> None:
+    """ATOMICITY, and it survives the degrade rule intact.
+
+    What D8 protects is that a GRID is never cut: half a fines table reads as
+    the whole schedule, so a partial grid misrepresents the data. A budget that
+    lands mid-table therefore draws NO grid — it renders the prose the table was
+    flattened into, cut by the ordinary whitespace rule. Prose cuts fine, and it
+    is what `truncate_for_gate` cuts today for that same region.
+    """
+    p, md, s = _run(12), _run(25), _run(200)
+    body = p + "\n" + TBL_1 + "\n" + s
+    tables = tables_by_ref([_table_row(TBL_1, md)])
+    segments = split_body(body, tables)
+    assert [seg["kind"] for seg in segments] == ["text", "table", "text"]
+
+    # len(p)=95, len(md)=199 — a budget that clears the prose and lands halfway
+    # into the grid.
+    cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=len(p) + 100)
+    text, rendered = ls.project_segments(cut["visible_segments"])
+
+    # No grid, whole or partial — and no token pointing at one.
+    assert rendered == {}
+    assert "<table" not in text and "TBL_" not in text
+    assert all(seg["kind"] == "text" for seg in cut["visible_segments"])
+    assert cut["is_truncated"] is True
+    # The grid became its prose, cut at a word boundary — and because the
+    # inter-segment separator is charged, the result is BYTE-FOR-BYTE the
+    # string cut `truncate_for_gate` performs on `content` at the same budget.
+    content = p + "\n" + md + "\n" + s
+    assert text == ls.truncate_for_gate(
+        content, "gated", free_chars=len(p) + 100
+    )["visible_text"]
+    # …and the trailing prose is still withheld: the walk stopped.
+    assert not text.endswith(s)
+
+
+def test_a_degraded_grid_is_weighed_into_the_placeholder_bars() -> None:
+    """The bars size off what is actually left, not off the token's 30 chars.
+
+    Sizing them off the raw ``content_display`` remainder would tell a reader
+    «~1 line is behind this gate» about a 900-char annex table.
+    """
+    md = _run(113)                       # 903 chars of law
+    lead = _run(6)                       # 47
+    segments = split_body(lead + "\n" + TBL_1, tables_by_ref([_table_row(TBL_1, md)]))
+    assert segments[-1]["weight"] == len(md)   # a real conversion: `md` dominates
+
+    cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=100)
+    # 100 - the lead - the 1-char separator the projection re-inserts.
+    shown = ls.truncate_for_gate(md, "gated", free_chars=100 - len(lead) - 1)
+
+    assert cut["is_truncated"] is True
+    assert cut["hidden_placeholder_lines"] == math.ceil(
+        (len(md) - len(shown["visible_text"])) / 90
+    )
+    # The token's own ~29 chars would have sized this at ONE bar.
+    assert cut["hidden_placeholder_lines"] > 1
+
+
+def test_no_token_survives_truncation() -> None:
+    """PROPERTY: at EVERY budget from 0 to len(body), `text` holds no loose token.
+
+    This is the 191-chunk bug — the chunks where a 600-char cut lands mid-token
+    and ships a `TBL_17630_reg_5…` fragment to a crawler. Sweeping every single
+    cut position covers that shape and every other straddle with it, so the
+    guarantee is structural rather than anecdotal: the literal string ``TBL_``
+    may appear in the payload ONLY as a whole line that ``tables`` can resolve.
+    """
+    md1, md2 = _run(9), _run(14)
+    body = f"{_run(4)}\n{TBL_1}\n{_run(7)}\n\n{TBL_2}\n\n{_run(5)}"
+    tables = tables_by_ref(
+        [_table_row(TBL_1, md1), _table_row(TBL_2, md2, html=_HTML_2)]
+    )
+    segments = split_body(body, tables)
+    assert sum(1 for s in segments if s["kind"] == "table") == 2
+
+    # The fixture really does carry BOTH shapes of the bug, so what follows is
+    # not vacuous:
+    #
+    # (a) a RAW character slice lands mid-token and ships `TBL_17393_reg…` as
+    #     prose — worse than a whole raw token, because it is no longer a whole
+    #     line and the renderer's own regex will not even recognise it;
+    assert any(
+        (tail := body[:b].rsplit("\n", 1)[-1]).startswith("TBL_")
+        and tail not in (TBL_1, TBL_2)
+        for b in range(len(body) + 1)
+    ), "fixture does not reproduce the mid-token cut"
+    # (b) even the whitespace-aware `truncate_for_gate` — which cannot split a
+    #     token, because a token line is bounded by newlines — happily ships a
+    #     WHOLE raw one with nothing to resolve it (D3, the 6,920-chunk case).
+    assert any(
+        TABLE_PLACEHOLDER.search(
+            ls.truncate_for_gate(body, "gated", free_chars=b)["visible_text"]
+        )
+        for b in range(len(body) + 1)
+    ), "fixture does not reproduce the raw-token preview"
+
+    for budget in range(0, len(body) + 1):
+        cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=budget)
+        text, rendered = ls.project_segments(cut["visible_segments"])
+        tokens = TABLE_PLACEHOLDER.findall(text)
+        # Every trace of `TBL_` is a whole-line token …
+        assert text.count("TBL_") == len(tokens), (budget, text)
+        # … and every one of them resolves.
+        assert set(tokens) <= set(rendered), (budget, tokens, list(rendered))
+
+
+def test_the_token_set_and_the_table_map_agree() -> None:
+    """§3.3's invariant, both directions, at every budget.
+
+    A token with no entry renders RAW on a statute page (D3). An entry with no
+    token renders NOWHERE and is dead weight baked into an ISR payload for 24h.
+    Neither is allowed, and «tokens ⊆ tables» alone would let the second through.
+    """
+    md1, md2 = _run(9), _run(14)
+    body = f"{_run(4)}\n{TBL_1}\n{_run(7)}\n\n{TBL_2}\n\n{_run(5)}"
+    segments = split_body(
+        body,
+        tables_by_ref([_table_row(TBL_1, md1), _table_row(TBL_2, md2, html=_HTML_2)]),
+    )
+
+    for gate, budget in [("open", 600), ("gated", 0), ("gated", 40),
+                         ("gated", 200), ("gated", 10_000)]:
+        cut = ls.truncate_segments_for_gate(segments, gate, free_chars=budget)
+        text, rendered = ls.project_segments(cut["visible_segments"])
+        assert set(TABLE_PLACEHOLDER.findall(text)) == set(rendered), (gate, budget)
+        for ref, payload in rendered.items():
+            assert payload["html"].startswith("<table"), ref
+            assert set(payload) == {"html", "md"}
+
+
+def test_an_unresolvable_token_reaches_no_payload() -> None:
+    """D3 at the service boundary: a token with no row leaves NO trace.
+
+    Corpus-wide this is unreachable today (0 unresolvable tokens across all
+    24,511), but the local corpus runs ahead of the DB and re-ingests recur.
+    """
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID,
+                content=f"{_run(4)}\n{_run(6)}\n{_run(4)}",
+                content_display=f"{_run(4)}\n{TBL_1}\n{_run(4)}",
+            )
+        ],
+        [],                                  # …and not one chunk_tables_v2 row
+        tier="open",
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    assert "TBL_" not in section["text"]
+    assert section["tables"] == {}
+
+
+# ---- 8.4 Fail-soft, in the direction that is NOT obvious ------------------
+
+
+def test_a_tables_read_failure_falls_back_to_prose() -> None:
+    """§3.2's named hazard: a degradation may cost fidelity, never CONTENT.
+
+    The obvious fallback is the wrong one. Rendering `content_display` with an
+    empty table map lets every token resolve to nothing (D3), which does not
+    degrade the نظام — it silently DELETES a table from it. Falling back to
+    `content` costs the grid and keeps every word of the law.
+    """
+    p, md, s = _run(12), _run(25), _run(20)
+    content = f"{p}\n{md}\n{s}"
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID, content=content, content_display=f"{p}\n{TBL_1}\n{s}"
+            )
+        ],
+        [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
+        tier="open",
+    )
+    fake.fail_tables = {"chunk_tables_v2"}
+
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    assert section["text"] == content       # the prose, tables intact as text
+    assert section["tables"] == {}
+    assert "TBL_" not in section["text"]
+    # The flattened table survived — which is the entire point.
+    assert md in section["text"]
+
+
+def test_a_successful_read_with_no_rows_is_not_a_failure() -> None:
+    """The other half: an EMPTY map from a healthy read is the 82% case.
+
+    39,535 of 48,390 chunks carry no table at all. Treating «no rows» as «read
+    failed» would push every one of them down the fallback path forever.
+    """
+    body = f"{_run(4)}\n{_run(6)}"
+    fake = _reg_with_tables(
+        [_display_chunk(CHUNK_ID, content=body, content_display=None)], [], tier="open"
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    assert section["text"] == body
+    assert section["tables"] == {}
+
+
+# ---- 8.5 «gated» still MEANS something ------------------------------------
+
+
+def test_a_gated_preview_still_withholds() -> None:
+    """MIN_WITHHELD_* still hold once tables are weighted in — the D8 payoff.
+
+    THE HAZARD, made concrete: the token is only 29 characters, so a naive
+    string cut at 600 leaves it whole inside the preview — and a client that
+    resolved it would draw a 1,999-char grid bought with 29 chars of budget.
+    Weighted properly the grid does not fit, degrades to its prose, and the
+    preview withholds a real remainder of the document.
+    """
+    p, md, s = _run(7), _run(250), _run(250)      # 55 / 1,999 / 1,999
+    content = p + "\n" + md + "\n" + s
+    content_display = p + "\n" + TBL_1 + "\n" + s
+
+    naive = ls.truncate_for_gate(content_display, "gated", free_chars=600)
+    assert TBL_1 in naive["visible_text"]         # the raw token, shipped
+
+    fake = _reg_with_tables(
+        [_display_chunk(CHUNK_ID, content=content, content_display=content_display)],
+        [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    total = len(p) + max(len(md), len(visible_text(_HTML_1))) + len(s)
+    withheld = total - _visible_legal_chars(section)
+    assert section["is_truncated"] is True
+    assert withheld >= ls.MIN_WITHHELD_CHARS
+    assert withheld / total >= ls.MIN_WITHHELD_RATIO
+    # No grid was drawn, so no grid was bought.
+    assert section["tables"] == {}
+    assert "TBL_" not in section["text"]
+
+
+def test_an_open_chunk_regulation_ships_its_grids() -> None:
+    """The bulk of the prize: 5,156 of v1's 8,017 tables render on this path."""
+    md = _run(20)
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID,
+                content=f"{_run(4)}\n{md}\n{_run(4)}",
+                content_display=f"{_run(4)}\n{TBL_1}\n{_run(4)}",
+            )
+        ],
+        [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
+        tier="open",
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    assert set(section["tables"]) == {TBL_1}
+    assert section["tables"][TBL_1]["md"] == md
+    assert 'colspan="2"' in section["tables"][TBL_1]["html"]
+    # THE TOKEN STAYS IN THE TEXT — it is how the client knows where the grid goes.
+    assert f"\n{TBL_1}\n" in section["text"]
+    assert section["is_truncated"] is False
+
+
+def test_the_appendix_surface_renders_its_grids() -> None:
+    """1,396 + 1,465 tables ride the ملاحق, and on a لائحة فنية they ARE the نظام."""
+    md = _run(20)
+    apx = _display_chunk(
+        "dddddddd-0000-0000-0000-000000000001",
+        content=f"{_run(3)}\n{md}",
+        content_display=f"{_run(3)}\n{TBL_2}",
+        title="ملحق (1)",
+        corpus="appendix",
+    )
+    fake = _reg_doc_fake(_article_rows([1, 2, 3]), n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = "open"
+    fake.tables["chunks_v2"] = [apx]
+    fake.tables["chunk_tables_v2"] = [
+        _table_row(TBL_2, md, html=_HTML_2, chunk_id=apx["id"])
+    ]
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    apx_section = doc["visible_sections"][-1]
+    assert apx_section["id"] == "apx-1"
+    assert set(apx_section["tables"]) == {TBL_2}
+    assert apx_section["text"].endswith(TBL_2)
+
+    # …and the paid reveal renders the SAME grid from the same rows.
+    full = ls.get_full_regulation(fake, "nizam-test")
+    assert full["sections"][-1]["tables"] == apx_section["tables"]
+
+
+def test_the_reveal_truncates_nothing_and_keeps_every_grid() -> None:
+    """`get_full_regulation`'s chunk branch — gate='open', so no walk can bite."""
+    md1, md2 = _run(9), _run(113)
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID,
+                content=f"{_run(4)}\n{md1}\n{_run(4)}\n{md2}",
+                content_display=f"{_run(4)}\n{TBL_1}\n{_run(4)}\n{TBL_2}",
+            )
+        ],
+        [
+            _table_row(TBL_1, md1, chunk_id=CHUNK_ID),
+            _table_row(TBL_2, md2, html=_HTML_2, chunk_id=CHUNK_ID),
+        ],
+    )
+    full = ls.get_full_regulation(fake, "nizam-test")
+    section = full["sections"][0]
+    assert set(section["tables"]) == {TBL_1, TBL_2}
+    assert set(TABLE_PLACEHOLDER.findall(section["text"])) == {TBL_1, TBL_2}
+
+
+def test_an_article_fallback_chunk_renders_its_grids() -> None:
+    """The `_chunk_row_map` → `_article_sections` path (a sliver, but free).
+
+    An extracted `article_text` is a slice of `content` and can carry no token —
+    §3.4's named limit — so only the CHUNK-FALLBACK bodies resolve tables here.
+    """
+    md = _run(20)
+    art = {
+        "regulation_id": REG_ID, "article_no": 1, "article_label": "المادة 1",
+        "slug": "m-1", "chunk_id": CHUNK_ID, "article_text": None,
+        "extraction_status": "pending",
+    }
+    fake = _reg_doc_fake([art], n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = "open"
+    fake.tables["chunks_v2"] = [
+        _display_chunk(
+            CHUNK_ID,
+            content=f"{_run(4)}\n{md}",
+            content_display=f"{_run(4)}\n{TBL_1}",
+            corpus="with_articles",
+        )
+    ]
+    fake.tables["chunk_tables_v2"] = [_table_row(TBL_1, md, chunk_id=CHUNK_ID)]
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    section = doc["visible_sections"][0]
+    assert section["id"] == "art-1"
+    assert set(section["tables"]) == {TBL_1}
+
+
+def test_an_extracted_article_is_untouched_and_carries_no_tables() -> None:
+    """The ~50k مواد this feature must not perturb: byte-identical, `tables={}`."""
+    doc = ls.get_regulation_doc(_reg_doc_fake(_holed(3, 3), n_chunks=0), "nizam-test")
+    for section in doc["visible_sections"]:
+        assert section["tables"] == {}
+        assert section["text"].startswith("نص المادة")
+
+
+def test_the_tables_read_is_one_round_trip_per_document() -> None:
+    """ONE batched read filtered on `regulation_id` — never one per chunk.
+
+    `idx_chunk_tables_reg` covers it. Per-chunk would be 60 round trips on a
+    chunk-surface نظام, at page-render latency, for a payload the ISR bake keeps
+    for 24h.
+    """
+    md = _run(6)
+    chunks = [
+        _display_chunk(
+            f"eeeeeeee-0000-0000-0000-{i:012d}",
+            content=f"{_run(3)}\n{md}",
+            content_display=f"{_run(3)}\n{TBL_1}",
+            position=i,
+        )
+        for i in (1, 2, 3)
+    ]
+    fake = _CountingSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[_bare_reg_row()],
+        seo_articles=_holed(232, 68),
+        chunks_v2=chunks,
+        chunk_tables_v2=[_table_row(TBL_1, md, chunk_id=chunks[0]["id"])],
+    )
+    ls.get_regulation_doc(fake, "nizam-test")
+    assert fake.tables_queried.count("chunk_tables_v2") == 1
+
+
+def test_an_all_extracted_regulation_never_reads_the_tables_table() -> None:
+    """No chunk-shaped body ⇒ no round trip. The common shape pays nothing."""
+    fake = _CountingSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[_bare_reg_row()],
+        seo_articles=_article_rows([1, 2, 3]),
+        chunks_v2=[],
+    )
+    ls.get_regulation_doc(fake, "nizam-test")
+    assert "chunk_tables_v2" not in fake.tables_queried
+
+
+def _bare_reg_row() -> dict[str, Any]:
+    return {"id": REG_ID, "reg_ref": "r", "clean_title": "نظام", "title": None,
+            "entity_name": None, "doc_type_bucket": None,
+            "status_class": "in_force", "legal_authority": None,
+            "start_date": None, "sectors": [], "summary": None,
+            "llm_summary": None, "landing_url": None, "pdf_url": None}
+
+
+# ---- 8.7 The wire ----------------------------------------------------------
+
+
+def test_the_response_model_declares_tables() -> None:
+    """`response_model` strips undeclared keys — the `kind`-on-`TocEntry` trap.
+
+    A service that emits `tables` and a model that does not list it produces a
+    payload whose `text` still carries the tokens and whose grids are GONE: naked
+    `TBL_…` lines on a statute page, i.e. exactly D3's failure arriving through
+    the serializer instead of the renderer.
+    """
+    from backend.app.api.public_library import LibraryFullSection, VisibleSection
+
+    assert "tables" in VisibleSection.model_fields
+    assert "tables" in LibraryFullSection.model_fields
+    # Absent ⇒ `{}`, never None: one shape on the wire.
+    assert VisibleSection(id="s", text="", is_truncated=False,
+                          hidden_placeholder_lines=0).tables == {}
+    assert LibraryFullSection(id="s", text="").tables == {}
+
+    section = VisibleSection(
+        id="s", text=f"نص\n{TBL_1}", is_truncated=False,
+        hidden_placeholder_lines=0,
+        tables={TBL_1: {"html": _HTML_1, "md": "بند"}},
+    )
+    assert section.model_dump()["tables"][TBL_1]["html"] == _HTML_1
+
+
+# ---- 8.8 An oversized grid degrades — the SECTION never does (D8a) --------
+#
+# A grid that does not fit degrades to the prose it replaced, and only THAT
+# table degrades. The earlier rule withheld the table and stopped the walk,
+# which punished the whole section for one oversized grid: measured over all
+# 8,855 display chunks at `free_chars=600` it blanked 2,640 (29.8%) outright and
+# left another 2,077 showing a median of 83 prose characters where ~600 ship
+# today — 182 published أنظمة between them. The granularity was the bug.
+#
+# Case 3 always fills the budget, so a section now serves ~free_chars exactly as
+# it does today, AND tables that fit still render as grids in the same section —
+# which no section-level fallback can do.
+
+
+def _oversized_fixture(
+    *, sep: str = "\n", tier: str = "gated"
+) -> tuple[FakeSupabase, str]:
+    """A chunk whose FIRST segment is a grid bigger than the whole budget."""
+    md, s = _run(230), _run(100)              # 1,839 chars — the p50 table_md
+    assert len(md) > 600
+    content = sep.join([md, s])
+    fake = _reg_with_tables(
+        [
+            _display_chunk(
+                CHUNK_ID, content=content, content_display=sep.join([TBL_1, s])
+            )
+        ],
+        [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
+        tier=tier,
+    )
+    return fake, content
+
+
+@pytest.mark.parametrize("sep", ["\n", "\n\n"], ids=["one-newline", "blank-line"])
+def test_an_oversized_grid_degrades_to_its_prose(sep: str) -> None:
+    """Case 3 — and the end of the 2,640-blank / 2,077-thin regression.
+
+    «Withhold the grid» must not degrade into «withhold the نظام». The grid is
+    not drawn (atomicity holds), its prose is, and the budget comes out full.
+    """
+    fake, _ = _oversized_fixture(sep=sep)
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    assert section["text"].strip(), "blank preview — the 161-page regression"
+    assert len(section["text"]) > 500          # the budget is FILLED, not spent
+    assert len(section["text"]) <= 600
+    # No grid, whole or partial, and no token pointing at one.
+    assert section["tables"] == {}
+    assert "TBL_" not in section["text"]
+    assert "<table" not in section["text"]
+    assert section["is_truncated"] is True
+
+
+@pytest.mark.parametrize("sep", ["\n", "\n\n"], ids=["one-newline", "blank-line"])
+def test_a_degraded_grid_is_byte_for_byte_what_ships_today(sep: str) -> None:
+    """THE no-regression proof, and it is an exact equality (unlike §6 test 8).
+
+    Case 3 renders `table_md` cut by the ordinary whitespace rule, and `md` is
+    byte-identical to the block it replaced inside `content`. With the grid
+    leading the body nothing has been charged before it, so there is not even
+    separator slack: both sides of this assertion are the SAME string through
+    the SAME function at the SAME budget. It cannot leak and it cannot regress.
+
+    This is the 2,640-chunk population — the one that used to render blank.
+    """
+    fake, content = _oversized_fixture(sep=sep)
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    today = ls.truncate_for_gate(content, "gated", free_chars=600)
+    assert section["text"] == today["visible_text"]
+    assert section["is_truncated"] == today["is_truncated"]
+    assert section["hidden_placeholder_lines"] == today["hidden_placeholder_lines"]
+
+
+def test_a_grid_that_fits_still_renders_beside_one_that_does_not() -> None:
+    """THE POINT OF THE WHOLE RULE: only the offending table degrades.
+
+    One section, two grids. The first fits and is drawn; the second does not and
+    becomes prose. A section-level fallback cannot express this — it would trade
+    the first grid away to rescue the second, on the very documents the feature
+    was built for.
+    """
+    lead, small, big = _run(4), _run(9), _run(230)
+    row = _display_chunk(
+        CHUNK_ID,
+        content=lead + "\n" + small + "\n" + big,
+        content_display=lead + "\n" + TBL_1 + "\n" + TBL_2,
+    )
+    out = ls._chunk_section_body(
+        row,
+        ls._ChunkTableMap(
+            {
+                CHUNK_ID: tables_by_ref(
+                    [_table_row(TBL_1, small), _table_row(TBL_2, big, html=_HTML_2)]
+                )
+            }
+        ),
+        gate="gated",
+        free_chars=600,
+    )
+
+    # The grid that fits: drawn, with its token in place.
+    assert set(out["tables"]) == {TBL_1}
+    assert TABLE_PLACEHOLDER.findall(out["text"]) == [TBL_1]
+    # The grid that does not: prose, cut — no second token, no second grid.
+    assert TBL_2 not in out["text"]
+    assert big[:40] in out["text"]
+    assert out["is_truncated"] is True
+
+
+def test_a_table_whose_prose_fits_does_not_stop_the_walk() -> None:
+    """Case 2 — a grid too heavy to draw whose prose still fits costs nothing.
+
+    The conversion-error shape is exactly this: `md` is 31 chars, the grid holds
+    ~900. Charging the grid's weight refuses to draw it; charging `md` lets the
+    walk carry straight on — and a LATER grid still renders in the same section,
+    which is the whole reason case 2 exists as a separate step.
+    """
+    err = "[خطأ في التحويل - انتهت المهلة]"
+    row = _display_chunk(
+        CHUNK_ID,
+        content=err + "\n" + _run(4) + "\n" + _run(9),
+        content_display=TBL_2 + "\n" + _run(4) + "\n" + TBL_1,
+    )
+    out = ls._chunk_section_body(
+        row,
+        ls._ChunkTableMap(
+            {
+                CHUNK_ID: tables_by_ref(
+                    [
+                        _table_row(TBL_2, err, html=_wide_grid(rows=60)),
+                        _table_row(TBL_1, _run(9)),
+                    ]
+                )
+            }
+        ),
+        gate="gated",
+        free_chars=600,
+    )
+
+    assert out["is_truncated"] is False        # the walk reached the end
+    assert err in out["text"]                  # case 2: the prose, not the grid
+    assert TBL_2 not in out["text"]
+    # …and the later grid, which case 2 made reachable, was drawn.
+    assert set(out["tables"]) == {TBL_1}
+
+
+def test_the_blank_guard_is_unreachable() -> None:
+    """`_chunk_section_body`'s blank guard is a BACKSTOP; the walk prevents this.
+
+    Swept over every shape that used to blank — a leading oversized grid, two
+    grids, a conversion-error grid — at every budget from 1 to 1,200: the walk
+    itself always yields text, so the guard never has to fire. If this ever goes
+    red the walk has regressed, and the walk is what to fix.
+    """
+    err = "[خطأ في التحويل - انتهت المهلة]"
+    bodies = [
+        (TBL_1 + "\n" + _run(100), [_table_row(TBL_1, _run(230))]),
+        (TBL_1 + "\n" + TBL_2,
+         [_table_row(TBL_1, _run(230)), _table_row(TBL_2, _run(9), html=_HTML_2)]),
+        (TBL_2 + "\n" + _run(20),
+         [_table_row(TBL_2, err, html=_wide_grid(rows=60))]),
+    ]
+    for body, rows in bodies:
+        segments = split_body(body, tables_by_ref(rows))
+        for budget in range(1, 1200):
+            cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=budget)
+            text, _ = ls.project_segments(cut["visible_segments"])
+            if not text.strip():
+                # Only legitimate when the budget cannot hold one whole word.
+                assert budget < 10, (body[:20], budget)
+
+
+def test_the_full_reveal_draws_every_grid() -> None:
+    """`gate='open'` truncates nothing, so no grid can degrade — case 1 always.
+
+    The reveal is where the grid is the whole point: it is what the unlock buys.
+    """
+    fake, _ = _oversized_fixture()
+    section = ls.get_full_regulation(fake, "nizam-test")["sections"][0]
+
+    assert set(section["tables"]) == {TBL_1}
+    assert TABLE_PLACEHOLDER.findall(section["text"]) == [TBL_1]
+
+
+def test_an_empty_body_stays_empty() -> None:
+    """A genuinely empty chunk must not acquire text out of nowhere."""
+    out = ls._chunk_section_body(
+        {"id": CHUNK_ID, "content": "", "content_display": None},
+        ls._ChunkTableMap(),
+        gate="gated",
+        free_chars=600,
+    )
+    assert out == {
+        "text": "",
+        "tables": {},
+        "is_truncated": False,
+        "hidden_placeholder_lines": 0,
+    }
+
+
+def test_a_rendered_grid_is_never_swapped_for_prose() -> None:
+    """A grid the budget PAID for is never taken back.
+
+    Once a grid fits and is drawn, no later shortfall may swap it for the
+    flattened list this whole feature exists to retire.
+    """
+    small, big = _run(4), _run(230)
+    row = _display_chunk(
+        CHUNK_ID,
+        content=small + "\n" + big,
+        content_display=TBL_1 + "\n" + TBL_2,
+    )
+    out = ls._chunk_section_body(
+        row,
+        ls._ChunkTableMap(
+            {
+                CHUNK_ID: tables_by_ref(
+                    [_table_row(TBL_1, small), _table_row(TBL_2, big, html=_HTML_2)]
+                )
+            }
+        ),
+        gate="gated",
+        free_chars=600,
+    )
+    assert set(out["tables"]) == {TBL_1}      # the grid the budget paid for
+    assert TABLE_PLACEHOLDER.findall(out["text"]) == [TBL_1]
+    assert out["is_truncated"] is True

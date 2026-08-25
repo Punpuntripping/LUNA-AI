@@ -336,6 +336,25 @@ export interface RegulationVisibleSection {
    * Optional on the wire — an older ISR/fetch-cache entry predates the field.
    */
   also_ids?: string[];
+  /**
+   * Rendered tables for this section, keyed by the `TBL_…` token that stands in
+   * for each one inside `text`. Sanitized SERVER-SIDE by an allowlist
+   * re-serializer (elements + `rowspan`/`colspan` only, everything else
+   * rebuilt away), so the client renders `html` as HTML and never parses it.
+   * `md` is the prose the table replaced — the copy string and the gate weight,
+   * both owned server-side; the renderer does not print it.
+   *
+   * OPTIONAL ON THE WIRE, like every additive field on these payloads: this page
+   * is ISR-baked for 24h, so a payload baked before the backend shipped carries
+   * no `tables` at all — and its `text` is the prose body, tables and all.
+   * Absent ⇒ exactly today's rendering, with no token left dangling.
+   *
+   * `text` and `tables` therefore have to be baked TOGETHER. They will be; but
+   * the renderer still drops any token it cannot resolve rather than trust the
+   * pair to always arrive intact — a raw `TBL_…` on a statute page is the one
+   * failure this whole feature exists to prevent.
+   */
+  tables?: Record<string, { html: string; md: string }>;
 }
 
 export interface RegulationOfficialSource {

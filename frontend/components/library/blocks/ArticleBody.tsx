@@ -19,6 +19,14 @@ import type { ArticleBodyProps } from "@/types/library";
  * everything else stays verbatim (no table/citation parsing — that's what the
  * chat `MarkdownRenderer` fallback is for). This keeps legal text predictable.
  *
+ * `tables` (plain only): sanitized table markup keyed by the `TBL_…` token that
+ * stands in for it inside `visibleText`, so a statute's grids render as grids
+ * instead of the flattened prose the corpus indexes. A token that does not
+ * resolve renders NOTHING — never a raw `TBL_…` on a statute page. Absent —
+ * which is what every non-regulation caller passes, and what every ISR payload
+ * baked before the backend shipped this forces — the placeholder branch does
+ * not run at all and the body renders exactly as it did before.
+ *
  * `dedupeHeading` (plain only): when the FIRST rendered block is a heading or
  * clause label that duplicates this value (colon/whitespace-insensitive), it is
  * dropped — used where a styled section `<h2>` already renders the same title
@@ -43,6 +51,7 @@ export function ArticleBody({
   visibleText,
   gate,
   plain,
+  tables,
   dedupeHeading,
   gateBarsOnly,
   headingAnchors,
@@ -50,7 +59,10 @@ export function ArticleBody({
 }: ArticleBodyProps) {
   const truncated = Boolean(gate?.isTruncated);
   const blocks = plain
-    ? dropDuplicateLeadingHeading(toLegalBlocks(visibleText), dedupeHeading)
+    ? dropDuplicateLeadingHeading(
+        toLegalBlocks(visibleText, tables),
+        dedupeHeading,
+      )
     : [];
 
   return (

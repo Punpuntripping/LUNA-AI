@@ -16,6 +16,10 @@ import type { LucideIcon } from "lucide-react";
 // below reference them because a related-items strip is literally a list of hub
 // cards (read_next_related_items §5.1).
 import type { RegulationHubItem } from "@/lib/library/api";
+// Same rule, same reason: type-only. `lib/library/legal-text.tsx` is a value
+// module (it renders JSX), so importing it for real would drag a component
+// module into a pure type file.
+import type { LegalTableMap } from "@/lib/library/legal-text";
 
 // ------------------------------------------------------------------
 // Shared data primitives
@@ -423,6 +427,14 @@ export interface ArticleBodyProps {
   gate?: GateInfo;
   /** Render `visibleText` as plain blank-line paragraphs instead of markdown. */
   plain?: boolean;
+  /**
+   * `plain` only: sanitized table markup keyed by the `TBL_…` token that stands
+   * in for it inside `visibleText`. Each resolved token renders as a real grid;
+   * an unresolved one renders as NOTHING (never a raw token). Omit it — as
+   * every non-regulation caller does, and as any payload baked before the
+   * backend shipped this forces — and the body renders exactly as before.
+   */
+  tables?: LegalTableMap;
   /**
    * `plain` only: when the FIRST rendered block is a heading that duplicates
    * this value (colon/whitespace-insensitive), drop it — used where a styled

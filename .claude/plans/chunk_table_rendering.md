@@ -1,8 +1,14 @@
 # Chunk tables on the reading surface — the grid instead of the flattening
 
-**Status:** PLANNED 2026-08-24 — nothing built. The corpus side is DONE and live.
+**Status:** **BUILT 2026-08-25 — §2/§3/§5 done, validated against the full live
+corpus, NOT committed and NOT deployed.** §4 (مراجع) not started. The corpus side
+was already DONE and live. Validation report:
+`agents_reports/chunk_tables_validation_2026-08-25.md`. Three decisions were
+REVISED by contact with real data — **D8** (gate charge), **§2.2** (the allowlist
+was destroying law), **§3.1** (blank previews) — each marked ⚠ in place. Read
+those before trusting an older copy of this file.
 **Written:** 2026-08-24 · every number below MEASURED against prod
-(`dwgghvxogtwyaxmbgjod`) on that date
+(`dwgghvxogtwyaxmbgjod`) on that date or on 2026-08-25
 **Corpus-side source of truth (other repo, `agentic_for_ministry`):**
 `ingestion/regulation_v2/CHUNK_TABLES_REFERENCE.md` (the consumer contract — read
 it first) and `reclassification/chunking_v3/CHUNK_TABLES_PLAN.md` (why it looks
@@ -108,12 +114,46 @@ that same component renders **model output**, and enabling it would open an HTML
 injection path on generated text to solve a corpus problem. The مراجع popup
 segments its body instead (§4.3).
 
-**D8 — A token is charged what its prose cost, and is atomic under the gate.**
-This is the load-bearing decision of the whole plan; see §3.1. A token spends
-`len(table_md)` of the free-char budget — the exact number of characters the prose
-version spent before this change — and is either wholly rendered or wholly
-withheld, never cut through. The invariant that falls out: **a gated preview
-exposes the same quantity of legal content after this change as before it.**
+**D8 — A token is charged for what it RENDERS, and is atomic under the gate.**
+The load-bearing decision of the whole plan; see §3.1. A token spends
+`max(len(table_md), len(visible_text(table_html)))` of the free-char budget. A
+**grid** is either rendered whole or not at all — never cut through, because half
+a table misrepresents the data. A grid that does not fit **degrades to the prose
+it replaced** rather than withholding the section (§3.1's three-case rule); it is
+that prose, not the grid, that absorbs the truncation.
+
+⚠ **Revised 2026-08-25 after validating against the real corpus.** The original
+rule charged `len(table_md)` alone, reasoning that `md` is byte-identical to the
+prose the token replaced, so the budget would buy exactly the law it bought
+before. That is right for the corpus as a whole — mean `md` 878 chars vs mean
+rendered text 786, so `md` usually charges MORE than the grid shows — and wrong
+at the tail, which is the half that leaks:
+
+| | |
+|---|---|
+| tables rendering >500 chars more than `md` charges | **548 (2.2%)** |
+| rendering >2,000 chars more | 33 |
+| worst single undercharge | **3,382 chars** |
+| tables whose `md` is an ingestion ERROR placeholder | **244** |
+
+Those 244 never got a prose conversion: their `table_md` is
+«[خطأ في التحويل - انتهت المهلة]», 31 characters. `17405_reg_603_chunk_019` is
+the shape — two 3.2 KB violation-fine grids (م / المخالفة / حد قيمة الغرامة,
+`rowspan="2"` headers over `colspan="3"` size bands) whose entire prose form is
+that sentence, twice. Charging `len(md)` would serve a complete penalty schedule
+to an anonymous crawler for 31 chars of a 600-char budget. `max()` costs nothing
+on the 97.8% where `md` already dominates and closes the hole exactly.
+
+The invariant, restated honestly: **a gated preview never exposes more legal
+content than it did before this change, and on the 2.2% it exposes less** —
+because the prose baseline was leaking those grids for free. Assert the
+direction, not equality.
+
+**D8a — Those 244 rows are an AGENT-side defect too, and this plan does not fix
+it.** `content` holds the same error string, so the model has been reading
+«conversion failed» where a fines table belongs. Restoring the grid for the
+reader does not repair retrieval. Logged in §8 as a corpus-side follow-up for
+the ingestion repo.
 
 **D9 — v1 renders the chunk-shaped surfaces only; the article surface is named,
 not attempted.** See §3.4. That is 84.3% of the tables on published pages for a
@@ -179,12 +219,48 @@ re-implements the regex.
 
 ### 2.2 The allowlist
 
-Elements: `table thead tbody tfoot tr th td caption br b strong i em sup sub p span`.
+Elements: `table thead tbody tfoot tr th td caption br b strong i em sup sub`
+plus `ul ol li dl dt dd` — a bulleted list inside a `<td>` is real structure, and
+226 corpus tables carry one.
 Attributes: `rowspan` and `colspan` **only**, and only when the value parses as an
 int in `1..100`. Everything else — `style` (55 rows), `class`, `id`, `width`,
 `align` — is dropped; the app's own styling owns presentation.
 
-Dropped elements, with their content **kept** as text: `a` (42 rows), `p`, `span`.
+**Unwrapped** — tag dropped, text **kept**: `a` (42 rows), `p`, `span`, `div`,
+`u`, `font`, `center`, `small`, `big`, `h1`–`h6`, `section`, `article`, `label`,
+`abbr`, `code`, `pre`, `blockquote`, `figure`, `figcaption`.
+
+⚠ **Revised 2026-08-25 — the first version of this list destroyed law.** Every
+presentational wrapper the corpus uses must be named in the *unwrapped* set, not
+merely left off the element list: an unlisted element is dropped **with its
+content**. That is correct for `<img>`/`<script>` and catastrophic for a layout
+wrapper. Full-corpus validation caught it:
+
+| tag opening the dropped scope | tables | chars eaten |
+|---|---|---|
+| `ul` | 218 | 149,116 |
+| `div` | 43 | 13,725 |
+| `ol` | 17 | 7,568 |
+| `h3` / `h2` / `u` / `dl` | 39 | 2,604 |
+| | **325** | **177,060** |
+
+24 of those rendered as a **visible blank grid** — cells intact, text gone — and
+the proof-of-life test passed on the corpse, so D3's "emit nothing" never fired.
+After the fix: text loss **399 chars across 73 tables** (max 30 each), and a
+tag-level audit of all 24,511 outputs finds **0** non-allowlisted tags and **0**
+non-allowlisted attributes.
+
+Two consequences baked into the module:
+
+1. **Proof of life is TEXT, not tags.** `sanitize_table_html` returns `""` when
+   no *visible text* survived, not merely when no `<td>` survived. 79 corpus
+   tables are genuinely empty in the source (`<table><tr><td></td></tr></table>`)
+   and now correctly resolve to nothing — verified: **0** of the 79 held any
+   visible text to begin with, so no law is lost.
+2. **A dropped-but-unclosed scope ends at the next structural tag.** 7 tables
+   carry a wrapper that is never closed, which otherwise swallows every
+   remaining cell — the hazard the void-element guard covers for `<img>`, met
+   again through a non-void element that simply isn't closed.
 Dropped elements, content and all: `img` (252 rows), `form`/`input`/`button`
 (4 rows), and anything else unrecognised. `<img>` goes because the CSP
 (`img-src 'self' https://*.supabase.co https://img.youtube.com data:`) would block
@@ -238,25 +314,45 @@ def truncate_segments_for_gate(
       - a TEXT segment is charged len(text); if it does not fit, it is cut at the
         last whitespace inside the remaining window (today's rule, unchanged) and
         the walk STOPS.
-      - a TABLE segment is charged len(md) — the prose it replaced — and is
-        ATOMIC: it is included whole if it fits, and if it does not, it is
-        withheld and the walk STOPS. A table is never cut through, and prose
-        after a withheld table is never shown (skipping over a withheld table
-        would misrepresent the document's shape).
+      - a TABLE segment, against remaining budget R:
+          1. weight <= R  -> render the GRID, charge weight, CONTINUE.
+          2. len(md) <= R -> render its PROSE (md), charge len(md), CONTINUE.
+          3. otherwise    -> render md CUT to R (last-whitespace rule), STOP.
+        A GRID is never cut through — half a table misrepresents the data, and
+        that is what atomicity protects. What case 3 cuts is prose, which cuts
+        fine and is exactly what today's gate cuts in that same region.
     Returns {"visible_segments", "is_truncated", "hidden_placeholder_lines"},
     with hidden_placeholder_lines sized off the WEIGHTED remainder so the
     placeholder bars keep meaning what they mean today.
     """
 ```
 
-Charging a table at `len(table_md)` is not a heuristic — `table_md` is *literally
-the prose that used to occupy those bytes*, byte-identical to the block between
-the markers. So the budget buys the same amount of law it bought yesterday, and
-the change is **gate-neutral by construction**. That is the claim §6 tests.
+Charging a table at `len(table_md)` alone is not a heuristic — `table_md` is
+*literally the prose that used to occupy those bytes* — but it undercharges 548
+real tables and badly undercharges the 244 whose prose conversion failed
+outright (D8). `weight` takes the max against what the grid actually renders, so
+the budget can only ever buy LESS law than it bought yesterday, never more.
+That direction — not equality — is what §6 tests.
 
 `truncate_for_gate` itself is untouched: every non-regulation caller (judgments,
 circulars, forms, guides, the شرح teaser) keeps calling it with a string and gets
 today's behaviour exactly.
+
+⚠ **Revised 2026-08-25 — the first version withheld the whole section.** The
+original rule withheld an over-budget table and STOPPED, which punished a section
+for one oversized grid. Measured over all 8,855 chunks at `free_chars=600`, that
+produced **2,640 blank previews (29.8%) across 363 أنظمة**, and after a
+section-level fallback keyed on *zero* it still left **2,077 chunks across 182
+published أنظمة** with a median surviving lead of **83 characters** where today
+serves ~600 — thin content on indexed pages, the exact failure `GateBudget.floor`
+exists to prevent.
+
+The granularity was the bug. Degrading the **table** rather than the **section**
+dissolves both: case 3 always fills the budget, so nothing is blank or thin, and
+— unlike a section-level fallback — a grid that DOES fit still renders beside one
+that does not. Cases 2 and 3 show `md` and charge `md`, which is byte-for-byte
+what `truncate_for_gate(content, …)` ships for that region, so exposure stays
+≤ today step for step.
 
 ⚠ `spend_budget_across_sections` / `gate_decision` — the document-wide exposure
 budget — is currently wired into **judgments only** (`JUDGMENT_BUDGET`,
@@ -406,14 +502,22 @@ both the library and the مراجع popup.
 
 ```tsx
 <figure className="my-4 -mx-1 overflow-x-auto" dir="rtl">
-  <table
-    className="w-full min-w-[28rem] border-collapse text-sm [&_td]:border [&_th]:border …"
+  <div
+    className="text-sm [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_th]:border …"
     dangerouslySetInnerHTML={{ __html: html }}   // sanitized server-side (D6)
   />
 </figure>
 ```
 
-Two things the wrapper has to get right:
+⚠ **The inner element is a `<div>`, never a `<table>`.** `table_html` is the bare
+`<table>…</table>` fragment — all 24,511 rows start `<table` and end `</table>` —
+so feeding it to a `<table>`'s `dangerouslySetInnerHTML` nests a table inside a
+table, which the HTML parser resolves by foster-parenting the inner one out,
+silently and inconsistently across browsers. The fragment brings its own root;
+the wrapper only styles it from the outside, which is why every cell selector is
+a descendant (`[&_td]`) rather than a child.
+
+Three things the wrapper has to get right:
 
 - **`overflow-x-auto` on the figure, never on the page.** Some of these are wide
   (max `table_html` 12,653 chars). The recent `cf8dafd` "870px of cards behind a
@@ -545,6 +649,16 @@ Order is **shared → frontend → backend → purge**, and it is not interchang
 - **The ~3% unsure blocks.** 706 blocks corpus-wide could not be matched to a
   source with confidence and deliberately keep their prose in both views. They
   degrade to exactly today's rendering, invisibly. Correct, and not a bug report.
+- **The 244 failed prose conversions (D8a) — a corpus-side bug for the ingestion
+  repo, found by this plan's validation and not fixable from here.** Their
+  `table_md` AND the corresponding block in `chunks_v2.content` both read
+  «[خطأ في التحويل - انتهت المهلة]», so the *agent* has been retrieving an error
+  string where a fines table belongs — `17405_reg_603_chunk_019` is 125 chars of
+  `content`, of which 62 are that message twice, standing in for two 3.2 KB
+  penalty grids. The user view is repaired by this plan (the grid renders); the
+  retrieval view is not, and re-running the conversion means rewriting `content`,
+  which recomputes `word_count` and BM25 and therefore belongs upstream. Worth
+  filing against `agentic_for_ministry` with the 244 `table_ref`s attached.
 - **Images.** `chunks_v2.images` / `has_images` / `image_count` are empty
   corpus-wide and the machinery would be identical. Tables only.
 - **1,796 appendix chunks leak raw markers into `content`.** An upstream ingestion
