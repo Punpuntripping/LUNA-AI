@@ -1,8 +1,8 @@
 """The entity slug map — ONE place where a URL segment meets a ``provider_name``.
 
 `public.services.provider_name` is the issuing government body of a خدمة, and it
-is the browse axis of `/compliance`: **28 distinct values over the 337 published
-service guides**, verified live 2026-08-22. This module pairs each one with a
+is the browse axis of `/compliance`: **29 distinct values over the 533 published
+service guides**, verified live 2026-08-25. This module pairs each one with a
 Latin URL segment and is the ONLY place that pairing exists on the Python side.
 
 WHY THIS IS A THINNER MODULE THAN ``courts.py``, AND MUST STAY THINNER
@@ -11,7 +11,7 @@ WHY THIS IS A THINNER MODULE THAN ``courts.py``, AND MUST STAY THINNER
 same judicial body appears under several spellings that differ only by CITY — so
 ``courts.py`` had to BE the normalizer and its query predicate is ``in.(variants)``.
 
-``services.provider_name`` is **already canonical**: 28 strings, one per body, no
+``services.provider_name`` is **already canonical**: 29 strings, one per body, no
 city suffixes, no numbered دوائر, no residual bucket, zero NULLs, zero
 near-duplicate spellings (all verified live). So this is a slug ⇄ SINGLE-NAME map
 and the predicate is ``eq``, not ``in``. There is deliberately **no variant list
@@ -31,7 +31,7 @@ SLUGS ARE LATIN kebab-case, unlike ``courts.py``
 justification that let ``courts.py`` go Arabic — «the whole /judgments wing is
 ``noindex`` behind the PDPL gate, so there is no SEO to be neutral about» — is
 exactly INVERTED here: /compliance is the indexed wing, 100% published and
-ungated, with all 337 guide URLs already in the sitemap. Latin also removes the
+ungated, with all 533 guide URLs already in the sitemap. Latin also removes the
 percent-encoding trap that runs through every entry point of the courts axis and
 through ISR revalidation (memory `isr-revalidate-encoding`).
 
@@ -41,8 +41,16 @@ ships them, so the same "never rewrite an existing slug" rule that governs
 
 ORDER IS MEANINGFUL. ``_ENTITIES`` is ordered by corpus volume and that insertion
 order IS the browse order (``ENTITY_ORDER``) — alphabetical would bury وزارة
-العدل (115 guides) somewhere in the middle of nine one-guide authorities.
-**Never re-sort it**, here or on the client.
+العدل (130 guides) somewhere in the middle of eight one-guide authorities.
+**Never re-sort it to some OTHER key** — not alphabetical, not by slug, and never
+on the client. Re-deriving it from the corpus when the corpus itself moves is the
+one edit this order invites, and it is a DISPLAY change only: a slug's text is
+permanent (above), its POSITION is not. Done 2026-08-25, when the third ingest
+took the wing 337 → 533 and وزارة البلديات والإسكان went 4 → 144 guides, i.e.
+from fifteenth place to first. Ties keep the incumbent ahead of the newcomer
+(zatca before board-of-grievances, both 14) so an existing section never moves
+for a tie. The whole map is GENERATED from the live corpus — see the note above
+``taqeem``.
 
 DRIFT BEHAVIOUR — deliberate, and the same contract as ``courts.py`` /
 ``sectors.py``: a ``provider_name`` that no slug claims is LOGGED and simply has
@@ -52,7 +60,7 @@ reachable through the unfiltered `/compliance` hub, the sitemap and search.
 ``backend/tests/test_library_entities.py`` asserts the live distinct set against
 this map, so drift is caught before it reaches prod.
 
-Guide counts in the comments were measured 2026-08-22 and are documentation only
+Guide counts in the comments were measured 2026-08-25 and are documentation only
 — nothing reads them. The counts the browse grid prints come from the corpus.
 """
 from __future__ import annotations
@@ -66,31 +74,32 @@ logger = logging.getLogger(__name__)
 # Latin slug → the exact ``services.provider_name`` string it claims.
 # ORDERED BY CORPUS VOLUME. This order is the browse order.
 _ENTITIES: dict[str, str] = {
-    "ministry-of-justice": "وزارة العدل",                                        # 115
-    "ministry-of-human-resources": "وزارة الموارد البشرية والتنمية الاجتماعية",   # 53
-    "ministry-of-commerce": "وزارة التجارة",                                     # 43
-    "gosi": "المؤسسة العامة للتأمينات الاجتماعية",                                # 19
-    "ministry-of-health": "وزارة الصحة",                                         # 17
-    "zatca": "هيئة الزكاة والضريبة والجمارك",                                     # 14
-    "ministry-of-education": "وزارة التعليم",                                    # 10
-    "hrdf": "صندوق تنمية الموارد البشرية",                                        # 8
-    "ministry-of-environment": "وزارة البيئة والمياه والزراعة",                    # 8
-    "media-regulation-authority": "الهيئة العامة لتنظيم الإعلام",                  # 7
-    "ministry-of-foreign-affairs": "وزارة الخارجية",                              # 7
-    "etimad": "المركز الوطني لنظم الموارد الحكومية",                               # 6
-    "social-development-bank": "بنك التنمية الاجتماعية",                          # 5
-    "human-rights-commission": "هيئة حقوق الإنسان",                               # 4
-    "ministry-of-municipalities-housing": "وزارة البلديات والإسكان",               # 4
-    "ministry-of-industry": "وزارة الصناعة والثروة المعدنية",                      # 2
-    "ministry-of-tourism": "وزارة السياحة",                                       # 2
+    "ministry-of-municipalities-housing": "وزارة البلديات والإسكان",  # 144
+    "ministry-of-justice": "وزارة العدل",  # 130
+    "ministry-of-human-resources": "وزارة الموارد البشرية والتنمية الاجتماعية",  # 70
+    "ministry-of-commerce": "وزارة التجارة",  # 43
+    "gosi": "المؤسسة العامة للتأمينات الاجتماعية",  # 19
+    "ministry-of-health": "وزارة الصحة",  # 17
+    "zatca": "هيئة الزكاة والضريبة والجمارك",  # 14
+    "board-of-grievances": "ديوان المظالم",  # 14
+    "ministry-of-education": "وزارة التعليم",  # 12
+    "real-estate-general-authority": "الهيئة العامة للعقار",  # 9
+    "hrdf": "صندوق تنمية الموارد البشرية",  # 8
+    "ministry-of-environment": "وزارة البيئة والمياه والزراعة",  # 8
+    "media-regulation-authority": "الهيئة العامة لتنظيم الإعلام",  # 7
+    "ministry-of-foreign-affairs": "وزارة الخارجية",  # 7
+    "etimad": "المركز الوطني لنظم الموارد الحكومية",  # 6
+    "social-development-bank": "بنك التنمية الاجتماعية",  # 5
+    "human-rights-commission": "هيئة حقوق الإنسان",  # 4
+    "ministry-of-industry": "وزارة الصناعة والثروة المعدنية",  # 2
+    "ministry-of-tourism": "وزارة السياحة",  # 2
     "environmental-compliance-center": "المركز الوطني للرقابة على الإلتزام البيئي",  # 2
-    "transport-general-authority": "الهيئة العامة للنقل",                          # 2
-    # ── The nine one-guide authorities. ALL 28 SHIP (plan D3). ──────────────
+    "transport-general-authority": "الهيئة العامة للنقل",  # 2
+    # ── The eight one-guide authorities. ALL 29 SHIP (plan D3). ────────────
     # The المحكمة العمالية precedent from the judgments wing applies: the route
     # is honest, costs nothing, and a browse grid that silently omits a body
     # whose name is printed on the cards is worse than a thin page.
-    "real-estate-general-authority": "الهيئة العامة للعقار",                       # 1
-    "awqaf-general-authority": "الهيئة العامة للأوقاف",                            # 1
+    "awqaf-general-authority": "الهيئة العامة للأوقاف",  # 1
     # ⚠ THE FATHA ON ق IS REAL AND LOAD-BEARING: the live value is
     # «للمقَيّمين» (U+064E after ق, U+0651 after ي), not «للمقيّمين». The predicate is an
     # exact ``eq``, so dropping the harakah matches ZERO rows and the section
@@ -98,19 +107,20 @@ _ENTITIES: dict[str, str] = {
     # it retyped without the fatha, which is exactly the class of bug
     # ``courts.py`` warns about (its row 9 differs from its neighbour by an
     # invisible double space). NEVER retype an entity name; copy it from the
-    # corpus.
+    # corpus — every string in this map is GENERATED from it, which is why the
+    # trailing counts line up with the corpus and not with a human's memory.
     "taqeem": "الهيئة السعودية للمقَيّمين المعتمدين (تقييم)",  # 1
-    "saudi-business-center": "المركز السعودي للأعمال الاقتصادية",                   # 1
-    "ministry-of-finance": "وزارة المالية",                                        # 1
-    "royal-commission-alula": "الهيئة الملكية لمحافظة العلا",                       # 1
-    "monshaat": "الهيئة العامة للمنشآت الصغيرة والمتوسطة",                          # 1
-    "tvtc": "المؤسسة العامة للتدريب التقني والمهني",                                # 1
-    "sfda": "الهيئة العامة للغذاء والدواء",                                         # 1
+    "saudi-business-center": "المركز السعودي للأعمال الاقتصادية",  # 1
+    "ministry-of-finance": "وزارة المالية",  # 1
+    "royal-commission-alula": "الهيئة الملكية لمحافظة العلا",  # 1
+    "monshaat": "الهيئة العامة للمنشآت الصغيرة والمتوسطة",  # 1
+    "tvtc": "المؤسسة العامة للتدريب التقني والمهني",  # 1
+    "sfda": "الهيئة العامة للغذاء والدواء",  # 1
 }
 
 # ─── Derived lookups ──────────────────────────────────────────────────────────
 ENTITY_ORDER: list[str] = list(_ENTITIES)
-"""The 28 entity slugs in browse (corpus-volume) order. THE SERVER OWNS THIS
+"""The 29 entity slugs in browse (corpus-volume) order. THE SERVER OWNS THIS
 ORDER — the browse grid renders it as given and must not re-sort."""
 
 ENTITY_LABELS: dict[str, str] = dict(_ENTITIES)

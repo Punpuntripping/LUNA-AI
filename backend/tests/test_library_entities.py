@@ -10,7 +10,7 @@ THREE THINGS ARE UNDER TEST HERE AND ALL THREE FAIL SILENTLY IF THEY REGRESS.
    hub slice below ``paid`` at page 1. /compliance's ENTITY axis is exempt, and
    the exemption is expressed as a ONE-LINE NON-EDIT — ``_hub_page_visible(...,
    section_scoped=bool(sector))``, with ``entity`` absent. The exemption is a
-   property of THIS wing (100% published, ungated end to end, all 337 guide URLs
+   property of THIS wing (100% published, ungated end to end, all 533 guide URLs
    already in the sitemap), not a change of mind about the rule, so the SECTOR
    axis on the same handler stays paid-only. Both halves are asserted below: get
    the first wrong and every entity page 404s for the anonymous readers and
@@ -82,7 +82,7 @@ ENTITIES = f"{HUB}/compliance/entities"
 
 # Picked FROM the map, so re-ordering or re-slugging it cannot leave this file
 # asserting against an entity that no longer exists.
-BIGGEST = ENTITY_ORDER[0]     # ministry-of-justice — 115 guides, 13 pages
+BIGGEST = ENTITY_ORDER[0]     # ministry-of-municipalities-housing — 144 guides
 SMALLEST = ENTITY_ORDER[-1]   # sfda — 1 guide, 1 page
 
 # A raw sector slug, for the "the sector rule survived D1" case.
@@ -259,11 +259,13 @@ def _is_arabic_refusal(res, status: int = 400) -> None:
 # ===========================================================================
 
 
-def test_all_twenty_eight_slugs_resolve() -> None:
-    """The map is IMPORTED, never retyped: a 29th issuing body added to
+def test_all_twenty_nine_slugs_resolve() -> None:
+    """The map is IMPORTED, never retyped: a 30th issuing body added to
     ``shared/library/entities.py`` must not need a second edit in the API layer
-    to become servable."""
-    assert len(ENTITY_ORDER) == 28
+    to become servable. ديوان المظالم was the 29th, added 2026-08-25 with the
+    ingest that took the wing 337 → 533 guides — and it needed exactly one
+    edit, in the map."""
+    assert len(ENTITY_ORDER) == 29
     for slug in ENTITY_ORDER:
         name = pl._entity_section(slug)
         assert name == ENTITY_LABELS[slug], slug
@@ -279,20 +281,26 @@ def test_slugs_are_latin_kebab_case_and_unique() -> None:
     assert all(s.isascii() for s in ENTITY_ORDER)
     bad = [s for s in ENTITY_ORDER if not _SLUG_RE.match(s)]
     assert not bad, f"not url-safe kebab-case: {bad}"
-    assert len(set(ENTITY_ORDER)) == 28
+    assert len(set(ENTITY_ORDER)) == 29
 
 
 def test_every_label_is_distinct() -> None:
-    """28 slugs, 28 issuing bodies. Two slugs sharing a ``provider_name`` would
+    """29 slugs, 29 issuing bodies. Two slugs sharing a ``provider_name`` would
     make one section a silent duplicate of the other, and both counts wrong."""
-    assert len(set(ENTITY_LABELS.values())) == 28
+    assert len(set(ENTITY_LABELS.values())) == 29
 
 
 def test_browse_order_is_by_volume_not_alphabetical() -> None:
     """§3: insertion order IS the browse order, and the SERVER owns it.
-    Alphabetical would land وزارة العدل (115 guides) among nine authorities
-    holding one guide each."""
-    assert ENTITY_ORDER[0] == "ministry-of-justice"
+    Alphabetical would land وزارة البلديات والإسكان (144 guides) among eight
+    authorities holding one guide each.
+
+    ⚠ The head of this list MOVES when the corpus does — 2026-08-25's ingest took
+    البلديات from 4 guides to 144 and it displaced العدل at the top. What the
+    test pins is that the order tracks VOLUME, not that any particular slug is
+    first: assert the top two against the live counts' own ranking."""
+    assert ENTITY_ORDER[0] == "ministry-of-municipalities-housing"
+    assert ENTITY_ORDER[1] == "ministry-of-justice"
     assert ENTITY_ORDER != sorted(ENTITY_ORDER)
 
 
@@ -368,10 +376,17 @@ def test_the_slug_reaches_the_service_as_the_RAW_PROVIDER_NAME(stubs) -> None:
     assert stubs["listers"][-1]["entity"] == ENTITY_LABELS[BIGGEST]
 
 
-@pytest.mark.parametrize("spelling", ["  ministry-of-justice  ", "MINISTRY-OF-JUSTICE"])
-def test_the_slug_is_normalised_before_lookup(stubs, spelling) -> None:
+@pytest.mark.parametrize("case", [lambda s: f"  {s}  ", str.upper])
+def test_the_slug_is_normalised_before_lookup(stubs, case) -> None:
     """Whitespace and case must land on the SAME memo entry, or the wall reports
-    «1 page» for a section holding 115 guides."""
+    «1 page» for a section holding 144 guides.
+
+    ⚠ The spelling is DERIVED from ``BIGGEST``, never spelled out: ``BIGGEST`` is
+    ``ENTITY_ORDER[0]`` and that head moves whenever the corpus does (2026-08-25:
+    البلديات displaced العدل). A literal here passes for exactly as long as the
+    biggest entity does not change, then fails against ``ENTITY_PAGES[BIGGEST]``
+    for a reason that has nothing to do with normalisation."""
+    spelling = case(BIGGEST)
     res = _client().get(COMPLIANCE, params={"entity_slug": spelling, "page": 2})
     assert res.status_code == 200
     assert res.json()["total_pages"] == ENTITY_PAGES[BIGGEST]
@@ -898,13 +913,13 @@ def test_LIVE_the_vocabulary_equals_the_corpus_exactly() -> None:
 
     assert unclaimed_entities(live) == [], "live provider_name(s) with no slug"
     assert sorted(set(ENTITY_LABELS.values()) - live) == [], "slugs matching no rows"
-    assert len(live) == len(ENTITY_ORDER) == 28
+    assert len(live) == len(ENTITY_ORDER) == 29
 
 
 def test_LIVE_no_guide_slug_collides_with_an_entity_slug_or_a_reserved_word() -> None:
     """D2's cost, paid: `/compliance/{slug}` is a shared namespace and the
     frontend dispatches entity-first, so a collision 404s a URL that is in the
-    sitemap. ∅ verified over all 337 live slugs."""
+    sitemap. ∅ verified over all 533 live slugs."""
     slugs = _live_slugs()
 
     assert slugs, "no published compliance slugs found"
@@ -913,7 +928,7 @@ def test_LIVE_no_guide_slug_collides_with_an_entity_slug_or_a_reserved_word() ->
 
 
 def test_LIVE_the_entity_counts_sum_to_the_whole_wing() -> None:
-    """Plan §8: 28 rows summing to 337. Every guide belongs to exactly one
+    """Plan §8: 29 rows summing to 533. Every guide belongs to exactly one
     entity, so the sum IS the wing — a shortfall means a ``provider_name`` no
     slug claims and guides missing from every section."""
     guides = _live_guides()
@@ -923,8 +938,8 @@ def test_LIVE_the_entity_counts_sum_to_the_whole_wing() -> None:
         if slug:
             counts[slug] += 1
 
-    assert len(counts) == 28
+    assert len(counts) == 29
     assert sum(counts.values()) == len(guides)
-    assert sum(counts.values()) == 337, (
+    assert sum(counts.values()) == 533, (
         "the wing has changed size — re-verify plan §1 before editing this number"
     )

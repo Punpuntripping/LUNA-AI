@@ -1,9 +1,14 @@
-// The 28 issuing bodies of the /compliance wing — «الجهة».
+// The 29 issuing bodies of the /compliance wing — «الجهة».
 //
 // ⚠ `shared/library/entities.py` IS THE SOURCE OF TRUTH. This file is a MIRROR
 // of its vocabulary: the slug keys, the Arabic labels, and — critically — the
-// INSERTION ORDER, which is corpus-volume order and IS the browse order.
-// Alphabetical would bury وزارة العدل (115 guides) in the middle of a tail of
+// INSERTION ORDER, which is corpus-volume order and IS the browse order. Both
+// files are GENERATED from the live corpus in one pass, so the Arabic is copied
+// byte-for-byte and never retyped (the `taqeem` label carries a real fatha on
+// its ق). Re-ordering when the corpus moves is expected — the 2026-08-25 ingest
+// took the wing 337 → 533 guides and وزارة البلديات والإسكان from 4 to 144,
+// i.e. from fifteenth place to first — but a slug's TEXT is permanent.
+// Alphabetical would bury وزارة العدل (130 guides) in the middle of a tail of
 // one-guide entities. The two files must be edited in LOCKSTEP, in the same
 // commit; the Python module additionally owns the QUERY PREDICATE (slug → the
 // raw `services.provider_name` it matches with `eq`), which has no reason to
@@ -16,7 +21,7 @@
 // ── WHY THIS VOCABULARY IS SIMPLER THAN `courts.ts` ─────────────────────────
 // `cases.court` is free text — 30 raw spellings collapsing to 12 buckets — so
 // `courts.py` had to BE the normalizer and carry a variant list.
-// `services.provider_name` is already canonical: 28 strings, one per body, no
+// `services.provider_name` is already canonical: 29 strings, one per body, no
 // city suffixes, no numbered دوائر, no residual bucket. So this is a
 // slug ⇄ single-name map, and there is nothing to normalise.
 //
@@ -37,20 +42,22 @@
 // Counts live server-side. Nothing here reads the corpus.
 
 /**
- * `[slug, provider_name]` for the 28 entities, in the Python module's insertion
+ * `[slug, provider_name]` for the 29 entities, in the Python module's insertion
  * order — which is corpus volume, which is the browse order.
  *
  * One tuple per entity rather than two parallel literals ON PURPOSE: the label
  * is Arabic and the slug is Latin, so an editor showing an RTL line beside an
  * LTR one is exactly where a mismatched pair gets shipped unnoticed. The comment
- * over each row is that entity's live guide count as measured 2026-08-22 —
+ * over each row is that entity's live guide count as measured 2026-08-25 —
  * documentation for the reader of this file, never a number the UI prints (the
  * switcher's counts come off the API).
  */
 const ENTITIES = [
-  // 115
+  // 144
+  ["ministry-of-municipalities-housing", "وزارة البلديات والإسكان"],
+  // 130
   ["ministry-of-justice", "وزارة العدل"],
-  // 53
+  // 70
   ["ministry-of-human-resources", "وزارة الموارد البشرية والتنمية الاجتماعية"],
   // 43
   ["ministry-of-commerce", "وزارة التجارة"],
@@ -60,8 +67,12 @@ const ENTITIES = [
   ["ministry-of-health", "وزارة الصحة"],
   // 14
   ["zatca", "هيئة الزكاة والضريبة والجمارك"],
-  // 10
+  // 14
+  ["board-of-grievances", "ديوان المظالم"],
+  // 12
   ["ministry-of-education", "وزارة التعليم"],
+  // 9
+  ["real-estate-general-authority", "الهيئة العامة للعقار"],
   // 8
   ["hrdf", "صندوق تنمية الموارد البشرية"],
   // 8
@@ -76,8 +87,6 @@ const ENTITIES = [
   ["social-development-bank", "بنك التنمية الاجتماعية"],
   // 4
   ["human-rights-commission", "هيئة حقوق الإنسان"],
-  // 4
-  ["ministry-of-municipalities-housing", "وزارة البلديات والإسكان"],
   // 2
   ["ministry-of-industry", "وزارة الصناعة والثروة المعدنية"],
   // 2
@@ -89,9 +98,9 @@ const ENTITIES = [
   ],
   // 2
   ["transport-general-authority", "الهيئة العامة للنقل"],
-  // 1
-  ["real-estate-general-authority", "الهيئة العامة للعقار"],
-  // 1
+  // 1 — the eight one-guide entities ship too (D3): a browse grid that silently
+  // omits an entity whose name is printed on the cards is worse than a thin
+  // page, and the route is honest and costs nothing.
   ["awqaf-general-authority", "الهيئة العامة للأوقاف"],
   // 1
   ["taqeem", "الهيئة السعودية للمقَيّمين المعتمدين (تقييم)"],
@@ -103,9 +112,7 @@ const ENTITIES = [
   ["royal-commission-alula", "الهيئة الملكية لمحافظة العلا"],
   // 1
   ["monshaat", "الهيئة العامة للمنشآت الصغيرة والمتوسطة"],
-  // 1 — the nine one-guide entities ship too (D3): a browse grid that silently
-  // omits an entity whose name is printed on the cards is worse than a thin
-  // page, and the route is honest and costs nothing.
+  // 1
   ["tvtc", "المؤسسة العامة للتدريب التقني والمهني"],
   // 1
   ["sfda", "الهيئة العامة للغذاء والدواء"],
@@ -114,7 +121,7 @@ const ENTITIES = [
 /** The closed slug vocabulary, as a type. */
 export type EntitySlug = (typeof ENTITIES)[number][0];
 
-/** The 28 slugs in browse (corpus-volume) order. Never re-sort. */
+/** The 29 slugs in browse (corpus-volume) order. Never re-sort. */
 export const ENTITY_ORDER: readonly EntitySlug[] = ENTITIES.map(
   ([slug]) => slug,
 );
@@ -132,7 +139,7 @@ export const ENTITY_LABELS: Record<EntitySlug, string> = Object.fromEntries(
  * `/compliance/page/{n}` keeps working because Next resolves the STATIC `page`
  * segment ahead of `[slug]`, and `shared/library/entities.py` refuses the same
  * three names server-side — two layers, one vocabulary (mirrors
- * `RESERVED_SLUGS` there). The 28 entity slugs are additionally reserved against
+ * `RESERVED_SLUGS` there). The 29 entity slugs are additionally reserved against
  * the live guide slugs by `scripts/build_compliance_slugs.py`, so an entity can
  * never shadow a guide URL that is already in the sitemap.
  */
@@ -143,7 +150,7 @@ export const RESERVED_ENTITY_SLUGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True when `value` is one of the 28.
+ * True when `value` is one of the 29.
  *
  * ⚠ THE DISPATCHER'S ENTIRE COST IS THIS CALL — an in-process dict lookup, zero
  * fetch — which is why `app/compliance/[slug]/page.tsx` asks it BEFORE spending
@@ -155,7 +162,7 @@ export function isEntitySlug(value: string): value is EntitySlug {
 }
 
 /**
- * Arabic label for an entity slug, or `null` when it is not one of the 28.
+ * Arabic label for an entity slug, or `null` when it is not one of the 29.
  *
  * Mirrors `entities.name_for_slug()`, including its contract: `null` means «this
  * is not an entity», which on the dispatcher means «fall through to the guide
@@ -166,7 +173,7 @@ export function entityLabel(slug: string): string | null {
 }
 
 /**
- * `provider_name` → slug, or `null` for a name outside the 28.
+ * `provider_name` → slug, or `null` for a name outside the 29.
  *
  * `ComplianceCard` uses it to turn the entity chip it already prints into a link
  * into that entity's section. `null` is the load-bearing case: a pipeline
@@ -223,12 +230,12 @@ export interface EntityNavItem {
 }
 
 /**
- * The 28 switcher tiles, counts attached where the API supplied them.
+ * The 29 switcher tiles, counts attached where the API supplied them.
  *
  * ⚠ ORDER AND MEMBERSHIP COME FROM THE MIRROR, COUNTS COME FROM THE SERVER —
  * and that split is the point. The endpoint already returns browse order, so the
  * two agree by construction; iterating the mirror instead means (a) the switcher
- * still renders all 28 links when the counts call soft-fails, and (b) every href
+ * still renders all 29 links when the counts call soft-fails, and (b) every href
  * is guaranteed to be a route that exists. A slug the server knows and this file
  * does not has no page to link to, so it is skipped — which is precisely the
  * drift the lockstep rule at the top exists to prevent, and it degrades to a
