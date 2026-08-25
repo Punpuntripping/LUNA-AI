@@ -19,6 +19,7 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle } from "@/lib/seo/schema";
 import { getComplianceGuide, toSnippet } from "@/lib/library/api";
 import {
+  RESERVED_ENTITY_SLUGS,
   entityHeading,
   entityLabel,
   entityPath,
@@ -50,8 +51,8 @@ import type {
 // (NO force-dynamic).
 //
 // ── THIS SEGMENT SERVES TWO KINDS OF THING (compliance_entity_sections D2) ──
-// `/compliance/{slug}` is EITHER one of the 28 entity SECTIONS
-// (`/compliance/ministry-of-justice`) or one of the 337 GUIDES. One dynamic
+// `/compliance/{slug}` is EITHER one of the 29 entity SECTIONS
+// (`/compliance/ministry-of-justice`) or one of the 533 GUIDES. One dynamic
 // segment, two vocabularies — which is legal in Next precisely because it is one
 // segment and not two dynamic names at one level (the build error that forced
 // `courts` into the /judgments URL).
@@ -97,6 +98,24 @@ export async function generateMetadata({
   // entity pages carry the ordinary `noindex, follow` when the anon depth cap
   // walls them — that rule lives in the `page/[n]` sibling, which is the only
   // place there is a wall to hide.
+  // ⚠ A RESERVED SEGMENT IS NOT A GUIDE, AND MUST NOT BE ASKED ABOUT.
+  // `isEntitySlug` already answers false for these three, but false is not
+  // enough here: falling through spends a `getComplianceGuide` round trip, and
+  // for `entities` that URL is a REAL backend endpoint declared ABOVE the doc
+  // route. It answers 200 with `{entities: [...]}`, so `doc` comes back TRUTHY
+  // with no `title` and the render throws — /compliance/entities served a 500,
+  // not a 404, until 2026-08-25. `page` and `mine` merely 404 by luck, because
+  // the backend happens to refuse them. Refuse all three here so the dispatcher
+  // stops depending on what the backend does with a name it never should be
+  // handed. Mirrors `name_for_slug`'s reserved check in
+  // `shared/library/entities.py`.
+  if (RESERVED_ENTITY_SLUGS.has(slug)) {
+    return {
+      title: "ريحان",
+      description: "المساعد القانوني الذكي للمحامين السعوديين",
+    };
+  }
+
   const entityName = entityLabel(slug);
   if (entityName) {
     const heading = entityHeading(entityName);
@@ -186,6 +205,11 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
     return <ComplianceHubView page={1} entitySlug={slug} />;
   }
 
+  // Reserved segments are neither an entity nor a guide — 404 before the fetch.
+  // See the note in `generateMetadata`: `entities` is a live backend endpoint
+  // and answering it as a guide returned a 500.
+  if (RESERVED_ENTITY_SLUGS.has(slug)) notFound();
+
   const doc = await getComplianceGuide(slug);
   if (!doc) notFound();
 
@@ -249,8 +273,11 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
   // (D14): the خدمات corpus carries no citation data at all.
   //
   // Expect this to be ABSENT on most guides until topic-BM25 lands (plan Wave
-  // E) — 337 guides across 29 entity values leaves almost nothing above the
-  // relevance floor, and a missing strip beats three unrelated services.
+  // E) — 533 guides across 30 entity values leaves almost nothing above the
+  // relevance floor, and a missing strip beats three unrelated services. (That
+  // count is the RELATED axis — `service_guides.entity_ref` agency codes, one of
+  // them the `unknown_agency` fallback — not the 29 `provider_name` values the
+  // browse axis uses. The two axes are keyed differently and do not line up.)
   //
   // Ungated by construction; the `slug` filter is the ISR-staleness guard.
   const relatedGuides = (doc.related_next ?? []).filter((item) =>

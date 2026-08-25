@@ -15,7 +15,7 @@ import {
 // canonical; anything else → 404, the same rule `app/compliance/page/[n]`
 // applies. Server component; data ISR via `lib/library/api.ts`.
 //
-// ONLY AN ENTITY HAS DEEP PAGES. `[slug]` is shared with the 337 guide URLs
+// ONLY AN ENTITY HAS DEEP PAGES. `[slug]` is shared with the 533 guide URLs
 // (compliance_entity_sections D2), and a guide is a single document — so an
 // unknown slug, a reserved word, or a real guide slug all 404 here rather than
 // rendering an empty hub. `/compliance/page/{n}` is unaffected: `page` is a

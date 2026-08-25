@@ -1250,7 +1250,7 @@ function SourceViewContent({
     // GUIDE, our own authored rewrite of the entity's official PDF user guide,
     // in full and ungated. It is reached by LEAVING to its own page via the
     // action bar's «افتح الدليل الشامل للخدمة في ريحان», which the backend adds
-    // only for the 337 services that have one. Nothing from the guide is
+    // only for the 533 services that have one. Nothing from the guide is
     // inlined into THIS body — that part is still deliberate, and it is why the
     // popup stays a link.
     //
