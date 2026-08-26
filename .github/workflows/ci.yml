@@ -1,14 +1,27 @@
 name: CI
+
+# ⚠ `master`, not `main`. This repo's default branch is master, and this
+# workflow watched `main` from the day it was written — so CI never fired once,
+# on any push, for the life of the project (`gh run list` was empty on
+# 2026-08-26). A workflow guarding the wrong branch name is indistinguishable
+# from no CI at all, and it looks healthier.
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: "https://example.supabase.co"
+      SUPABASE_SERVICE_ROLE_KEY: "test-key"
+      SUPABASE_ANON_KEY: "test-key"
+      SUPABASE_JWT_SECRET: "test-secret"
+      REDIS_URL: "redis://localhost:6379"
+      ENVIRONMENT: "test"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,14 +29,28 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       - run: pip install -r backend/requirements.txt
+      - run: pip install pytest
       - run: python -c "from backend.app.main import app; print('Backend imports OK')"
-        env:
-          SUPABASE_URL: "https://example.supabase.co"
-          SUPABASE_SERVICE_ROLE_KEY: "test-key"
-          SUPABASE_ANON_KEY: "test-key"
-          SUPABASE_JWT_SECRET: "test-secret"
-          REDIS_URL: "redis://localhost:6379"
-          ENVIRONMENT: "test"
+
+      # The DURABLE suites — the ones .gitignore deliberately re-includes
+      # because they pin a contract rather than a moment: entitlement and gate
+      # invariants, the PDPL masking codec, and the chunk-table display layer
+      # (whose sanitizer feeds `dangerouslySetInnerHTML`, so its allowlist is a
+      # security boundary, not a formatting preference).
+      #
+      # Deliberately NOT `pytest backend/tests/`: several suites there are LIVE
+      # (`test_LIVE_*` in test_library_entities.py queries prod and drifts as the
+      # corpus grows). A CI job that goes red on corpus churn gets ignored within
+      # a week, and an ignored CI is worse than none. Add a suite here only once
+      # it passes with these dummy credentials and no network.
+      - name: Durable test suites
+        run: |
+          python -m pytest -q \
+            shared/library/tests/ \
+            shared/privacy/tests/ \
+            backend/tests/test_library_gating.py \
+            backend/tests/test_library_enforcement.py \
+            backend/tests/test_reference_source.py
 
   frontend:
     name: Frontend
