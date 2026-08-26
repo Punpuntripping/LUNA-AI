@@ -768,17 +768,24 @@ def truncate_segments_for_gate(
     stopped_at = len(segs)
 
     for i, seg in enumerate(segs):
-        # `split_body` consumes the newline on either side of a token as a LINE
-        # SEPARATOR, so those characters are in `content` — and charged by
-        # `truncate_for_gate` — but appear in no segment. `project_segments` puts
-        # one back between consecutive segments, and this is where it is paid
-        # for. Without it the walk arrives at each later segment a few chars
-        # richer than the string cut, which rounds up to a whole word and lets a
-        # section serve slightly MORE than it does today (measured: 8 of 108
-        # preview sections, up to +20 chars). Charging exactly 1 is also SAFE at
-        # the other end: a token is a whole line, so `content` always spent at
-        # least one newline at that boundary — never fewer than we charge.
-        sep_cost = 1 if visible else 0
+        # `split_body` consumes the whitespace on either side of a token as LINE
+        # SEPARATORS, so those characters are in `content` — and charged by
+        # `truncate_for_gate` — but appear in no segment. Left unpaid, the walk
+        # arrives at each later segment a few chars richer than the string cut,
+        # which rounds up to a whole word and lets a section serve slightly MORE
+        # than it does today (measured before this: 8 of 108 preview sections, up
+        # to +20 chars — one short Arabic word apiece).
+        #
+        # WHY 2 AND NOT 1. Measured over all 24,511 tokens on 2026-08-25, the
+        # whitespace at a token boundary is: BEFORE — 2 newlines on 86.2%, 1 on
+        # 0.2%, and 0 on 13.6% (the token opens the body, where there is no
+        # preceding segment and so no boundary to charge); AFTER — 2 newlines on
+        # 74.1%, 1 on 25.9%. **Nothing in the corpus exceeds 2**, so 2 is an
+        # UPPER BOUND on every boundary and this charge can never come in under
+        # what `content` actually spent there. Where the truth is 1 we over-charge
+        # by a character and serve marginally LESS than today, which is the only
+        # direction a gate is allowed to be wrong in.
+        sep_cost = 2 if visible else 0
 
         if seg.get("kind") == "table":
             weight = _table_charge(seg)

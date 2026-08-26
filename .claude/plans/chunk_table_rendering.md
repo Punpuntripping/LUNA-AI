@@ -144,10 +144,25 @@ that sentence, twice. Charging `len(md)` would serve a complete penalty schedule
 to an anonymous crawler for 31 chars of a 600-char budget. `max()` costs nothing
 on the 97.8% where `md` already dominates and closes the hole exactly.
 
-The invariant, restated honestly: **a gated preview never exposes more legal
-content than it did before this change, and on the 2.2% it exposes less** —
-because the prose baseline was leaking those grids for free. Assert the
-direction, not equality.
+The invariant, restated honestly and then measured. Over all 8,855 table-bearing
+chunks at `free_chars=600`, comparing reader-visible **non-whitespace** legal
+characters against `truncate_for_gate(content, …)`:
+
+| | |
+|---|---|
+| delta min / p50 / max | **−425 / 0 / +28** |
+| chunks serving MORE than today | **37 (0.42%)**, none by more than 28 chars |
+| blank previews | **0** |
+
+So the claim is *not* "never more" — it is **"never materially more, and usually
+less"**. The residual +28 is structural, not a leak: both paths spend the same
+**raw** 600-character budget, but `content` and `content_display` + `md`
+distribute whitespace differently, so the same budget yields a slightly
+different non-whitespace harvest. Closing it completely would mean
+re-denominating the gate in non-whitespace units for every wing, which is a much
+larger change than 28 characters on 0.4% of chunks justifies. Assert the
+direction with a documented tolerance; do not assert equality, and do not claim
+exactness the corpus does not support.
 
 **D8a — Those 244 rows are an AGENT-side defect too, and this plan does not fix
 it.** `content` holds the same error string, so the model has been reading

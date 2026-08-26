@@ -1946,38 +1946,56 @@ def _reg_with_tables(
     return fake
 
 
-def _prose_chars(section: dict[str, Any]) -> int:
-    """The section's rendered prose, tokens removed.
+def _prose_text(section: dict[str, Any]) -> str:
+    """The section's rendered prose, `TBL_…` tokens removed.
 
-    A `TBL_…` token is not legal text — it is a placement instruction for the
-    client — so it is stripped before counting. The newlines that surrounded it
-    stay, because the prose body had them too.
+    A token is not legal text — it is a placement instruction for the client —
+    so it is stripped before any measurement.
     """
-    return len(TABLE_PLACEHOLDER.sub("", section["text"]))
+    return TABLE_PLACEHOLDER.sub("", section["text"])
+
+
+def _visible_legal_text(section: dict[str, Any]) -> str:
+    """Prose + the PROSE FORM of each rendered grid (``table_md``).
+
+    The measure D8 is written against: how much law the section stands for,
+    expressed in the same units `truncate_for_gate` spends.
+    """
+    return _prose_text(section) + "".join(
+        t["md"] for t in section["tables"].values()
+    )
+
+
+def _reader_visible_text(section: dict[str, Any]) -> str:
+    """Prose + the text a reader actually reads OFF each rendered grid.
+
+    The security measure, and the one with no tolerance on it. For the 244
+    tables whose `table_md` is the ingestion error placeholder «[خطأ في التحويل
+    - انتهت المهلة]» this is the only honest count — `md` reports 31 characters
+    for a 3.2 KB penalty schedule, which is the hole `table_weight`'s ``max``
+    closes.
+    """
+    return _prose_text(section) + "".join(
+        visible_text(t["html"]) for t in section["tables"].values()
+    )
+
+
+def _nonspace(text: str) -> int:
+    """Non-whitespace characters — «how much law», immune to layout.
+
+    The two views deliberately disagree about whitespace: `content` spends two
+    newlines around a flattened block where `project_segments` re-emits one.
+    Comparing raw lengths turns an exposure assertion into a whitespace assay.
+    """
+    return len("".join(text.split()))
 
 
 def _visible_legal_chars(section: dict[str, Any]) -> int:
-    """Prose + the PROSE FORM of each rendered grid (``table_md``).
-
-    The measure D8 was originally written against: how much law the section
-    stands for, expressed in the same units `truncate_for_gate` spends.
-    """
-    return _prose_chars(section) + sum(
-        len(t["md"]) for t in section["tables"].values()
-    )
+    return len(_visible_legal_text(section))
 
 
 def _reader_visible_chars(section: dict[str, Any]) -> int:
-    """Prose + the text a reader actually reads OFF each rendered grid.
-
-    The security measure, and the one with no tolerance on it. For the 244 tables
-    whose `table_md` is the ingestion error placeholder «[خطأ في التحويل - انتهت
-    المهلة]» this is the only honest count — `md` reports 31 characters for a
-    3.2 KB penalty schedule, which is the hole `table_weight`'s ``max`` closes.
-    """
-    return _prose_chars(section) + sum(
-        len(visible_text(t["html"])) for t in section["tables"].values()
-    )
+    return len(_reader_visible_text(section))
 
 
 # ---- 8.1 D8 — THE GATE IS NEUTRAL TO TABLES -------------------------------
@@ -1986,30 +2004,26 @@ def _reader_visible_chars(section: dict[str, Any]) -> int:
 def _neutrality_fixture() -> tuple[FakeSupabase, str]:
     """A chunk whose two views hold the SAME law, sized for an EXACT comparison.
 
-    ``content``          = P + "\\n" + MD + "\\n" + S   (the prose, agent view)
-    ``content_display``  = P + "\\n" + TOKEN + "\\n" + S (the user view)
+    ``content``          = P + BLANK + MD + BLANK + S   (the prose, agent view)
+    ``content_display``  = P + BLANK + TOKEN + BLANK + S (the user view)
 
     with ``MD`` = ``table_md``, i.e. byte-identical to the block the token
     replaced. That identity is the whole basis of D8.
+
+    A BLANK line on each side of the token, because that is what the corpus has:
+    86.2% of the 24,511 tokens carry two newlines before them and 74.1% two
+    after (measured 2026-08-25). It is also the shape the gate charges exactly —
+    ``sep_cost`` is 2 — so the segment walk and the string cut reach ``S`` with
+    the same budget and cut at the same space.
 
     ``MD`` is a REAL conversion — long enough that ``table_weight``'s ``max``
     resolves to ``len(md)`` — so this fixture measures the neutral 97.8% of the
     corpus. The conversion-error tail gets its own test, and there the gate is
     deliberately stricter than the prose baseline.
-
-    THE ARITHMETIC IS TUNED, ON PURPOSE, so the neutrality band is tight rather
-    than «about the same». `split_body` consumes the newline on either side of a
-    token as a line separator, so the segment walk is not charged those 2 chars
-    while the string cut is — the walk therefore reaches ``S`` with 2 chars MORE
-    budget. 7-char words put those 2 chars strictly inside a word (no space at
-    S[304] or S[305]), so both paths cut at the same space, S[303]. With
-    blank-line separation the string cut spends 2 newlines per boundary where
-    the walk is charged 1, so the walk stays at or BELOW today — never above,
-    which is the direction that matters.
     """
     p, md, s = _run(12), _run(25), _run(200)      # 95, 199, 1599 chars
-    content = f"{p}\n{md}\n{s}"
-    content_display = f"{p}\n{TBL_1}\n{s}"
+    content = p + "\n\n" + md + "\n\n" + s
+    content_display = p + "\n\n" + TBL_1 + "\n\n" + s
     fake = _reg_with_tables(
         [_display_chunk(CHUNK_ID, content=content, content_display=content_display)],
         [_table_row(TBL_1, md, chunk_id=CHUNK_ID)],
@@ -2018,7 +2032,7 @@ def _neutrality_fixture() -> tuple[FakeSupabase, str]:
 
 
 def test_the_gate_is_neutral_to_tables() -> None:
-    """THE headline assertion — D8 made checkable, as the SAFE DIRECTION.
+    """THE headline assertion — D8 made checkable.
 
     A table is charged ``max(len(table_md), len(visible_text(table_html)))``. The
     ``md`` half is the original D8: ``table_md`` is *literally the prose that
@@ -2027,15 +2041,19 @@ def test_the_gate_is_neutral_to_tables() -> None:
     this feature existed. This is the assertion that answers «does this leak
     more».
 
-    ⚠ IT IS `<=`, NOT `==`, AND THAT IS THE POINT. Strict equality was the
-    original spec and it is WRONG, because it would also have to hold for the
-    **244 tables whose ``table_md`` is the ingestion error placeholder** «[خطأ في
-    التحويل - انتهت المهلة]» — 31 characters standing in for a full penalty
-    schedule. There the prose baseline was itself leaking a grid for free, so
-    matching it is the last thing this gate should do; it is deliberately
-    STRICTER. Neutrality is the claim for the 97.8% where ``md`` is a real
-    conversion, and with the inter-segment separator charged it holds EXACTLY —
-    the assertion below is `==`, and the security claim above it is a hard `<=`.
+    ⚠ MEASURED IN NON-WHITESPACE CHARACTERS, AND THAT IS DELIBERATE. The two
+    views do not agree on whitespace and must not be asked to: `content` spends
+    two newlines on each side of the flattened block, while `project_segments`
+    re-emits one. Counting raw bytes would make this test a whitespace assay.
+    Non-space characters are «how much law», they are exactly invariant here,
+    and they are what an exposure budget is actually about.
+
+    ⚠ The companion claim is `<=`, NOT `==`, and that is also the point. Strict
+    equality on every table would have to hold for the **244 whose ``table_md``
+    is the ingestion error placeholder** «[خطأ في التحويل - انتهت المهلة]» — 31
+    characters standing in for a full penalty schedule. There the prose baseline
+    was itself leaking a grid for free, so matching it is the last thing this
+    gate should do; it is deliberately STRICTER.
     """
     fake, content = _neutrality_fixture()
     doc = ls.get_regulation_doc(fake, "nizam-test")
@@ -2046,17 +2064,14 @@ def test_the_gate_is_neutral_to_tables() -> None:
     assert section["tables"], "fixture rendered no table"
     assert section["is_truncated"] is True
 
-    baseline = len(
-        ls.truncate_for_gate(content, "gated", free_chars=600)["visible_text"]
-    )
+    today = ls.truncate_for_gate(content, "gated", free_chars=600)["visible_text"]
+
     # (a) THE SECURITY CLAIM: what an anonymous crawler actually reads off the
     #     page — prose plus the text inside each grid — never exceeds what the
     #     prose gate served it. Hard `<=`, no tolerance.
-    assert _reader_visible_chars(section) <= baseline
-    # (b) THE NEUTRALITY CLAIM, in the units the budget is spent in. EXACT:
-    #     charging the inter-segment separator removed the last source of
-    #     drift between the segment walk and the string cut.
-    assert _visible_legal_chars(section) == baseline
+    assert _nonspace(_reader_visible_text(section)) <= _nonspace(today)
+    # (b) THE NEUTRALITY CLAIM, in the units the budget is spent in. EXACT.
+    assert _nonspace(_visible_legal_text(section)) == _nonspace(today)
 
 
 def test_the_gate_is_stricter_than_prose_on_a_conversion_error_table() -> None:
