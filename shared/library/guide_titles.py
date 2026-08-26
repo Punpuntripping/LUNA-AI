@@ -398,6 +398,39 @@ def canonicalize_channels(labels: "list[str]") -> "dict[str, str]":
     return mapping
 
 
+MIN_ATTESTATIONS = 3
+"""How many guides must name a brand as their channel, WITHOUT it appearing in
+their own title, before it counts as a real portal. Three is the smallest number
+that cannot be produced by one guide's vocabulary echoing twice."""
+
+
+def attested_channels(labels: "list[str]") -> "frozenset[str]":
+    """The folded brands that the corpus itself vouches for as real portals.
+
+    ⚠ THE SIGNAL THAT SEPARATES A PORTAL FROM A RECYCLED SERVICE NAME.
+    ``brand_already_in_title`` knows that a channel appearing in its own guide's
+    title must not be appended — but it cannot tell WHY, and the two whys need
+    opposite handling:
+
+      * «إصدار ترخيص صناعي» → «منصة صناعي» is INVENTED out of the title. There is
+        no such portal; the guide should fall back to its issuing entity.
+      * «… في السعودية عبر ناجز» → «بوابة ناجز» is CORRECT and already stated.
+        The title should simply be left alone — appending the ministry instead
+        gives «… عبر ناجز في وزارة العدل», which is clumsy and drops the brand
+        the reader was looking for.
+
+    Told apart by counting: pass the labels from guides where the brand was NOT
+    in the title, and a real portal shows up many times (ناجز 108, بلدي 130)
+    while an invented one shows up never. Measured live 2026-08-26.
+    """
+    counts: dict[str, int] = {}
+    for raw in labels:
+        brand = _fold(channel_brand(raw or ""))
+        if brand:
+            counts[brand] = counts.get(brand, 0) + 1
+    return frozenset(b for b, n in counts.items() if n >= MIN_ATTESTATIONS)
+
+
 def brand_already_in_title(channel: str, title: Optional[str]) -> bool:
     """True when the channel's brand already appears in the guide's own title.
 
@@ -484,6 +517,8 @@ def compose_guide_title(corpus_title: str, label: Optional[str]) -> str:
 
 
 __all__ = [
+    "MIN_ATTESTATIONS",
+    "attested_channels",
     "brand_already_in_title",
     "canonicalize_channels",
     "channel_brand",

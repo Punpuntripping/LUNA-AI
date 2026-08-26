@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from shared.library.guide_titles import (
+    attested_channels,
     brand_already_in_title,
     canonicalize_channels,
     channel_brand,
@@ -369,3 +370,30 @@ def test_the_ENTITY_fallback_is_anti_stuttered_too() -> None:
 def test_a_mid_string_label_blocks_the_append() -> None:
     title = "الدليل الشامل: تدقيق بيانات ومتغيرات الوظائف في مسار"
     assert compose_guide_title(title, "منصة مسار") == title
+
+
+# ── attestation: portal vs recycled service name ─────────────────────────────
+def test_a_widely_used_brand_is_attested() -> None:
+    assert "ناجز" in {b for b in attested_channels(["بوابة ناجز"] * 108)}
+
+
+def test_a_one_off_brand_is_NOT_attested() -> None:
+    """«منصة صناعي» exists on exactly one guide — the one whose title it was
+    lifted from. That is the signature of an invented portal."""
+    att = attested_channels(["منصة صناعي"])
+    assert not att
+
+
+def test_attestation_separates_the_two_in_title_cases() -> None:
+    """The whole point: «… عبر ناجز» keeps ناجز (a real portal named by 108
+    other guides) and is left as written, while «إصدار ترخيص صناعي» drops
+    «منصة صناعي» and falls back to its entity."""
+    run = ["بوابة ناجز"] * 108 + ["منصة بلدي"] * 130 + ["منصة فال"]
+    att = attested_channels(run)
+    assert "ناجز" in att and "بلدي" in att
+    assert "فال" not in att
+
+
+def test_the_threshold_is_exclusive_of_two() -> None:
+    assert not attested_channels(["منصة قبول"] * 2)
+    assert attested_channels(["منصة قبول"] * 3)

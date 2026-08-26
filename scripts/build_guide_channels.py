@@ -118,6 +118,7 @@ from agents.utils.agent_models import ModelPolicy, build_fallback_model, cost_us
 from shared import pricing
 from shared.db.client import get_supabase_client
 from shared.library.guide_titles import (
+    attested_channels,
     brand_already_in_title,
     canonicalize_channels,
     channel_is_grounded,
@@ -135,6 +136,12 @@ except Exception:  # noqa: BLE001
 
 
 SIDECAR = "service_guide_channels"
+
+
+def _fold_brand(channel: str) -> str:
+    from shared.library.guide_titles import _fold, channel_brand
+
+    return _fold(channel_brand(channel or ""))
 
 # Same cell as the slug namer: this is a short, mechanical extraction over text
 # we already own, not a reasoning task.
@@ -286,6 +293,7 @@ async def _extract_one(agent: Agent[None, str], sem: asyncio.Semaphore, row: dic
     provider = (row.get("provider_name") or "").strip()
     base = {
         "content_id": cid,
+        "in_title": False,
         "slug": row.get("slug"),
         "corpus_title": corpus_title,
         "provider": provider,
@@ -332,16 +340,19 @@ async def _extract_one(agent: Agent[None, str], sem: asyncio.Semaphore, row: dic
     # «إصدار ترخيص صناعي» → «منصة صناعي». It also catches the honest case of a
     # title that already names its channel, which must not have it appended
     # twice. 27 of 533 titles needed this on the first apply.
-    if brand_already_in_title(proposal, corpus_title):
-        return {
-            **base,
-            "channel": None,
-            "reason": f"brand already in the title (recycled or already stated): «{proposal}»",
-            "tokens": tokens,
-            "model": model,
-        }
-
-    return {**base, "channel": proposal, "reason": None, "tokens": tokens, "model": model}
+    # ⚠ GATE 4 FLAGS, IT DOES NOT DECIDE. Whether a brand that appears in its own
+    # title is invented («منصة صناعي») or merely already-stated («… عبر ناجز»)
+    # cannot be known from ONE guide — it takes the whole run's counts. The
+    # second pass in `_settle_in_title` decides; destroying the proposal here
+    # would throw away the evidence it needs.
+    return {
+        **base,
+        "channel": proposal,
+        "in_title": brand_already_in_title(proposal, corpus_title),
+        "reason": None,
+        "tokens": tokens,
+        "model": model,
+    }
 
 
 # ─── Corpus read ──────────────────────────────────────────────────────────────
@@ -499,6 +510,31 @@ def _apply(client, results: list[dict]) -> int:
     return written
 
 
+def _settle_in_title(results: list[dict]) -> None:
+    """Decide the gate-4 flagged rows using the corpus's own vote.
+
+    A brand attested by ``MIN_ATTESTATIONS`` other guides — ones that did NOT
+    have it in their own title — is a real portal, so the guide KEEPS it and
+    ``compose_guide_title`` leaves the title alone (it already names it).
+    Anything else was invented out of the title and falls back to the entity.
+    """
+    attested = attested_channels(
+        [r["channel"] for r in results if r.get("channel") and not r.get("in_title")]
+    )
+    kept = dropped = 0
+    for r in results:
+        if not (r.get("channel") and r.get("in_title")):
+            continue
+        if _fold_brand(r["channel"]) in attested:
+            r["reason"] = "already named in the title — left as written"
+            kept += 1
+        else:
+            r["reason"] = f"invented from the title: «{r['channel']}»"
+            r["channel"] = None
+            dropped += 1
+    print(f"  in-title proposals: {kept} kept as real portals, {dropped} dropped as invented")
+
+
 def _recompose(client) -> None:
     """Rebuild every ``display_title`` from the STORED channel — no LLM call.
 
@@ -605,6 +641,9 @@ async def _run(args) -> None:
     started = time.monotonic()
     results = await asyncio.gather(*(_extract_one(agent, sem, r) for r in rows))
     elapsed = time.monotonic() - started
+
+    # ⚠ SECOND PASS — decide the flagged proposals using the WHOLE run.
+    _settle_in_title(results)
 
     # ⚠ CANONICALISE BEFORE COMPOSING. The extractor sees one guide at a time,
     # so one portal comes back under several classifiers; this vote settles on
