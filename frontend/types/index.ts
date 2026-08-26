@@ -746,6 +746,23 @@ export type SourceView =
       source_type: 'chunk';
       title: string;
       content: string;
+      /**
+       * The same مقطع split into prose runs and rendered tables — the corpus
+       * flattened every table into a bulleted list before ingestion, and this
+       * puts the grid back for the reader.
+       *
+       * `content` above stays the PROSE and is still what «نسخ المحتوى» copies:
+       * pasting a source into a memo must yield text, not `<table>` markup.
+       *
+       * Empty (or absent) means "render `content`, exactly as before" — which
+       * is the 82% of chunks with no table, every judgment riding this shape,
+       * and every artifact persisted before this shipped. Each `html` is
+       * sanitized server-side by an allowlist re-serializer.
+       */
+      display_segments?: (
+        | { kind: 'text'; text: string }
+        | { kind: 'table'; ref: string; html: string; md: string }
+      )[];
       regulation_title: string;
       /**
        * Parent regulation's landing page — the ONE external exit. The PDF

@@ -24,6 +24,9 @@ Per-domain query count:
     regulations -- 4 logical fetches (chunks_v2, regulations_v2,
                    cross_references_v2, articles_v2), each batched by 150.
                    (Appendix chunks ride this same path — real chunks_v2 rows.)
+                   A FIFTH (chunk_tables_v2) runs ONLY under
+                   ``with_tables=True``, which the live turn never passes —
+                   see ``_enrich_regulations``.
     cases       -- 2 logical fetches (cases, entities), each batched by 150.
     compliance  -- 0 (the adapter already carries every field).
     circulars   -- 0 (the adapter carries the capped content + entity name).
@@ -57,14 +60,32 @@ def _batched(items: list[str], size: int) -> Iterator[list[str]]:
 # -- Batched DB fetches (each runs inside asyncio.to_thread) ------------------
 
 
-def _fetch_chunks(supabase, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
-    """`chunks_v2` rows keyed by id -- content/context/owns/regulation_id."""
+#: The chunk select list, live-turn shape. ``content`` is the AGENT view (the
+#: prose conversion) and is what ``for_aggregator()`` projects — see D1/D2.
+_CHUNK_COLUMNS = "id, regulation_id, title, summary, context, content, owns"
+
+#: The reveal shape: ``content_display`` rides ALONGSIDE ``content``, never
+#: instead of it. The fail-soft path in the viewer needs the prose, and nothing
+#: may ever hand ``content_display`` to a prompt.
+_CHUNK_COLUMNS_WITH_DISPLAY = _CHUNK_COLUMNS + ", content_display"
+
+
+def _fetch_chunks(
+    supabase, chunk_ids: list[str], *, with_display: bool = False
+) -> dict[str, dict[str, Any]]:
+    """`chunks_v2` rows keyed by id -- content/context/owns/regulation_id.
+
+    ``with_display`` adds ONE column (``content_display``) and nothing else. It
+    is False on the live search turn, so that turn's select list is byte-for-byte
+    what it has always been. See :func:`_enrich_regulations`.
+    """
+    columns = _CHUNK_COLUMNS_WITH_DISPLAY if with_display else _CHUNK_COLUMNS
     out: dict[str, dict[str, Any]] = {}
     for batch in _batched(chunk_ids, _ID_BATCH):
         try:
             resp = (
                 supabase.table("chunks_v2")
-                .select("id, regulation_id, title, summary, context, content, owns")
+                .select(columns)
                 .in_("id", batch)
                 .execute()
             )
@@ -72,6 +93,78 @@ def _fetch_chunks(supabase, chunk_ids: list[str]) -> dict[str, dict[str, Any]]:
                 out[r["id"]] = r
         except Exception as e:  # best-effort -- never crash the pipeline
             logger.warning("enrich_ura: _fetch_chunks batch failed: %s", e)
+    return out
+
+
+# -- chunk_tables_v2: the REVEAL-only read (plan D10) -------------------------
+#
+# PostgREST clamps any response to max-rows=1000, and one نظام in this corpus
+# already carries 965 tables. A reveal batches whole chunks, so the clamp is
+# reachable — and past it the missing rows do not error, they simply do not
+# arrive, and every unmatched token becomes a DELETED table (the renderer drops
+# what it cannot resolve). Page it. Mirrors
+# ``library_service._chunk_tables_for_regulation``, which solved the same
+# problem on the library side.
+_TABLES_PAGE = 1000
+
+#: Absolute ceiling across ONE enrichment call. A runaway ingestion must not
+#: turn a source reveal into an unbounded scan; a reveal is a handful of chunks,
+#: so this is orders of magnitude of headroom.
+_TABLES_MAX_ROWS = 10_000
+
+
+def _fetch_chunk_tables(
+    supabase, chunk_ids: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Raw ``chunk_tables_v2`` rows for these chunks, keyed by ``chunk_id``.
+
+    ONE batched read per ``_ID_BATCH`` of chunk ids, PAGED at 1000 rows inside
+    each batch. Selects ``table_ref, chunk_id, table_html, table_md`` and
+    nothing else: ``table_html`` alone is 29.0 MB corpus-wide and the provenance
+    columns (``page``, ``resolution``, ``source_file``, ``line_start``…) are of
+    no use to a renderer.
+
+    Ordered by ``table_ref`` so the paging window is stable — an unordered
+    PostgREST range is not a guaranteed partition, and a row that lands in no
+    page is a table silently deleted from a statute.
+
+    Best-effort like every other fetch here: a failure logs and returns whatever
+    arrived. The consumer's fail-soft direction is what makes that safe — a
+    chunk whose tables did not arrive renders its PROSE (``chunk_content``),
+    which is exactly today's output, never ``content_display`` minus its tables.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for batch in _batched(chunk_ids, _ID_BATCH):
+        start = 0
+        while True:
+            try:
+                resp = (
+                    supabase.table("chunk_tables_v2")
+                    .select("table_ref, chunk_id, table_html, table_md")
+                    .in_("chunk_id", batch)
+                    .order("table_ref")
+                    .range(start, start + _TABLES_PAGE - 1)
+                    .execute()
+                )
+            except Exception as e:
+                logger.warning("enrich_ura: _fetch_chunk_tables batch failed: %s", e)
+                break
+            page = resp.data or []
+            for r in page:
+                chunk_id = r.get("chunk_id")
+                if chunk_id is None:
+                    continue
+                out.setdefault(str(chunk_id), []).append(r)
+            if len(page) < _TABLES_PAGE:
+                break
+            start += _TABLES_PAGE
+            if start >= _TABLES_MAX_ROWS:
+                logger.warning(
+                    "enrich_ura: chunk_tables read hit the %d-row ceiling — "
+                    "some tables will render as prose",
+                    _TABLES_MAX_ROWS,
+                )
+                break
     return out
 
 
@@ -235,11 +328,34 @@ def _fetch_entities(supabase, entity_ids: list[str]) -> dict[str, str]:
 # -- Per-domain enrichment ----------------------------------------------------
 
 
-async def _enrich_regulations(reg_results: list, supabase) -> None:
+async def _enrich_regulations(
+    reg_results: list, supabase, *, with_tables: bool = False
+) -> None:
     """Fill the heavy reg fields and resolve cross-refs (4 batched fetches).
 
     Mutates each ``RegURAResult`` in ``reg_results`` in place. The empty-body
     filter is applied by the caller (``enrich_ura``) after this returns.
+
+    Args:
+        with_tables: also read ``chunks_v2.content_display`` and the chunks'
+            ``chunk_tables_v2`` rows, filling ``chunk_display`` /
+            ``chunk_tables`` (a FIFTH batched fetch). **False on the live search
+            path**, and that default is the point — see below. True from
+            ``references_service._build_reg_shells`` on the source REVEAL, which
+            runs on a user's click.
+
+    ⚠ THIS FUNCTION HAS TWO CALLERS AND ONLY ONE OF THEM IS A USER CLICK.
+    ``enrich_ura`` runs it on every deep_search turn; ``references_service``
+    runs it when someone opens «عرض المصدر» on a single citation. The corpus
+    holds **29.0 MB** of table markup and only **7.7%** of regulation citations
+    ever point at a chunk that has any, so pulling it on the hot path would cost
+    every search for a body almost nobody opens — and it would bloat the
+    persisted retrieval artifact, which is the more expensive half. With
+    ``with_tables=False`` this function issues not one extra query and selects
+    not one extra column: the live turn is bit-for-bit what it was.
+
+    Same shape, same reason, as ``_enrich_cases(..., with_summary=True)``.
+    Plan: ``.claude/plans/chunk_table_rendering.md`` D10 / §4.2.
     """
     if not reg_results:
         return
@@ -257,7 +373,17 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
         return
 
     # 1. chunks_v2 by id.
-    chunks = await asyncio.to_thread(_fetch_chunks, supabase, chunk_ids)
+    chunks = await asyncio.to_thread(
+        _fetch_chunks, supabase, chunk_ids, with_display=with_tables
+    )
+
+    # 1b. chunk_tables_v2 — REVEAL ONLY. Skipped entirely (no query, no import
+    #     of 29 MB of markup into a persisted artifact) on the live turn.
+    chunk_tables: dict[str, list[dict[str, Any]]] = {}
+    if with_tables:
+        chunk_tables = await asyncio.to_thread(
+            _fetch_chunk_tables, supabase, chunk_ids
+        )
 
     # 2. regulations_v2 by the chunks' regulation_id.
     regulation_ids = [c.get("regulation_id") for c in chunks.values()]
@@ -312,11 +438,31 @@ async def _enrich_regulations(reg_results: list, supabase) -> None:
             owns = chunk.get("owns")
             res.owns = owns if isinstance(owns, dict) else {}
             reg = regs.get(chunk.get("regulation_id")) or {}
+            if with_tables:
+                # The display fork (D1/D2). ``chunk_content`` above keeps the
+                # PROSE — untouched, still what for_aggregator() projects — and
+                # the user view travels beside it.
+                #
+                # Both are filled TOGETHER or not at all: a display body whose
+                # tables did not arrive would render its tokens as nothing,
+                # which does not degrade the نظام, it DELETES tables from it.
+                # A chunk with no rows in chunk_tables_v2 therefore keeps
+                # ``chunk_display=""``, and the viewer falls back to the prose.
+                rows = chunk_tables.get(str(chunk.get("id") or "")) or []
+                if rows:
+                    res.chunk_display = chunk.get("content_display") or ""
+                    res.chunk_tables = rows
+                else:
+                    res.chunk_display = ""
+                    res.chunk_tables = []
         else:
             # Chunk missing -> leave defaults; empty-filter will drop it.
             res.chunk_content = ""
             res.chunk_context = ""
             res.owns = {}
+            if with_tables:
+                res.chunk_display = ""
+                res.chunk_tables = []
             reg = {}
 
         res.reg_title = reg.get("clean_title") or reg.get("title") or ""

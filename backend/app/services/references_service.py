@@ -547,7 +547,13 @@ async def build_reference_source_view(
     n = int(row.get("n") or 0)
 
     if domain == "regulations":
-        shells: dict[int, RefShell] = await _build_reg_shells(supabase, [row])  # type: ignore[assignment]
+        # ``with_tables=True`` — THE reveal, and the only place it is True.
+        # This function runs on a click, on one row, and its whole output is a
+        # body the reader is about to read; the live search turn and the
+        # citation-list read both leave it False (plan D10).
+        shells: dict[int, RefShell] = await _build_reg_shells(  # type: ignore[assignment]
+            supabase, [row], with_tables=True
+        )
     elif domain == "cases":
         shells = await _build_case_shells(supabase, [row])  # type: ignore[assignment]
     elif domain == "compliance":
@@ -667,12 +673,28 @@ def _case_ref_from_row(row: dict) -> str:
 async def _build_reg_shells(
     supabase: SupabaseClient,
     rows: list[dict],
+    *,
+    with_tables: bool = False,
 ) -> dict[int, RegURAResult]:
     """Build RegURAResult shells for every regulations row and enrich in bulk.
 
     Reuses ``ura.enrich._enrich_regulations`` which already batches every
     fetch (chunks_v2, regulations_v2, cross_references_v2, articles_v2,
     appendices placeholder) and mutates the shells in place.
+
+    Args:
+        with_tables: pull ``content_display`` + the chunks' ``chunk_tables_v2``
+            rows so the popup can render real grids instead of the prose the
+            OCR pipeline flattened them into. **Only ``build_reference_source_view``
+            passes True** — that is the REVEAL, one row, on a click.
+
+    ⚠ THIS HELPER HAS TWO CALLERS AND THE DEFAULT IS FOR THE OTHER ONE. The
+    list read (``_load_references``) also builds reg shells, for every citation
+    on a workspace item at once, and it serves NO source bodies at all — its
+    cards are titles, snippets and links. Fetching table markup there would buy
+    a payload nothing renders, N citations at a time. The plan wrote this flag
+    as if ``_build_reg_shells`` were the click; it is not, the reveal is, so the
+    flag stops at the reveal.
     """
     shells_by_n: dict[int, RegURAResult] = {}
     shells: list[RegURAResult] = []
@@ -691,7 +713,7 @@ async def _build_reg_shells(
         shells_by_n[int(row["n"])] = shell
 
     try:
-        await _enrich_regulations(shells, supabase)
+        await _enrich_regulations(shells, supabase, with_tables=with_tables)
     except Exception as exc:  # noqa: BLE001
         logger.warning("references_service: reg enrichment failed: %s", exc)
 

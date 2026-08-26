@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { ChunkTable } from "@/components/library/blocks/ChunkTable";
 import {
   useLibraryBalance,
   useReferenceSource,
@@ -1232,6 +1233,30 @@ function SourceViewContent({
     );
   }
   if (view.source_type === "chunk") {
+    // A مقطع whose tables survived ingestion renders as prose runs with real
+    // grids between them; anything else renders exactly as it always has.
+    //
+    // ⚠ The tables are NOT handed to `MarkdownRenderer`. It carries no
+    // `rehype-raw`, so react-markdown would silently strip the `<table>` and
+    // the grid would simply vanish — and turning raw HTML ON there is not the
+    // fix, because that same component renders MODEL OUTPUT. Enabling raw
+    // markup on generated text to solve a corpus problem trades a real security
+    // boundary for a rendering nicety. So the body is split instead: prose
+    // through markdown, grids through the component the library already uses.
+    const segments = view.display_segments ?? [];
+    if (segments.length > 0) {
+      return (
+        <div className="space-y-3">
+          {segments.map((segment, index) =>
+            segment.kind === "table" ? (
+              <ChunkTable key={`${segment.ref}-${index}`} html={segment.html} />
+            ) : (
+              <MarkdownRenderer key={index} content={segment.text} />
+            ),
+          )}
+        </div>
+      );
+    }
     return (
       <div className="space-y-3">
         {sourceContent && <MarkdownRenderer content={sourceContent} />}

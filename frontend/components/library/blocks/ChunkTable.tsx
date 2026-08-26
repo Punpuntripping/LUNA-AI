@@ -65,6 +65,14 @@ export function ChunkTable({ html }: ChunkTableProps) {
           // Stops a long Arabic cell from collapsing to a one-word column when
           // it shares a row with a dozen siblings.
           "[&_td]:min-w-[6rem] [&_th]:min-w-[5rem]",
+          // ...and the other end. `w-max` sizes the table to its content, which
+          // is what makes a twelve-column penalty grid readable — but a cell
+          // holding a PARAGRAPH then lays that paragraph out on one line. A real
+          // corpus table (1 row, 3 cells, one holding 801 chars of نظام
+          // المرافعات الشرعية) rendered 4,215px wide as a single strip. Capping
+          // the cell makes long prose wrap while leaving short cells to size
+          // themselves, so both shapes render correctly.
+          "[&_td]:max-w-[32rem] [&_th]:max-w-[32rem]",
           // Caption, when the corpus carried one: a quiet lead-in, start-aligned.
           "[&_caption]:mb-2 [&_caption]:text-start [&_caption]:text-xs [&_caption]:text-text-secondary",
           // Cells. `align-top` because a merged cell spanning four rows must

@@ -74,6 +74,7 @@ from agents.deep_search_v4.ura.schema import (
 )
 from shared.library.case_sources import entity_name as _entity_name
 from shared.library.case_sources import judgment_provenance
+from shared.library.chunk_tables import split_body, tables_by_ref
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,40 @@ class ChunkSourceView(BaseModel):
     No PDF companion: the source popup offers exactly two ways out (the official
     link, and the item's page in our own library), so a raw file link was a third
     exit that led out of the product for content we already publish ourselves.
+    """
+    display_segments: list[dict] = Field(default_factory=list)
+    """The chunk's body split into prose runs and rendered TABLES, or ``[]``.
+
+    Every table in the reg corpus was OCR'd and then converted to PROSE before
+    ingestion (prose is what BM25 indexes and what the model reads), so a grid
+    reaches this popup as a numbered list of sentences. ``chunks_v2`` also keeps
+    ``content_display`` — the same text with each resolved table collapsed to a
+    whole-line ``TBL_…`` token — and ``chunk_tables_v2`` holds the markup behind
+    each token. This is that walk, already done:
+    ``shared.library.chunk_tables.split_body``.
+
+    Exactly two segment shapes::
+
+        {"kind": "text",  "text": str}
+        {"kind": "table", "ref": str, "html": str, "md": str, "weight": int}
+
+    ``html`` is **sanitized server-side** by an allowlist re-serializer
+    (``sanitize_table_html``, run inside ``tables_by_ref``) — that is what makes
+    the client's ``dangerouslySetInnerHTML`` trusted BY CONSTRUCTION rather than
+    by inspection of a corpus snapshot. Raw ``chunk_tables_v2.table_html`` never
+    reaches this field.
+
+    ⚠ **``[]`` is the normal case and it means "render ``content`` exactly as
+    today".** It covers all three of: a chunk with no tables (82% of the
+    corpus), a reveal built without ``with_tables=True``, and every artifact
+    persisted before this shipped. Because empty is the untouched path, no
+    consumer needs a compatibility branch — which is precisely why this field
+    was added beside ``content`` instead of replacing it.
+
+    ``content`` remains the PROSE and remains authoritative for text-only
+    channels: «نسخ المحتوى» pastes it, and a client that cannot render HTML
+    falls back to it. An unresolvable token produces NO segment and leaves no
+    trace, so the literal string ``TBL_`` can never appear in a ``text``.
     """
 
 
@@ -566,6 +601,50 @@ def _strip_line_indent(text: str) -> str:
     return "\n".join(line.lstrip() for line in text.splitlines())
 
 
+def _reg_display_segments(ura: RegURAResult) -> list[dict]:
+    """``RegURAResult`` → prose/table segments, or ``[]`` for "render content".
+
+    PURE. The whole walk lives in ``shared.library.chunk_tables`` — the one
+    implementation the public library and this popup both call, so the two
+    surfaces cannot drift — and this is only the adapter onto a URA.
+
+    ``tables_by_ref`` is the ONLY constructor used, because it is what runs
+    ``sanitize_table_html``; raw ``table_html`` must never reach a view. A row
+    whose HTML sanitizes to nothing is dropped there, so its token behaves
+    exactly like one that was never ingested.
+
+    Returns ``[]`` — meaning "render ``content``, exactly as today" — for every
+    reason there is not to segment: no display body, no table rows, nothing that
+    sanitized to a real grid, and (the case that matters) a body that split into
+    no table at all. That last guard is what keeps a table-free reveal off the
+    new path entirely: ``content_display`` is a DIFFERENT string from
+    ``content`` even when it carries no token, and a segment payload built from
+    it would quietly change what the popup shows for a chunk that has nothing to
+    gain from it.
+
+    Never raises. A blown parse costs the reader a grid; it must not cost them
+    the source.
+    """
+    body = (ura.chunk_display or "").strip()
+    rows = ura.chunk_tables or []
+    if not body or not rows:
+        return []
+    try:
+        tables = tables_by_ref(rows)
+        if not tables:
+            return []
+        segments = split_body(_strip_line_indent(body), tables)
+    except Exception as exc:  # noqa: BLE001 — degrade to the prose, never 500
+        logger.warning(
+            "source_viewer: table segmentation failed for %s: %s",
+            getattr(ura, "ref_id", "?"), exc,
+        )
+        return []
+    if not any(seg.get("kind") == "table" for seg in segments):
+        return []
+    return segments
+
+
 async def _build_reg_view(
     supabase: SupabaseClient, ura: RegURAResult
 ) -> ChunkSourceView:
@@ -584,14 +663,34 @@ async def _build_reg_view(
     same body with no separator: a reader quoting the popup ends up quoting us.
     The field survives on ``RegURAResult`` (stored, and still in the forensic
     dumps) — it just no longer reaches a user surface.
+
+    **Tables (chunk_table_rendering.md §4.2).** ``display_segments`` is filled
+    only when the URA arrived from a REVEAL — i.e. from
+    ``_enrich_regulations(..., with_tables=True)``, which is the only caller
+    that reads ``content_display`` and ``chunk_tables_v2``. A live-turn URA
+    carries neither, so this stays ``[]`` and the popup renders ``content``
+    exactly as it does today.
+
+    ``content`` is NEVER built from the display body: it is the prose, it is
+    what «نسخ المحتوى» pastes (D11) and it is the fallback any consumer that
+    ignores segments falls back to. The two strings diverge here deliberately.
+
+    Fail-soft, and the safe direction is not the obvious one: if the tables did
+    not arrive, ``chunk_display`` is empty and we emit ``[]`` — the prose, with
+    every table intact as the flattened list it has always been. Splitting the
+    display body against an EMPTY table map would instead let each token resolve
+    to nothing, which does not degrade the نظام, it silently deletes tables from
+    it. ``_enrich_regulations`` fills the pair together for the same reason.
     """
     _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 
+    content = _strip_line_indent((ura.chunk_content or "").strip())
     return ChunkSourceView(
         title=ura.reg_title or "",
-        content=_strip_line_indent((ura.chunk_content or "").strip()),
+        content=content,
         regulation_title=ura.reg_title or "",
         regulation_source_url=ura.landing_url or "",
+        display_segments=_reg_display_segments(ura),
     )
 
 

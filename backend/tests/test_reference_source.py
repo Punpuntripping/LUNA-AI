@@ -32,10 +32,12 @@ from agents.deep_search_v4.source_viewer import (
     ChunkSourceView,
     RegulationSummarySourceView,
 )
+from agents.deep_search_v4.ura.enrich import enrich_ura
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
     RegURAResult,
+    UnifiedRetrievalArtifact,
 )
 from backend.app.api import workspace as workspace_api
 from backend.app.deps import get_current_user, get_supabase
@@ -47,7 +49,7 @@ from backend.app.services import library_service as ls
 from backend.app.services import reference_resolver, references_service
 
 # The row-backed PostgREST fake + quota fixtures Phase A already ships.
-from backend.tests.test_library_gating import FakeSupabase, quota_row
+from backend.tests.test_library_gating import FakeSupabase, _Chain, quota_row
 
 
 # ---------------------------------------------------------------------------
@@ -1456,3 +1458,445 @@ def test_the_source_view_has_no_pdf_exit() -> None:
     dumped = view.model_dump(mode="json")
     assert "regulation_pdf_link" not in dumped
     assert not any("pdf" in k.lower() for k in dumped)
+
+
+# ===========================================================================
+# 6. Chunk tables in the مراجع reveal
+#    (`.claude/plans/chunk_table_rendering.md` §4, D1/D2/D10/D11)
+# ===========================================================================
+#
+# Every table in the regulation corpus was OCR'd and then CONVERTED TO PROSE
+# before ingestion, because prose is what BM25 indexes and what the model reads.
+# `chunks_v2.content` keeps that prose (the AGENT view) and `content_display`
+# carries the same text with each table collapsed to a one-line `TBL_…` token
+# (the USER view), with `chunk_tables_v2` holding the markup behind each token.
+#
+# The whole design pressure here is that `ura.enrich._enrich_regulations` is
+# shared by TWO callers: the live deep_search turn, and this reveal — which runs
+# on a click. 29 MB of markup exists corpus-wide and only 7.7% of regulation
+# citations point at a chunk that has any, so the live turn must fetch NOTHING
+# extra and its prompt surface must not move by a byte.
+
+TABLE_CHUNK = "aaaabbbb-0000-4000-8000-00000000cafe"
+PLAIN_CHUNK = "aaaacccc-0000-4000-8000-00000000beef"
+
+TBL_A = "TBL_17405_reg_603_chunk_019_1"
+TBL_GHOST = "TBL_17405_reg_603_chunk_019_9"  # a token with no row — D3
+
+_TABLE_MD = (
+    "1. م: 1 — المخالفة: التأخر في السداد — حد قيمة الغرامة: 500 ريال.\n"
+    "2. م: 2 — المخالفة: عدم الإفصاح — حد قيمة الغرامة: 1000 ريال."
+)
+_TABLE_HTML = (
+    '<table><tr><th colspan="2">جدول الغرامات</th></tr>'
+    '<tr><td rowspan="1">1</td><td>500 ريال</td></tr>'
+    "<tr><td>2</td><td>1000 ريال</td></tr></table>"
+)
+
+#: The AGENT view — what `for_aggregator()` projects and BM25 indexes.
+_CHUNK_PROSE = (
+    "المادة الأولى: تسري أحكام هذه اللائحة على كل منشأة.\n"
+    "\n"
+    f"{_TABLE_MD}\n"
+    "\n"
+    "وتُطبق العقوبات وفق الجدول أعلاه."
+)
+#: The USER view — same law, the grid collapsed to a whole-line token. The
+#: ghost token is deliberate: a re-ingest can run ahead of the DB, and a raw
+#: `TBL_…` on a user surface is the one failure this design exists to prevent.
+_CHUNK_DISPLAY = (
+    "المادة الأولى: تسري أحكام هذه اللائحة على كل منشأة.\n"
+    "\n"
+    f"{TBL_A}\n"
+    "\n"
+    f"{TBL_GHOST}\n"
+    "\n"
+    "وتُطبق العقوبات وفق الجدول أعلاه."
+)
+
+
+def table_row(ref: str = TBL_A, *, chunk_id: str = TABLE_CHUNK) -> dict[str, Any]:
+    """One raw ``chunk_tables_v2`` row, in the four columns the reveal selects."""
+    return {
+        "table_ref": ref,
+        "chunk_id": chunk_id,
+        "table_html": _TABLE_HTML,
+        "table_md": _TABLE_MD,
+    }
+
+
+def table_supabase(**over: Any) -> FakeSupabase:
+    """A FakeSupabase whose reg chunk carries a real table."""
+    seeded: dict[str, Any] = {
+        "chunks_v2": [
+            {
+                "id": TABLE_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {"MADDA": [1]},
+                "content": _CHUNK_PROSE,
+                "content_display": _CHUNK_DISPLAY,
+                "context": "",
+            },
+            {
+                "id": PLAIN_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {"MADDA": [2]},
+                "content": "المادة الثانية: نص بلا جداول.",
+                "content_display": None,
+                "context": "",
+            },
+        ],
+        "chunk_tables_v2": [table_row()],
+    }
+    seeded.update(over)
+    return base_supabase(**seeded)
+
+
+class _SpyChain(_Chain):
+    """``_Chain`` that records ``(table, select-list)`` on the parent fake."""
+
+    def select(self, *cols: Any, **kw: Any) -> "_SpyChain":
+        self._fake.queries.append((self._table, ", ".join(str(c) for c in cols)))
+        return super().select(*cols, **kw)  # type: ignore[return-value]
+
+
+class SpySupabase(FakeSupabase):
+    """FakeSupabase that logs every table read. Same rows, same semantics."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.queries: list[tuple[str, str]] = []
+
+    def table(self, name: str) -> _SpyChain:  # type: ignore[override]
+        return _SpyChain(self, name)
+
+    def tables_queried(self) -> set[str]:
+        return {t for t, _ in self.queries}
+
+    def selects_for(self, table: str) -> list[str]:
+        return [cols for t, cols in self.queries if t == table]
+
+
+def spy_supabase(**over: Any) -> SpySupabase:
+    base = table_supabase(**over)
+    return SpySupabase(quota_row=base.quota_row, **base.tables)
+
+
+def reg_shell(chunk_id: str = TABLE_CHUNK) -> RegURAResult:
+    return RegURAResult(
+        ref_id=f"reg:{chunk_id}", source_type="reg_chunk", relevance="high"
+    )
+
+
+def _reader_visible_payload(view: ChunkSourceView) -> str:
+    """Everything in a reveal that a READER can end up looking at.
+
+    A table segment's ``ref`` is excluded on purpose: it is the resolution key
+    and the client's list key, it is the one place the ``TBL_…`` string is
+    supposed to exist, and it is never rendered. Everything else — the prose,
+    the grids, the copy text — is fair game for the D3 assertion.
+    """
+    parts = [view.content]
+    for seg in view.display_segments:
+        if seg["kind"] == "text":
+            parts.append(seg["text"])
+        else:
+            parts.extend([seg["html"], seg["md"]])
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# 6.1 The live search turn — the assertion that protects the cost of a search
+# ---------------------------------------------------------------------------
+
+
+def test_the_live_search_turn_fetches_no_tables() -> None:
+    """D10, and the headline. ``enrich_ura`` must not touch ``chunk_tables_v2``.
+
+    This is the whole reason ``with_tables`` defaults to False. The corpus holds
+    29.0 MB of table markup; only 7.7% of regulation citations point at a chunk
+    that has any, and a search turn that pulled it for bodies nobody opens would
+    pay for all of it — twice, because the URA is PERSISTED as a retrieval
+    artifact.
+
+    Asserted three ways, because "we did not mean to" is not a mechanism: zero
+    queries against the table, no extra COLUMN on the chunks read, and both
+    stored-only fields still at their defaults.
+    """
+    supabase = spy_supabase()
+    ura = UnifiedRetrievalArtifact(high_results=[reg_shell()])
+
+    run(enrich_ura(ura, supabase))
+
+    assert "chunk_tables_v2" not in supabase.tables_queried()
+    # …and not one extra column on the read it DOES make.
+    chunk_selects = supabase.selects_for("chunks_v2")
+    assert chunk_selects, "the live turn still reads chunks_v2"
+    assert all("content_display" not in cols for cols in chunk_selects)
+
+    res = ura.high_results[0]
+    assert res.chunk_display == ""
+    assert res.chunk_tables == []
+    # The prose arrived, untouched — this turn is not degraded, just unloaded.
+    assert res.chunk_content == _CHUNK_PROSE
+
+
+def test_the_live_turn_column_list_is_exactly_todays() -> None:
+    """Pins the select string itself, so a stray column cannot ride in later."""
+    supabase = spy_supabase()
+    run(enrich_ura(UnifiedRetrievalArtifact(high_results=[reg_shell()]), supabase))
+    assert supabase.selects_for("chunks_v2") == [
+        "id, regulation_id, title, summary, context, content, owns"
+    ]
+
+
+def test_for_aggregator_is_byte_identical() -> None:
+    """D2 + the prompt cache. The synthesis surface must not move by a byte.
+
+    ``content_display`` has table content REMOVED — prompting on it would
+    silently hand the model a statute with its tables deleted. And even a
+    harmless-looking addition to ``AggregatorItem`` would invalidate the
+    prompt-cache prefix on every provider. So the two new fields are stored
+    only, exactly as ``chunk_context`` / ``pdf_url`` / ``owns`` / ``doc_type``
+    already are.
+    """
+    from agents.deep_search_v4.aggregator.preprocessor import (
+        render_aggregator_content,
+    )
+
+    plain = reg_shell()
+    plain.chunk_content = _CHUNK_PROSE
+    plain.reg_title = "نظام العمل"
+
+    loaded = reg_shell()
+    loaded.chunk_content = _CHUNK_PROSE
+    loaded.reg_title = "نظام العمل"
+    loaded.chunk_display = _CHUNK_DISPLAY
+    loaded.chunk_tables = [table_row()]
+
+    before = plain.for_aggregator(n=3)
+    after = loaded.for_aggregator(n=3)
+
+    assert after.model_dump_json() == before.model_dump_json()
+    rendered = render_aggregator_content(after)
+    assert rendered == render_aggregator_content(before)
+    # The prompt block carries the PROSE, and no display artifact of any kind.
+    assert _TABLE_MD.splitlines()[0] in rendered
+    assert "TBL_" not in rendered
+    assert "<table" not in rendered
+    # Neither field is even a member of the projected model.
+    assert "chunk_display" not in type(after).model_fields
+    assert "chunk_tables" not in type(after).model_fields
+
+
+def test_the_reference_card_projection_is_untouched_too() -> None:
+    """``for_reference()`` feeds the citation CARD, which is never a body."""
+    loaded = reg_shell()
+    loaded.chunk_display = _CHUNK_DISPLAY
+    loaded.chunk_tables = [table_row()]
+    dumped = loaded.for_reference().model_dump(mode="json")
+    assert "chunk_display" not in dumped and "chunk_tables" not in dumped
+    assert "TBL_" not in json.dumps(dumped, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# 6.2 The reveal — where the grids are supposed to appear
+# ---------------------------------------------------------------------------
+
+
+def test_the_reveal_carries_segments() -> None:
+    """``with_tables=True`` turns the token back into a grid — and ONLY there.
+
+    The reveal runs on a click, on one row, and its entire output is a body the
+    reader is about to read. That is the one place the 29 MB is worth touching.
+    """
+    supabase = spy_supabase()
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert isinstance(view, ChunkSourceView)
+    segments = view.display_segments
+    assert segments, "a table-bearing chunk must segment"
+
+    tables = [s for s in segments if s["kind"] == "table"]
+    texts = [s for s in segments if s["kind"] == "text"]
+    # One token resolved (TBL_A); the ghost token resolved to nothing (D3).
+    assert len(tables) == 1
+    assert tables[0]["ref"] == TBL_A
+    assert tables[0]["md"] == _TABLE_MD
+    assert len(segments) == len(tables) + len(texts)
+
+    # The grid is real, merged cells intact, and it was SANITIZED on the way
+    # through (`tables_by_ref` -> `sanitize_table_html`) — raw corpus markup
+    # never reaches a view.
+    assert tables[0]["html"].startswith("<table>")
+    assert 'colspan="2"' in tables[0]["html"]
+    assert "500 ريال" in tables[0]["html"]
+
+    # …and `content` is still the PROSE. It is what «نسخ المحتوى» pastes (D11)
+    # and what any consumer ignoring segments renders.
+    assert _TABLE_MD.splitlines()[0] in view.content
+    assert "TBL_" not in view.content
+    assert "<table" not in view.content
+
+
+def test_the_reveal_is_the_only_caller_that_reads_the_table() -> None:
+    """The read happens on the click — and it is one batched, column-narrow hop."""
+    supabase = spy_supabase()
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    run(references_service.build_reference_source_view(supabase, row))
+
+    selects = supabase.selects_for("chunk_tables_v2")
+    assert selects == ["table_ref, chunk_id, table_html, table_md"]
+    # `content_display` rides ALONGSIDE `content`, never instead of it — the
+    # fail-soft path needs the prose.
+    chunk_cols = supabase.selects_for("chunks_v2")[0]
+    assert "content_display" in chunk_cols and "content," in chunk_cols
+
+
+def test_the_citation_list_read_fetches_no_tables() -> None:
+    """The panel LIST serves no source bodies at all (Phase C), so it has no
+    business pulling markup for N citations at once. The plan named
+    ``_build_reg_shells`` as "the click"; it is not — the reveal is."""
+    supabase = spy_supabase(
+        workspace_item_references=[
+            ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+        ],
+    )
+    run(references_service.fetch_item_references(supabase, WI_A))
+    assert "chunk_tables_v2" not in supabase.tables_queried()
+
+
+def test_a_reveal_without_tables_emits_empty_segments() -> None:
+    """The 82% case: no ``content_display``, so nothing to segment.
+
+    ``[]`` is not a degraded state, it is THE state — it means "render
+    ``content`` exactly as today", which is what makes every artifact persisted
+    before this shipped keep working with no compatibility branch anywhere.
+    """
+    supabase = table_supabase()
+    row = ref_row(n=2, ref_id=f"reg:{PLAIN_CHUNK}", item_id=PLAIN_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert isinstance(view, ChunkSourceView)
+    assert view.display_segments == []
+    assert view.content == "المادة الثانية: نص بلا جداول."
+
+
+def test_a_chunk_with_a_display_body_but_no_rows_renders_the_prose() -> None:
+    """Fail-soft, in the direction that is NOT obvious.
+
+    If the ``chunk_tables_v2`` read comes back empty for a chunk that HAS a
+    display body, splitting that body against an empty map would let every token
+    resolve to nothing — which does not degrade the نظام, it DELETES tables from
+    it. The fallback is ``content``: the prose, tables intact as the flattened
+    list they have always been.
+    """
+    supabase = table_supabase(chunk_tables_v2=[])
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert view is not None and view.display_segments == []
+    assert _TABLE_MD.splitlines()[0] in view.content
+    assert "TBL_" not in view.content
+
+
+def test_a_failed_tables_read_still_serves_the_source() -> None:
+    """A PostgREST hiccup costs a grid, never the citation."""
+    supabase = table_supabase()
+    supabase.fail_tables.add("chunk_tables_v2")
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert view is not None and view.display_segments == []
+    assert "TBL_" not in view.content
+    assert _TABLE_MD.splitlines()[0] in view.content
+
+
+def test_segments_carry_no_raw_token() -> None:
+    """D3, asserted on the literal string.
+
+    A raw ``TBL_17405_reg_603_chunk_019_9`` printed inside a statute — or pasted
+    into a memo — is the single failure mode this whole design exists to
+    prevent, and the ghost token in the fixture is exactly the shape a re-ingest
+    running ahead of the DB produces.
+    """
+    supabase = table_supabase()
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+    assert view is not None
+
+    for seg in view.display_segments:
+        if seg["kind"] == "text":
+            assert "TBL_" not in seg["text"]
+            # The dropped token leaves no scar either — no orphaned blank run.
+            assert seg["text"].strip()
+        else:
+            # A table's `ref` IS the token — that is the lookup key and the
+            # client's list key, and it is the ONE place the string is allowed
+            # to live. Nothing a reader ever sees may carry it.
+            assert "TBL_" not in seg["html"] and "TBL_" not in seg["md"]
+    assert "TBL_" not in view.content
+    assert "TBL_" not in _reader_visible_payload(view)
+
+
+def test_the_tables_read_is_paged() -> None:
+    """PostgREST clamps at 1000 rows and one نظام already carries 965.
+
+    Past the clamp the missing rows do not error — they simply do not arrive,
+    and the renderer drops every token it cannot resolve, so each one becomes a
+    DELETED table. This is the bug that never announces itself.
+    """
+    refs = [f"TBL_paged_chunk_{i:05d}" for i in range(1, 1601)]
+    body = "\n\n".join(refs)
+    supabase = table_supabase(
+        chunks_v2=[
+            {
+                "id": TABLE_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {},
+                "content": "\n\n".join([_TABLE_MD] * len(refs)),
+                "content_display": body,
+                "context": "",
+            }
+        ],
+        chunk_tables_v2=[table_row(ref) for ref in refs],
+    )
+    row = ref_row(n=1, ref_id=f"reg:{TABLE_CHUNK}", item_id=TABLE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert view is not None
+    tables = [s for s in view.display_segments if s["kind"] == "table"]
+    assert len(tables) == len(refs)          # ALL of them, not the first 1000
+    assert {s["ref"] for s in tables} == set(refs)
+    # Not one token slipped through as text — which is what a lost page looks
+    # like from the reader's side: a table quietly gone, no error anywhere.
+    assert "TBL_" not in _reader_visible_payload(view)
+
+
+def test_the_enrich_flag_is_keyword_only_and_defaults_off() -> None:
+    """The default is the whole safety property, so pin the signature.
+
+    Positional ``with_tables`` would let a caller flip it by accident, and a
+    True default would put 29 MB of markup on every search turn.
+    """
+    import inspect
+
+    from agents.deep_search_v4.ura import enrich as enrich_mod
+
+    param = inspect.signature(enrich_mod._enrich_regulations).parameters["with_tables"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
+
+    shell_param = inspect.signature(
+        references_service._build_reg_shells
+    ).parameters["with_tables"]
+    assert shell_param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert shell_param.default is False

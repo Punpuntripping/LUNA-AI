@@ -323,6 +323,41 @@ class RegURAResult(URAResultBase):
     owns: dict = Field(default_factory=dict)  # stored only
     corpus: str = ""              # "appendix" -> (ملحق) tag (D13); "" = main body
 
+    # -- The display fork (chunk_table_rendering.md §4.1, D1/D2/D10) ---------
+    # Every table in the reg corpus was OCR'd and CONVERTED TO PROSE before
+    # ingestion, because prose is what BM25 indexes and what the model reads.
+    # ``chunk_content`` above IS that prose and stays that prose. The two fields
+    # below carry the USER view alongside it — never instead of it.
+    #
+    # ⚠ BOTH ARE STORED ONLY, and that is the load-bearing part. Neither is
+    # projected by ``for_aggregator()``, exactly as ``chunk_context``,
+    # ``pdf_url``, ``owns`` and ``doc_type`` already are not:
+    #
+    #   * D2 — ``content_display`` has table content REMOVED (each table
+    #     collapsed to a one-line ``TBL_…`` token). Prompting on it would
+    #     silently feed the synthesis model a statute with its tables deleted,
+    #     and it is a one-line mistake to make.
+    #   * The prompt surface must stay BYTE-IDENTICAL so the prompt-cache prefix
+    #     is untouched — the same argument ``doc_type`` is already excluded
+    #     under. (``reg_status`` is the one deliberate exception, for a reason
+    #     documented on that field.)
+    #
+    # Filled ONLY when ``ura.enrich._enrich_regulations`` is called with
+    # ``with_tables=True`` — i.e. from the مراجع reveal, never from the live
+    # search turn (D10). On every live URA both stay at their defaults, which is
+    # also what keeps persisted retrieval artifacts free of the corpus's 29 MB
+    # of table markup.
+    #: ``chunks_v2.content_display`` — the same text as ``chunk_content`` with
+    #: each confidently-resolved table collapsed to a whole-line ``TBL_…``
+    #: token. ``""`` when the chunk has no table to swap (82% of the corpus) or
+    #: when tables were not requested. Never embed, index or prompt on it.
+    chunk_display: str = ""        # stored only — NEVER in for_aggregator()
+    #: Raw ``chunk_tables_v2`` rows for this chunk: ``table_ref``, ``chunk_id``,
+    #: ``table_html``, ``table_md``. RAW — ``table_html`` is unsanitized corpus
+    #: markup here, and only ``shared.library.chunk_tables.tables_by_ref`` may
+    #: turn it into something a view renders.
+    chunk_tables: list[dict] = Field(default_factory=list)  # stored only
+
     def for_aggregator(self, n: int = 0) -> AggregatorItem:
         return AggregatorItem(
             ref_id=self.ref_id,
