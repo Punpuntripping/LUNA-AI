@@ -35,6 +35,8 @@
 
 import { getAccessToken } from "@/lib/api";
 import type { UsageReport } from "@/types";
+// Type-only: `legal-text` renders JSX, and this is a plain fetch module.
+import type { LegalTableMap } from "@/lib/library/legal-text";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -50,6 +52,22 @@ export interface FullSection {
   /** Nullable on the wire — `LibraryFullSection.title` is `Optional[str]`. */
   title: string | null;
   text: string;
+  /**
+   * Sanitized table markup keyed by the whole-line `TBL_…` token that stands in
+   * for it inside `text`. Mirrors `RegulationVisibleSection.tables`; the backend
+   * declares it on `LibraryFullSection`.
+   *
+   * ⚠ THE REVEAL IS WHERE THIS MATTERS MOST. A gated preview usually degrades an
+   * oversized grid to prose, so it carries few tokens — but the reveal is
+   * `gate="open"`, nothing is withheld, and EVERY token survives into `text`.
+   * Forget to pass this to `ArticleBody` and the reader who just paid for the
+   * document gets a bare `TBL_17552_reg_501_chunk_001_1` where the table
+   * belongs. That happened; this field is the fix.
+   *
+   * Optional on the wire so a judgment reveal (same envelope, no tables) and any
+   * response cached before the backend shipped it both narrow cleanly.
+   */
+  tables?: LegalTableMap;
 }
 
 /** One «المصادر الرسمية» entry. Matches the backend's `OfficialSource`. */

@@ -430,6 +430,14 @@ function renderFull(kind: GateKind, full: FullContentPayload): ReactNode {
             <ArticleBody
               visibleText={section.text}
               plain
+              // ⚠ LOAD-BEARING. The reveal runs at gate="open", so nothing is
+              // withheld and EVERY `TBL_…` token survives into `section.text`.
+              // Without this prop `toLegalBlocks` cannot resolve them and the
+              // reader who just paid for the document sees a bare
+              // `TBL_17552_reg_501_chunk_001_1` where the table belongs. The
+              // gated preview hides this bug — it degrades oversized grids to
+              // prose, so it often carries no tokens at all.
+              tables={section.tables}
               dedupeHeading={section.title ?? undefined}
             />
           </section>
