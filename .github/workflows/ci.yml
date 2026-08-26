@@ -10,6 +10,11 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual trigger — `gh workflow run CI`. Worth having on its own, and it is
+  # the only way to get a run out of this workflow without pushing, which
+  # matters when you are trying to tell "my change is broken" apart from
+  # "the trigger did not fire".
+  workflow_dispatch:
 
 jobs:
   backend:
