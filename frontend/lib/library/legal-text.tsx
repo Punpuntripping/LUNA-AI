@@ -205,12 +205,20 @@ export function toLegalBlocks(
       continue;
     }
 
-    const placeholder = tables ? line.match(TABLE_PLACEHOLDER) : null;
+    // ⚠ MATCHED UNCONDITIONALLY — do NOT gate this on `tables`. A whole-line
+    // `TBL_…` is a placeholder, never legal text, so it must vanish whether or
+    // not a map was supplied. Gating it on `tables` is what shipped reference
+    // ids to readers: `FullContentGate` rendered the reveal without passing the
+    // map, every token fell through to the paragraph buffer, and a نظام that is
+    // mostly tables displayed almost nothing but its own ids. Dropping instead
+    // degrades a forgetful caller to a MISSING table — bad, but not a leak.
+    const placeholder = line.match(TABLE_PLACEHOLDER);
     if (placeholder) {
       flush();
       const ref = placeholder[1];
       const html = tables?.[ref]?.html;
-      // Resolved ⇒ the grid. Unresolved (or empty markup) ⇒ nothing at all.
+      // Resolved ⇒ the grid. Unresolved, empty markup, or no map at all ⇒
+      // nothing at all (the corpus contract's rule 2).
       if (html) blocks.push({ type: "table", ref, html });
     } else if (line.trim() === "") {
       flush();
