@@ -15,8 +15,17 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    # `Settings` has exactly four REQUIRED fields: SUPABASE_URL,
+    # SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY, SUPABASE_JWT_SECRET. The block
+    # here set SUPABASE_SERVICE_ROLE_KEY — which is optional — and omitted
+    # SUPABASE_SERVICE_KEY, so `get_settings()` raised on import. That was true
+    # from the day it was written and nobody could see it, because the workflow
+    # watched the wrong branch and never ran. Both names are set: the required
+    # one for `Settings`, and the ROLE_KEY name because scripts read it directly
+    # from the environment.
     env:
       SUPABASE_URL: "https://example.supabase.co"
+      SUPABASE_SERVICE_KEY: "test-key"
       SUPABASE_SERVICE_ROLE_KEY: "test-key"
       SUPABASE_ANON_KEY: "test-key"
       SUPABASE_JWT_SECRET: "test-secret"
