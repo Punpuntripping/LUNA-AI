@@ -96,9 +96,19 @@ export function splitGuideMarkdown(md: string): GuideSegment[] {
 /**
  * The corpus prefix every guide title carries, and the «بالصور» form of it.
  *
- * All 169 titles begin with `GUIDE_PREFIX` (verified live against prod
- * 2026-08-19), so the «بالصور» treatment is a PREFIX REWRITE. Appending would
+ * All 533 titles begin with `GUIDE_PREFIX` (verified live against prod
+ * 2026-08-26), so the «بالصور» treatment is a PREFIX REWRITE. Appending would
  * read «الدليل الشامل: إصدار تأشيرة عمل — الدليل الشامل بالصور».
+ *
+ * ⚠ THE TITLE ARRIVING HERE IS NO LONGER THE RAW CORPUS TITLE. Since migration
+ * 146 the API serves a COMPOSED title whose locale tail «في السعودية» has been
+ * replaced by the service's delivery channel — «… في بوابة ناجز», «… في منصة
+ * بلدي» — or by its issuing entity when it has no branded channel. That rewrite
+ * happens at the END of the string, in Python (`shared/library/guide_titles.py`),
+ * precisely so this PREFIX rewrite keeps matching: the two edits are at opposite
+ * ends and neither knows about the other. If a future change ever normalises the
+ * prefix server-side, `startsWith` here stops matching and every guide silently
+ * loses its «بالصور».
  */
 const GUIDE_PREFIX = "الدليل الشامل:";
 const GUIDE_PREFIX_IMAGES = "الدليل الشامل بالصور:";
