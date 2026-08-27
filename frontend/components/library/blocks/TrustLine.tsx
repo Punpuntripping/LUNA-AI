@@ -1,3 +1,4 @@
+import { Fragment, type ReactNode } from "react";
 import Link from "next/link";
 import { Clock, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,7 +25,12 @@ function formatArabicDate(iso: string): string {
 /**
  * The subtle E-E-A-T trust line under a page H1: «آخر تحديث {date}» · issuing
  * entity · AI-disclaimer link. One quiet muted line — server component, links
- * only. Dot separators collapse gracefully when `entity` is absent.
+ * only.
+ *
+ * Parts are assembled into a list and joined with «·» rather than each carrying
+ * its own leading separator, so the dots collapse correctly whichever parts are
+ * absent. `updatedAt` and `entity` are both optional; the disclaimer link is the
+ * only part always present.
  */
 export function TrustLine({
   updatedAt,
@@ -32,6 +38,38 @@ export function TrustLine({
   disclaimerHref = LEGAL_ROUTES.terms,
   className,
 }: TrustLineProps) {
+  const parts: Array<{ key: string; node: ReactNode }> = [];
+
+  if (updatedAt) {
+    parts.push({
+      key: "updated",
+      node: (
+        <span className="inline-flex items-center gap-1">
+          <Clock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+          آخر تحديث{" "}
+          <time dateTime={updatedAt}>{formatArabicDate(updatedAt)}</time>
+        </span>
+      ),
+    });
+  }
+
+  if (entity) {
+    parts.push({ key: "entity", node: <span>{entity}</span> });
+  }
+
+  parts.push({
+    key: "disclaimer",
+    node: (
+      <Link
+        href={disclaimerHref}
+        className="inline-flex items-center gap-1 underline-offset-2 transition-colors hover:text-foreground hover:underline"
+      >
+        <Info aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+        إخلاء المسؤولية
+      </Link>
+    ),
+  });
+
   return (
     <p
       dir="rtl"
@@ -40,31 +78,16 @@ export function TrustLine({
         className,
       )}
     >
-      <span className="inline-flex items-center gap-1">
-        <Clock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-        آخر تحديث{" "}
-        <time dateTime={updatedAt}>{formatArabicDate(updatedAt)}</time>
-      </span>
-
-      {entity && (
-        <>
-          <span aria-hidden="true" className="text-text-subtle">
-            ·
-          </span>
-          <span>{entity}</span>
-        </>
-      )}
-
-      <span aria-hidden="true" className="text-text-subtle">
-        ·
-      </span>
-      <Link
-        href={disclaimerHref}
-        className="inline-flex items-center gap-1 underline-offset-2 transition-colors hover:text-foreground hover:underline"
-      >
-        <Info aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-        إخلاء المسؤولية
-      </Link>
+      {parts.map((part, index) => (
+        <Fragment key={part.key}>
+          {index > 0 && (
+            <span aria-hidden="true" className="text-text-subtle">
+              ·
+            </span>
+          )}
+          {part.node}
+        </Fragment>
+      ))}
     </p>
   );
 }

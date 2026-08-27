@@ -326,8 +326,15 @@ export interface TopicBreadcrumbsProps {
 }
 
 export interface TrustLineProps {
-  /** ISO date string of the last content update. */
-  updatedAt: string;
+  /**
+   * ISO date string of the last content update.
+   *
+   * ⚠ Optional, and NEVER `new Date().toISOString()`. «آخر تحديث اليوم» on
+   * every page every day is a false freshness claim shown to the reader, not
+   * just a schema field. Wings whose payload carries no real date omit this
+   * and the clause does not render.
+   */
+  updatedAt?: string | null;
   /** Issuing/attribution entity, e.g. «هيئة الخبراء بمجلس الوزراء». */
   entity?: string;
   /** AI-disclaimer link target. Default = the shared legal disclaimer route. */

@@ -107,7 +107,7 @@ export default async function CalculatorPage({ params }: PageProps) {
           <h1 className="text-2xl font-bold leading-tight text-foreground sm:text-3xl">
             {heading}
           </h1>
-          <TrustLine updatedAt={new Date().toISOString()} />
+          <TrustLine />
         </header>
 
         <LeadSummary text={calc.description} />

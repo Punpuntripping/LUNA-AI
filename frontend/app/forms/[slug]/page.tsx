@@ -85,7 +85,10 @@ export default async function FormDetailPage({ params }: PageProps) {
       }
     : undefined;
 
-  const now = new Date().toISOString();
+  // NO `datePublished`/`dateModified`: this wing's payload carries no real
+  // content date, and a render-time stamp would churn on every ISR revalidation
+  // (see `ArticleInput.datePublished`). Plumb the corpus date through the API
+  // and pass it here — until then the fields are correctly absent.
   const articleNode = {
     ...buildArticle({
       title: `${detail.title} — نموذج جاهز`,
@@ -93,8 +96,6 @@ export default async function FormDetailPage({ params }: PageProps) {
         toSnippet(detail.use_case_md || detail.intro_md || "") ||
         `${detail.title} — نموذج قانوني جاهز عبر ريحان.`,
       url: `${SITE_URL}/forms/${encodeURIComponent(detail.slug)}`,
-      datePublished: now,
-      dateModified: now,
     }),
     // The template body is the gated part — mark the paywall when truncated.
     ...(detail.body_preview.is_truncated
@@ -121,7 +122,7 @@ export default async function FormDetailPage({ params }: PageProps) {
               </span>
             )}
           </div>
-          <TrustLine updatedAt={now} />
+          <TrustLine />
         </header>
 
         {/* Prominent liability disclaimer — «راجع مختصاً» on every form page. */}

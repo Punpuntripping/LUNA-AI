@@ -241,7 +241,7 @@ export default async function RegulationDocPage({ params }: PageProps) {
             </h1>
             {status && <StatusBadge status={status} />}
           </div>
-          <TrustLine updatedAt={new Date().toISOString()} entity={entity} />
+          <TrustLine entity={entity} />
         </header>
 
         {doc.draft_notice && (

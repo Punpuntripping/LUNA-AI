@@ -130,15 +130,16 @@ export default async function RegulationArticlePage({ params }: PageProps) {
     doc.regulation.slug,
     doc.slug,
   )}`;
-  const now = new Date().toISOString();
+  // NO `datePublished`/`dateModified`: this wing's payload carries no real
+  // content date, and a render-time stamp would churn on every ISR revalidation
+  // (see `ArticleInput.datePublished`). Plumb the corpus date through the API
+  // and pass it here — until then the fields are correctly absent.
   const articleNode = {
     ...buildArticle({
       title: `${heading} — نصها وشرحها`,
       description:
         toSnippet(doc.text, 150) || `${heading} — نصّها النظامي وشرحها.`,
       url: canonicalUrl,
-      datePublished: now,
-      dateModified: now,
     }),
     ...(doc.gate === "gated" ? buildPaywallFragment(".gated-body") : {}),
   };
@@ -180,7 +181,7 @@ export default async function RegulationArticlePage({ params }: PageProps) {
                 </h1>
                 {status && <StatusBadge status={status} />}
               </div>
-              <TrustLine updatedAt={now} />
+              <TrustLine />
             </div>
           </div>
         </header>

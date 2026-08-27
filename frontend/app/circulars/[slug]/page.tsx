@@ -102,15 +102,16 @@ export default async function CircularDocPage({ params }: PageProps) {
       }
     : undefined;
 
-  const now = new Date().toISOString();
+  // NO `datePublished`/`dateModified`: this wing's payload carries no real
+  // content date, and a render-time stamp would churn on every ISR revalidation
+  // (see `ArticleInput.datePublished`). Plumb the corpus date through the API
+  // and pass it here — until then the fields are correctly absent.
   const articleNode = {
     ...buildArticle({
       title: doc.title,
       description:
         toSnippet(doc.text) || `${doc.title} — نص التعميم وجهته المصدرة.`,
       url: `${SITE_URL}/circulars/${encodeURIComponent(doc.slug)}`,
-      datePublished: now,
-      dateModified: now,
     }),
     ...(doc.gate_effective === "gated"
       ? buildPaywallFragment(".gated-body")
@@ -140,7 +141,7 @@ export default async function CircularDocPage({ params }: PageProps) {
           <h1 className="text-2xl font-bold leading-tight text-foreground sm:text-3xl">
             {doc.title}
           </h1>
-          <TrustLine updatedAt={now} entity={doc.entity_name ?? undefined} />
+          <TrustLine entity={doc.entity_name ?? undefined} />
         </header>
 
         {metadataItems.length > 0 && <MetadataCard items={metadataItems} />}

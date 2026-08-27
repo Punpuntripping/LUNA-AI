@@ -256,7 +256,11 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
   }));
   const showToc = tocEntries.length >= 2;
 
-  const now = new Date().toISOString();
+  // NO `datePublished`/`dateModified`: this wing's payload carries no real
+  // content date, and a render-time stamp would churn on every ISR revalidation
+  // (see `ArticleInput.datePublished`). Plumb the corpus date through the API
+  // and pass it here — until then the fields are correctly absent.
+  //
   // Article, with NO paywall fragment: `buildPaywallFragment` describes content
   // withheld behind a gate, and there is none here. Claiming one on an open page
   // is a structured-data lie Google checks against the rendered body.
@@ -265,8 +269,6 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
     title: display,
     description: toSnippet(doc.summary) || `${display} — خطوات الخدمة عبر ريحان.`,
     url: `${SITE_URL}/compliance/${encodeURIComponent(doc.slug)}`,
-    datePublished: now,
-    dateModified: now,
   });
 
   // «اقرأ تاليًا» — same-type only (D2). NO «الأنظمة المذكورة» on this wing
@@ -306,7 +308,7 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
           <h1 className="text-2xl font-bold leading-tight text-foreground sm:text-3xl">
             {display}
           </h1>
-          <TrustLine updatedAt={now} entity={doc.provider_name ?? undefined} />
+          <TrustLine entity={doc.provider_name ?? undefined} />
         </header>
 
         {/* Two-column reading layout, the same shape /regulations/{slug} uses.

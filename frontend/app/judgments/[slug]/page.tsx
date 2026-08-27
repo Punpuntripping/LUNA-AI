@@ -176,11 +176,10 @@ export default async function JudgmentDocPage({ params }: PageProps) {
     (source) => ({ label: source.title, href: source.href }),
   );
 
-  const now = new Date().toISOString();
-  // The trust line's date is the judgment's OWN Gregorian date when the payload
-  // carries a parseable one — a stable content date beats a "today" that churns
-  // on every ISR revalidation. Falls back to now when the date is absent or is
-  // in a non-ISO shape.
+  // The trust line's date is the judgment's OWN Gregorian date — a stable
+  // content date beats a "today" that churns on every ISR revalidation. When the
+  // payload has none, or it is in a non-ISO shape, the clause does not render at
+  // all: a real date or nothing, never a render-time stamp.
   const judgmentIso = toIsoTimestamp(doc.date_gregorian);
 
   // Article — NOT Legislation: a court ruling is not legislation, and
@@ -196,8 +195,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
         (doc.summary_md ? toSnippet(doc.summary_md) : "") ||
         `${doc.subject} — حكم صادر عن ${doc.court}.`,
       url: `${SITE_URL}/judgments/${encodeURIComponent(doc.slug)}`,
-      datePublished: judgmentIso ?? now,
-      dateModified: now,
+      datePublished: judgmentIso ?? undefined,
     }),
     ...(doc.gate_effective === "gated"
       ? buildPaywallFragment(".gated-body")
@@ -260,10 +258,7 @@ export default async function JudgmentDocPage({ params }: PageProps) {
               </span>
             )}
           </div>
-          <TrustLine
-            updatedAt={judgmentIso ?? now}
-            entity={doc.court || undefined}
-          />
+          <TrustLine updatedAt={judgmentIso} entity={doc.court || undefined} />
         </header>
 
         {/* Two-column reading layout on desktop — identical to the regulation

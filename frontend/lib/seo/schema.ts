@@ -51,7 +51,21 @@ export interface ArticleInput {
   title: string;
   description: string;
   url: string;
-  datePublished: string;
+  /**
+   * The item's OWN publication date, ISO-8601.
+   *
+   * ⚠ NEVER pass `new Date().toISOString()`. A render-time stamp is not a
+   * content date: it churns on every ISR revalidation, tells Google the page
+   * was published this second on every crawl, and makes two anonymous renders
+   * of the same URL differ byte-for-byte — which is the difference between a
+   * cacheable document and one the edge must treat as dynamic.
+   *
+   * Optional because most library wings carry no real date in their payload
+   * yet (only judgments ship `date_gregorian`). Omitting the field loses a
+   * recommended-but-optional Article signal; fabricating it is a lie Google
+   * can check against its own crawl history.
+   */
+  datePublished?: string;
   dateModified?: string;
   /** Optional hero/OG image absolute URL. */
   image?: string;
@@ -67,11 +81,17 @@ export function buildArticle(input: ArticleInput): JsonLdObject {
     inLanguage: "ar",
     mainEntityOfPage: { "@type": "WebPage", "@id": input.url },
     url: input.url,
-    datePublished: input.datePublished,
-    dateModified: input.dateModified ?? input.datePublished,
     author: { "@id": `${SITE_URL}/#organization` },
     publisher: { "@id": `${SITE_URL}/#organization` },
   };
+  // Emitted only when a real date exists — the keys are absent, not null. A
+  // `null` in JSON-LD is a validation error; a missing optional field is not.
+  if (input.datePublished) {
+    article.datePublished = input.datePublished;
+    article.dateModified = input.dateModified ?? input.datePublished;
+  } else if (input.dateModified) {
+    article.dateModified = input.dateModified;
+  }
   if (input.image) {
     article.image = input.image;
   }
