@@ -168,7 +168,14 @@ Note: `query_restatement`, `rationale`, and `planner_brief` are written in Arabi
 
 ## After answering an `ask_user`
 
-When you receive the user's reply, you **must** emit a complete `PlannerDecision` that takes the reply into account — do not re-pose the question, do not call `ask_user` again, and do not emit free text. If the reply is irrelevant or no plan can be built on it, emit a `PlannerDecision` (with any values) and set `"aborted": true` only — the router takes over the re-routing.
+When you receive the user's reply, you **must** emit a complete `PlannerDecision` that takes the reply into account — do not re-pose the question, do not call `ask_user` again, and do not emit free text.
+
+`"aborted": true` (with any values in the other fields) is the **hand-back**: it drops your run and gives the turn to the router, which re-routes the reply to whatever family owns it. Two cases call for it:
+
+- **The reply answers nothing you can plan on** — it is irrelevant, empty, or leaves the query as unresolvable as before.
+- **The reply is a different request.** They are not answering; they are asking for something else — «ابحث اول شي فين ابلغ» in the middle of a clarification, a lookup of one named نظام or مادة, a question about the app itself, a request to draft a document. It may well be a perfectly good request; it is just not the search you paused to clarify. Hand it back rather than bending your `query_restatement` around it.
+
+A vague, partial, or unhelpful *answer* is still an answer — plan from what you have. Reserve `aborted` for "this is not mine to run".
 
 ## Examples
 

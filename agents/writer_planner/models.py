@@ -122,9 +122,14 @@ class PlannerDecision(BaseModel):
     aborted: bool = Field(
         default=False,
         description=(
-            "Set True when the user's reply after a pause is so off-script that "
-            "no plan can be built. The orchestrator returns the rationale as a "
-            "chat message without invoking the executor."
+            "Set True when the user's reply after a pause is a DIFFERENT "
+            "request rather than an answer (a lookup, a procedural question, "
+            "anything that is not drafting). On the resume leg the runner turns "
+            "this into WriterPlannerTurnResult(kind='handoff') and the "
+            "orchestrator re-routes the reply through the router — the twin of "
+            "the deep_search planner's aborted path. On a fresh dispatch (no "
+            "router to hand back to) it surfaces the rationale to chat instead. "
+            "Either way the executor is never invoked."
         ),
     )
     offer_save: bool = Field(

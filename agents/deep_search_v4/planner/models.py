@@ -122,9 +122,11 @@ class PlannerDecision(BaseModel):
     aborted: bool = Field(
         default=False,
         description=(
-            "Set True when the user's reply after an ask_user deferral is so "
-            "off-script that no plan can be built. The orchestrator re-routes "
-            "via the router instead of running phases 2–3."
+            "Set True when the user's reply after an ask_user deferral is not "
+            "something this run can plan on — either it answers nothing, or it "
+            "is a DIFFERENT request (a lookup, a drafting ask, an app "
+            "question). The orchestrator drops the pause and re-routes the "
+            "reply via the router instead of running phases 2-3."
         ),
     )
     planner_brief: str = Field(

@@ -21,6 +21,14 @@ Planner-redesign rewiring:
 - Pre-route pause check: _find_awaiting_user / _expired / _resume_major_agent.
 - A phase-1 ask_user pause comes back as kind="paused"; _dispatch writes the
   paused_runs row + agent_question message and keeps the run alive.
+
+Planner → router hand-back (both planners):
+- A reply to a pause that is a NEW request, not an answer, must not dead-end in
+  the family that asked. The deep_search planner signals this with
+  PlannerDecision.aborted; the writer_planner returns kind="handoff" (its own
+  aborted flag, resume leg only). Both land on the same move here: resolve the
+  pause, release the reply's agent_answer tag, re-route through _route so the
+  router can pick whichever family the user actually asked for.
 - _run_deep_search accepts an optional `decision`: on resume, _resume_major_agent
   resumes planner_decider itself, then passes the PlannerDecision so phases 2–3
   run through the same convergence point as a fresh dispatch.
@@ -702,6 +710,33 @@ def _pause_is_current(
     return True  # nothing visible to judge by — fail open
 
 
+def _release_agent_answer_tag(
+    supabase: SupabaseClient, user_message_id: str | None
+) -> None:
+    """Undo the ``metadata.kind='agent_answer'`` tag on the user's reply.
+
+    ``_resume_major_agent_inner`` tags every reply as an answer to the pending
+    question before it knows what the reply actually is. When the reply turns
+    out to be a NEW request and the turn is handed back to the router, that tag
+    is a lie with teeth: ``router/context.py`` drops ``agent_question`` /
+    ``agent_answer`` rows from the history it feeds the router, so on every
+    LATER turn the router would be blind to the request it is about to serve.
+
+    Best-effort — a failed patch costs history fidelity on subsequent turns,
+    never this turn (``_route`` receives the reply text directly)."""
+    if not user_message_id:
+        return
+    try:
+        supabase.table("messages").update({"metadata": {}}).eq(
+            "message_id", user_message_id
+        ).execute()
+    except Exception as e:
+        logger.warning(
+            "_release_agent_answer_tag: could not clear metadata on %s: %s",
+            user_message_id, e,
+        )
+
+
 async def _resume_major_agent(
     pending: dict,
     user_reply: str,
@@ -802,6 +837,7 @@ async def _resume_major_agent_inner(
         )
         _resolve_pause_loud(supabase, run_id, where="abandon_unsupported_family")
         # Re-route the user reply through the normal router.
+        _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -809,6 +845,7 @@ async def _resume_major_agent_inner(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -846,6 +883,7 @@ async def _resume_major_agent_inner(
             run_id, exc, exc_info=True,
         )
         _resolve_pause_loud(supabase, run_id, where="rehydrate_failed")
+        _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -853,6 +891,7 @@ async def _resume_major_agent_inner(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -869,6 +908,11 @@ async def _resume_major_agent_inner(
         # the SAME run_id — the finally must then NOT resolve_pause (that would
         # delete the row we just wrote and kill the chained pause).
         _rewrote_pause = False
+        # Set when the planner reports the reply was a DIFFERENT request
+        # (kind='handoff'). The pause still dies in the finally — but instead of
+        # streaming a result we re-route the reply through the router, below the
+        # try/finally so the writing run is closed out first.
+        _handoff = False
         try:
             attached_items = _load_attached_items(supabase, [], user_id, conversation_id)
             recent_messages = _load_recent_messages(
@@ -942,23 +986,36 @@ async def _resume_major_agent_inner(
                 yield {"type": "agent_run_finished", "agent_family": "writing"}
                 return
 
-            # completed — stream the SpecialistResult (mirror fresh dispatch).
-            run_result = wp_outcome.result
-            for ev in run_result.sse_events:
-                yield ev
-            if run_result.chat_summary:
-                yield {"type": "token", "text": run_result.chat_summary}
-            if run_result.key_findings:
-                bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
-                yield {"type": "token", "text": bullets}
-            yield {
-                "type": "done",
-                "usage": {
-                    "prompt_tokens": run_result.tokens_in or 0,
-                    "completion_tokens": run_result.tokens_out or 0,
-                    "model": run_result.model_used or "writer_planner_decider",
-                },
-            }
+            if wp_outcome.kind == "handoff":
+                # The reply did not answer the pause — it asked for something
+                # else (a lookup, a search, a procedural question). Drafting
+                # cannot serve that; the router can. Fall out of the try so the
+                # finally drops the pause and the writing run is closed, then
+                # re-route below.
+                logger.info(
+                    "_resume_major_agent: writer_planner handed off run_id=%s "
+                    "to the router (reason=%s)",
+                    run_id, (wp_outcome.handoff_reason or "")[:160] or "unspecified",
+                )
+                _handoff = True
+            else:
+                # completed — stream the SpecialistResult (mirror fresh dispatch).
+                run_result = wp_outcome.result
+                for ev in run_result.sse_events:
+                    yield ev
+                if run_result.chat_summary:
+                    yield {"type": "token", "text": run_result.chat_summary}
+                if run_result.key_findings:
+                    bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
+                    yield {"type": "token", "text": bullets}
+                yield {
+                    "type": "done",
+                    "usage": {
+                        "prompt_tokens": run_result.tokens_in or 0,
+                        "completion_tokens": run_result.tokens_out or 0,
+                        "model": run_result.model_used or "writer_planner_decider",
+                    },
+                }
         except asyncio.CancelledError:
             logger.info(
                 "_resume_major_agent: writing run cancelled mid-resume run_id=%s",
@@ -984,6 +1041,24 @@ async def _resume_major_agent_inner(
                 _resolve_pause_loud(supabase, run_id, where="writing_resume_finally")
 
         yield {"type": "agent_run_finished", "agent_family": "writing"}
+
+        # ── Handoff → the router owns the rest of this turn ──────────────────
+        # Emitted AFTER agent_run_finished so the client sees the writing run
+        # closed before whatever family the router picks opens its own. The
+        # reply is no longer an answer to a question, so its agent_answer tag is
+        # released (router history excludes that kind) before _route reads it.
+        if _handoff:
+            _release_agent_answer_tag(supabase, user_message_id)
+            async for ev in _route(
+                question=user_reply,
+                supabase=supabase,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                case_id=case_id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            ):
+                yield ev
         return
 
     # ── Resume the planner_decider (phase 1) with the user's answer ──────────
@@ -1108,6 +1183,7 @@ async def _resume_major_agent_inner(
             run_id, exc, exc_info=True,
         )
         _resolve_pause_loud(supabase, run_id, where="planner_resume_failed")
+        _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -1115,6 +1191,7 @@ async def _resume_major_agent_inner(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -1148,6 +1225,7 @@ async def _resume_major_agent_inner(
             run_id,
         )
         _resolve_pause_loud(supabase, run_id, where="planner_aborted")
+        _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -1155,6 +1233,7 @@ async def _resume_major_agent_inner(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -1362,6 +1441,7 @@ async def _resume_simple_search_leg(
         # normal router rather than a dead turn. The alarm above is the signal.
         _resolve_pause_loud(supabase, run_id, where="ss_resume_symbol_missing")
         yield {"type": "agent_run_finished", "agent_family": "simple_search"}
+        _release_agent_answer_tag(supabase, user_message_id)
         async for ev in _route(
             question=user_reply,
             supabase=supabase,
@@ -1369,6 +1449,7 @@ async def _resume_simple_search_leg(
             conversation_id=conversation_id,
             case_id=case_id,
             user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
         ):
             yield ev
         return
@@ -3233,6 +3314,8 @@ async def _run_writer(
           - ``'completed'`` → ``.result`` is the SpecialistResult to stream.
           - ``'paused'``    → ``.planner_result`` + ``.deferred`` + ``.pause_reason``
             feed ``_record_deferred``; the run stays alive.
+          - ``'handoff'``   → resume only: the reply to the pause was a DIFFERENT
+            request. Drop the pause and re-route the reply through ``_route``.
 
     ``subtype`` is forwarded as a hint but the planner derives the final
     subtype from the user's intent — the router's hint is advisory only.

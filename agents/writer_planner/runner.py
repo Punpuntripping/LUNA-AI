@@ -5,11 +5,12 @@ orchestrator's ``_run_writer`` (replaces the legacy direct-writer
 invocation per `.claude/plans/writer_planner.md` § Orchestrator wiring
 change).
 
-Returns :class:`WriterPlannerTurnResult` — either ``kind='completed'``
-(planner finished; writing executor drafted; row published) or
-``kind='paused'`` (planner called ``ask_user`` or
-``present_plan_for_approval``; orchestrator must persist the deferred
-state and surface the question_text to chat).
+Returns :class:`WriterPlannerTurnResult` — one of ``kind='completed'``
+(planner finished; writing executor drafted; row published), ``kind='paused'``
+(planner called ``ask_user`` or ``present_plan_for_approval``; orchestrator
+must persist the deferred state and surface the question_text to chat), or
+``kind='handoff'`` (the reply to a pause was a *different request*; the
+orchestrator drops the pause and re-routes it through the router).
 
 Pause-resume contract:
     Fresh dispatch:    handle_writer_planner_turn(major_input, supabase)
@@ -81,15 +82,26 @@ class WriterPlannerTurnResult:
     ``planner_result`` (raw AgentRunResult) + ``deferred`` carry the pause
     state; ``pause_reason`` is the tool-name-derived value the orchestrator
     writes to ``agent_runs.pause_reason`` (migration 053).
+
+    ``kind='handoff'`` — the planner emitted ``aborted=True`` *on a resume*:
+    the user answered its question with a different request. The orchestrator
+    drops the pause and re-routes the reply through the router, exactly like
+    the deep_search planner's ``PlannerDecision.aborted`` path. Only ever
+    returned on the resume leg; a fresh dispatch that aborts still comes back
+    ``completed`` with an apology (re-routing there would bounce straight back
+    to the router that just dispatched us).
     """
 
-    kind: Literal["completed", "paused"]
+    kind: Literal["completed", "paused", "handoff"]
     # completed
     result: SpecialistResult | None = None
     # paused
     planner_result: Any = None
     deferred: "DeferredToolRequests | None" = None
     pause_reason: Literal["clarify", "approve_plan"] | None = None
+    # handoff — the planner's Arabic rationale for giving up (logs/telemetry only;
+    # the router re-reads the user's reply itself, it is not shown to the user).
+    handoff_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +535,28 @@ async def handle_writer_planner_turn(
         decision = output
 
         if decision.aborted:
+            # On a RESUME, aborted means "the reply was a different request" —
+            # hand the turn back to the router so the user's actual ask reaches
+            # whichever family owns it (search, lookup, a plain answer). This is
+            # the writer-side twin of the deep_search planner's aborted path
+            # (orchestrator ``_resume_major_agent_inner`` → ``_route``); without
+            # it a mid-pause digression dead-ended in an apology, because the
+            # only thing a paused writing run could do with a reply was try to
+            # draft from it.
+            #
+            # On a FRESH dispatch there is nothing to hand back to: the router
+            # chose `writing` microseconds ago, so re-routing the same message
+            # would bounce straight back here. Keep the apology there.
+            if message_history is not None:
+                logger.info(
+                    "writer_planner: decision.aborted=True on resume — handing "
+                    "the turn back to the router (reason=%s)",
+                    (decision.rationale or "")[:160] or "unspecified",
+                )
+                return WriterPlannerTurnResult(
+                    kind="handoff",
+                    handoff_reason=decision.rationale or None,
+                )
             logger.info(
                 "writer_planner: decision.aborted=True — surfacing rationale to chat"
             )
