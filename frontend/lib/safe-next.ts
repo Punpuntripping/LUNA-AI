@@ -31,11 +31,19 @@ export const DEFAULT_NEXT = "/chat";
  *
  * ⚠ This is NOT the same list as `lib/anon-cta/eligibility.ts`'s `WINGS`, and
  * the two must not be merged. `WINGS` governs where the popup FIRES (documents
- * on the five content wings). This governs where a visitor may be RETURNED TO
- * after authenticating — a strictly wider set, because `BlogConversionCta` is
- * mounted by `LibraryPageShell` on `/forms`, `/calculators` and `/library` as
- * well. Without those three a CTA click there drops `next` and lands on `/chat`,
- * silently losing the reader's place.
+ * on the content wings). This governs where a visitor may be RETURNED TO after
+ * authenticating — still the wider set, and it must stay a SUPERSET: every wing
+ * has to be returnable, or the popup's own «ابدأ الآن» would drop `next` and
+ * land the reader on `/chat` instead of the page that earned the pitch. It is
+ * wider than the wings for two more reasons — `BlogConversionCta` is mounted by
+ * `LibraryPageShell` on `/library` too, and the app's own surfaces (`/chat`,
+ * `/pay`, the session-expiry returns below) are here for reasons that have
+ * nothing to do with the popup. The two lists answer different questions and
+ * are kept separate on purpose; when a wing is added there, check it is here.
+ *
+ * As of 2026-08-25 `WINGS` covers all seven document wings — regulations,
+ * circulars, judgments, blog, compliance, forms, calculators — and every one of
+ * them already appears below, so the superset rule holds with no change needed.
  *
  * Every entry is a route `AuthGuard` already treats as public (`PUBLIC_PREFIXES`)
  * or the app itself, so returning a freshly-authenticated user here is never a
@@ -164,7 +172,8 @@ export function safeNext(raw: string | null | undefined): string {
  *
  *   loginHref("/blog/x")                     → "/login?next=%2Fblog%2Fx"
  *   loginHref("/blog/x", { register: true }) → "/login?next=%2Fblog%2Fx&mode=register"
- *   loginHref("/forms/x")                    → "/login"   (not allowlisted → dropped)
+ *   loginHref("/settings/x")                 → "/login?next=%2Fsettings%2Fx"
+ *   loginHref("/pricing")                    → "/login"   (not allowlisted → dropped)
  *
  * `mode=register` opens the form directly on signup, so a button that says
  * «ابدأ الآن» means what it says (§7.7).

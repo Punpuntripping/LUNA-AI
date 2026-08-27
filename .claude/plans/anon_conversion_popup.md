@@ -1,7 +1,9 @@
 # Anon Conversion Popup («جرّب ريحان مجاناً») + Return-to-Page Auth
 
 **Status:** PLAN — not built. Written 2026-08-01.
-**Scope:** the five public content wings + a generic `?next=` return-to-page across all three auth paths.
+**Scope:** the public content wings + a generic `?next=` return-to-page across all three auth paths.
+
+**Amendment 2026-08-25 — `forms` + `calculators` join the wings.** Coverage went five → seven. `/forms/{slug}` and `/calculators/{slug}` were the last public *item* routes `LibraryPageShell` served that `WINGS` still filtered out, so a نموذج or a حاسبة was the one place an anonymous reader could read a page to the end and never be asked for an account. §2 below is updated in place; nothing else in the plan changes — this was exactly the "adding a string to one array" the original §2 anticipated. Note that `/forms` is *sometimes* gated (the نموذج body truncates for anon): that needs no special case, because §5's gate 5 already stands the popup down whenever a `[data-anon-cta]` panel is on screen, per page, at fire time.
 **Companion:** `access_tiers_gating.md` (the gate CTA this must not collide with), `edu_popups.md` (the authed-side popup engine — different audience, different persistence, no shared code).
 
 ---
@@ -27,7 +29,7 @@ The popup is the softest surface in the product — it interrupts a reader who i
 
 ## 2. Where it fires
 
-### The five wings
+### The wings
 
 | Wing | Hub route | Document routes |
 |---|---|---|
@@ -36,14 +38,19 @@ The popup is the softest surface in the product — it interrupts a reader who i
 | التعاميم | `/circulars` | `/circulars/{slug}` |
 | الأحكام | `/judgments` | `/judgments/{slug}` |
 | المدونة | `/blog` | `/blog/{token}` |
+| النماذج | `/forms` | `/forms/{slug}` — *added 2026-08-25* |
+| الحاسبات | `/calculators` | `/calculators/{slug}` — *added 2026-08-25* |
 
 **Documents only.** Hubs and their paginated siblings (`/{wing}/page/{n}`) are excluded: a directory grid has no reading depth, so a scroll trigger there measures nothing but a flick. Hubs already carry `HubCtaWall`, which is a full-page conversion surface of its own for anyone who tries to reach page 2.
 
 ```ts
 // lib/anon-cta/eligibility.ts
-const WINGS = ["regulations", "compliance", "circulars", "judgments", "blog"] as const;
+const WINGS = [
+  "regulations", "compliance", "circulars", "judgments", "blog",
+  "forms", "calculators",                                // added 2026-08-25
+] as const;
 
-/** A DOCUMENT under one of the five wings — not the hub, not a hub page. */
+/** A DOCUMENT under one of the wings — not the hub, not a hub page. */
 export function isEligibleDoc(pathname: string): boolean {
   const seg = pathname.split("/").filter(Boolean);      // "/regulations/x" → ["regulations","x"]
   if (seg.length < 2) return false;                      // the bare hub
@@ -55,14 +62,14 @@ export function isEligibleDoc(pathname: string): boolean {
 
 ### Mount points — two lines, total
 
-Every one of the five wings already funnels through one of two shells:
+Every one of the wings already funnels through one of two shells:
 
-- `components/library/blocks/LibraryPageShell.tsx` → regulations, compliance, circulars, judgments (docs **and** hub views, via `RegulationsHubView` et al.)
+- `components/library/blocks/LibraryPageShell.tsx` → regulations, compliance, circulars, judgments, forms, calculators (docs **and** hub views, via `RegulationsHubView` et al.)
 - `components/blog/BlogPageShell.tsx` → `/blog` and `/blog/{token}`
 
 Mount `<AnonCtaPopup />` in both, right beside the existing `<BlogConversionCta />`. The component decides its own eligibility from `usePathname()`, so mounting it on ineligible routes costs nothing.
 
-> **Deliberate consequence:** `LibraryPageShell` is also used by `/forms`, `/calculators`, and the `/library/{sector}` browse surfaces. Those mount the popup too but are filtered out by `WINGS`. Extending coverage later = adding a string to one array; no new mount, no new component.
+> **Deliberate consequence:** `LibraryPageShell` is also used by the `/library/{sector}` browse surfaces. Those mount the popup too but are filtered out by `WINGS` — they are hubs. Extending coverage is adding a string to one array; no new mount, no new component. That is precisely how `/forms` and `/calculators` were added on 2026-08-25, at a cost of two strings.
 
 **ISR safety.** `AnonCtaPopup` is a pure client component with zero server data — nothing it does can vary the shared ISR cache. This is the constraint `HubCtaWall`'s header comment spells out at length, and the reason the popup must never grow a server-side fetch.
 
@@ -301,7 +308,7 @@ Allowlist, not a denylist. `/chat` is the fallback and is itself allowed, so a s
 
 Browsers strip tab, LF and CR out of a URL **before resolving it**, so that resolves as the protocol-relative `//evil.com` and walks straight past `startsWith("//")`. Rejecting all control characters is simpler and safer than modelling the stripping rules, and it also closes CR/LF header injection on the server side. Implement it with char codes rather than a regex literal so no raw control byte ever lands in the source.
 
-**The allowlist is wider than the popup's `WINGS`, deliberately.** It carries `/forms`, `/calculators` and `/library` in addition to the five wings, because `LibraryPageShell` mounts `BlogConversionCta` on those routes too — without them a CTA click there drops `next` and silently lands on `/chat`. The two lists answer different questions (*where does the popup fire* vs *where may auth return someone*) and must stay separate; both files carry a comment saying so.
+**The allowlist is wider than the popup's `WINGS`, deliberately, and must stay a SUPERSET of it** — every wing has to be returnable, or the popup's own «ابدأ الآن» drops `next` and lands the reader on `/chat` instead of the page that earned the pitch. It carries `/library` in addition to the wings, because `LibraryPageShell` mounts `BlogConversionCta` on those hub routes too — without it a CTA click there drops `next` and silently lands on `/chat`. (It already carried `/forms` and `/calculators` before they became wings on 2026-08-25, which is why that change needed no edit here.) The two lists answer different questions (*where does the popup fire* vs *where may auth return someone*) and must stay separate; both files carry a comment saying so.
 
 ### 7.4 The one real limitation — cross-device verification
 

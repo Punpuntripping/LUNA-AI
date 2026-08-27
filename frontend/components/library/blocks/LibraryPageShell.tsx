@@ -44,9 +44,11 @@ export function LibraryPageShell({
 
       {/* The ACTIVE half of the same pitch: a popup earned by reading depth.
           Mounted unconditionally — it decides its own eligibility from the
-          pathname (documents under the five wings only), so /forms,
-          /calculators and every hub cost nothing but a no-op render. Pure
-          client, zero server data: it must never vary the shared ISR cache. */}
+          pathname (DOCUMENTS under the content wings only), so every hub this
+          shell also serves costs nothing but a no-op render. Since 2026-08-25
+          that covers every document route the shell has, /forms and
+          /calculators included. Pure client, zero server data: it must never
+          vary the shared ISR cache. */}
       <AnonCtaPopup />
     </SitePageShell>
   );
