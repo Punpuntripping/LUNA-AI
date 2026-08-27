@@ -58,6 +58,13 @@ ATTACHMENT_CONTEXT_COMPACTION_CLIP_CHARS = 3200
 # migration 041) — kept here as defense in depth in case this function is
 # reached via a path that bypasses the trigger (manual POST, backfill script,
 # the inline OCR path).
+#
+# The gate rests on "downstream agents read content_md directly", which was
+# false for the router until 2026-08-27: it only ever saw (title, summary), so
+# a short OCR'd attachment reached it as a bare filename. The router's context
+# loader now falls back to content_md for a summary-less item
+# (agents/router/context.py::_apply_summary_fallback) — do not raise this
+# threshold without checking that fallback still covers the gap.
 MIN_CONTENT_LENGTH_CHARS = 300
 
 

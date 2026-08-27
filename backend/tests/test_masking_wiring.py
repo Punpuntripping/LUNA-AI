@@ -878,6 +878,37 @@ def test_load_router_context_encodes_summaries_and_compaction(active):
     assert _REAL_ID not in ctx.compaction_summary_md
 
 
+def test_load_router_context_encodes_summary_fallback_content(active):
+    """An item with no summary is served its own ``content_md`` instead
+    (``_apply_summary_fallback``). That is raw, un-digested document text — the
+    masking encode must reach it exactly as it reaches a real summary, or وضع
+    السرية leaks every identifier in a short OCR'd attachment."""
+    from agents.router.context import load_router_context
+
+    sb = FakeSupabase(
+        data={
+            "workspace_items": [
+                {
+                    "item_id": "ws-1",
+                    "wi_seq": 1,
+                    "kind": "attachment",
+                    "title": "Screenshot.png",
+                    "summary": None,  # below MIN_CONTENT_LENGTH_CHARS
+                    "content_md": f"رقم الهوية {_REAL_ID}",
+                    "created_at": "2026-08-27T13:21:28Z",
+                },
+            ],
+            "messages": [],
+            "conversations": [],
+            "user_preferences": [],
+            "pii_mappings": [],
+        }
+    )
+    (s,) = load_router_context(sb, "u1", "conv1", None).workspace_item_summaries
+    assert s["summary_is_content"] is True
+    assert _FAKE_ID in s["summary"] and _REAL_ID not in s["summary"]
+
+
 def test_load_router_context_encodes_case_memory(active, monkeypatch):
     import agents.router.context as rc
 

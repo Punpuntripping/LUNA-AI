@@ -37,6 +37,32 @@ logger = logging.getLogger(__name__)
 
 _EXCLUDED_MESSAGE_KINDS = {"agent_question", "agent_answer"}
 
+# --- Summary-less items: fall back to the item's own content -----------------
+#
+# The router's ONLY window onto a workspace item is (title, summary) — the full
+# ``content_md`` is behind the ``unfold_workspace_item`` tool. So an item whose
+# ``summary`` is NULL reached the model as a bare filename plus the literal
+# "(لا يوجد ملخص بعد)".
+#
+# That is exactly the state a freshly-OCR'd SHORT attachment lands in:
+# ``summarize_workspace_item`` skips the LLM below ``MIN_CONTENT_LENGTH_CHARS``
+# (300) on the stated grounds that "short blurbs don't need an agent-facing
+# summary — downstream agents read content_md directly". True of every
+# downstream agent except the router, which never reads it. On 2026-08-27 a
+# user attached a screenshot carrying their whole question (262 OCR chars),
+# typed «ابحث», and the router — which had correctly waited for OCR — answered
+# "what would you like me to search for?" because all it could see was
+# "Screenshot ....png" (conversation 12afc227).
+#
+# Fix: when an item has no summary, hand the router the item's own content,
+# clipped. Also covers the rarer case of a summarizer that errored out.
+_SUMMARY_FALLBACK_ITEM_CHARS = 1500
+# Total across all summary-less items in one conversation, so a workspace full
+# of them cannot inflate the router prompt without bound (``content_md`` is
+# user-supplied and runs to 200k chars). Spent newest-first: the item the
+# current turn is about is the one just uploaded.
+_SUMMARY_FALLBACK_TOTAL_CHARS = 6000
+
 
 @dataclass
 class RouterContext:
@@ -247,9 +273,46 @@ def _load_workspace_item_summaries(
             "wi_seq": row.get("wi_seq"),
             "kind": kind or "agent_search",
             "title": row.get("title") or "",
-            "summary": row.get("summary"),  # may be NULL — renderer handles
+            "summary": row.get("summary"),  # may be NULL — filled below
+            # Carried only so the fallback pass below can read it; dropped
+            # again before the dict leaves this function.
+            "_content_md": row.get("content_md") or "",
         })
+
+    _apply_summary_fallback(summaries)
+    for s in summaries:
+        s.pop("_content_md", None)
     return summaries, compaction_summary_md
+
+
+def _apply_summary_fallback(summaries: list[dict]) -> None:
+    """Fill a NULL ``summary`` with the item's own content, clipped. In place.
+
+    See ``_SUMMARY_FALLBACK_ITEM_CHARS`` for why this exists. Items that DO
+    have a summary are untouched; so are items with neither summary nor content
+    (a failed OCR, say) — those keep the renderer's "(لا يوجد ملخص بعد)".
+
+    ``summary_is_content`` tells the renderer to label the text as the item's
+    body rather than a digest, and ``summary_truncated`` says the router must
+    unfold to see the rest. Budget is spent newest-first (``summaries`` arrives
+    ordered created_at ASC) because the item the current turn is about is the
+    one just added.
+    """
+    budget = _SUMMARY_FALLBACK_TOTAL_CHARS
+    for item in reversed(summaries):
+        if (item.get("summary") or "").strip():
+            continue
+        body = (item.get("_content_md") or "").strip()
+        if not body or budget <= 0:
+            continue
+        allowance = min(_SUMMARY_FALLBACK_ITEM_CHARS, budget)
+        truncated = len(body) > allowance
+        if truncated:
+            body = body[:allowance].rstrip()
+        budget -= len(body)
+        item["summary"] = body
+        item["summary_is_content"] = True
+        item["summary_truncated"] = truncated
 
 
 def _load_filtered_messages(
