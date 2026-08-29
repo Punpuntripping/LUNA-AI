@@ -1,8 +1,8 @@
 """The entity slug map — ONE place where a URL segment meets a ``provider_name``.
 
 `public.services.provider_name` is the issuing government body of a خدمة, and it
-is the browse axis of `/compliance`: **29 distinct values over the 533 published
-service guides**, verified live 2026-08-25. This module pairs each one with a
+is the browse axis of `/compliance`: **33 distinct values over the 825 published
+service guides**, verified live 2026-08-29. This module pairs each one with a
 Latin URL segment and is the ONLY place that pairing exists on the Python side.
 
 WHY THIS IS A THINNER MODULE THAN ``courts.py``, AND MUST STAY THINNER
@@ -11,7 +11,7 @@ WHY THIS IS A THINNER MODULE THAN ``courts.py``, AND MUST STAY THINNER
 same judicial body appears under several spellings that differ only by CITY — so
 ``courts.py`` had to BE the normalizer and its query predicate is ``in.(variants)``.
 
-``services.provider_name`` is **already canonical**: 29 strings, one per body, no
+``services.provider_name`` is **already canonical**: 33 strings, one per body, no
 city suffixes, no numbered دوائر, no residual bucket, zero NULLs, zero
 near-duplicate spellings (all verified live). So this is a slug ⇄ SINGLE-NAME map
 and the predicate is ``eq``, not ``in``. There is deliberately **no variant list
@@ -31,7 +31,7 @@ SLUGS ARE LATIN kebab-case, unlike ``courts.py``
 justification that let ``courts.py`` go Arabic — «the whole /judgments wing is
 ``noindex`` behind the PDPL gate, so there is no SEO to be neutral about» — is
 exactly INVERTED here: /compliance is the indexed wing, 100% published and
-ungated, with all 533 guide URLs already in the sitemap. Latin also removes the
+ungated, with all 825 guide URLs already in the sitemap. Latin also removes the
 percent-encoding trap that runs through every entry point of the courts axis and
 through ISR revalidation (memory `isr-revalidate-encoding`).
 
@@ -47,7 +47,11 @@ on the client. Re-deriving it from the corpus when the corpus itself moves is th
 one edit this order invites, and it is a DISPLAY change only: a slug's text is
 permanent (above), its POSITION is not. Done 2026-08-25, when the third ingest
 took the wing 337 → 533 and وزارة البلديات والإسكان went 4 → 144 guides, i.e.
-from fifteenth place to first. Ties keep the incumbent ahead of the newcomer
+from fifteenth place to first — and again 2026-08-29, when the fourth took it
+533 → 825 and هيئة الزكاة والضريبة والجمارك went 14 → 150, from seventh to
+first (المؤسسة العامة للتأمينات الاجتماعية 19 → 103 came with it). Four bodies
+were added in that pass: هيئة الاتصالات وتقنية المعلومات, أمانة محافظة جدة,
+وزارة الطاقة, أمانة منطقة الرياض. Ties keep the incumbent ahead of the newcomer
 (zatca before board-of-grievances, both 14) so an existing section never moves
 for a tie. The whole map is GENERATED from the live corpus — see the note above
 ``taqeem``.
@@ -60,7 +64,7 @@ reachable through the unfiltered `/compliance` hub, the sitemap and search.
 ``backend/tests/test_library_entities.py`` asserts the live distinct set against
 this map, so drift is caught before it reaches prod.
 
-Guide counts in the comments were measured 2026-08-25 and are documentation only
+Guide counts in the comments were measured 2026-08-29 and are documentation only
 — nothing reads them. The counts the browse grid prints come from the corpus.
 """
 from __future__ import annotations
@@ -74,13 +78,16 @@ logger = logging.getLogger(__name__)
 # Latin slug → the exact ``services.provider_name`` string it claims.
 # ORDERED BY CORPUS VOLUME. This order is the browse order.
 _ENTITIES: dict[str, str] = {
+    "zatca": "هيئة الزكاة والضريبة والجمارك",  # 150
     "ministry-of-municipalities-housing": "وزارة البلديات والإسكان",  # 144
     "ministry-of-justice": "وزارة العدل",  # 130
+    "gosi": "المؤسسة العامة للتأمينات الاجتماعية",  # 103
     "ministry-of-human-resources": "وزارة الموارد البشرية والتنمية الاجتماعية",  # 70
     "ministry-of-commerce": "وزارة التجارة",  # 43
-    "gosi": "المؤسسة العامة للتأمينات الاجتماعية",  # 19
-    "ministry-of-health": "وزارة الصحة",  # 17
-    "zatca": "هيئة الزكاة والضريبة والجمارك",  # 14
+    "ministry-of-health": "وزارة الصحة",  # 25
+    "citc": "هيئة الاتصالات وتقنية المعلومات",  # 21
+    "jeddah-municipality": "أمانة محافظة جدة",  # 19
+    "ministry-of-energy": "وزارة الطاقة",  # 19
     "board-of-grievances": "ديوان المظالم",  # 14
     "ministry-of-education": "وزارة التعليم",  # 12
     "real-estate-general-authority": "الهيئة العامة للعقار",  # 9
@@ -90,12 +97,13 @@ _ENTITIES: dict[str, str] = {
     "ministry-of-foreign-affairs": "وزارة الخارجية",  # 7
     "etimad": "المركز الوطني لنظم الموارد الحكومية",  # 6
     "social-development-bank": "بنك التنمية الاجتماعية",  # 5
+    "ministry-of-industry": "وزارة الصناعة والثروة المعدنية",  # 5
     "human-rights-commission": "هيئة حقوق الإنسان",  # 4
-    "ministry-of-industry": "وزارة الصناعة والثروة المعدنية",  # 2
     "ministry-of-tourism": "وزارة السياحة",  # 2
     "environmental-compliance-center": "المركز الوطني للرقابة على الإلتزام البيئي",  # 2
     "transport-general-authority": "الهيئة العامة للنقل",  # 2
-    # ── The eight one-guide authorities. ALL 29 SHIP (plan D3). ────────────
+    "riyadh-municipality": "أمانة منطقة الرياض",  # 2
+    # ── The eight one-guide authorities. ALL 33 SHIP (plan D3). ────────────
     # The المحكمة العمالية precedent from the judgments wing applies: the route
     # is honest, costs nothing, and a browse grid that silently omits a body
     # whose name is printed on the cards is worse than a thin page.
@@ -120,7 +128,7 @@ _ENTITIES: dict[str, str] = {
 
 # ─── Derived lookups ──────────────────────────────────────────────────────────
 ENTITY_ORDER: list[str] = list(_ENTITIES)
-"""The 29 entity slugs in browse (corpus-volume) order. THE SERVER OWNS THIS
+"""The 33 entity slugs in browse (corpus-volume) order. THE SERVER OWNS THIS
 ORDER — the browse grid renders it as given and must not re-sort."""
 
 ENTITY_LABELS: dict[str, str] = dict(_ENTITIES)

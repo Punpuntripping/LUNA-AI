@@ -372,6 +372,46 @@ def test_a_mid_string_label_blocks_the_append() -> None:
     assert compose_guide_title(title, "منصة مسار") == title
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "الدليل الشامل: المواعيد في أمانة جدة",
+        "الدليل الشامل: الاتصال المباشر في أمانة جدة",
+        "الدليل الشامل: طلبات التسكين (أمانة جدة)",
+        "الدليل الشامل: التدريب التعاوني في أمانة جدة",
+        "الدليل الشامل: الاستعلام عن معاملة في أمانة جدة",
+    ],
+)
+def test_a_SHORTER_FORM_of_the_entity_name_blocks_the_append(title) -> None:
+    """LIVE regression, 2026-08-29 ingest: these five shipped as «… في أمانة جدة
+    في أمانة محافظة جدة».
+
+    The canonical ``provider_name`` carries «محافظة» and the corpus title does
+    not, so containment on the full label saw two different strings where a
+    reader sees one body named twice."""
+    assert compose_guide_title(title, "أمانة محافظة جدة") == title
+
+
+def test_a_shorter_form_never_matches_a_DIFFERENT_body() -> None:
+    """Only structural filler is dropped, so every distinguishing token survives
+    and a short form still names exactly one body. A title about a different
+    أمانة keeps its own append."""
+    title = "الدليل الشامل: الاستعلام عن معاملة في أمانة جدة"
+    assert compose_guide_title(title, "أمانة منطقة الرياض") == (
+        f"{title} في أمانة منطقة الرياض"
+    )
+
+
+def test_a_subject_that_shares_a_word_with_its_entity_still_appends() -> None:
+    """The append must survive the common case it looks like: «الزكاة» here is
+    what the service is ABOUT, not a naming of the authority. Only a
+    CLASSIFIER-led form of the body itself blocks."""
+    title = "الدليل الشامل: الاعتراض على إعادة تقييم الزكاة"
+    assert compose_guide_title(title, "هيئة الزكاة والضريبة والجمارك") == (
+        f"{title} في هيئة الزكاة والضريبة والجمارك"
+    )
+
+
 # ── attestation: portal vs recycled service name ─────────────────────────────
 def test_a_widely_used_brand_is_attested() -> None:
     assert "ناجز" in {b for b in attested_channels(["بوابة ناجز"] * 108)}

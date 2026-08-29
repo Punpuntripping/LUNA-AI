@@ -25,7 +25,7 @@ import type { BreadcrumbItem } from "@/types/library";
  * deep pages (`/compliance/page/{n}`) and, since the entity sections shipped,
  * both halves of `/compliance/{entity}` too.
  *
- * WHAT THE GRID LISTS: `service_guides` — 533 guides to the most-used Saudi
+ * WHAT THE GRID LISTS: `service_guides` — 825 guides to the most-used Saudi
  * government services, ordered most-used first. Each one is OUR OWN authored
  * rewrite of the issuing entity's official PDF user-guide, published in full and
  * ungated at `/compliance/{slug}`, with the entity's service page as the only
@@ -39,7 +39,7 @@ import type { BreadcrumbItem } from "@/types/library";
  * offer.
  *
  * ── «الجهة» — A SECTION, AND AN ANON-VISIBLE ONE ────────────────────────────
- * `entitySlug` is one of the 28 Latin entity slugs (`lib/library/entities.ts`,
+ * `entitySlug` is one of the 33 Latin entity slugs (`lib/library/entities.ts`,
  * mirroring `shared/library/entities.py`). Like `sector_slug` and the judgments
  * `court` it is a CLOSED, server-owned vocabulary the backend keeps out of its
  * `filtered` flag — which is what lets an anonymous reader see the section's
@@ -48,7 +48,7 @@ import type { BreadcrumbItem } from "@/types/library";
  * ⚠ AND UNLIKE THOSE TWO, IT IS NOT A PAID SECTION (plan D1). No `sectionScope`
  * is passed to `HubCtaWall` below, because the backend does not pass
  * `entity_slug` into `section_scope_allowed()`: this wing is 100% published and
- * ungated end to end, every one of its 533 guide URLs is already in the sitemap,
+ * ungated end to end, every one of its 825 guide URLs is already in the sitemap,
  * and the guides are our own text — so a section slice here accumulates no
  * withheld content and opens no enumeration path that the sitemap has not opened
  * already. What still applies, per URL, is the anon DEPTH cap: page 1 of an
@@ -62,7 +62,7 @@ import type { BreadcrumbItem } from "@/types/library";
  *   2. `fetchQuery` → `HubCtaWall`'s CLIENT-SIDE authed reveal, which calls the
  *      wing endpoint by query param and knows nothing about our path shape.
  *      Miss it and a signed-in reader paging past the anon cap silently drops
- *      back to all 533 guides.
+ *      back to all 825 guides.
  *   3. `basePath` → the pagination LINKS, where the entity lives in the PATH
  *      (`/compliance/{entity}/page/2`).
  *
@@ -80,7 +80,7 @@ export async function ComplianceHubView({
   verifiedBot,
 }: {
   page: number;
-  /** One of the 28 entity slugs. Absent ⇒ the unfiltered /compliance hub. */
+  /** One of the 33 entity slugs. Absent ⇒ the unfiltered /compliance hub. */
   entitySlug?: string;
   verifiedBot?: boolean;
 }) {
@@ -93,7 +93,7 @@ export async function ComplianceHubView({
   // `getSectorSlugMap` soft-fails to `{}` — a missing map costs the sector
   // pills their links, never the hub its render. `getComplianceEntities` soft-
   // fails to `[]` the same way, and `entityNavItems` then falls back to the
-  // local mirror's 28 links without counts.
+  // local mirror's 33 links without counts.
   const [data, sectorSlugs, entityRows] = await Promise.all([
     getComplianceHub(page, entity ? { entity_slug: entity } : undefined, {
       verifiedBot,
@@ -196,7 +196,7 @@ export async function ComplianceHubView({
             <p className="py-16 text-center text-sm text-muted-foreground">
               {activeLabel
                 ? // Reachable in principle only while the corpus is mid-ingest:
-                  // all 28 sections carry at least one guide today.
+                  // all 33 sections carry at least one guide today.
                   `لا توجد أدلة خدمات من ${activeLabel} حالياً — تصفّح جهة أخرى من القائمة أعلاه.`
                 : LIBRARY_TYPE_META.compliance.empty}
             </p>

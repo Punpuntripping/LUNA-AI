@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 #
 #   · ``compliance`` IS the government-services NAVIGATION corpus (joined
 #     2026-08-23, ``.claude/plans/compliance_entity_sections.md`` §6). It carries
-#     the 533 SERVICE GUIDES — ريحان's own authored rewrite of each entity's
+#     the 825 SERVICE GUIDES — ريحان's own authored rewrite of each entity's
 #     official PDF — keyed by ``service_guides.id``, with the Latin slugs the
 #     /compliance wing publishes. Every hit resolves to a real, ungated,
 #     fully-published page, which is precisely what the corpus's absence used to

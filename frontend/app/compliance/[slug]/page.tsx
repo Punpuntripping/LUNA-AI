@@ -51,22 +51,22 @@ import type {
 // (NO force-dynamic).
 //
 // ── THIS SEGMENT SERVES TWO KINDS OF THING (compliance_entity_sections D2) ──
-// `/compliance/{slug}` is EITHER one of the 29 entity SECTIONS
-// (`/compliance/ministry-of-justice`) or one of the 533 GUIDES. One dynamic
+// `/compliance/{slug}` is EITHER one of the 33 entity SECTIONS
+// (`/compliance/ministry-of-justice`) or one of the 825 GUIDES. One dynamic
 // segment, two vocabularies — which is legal in Next precisely because it is one
 // segment and not two dynamic names at one level (the build error that forced
 // `courts` into the /judgments URL).
 //
 // THE ENTITY VOCABULARY IS CHECKED FIRST, and it is free to check: an in-process
-// dict lookup against the closed 28-value mirror, no fetch. That ordering is
-// only safe because the two namespaces are proven disjoint — the 28 slugs plus
+// dict lookup against the closed 33-value mirror, no fetch. That ordering is
+// only safe because the two namespaces are proven disjoint — the 33 slugs plus
 // `page`/`entities`/`mine` are reserved in `scripts/build_compliance_slugs.py`,
 // asserted against live `seo_item_meta`, and refused by `get_compliance_guide`
 // server-side. Were an entity slug ever minted as a guide slug, this order would
 // 404 a URL that is in the sitemap.
 //
 // ⚠ NO `generateStaticParams` HERE, AND THAT IS DELIBERATE — the route has never
-// had one. On-demand ISR means the 28 entity pages are not baked at build time,
+// had one. On-demand ISR means the 33 entity pages are not baked at build time,
 // so they cannot bake as 404s if the frontend image is built while the backend
 // still lacks `entity_slug` (memory `isr-bake-trap`, and the reason the rollout
 // order deploys the backend first).
@@ -275,10 +275,10 @@ export default async function ComplianceGuidePage({ params }: PageProps) {
   // (D14): the خدمات corpus carries no citation data at all.
   //
   // Expect this to be ABSENT on most guides until topic-BM25 lands (plan Wave
-  // E) — 533 guides across 30 entity values leaves almost nothing above the
+  // E) — 825 guides across 34 entity values leaves almost nothing above the
   // relevance floor, and a missing strip beats three unrelated services. (That
   // count is the RELATED axis — `service_guides.entity_ref` agency codes, one of
-  // them the `unknown_agency` fallback — not the 29 `provider_name` values the
+  // them the `unknown_agency` fallback — not the 33 `provider_name` values the
   // browse axis uses. The two axes are keyed differently and do not line up.)
   //
   // Ungated by construction; the `slug` filter is the ISR-staleness guard.

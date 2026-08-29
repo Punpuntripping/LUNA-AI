@@ -470,6 +470,39 @@ def strip_locale_tail(title: str) -> str:
     return text
 
 
+# ⚠ STRUCTURAL FILLER INSIDE AN ENTITY NAME — words that carry no identity.
+# `أمانة محافظة جدة` and `أمانة جدة` are the same body; a corpus title writes the
+# short form and the canonical `provider_name` writes the long one, so plain
+# containment does not see the repetition. Removing ONLY these words can never
+# turn one body's name into another's — every distinguishing token survives — so
+# a short form is safe to test for. See ``_label_short_forms``.
+_ENTITY_FILLER: frozenset[str] = frozenset(
+    {"محافظة", "منطقة", "العامة", "العام", "الوطني", "الوطنية", "الملكية",
+     "السعودية", "السعودي"}
+)
+
+
+def _label_short_forms(label: str) -> list[str]:
+    """The label plus the shorter ways the corpus writes the SAME body.
+
+    Built by dropping structural filler (``_ENTITY_FILLER``) — one word at a
+    time and then all of them — never a distinguishing token. «أمانة محافظة جدة»
+    yields «أمانة جدة»; «الهيئة العامة للأوقاف» yields «الهيئة للأوقاف», which
+    no title says, so it costs nothing and matches nothing.
+    """
+    words = (label or "").split()
+    if not words:
+        return []
+    forms = {label}
+    filler_at = [i for i, w in enumerate(words) if w in _ENTITY_FILLER]
+    for i in filler_at:
+        forms.add(" ".join(words[:i] + words[i + 1 :]))
+    if len(filler_at) > 1:
+        forms.add(" ".join(w for w in words if w not in _ENTITY_FILLER))
+    # A form that lost every distinguishing word would match anything.
+    return [f for f in forms if len(f.split()) >= 2]
+
+
 def compose_guide_title(corpus_title: str, label: Optional[str]) -> str:
     """``corpus_title`` with its locale tail replaced by «في {label}».
 
@@ -487,7 +520,13 @@ def compose_guide_title(corpus_title: str, label: Optional[str]) -> str:
         in a bare «…» would be worse than the generic tail it replaced);
       * the title already CONTAINS the label, anywhere — «حجز موعد إلكتروني في
         وزارة الموارد البشرية والتنمية الاجتماعية» names its own ministry, and
-        appending the entity again would double it;
+        appending the entity again would double it. ⚠ OR A SHORTER FORM OF IT:
+        five live titles said «… في أمانة جدة» while the canonical
+        ``provider_name`` is «أمانة محافظة جدة», so containment on the full label
+        missed a body the title had already named and shipped «المواعيد في أمانة
+        جدة في أمانة محافظة جدة». ``_label_short_forms`` drops the structural
+        filler and never a distinguishing token, so this cannot match a
+        DIFFERENT body;
       * the title already contains the label's BRAND — «… عبر ناجز» must not
         become «… عبر ناجز في بوابة ناجز».
 
@@ -508,7 +547,7 @@ def compose_guide_title(corpus_title: str, label: Optional[str]) -> str:
         return text
 
     folded_title = _fold(stripped)
-    if _fold(lab) in folded_title:
+    if any(_fold(form) in folded_title for form in _label_short_forms(lab)):
         return stripped
     if brand_already_in_title(lab, stripped):
         return stripped

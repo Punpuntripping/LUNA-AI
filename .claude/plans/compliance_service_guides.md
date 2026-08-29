@@ -56,6 +56,15 @@ confirmed: "we rewrote it." Every comment in the codebase that still tells the
 
 ## 1. Verified live state (queried 2026-08-19 — do not re-derive)
 
+> ⚠ **This table is the state the plan was WRITTEN against, kept as the decision
+> record. The corpus has grown three times since.** Current (2026-08-29, fourth
+> ingest): **825 guides · 14,988 images · 0 awaiting upload · 71 zero-image ·
+> 33 distinct `provider_name` · 825 slugged / 825 indexable**. That batch also
+> needed a POST-BUILD renumber — 39 guides had been built in slug-named folders,
+> so their `{ref}_{n}` tokens could not match the `\d+_\d+` render contract; see
+> `agentic_for_ministry/ingestion/service_guides/PLAN.md` (2026-08-29 status)
+> and `scripts/source_scrape/renumber_built_slug_refs.py`.
+
 | Fact | Value |
 |---|---|
 | `service_guides` rows | **169**, all `is_canonical=true`, 0 aliases, 0 duplicate `service_id` |

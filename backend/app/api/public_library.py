@@ -624,7 +624,7 @@ _court_total_pages_memo: dict[str, int] = {}
 _court_memo_at: dict[str, float] = {"at": 0.0}
 
 # ── Entity counts (compliance_entity_sections §4.1) ─────────────────────────
-# The 28 per-entity published guide counts and the page counts derived from
+# The 33 per-entity published guide counts and the page counts derived from
 # them, on the SAME 5-minute TTL as the sector and court memos, and for the same
 # reason: an entity is a SECTION, so its wall reports a real number, and a real
 # number on the anon path must not cost a query per request.
@@ -781,7 +781,7 @@ async def _court_total_pages(supabase: SupabaseClient, court_slug: str) -> int:
 
 
 async def _entity_counts(supabase: SupabaseClient) -> dict[str, int]:
-    """The 28 per-entity PUBLISHED guide counts, memoised for 5 minutes (§4.1).
+    """The 33 per-entity PUBLISHED guide counts, memoised for 5 minutes (§4.1).
 
     ONE refresh fills the item counts returned here and the derived page counts
     the paginator and the CTA wall read. Cost: one read of the published guide
@@ -807,7 +807,7 @@ async def _entity_counts(supabase: SupabaseClient) -> dict[str, int]:
         # An empty entity still reports 1 page — the hub listers do the same
         # (``max(1, ...) if total else 1``), so an entity whose guides all lost
         # their slugs renders a single "no results" page rather than a zero-page
-        # paginator. Nine of the 28 hold exactly one guide, so the small end of
+        # paginator. Eight of the 33 hold exactly one guide, so the small end of
         # this range is the normal case, not a defensive branch.
         _entity_total_pages_memo[slug] = (
             max(1, math.ceil(items / page_size)) if items else 1
@@ -1046,7 +1046,7 @@ _COURT_LEVEL_VOCAB = frozenset(COURT_LEVEL_LABELS)
 # Arabic court strings must never be retyped into this module (30 distinct free
 # text values, several differing only by an invisible double space).
 _COURT_VOCAB = COURT_SLUG_VOCAB
-# The 28 /compliance ENTITY SECTION slugs. IMPORTED from
+# The 33 /compliance ENTITY SECTION slugs. IMPORTED from
 # ``shared/library/entities.py``, which owns the slug ⇄ ``provider_name`` pairing
 # — a 29th issuing body added there must not need a second edit here to become
 # servable, and the Arabic provider names must NEVER be retyped into this module
@@ -1314,7 +1314,7 @@ def _entity_section(entity_slug: Optional[str]) -> Optional[str]:
     namespace therefore costs no DB round-trip, and a refusal cannot become its
     own load generator. Call this BEFORE tier resolution and before any query.
 
-    Raises 400 «الجهة غير معروفة» for a value outside the 28 and for a RESERVED
+    Raises 400 «الجهة غير معروفة» for a value outside the 33 and for a RESERVED
     segment (``page`` / ``entities`` / ``mine`` — ``name_for_slug`` returns None
     for those even if a future edit adds them to the map, so `/compliance/page/2`
     can never resolve as an entity in either namespace).
@@ -1328,7 +1328,7 @@ def _entity_section(entity_slug: Optional[str]) -> Optional[str]:
     ⚠ ``provider`` IS A DIFFERENT AXIS AND STAYS EXACTLY AS IT IS. That param is a
     free-text ``ilike`` SUBSTRING facet over the same column, >= 3 chars,
     available to anon, and it belongs in the ``filtered`` flag precisely because
-    its value space is unbounded. ``entity_slug`` is a closed 28-value
+    its value space is unbounded. ``entity_slug`` is a closed 33-value
     server-owned vocabulary and is a SECTION. Same column, opposite treatment —
     do not merge them, and do not make ``entity`` an ``ilike`` "for consistency".
     """
@@ -2144,7 +2144,7 @@ class EntitySummary(BaseModel):
 
 
 class EntityListResponse(BaseModel):
-    """``GET /public/library/compliance/entities`` — all 28, memoised 5 minutes.
+    """``GET /public/library/compliance/entities`` — all 33, memoised 5 minutes.
 
     ⚠ THE SERVER OWNS THE ORDER: corpus volume descending (``ENTITY_ORDER``). Do
     not re-sort on the client — alphabetically وزارة العدل (115 guides) would
@@ -2764,7 +2764,7 @@ async def list_compliance(
     entity_slug: Optional[str] = Query(
         None,
         description=(
-            "Latin entity slug — the «الجهة» SECTION axis; one of the 28 in "
+            "Latin entity slug — the «الجهة» SECTION axis; one of the 33 in "
             "shared/library/entities.py. Exact match on provider_name (NOT the "
             "free-text `provider` facet)."
         ),
