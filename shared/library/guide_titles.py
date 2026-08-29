@@ -2,7 +2,7 @@
 
 A guide's corpus title (`service_guides.title`) is pipeline-owned and reads
 «الدليل الشامل: {الخدمة} في السعودية». The locale tail is the weakest 12
-characters on the page: 445 of 533 titles carry it, so as a search keyword it
+characters on the page: 666 of 825 titles carry it, so as a search keyword it
 distinguishes a guide from nothing at all — every sibling has it too.
 
 What a reader actually searches for is the CHANNEL: «الاطلاع على قضايا المنشأة
@@ -21,7 +21,7 @@ the exact example this rewrite exists to fix. The body knows: it prints
 
 ⚠ AND WHY IT IS NOT A REGEX OVER «قناة التقديم» EITHER
 -------------------------------------------------------
-That field exists on only 247 of 533 guides, and its values are free text:
+That field exists on only 623 of 825 guides, and its values are free text:
 «بوابة ناجز الإلكترونية (najiz.sa).», «منصة "بلدي" الإلكترونية», «منصة بلدي
 (النظام الموحد لوزارة البلديات والإسكان والمجتمعات)» — plus non-answers like
 «الموقع الرسمي للصندوق» and «إلكتروني (افتراضي)», which name no brand at all.
@@ -43,8 +43,8 @@ from typing import Optional
 # ─── The locale tail ──────────────────────────────────────────────────────────
 # ORDER MATTERS: the long form is a superset of the short one only in meaning,
 # not in text, but listing the longest first keeps this honest if a future tail
-# ever nests. Measured live 2026-08-25: 445 titles end «في السعودية», 2 end
-# «في المملكة العربية السعودية», 86 carry no locale tail at all.
+# ever nests. Measured live 2026-08-29: 666 titles end «في السعودية», 2 end
+# «في المملكة العربية السعودية», 157 carry no locale tail at all.
 _LOCALE_TAILS: tuple[str, ...] = (
     "في المملكة العربية السعودية",
     "في السعودية",
