@@ -29,40 +29,9 @@ interface NavItemProps {
   active?: boolean;
   onClick?: () => void;
   testId?: string;
-  /**
-   * Render the row as non-interactive with a "قيد التطوير" badge. Used to keep
-   * a feature visible in the nav while it is gated off (see lib/features.ts).
-   */
-  disabled?: boolean;
-  disabledBadge?: string;
 }
 
-function NavItem({
-  icon: Icon,
-  label,
-  active,
-  onClick,
-  testId,
-  disabled,
-  disabledBadge,
-}: NavItemProps) {
-  if (disabled) {
-    return (
-      <div
-        aria-disabled
-        className="flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-muted-foreground/50 cursor-not-allowed select-none"
-      >
-        <Icon className="h-4 w-4 shrink-0" />
-        <span className="flex-1 truncate text-sm">{label}</span>
-        {disabledBadge && (
-          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium leading-none text-muted-foreground">
-            {disabledBadge}
-          </span>
-        )}
-      </div>
-    );
-  }
-
+function NavItem({ icon: Icon, label, active, onClick, testId }: NavItemProps) {
   return (
     <button
       type="button"
@@ -145,7 +114,11 @@ export function Sidebar() {
           in-sidebar peek lists (قوالبي/مدوناتي/مكتبتي) are gone: the /mine
           pages are the single browsing surface for each collection. */}
       <nav className="flex flex-col gap-0.5 px-3 pt-3 pb-1 shrink-0">
-        {CASES_ENABLED ? (
+        {/* القضايا renders ONLY when the feature is on. It used to render as a
+            greyed row with a «قيد التطوير» badge; a permanently-dead row that
+            cannot be clicked is nav clutter, not a roadmap. Flip
+            `CASES_ENABLED` and the row comes back exactly as it was. */}
+        {CASES_ENABLED && (
           <NavItem
             icon={Scale}
             label="القضايا"
@@ -154,13 +127,6 @@ export function Sidebar() {
               setActiveTab(activeTab === "cases" ? "conversations" : "cases")
             }
             testId="sidebar-nav-cases"
-          />
-        ) : (
-          <NavItem
-            icon={Scale}
-            label="القضايا"
-            disabled
-            disabledBadge="قيد التطوير"
           />
         )}
         <NavItem

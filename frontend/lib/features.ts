@@ -9,8 +9,11 @@
 
 /**
  * Cases (القضايا) — case-specific mode: cases CRUD, case-scoped documents,
- * memories, and the case workspace route. Currently "under development"
- * (قيد التطوير): the sidebar entry is shown disabled and every entry point is
- * gated so the feature is unreachable. Set to `true` to bring it back.
+ * memories, and the case workspace route. Currently off: the sidebar row is not
+ * rendered at all and every entry point is gated, so the feature is unreachable
+ * and leaves no trace in the nav. (It used to render greyed out with a
+ * «قيد التطوير» badge; a row that can never be clicked is clutter, not a
+ * roadmap.) Set to `true` and the row, the case list and every route come back
+ * with no other code change.
  */
 export const CASES_ENABLED = false;
