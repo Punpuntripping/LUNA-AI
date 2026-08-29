@@ -98,7 +98,7 @@ PLAN_ROWS = [
      "billing_cycle": "one_time", "promo_price_sar": "39.90"},
     {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "89.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "49.90"},
-    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "189.90", "duration_days": 30,
+    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "289.90", "duration_days": 30,
      "billing_cycle": "recurring_30d", "promo_price_sar": "99.90"},
 ]
 
@@ -1211,17 +1211,17 @@ def test_a_due_term_is_charged_from_the_catalog_price(flag_on, charges, no_smtp)
 
 
 def test_the_amount_is_never_the_last_payments_amount(flag_on, charges, no_smtp):
-    """A prorated upgrade paid 100.00 for `max`; the RENEWAL is 189.90."""
+    """A prorated upgrade paid 200.00 for `max`; the RENEWAL is 289.90."""
     db = FakeSupabase(sub("max", hours_left=6))
     store_method(db)
     db.tables["payment_transactions"].append({
         "payment_id": str(uuid.uuid4()), "user_id": USER, "plan_id": "max",
-        "amount_sar": "100.00", "status": "paid", "initiated_by": "user",
+        "amount_sar": "200.00", "status": "paid", "initiated_by": "user",
         "upgrade_credit_sar": "89.90", "created_at": _iso(_now() - timedelta(days=30)),
     })
 
     sweep(db)
-    assert charges[0]["amount"] == 18990
+    assert charges[0]["amount"] == 28990
 
 
 def test_term_extends_from_expires_at_not_now(flag_on, charges, no_smtp):
@@ -1445,7 +1445,7 @@ def test_an_upgrade_mid_charge_holds_the_grant_instead_of_downgrading(
 ):
     """The narrow race with the ugliest outcome: the user upgrades pro→max while
     their pro renewal is in flight. grant_plan writes plan_id unconditionally, so
-    granting would silently downgrade somebody who just paid 189.90 — and neither
+    granting would silently downgrade somebody who just paid 289.90 — and neither
     they nor support would ever work out why."""
     db = FakeSupabase(sub("pro", hours_left=6))
     store_method(db)

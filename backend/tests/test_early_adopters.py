@@ -212,7 +212,7 @@ def buy(db, monkeypatch, plan_id="pro"):
 
 
 def price_now(db, plan_id="pro", *, context=ps.PRICE_CONTEXT_PURCHASE, user_id=USER):
-    catalog = {"basic": "49.90", "pro": "89.90", "max": "189.90"}[plan_id]
+    catalog = {"basic": "49.90", "pro": "89.90", "max": "289.90"}[plan_id]
     return ps._effective_price(db, user_id, plan_id, catalog, context=context)
 
 

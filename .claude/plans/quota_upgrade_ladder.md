@@ -68,7 +68,8 @@ RPC compares `plans.price_sar`, which is **already the authoritative amount** th
 checkout charges.
 
 > **Invariant this rests on:** price order equals capability order
-> (49.90 < 89.90 < 189.90). True today. Rank-less plans (`free`, `marketing_*`,
+> (49.90 < 89.90 < 289.90). True today — re-verified after migration 147 raised
+> `max` on 2026-08-29. Rank-less plans (`free`, `marketing_*`,
 > `dev`) have `price_sar IS NULL` and therefore never trigger a reset — which
 > matches the existing "rank-less earns no credit" rule in `create_checkout`.
 > **If a plan is ever priced out of capability order, add an explicit `rank`

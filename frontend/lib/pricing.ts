@@ -4,14 +4,15 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
 /**
  * Pricing catalog for the public /pricing page. This is marketing copy — the
  * single source of truth for what is *displayed*. The matching enforcement
- * limits live in the `plans` DB table (migration 076); keep the two in sync by
- * hand when limits change.
+ * limits live in the `plans` DB table (migrations 076 + 147); keep the two in
+ * sync by hand when limits change.
  *
  * ⚠ THE DB IS AUTHORITATIVE FOR THE AMOUNT. `plans.price_sar` is what
  * `/payments/checkout` charges; the strings below are display only, and the two
  * drift silently if edited apart. They were repriced together to 49.90 / 89.90 /
- * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit — migration 113 and this
- * file must always move as one.
+ * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit, and `max` was raised to
+ * 289.90 by migration 147 (2026-08-29) — a price migration and this file must
+ * always move as one.
  *
  * Billing model (owner, 2026-08-10 — see .claude/plans/subscription_auto_renewal.md):
  *   - basic — a ONE-TIME 7-day purchase that ends without any further charge.
@@ -134,6 +135,7 @@ export const PRICING_PLANS: PricingPlan[] = [
       "50 نقطة استخدام طوال الاشتراك (7 أيام)",
       "10 نقاط لكل جلسة (5 ساعات)",
       "15 صفحة استخراج نص",
+      "الوصول الكامل للمكتبة القانونية",
     ],
   },
   {
@@ -151,22 +153,24 @@ export const PRICING_PLANS: PricingPlan[] = [
       "75 نقطة استخدام أسبوعياً",
       "15 نقطة لكل جلسة (5 ساعات)",
       "40 صفحة استخراج نص شهرياً",
+      "الوصول الكامل للمكتبة القانونية",
     ],
   },
   {
     id: "max",
     nameAr: "القصوى",
     tagline: "أقصى سعة للقضايا المكثّفة",
-    price: "189.90",
+    price: "289.90",
     promoPrice: "99.90",
     period: "شهرياً",
     billingNote: "فترة الاشتراك 30 يوماً",
     promoBillingNote:
       "فترة الاشتراك 30 يوماً · سعر المشتركين الأوائل لأول 90 يوماً، ثم يعود إلى السعر المعتاد",
     features: [
-      "250 نقطة استخدام أسبوعياً",
-      "50 نقطة لكل جلسة (5 ساعات)",
-      "200 صفحة استخراج نص شهرياً",
+      "375 نقطة استخدام أسبوعياً",
+      "75 نقطة لكل جلسة (5 ساعات)",
+      "500 صفحة استخراج نص شهرياً",
+      "الوصول الكامل للمكتبة القانونية",
     ],
   },
 ];
@@ -221,7 +225,7 @@ export function cheapestPricingPlan(campaignOpen = false): PricingPlan {
  * `campaignOpen` switches the comparison to EFFECTIVE prices so the ladder is
  * ranked the way the cards are priced. It does NOT widen or narrow the ladder:
  * promo pricing preserves the catalog's rank (39.90 < 49.90 < 99.90, exactly as
- * 49.90 < 89.90 < 189.90), so the same plans are offered either way and nothing
+ * 49.90 < 89.90 < 289.90), so the same plans are offered either way and nothing
  * the server's downgrade guard would refuse can appear. Assert that whenever a
  * promo amount changes — a promo that inverted the order would let this function
  * offer a downgrade.
@@ -569,8 +573,8 @@ export function formatFeeSar(value: number | string): string {
  * Split a price string on the decimal separator so the fractional part can be
  * rendered smaller than the integer part.
  *
- * Purely a layout concern, and a real one: at `text-5xl`, «189.90» is materially
- * wider than «189» and reflows the three-card grid at the md breakpoint. Shared
+ * Purely a layout concern, and a real one: at `text-5xl`, «289.90» is materially
+ * wider than «289» and reflows the three-card grid at the md breakpoint. Shared
  * by /pricing and the landing teaser so they can never diverge.
  */
 export function splitPrice(price: string): {

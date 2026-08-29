@@ -76,7 +76,7 @@ PLAN_ROWS = [
      "billing_cycle": "one_time", "promo_price_sar": "39.90"},
     {"plan_id": "pro", "name_ar": "الاحترافية", "price_sar": "89.90", "duration_days": 30,
      "billing_cycle": "one_time", "promo_price_sar": "49.90"},
-    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "189.90", "duration_days": 30,
+    {"plan_id": "max", "name_ar": "القصوى", "price_sar": "289.90", "duration_days": 30,
      "billing_cycle": "one_time", "promo_price_sar": "99.90"},
     {"plan_id": "marketing_lawyer", "name_ar": "عرض المحامين", "price_sar": None,
      "duration_days": 7, "billing_cycle": None, "promo_price_sar": None},
@@ -694,7 +694,7 @@ def test_unrecognized_key_prefix_refuses_boot(monkeypatch):
     "charge,halalas,net,vat",
     [("49.90", 4990, "43.39", "6.51"),
      ("89.90", 8990, "78.17", "11.73"),
-     ("189.90", 18990, "165.13", "24.77")],
+     ("289.90", 28990, "252.09", "37.81")],
 )
 def test_vat_split_matches_plan_table(charge, halalas, net, vat):
     n, v = ps.vat_split(ps.q2(charge))
@@ -732,16 +732,16 @@ def test_checkout_prices_from_the_catalog(keys):
 
 
 def test_upgrade_credit_matches_plan_example(keys):
-    """pro with 26 days left → max: 189.90 − round(26/30 × 89.90, 2) = 111.99."""
+    """pro with 26 days left → max: 289.90 − round(26/30 × 89.90, 2) = 211.99."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     result = checkout(db, "max")
     assert result["credit_sar"] == "77.91"
-    assert result["amount_sar"] == "111.99"
-    assert result["amount_halalas"] == 11199
+    assert result["amount_sar"] == "211.99"
+    assert result["amount_halalas"] == 21199
     row = db.tables["payment_transactions"][0]
     assert row["upgrade_credit_sar"] == "77.91"
     # VAT is split on the CHARGED amount, not the catalog price.
-    assert row["vat_amount_sar"] == "14.61" and row["net_amount_sar"] == "97.38"
+    assert row["vat_amount_sar"] == "27.65" and row["net_amount_sar"] == "184.34"
 
 
 def test_code_sourced_plan_earns_no_credit(keys):
@@ -872,7 +872,7 @@ def test_paid_path_stamps_snapshot_before_grant(keys, monkeypatch):
     RPC — and it MUST run first: grant_plan overwrites the row it snapshots."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert db.calls == [
@@ -1235,11 +1235,11 @@ def test_refund_marks_refunded_before_revoking(keys, provider_refunds):
 
 def test_refund_of_an_upgrade_restores_the_prior_plan(keys, provider_refunds):
     db = FakeSupabase(sub("max", source="payment", days_left=30))
-    row = paid_row(db, plan_id="max", amount="111.99", prior_plan_id="pro",
+    row = paid_row(db, plan_id="max", amount="211.99", prior_plan_id="pro",
                    prior_expires_at=_iso(_now() + timedelta(days=26)))
     result = run(ps.refund_payment(db, USER, row["payment_id"]))
     assert result["revoke_action"] == "restored"
-    assert result["refunded_amount_sar"] == "108.61"       # 111.99 − 3.38
+    assert result["refunded_amount_sar"] == "208.61"       # 211.99 − 3.38
 
 
 def test_refund_after_24h_is_refused(keys, provider_refunds):
@@ -1454,14 +1454,14 @@ def test_refund_uses_provider_fee_end_to_end(keys, provider_refunds):
 def test_credit_ratio_is_clamped_to_one_period(keys):
     """The amplified exploit. Same-plan purchases STACK (grant_plan adds
     duration_days onto a live expiry), so remaining_days was unbounded: pro
-    bought 3× left 90 days → 90/30 × 89.90 = 269.70 credit against a 189.90
-    plan → clamped by `price − 1.00` to 188.90 → **a 30-day `max` for 1.00
+    bought 3× left 90 days → 90/30 × 89.90 = 269.70 credit against a 289.90
+    plan → clamped by `price − 1.00` to 288.90 → **a 30-day `max` for 1.00
     SAR**, below the ~1.73 SAR the card network charges us to collect it."""
     db = FakeSupabase(sub("pro", source="payment", days_left=90))
     result = checkout(db, "max")
     assert result["credit_sar"] == "89.90"       # one period of pro, never three
-    assert result["amount_sar"] == "100.00"
-    assert result["amount_halalas"] == 10000
+    assert result["amount_sar"] == "200.00"
+    assert result["amount_halalas"] == 20000
 
 
 @pytest.mark.parametrize("days_left", [30, 45, 90, 365])
@@ -1515,7 +1515,7 @@ def test_stockpiled_credited_checkouts_grant_exactly_once(keys, monkeypatch):
         # A distinct provider id per payment, as Moyasar would issue.
         patch_fetch(
             monkeypatch,
-            {**moyasar_payment(pid, amount=11199), "id": str(uuid.uuid4())},
+            {**moyasar_payment(pid, amount=21199), "id": str(uuid.uuid4())},
         )
         results.append(run(ps.verify_payment(db, USER, MOYASAR_ID)))
 
@@ -1545,7 +1545,7 @@ def test_credit_revalidation_refuses_when_the_term_is_gone(keys, monkeypatch):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["user_subscriptions"] = []
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is False
@@ -1558,12 +1558,12 @@ def test_credit_revalidation_refuses_when_the_term_is_gone(keys, monkeypatch):
 
 
 def test_a_stale_quote_cannot_be_banked(keys, monkeypatch):
-    """Prod held a payable 100.00 SAR `max` quote for three days. Past the TTL
+    """Prod held a payable 200.00 SAR `max` quote for three days. Past the TTL
     the discount is not honoured on its own word."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=25))
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is False and result["review_reason"] == "quote_expired"
@@ -1577,7 +1577,7 @@ def test_an_honest_upgrade_still_grants(keys, monkeypatch):
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["payment_transactions"][0]["created_at"] = _iso(_now() - timedelta(hours=3))
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     result = run(ps.verify_payment(db, USER, MOYASAR_ID))
     assert result["granted"] is True
@@ -1595,7 +1595,7 @@ def test_a_credited_upgrade_is_idempotent_across_both_paths(keys, monkeypatch):
     it, exactly as it stops grant_plan."""
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     first = run(ps.verify_payment(db, USER, MOYASAR_ID))
     second = run(ps.handle_webhook_event(db, _event(pid)))
@@ -1610,8 +1610,8 @@ def test_a_price_cut_between_quote_and_payment_still_grants(keys, monkeypatch):
     pid = checkout(db, "max")["payment_id"]
     for plan in db.tables["plans"]:
         if plan["plan_id"] == "max":
-            plan["price_sar"] = "149.90"
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+            plan["price_sar"] = "249.90"
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
 
     assert run(ps.verify_payment(db, USER, MOYASAR_ID))["granted"] is True
 
@@ -1623,14 +1623,14 @@ def test_a_held_payment_stays_refundable_by_the_customer(keys, monkeypatch, prov
     db = FakeSupabase(sub("pro", source="payment", days_left=26))
     pid = checkout(db, "max")["payment_id"]
     db.tables["user_subscriptions"] = []
-    patch_fetch(monkeypatch, moyasar_payment(pid, amount=11199))
+    patch_fetch(monkeypatch, moyasar_payment(pid, amount=21199))
     run(ps.verify_payment(db, USER, MOYASAR_ID))
 
     result = run(ps.refund_payment(db, USER, pid))
     assert result["status"] == "refunded"
     assert result["revoke_action"] == "not_fulfilled"
     assert result["revoked"] is True
-    assert provider_refunds == [(MOYASAR_ID, 11199 - 340)]   # legacy-fee fallback
+    assert provider_refunds == [(MOYASAR_ID, 21199 - 340)]   # legacy-fee fallback
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1639,9 +1639,9 @@ def test_a_held_payment_stays_refundable_by_the_customer(keys, monkeypatch, prov
 
 
 def _ladder(db):
-    """basic → pro → max: 189.90 paid across three rungs, each upgrade priced
+    """basic → pro → max: 289.90 paid across three rungs, each upgrade priced
     against the one below it. Audit logs from prod confirm the shape
-    (`checkout_initiated plan=max from_plan=pro credit=89.90 amount=100.00`)."""
+    (`checkout_initiated plan=max from_plan=pro credit=89.90 amount=200.00`)."""
     basic = paid_row(
         db, plan_id="basic", amount="49.90", upgrade_credit_sar="0.00",
         created_at=_iso(_now() - timedelta(hours=3)),
@@ -1656,7 +1656,7 @@ def _ladder(db):
         fulfilled_at=_iso(_now() - timedelta(hours=2)),
     )
     top = paid_row(
-        db, plan_id="max", amount="100.00", upgrade_credit_sar="89.90",
+        db, plan_id="max", amount="200.00", upgrade_credit_sar="89.90",
         prior_plan_id="pro", prior_expires_at=_iso(_now() + timedelta(days=29)),
         created_at=_iso(_now() - timedelta(hours=1)),
         paid_at=_iso(_now() - timedelta(hours=1)),
@@ -1667,8 +1667,8 @@ def _ladder(db):
 
 def test_refund_of_a_superseded_payment_is_blocked(keys, provider_refunds):
     """EXPLOIT 2. Refunding the basic and the pro used to return 85.90 with both
-    hitting `plan_switched` — the subscription untouched, a 189.90 `max` term
-    standing for a net 104.00, full entitlement retained."""
+    hitting `plan_switched` — the subscription untouched, a 289.90 `max` term
+    standing for a net 204.00, full entitlement retained."""
     db = FakeSupabase(sub("max", source="payment", days_left=30))
     basic, pro, _top = _ladder(db)
 

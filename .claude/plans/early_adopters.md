@@ -30,7 +30,11 @@ price for the rest of their 90 days.
 |---|---|---|---|---|
 | basic | 49.90 | **39.90** | anyone, while seats remain | campaign closes |
 | pro | 89.90 | **49.90** | seat holders | 90 days from seat claim |
-| max | 189.90 | **99.90** | seat holders | 90 days from seat claim |
+| max | 289.90 | **99.90** | seat holders | 90 days from seat claim |
+
+> `max` list price rose 189.90 → **289.90** on 2026-08-29 (migration 147). The
+> promo amount was deliberately left at 99.90, so the seat holders' discount
+> WIDENED rather than moved — they were sold 99.90 and keep it.
 
 ---
 

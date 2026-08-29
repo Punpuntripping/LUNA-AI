@@ -196,7 +196,7 @@ def _refund_fee_halalas(row: dict) -> int:
 
     The provider fee is read from the stored ``raw_payload`` — the value
     Moyasar itself reported for the original charge — so mada vs Visa and
-    49.90 vs 189.90 are each recovered exactly, with no rate table to drift.
+    49.90 vs 289.90 are each recovered exactly, with no rate table to drift.
     """
     payload = row.get("raw_payload") or {}
     provider_fee = payload.get("fee") if isinstance(payload, dict) else None
@@ -450,7 +450,7 @@ def vat_split(charge_sar: Decimal) -> tuple[Decimal, Decimal]:
 
     Stamped once at initiation and stored (plan trap 8): displays read the
     stored numbers forever, so a future rate change cannot rewrite old rows.
-    49.90 → (43.39, 6.51) · 89.90 → (78.17, 11.73) · 189.90 → (165.13, 24.77).
+    49.90 → (43.39, 6.51) · 89.90 → (78.17, 11.73) · 289.90 → (252.09, 37.81).
     """
     charge = q2(charge_sar)
     net = q2(charge / (Decimal("1") + VAT_RATE))
@@ -1280,8 +1280,8 @@ def _is_superseded(row: dict, siblings: list[dict]) -> bool:
     subscription no longer holds the refunded payment's plan — subtracting days
     there would eat a plan the user still pays for. Correct in isolation, and
     the whole exploit: buy basic → upgrade pro (credit 49.90) → upgrade max
-    (credit 89.90) = 189.90 paid, then refund the basic and the pro. Both
-    no-op, 85.90 comes back, and a 189.90 `max` term stands for 104.00.
+    (credit 89.90) = 289.90 paid, then refund the basic and the pro. Both
+    no-op, 85.90 comes back, and a 289.90 `max` term stands for 204.00.
 
     The credit only ever came from a term an EARLIER payment funded, so the
     ladder is a stack and it has to unwind from the top. This predicate names
@@ -1502,7 +1502,7 @@ def _upgrade_credit(
 
     # Never negative, and never so large that the charge falls under Moyasar's
     # 1.00 SAR minimum. With the ratio clamped and downgrades blocked the
-    # ceiling cannot bind on today's catalog (max credit 89.90 < 189.90) — but
+    # ceiling cannot bind on today's catalog (max credit 89.90 < 289.90) — but
     # it BOUND before the clamp existed (that is the 1.00 SAR `max` above), so
     # it stays as the second wall rather than as a comment claiming it is idle.
     ceiling = new_price - MIN_CHARGE_SAR

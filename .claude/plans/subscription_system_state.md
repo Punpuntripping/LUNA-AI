@@ -50,14 +50,27 @@ feature not in the plan** · a per-user `*_override` beats the plan value.
 
 ## 4. Plan catalog (live values)
 
+Re-read from prod 2026-08-29 (`select * from plans`), so this table is the
+query result, not a remembered one.
+
 | plan_id | name_ar | SAR | billing | days | session | weekly | OCR/30d |
 |---|---|---|---|---|---|---|---|
-| `free` | المجانية | — | — | ∞ | 5 | 5 | 0 |
-| `basic` | الأساسية | 49 | one_time | 7 | 10 | 50 | 15 |
-| `pro` | الاحترافية | 89 | recurring_monthly | 30 | 15 | 75 | 40 |
-| `max` | القصوى | 189 | recurring_monthly | 30 | 50 | 250 | 200 |
-| `marketing_lawyer` | ترويجي | — | — | 7 | 15 | 76 | 20 |
+| `free` | المجانية | — | — | ∞ | ∞ | ∞ | 0 |
+| `basic` | الأساسية | 49.90 | one_time | 7 | 10 | 50 | 15 |
+| `pro` | الاحترافية | 89.90 | recurring_30d | 30 | 15 | 75 | 40 |
+| `max` | القصوى | 289.90 | recurring_30d | 30 | 75 | 375 | 500 |
+| `marketing_lawyer` | ترويجي | — | — | 7 | 15 | 74 | 20 |
 | `dev` | حساب مطوّر | — | — | 60 | ∞ | ∞ | ∞ |
+
+Three cells moved against the previous copy of this table, and only one of them
+was a repricing:
+* `max` — 189→**289.90**, session 50→**75**, weekly 250→**375**, OCR 200→**500**
+  (migration 147, 2026-08-29). Its promo price stays 99.90.
+* `free` — its session and weekly are **NULL**, not 5/5. Migration 129 replaced
+  both with a single 5-point rolling 30-day window (`points_monthly`), and this
+  table had never been updated. `∞` here means "window not read", with the
+  monthly window doing all the limiting.
+* `marketing_lawyer` — weekly is **74**, not 76.
 
 `price_sar` is the **server-authoritative** checkout amount (092). Checkout must
 read it from here — never accept an amount from the client.

@@ -583,7 +583,7 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         # The one case where granting would DESTROY something: the user
         # upgraded pro→max in the seconds between selection and this line.
         # grant_plan writes plan_id unconditionally, so granting the pro
-        # renewal now would silently downgrade a customer who just paid 189.90
+        # renewal now would silently downgrade a customer who just paid 289.90
         # — and neither they nor support would ever work out why. A term that
         # merely MOVED (they stacked an extension) is not a problem: grant_plan
         # stacks onto whatever expires_at says, which is correct.

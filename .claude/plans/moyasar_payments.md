@@ -29,7 +29,7 @@ accurate except §3, see below) and `.claude/plans/subscription_system_state.md`
 | Auto-renewal | **Wave 2**, via saved tokens + our own scheduler | Not in this plan's scope beyond not painting us into a corner |
 | Card storage | **Tokenization approved** (2026-08-03) — cards stored **at Moyasar**, never at Rayhan | Wave 2 confirmed; needs consent copy, cancel-renewal flow, and processor disclosure |
 | Trust claim | «جميع العمليات المالية تتم عبر مُيسّر» — **not** «لا نحفظ بطاقتك» | See Phase E for the exact defensible wording and what it may not say |
-| Prices | **49.90 / 89.90 / 189.90**, VAT-inclusive (15%) | Repriced 2026-08-03 (x.00 → x.99 → **x.90** final). Charge amount == `plans.price_sar`; both the DB and `lib/pricing.ts` change together |
+| Prices | **49.90 / 89.90 / 289.90**, VAT-inclusive (15%) | Repriced 2026-08-03 (x.00 → x.99 → **x.90** final); `max` 189.90 → **289.90** on 2026-08-29 (migration 147, promo left at 99.90). Charge amount == `plans.price_sar`; both the DB and `lib/pricing.ts` change together |
 | Refunds | **Refundable within 24 hours of purchase**, minus a **per-payment fee = provider fee + 1.15 + 0.50** (owner 2026-08-05; Moyasar confirmed the original txn fee is never returned AND a flat 1.15 refund-execution fee applies) | A refund must **revoke the granted term** — this settles the open question in `financial_integration.md` §4. The fee makes every refund a **partial** refund → credit-note VAT, see Phase B |
 | Payment methods | **Cards (mada/Visa/MC) + Apple Pay. No STC Pay** | Decision 2026-08-03; `methods: ['creditcard','applepay']` — re-adding STC Pay later is one line |
 | Upgrades | **Prorated charge** — `charge = new_price − (remaining_days/duration × old_price)` | Decision 2026-08-03 (settles §8.B.6). Credit only when `source='payment'`; refunding an upgrade restores the prior plan. Same-plan re-purchase stacks; downgrades blocked |
@@ -271,7 +271,7 @@ VAT split at 15%, inclusive:
 |---|---|---|---|---|
 | basic | 49.90 | 4990 | 43.39 | 6.51 |
 | pro | 89.90 | 8990 | 78.17 | 11.73 |
-| max | 189.90 | 18990 | 165.13 | 24.77 |
+| max | 289.90 | 28990 | 252.09 | 37.81 |
 
 **Refund deduction is PER PAYMENT** (owner 2026-08-05) — `provider fee +
 1.15 + 0.50`, read from `raw_payload.fee`, so it recovers exactly what Moyasar
@@ -281,7 +281,7 @@ kept for that card network and price. Illustrative (mada rates):
 |---|---|---|---|
 | basic 49.90 | 1.73 | 3.38 | 46.52 |
 | pro 89.90 | ~2.35 | ~4.00 | ~85.90 |
-| max 189.90 (Visa) | ~5.75 | ~7.40 | ~182.50 |
+| max 289.90 (Visa) | ~8.47 | ~10.12 | ~279.78 |
 
 Every refund is still *partial*, so each needs its own VAT split for the credit
 note — computed from the actual refunded amount at the time.
@@ -308,7 +308,7 @@ router, ~line 638). New `ErrorCode` members in `backend/app/errors.py`:
    if sub.source == 'payment' and sub.plan_id != new_plan and not expired:
        remaining_days = (sub.expires_at - now())          # fractional
        credit = round(remaining_days / old.duration_days * old.price_sar, 2)
-   charge = new.price_sar - credit                        # always > 0 here (max credit 89.90 < 189.90)
+   charge = new.price_sar - credit                        # always > 0 here (max credit 89.90 < 289.90)
    ```
    `source != 'payment'` (code/marketing/manual grants) earns **no credit** —
    otherwise promo codes convert into cash discounts. All server-side; the
@@ -446,6 +446,9 @@ receipts list in Settings. RLS already allows self-SELECT.
   (the `?next=` machinery from `project_anon_conversion_popup` already exists).
 - **`frontend/lib/pricing.ts`** — three changes: `price` becomes `٤٩٫٩٠` / `٨٩٫٩٠`
   / `١٨٩٫٩٠` (Arabic decimal separator `٫` U+066B, matching the `ar-EG` locale the
+  usage dialog formatted with at the time). ⚠ **BOTH HALVES ARE STALE:** the app
+  renders Latin digits only since the numerals policy, and `max` is 289.90 since
+  migration 147 — read this bullet as the 2026-08 record, not as the spec.
   usage dialog already formats with); `billingNote` for pro/max
   (`:59,73`) stops saying «تجديد تلقائي شهري»; add «شامل الضريبة» + the refund
   line.
@@ -532,7 +535,7 @@ flag check), and every decline code above should land as `failed` with no grant.
 9. **Refund attempt at 25h** → `PAYMENT_REFUND_WINDOW_CLOSED`, term untouched.
 10. **Stacking** — buy `pro` twice → term extends, does not reset.
 10b. **Prorated upgrade** — pro with N days left → buy max → charged exactly
-     `189.90 − round(N/30 × 89.90, 2)`; `user_subscriptions_live` shows max with
+     `289.90 − round(N/30 × 89.90, 2)`; `user_subscriptions_live` shows max with
      a fresh 30-day window.
 10c. **Upgrade refund restores** — refund the upgrade within 24h → user is back
      on pro with the *original* expiry, refunded `charge − 2.00`.

@@ -26,7 +26,8 @@ import { cn } from "@/lib/utils";
  *     deep_search median 3.96 p25–p75 3.19–4.61 → «3–5 نقاط»
  *
  * The per-plan counts are those medians divided into `plans.points_session` /
- * `points_weekly` (live values: basic 10/50 · pro 15/75 · max 50/250).
+ * `points_weekly` (live values: basic 10/50 · pro 15/75 · max 75/375 — max was
+ * raised from 50/250 by migration 147, 2026-08-29).
  *
  * `free` is deliberately NOT in that table any more (migration 129): it has no
  * session and no weekly limit at all, just 5 points per rolling 30 days. Its
@@ -132,10 +133,10 @@ const PLAN_ROWS: readonly PlanRow[] = [
   },
   {
     plan: "القصوى",
-    session: "50",
-    sessionRuns: "10–16",
-    weekly: "250",
-    weeklyRuns: "54–78",
+    session: "75",
+    sessionRuns: "16–23",
+    weekly: "375",
+    weeklyRuns: "81–117",
   },
 ] as const;
 

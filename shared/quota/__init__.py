@@ -403,7 +403,7 @@ async def _upgrade_options(
     * **strictly greater limit on the BLOCKING window** — offering a plan that
       does not raise the limit that blocked you is the same error as offering a
       downgrade. This is what makes ``marketing_lawyer`` fall out for free: on a
-      *session* block their 15 ties ``pro``'s 15, so only ``max`` (50) is
+      *session* block their 15 ties ``pro``'s 15, so only ``max`` (75) is
       offered; on a *weekly* block both ``pro`` and ``max`` clear it.
 
     NULL limits follow the module-wide convention — NULL = unlimited, so a
