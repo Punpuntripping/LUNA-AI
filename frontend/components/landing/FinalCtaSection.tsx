@@ -1,8 +1,14 @@
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, MessageCircle } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { PRIMARY_CTA_HREF, SUPPORT_EMAIL } from "./content";
+import {
+  PRIMARY_CTA_HREF,
+  SUPPORT_EMAIL,
+  SUPPORT_WHATSAPP,
+  SUPPORT_WHATSAPP_HREF,
+  SUPPORT_WHATSAPP_NOTE,
+} from "./content";
 
 /**
  * Closing call to action — early-adopter framing. Rayhan is in trial launch;
@@ -26,7 +32,8 @@ export function FinalCtaSection() {
             للمنصة.
           </p>
 
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          {/* flex-wrap: three pills no longer fit on one line at the sm break. */}
+          <div className="mt-8 flex flex-col flex-wrap items-center justify-center gap-3 sm:flex-row">
             <Link
               href={PRIMARY_CTA_HREF}
               className={cn(
@@ -37,6 +44,24 @@ export function FinalCtaSection() {
               انضمّ الآن
               <ArrowLeft className="h-4 w-4" />
             </Link>
+            {/* WhatsApp above the inbox — fastest channel first. Chat only, so
+                the «واتساب فقط» qualifier travels with the number everywhere. */}
+            <a
+              href={SUPPORT_WHATSAPP_HREF}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`تواصل معنا عبر واتساب على الرقم ${SUPPORT_WHATSAPP} — ${SUPPORT_WHATSAPP_NOTE}`}
+              className={cn(
+                buttonVariants({ variant: "outline", size: "lg" }),
+                "w-full gap-2 border-primary-foreground/30 bg-transparent text-base text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground sm:w-auto",
+              )}
+            >
+              <MessageCircle className="h-4 w-4 shrink-0" />
+              <span dir="ltr">{SUPPORT_WHATSAPP}</span>
+              <span className="text-sm opacity-80">
+                {SUPPORT_WHATSAPP_NOTE}
+              </span>
+            </a>
             <a
               href={`mailto:${SUPPORT_EMAIL}`}
               dir="ltr"

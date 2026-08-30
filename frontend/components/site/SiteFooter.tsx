@@ -1,7 +1,12 @@
 import Link from "next/link";
-import { Mail } from "lucide-react";
+import { Mail, MessageCircle } from "lucide-react";
 import { LEGAL_ROUTES } from "@/lib/legal";
-import { SUPPORT_EMAIL } from "@/components/landing/content";
+import {
+  SUPPORT_EMAIL,
+  SUPPORT_WHATSAPP,
+  SUPPORT_WHATSAPP_HREF,
+  SUPPORT_WHATSAPP_NOTE,
+} from "@/components/landing/content";
 
 /**
  * Full site footer for every public page (landing, /about_us, /audiences,
@@ -99,6 +104,19 @@ export function SiteFooter() {
               {link.label}
             </Link>
           ))}
+          {/* WhatsApp sits above the inbox: it is the fastest reply channel we
+              have. It is a chat line only — hence the «واتساب فقط» qualifier. */}
+          <a
+            href={SUPPORT_WHATSAPP_HREF}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`تواصل معنا عبر واتساب على الرقم ${SUPPORT_WHATSAPP} — ${SUPPORT_WHATSAPP_NOTE}`}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <MessageCircle className="h-3.5 w-3.5 shrink-0" />
+            <span dir="ltr">{SUPPORT_WHATSAPP}</span>
+            <span className="text-xs opacity-75">{SUPPORT_WHATSAPP_NOTE}</span>
+          </a>
           <a
             href={`mailto:${SUPPORT_EMAIL}`}
             className="inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"

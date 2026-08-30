@@ -26,6 +26,20 @@ export const PRIMARY_CTA_HREF = "/login";
 /** Support inbox used for early-access / activation-code requests. */
 export const SUPPORT_EMAIL = "support@rayhanai.com";
 
+/**
+ * Support line — **WhatsApp only**, it is not a callable phone number. Every
+ * surface that renders it must carry the «واتساب فقط» qualifier below so nobody
+ * tries to dial it, and must wrap the digits in `dir="ltr"` so the leading «+»
+ * stays on the left inside our RTL shell. Latin digits only (app-wide policy).
+ */
+export const SUPPORT_WHATSAPP = "+966552517086";
+
+/** Qualifier rendered next to the number — never show the number without it. */
+export const SUPPORT_WHATSAPP_NOTE = "واتساب فقط";
+
+/** wa.me wants the number bare: no «+», no spaces, no dashes. */
+export const SUPPORT_WHATSAPP_HREF = "https://wa.me/966552517086";
+
 // ---------------------------------------------------------------------------
 // Hero
 // ---------------------------------------------------------------------------
