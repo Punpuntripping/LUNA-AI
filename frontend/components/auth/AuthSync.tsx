@@ -7,6 +7,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
 import { isPublicPath } from "@/components/auth/AuthGuard";
 import { loginHref } from "@/lib/safe-next";
+import { rememberAuthIdentity } from "@/lib/auth-identity";
 
 /**
  * Cross-tab identity guard — fixes the account-mixing privacy leak.
@@ -48,6 +49,13 @@ export function AuthSync() {
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       const nextId = session?.user?.id ?? null;
 
+      // This subscription sees every session this tab ever holds, so it is the
+      // one place that can keep `lib/auth-identity` current for the OTHER two
+      // eject paths (AuthGuard, apiFetch's 401), which fire when the session is
+      // already gone. No-ops on SIGNED_OUT, which is what lets the eject below
+      // still name the account that just left.
+      rememberAuthIdentity(nextId);
+
       // First observation (mount / initial hydrate, or the user's own login on
       // this tab): just record who we are — no reset.
       if (boundUserId.current === null) {
@@ -70,6 +78,14 @@ export function AuthSync() {
         //     the signed-out variant; the content stays).
         //   - PRIVATE page: /login is the only correct destination, but carry
         //     the page as `?next=` so re-login returns the user here.
+        //
+        // ⚠ "here" is only correct for the account that just left. The page is
+        // this user's — `/chat/<their conversation>`, `/settings` — and handing
+        // it to whoever signs in next lands a stranger on a URL they do not own
+        // («المحادثة غير موجودة»). So the departing identity is captured BEFORE
+        // `boundUserId` is cleared and rides along as `?u=`; `LoginForm` and
+        // `/auth/callback` drop `next` unless the same account returns.
+        const departing = boundUserId.current;
         purge();
         boundUserId.current = null;
         if (isPublicPath(window.location.pathname)) {
@@ -78,6 +94,7 @@ export function AuthSync() {
           window.location.replace(
             loginHref(
               `${window.location.pathname}${window.location.search}`,
+              { identity: departing },
             ),
           );
         }

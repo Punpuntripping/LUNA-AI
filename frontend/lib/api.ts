@@ -60,6 +60,7 @@ import type {
 } from "@/types";
 import { supabase } from "@/lib/supabase";
 import { loginHref } from "@/lib/safe-next";
+import { getLastAuthIdentity } from "@/lib/auth-identity";
 // Access-tiers Phase C: the metered reference reveal answers with the SAME D14
 // 402 body as `/library/full/*`, so it reuses that module's defensive parser
 // rather than growing a second one that could drift from it.
@@ -132,10 +133,16 @@ let refreshPromise: Promise<string> | null = null;
 
 /** Hard-eject to /login, carrying the current page as `?next=` so re-login
  *  puts the user straight back. `loginHref` runs the value through `safeNext`,
- *  so a page outside the allowlist degrades to a plain `/login`. */
+ *  so a page outside the allowlist degrades to a plain `/login`.
+ *
+ *  The page belongs to the account whose token just failed to refresh, so the
+ *  return-to is stamped with that identity (`?u=`) and is honoured only if the
+ *  same account signs back in — otherwise the next account inherits this one's
+ *  URL and meets a 404 it cannot explain. */
 function ejectToLogin(): void {
   window.location.href = loginHref(
     `${window.location.pathname}${window.location.search}`,
+    { identity: getLastAuthIdentity() },
   );
 }
 

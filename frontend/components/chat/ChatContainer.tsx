@@ -1,14 +1,16 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { X, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ApiClientError } from "@/lib/api";
 import { useSendMessage } from "@/hooks/use-chat";
 import { useChatStore } from "@/stores/chat-store";
 import { useConversationDetail } from "@/hooks/use-conversations";
 import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { MessageList } from "@/components/chat/MessageList";
+import { ConversationNotFound } from "@/components/chat/ConversationNotFound";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { QuotaBanner } from "@/components/chat/QuotaBanner";
 import { ConversationHeaderMenu } from "@/components/chat/ConversationHeaderMenu";
@@ -27,8 +29,15 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   );
   const toggleWorkspace = useChatStore((s) => s.toggleWorkspace);
 
-  const { data: convData } = useConversationDetail(conversationId);
+  const { data: convData, error: convError } = useConversationDetail(conversationId);
   const conversation = convData?.conversation;
+  // 404 = this browser may not open this conversation: a stale route from an
+  // account switch, a bookmark into a deleted thread, someone else's link. The
+  // error used to be swallowed here, so the page rendered an empty thread with
+  // a working composer and the user only found out on send. The query client
+  // does not retry 401/403/404 (providers.tsx), so this is settled, not a blip.
+  const isNotFound =
+    convError instanceof ApiClientError && convError.status === 404;
   const caseId = conversation?.case_id ?? null;
   // Read-only shared demo conversation: the ⋯ menu drops star / rename /
   // delete (all refused server-side, all shared) for a per-user «إخفاء».
@@ -65,6 +74,20 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     },
     [retryMessage, conversationId, caseId]
   );
+
+  // The store's error is global, not per-conversation, so a «المحادثة غير
+  // موجودة» left over from a send that 404'd would otherwise follow the user
+  // into the next conversation they open. The panel below says it better.
+  useEffect(() => {
+    if (isNotFound) setError(null);
+  }, [isNotFound, setError]);
+
+  // Before the composer, deliberately: nothing typed here can ever be sent, and
+  // MessageList / ChatInput are not mounted at all — so no message fetch, no
+  // upload target, and no second 404 from the same dead id.
+  if (isNotFound) {
+    return <ConversationNotFound className={className} />;
+  }
 
   return (
     <div className={cn("flex flex-col h-full", className)}>

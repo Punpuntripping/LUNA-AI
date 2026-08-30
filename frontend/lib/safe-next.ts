@@ -177,10 +177,17 @@ export function safeNext(raw: string | null | undefined): string {
  *
  * `mode=register` opens the form directly on signup, so a button that says
  * «ابدأ الآن» means what it says (§7.7).
+ *
+ * `identity` is the Supabase auth uid of the session being ejected, passed by
+ * the three callers that know it — `AuthSync`'s SIGNED_OUT branch,
+ * `AuthGuard`'s redirect and `apiFetch`'s 401 handler. It ships as `?u=` so
+ * the consume side can refuse to hand this `next` to a DIFFERENT account; see
+ * `IDENTITY_PARAM`. Every other caller is an anonymous CTA with no identity to
+ * declare, and its URLs are unchanged.
  */
 export function loginHref(
   returnTo: string,
-  opts?: { register?: boolean },
+  opts?: { register?: boolean; identity?: string | null },
 ): string {
   const params = new URLSearchParams();
 
@@ -190,8 +197,114 @@ export function loginHref(
   const next = safeNext(returnTo);
   if (next !== DEFAULT_NEXT) params.set("next", next);
 
+  // Only meaningful alongside a surviving `next` — with nothing to return to
+  // there is nothing to scope, and the same "no dead parameters" rule applies.
+  if (next !== DEFAULT_NEXT && opts?.identity) {
+    const tag = identityTag(opts.identity);
+    if (tag) params.set(IDENTITY_PARAM, tag);
+  }
+
   if (opts?.register) params.set("mode", "register");
 
   const query = params.toString();
   return query ? `/login?${query}` : "/login";
+}
+
+/**
+ * `?u=` — the identity a `next` was minted FOR.
+ *
+ * `next` is minted per-PAGE but consumed per-SESSION, and those stop being the
+ * same thing the moment a DIFFERENT account signs in. Signing out of
+ * `/chat/<id>` produces `/login?next=/chat/<id>` (AuthSync's SIGNED_OUT
+ * branch); if the next account to authenticate in that browser is not the one
+ * that just left, it is deposited on a conversation it does not own and the
+ * app answers «المحادثة غير موجودة» with a live composer that 404s again on
+ * send. Observed in production on 2026-08-30: an account switch on
+ * `/chat/d0d29f71-2588-43e1-aca5-f809ecb4a577` — logout 14:04:30, login as the
+ * other account 14:04:38, `GET`+`POST` 404 at 14:04:40 and 14:06:17.
+ *
+ * So the eject paths that KNOW who is leaving stamp this parameter, and the
+ * consume side — `LoginForm` and `/auth/callback` — honours `next` only when
+ * the account that arrives is the account that left.
+ *
+ * A `next` minted with NO identity carries no `u` and is honoured exactly as
+ * before. That is every anonymous CTA on the public wings — the whole
+ * conversion funnel — and it is deliberately untouched.
+ */
+export const IDENTITY_PARAM = "u";
+
+/**
+ * A short, stable, NON-CRYPTOGRAPHIC fingerprint of a Supabase auth user id.
+ *
+ * The raw uid does not go in the URL: it lands in browser history and in the
+ * address bar of what may be a shared machine, and the only question being
+ * asked is "same account or not". FNV-1a/32 answers that in eight hex
+ * characters synchronously — this module is imported by BOTH a route handler
+ * and a client component and must stay dependency-free, which rules out the
+ * async `crypto.subtle` digest.
+ *
+ * ⚠ Not a security boundary. `u` decides NAVIGATION, never access: every
+ * target is still authorised server-side on every request, which is exactly
+ * what produced the 404 this parameter exists to stop the user from ever
+ * seeing. A forged or collided tag can only reproduce the pre-existing
+ * behaviour (the `next` is honoured); it can never widen `safeNext`'s
+ * allowlist or reach another account's data.
+ */
+export function identityTag(authUserId: string | null | undefined): string | null {
+  if (!authUserId) return null;
+
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < authUserId.length; i += 1) {
+    hash ^= authUserId.charCodeAt(i);
+    // × 16777619 (the 32-bit FNV prime), written as shifts because a plain
+    // multiply leaves the 32-bit range and silently loses the low bits through
+    // the float64 mantissa.
+    hash =
+      (hash +
+        ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>>
+      0;
+  }
+
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * True for a value shaped like `identityTag` output. Arriving values are
+ * attacker-controlled like `next` is, and `/auth/callback` echoes `u` back
+ * onto its `/login?...` error redirects — so junk is dropped at the door
+ * rather than carried around the auth round trip.
+ */
+export function isIdentityTag(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}$/.test(value);
+}
+
+/**
+ * Resolve where a freshly-authenticated session should land.
+ *
+ * The three cases, in the order they are decided:
+ *
+ *   1. `next` fails `safeNext` (unlisted, hostile, absent) → `/chat`, exactly
+ *      as before. The allowlist is still the outer gate and this function
+ *      never widens it.
+ *   2. No `u` was stamped → honour `next`. An anonymous reader returning to
+ *      the library page they were on has no previous identity to match, and
+ *      this is the path the conversion funnel takes.
+ *   3. `u` was stamped → honour `next` only for the SAME account. A different
+ *      account gets `/chat`, its own home, instead of a stranger's URL.
+ *
+ * `authUserId` is the Supabase auth uid of the session that just came into
+ * existence — read AFTER the exchange/sign-in, never before.
+ */
+export function nextForIdentity(
+  rawNext: string | null | undefined,
+  rawIdentity: string | null | undefined,
+  authUserId: string | null | undefined,
+): string {
+  const next = safeNext(rawNext);
+  if (next === DEFAULT_NEXT) return DEFAULT_NEXT;
+
+  if (!isIdentityTag(rawIdentity)) return next;
+
+  const tag = identityTag(authUserId);
+  return tag !== null && tag === rawIdentity ? next : DEFAULT_NEXT;
 }

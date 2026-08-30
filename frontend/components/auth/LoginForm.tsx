@@ -9,7 +9,13 @@ import { useAuthStore } from "@/stores/auth-store";
 import { ApiClientError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { LEGAL_VERSION, LEGAL_ROUTES } from "@/lib/legal";
-import { DEFAULT_NEXT, safeNext } from "@/lib/safe-next";
+import {
+  DEFAULT_NEXT,
+  IDENTITY_PARAM,
+  isIdentityTag,
+  nextForIdentity,
+  safeNext,
+} from "@/lib/safe-next";
 // The "G" mark moved to the shared quick-signup module so the gate surfaces
 // and this form render the identical logo.
 import { GoogleIcon } from "@/components/auth/GoogleQuickSignup";
@@ -55,6 +61,10 @@ export function LoginForm() {
   const [notice, setNotice] = useState<string | null>(null);
   // Raw `?next=` as it arrived; validated on every read via safeNext().
   const [nextParam, setNextParam] = useState<string | null>(null);
+  // `?u=` — the account the `next` above was minted for, when an eject path
+  // stamped one. Present ⇒ `next` is honoured only if THAT account is the one
+  // that signs in here; see IDENTITY_PARAM in lib/safe-next.
+  const [identityParam, setIdentityParam] = useState<string | null>(null);
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
   // Option B consent: registration is blocked until this is checked.
   const [agreedToTerms, setAgreedToTerms] = useState(false);
@@ -75,6 +85,11 @@ export function LoginForm() {
     const rawNext = params.get("next");
     if (rawNext) setNextParam(rawNext);
 
+    // Identity the target was minted for. Shape-checked here so a junk value
+    // is never re-echoed through the Google round trip below.
+    const rawIdentity = params.get(IDENTITY_PARAM);
+    if (isIdentityTag(rawIdentity)) setIdentityParam(rawIdentity);
+
     // «ابدأ الآن» promises signup, so open the form already on signup (§7.7).
     if (params.get("mode") === "register") setMode("register");
 
@@ -91,15 +106,20 @@ export function LoginForm() {
     // Surface OAuth failures redirected back from /auth/callback?error=oauth.
     if (params.get("error") === "oauth") {
       setServerError("تعذّر تسجيل الدخول عبر Google. حاول مرة أخرى.");
-      // Drop the error from the address bar but keep `next`, so a reload still
-      // returns the visitor to the page they came from.
+      // Drop the error from the address bar but keep `next` — and the `u` that
+      // scopes it, or a reload would silently un-scope the return-to and hand
+      // it to whichever account retries.
       const keep = safeNext(rawNext);
+      const keepIdentity =
+        keep !== DEFAULT_NEXT && isIdentityTag(rawIdentity)
+          ? `&${IDENTITY_PARAM}=${encodeURIComponent(rawIdentity)}`
+          : "";
       window.history.replaceState(
         null,
         "",
         keep === DEFAULT_NEXT
           ? window.location.pathname
-          : `${window.location.pathname}?next=${encodeURIComponent(keep)}`,
+          : `${window.location.pathname}?next=${encodeURIComponent(keep)}${keepIdentity}`,
       );
     }
   }, []);
@@ -118,6 +138,24 @@ export function LoginForm() {
   /** The same value, but undefined when it is just the default — keeps a dead
    *  `?next=/chat` off the OAuth and confirmation-email URLs. */
   const returnTo = nextTarget === DEFAULT_NEXT ? undefined : nextTarget;
+
+  /**
+   * Where THIS sign-in actually lands.
+   *
+   * Resolved after the session exists rather than at render, because a `?u=`
+   * stamped by an eject path can only be judged against the account that has
+   * just arrived. Without a `u` this is `nextTarget` unchanged — no extra work
+   * and no behaviour change for the anonymous funnel.
+   */
+  const resolveLanding = async (): Promise<string> => {
+    if (!identityParam) return nextTarget;
+    const { data } = await supabase.auth.getSession();
+    return nextForIdentity(
+      nextParam,
+      identityParam,
+      data.session?.user?.id ?? null,
+    );
+  };
 
   const toggleMode = () => {
     setMode((prev) => (prev === "login" ? "register" : "login"));
@@ -175,7 +213,7 @@ export function LoginForm() {
     try {
       if (mode === "login") {
         await login(email, password);
-        router.push(nextTarget);
+        router.push(await resolveLanding());
       } else {
         const { needsVerification } = await register(
           email,
@@ -183,12 +221,18 @@ export function LoginForm() {
           fullNameAr,
           LEGAL_VERSION,
           marketingOptIn,
-          returnTo,
+          // A registration creates an account that by definition is NOT the one
+          // the `next` was minted for, so a scoped return-to is dropped before
+          // it can ride into the confirmation email and outlive this page. An
+          // unscoped one — the anonymous reader converting off a library page —
+          // is passed through untouched, which is the funnel this parameter
+          // exists for.
+          identityParam ? undefined : returnTo,
         );
         if (needsVerification) {
           setRegistrationSuccess(true);
         } else {
-          router.push(nextTarget);
+          router.push(await resolveLanding());
         }
       }
     } catch (err) {
@@ -220,8 +264,20 @@ export function LoginForm() {
       options: {
         // `next` rides through Google and back into /auth/callback, which
         // re-validates it before redirecting (§7.2 path B).
+        //
+        // `u` rides with it, because "sign in with Google as a different
+        // account" is the very shape this scoping exists to catch — and the
+        // callback is the only place that learns the resulting uid. Without it
+        // the OAuth path would stay the one un-scoped way back onto a stranger's
+        // page.
         redirectTo: `${window.location.origin}/auth/callback${
-          returnTo ? `?next=${encodeURIComponent(returnTo)}` : ""
+          returnTo
+            ? `?next=${encodeURIComponent(returnTo)}${
+                identityParam
+                  ? `&${IDENTITY_PARAM}=${encodeURIComponent(identityParam)}`
+                  : ""
+              }`
+            : ""
         }`,
       },
     });

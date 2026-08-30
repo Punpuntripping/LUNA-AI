@@ -8,6 +8,7 @@ import { useSidebarStore } from "@/stores/sidebar-store";
 import { api, conversationsApi, formsApi } from "@/lib/api";
 import { consumePendingIntent } from "@/lib/post-login-intent";
 import { loginHref } from "@/lib/safe-next";
+import { getLastAuthIdentity } from "@/lib/auth-identity";
 import { storeClaimedAnswer } from "@/lib/library/ask";
 import { AccountDeletionPendingScreen } from "@/components/auth/AccountDeletionPendingScreen";
 
@@ -68,6 +69,7 @@ const PUBLIC_PREFIXES = [
   "/masking",
   "/promo-terms",
   "/about_us",
+  "/for-lawyers",
   "/vs-chatgpt",
   "/library",
   "/learn",
@@ -218,8 +220,15 @@ export function AuthGuard({ children }: Props) {
       // signed-in user and an anonymous visitor opening a deep link into the
       // app. `loginHref` validates via safeNext — an unlisted path degrades to
       // a plain /login, exactly today's behaviour.
+      //
+      // `identity` scopes that return-to to the account whose session just
+      // died, so a DIFFERENT account signing in is not dropped onto this
+      // user's page. Null for the anonymous deep-link case — nobody was signed
+      // in, there is no identity to match, and `next` is honoured as before.
       router.replace(
-        loginHref(pathname ? `${pathname}${window.location.search}` : ""),
+        loginHref(pathname ? `${pathname}${window.location.search}` : "", {
+          identity: getLastAuthIdentity(),
+        }),
       );
     }
   }, [isLoading, isAuthenticated, pathname, router, isPublic]);
