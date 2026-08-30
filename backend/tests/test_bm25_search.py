@@ -18,9 +18,11 @@ The load-bearing assertions, in the order they would hurt if they broke:
     it, and the gating apparatus this design deleted has to come back.
   * ``test_a_capped_total_is_reported_as_inexact`` — ``total_count`` is a count
     over the candidate set. Printing a ceiling as a total is lying to the reader.
-  * ``test_search_charges_the_same_keys_as_browsing`` — §5.4: a document found by
-    searching and the same document found by browsing are ONE item against the
-    budget, or search becomes a way to buy extra corpus reach.
+  * ``test_search_never_touches_the_item_budget`` — the INVERSE of what §5.4
+    originally specified. Search charged the budget until 2026-08-30, when the
+    owner removed it: search is navigation, and a reader at their hourly hub cap
+    must still be able to look something up. The test makes both budget entry
+    points explode, so a future re-import re-metering search fails loudly.
   * ``test_an_rpc_failure_is_an_arabic_error_not_an_empty_result`` — a search box
     that answers «لا توجد نتائج» when the index is down is indistinguishable from
     one that works.
@@ -35,9 +37,10 @@ from fastapi.testclient import TestClient
 
 from backend.app.api import search as search_api
 from backend.app.deps import get_current_user, get_supabase
-from backend.app.errors import ErrorCode, LunaHTTPException, luna_exception_handler
+from backend.app.errors import LunaHTTPException, luna_exception_handler
 from backend.app.models.search import SearchHit, SearchResponse
-from backend.app.services import case_service, search_service as ss
+from backend.app.services import case_service, library_budget_service as lb
+from backend.app.services import search_service as ss
 
 AUTH_ID = "auth-0000-1111"
 USER_ID = "11111111-2222-3333-4444-555555555555"
@@ -326,46 +329,37 @@ def test_page_size_is_clamped_not_refused() -> None:
 # ===========================================================================
 
 
-def test_search_charges_the_same_keys_as_browsing(monkeypatch) -> None:
-    """ONE item budget across browse and search. The keys are ``section:slug``, so
-    the same document reached two ways is charged once, under one name."""
-    charged: list[list[str]] = []
+def test_search_never_touches_the_item_budget(monkeypatch) -> None:
+    """Owner, 2026-08-30. Search charged ``section:slug`` keys against the item
+    budget until this date, so browsing to the hourly cap also disabled the search
+    box. It no longer does: nothing here debits the budget and nothing refuses on
+    it.
 
-    async def _spy(_request, _user_id, members, **_kw):
-        charged.append(list(members))
-        return len(members)
+    Both entry points are replaced with a raiser rather than a spy. The route no
+    longer imports the module at all, so a spy would assert nothing — but these
+    patch the SERVICE module's own attributes, which any future
+    ``library_budget.enforce_item_budget(...)`` call would resolve through at call
+    time. Re-metering search therefore fails here instead of shipping quietly."""
 
-    monkeypatch.setattr(search_api.library_budget, "charge_items", _spy)
+    async def _boom(*_args, **_kwargs):
+        raise AssertionError("/search must not touch the library item budget")
+
+    monkeypatch.setattr(lb, "enforce_item_budget", _boom)
+    monkeypatch.setattr(lb, "charge_items", _boom)
 
     fake = FakeSupabase([_hit("circular", 1), _hit("regulation", 2)])
     res = _client(fake, _User()).get("/api/v1/search", params={"q": "رخصة تجارية"})
     assert res.status_code == 200, res.text
+    assert len(res.json()["items"]) == 2
 
-    flat = [key for batch in charged for key in batch]
-    assert "circulars:circular-slug-1" in flat
-    assert "regulations:regulation-slug-2" in flat
-
-
-def test_the_budget_is_enforced_before_the_query(monkeypatch) -> None:
-    """A refusal must not cost a DB round-trip — the same ordering rule the hubs
-    follow (§2.2)."""
-
-    async def _refuse(_request, _user_id, _tier=None):
-        raise LunaHTTPException(
-            status_code=429, code=ErrorCode.RATE_LIMITED, detail="تم تجاوز الحد"
-        )
-
-    monkeypatch.setattr(search_api.library_budget, "enforce_item_budget", _refuse)
-
-    fake = FakeSupabase([_hit("regulation", 1)])
-    res = _client(fake, _User()).get("/api/v1/search", params={"q": "نظام"})
-    assert res.status_code == 429
-    assert fake.calls == []
+    # The import itself is gone, not merely unused — the structural half of the
+    # same claim, and what makes the raisers above unreachable today.
+    assert not hasattr(search_api, "library_budget")
 
 
 def test_search_responses_are_never_shared_cached() -> None:
-    """Every byte is per-caller (metered against their budget), so none of it may
-    reach an ISR or edge cache."""
+    """Every byte is per-caller (the route is auth-only), so none of it may reach
+    an ISR or edge cache."""
     res = _client(FakeSupabase(), _User()).get("/api/v1/search", params={"q": "نظام"})
     assert res.headers["cache-control"] == "private, no-store"
 

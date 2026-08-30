@@ -27,67 +27,55 @@ can come back. A hit is corpus + slug + title + facets; the card the frontend
 renders keeps using the static free excerpt it already renders. See
 ``backend/app/models/search.py``.
 
-METERING (§5.4). ``/search`` charges the per-user item budget exactly like a hub
-page, through the same ``section:slug`` keys — so a document found by searching
-and the same document found by browsing are ONE item, and a search is not a way
-to buy extra corpus reach. There is no search exemption.
+NOT METERED (owner, 2026-08-30). ``/search`` used to charge the per-user item
+budget through the same ``section:slug`` keys as a hub page, so that finding a
+document by searching and finding it by browsing were ONE item. That is gone:
+search is navigation, and a reader who has browsed to their hourly cap should
+still be able to look something up. Nothing here debits the budget and nothing
+here refuses on it.
+
+⚠ WHAT THAT GIVES UP. Search now yields slug + title for up to
+``MAX_RESULTS`` (200) rows per query with no per-user reach bound, so it is the
+cheapest enumeration surface on the authed side. The remaining bounds are the
+auth requirement, the ``_paging`` clamp, the middleware rate limiter, and the
+unlock ledger on the bytes themselves — the item budget is no longer one of
+them. Re-metering is a two-call restore — ``library_budget.enforce_item_budget``
+before the query and ``library_budget.charge_items`` per wing after it, plus the
+``user_id``/tier resolution both need. That code is DELETED rather than left
+commented out, so the live path reads clean; ``git show 3e01ef2`` is the
+reference implementation if it ever comes back.
 """
 from __future__ import annotations
 
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Response
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase
 from backend.app.models.search import SearchHit, SearchResponse
 from backend.app.services import (
     case_service,
-    library_budget_service as library_budget,
     library_items_service,
     search_service,
 )
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
-from shared.quota import library_state
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["search"])
 
-# Every byte here is per-caller (the results are metered against their budget,
-# and /search/mine is literally their own content), so nothing may be shared- or
-# ISR-cached. Same rule the shelf and the authed hub responses follow.
+# Every byte here is per-caller (both routes are auth-only, and /search/mine is
+# literally their own content), so nothing may be shared- or ISR-cached. Same
+# rule the shelf and the authed hub responses follow.
 _PRIVATE_CACHE_CONTROL = "private, no-store"
 
 # What ``/search/mine`` may be asked for. ``shelf`` is not a corpus — it is the
 # caller's مكتبتي rows, which live in the PUBLIC corpora but are scoped to what
 # they already opened or pinned (see ``library_items_service.search_shelf``).
 _MINE_SCOPES = ("blog", "template", "shelf")
-
-
-async def _budget_tier(supabase: SupabaseClient, user_id: Optional[str]) -> Optional[str]:
-    """The caller's item-budget row: ``"free"`` | ``"paid"`` (``None`` = unknown).
-
-    Mirrors ``public_library._hub_caller``'s tier half — locked accounts browse as
-    free, everything else is paid — so a document reached by searching is metered
-    on the same ladder row as the same document reached by browsing. Search is
-    auth-only, so ``"anon"`` is not reachable here.
-
-    One extra quota-RPC read per search, which the hubs already pay for their
-    depth cap. Failure returns ``None`` rather than guessing: ``item_budget_limit``
-    treats an unknown tier as paid, and refusing a search because a quota read
-    hiccuped is the worse failure of the two.
-    """
-    if not user_id:
-        return None
-    try:
-        state = await library_state(supabase, user_id)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Search: tier unresolved (%s) — budget falls back to paid", e)
-        return None
-    return "free" if state.locked or (state.effective_plan_id or "free") == "free" else "paid"
 
 
 def _paging(page: int, page_size: int) -> tuple[int, int, int]:
@@ -122,7 +110,6 @@ def _hit_models(hits: list[dict]) -> list[SearchHit]:
 
 @router.get("/search", response_model=SearchResponse)
 async def search_library(
-    request: Request,
     response: Response,
     q: str = Query(..., description="search text (>= 3 chars)"),
     corpus: Optional[list[str]] = Query(
@@ -151,8 +138,10 @@ async def search_library(
     ``total`` is the count over the RPC's candidate set and ``total_is_exact``
     says whether that is the true total (see ``SearchResponse``).
 
-    Yielded items are charged to the caller's library item budget, identically to
-    a hub page (§5.4) — 429 past it, before any query runs.
+    NOT metered against the library item budget (owner, 2026-08-30): yielded
+    items are neither charged nor refused on it, so a reader at their hourly hub
+    cap can still search. ``current_user`` stays required — the route is
+    auth-only — but nothing here reads the caller's tier any more.
     """
     response.headers["Cache-Control"] = _PRIVATE_CACHE_CONTROL
 
@@ -160,24 +149,10 @@ async def search_library(
     corpora = search_service.clean_corpora(corpus, search_service.PUBLIC_CORPORA)
     page, page_size, offset = _paging(page, page_size)
 
-    # The item budget is keyed on ``users.user_id`` (never ``auth_id``) — the id
-    # space ``library_items`` / ``library_unlocks`` join on. A caller whose row
-    # cannot be resolved is unmetered, exactly as on the hubs, and for the same
-    # reason: refusing a search because a profile lookup hiccuped is the worse
-    # failure of the two.
-    user_id: Optional[str] = None
-    try:
-        user_id = await run_db(case_service.get_user_id, supabase, current_user.auth_id)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Search: could not resolve user_id (%s) — unmetered", e)
-
-    tier = await _budget_tier(supabase, user_id)
-    await library_budget.enforce_item_budget(request, user_id, tier)
-
     if not corpora or offset >= search_service.MAX_RESULTS:
-        # Past the result ceiling there is nothing to serve and nothing to
-        # charge. Deep paging through search results is a traversal technique,
-        # not a reading pattern (§5.4) — an empty page is the honest answer.
+        # Past the result ceiling there is nothing to serve. Deep paging through
+        # search results is a traversal technique, not a reading pattern (§5.4) —
+        # an empty page is the honest answer.
         return SearchResponse(
             query=query, corpora=list(corpora), page=page, page_size=page_size
         )
@@ -192,20 +167,6 @@ async def search_library(
         limit=limit,
         offset=offset,
     )
-
-    # Charge per WING, so the keys collide with the hub keys for the same
-    # documents. ``item_keys`` skips slugless rows, which cannot happen here (the
-    # index only holds slugged rows) but costs nothing to keep honest.
-    for wing in corpora:
-        section = search_service.CORPUS_SECTION.get(wing)
-        if not section:
-            continue
-        rows = [{"slug": h.get("slug")} for h in result.hits if h.get("corpus") == wing]
-        if rows:
-            await library_budget.charge_items(
-                request, user_id, library_budget.item_keys(section, rows),
-                tier=tier, supabase=supabase,
-            )
 
     return SearchResponse(
         items=_hit_models(result.hits),
@@ -250,10 +211,12 @@ async def search_mine(
     (different IDF tables per corpus), which is acceptable for a "my stuff" list
     and is called out in ``SearchHit.score``.
 
-    NOT METERED, unlike ``/search``. The item budget bounds CORPUS REACH; blogs
-    and templates are the caller's own writing, and a shelf row is by definition
-    a document they already reached (that is how it got on the shelf). Charging
-    again would meter re-finding something you already own.
+    NOT METERED — and since 2026-08-30 neither is ``/search``, so this is no
+    longer the contrast it once was. The reason here is narrower and survives
+    that change: blogs and templates are the caller's own writing, and a shelf
+    row is by definition a document they already reached (that is how it got on
+    the shelf), so this route would have nothing to charge even if the item
+    budget still applied to search.
     """
     response.headers["Cache-Control"] = _PRIVATE_CACHE_CONTROL
 

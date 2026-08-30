@@ -77,8 +77,8 @@ working untouched. The one addition is ``Cache-Control: private, no-store``: thi
 and one of them parked in the edge cache would serve one user's exhausted budget
 to every visitor asking for that page.
 
-THE LADDER — free 36 / paid 96, per hour (owner, 2026-08-02)
-------------------------------------------------------------
+THE LADDER — free 36 / paid 120, per hour (owner, 2026-08-02; paid raised 2026-08-30)
+--------------------------------------------------------------------------------------
 ``navigation_enumeration_defence.md`` §3 specified a four-row ladder (anon 60 /
 free 300 / paid 500); ``cloudflare_navigation_hardening.md`` §2.2 collapsed it to
 one flat 500. Neither shipped as written — this module now carries the owner's
@@ -88,16 +88,21 @@ tightened ladder, keyed on ``_hub_caller``'s browse tier:
     ------  ---------  ----------------------  ---------
     anon    —          (never metered)         —
     free    36         4                       429
-    paid    96         ~10.7                   429
+    paid    120        ~13.3                   429
 
 **Anon is deliberately absent, not forgotten.** It is bounded by depth instead:
 ``ANON_HUB_MAX_PAGE = 1`` caps every navigation endpoint at page 1, so an
 anonymous caller's reach per filter signature is one page. Metering it here is
 not merely unnecessary, it is unsafe — see the PER-USER ONLY note above.
 
-⚠ The paid row is BELOW a straight 12-page walk (108 ids) — that is the point,
-and it was confirmed as intent. Re-visiting pages already seen stays free, so
-this bites on new reach only.
+⚠ The paid row was 96 until 2026-08-30, deliberately BELOW a straight 12-page
+walk (108 ids) so the cap bit before a paying reader could exhaust a hub. At 120
+it now sits ABOVE that walk: a paid caller can page a single filter signature to
+the end (12 pages, 108 ids) and still have 12 ids of new reach left. That is the
+owner's call, made to stop the meter from firing on ordinary browsing — the
+enumeration bound it used to provide now rests entirely on the unlock ledger and
+the edge. Re-visiting pages already seen stays free, so this bites on new reach
+only.
 
 TUNING
 ------
@@ -105,7 +110,7 @@ Env-configurable, read FRESH on every call so a change is an env flip rather tha
 a restart, and so tests can ``monkeypatch.setenv``:
 
     LIBRARY_USER_ITEM_BUDGET_FREE            default 36
-    LIBRARY_USER_ITEM_BUDGET_PAID            default 96
+    LIBRARY_USER_ITEM_BUDGET_PAID            default 120
     LIBRARY_USER_ITEM_BUDGET                 ALL-TIER override (<= 0 disables)
     LIBRARY_USER_ITEM_BUDGET_WINDOW_SECONDS  default 3600
     LIBRARY_YIELD_ALERT_THRESHOLD            default 200   (<= 0 disables §2.3)
@@ -175,7 +180,7 @@ ITEM_BUDGET_WINDOW_ENV = "LIBRARY_USER_ITEM_BUDGET_WINDOW_SECONDS"
 YIELD_ALERT_THRESHOLD_ENV = "LIBRARY_YIELD_ALERT_THRESHOLD"
 
 DEFAULT_FREE_ITEM_BUDGET = 36
-DEFAULT_PAID_ITEM_BUDGET = 96
+DEFAULT_PAID_ITEM_BUDGET = 120
 # Back-compat alias: the flat default before the ladder landed. It is the PAID
 # row because that is the limit an unknown tier resolves to (see
 # ``item_budget_limit``), so importers reading "the default" still read the

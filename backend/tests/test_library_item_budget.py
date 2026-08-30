@@ -579,31 +579,47 @@ def test_the_budget_can_be_disabled_entirely(stub_hubs, monkeypatch) -> None:
 
 
 def test_the_limit_and_window_are_env_configurable(monkeypatch) -> None:
-    assert lb.item_budget_limit() == 96
-    assert lb.item_budget_window_seconds() == 3600
-    monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "120")
-    monkeypatch.setenv(lb.ITEM_BUDGET_WINDOW_ENV, "900")
     assert lb.item_budget_limit() == 120
+    assert lb.item_budget_window_seconds() == 3600
+    # 150, NOT 120 — the override value must differ from the default, or this
+    # asserts nothing about the env var being read.
+    monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "150")
+    monkeypatch.setenv(lb.ITEM_BUDGET_WINDOW_ENV, "900")
+    assert lb.item_budget_limit() == 150
     assert lb.item_budget_window_seconds() == 900
     # Junk must never disable the control by accident.
     monkeypatch.setenv(lb.ITEM_BUDGET_ENV, "لا")
     monkeypatch.setenv(lb.ITEM_BUDGET_WINDOW_ENV, "-5")
-    assert lb.item_budget_limit() == 96
+    assert lb.item_budget_limit() == 120
     assert lb.item_budget_window_seconds() == 3600
 
 
 # ===========================================================================
-# 5b. THE LADDER — free 36 / paid 96 (owner, 2026-08-02)
+# 5b. THE LADDER — free 36 / paid 120 (owner, 2026-08-02; paid raised 2026-08-30)
 # ===========================================================================
 
 
-def test_the_ladder_is_free_36_paid_96() -> None:
+def test_the_ladder_is_free_36_paid_120() -> None:
     """The shipped rows. ``navigation_enumeration_defence.md`` §3 said 300/500
     and ``cloudflare_navigation_hardening.md`` §2.2 said a flat 500; neither is
     what runs. These two numbers are, and they are the owner's."""
     assert lb.item_budget_limit("free") == 36
-    assert lb.item_budget_limit("paid") == 96
-    assert (lb.DEFAULT_FREE_ITEM_BUDGET, lb.DEFAULT_PAID_ITEM_BUDGET) == (36, 96)
+    assert lb.item_budget_limit("paid") == 120
+    assert (lb.DEFAULT_FREE_ITEM_BUDGET, lb.DEFAULT_PAID_ITEM_BUDGET) == (36, 120)
+
+
+def test_the_paid_row_now_clears_a_full_twelve_page_walk() -> None:
+    """The inverted invariant, asserted so the flip is deliberate rather than a
+    number someone nudged. Until 2026-08-30 paid was 96 — BELOW the 108 ids of a
+    straight 12-page walk (9 cards/page), so the meter bit before a paying reader
+    could exhaust one filter signature. At 120 it clears that walk with room to
+    spare, which is the whole point of the raise: the cap should not fire on
+    ordinary browsing."""
+    twelve_page_walk = 12 * 9
+    assert twelve_page_walk == 108
+    assert lb.item_budget_limit("paid") > twelve_page_walk
+    # The free row is unchanged and still bites well inside its 3-page depth cap.
+    assert lb.item_budget_limit("free") < twelve_page_walk
 
 
 def test_an_unknown_tier_resolves_to_the_paid_row() -> None:
@@ -611,9 +627,9 @@ def test_an_unknown_tier_resolves_to_the_paid_row() -> None:
     that hiccups must not manufacture a 429 for a legitimate reader. Safe because
     the same failure hands the caller the FREE depth cap (3 pages = 27 ids), so
     they cannot walk far enough to exploit the wider budget."""
-    assert lb.item_budget_limit(None) == 96
-    assert lb.item_budget_limit("") == 96
-    assert lb.item_budget_limit("anon") == 96  # never reached: anon has no user_id
+    assert lb.item_budget_limit(None) == 120
+    assert lb.item_budget_limit("") == 120
+    assert lb.item_budget_limit("anon") == 120  # never reached: anon has no user_id
 
 
 def test_each_row_is_independently_tunable(monkeypatch) -> None:
