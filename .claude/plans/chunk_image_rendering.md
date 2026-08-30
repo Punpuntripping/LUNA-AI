@@ -1,20 +1,16 @@
 # Chunk images on the reading surface — the figure instead of the filename
 
-**Status:** **BUILT 2026-08-30, NOT DEPLOYED.** §2–§6 are implemented and green
-(`shared/library/chunk_images.py`, the four frontend surfaces, `library_service.py`
-+ `public_library.py`, `ura/enrich.py` + `source_viewer.py`; 2,355 backend+shared
-tests pass). **§7 steps 5–7 are OUTSTANDING** — nothing is committed, nothing is
-deployed, the 175 ISR pages are NOT purged, and no figure has yet been seen by a
-human eye or read back off a real agent turn in Logfire. The corpus side was
-already DONE and live (`public.chunk_images`, 5,347 rows, ingested 2026-08-29).
-**Written:** 2026-08-29 · every number below MEASURED against prod
-(`dwgghvxogtwyaxmbgjod`) on that date.
-**Revised 2026-08-30:** §3.5 added — the article surface moved from "out of
-scope" INTO v1 (the span survives the slice, so it resolves with the machinery
-§2 already has), and with it the reveal-map gap in §3.5.1, which bites every
-surface and not just this one. §3.2's call-site table was mislabelled and is
-corrected. §3.4, §6, §7, §8 and §9.7 follow. Its numbers are measured on the
-revision date.
+**Status:** **DEPLOYED 2026-08-30** — commit `5478194`, both services green,
+**175/175 ISR pages purged**, verified live: real `<figure>` + «الصورة N: {title}»
+on the reading surface and **0 raw filename leaks / 0 leaked `IMG_` tokens** on
+every page sampled. 2,355 backend+shared tests pass. Corpus side was already live
+(`public.chunk_images`, 5,347 rows, ingested 2026-08-29).
+⚠ Two consequences worth knowing before touching this again: the caption number
+is minted BEFORE the gate (stable across entitlement — a gated page can open on
+«الصورة 12»; do not "fix" it into contiguity), and figures are usually WITHHELD
+on gated previews because D10 charges the transcription against a ~600-char
+budget — that is the anti-scraping rule working, and it means the reader-facing
+payoff lands on open-tier pages and the paid reveal.
 **Corpus-side source of truth (other repo, `agentic_for_ministry`):**
 `ingestion/chunk_images/REFERENCE.md` (the consumer contract — read it first)
 and `ingestion/chunk_images/PLAN.md` (why it looks like this).
