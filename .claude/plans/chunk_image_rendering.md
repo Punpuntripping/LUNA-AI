@@ -1,7 +1,12 @@
 # Chunk images on the reading surface — the figure instead of the filename
 
-**Status:** **NOT STARTED.** The corpus side is DONE and live (`public.chunk_images`,
-5,347 rows, ingested 2026-08-29). Nothing in this repo reads it.
+**Status:** **BUILT 2026-08-30, NOT DEPLOYED.** §2–§6 are implemented and green
+(`shared/library/chunk_images.py`, the four frontend surfaces, `library_service.py`
++ `public_library.py`, `ura/enrich.py` + `source_viewer.py`; 2,355 backend+shared
+tests pass). **§7 steps 5–7 are OUTSTANDING** — nothing is committed, nothing is
+deployed, the 175 ISR pages are NOT purged, and no figure has yet been seen by a
+human eye or read back off a real agent turn in Logfire. The corpus side was
+already DONE and live (`public.chunk_images`, 5,347 rows, ingested 2026-08-29).
 **Written:** 2026-08-29 · every number below MEASURED against prod
 (`dwgghvxogtwyaxmbgjod`) on that date.
 **Revised 2026-08-30:** §3.5 added — the article surface moved from "out of
@@ -468,7 +473,7 @@ than in article-shaped أنظمة:
 
 Separately, **52 `seo_articles` rows across 10 regulations carry 217 raw spans
 in `article_text`** and print them as literal text today — but only **11 of
-those spans, on 8 مادة pages across 7 published أنظمة**, are reachable by a
+those spans, in 8 مواد across 7 published أنظمة**, are reachable by a
 reader (`دليل المهن والمنشآت البيطرية` alone is 128 spans and has no slug). §3.5
 resolves them.
 
@@ -489,7 +494,7 @@ Measured against live `article_text`:
 | resolve against their own chunk's `chunk_images` rows | **131** |
 | chunk carries no rows at all ⇒ D3 deletes them | 74 |
 | basename absent from a chunk that does have rows ⇒ D3 | 12 |
-| **on published pages** | **11 spans · 8 مادة pages · 7 أنظمة — 10 of the 11 resolve** |
+| **on published pages** | **11 spans · 8 مواد · 7 أنظمة — 10 of the 11 resolve** (as `art-N` sections; none of the 8 has a published مادة page — §7 step 5) |
 
 **D16 — the extracted `article_text` body renders CITED figures, and only cited
 ones.** Orphans (`origin='orphan'`) never reach the article surface. Their
@@ -574,9 +579,19 @@ fires **only when at least one fetched chunk has it set**, batched at `_ID_BATCH
 
 ```python
 #: `content` with every image span replaced by the figure's WORDS (D1/D13).
-#: Empty when the chunk carries no figure — 96.7% of the corpus.
+#: Empty when the chunk has nothing to fix — 96.7% of the corpus.
 chunk_agent_content: str = ""
 ```
+
+⚠ **The condition is "has something to fix", NOT "has a figure".** 656 chunks
+carry markup with **no row behind it** — 298 of those spans on published pages —
+so `has_images` is false there and nothing is resolved. Gating the substitution
+on a resolved figure leaves the aggregator reading `page_005_img_001.jpeg` on
+exactly those chunks, which is §0's bug rather than a smaller version of it. Fill
+it whenever the content carries a span **or** a figure resolved; `render_for_agent`
+deletes an unresolved span (D3) and returns `content` byte-identical when there
+is neither, so the 96.7% case still pays nothing and no extra query is issued —
+the span is in a string already in hand.
 
 ```python
 def for_aggregator(self, n=0) -> AggregatorItem:
@@ -797,9 +812,14 @@ plan the frontend goes first *because it fixes something on its own*.
 5. **Purge.** ISR pages call the backend at bake time, so nothing changes on the
    live site until a page re-bakes. Purge the **175** affected regulation pages
    through `POST /api/revalidate` (`x-revalidate-secret`, body
-   `{"path": "/regulations/<slug>"}`), **and the 8 مادة pages** — they are their
-   own ISR route (`/regulations/<slug>/<article_slug>`) and purging the document
-   does not purge them. The slugs are Arabic — **percent-encode
+   `{"path": "/regulations/<slug>"}`). **The مادة pages need nothing today** —
+   measured on the revision date: all 52 span-carrying مواد have a
+   `seo_articles.slug`, but **0 have the `seo_item_meta` article sidecar** that
+   makes a مادة page published, so the articles sitemap is empty and those 11
+   spans reach readers only as `art-N` sections on the document page. The day an
+   operator publishes مواد, `/regulations/<slug>/<article_slug>` becomes its own
+   ISR route and purging the document will NOT purge it. The slugs are Arabic —
+   **percent-encode
    them**, or the route returns a cheerful `{"revalidated": true}` for a path
    that was never purged. Mandatory, not optional: a Docker-cached bake serves
    the old payload for a full day.

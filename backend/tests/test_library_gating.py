@@ -2817,7 +2817,14 @@ def test_the_full_reveal_draws_every_grid() -> None:
 
 
 def test_an_empty_body_stays_empty() -> None:
-    """A genuinely empty chunk must not acquire text out of nowhere."""
+    """A genuinely empty chunk must not acquire text out of nowhere.
+
+    The dict grew two keys when figures shipped (`images`, `next_index` — plan
+    §3.2), and the assertion is still an EXACT equality on purpose: it is the one
+    place that pins the whole return shape, so a sixth key cannot be added
+    without a reviewer seeing it here. `next_index` comes back as the
+    `start_index` it went in with — an empty chunk consumes no numbers.
+    """
     out = ls._chunk_section_body(
         {"id": CHUNK_ID, "content": "", "content_display": None},
         ls._ChunkTableMap(),
@@ -2827,8 +2834,10 @@ def test_an_empty_body_stays_empty() -> None:
     assert out == {
         "text": "",
         "tables": {},
+        "images": {},
         "is_truncated": False,
         "hidden_placeholder_lines": 0,
+        "next_index": 1,
     }
 
 
@@ -2859,3 +2868,1365 @@ def test_a_rendered_grid_is_never_swapped_for_prose() -> None:
     assert set(out["tables"]) == {TBL_1}      # the grid the budget paid for
     assert TABLE_PLACEHOLDER.findall(out["text"]) == [TBL_1]
     assert out["is_truncated"] is True
+
+
+# ===========================================================================
+# 9. CHUNK IMAGES — the figure instead of the filename
+# `.claude/plans/chunk_image_rendering.md` §3.1 (D10/D11), §3.2, §3.3, §3.5
+# · §6 tests 11–16 and 21–25
+# ===========================================================================
+#
+# This one is a LIVE BUG, not a missed improvement. 1,839 chunks carry
+#
+#     ![img-1.jpeg](images/page_005_img_001.jpeg)
+#
+# and nothing in this repository has ever looked at it, so the library prints
+# that literal string as body text on **168 published أنظمة (1,956 spans)** and
+# 52 `seo_articles` rows print it inside a مادة. `public.chunk_images` (5,347
+# rows, ingested 2026-08-29) holds the pixels and the words behind each span.
+#
+# Two rules carry the whole section and they pull in opposite directions from
+# their table equivalents:
+#
+#   * D3 — an UNRESOLVED span emits NOTHING. For tables this was defensive (0 of
+#     24,511 tokens were unresolvable); here it FIRES — 656 chunks carry markup
+#     with no row at all, 298 of those spans on published pages. Deleting them IS
+#     the fix.
+#   * §3.2's fail-soft INVERTS. A failed `chunk_tables_v2` read falls back to
+#     `content` so the flattened tables survive; a failed `chunk_images` read
+#     must leave the spans unresolved so D3 removes them. A failed read may never
+#     leave `![img-1.jpeg](images/…)` on the page — that is the bug this feature
+#     exists to kill.
+
+from shared.config import get_settings                       # noqa: E402
+from shared.library.chunk_images import (                    # noqa: E402
+    IMAGE_SPAN,
+    IMAGE_TOKEN,
+    image_weight,
+    images_by_chunk,
+)
+
+# The bucket prefix the service builds every URL against (D7). Read from the
+# same place `library_service` reads it, so a project restore moves both.
+_IMAGE_BASE = get_settings().SUPABASE_URL
+
+# A real span, in the corpus's own shape (REFERENCE.md §3.1). 43 chars — the
+# live population is mean 41, p50 44, max 68.
+_BASENAME_1 = "page_005_img_001.jpeg"
+_BASENAME_2 = "page_012_img_003.png"
+_GHOST_BASENAME = "page_099_img_009.jpeg"      # the 656-chunk / 298-span case
+
+
+def _span(basename: str) -> str:
+    """``![img-1.jpeg](images/NAME)`` — the markup, exactly as `content` holds it."""
+    return f"![img-1.jpeg](images/{basename})"
+
+
+SPAN_1 = _span(_BASENAME_1)
+SPAN_2 = _span(_BASENAME_2)
+GHOST_SPAN = _span(_GHOST_BASENAME)
+
+# 12 chars. Short on purpose — `title` runs 4–77 with a mean of 31, and the
+# caption «الصورة {n}: {title}» is the ONLY figure text that reaches the DOM.
+_TITLE = "مخطط الترخيص"
+_DESC = (
+    "مخطط تدفق يوضح مراحل إصدار الترخيص بدءًا من تقديم الطلب عبر البوابة "
+    "الإلكترونية ومرورًا بالفحص الفني وانتهاءً بتسليم الرخصة للمنشأة."
+)
+
+
+def _image_row(
+    *,
+    basename: str = _BASENAME_1,
+    n: int = 1,
+    chunk_id: str = CHUNK_ID,
+    title: str = _TITLE,
+    description: str = _DESC,
+    transcript: str = "",
+    origin: str = "cited",
+    uploaded_at: Optional[str] = "2026-08-29T09:14:22.117+00:00",
+    reg: str = REG_ID,
+    ext: str = "jpeg",
+) -> dict[str, Any]:
+    """One ``chunk_images`` row, in the shape PostgREST actually returns.
+
+    ``origin``/``n``/``width``/``height`` sit inside ``meta`` because the batched
+    read (§3.2) selects ``meta`` whole. ``regulation_id`` is the column the read
+    filters on and is never used for resolution — that is
+    ``(chunk_id, source_basename)``, and only that (D4).
+    """
+    ref = f"17393_reg_029_img_{n}"
+    return {
+        "regulation_id": reg,
+        "chunk_id": chunk_id,
+        "image_ref": ref,
+        "source_basename": basename,
+        "title": title,
+        "description": description,
+        "transcribed_text": transcript,
+        "contains_text": bool(transcript),
+        # D7 — the URL is built from `storage_path`, never `image_ref + ".jpeg"`.
+        "storage_path": f"17393_reg_029/{ref}.{ext}",
+        "mime_type": "image/png" if ext == "png" else "image/jpeg",
+        "uploaded_at": uploaded_at,
+        "meta": {
+            "origin": origin,
+            "position_source": "exact" if origin == "cited" else "predicted",
+            "n": n,
+            "width": 1240,
+            "height": 880,
+        },
+    }
+
+
+def _orphan_row(*, n: int, **kwargs: Any) -> dict[str, Any]:
+    """A recovered figure with no markup to ride — 1,670 of the 5,347 rows."""
+    return _image_row(basename="", n=n, origin="orphan", **kwargs)
+
+
+def _image_map(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """``{chunk_id: [ChunkImage]}`` the way the service builds it. No DB."""
+    return images_by_chunk(rows, base_url=_IMAGE_BASE)
+
+
+def _weight_of(row: dict[str, Any]) -> int:
+    """D10's charge for one figure — READ from the shared module, never re-derived.
+
+    ``max(span_len, len(caption) + len(transcribed_text))``. Recomputing it here
+    would let this file and `chunk_images.image_weight` drift, which is the exact
+    failure `_table_charge`'s docstring warns about one module over.
+    """
+    images = _image_map([row])[str(row["chunk_id"])]
+    span_len = len(_span(row["source_basename"])) if row["source_basename"] else 0
+    return max(span_len, image_weight(images[0]))
+
+
+def _reg_with_images(
+    chunks: list[dict[str, Any]],
+    images: list[dict[str, Any]],
+    *,
+    tier: str = "gated",
+) -> FakeSupabase:
+    """A CHUNK-SURFACE نظام (holed index → flip) carrying real `chunk_images` rows."""
+    fake = _reg_with_tables(chunks, [], tier=tier)
+    fake.tables["chunk_images"] = images
+    return fake
+
+
+def _tokens(text: str) -> list[str]:
+    """Every whole-line ``IMG_{n}`` token in a rendered body, in order."""
+    return IMAGE_TOKEN.findall(text or "")
+
+
+def _figure_prose(section: dict[str, Any]) -> str:
+    """The section's prose with BOTH token shapes removed.
+
+    A token is not legal text — it is a placement instruction for the client —
+    so it comes out before anything is measured, exactly as `_prose_text` does
+    for `TBL_…`.
+    """
+    return IMAGE_TOKEN.sub("", TABLE_PLACEHOLDER.sub("", section["text"]))
+
+
+def _captions(section: dict[str, Any]) -> str:
+    """What a rendered figure actually puts in front of a reader.
+
+    The caption and nothing else: `description` is the `alt`, `transcribed_text`
+    is not on this wire at all (D9), and the pixels are not characters.
+    """
+    return "".join(
+        f"الصورة {img['n']}: {img['title']}"
+        for img in section["images"].values()
+    )
+
+
+def _figure_visible_chars(section: dict[str, Any]) -> int:
+    """Non-whitespace characters a reader gets: prose + every caption."""
+    return _nonspace(_figure_prose(section) + _captions(section))
+
+
+def _all_images(sections: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for section in sections:
+        merged.update(section.get("images") or {})
+    return merged
+
+
+def _all_tokens(sections: list[dict[str, Any]]) -> list[str]:
+    return [tok for section in sections for tok in _tokens(section.get("text") or "")]
+
+
+# ---- 9.1 §6.11 THE HEADLINE — the gate never serves more than today --------
+
+
+def test_the_gate_never_serves_more_than_today() -> None:
+    """Property-style over `free_chars` 0..len(body). Three claims, no tolerance.
+
+    A figure is charged ``max(span_len, len(caption) + len(transcribed_text))``
+    (D10) and renders only its caption, so it can never buy more exposure than
+    the 43 characters of dead markup it replaced. Stated three ways, because one
+    of them alone is checkable-but-weak:
+
+      (a) THE SECURITY CLAIM — what a reader actually gets (prose + captions)
+          never exceeds what the string cut serves them today, at ANY budget.
+          Today's number INCLUDES the raw span, because that is what the page
+          literally prints right now: 1,956 of them across 168 published أنظمة.
+      (b) THE SPEND CLAIM — the walk never hands out more weighted characters
+          than the budget, at any budget. This is the general form of «every
+          span's length is still charged».
+      (c) THE SPAN CLAIM, in its sharpest form — the same section as it would be
+          if that span had never been in the corpus at all always shows MORE
+          prose, by the span's own length give or take one word of cut-boundary
+          rounding. If a withheld figure rode free, the two would agree.
+
+    ⚠ Measured in non-whitespace characters, for the reason
+    `test_the_gate_is_neutral_to_tables` gives: `content` spends two newlines on
+    each side of a span where the projection re-emits one, so counting raw bytes
+    would turn an exposure assertion into a whitespace assay.
+
+    ⚠ AND «today» IS THE SAME WALK OVER THE SAME BODY WITH THE SPAN LEFT AS
+    PLAIN CHARACTERS — not `truncate_for_gate` on the raw string. The two differ
+    by up to one word at a budget that lands exactly on a segment boundary,
+    because `truncate_segments_for_gate` renders a segment WHOLE when it fits
+    while `truncate_for_gate` still cuts at the last whitespace strictly inside
+    its window. That is a property of the segment walk, it predates figures, it
+    is already asserted for prose by `test_the_walk_never_spends_more_than_its
+    _budget`, and comparing against it here would measure it instead of the
+    thing this test is about. The control charges the span exactly the
+    characters `content` spends on it, which is what the page prints today.
+    """
+    p, s = _run(10), _run(40)                       # 79 / 319 chars
+    transcript = _run(30)                           # 239 chars of photographed law
+    body = f"{p}\n\n{SPAN_1}\n\n{s}"
+    row = _image_row(transcript=transcript)
+    weight = _weight_of(row)
+
+    # The fixture is only interesting if the figure costs MORE than its markup —
+    # that is the whole of D10, and the p95 transcription is 755 chars.
+    assert weight > len(SPAN_1) and weight == len("الصورة ") + len(": ") + len(
+        _TITLE
+    ) + len(transcript)
+
+    chunk = _display_chunk(CHUNK_ID, content=body, content_display=None)
+    imap = _image_map([row])
+
+    # The sweep must reach both regimes or the claims below are about one of
+    # them: the figure has to RENDER at some budget and be WITHHELD at another.
+    rendered_at, withheld_at = 0, 0
+
+    # «Today», in the same units and through the same walk: the span left as the
+    # 43 plain characters the page currently prints.
+    todays_segments = [
+        {"kind": "text", "text": p},
+        {"kind": "text", "text": "x" * len(SPAN_1)},
+        {"kind": "text", "text": s},
+    ]
+
+    for budget in range(0, len(body) + 2):
+        out = ls._chunk_section_body(
+            chunk, ls._ChunkTableMap(), gate="gated", free_chars=budget, images=imap
+        )
+        today, _t, _i = ls._project(
+            ls.truncate_segments_for_gate(
+                todays_segments, "gated", free_chars=budget
+            )["visible_segments"]
+        )
+
+        rendered_at += bool(out["images"])
+        withheld_at += bool(out["is_truncated"] and not out["images"])
+
+        # (a) the security claim
+        assert _figure_visible_chars(out) <= _nonspace(today), budget
+        # …and its absolute form, which needs no comparand at all: a reader
+        # never gets more law than the budget bought, because prose is charged
+        # 1:1 and a figure is charged at least what it renders.
+        assert _figure_visible_chars(out) <= budget, budget
+        # …and no path may print the markup itself, ever (§6.12's rule, asserted
+        # here too because this sweep is the widest one in the file).
+        assert "](images/" not in out["text"], budget
+
+    assert rendered_at and withheld_at, (rendered_at, withheld_at)
+
+    # (b) the spend claim, over the segments themselves — the same shape
+    # `test_the_walk_never_spends_more_than_its_budget` uses for grids.
+    segments, _next = ls.place_images(split_body(body, {}), imap[CHUNK_ID])
+    assert [seg["kind"] for seg in segments] == ["text", "image", "text"]
+    for budget in range(0, len(body) + weight + 2):
+        cut = ls.truncate_segments_for_gate(segments, "gated", free_chars=budget)
+        spend = sum(
+            seg["weight"] if seg["kind"] == "image" else len(seg["text"])
+            for seg in cut["visible_segments"]
+        )
+        assert spend <= budget, (budget, spend)
+
+    # (c) THE SPAN CLAIM. `zero` is the identical section as it would be if that
+    # span had never been written into the corpus — same prose, same segments,
+    # same walk, one charge missing. The span's own characters are therefore the
+    # ONLY difference between the two, which is what makes this exact and
+    # boundary-proof: a smaller window over the same trailing text can never
+    # print more of it.
+    zero = [seg for seg in segments if seg["kind"] != "image"]
+    gaps = []
+    for budget in range(0, len(body) + weight + 2):
+        ours, _t, _i = ls._project(
+            ls.truncate_segments_for_gate(segments, "gated", free_chars=budget)[
+                "visible_segments"
+            ]
+        )
+        none_, _t, _i = ls._project(
+            ls.truncate_segments_for_gate(zero, "gated", free_chars=budget)[
+                "visible_segments"
+            ]
+        )
+        ours_prose = IMAGE_TOKEN.sub("", ours)
+        # In non-whitespace characters, for the reason above: a rendered figure
+        # puts a token on its own line, so the two projections spend a newline
+        # differently and nothing else.
+        assert _nonspace(ours_prose) <= _nonspace(none_), budget
+        withheld = not IMAGE_TOKEN.findall(ours)
+        if withheld and len(p) < len(ours_prose) < len(p) + len(s):
+            gaps.append(len(none_) - len(ours_prose))
+
+    # …and the SIZE of that difference is the span itself, not a rounding
+    # accident. Measured over every budget at which the figure was WITHHELD and
+    # both walks were cutting inside the trailing prose: ±8 is one whole `_W7`
+    # word, because both sides cut at the last whitespace inside their own
+    # window and the two windows differ by exactly the span plus the separator
+    # the walk charges for it.
+    assert gaps, "the sweep never withheld the figure mid-prose"
+    assert min(gaps) >= len(SPAN_1) - 8, min(gaps)
+    assert max(gaps) <= len(SPAN_1) + 8, max(gaps)
+
+
+def test_a_figure_is_charged_more_than_the_markup_it_replaced() -> None:
+    """D10 in one line, at the seam the gate reads it from.
+
+    The whole argument for weighing a figure is that it can carry a full
+    specification table in pixels: `transcribed_text` runs p50 31, p95 755, max
+    4,854 — a fines schedule photographed whole. Charging the 43-char span alone
+    would let an anonymous crawler collect one against a 600-char budget.
+    """
+    transcript = _run(80)                            # 639 chars
+    row = _image_row(transcript=transcript)
+    [image] = _image_map([row])[CHUNK_ID]
+    segments, _ = ls.place_images(
+        split_body(f"{_run(4)}\n\n{SPAN_1}", {}), [image]
+    )
+    figure = segments[-1]
+
+    assert figure["kind"] == "image"
+    assert figure["span_len"] == len(SPAN_1) == 43
+    assert figure["weight"] == _weight_of(row) > figure["span_len"]
+    # The gate READS the weight off the segment — it never recomputes it.
+    assert ls._image_charge(figure) == figure["weight"]
+    assert ls._image_span_len(figure) == len(SPAN_1)
+
+
+# ---- 9.2 §6.12 No raw markup, at any cut position -------------------------
+
+
+def test_no_raw_markup_survives_truncation() -> None:
+    """`](images/` never appears in `visible_text`, at ANY `free_chars`.
+
+    The mid-span-cut analogue of the tables plan's 191-chunk bug, plus D3's
+    live population in the same fixture: one span that RESOLVES and one that
+    never will (656 chunks carry markup with no row; 298 of those spans sit on
+    published pages, because the vision pass judged those figures decorative or
+    they sit in regulation front matter).
+
+    The fixture is not vacuous: a raw character slice of this body ships the
+    markup at plenty of budgets, and so does the whitespace-aware string cut —
+    a span contains no whitespace at all, so `truncate_for_gate` can only serve
+    it whole or not at all, and «whole» is exactly today's bug.
+    """
+    body = f"{_run(4)}\n\n{SPAN_1}\n\n{_run(6)}\n\n{GHOST_SPAN}\n\n{_run(5)}"
+    chunk = _display_chunk(CHUNK_ID, content=body, content_display=None)
+    imap = _image_map([_image_row(transcript=_run(5))])
+
+    # (a) the string cut really does ship the markup today …
+    assert any(
+        "](images/" in ls.truncate_for_gate(body, "gated", free_chars=b)["visible_text"]
+        for b in range(len(body) + 1)
+    ), "fixture does not reproduce the raw-markup preview"
+
+    for budget in range(0, len(body) + 2):
+        out = ls._chunk_section_body(
+            chunk, ls._ChunkTableMap(), gate="gated", free_chars=budget, images=imap
+        )
+        # (b) … and no budget lets any of it through here.
+        assert "](images/" not in out["text"], budget
+        assert "![" not in out["text"], budget
+        assert _GHOST_BASENAME not in out["text"], budget
+        # Every token that survived resolves — a token with no entry renders raw.
+        assert set(_tokens(out["text"])) == set(out["images"]), budget
+
+    # The ghost span is never resolvable, at any budget, so its figure exists on
+    # no surface at all — that IS the fix, not a fallback (D3).
+    everything = ls._chunk_section_body(
+        chunk, ls._ChunkTableMap(), gate="open", free_chars=0, images=imap
+    )
+    assert list(everything["images"]) == ["IMG_1"]
+    assert _tokens(everything["text"]) == ["IMG_1"]
+
+
+# ---- 9.3 §6.13/§6.14 D11 — the figure degrades, the section never does -----
+
+
+def test_a_withheld_figure_marks_truncated() -> None:
+    """A figure skipped for budget sets `is_truncated` even when no prose was cut.
+
+    Otherwise the page claims it showed everything while hiding a diagram — and
+    on a لائحة فنية the diagram IS the operative content. The prose is untouched
+    by the skip, which is the other half of D11: a section may never blank on
+    account of a figure.
+    """
+    p = _run(6)                                       # 47 chars
+    body = f"{p}\n\n{SPAN_1}"
+    row = _image_row(transcript=_run(60))             # weight ≫ any sane budget
+    out = ls._chunk_section_body(
+        _display_chunk(CHUNK_ID, content=body, content_display=None),
+        ls._ChunkTableMap(),
+        gate="gated",
+        # Room for every character of prose and for the span's own 43 — and
+        # nowhere near the figure's weight.
+        free_chars=len(p) + len(SPAN_1) + 10,
+        images=_image_map([row]),
+    )
+
+    assert out["text"] == p, out["text"]              # not one word was cut …
+    assert out["images"] == {}                        # … and the figure is gone
+    assert out["is_truncated"] is True                # …and the page says so.
+    assert out["hidden_placeholder_lines"] > 0
+
+
+def test_the_first_skip_closes_the_channel() -> None:
+    """D11's monotone rule: figures 1 and 2 render, 3 does not fit, 4 is skipped too.
+
+    Not an optimisation — it is what keeps «الصورة {N}» honest. Letting a later
+    small figure slip through after a big one was withheld prints «الصورة 1، 2،
+    4» around a hole the reader cannot see and cannot account for. Numbering
+    stays 1, 2.
+    """
+    small = "و"                                        # a 1-char caption tail
+    rows = [
+        _image_row(basename=f"page_00{i}_img_001.jpeg", n=i, title=small)
+        for i in (1, 2, 4)
+    ]
+    # Figure 3 is the wall: 1,000 chars of photographed schedule.
+    rows.insert(2, _image_row(basename="page_003_img_001.jpeg", n=3,
+                              transcript=_run(125)))
+    body = "\n\n".join(
+        [
+            _run(2),
+            _span("page_001_img_001.jpeg"),
+            _span("page_002_img_001.jpeg"),
+            _span("page_003_img_001.jpeg"),
+            _span("page_004_img_001.jpeg"),
+        ]
+    )
+    imap = _image_map(rows)
+
+    # A budget that clears the lead, both small figures, the SPAN the withheld
+    # third one is still charged, and — critically — the fourth figure too. Only
+    # the third does not fit. Anything tighter and this test passes for the
+    # wrong reason: figure 4 would have been refused on budget anyway.
+    cheap = _weight_of(rows[0])
+    budget = len(_run(2)) + 4 * (cheap + 2) + 10
+    assert cheap == len(SPAN_1)                     # no transcription to charge
+    assert budget < _weight_of(rows[2])             # …and the wall is unpayable
+
+    out = ls._chunk_section_body(
+        _display_chunk(CHUNK_ID, content=body, content_display=None),
+        ls._ChunkTableMap(),
+        gate="gated",
+        free_chars=budget,
+        images=imap,
+    )
+
+    assert _tokens(out["text"]) == ["IMG_1", "IMG_2"]
+    assert set(out["images"]) == {"IMG_1", "IMG_2"}
+    assert [img["n"] for img in out["images"].values()] == [1, 2]
+    assert out["is_truncated"] is True
+
+    # THE CHANNEL IS WHAT CLOSED, NOT THE BUDGET — and this is the half that
+    # makes the test mean something. Take the wall away and, at the SAME budget
+    # over the SAME body, the fourth figure renders: it always fitted.
+    without_the_wall = ls._chunk_section_body(
+        _display_chunk(CHUNK_ID, content=body, content_display=None),
+        ls._ChunkTableMap(),
+        gate="gated",
+        free_chars=budget,
+        images=_image_map([rows[0], rows[1], rows[3]]),
+    )
+    assert _tokens(without_the_wall["text"]) == ["IMG_1", "IMG_2", "IMG_3"]
+    # …and it is numbered 3 there, because the withheld wall never existed.
+    # With the wall present the sequence is 1, 2 and STOPS — never 1, 2, 4.
+    assert "IMG_4" not in out["text"] and "IMG_3" not in out["text"]
+
+
+def test_a_figure_never_blanks_its_section() -> None:
+    """The failure the tables plan spent a revision fixing, pre-empted here.
+
+    A figure has no prose it replaced to degrade into — the space it occupied was
+    43 characters of dead markup — so «degrade the figure» means degrade it to
+    nothing and let the prose keep filling the budget. Swept over every budget
+    that can hold a word.
+    """
+    body = f"{SPAN_1}\n\n{_run(80)}"                   # the figure comes FIRST
+    chunk = _display_chunk(CHUNK_ID, content=body, content_display=None)
+    imap = _image_map([_image_row(transcript=_run(200))])
+
+    for budget in range(20, 640):
+        out = ls._chunk_section_body(
+            chunk, ls._ChunkTableMap(), gate="gated", free_chars=budget, images=imap
+        )
+        assert out["text"].strip(), budget
+        assert out["images"] == {}, budget            # the figure never fits …
+        # … and the prose still fills the budget it was given.
+        assert len(out["text"]) > budget - len(SPAN_1) - 12, budget
+
+
+def test_the_plain_string_path_deletes_the_markup_it_cannot_render() -> None:
+    """`_strip_image_spans` — D3 for the paths that have nowhere to put a figure.
+
+    `_chunk_section_body`'s blank guard renders a PLAIN STRING, and a plain
+    string cannot carry an `IMG_{n}` token with a map beside it. So the spans are
+    DELETED rather than printed, and the whitespace they orphaned goes with them:
+    a span alone on its line takes its line, an inline one collapses to a single
+    space, and neither leaves a doubled paragraph break where the figure stood.
+
+    The guard itself is a backstop that `test_the_blank_guard_is_unreachable`
+    shows never fires — but «the markup must never reach a reader» is absolute,
+    so the branch that could print it is the one branch that may not be left
+    untested.
+    """
+    assert ls._strip_image_spans("") == ""
+    # Nothing to do ⇒ byte-identical, no allocation, the 96.7% case.
+    plain = "المادة الأولى: نص بلا صور."
+    assert ls._strip_image_spans(plain) is plain
+
+    whole_line = f"قبل\n\n{SPAN_1}\n\nبعد"
+    assert ls._strip_image_spans(whole_line) == "قبل\n\nبعد"
+
+    # The 47-span case: the sentence survives, with ONE space where the span was.
+    inline = f"يُرخَّص {SPAN_1} وفق المخطط."
+    assert ls._strip_image_spans(inline) == "يُرخَّص وفق المخطط."
+
+    for shape in (whole_line, inline, SPAN_1, f"{SPAN_1}{GHOST_SPAN}"):
+        assert "](images/" not in ls._strip_image_spans(shape)
+
+
+# ---- 9.4 §6.15 Fail-soft, and it INVERTS ----------------------------------
+
+
+def test_an_images_read_failure_degrades_to_prose() -> None:
+    """§3.2's inversion, and the one somebody will "fix" to match the neighbour.
+
+    A failed `chunk_tables_v2` read falls back to `content` so the flattened
+    tables survive. A failed `chunk_images` read must do the OPPOSITE — leave the
+    spans unresolved so D3 removes them — because the only other option is to
+    leave `![img-1.jpeg](images/…)` on the page, which is precisely today's bug.
+    An image read failure therefore degrades to *the prose without its figures*,
+    which is strictly better than what ships now.
+    """
+    lead, tail = _run(4), _run(5)
+    body = f"{lead}\n\n{SPAN_1}\n\n{tail}"
+    fake = _reg_with_images(
+        [_display_chunk(CHUNK_ID, content=body, content_display=None)],
+        [_image_row()],
+        tier="open",
+    )
+    fake.fail_tables = {"chunk_images"}
+
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+
+    # The statute survives, whole …
+    assert lead in section["text"] and tail in section["text"]
+    # … the figure does not …
+    assert section["images"] == {}
+    assert _tokens(section["text"]) == []
+    # … and NOT ONE CHARACTER of the markup reaches the reader.
+    assert "](images/" not in section["text"]
+    assert "img-1.jpeg" not in section["text"]
+    # The hole closes cleanly: no blank-line artifact where the span stood.
+    assert "\n\n\n" not in section["text"]
+
+
+def test_an_empty_images_read_is_not_a_failure() -> None:
+    """The other half: 96.7% of chunks carry no figure and must pay nothing.
+
+    46,831 of 48,429. Treating «no rows» as «read failed» would be invisible
+    here — both render the same prose — which is exactly why the fail-soft
+    direction had to be chosen so that the two ARE the same.
+    """
+    body = f"{_run(4)}\n\n{_run(6)}"
+    fake = _reg_with_images(
+        [_display_chunk(CHUNK_ID, content=body, content_display=None)], [], tier="open"
+    )
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    assert section["text"] == body
+    assert section["images"] == {}
+
+
+# ---- 9.5 §6.16 The counter's precondition ---------------------------------
+
+
+def test_sections_are_built_in_reading_order() -> None:
+    """«الصورة {N}» is render order, so the render must BE the reading order.
+
+    A counter threaded through an unordered loop numbers figures in whatever
+    order the rows arrived — and `position` is scoped PER STREAM, so a naive
+    sort interleaves a نظام's ملاحق with its body (7.5 above). The numbering is
+    therefore an independent check on the same ordering rule: body chunk 1, body
+    chunk 2, then the ملحق, and the figures numbered 1, 2, 3 in that order.
+    """
+    chunks = [
+        _display_chunk(
+            "cccccccc-0000-0000-0000-000000000001",
+            content=f"{_run(3)}\n\n{_span('page_001_img_001.jpeg')}",
+            content_display=None,
+            corpus="without_articles",
+            position=1,
+        ),
+        _display_chunk(
+            "cccccccc-0000-0000-0000-000000000002",
+            content=f"{_run(3)}\n\n{_span('page_002_img_001.jpeg')}",
+            content_display=None,
+            corpus="without_articles",
+            position=2,
+        ),
+        _display_chunk(
+            "dddddddd-0000-0000-0000-000000000001",
+            content=f"{_run(3)}\n\n{_span('page_003_img_001.jpeg')}",
+            content_display=None,
+            title="ملحق (1)",
+            corpus="appendix",
+            position=1,
+        ),
+    ]
+    rows = [
+        _image_row(basename="page_001_img_001.jpeg", n=1, chunk_id=chunks[0]["id"]),
+        _image_row(basename="page_002_img_001.jpeg", n=2, chunk_id=chunks[1]["id"]),
+        _image_row(basename="page_003_img_001.jpeg", n=3, chunk_id=chunks[2]["id"]),
+    ]
+    doc = ls.get_regulation_doc(_reg_with_images(chunks, rows, tier="open"), "nizam-test")
+    sections = doc["visible_sections"]
+
+    # The document renders body-before-appendix …
+    assert [s["id"] for s in sections] == [c["id"] for c in chunks]
+    # … and the counter follows it: one figure each, numbered 1, 2, 3.
+    assert [_tokens(s["text"]) for s in sections] == [["IMG_1"], ["IMG_2"], ["IMG_3"]]
+    assert [list(s["images"]) for s in sections] == [["IMG_1"], ["IMG_2"], ["IMG_3"]]
+    numbers = [img["n"] for s in sections for img in s["images"].values()]
+    assert numbers == sorted(numbers) == [1, 2, 3]
+    # Never `meta->>'n'` and never `n_in_chunk` — the corpus numbers are 1,2,3
+    # here by construction, so the real proof is 9.9's gap fixture.
+
+
+def test_a_chunk_fallback_article_threads_the_counter() -> None:
+    """The other branch of `_article_sections`, and it consumes numbers too.
+
+    A مادة whose extraction failed renders its whole owning CHUNK through
+    `_chunk_section_body` (plan §3.4: 2 chunks, 2 figures — free, because that
+    path already existed). If it does not hand `next_index` on, the مادة after
+    it renumbers over the top of what the fallback just printed.
+    """
+    fallback_chunk = "bbbbbbbb-0000-0000-0000-000000000001"
+    articles = [
+        {
+            "regulation_id": REG_ID, "article_no": 1, "article_label": "المادة 1",
+            "slug": "m-1", "chunk_id": fallback_chunk, "article_text": None,
+            "extraction_status": "pending",
+        },
+        _extracted_article(2, f"المادة 2\n\n{_span('page_009_img_001.jpeg')}"),
+    ]
+    fake = _article_surface_fake(
+        articles,
+        [
+            _image_row(basename="page_001_img_001.jpeg", n=1, chunk_id=fallback_chunk),
+            _image_row(basename="page_002_img_001.jpeg", n=2, chunk_id=fallback_chunk),
+            _image_row(basename="page_009_img_001.jpeg", n=3, chunk_id=ART_CHUNK),
+        ],
+        chunks=[
+            {
+                "id": fallback_chunk, "regulation_id": REG_ID, "title": "الفصل الأول",
+                "position": 1, "corpus": "with_articles",
+                "chunk_ref": "17393_reg_029_chunk_001",
+                "content": (
+                    f"نص المقطع\n\n{_span('page_001_img_001.jpeg')}"
+                    f"\n\n{_span('page_002_img_001.jpeg')}"
+                ),
+                "content_display": None, "has_images": True,
+            },
+            {
+                "id": ART_CHUNK, "regulation_id": REG_ID, "title": "الفصل الثاني",
+                "position": 2, "corpus": "with_articles",
+                "chunk_ref": "17393_reg_029_chunk_002",
+                "content": "نص", "content_display": None, "has_images": True,
+            },
+        ],
+    )
+    by_id = {s["id"]: s for s in ls.get_regulation_doc(fake, "nizam-test")["visible_sections"]}
+
+    assert _tokens(by_id["art-1"]["text"]) == ["IMG_1", "IMG_2"]
+    # …and the extracted مادة that follows continues from 3 — never back to 1.
+    assert _tokens(by_id["art-2"]["text"]) == ["IMG_3"]
+    assert by_id["art-2"]["images"]["IMG_3"]["n"] == 3
+
+
+def test_the_number_is_never_the_corpus_number() -> None:
+    """D8, at the service boundary: «الصورة 402» must be impossible.
+
+    `meta->>'n'` is the index within the REGULATION and **120 of 418 regulations
+    have gaps in it** — the 9,310 decorative figures were counted and then not
+    ingested. Worst case a نظام whose figures are numbered 1, 47, …, 414 for 31
+    actual images, a gap of **383**: a reader would see «الصورة 402» and conclude
+    401 figures were missing.
+    """
+    body = f"{_run(3)}\n\n{_span('page_001_img_001.jpeg')}\n\n" \
+           f"{_span('page_002_img_001.jpeg')}"
+    rows = [
+        _image_row(basename="page_001_img_001.jpeg", n=47),
+        _image_row(basename="page_002_img_001.jpeg", n=414),
+    ]
+    section = ls.get_regulation_doc(
+        _reg_with_images(
+            [_display_chunk(CHUNK_ID, content=body, content_display=None)],
+            rows,
+            tier="open",
+        ),
+        "nizam-test",
+    )["visible_sections"][0]
+
+    assert _tokens(section["text"]) == ["IMG_1", "IMG_2"]
+    assert [img["n"] for img in section["images"].values()] == [1, 2]
+    assert "IMG_47" not in section["text"] and "IMG_414" not in section["text"]
+    # The caption prints the render number, so the token and the label agree.
+    assert all(f"IMG_{img['n']}" in section["images"] for img in section["images"].values())
+
+
+# ---- 9.6 The wire ----------------------------------------------------------
+
+
+def test_the_response_model_declares_images() -> None:
+    """`response_model` strips undeclared keys — the `tables`/`kind` trap, again.
+
+    A service that emits `images` and a model that does not list it produces a
+    payload whose `text` still carries `IMG_{n}` token lines and whose figures
+    are GONE. The client strips a token it cannot resolve, so the page renders
+    prose with the diagram missing, silently, on all FOUR payloads (§3.5.1).
+    """
+    from backend.app.api.public_library import (
+        LibraryFullResponse,
+        LibraryFullSection,
+        RegulationArticleResponse,
+        VisibleSection,
+    )
+
+    for model in (
+        VisibleSection,
+        LibraryFullSection,
+        RegulationArticleResponse,
+        LibraryFullResponse,
+    ):
+        assert "images" in model.model_fields, model.__name__
+
+    # Absent ⇒ `{}`, never None: one shape on the wire.
+    assert VisibleSection(id="s", text="", is_truncated=False,
+                          hidden_placeholder_lines=0).images == {}
+    assert LibraryFullSection(id="s", text="").images == {}
+
+    payload = {
+        "image_ref": "17393_reg_029_img_5", "n": 3, "title": _TITLE,
+        "description": _DESC, "url": f"{_IMAGE_BASE}/x.png",
+        "width": 1240, "height": 880,
+    }
+    section = VisibleSection(
+        id="s", text="نص\nIMG_3", is_truncated=False, hidden_placeholder_lines=0,
+        images={"IMG_3": payload},
+    )
+    # The seven fields the frontend's `RegulationImage` declares — no more (a
+    # `transcribed_text` on this wire is a gate decision nobody has taken, D9)
+    # and no fewer (`width`/`height` reserve the box before the bytes land).
+    assert section.model_dump()["images"]["IMG_3"] == payload
+
+
+def test_the_token_set_and_the_image_map_agree() -> None:
+    """§3.3's invariant, both directions, at every budget.
+
+    A token with no entry renders RAW on a statute page. An entry with no token
+    renders NOWHERE and is dead weight baked into an ISR payload for 24h.
+    «tokens ⊆ images» alone would let the second through.
+    """
+    body = "\n\n".join(
+        [_run(4), _span("page_001_img_001.jpeg"), _run(7),
+         _span("page_002_img_001.jpeg"), _run(5)]
+    )
+    imap = _image_map(
+        [
+            _image_row(basename="page_001_img_001.jpeg", n=1, transcript=_run(3)),
+            _image_row(basename="page_002_img_001.jpeg", n=2),
+        ]
+    )
+    segments, _ = ls.place_images(split_body(body, {}), imap[CHUNK_ID])
+
+    for gate, budget in [("open", 600), ("gated", 0), ("gated", 40),
+                         ("gated", 200), ("gated", 10_000)]:
+        cut = ls.truncate_segments_for_gate(segments, gate, free_chars=budget)
+        text, tables, images = ls._project(cut["visible_segments"])
+        assert set(IMAGE_TOKEN.findall(text)) == set(images), (gate, budget)
+        assert tables == {}
+        for token, payload in images.items():
+            assert token == f"IMG_{payload['n']}"
+            assert payload["url"].startswith(_IMAGE_BASE)
+            assert set(payload) == {
+                "image_ref", "n", "title", "description", "url", "width", "height"
+            }
+    # `project_segments` keeps its two-value shape for every caller that has no
+    # figures to ship, and `project_images` is the same walk.
+    text, tables = ls.project_segments(segments)
+    assert set(IMAGE_TOKEN.findall(text)) == set(ls.project_images(segments))
+
+
+def test_a_figure_with_no_url_is_dropped_whole() -> None:
+    """D3 at the projection: half a figure is worse than none of it.
+
+    `images_by_chunk` already refuses to build a `ChunkImage` without
+    `storage_path` or `uploaded_at` — a URL for absent bytes is a 404 inside a
+    statute — so this branch is unreachable through `place_images` today. It is
+    code and not a comment for the same reason `project_segments` drops a table
+    missing its `html`: a segment that reached the projection half-built would
+    otherwise put an `IMG_{n}` line in `text` with nothing to resolve it, which
+    renders raw on a statute page.
+    """
+    hand_built = [
+        {"kind": "text", "text": "قبل"},
+        {"kind": "image", "image_ref": "r", "n": 1, "title": "ت", "description": "",
+         "url": "", "width": 0, "height": 0, "weight": 43, "span_len": 43},
+        {"kind": "image", "image_ref": "r2", "n": 0, "title": "ت", "description": "",
+         "url": f"{_IMAGE_BASE}/x.jpeg", "width": 1, "height": 1,
+         "weight": 43, "span_len": 43},
+        {"kind": "text", "text": "بعد"},
+    ]
+    text, tables, images = ls._project(hand_built)
+
+    assert images == {} and tables == {}
+    assert _tokens(text) == []
+    assert "IMG_" not in text
+    assert text == "قبل\nبعد"
+
+
+def test_a_figure_cited_twice_is_numbered_once() -> None:
+    """26 basenames appear more than once in one chunk — the same figure, twice.
+
+    It must not become «الصورة 3» and «الصورة 7». Both occurrences render, both
+    carry the same token, and the map holds ONE entry.
+    """
+    body = f"{_run(3)}\n\n{SPAN_1}\n\n{_run(3)}\n\n{SPAN_1}"
+    out = ls._chunk_section_body(
+        _display_chunk(CHUNK_ID, content=body, content_display=None),
+        ls._ChunkTableMap(),
+        gate="open",
+        free_chars=0,
+        images=_image_map([_image_row()]),
+    )
+    assert _tokens(out["text"]) == ["IMG_1", "IMG_1"]
+    assert list(out["images"]) == ["IMG_1"]
+    assert out["next_index"] == 2
+
+
+# ---- 9.7 §3.5 THE ARTICLE SURFACE (§6.21–§6.25) ---------------------------
+#
+# The tables plan stopped at the article surface. This one crosses it, and it
+# turned out to be cheap: `article_text` is cut out of `content` **and the span
+# is cut out with it** — which is precisely WHY 52 `seo_articles` rows print
+# filenames today — so `(chunk_id, source_basename)` resolves it with the
+# machinery §2 already has. 217 spans on 10 أنظمة, of which 11 spans on 8 مادة
+# pages across 7 published أنظمة are reachable by a reader.
+
+
+ART_CHUNK = "aaaaaaaa-1111-0000-0000-000000000001"
+
+
+def _extracted_article(
+    no: int, text: str, *, chunk_id: str = ART_CHUNK
+) -> dict[str, Any]:
+    return {
+        "regulation_id": REG_ID,
+        "article_no": no,
+        "article_label": f"المادة {no}",
+        "slug": f"m-{no}",
+        "chunk_id": chunk_id,
+        "article_text": text,
+        "extraction_status": "extracted",
+    }
+
+
+def _article_surface_fake(
+    articles: list[dict[str, Any]],
+    images: list[dict[str, Any]],
+    *,
+    tier: str = "open",
+    chunks: Optional[list[dict[str, Any]]] = None,
+) -> FakeSupabase:
+    """An ARTICLE-surface نظام whose مواد carry spans, plus the article sidecars.
+
+    Complete enough for BOTH `get_regulation_doc` and `get_regulation_article`:
+    the مادة page is opt-in and 404s without a published `seo_item_meta` row
+    (`content_type='article'`, `content_id='{reg}#{no}'`, slug set).
+    """
+    fake = _reg_doc_fake(articles, n_chunks=0)
+    fake.tables["seo_item_meta"][0]["seo_tier"] = tier
+    fake.tables["seo_item_meta"].extend(
+        {
+            "content_type": "article",
+            "content_id": f"{REG_ID}#{int(a['article_no'])}",
+            "slug": a["slug"],
+            "seo_tier": None,
+            "gate_override": None,
+        }
+        for a in articles
+    )
+    fake.tables["chunks_v2"] = chunks if chunks is not None else [
+        {
+            "id": ART_CHUNK,
+            "regulation_id": REG_ID,
+            "title": "الفصل الأول",
+            "position": 1,
+            "corpus": "with_articles",
+            "chunk_ref": "17393_reg_029_chunk_001",
+            "content": "نص المقطع كاملاً",
+            "content_display": None,
+            # D12's cost bound — the مادة page reads figures ONLY when this is
+            # set, on a boolean that is already on the row it reads for
+            # `context_title`.
+            "has_images": True,
+        }
+    ]
+    fake.tables["chunk_images"] = images
+    fake.tables["seo_sharh"] = []
+    return fake
+
+
+def test_an_extracted_article_resolves_its_own_span() -> None:
+    """§6.21 — the 11-published-span case, on both surfaces that render a مادة.
+
+    The row above was written as a hard bucket («the article surface is out of
+    scope») and re-measuring said otherwise: 131 of the 217 spans inside
+    `article_text` resolve against their own chunk's rows, keyed by
+    `seo_articles.chunk_id`. There is no «span matching inside the slice» to
+    invent — it is the same `(chunk_id, source_basename)` lookup.
+    """
+    text = f"المادة الأولى: يُرخَّص وفق المخطط الآتي.\n\n{SPAN_1}\n\nويُعمل به من تاريخه."
+    fake = _article_surface_fake([_extracted_article(1, text)], [_image_row(chunk_id=ART_CHUNK)])
+
+    # (a) the DOC page
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    assert section["id"] == "art-1"
+    assert _tokens(section["text"]) == ["IMG_1"]
+    assert set(section["images"]) == {"IMG_1"}
+    assert section["images"]["IMG_1"]["title"] == _TITLE
+    assert section["images"]["IMG_1"]["url"].endswith(".jpeg")
+    assert "](images/" not in section["text"]
+    # …and the prose around it is intact, in order. (The «المادة الأولى:»
+    # heading line is stripped by `_clean_article_display_text` before any of
+    # this — it duplicates the section title — so the body opens on the sentence
+    # that followed it.)
+    assert section["text"].startswith("يُرخَّص وفق المخطط")
+    assert section["text"].endswith("ويُعمل به من تاريخه.")
+    # §3.4's untouched limit: this plan reaches no table inside `article_text`.
+    assert section["tables"] == {}
+
+    # (b) the مادة PAGE, which reads its own figures for that ONE chunk
+    art = ls.get_regulation_article(fake, "nizam-test", "m-1")
+    assert art is not None
+    assert _tokens(art["text"]) == ["IMG_1"]
+    assert set(art["images"]) == {"IMG_1"}
+    assert art["images"]["IMG_1"]["image_ref"] == "17393_reg_029_img_1"
+    assert "](images/" not in art["text"]
+
+    # (c) the REVEAL of that one مادة — §3.5.1's fourth payload.
+    full = ls.get_full_article(fake, "nizam-test", "m-1")
+    assert _tokens(full["text"]) == ["IMG_1"]
+    assert set(full["images"]) == {"IMG_1"}
+
+
+def test_a_figureless_article_is_byte_for_byte_what_ships_today() -> None:
+    """D18 moved ~50k مواد onto a different code path. It must not move ONE of them.
+
+    The extracted branch used to cut a plain string with `truncate_for_gate`; it
+    now walks `split_body` → `place_images` → `truncate_segments_for_gate` so a
+    figure cannot ride the gate free. Every مادة that carries no span — 49,000-odd
+    of them — has to come out the other side unchanged: same text, same
+    `is_truncated`, same placeholder count, at every budget the surface uses.
+
+    Verified against live data on 2026-08-30 before this was written: 1,000 real
+    `article_text` rows × 3 (gate, budget) combinations, **3,000 identical, 0
+    differing**. This is that check in a form CI can run.
+
+    ⚠ ONE difference exists and it is named rather than hidden: `split_body`
+    trims BLANK LINES at the two ends of the body — its own long-standing rule,
+    which every chunk-shaped body has always been through — so a مادة that opens
+    or closes on an empty line loses it. Not one of the 1,000 live rows does
+    (`_clean_article_display_text` already collapses the leading whitespace it
+    leaves behind), the trimmed characters are whitespace and never law, and
+    `toLegalBlocks` renders a leading blank line as nothing either way. The
+    fixture below carries that shape ON PURPOSE, and the comparison normalises
+    exactly it and nothing else.
+    """
+
+    def blank_edges_trimmed(text: str) -> str:
+        lines = text.split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines)
+
+    bodies = [
+        "المادة الأولى: يُقصد بالألفاظ الآتية المعاني المبيّنة أمامها.",
+        "المادة الثانية: " + _run(120),
+        "\n\n" + _run(30) + "\n\n\n" + _run(90) + "\n\n",
+        _run(4),
+        "بند\n- أولاً: " + _run(60) + "\n- ثانياً: " + _run(60),
+        "",
+    ]
+    for body in bodies:
+        cleaned = ls._clean_article_display_text(body)
+        for gate, budget in (
+            ("gated", 600),
+            ("gated", ls.ARTICLE_FREE_CHARS),
+            ("gated", 0),
+            ("open", 0),
+        ):
+            old = ls.truncate_for_gate(cleaned, gate, free_chars=budget)
+            new = ls._article_body_cut(cleaned, [], gate=gate, free_chars=budget)
+            where = (repr(body[:24]), gate, budget)
+            assert new["text"] == blank_edges_trimmed(old["visible_text"]), where
+            assert new["is_truncated"] == old["is_truncated"], where
+            assert (
+                new["hidden_placeholder_lines"] == old["hidden_placeholder_lines"]
+            ), where
+            assert new["images"] == {}, where
+            # No figures placed ⇒ no numbers consumed, so a figure-free مادة
+            # cannot push the document's counter along.
+            assert new["next_index"] == 1, where
+
+
+def test_an_article_never_shows_an_orphan() -> None:
+    """§6.22 / D16 — an orphan's position is a claim a مادة cannot make.
+
+    1,670 figures have no markup at all: they were recovered from the source PDF
+    and placed by line provenance against the WHOLE CHUNK. A مادة is a fragment
+    of that chunk, so appending a figure to it because it was predicted
+    *somewhere in the chunk that contains it* is a placement claim the data does
+    not support. 26 published orphan figures on 25 extracted-article chunks stay
+    invisible — exactly as they are today — and that cost is on the record.
+    """
+    text = f"المادة الأولى: يُرخَّص وفق المخطط.\n\n{SPAN_1}"
+    fake = _article_surface_fake(
+        [_extracted_article(1, text)],
+        [
+            _image_row(chunk_id=ART_CHUNK, n=1),
+            _orphan_row(n=2, chunk_id=ART_CHUNK, title="صورة مرفقة"),
+            _orphan_row(n=3, chunk_id=ART_CHUNK, title="صورة أخرى"),
+        ],
+    )
+
+    section = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    art = ls.get_regulation_article(fake, "nizam-test", "m-1")
+
+    for surface in (section, art):
+        # The cited figure rides its own markup …
+        assert set(surface["images"]) == {"IMG_1"}
+        # … and neither orphan appears, on either surface.
+        assert "صورة مرفقة" not in str(surface["images"])
+        assert _tokens(surface["text"]) == ["IMG_1"]
+
+    # A CHUNK-shaped body is not a fragment, so it keeps its orphans — the same
+    # rows, rendered through `_chunk_section_body`.
+    whole_chunk = ls._chunk_section_body(
+        {"id": ART_CHUNK, "content": text, "content_display": None},
+        ls._ChunkTableMap(),
+        gate="open",
+        free_chars=0,
+        images=_image_map(
+            [
+                _image_row(chunk_id=ART_CHUNK, n=1),
+                _orphan_row(n=2, chunk_id=ART_CHUNK, title="صورة مرفقة"),
+            ]
+        ),
+    )
+    assert set(whole_chunk["images"]) == {"IMG_1", "IMG_2"}
+
+
+def test_the_article_gate_charges_the_figure() -> None:
+    """§6.23 / D18 — the extracted branch walks segments, so nothing rides free.
+
+    This one FAILS TODAY BY CONSTRUCTION: the branch used to cut a plain string
+    with `truncate_for_gate`, which charges the 43-char span and hands over
+    whatever the diagram carries in pixels. D10's whole argument — a photographed
+    penalty schedule against a 500-char budget — applies to a مادة unchanged.
+    """
+    lead = _run(10)                                    # 79 chars
+    tail = _run(90)                                    # 719 chars
+    text = f"{lead}\n\n{SPAN_1}\n\n{tail}"
+    row = _image_row(transcript=_run(30))              # weight 260
+    weight = _weight_of(row)
+    assert weight > ls.ARTICLE_FREE_CHARS // 2
+
+    fake = _article_surface_fake(
+        [_extracted_article(1, text)], [_image_row(chunk_id=ART_CHUNK, transcript=_run(30))],
+        tier="gated",
+    )
+    art = ls.get_regulation_article(fake, "nizam-test", "m-1")
+    assert art["gate"] == "gated"
+
+    # THE OLD BEHAVIOUR, for the size of the difference: a plain-string cut
+    # spends 43 on the span and buys the reader the rest of the budget in prose.
+    old = ls.truncate_for_gate(text, "gated", free_chars=ls.ARTICLE_FREE_CHARS)
+    assert "](images/" in old["visible_text"], "fixture does not reproduce the bug"
+
+    prose = _figure_prose(art)
+    # The figure is charged its WEIGHT, so the prose shrinks by about that much.
+    assert len(prose) < len(old["visible_text"]) - weight + len(SPAN_1) + 8
+    assert art["is_truncated"] is True
+    # …and whichever way the budget fell, the reader never gets more than today.
+    assert _nonspace(prose + _captions(art)) <= _nonspace(old["visible_text"])
+    assert "](images/" not in art["text"]
+
+
+def test_the_reveal_shows_every_figure_the_preview_showed() -> None:
+    """§6.24 — the ⚠ in §3.5.1, and the one this plan is most likely to ship broken.
+
+    `FullSection` declared `tables?` and nothing else, and `renderFull` passed
+    only `tables`. An article-surface reveal builds its ملاحق through
+    `_appendix_sections`, so its `text` carries `IMG_{n}` token lines the moment
+    §3 ships — with no map, the client's unconditional strip eats every one and
+    the reader who JUST UNLOCKED the document sees fewer figures than the
+    anonymous preview of the same page.
+
+    ⚠ ASSERTED OVER TOKENS AND MAP KEYS, NOT SECTION IDS.
+    `test_the_public_page_and_the_reveal_agree_on_the_appendix` compares ids and
+    sails straight through this bug.
+    """
+    text = f"المادة الأولى: انظر المخطط.\n\n{SPAN_1}"
+    apx = _display_chunk(
+        "dddddddd-0000-0000-0000-000000000001",
+        content=f"ملحق (1)\n\n{_span('page_020_img_002.jpeg')}",
+        content_display=None,
+        title="ملحق (1)",
+        corpus="appendix",
+    )
+    body_chunk = {
+        "id": ART_CHUNK, "regulation_id": REG_ID, "title": "الفصل الأول",
+        "position": 1, "corpus": "with_articles",
+        "chunk_ref": "17393_reg_029_chunk_001",
+        "content": "نص", "content_display": None, "has_images": True,
+    }
+    images = [
+        _image_row(chunk_id=ART_CHUNK, n=1),
+        _image_row(basename="page_020_img_002.jpeg", n=2, chunk_id=apx["id"],
+                   title="جدول الحدود", ext="png"),
+    ]
+    fake = _article_surface_fake(
+        [_extracted_article(1, text)], images, chunks=[body_chunk, apx]
+    )
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    full = ls.get_full_regulation(fake, "nizam-test")
+
+    doc_tokens, full_tokens = _all_tokens(doc["visible_sections"]), _all_tokens(full["sections"])
+    doc_images, full_images = _all_images(doc["visible_sections"]), _all_images(full["sections"])
+
+    # The fixture is not vacuous: a مادة figure AND a ملحق figure, on both.
+    assert doc_tokens == ["IMG_1", "IMG_2"], doc_tokens
+    # THE ASSERTION. The reveal shows every figure the preview showed …
+    assert full_tokens == doc_tokens
+    assert set(full_images) == set(doc_images) == set(doc_tokens)
+    # … resolved to the same bytes …
+    assert full_images == doc_images
+    # … and every token in the reveal resolves, section by section (a token with
+    # no entry is what the client strips).
+    for section in full["sections"]:
+        assert set(_tokens(section["text"])) == set(section["images"]), section["id"]
+    # The PNG kept its own extension — `image_ref + ".jpeg"` would 404 (D7).
+    assert full_images["IMG_2"]["url"].endswith(".png")
+
+
+def test_the_chunk_reveal_carries_its_figures() -> None:
+    """§3.5.1 on the OTHER reveal branch — the one 1,562 of the figures ride.
+
+    `get_full_regulation` has two branches and both build their own section
+    dicts. The article branch is covered by
+    `test_the_reveal_shows_every_figure_the_preview_showed`; this is the chunk
+    one, where the `without_articles` body stream lives — the لوائح فنية that
+    are mostly diagrams, and the bulk of what this feature exists to fix.
+
+    The نظام is GATED, which is the case that matters: the anon preview withholds
+    (its budget cannot hold the figure), and the reveal is the only place the
+    reader ever sees it. If the map is missing there, the person who paid gets a
+    naked token — or, once the client strips it, prose with a hole.
+    """
+    body = f"{_run(4)}\n\n{SPAN_1}\n\n{_run(60)}"
+    fake = _reg_with_images(
+        [_display_chunk(CHUNK_ID, content=body, content_display=None)],
+        [_image_row(transcript=_run(90))],       # weight ≫ the 600-char budget
+        tier="gated",
+    )
+
+    preview = ls.get_regulation_doc(fake, "nizam-test")["visible_sections"][0]
+    assert preview["images"] == {}                # withheld, as the gate should
+    assert preview["is_truncated"] is True
+    assert "](images/" not in preview["text"]
+
+    section = ls.get_full_regulation(fake, "nizam-test")["sections"][0]
+    assert _tokens(section["text"]) == ["IMG_1"]
+    # THE ASSERTION: the token resolves for the reader who paid.
+    assert set(section["images"]) == {"IMG_1"}
+    assert section["images"]["IMG_1"]["url"].startswith(_IMAGE_BASE)
+    assert "](images/" not in section["text"]
+
+
+def test_the_article_counter_is_page_scoped() -> None:
+    """§6.25 / D17 — the same figure is «الصورة 7» in the document, «الصورة 1» alone.
+
+    D8's rule is *render order within the render scope*, and a reader counting
+    figures on a مادة page can only count the ones on that page. The document
+    threads ONE number across its sections in reading order — مواد first, then
+    the ملاحق, which must keep counting from where the مواد stopped rather than
+    restarting at 1 on the same page.
+    """
+    spans = [f"page_{i:03d}_img_001.jpeg" for i in range(1, 9)]
+    articles = [
+        _extracted_article(1, "المادة 1\n\n" + "\n\n".join(_span(b) for b in spans[0:3])),
+        _extracted_article(2, "المادة 2\n\n" + "\n\n".join(_span(b) for b in spans[3:6])),
+        _extracted_article(3, "المادة 3\n\n" + _span(spans[6])),
+    ]
+    apx = _display_chunk(
+        "dddddddd-0000-0000-0000-000000000001",
+        content=f"ملحق (1)\n\n{_span(spans[7])}",
+        content_display=None,
+        title="ملحق (1)",
+        corpus="appendix",
+    )
+    body_chunk = {
+        "id": ART_CHUNK, "regulation_id": REG_ID, "title": "الفصل الأول",
+        "position": 1, "corpus": "with_articles",
+        "chunk_ref": "17393_reg_029_chunk_001",
+        "content": "نص", "content_display": None, "has_images": True,
+    }
+    images = [
+        _image_row(basename=b, n=i, chunk_id=(apx["id"] if i == 8 else ART_CHUNK))
+        for i, b in enumerate(spans, start=1)
+    ]
+    fake = _article_surface_fake(articles, images, chunks=[body_chunk, apx])
+
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    by_id = {s["id"]: s for s in doc["visible_sections"]}
+
+    # ONE numbering across the whole page, in reading order …
+    assert _tokens(by_id["art-1"]["text"]) == ["IMG_1", "IMG_2", "IMG_3"]
+    assert _tokens(by_id["art-2"]["text"]) == ["IMG_4", "IMG_5", "IMG_6"]
+    assert _tokens(by_id["art-3"]["text"]) == ["IMG_7"]
+    # … and the ملاحق keep counting from where the مواد stopped. Restarting here
+    # would print «الصورة 1» twice on one page.
+    assert _tokens(by_id["apx-1"]["text"]) == ["IMG_8"]
+    assert by_id["apx-1"]["images"]["IMG_8"]["n"] == 8
+
+    # THE SAME FIGURE, on its own page, is «الصورة 1» — D17.
+    art = ls.get_regulation_article(fake, "nizam-test", "m-3")
+    assert _tokens(art["text"]) == ["IMG_1"]
+    assert art["images"]["IMG_1"]["n"] == 1
+    assert (
+        art["images"]["IMG_1"]["image_ref"]
+        == by_id["art-3"]["images"]["IMG_7"]["image_ref"]
+    )
+    # …and the reveal of that مادة agrees with its own public page, not with the
+    # document's numbering.
+    full_art = ls.get_full_article(fake, "nizam-test", "m-3")
+    assert set(full_art["images"]) == {"IMG_1"}
+
+
+# ---- 9.8 The cost bound (D12) ---------------------------------------------
+
+
+def test_the_images_read_is_one_round_trip_per_document() -> None:
+    """ONE batched read filtered on `regulation_id` — never one per chunk.
+
+    Per-chunk would be 60 round trips on a chunk-surface نظام, at page-render
+    latency, for a payload the ISR bake keeps for 24 hours.
+    """
+    chunks = [
+        _display_chunk(
+            f"eeeeeeee-0000-0000-0000-{i:012d}",
+            content=f"{_run(3)}\n\n{SPAN_1}",
+            content_display=None,
+            position=i,
+        )
+        for i in (1, 2, 3)
+    ]
+    fake = _CountingSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[_bare_reg_row()],
+        seo_articles=_holed(232, 68),
+        chunks_v2=chunks,
+        chunk_images=[_image_row(chunk_id=chunks[0]["id"])],
+    )
+    ls.get_regulation_doc(fake, "nizam-test")
+    assert fake.tables_queried.count("chunk_images") == 1
+
+
+def test_an_all_extracted_regulation_with_no_span_never_reads_the_images_table() -> None:
+    """D12's cost bound on the article surface: no chunk body, no span, no query.
+
+    Only 175 of 1,689 published أنظمة carry a figure at all, and an extracted
+    مادة can only carry one if its own slice still holds the markup — 52 rows
+    corpus-wide — which is free to check in memory.
+    """
+    fake = _CountingSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[_bare_reg_row()],
+        seo_articles=_article_rows([1, 2, 3]),
+        chunks_v2=[],
+    )
+    ls.get_regulation_doc(fake, "nizam-test")
+    assert "chunk_images" not in fake.tables_queried
+
+
+def test_a_span_inside_an_extracted_article_forces_the_read() -> None:
+    """The other half of that bound: a مادة carrying markup MUST be resolved.
+
+    This is the whole of §3.5 — 52 rows print filenames today precisely because
+    the span survived the slice, so «no chunk-shaped body» must not mean «no
+    figures».
+    """
+    fake = _CountingSupabase(
+        seo_item_meta=[{"content_type": "regulation", "content_id": REG_ID,
+                        "slug": "nizam-test", "seo_tier": "open",
+                        "gate_override": None}],
+        regulations_v2=[_bare_reg_row()],
+        seo_articles=[_extracted_article(1, f"المادة 1\n\n{SPAN_1}")],
+        chunks_v2=[],
+        chunk_images=[_image_row(chunk_id=ART_CHUNK)],
+    )
+    doc = ls.get_regulation_doc(fake, "nizam-test")
+    assert fake.tables_queried.count("chunk_images") == 1
+    assert set(doc["visible_sections"][0]["images"]) == {"IMG_1"}
+
+
+def test_a_mada_page_with_no_figures_never_reads_the_images_table() -> None:
+    """`has_images` is the bound on the مادة surface — 96.7% of chunks are false."""
+    fake = _article_surface_fake(
+        [_extracted_article(1, "المادة الأولى: نص بلا صور.")], []
+    )
+    counting = _CountingSupabase(**{k: list(v) for k, v in fake.tables.items()})
+    counting.tables["chunks_v2"][0]["has_images"] = False
+    art = ls.get_regulation_article(counting, "nizam-test", "m-1")
+    assert art is not None
+    assert art["images"] == {}
+    assert "chunk_images" not in counting.tables_queried

@@ -351,6 +351,16 @@ export default async function RegulationDocPage({ params }: PageProps) {
                           // shipped `tables` — `visibleText` is then the prose
                           // body, which carries no token to leave dangling.
                           tables={section.tables}
+                          // The diagram where the ingestion left a filename —
+                          // «الصورة {n}» keyed by the `IMG_{n}` token in
+                          // `visibleText`. Undefined on any page baked before
+                          // the backend shipped `images`, in which case
+                          // `visibleText` still carries the raw
+                          // `![…](images/…)` markup — which `toLegalBlocks`
+                          // strips unconditionally, so an old bake reads as
+                          // prose without its figures instead of printing
+                          // `page_005_img_001.jpeg` at a reader.
+                          images={section.images}
                           dedupeHeading={section.title}
                           // When the document has a trailing hidden-section CTA
                           // card, every per-section gate renders bars-only so

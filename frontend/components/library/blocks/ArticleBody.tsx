@@ -27,6 +27,18 @@ import type { ArticleBodyProps } from "@/types/library";
  * baked before the backend shipped this forces — the placeholder branch does
  * not run at all and the body renders exactly as it did before.
  *
+ * `images` (plain only): rendered figures keyed by the `IMG_{n}` token that
+ * stands in for each one inside `visibleText`, so a نظام's diagrams render as
+ * diagrams instead of the filename the corpus stores. Same "unresolved renders
+ * NOTHING" rule as `tables`.
+ *
+ * ⚠ Omitting `images` costs you the FIGURES; it does not print a filename. The
+ * raw `![…](images/…)` markup is stripped by `toLegalBlocks` unconditionally,
+ * for every caller, map or no map — which is what stops 168 published أنظمة
+ * printing `page_005_img_001.jpeg` as body text. The five non-regulation callers
+ * (circulars, forms, judgments, guides, `GateBanner`) pass nothing here and are
+ * unaffected: those wings carry no image spans at all.
+ *
  * `dedupeHeading` (plain only): when the FIRST rendered block is a heading or
  * clause label that duplicates this value (colon/whitespace-insensitive), it is
  * dropped — used where a styled section `<h2>` already renders the same title
@@ -52,6 +64,7 @@ export function ArticleBody({
   gate,
   plain,
   tables,
+  images,
   dedupeHeading,
   gateBarsOnly,
   headingAnchors,
@@ -60,7 +73,7 @@ export function ArticleBody({
   const truncated = Boolean(gate?.isTruncated);
   const blocks = plain
     ? dropDuplicateLeadingHeading(
-        toLegalBlocks(visibleText, tables),
+        toLegalBlocks(visibleText, tables, images),
         dedupeHeading,
       )
     : [];

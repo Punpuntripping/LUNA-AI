@@ -27,6 +27,9 @@ Per-domain query count:
                    A FIFTH (chunk_tables_v2) runs ONLY under
                    ``with_tables=True``, which the live turn never passes —
                    see ``_enrich_regulations``.
+                   A SIXTH (chunk_images) runs on BOTH paths, but only when
+                   a fetched chunk carries ``has_images`` — 1.6% of regulation
+                   citations — so on 98.4% of turns it is not issued at all.
     cases       -- 2 logical fetches (cases, entities), each batched by 150.
     compliance  -- 0 (the adapter already carries every field).
     circulars   -- 0 (the adapter carries the capped content + entity name).
@@ -39,6 +42,15 @@ from collections.abc import Iterator
 from typing import Any
 
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+
+# The figure instead of the filename. ONE implementation, shared with the public
+# library and the مراجع popup, so the reader view and the model view of the same
+# chunk cannot drift (chunk_image_rendering.md §2).
+from shared.library.chunk_images import (
+    ChunkImage,
+    images_by_chunk,
+    render_for_agent,
+)
 
 # Repeal vocabulary -- shared with the reranker's candidate blocks so a
 # repealed law is never described two different ways inside one turn.
@@ -62,7 +74,17 @@ def _batched(items: list[str], size: int) -> Iterator[list[str]]:
 
 #: The chunk select list, live-turn shape. ``content`` is the AGENT view (the
 #: prose conversion) and is what ``for_aggregator()`` projects — see D1/D2.
-_CHUNK_COLUMNS = "id, regulation_id, title, summary, context, content, owns"
+#:
+#: ``has_images`` is the one column this list has gained since, and it is the
+#: entire cost bound of the figure read (chunk_image_rendering.md D12): a
+#: boolean already on the row, true on 1,598 of 48,429 chunks, so
+#: :func:`_fetch_chunk_images` is never called on the 98.4% of turns whose
+#: citations land nowhere near a figure. It rides the LIVE list — unlike
+#: ``content_display`` — because for images the broken consumer IS the
+#: aggregator: ``content`` carries a figure as nothing but its own file path.
+_CHUNK_COLUMNS = (
+    "id, regulation_id, title, summary, context, content, owns, has_images"
+)
 
 #: The reveal shape: ``content_display`` rides ALONGSIDE ``content``, never
 #: instead of it. The fail-soft path in the viewer needs the prose, and nothing
@@ -163,6 +185,121 @@ def _fetch_chunk_tables(
                     "enrich_ura: chunk_tables read hit the %d-row ceiling — "
                     "some tables will render as prose",
                     _TABLES_MAX_ROWS,
+                )
+                break
+    return out
+
+
+# -- chunk_images: the LIVE read, gated on DATA (plan D12) --------------------
+#
+# The deliberate opposite of the block above. Tables are reveal-only because
+# ``content`` already holds every table as prose — the model needs nothing from
+# ``chunk_tables_v2``. A figure was flattened into NOTHING BUT ITS OWN PATH, so
+# the aggregator has been reading ``page_005_img_001.jpeg`` where a diagram
+# belongs; here the broken consumer is the one on the hot path, and no
+# ``with_tables``-shaped flag can repair it, because that flag is off there.
+#
+# What makes it affordable is that this gate is DATA, not a caller opinion:
+# ``chunks_v2.has_images`` already rides the chunk row this stage fetches
+# anyway, and only 1.6% of regulation citations land on a chunk that has it set.
+_IMAGES_PAGE = 1000
+
+#: Absolute ceiling across ONE enrichment call, mirroring
+#: :data:`_TABLES_MAX_ROWS`. The heaviest single نظام carries 414 figures and a
+#: reveal is a handful of chunks, so this is orders of magnitude of headroom —
+#: it exists only so a runaway re-ingest cannot turn enrichment into a scan.
+_IMAGES_MAX_ROWS = 10_000
+
+#: Exactly what ``images_by_chunk`` reads, and nothing else. ``mime_type`` is
+#: absent on purpose: the URL is built from ``storage_path``, which already
+#: carries the right extension (D7 — 575 of 5,347 rows are PNG), so the column
+#: would be dead weight. ``meta`` is selected whole because ``origin``, ``n``,
+#: ``width`` and ``height`` live inside it.
+_IMAGE_COLUMNS = (
+    "chunk_id, image_ref, source_basename, title, description, "
+    "transcribed_text, contains_text, storage_path, uploaded_at, meta"
+)
+
+
+def image_base_url() -> str:
+    """``SUPABASE_URL`` for the public ``regulation-images`` bucket, or ``""``.
+
+    ``shared.library.chunk_images`` is PURE — no DB, no config — so the base URL
+    is passed in, exactly as ``library_service._guide_image_base()`` already
+    does for the guides bucket. A restore into another project therefore finds
+    its own images with no code change.
+
+    ``""`` on any failure, and that is the safe direction by construction:
+    ``images_by_chunk`` then resolves NOTHING, rather than building a RELATIVE
+    URL against the app origin — which is precisely the broken-image bug this
+    feature exists to delete. Both readers degrade to *the prose without its
+    figures*, never to a dead ``<img>`` and never to a printed filename.
+
+    Shared with ``source_viewer`` so the agents layer has one spelling of the
+    bucket origin.
+    """
+    try:
+        from shared.config import get_settings
+
+        return (get_settings().SUPABASE_URL or "").strip()
+    except Exception as e:  # best-effort — a config miss must not raise here
+        logger.warning("enrich_ura: SUPABASE_URL unavailable for images: %s", e)
+        return ""
+
+
+def _fetch_chunk_images(
+    supabase, chunk_ids: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Raw ``chunk_images`` rows for these chunks, keyed by ``chunk_id``.
+
+    ⚠ **Call this only for chunks whose ``has_images`` is set.** That gate is
+    the entire cost argument (D12) and it lives at the call site, in
+    :func:`_enrich_regulations`, because that is the only place that has the
+    chunk rows in hand.
+
+    ONE batched read per ``_ID_BATCH`` of chunk ids, PAGED at 1000 rows inside
+    each batch and ordered by ``image_ref`` so the paging window is stable. An
+    unordered PostgREST range is not a guaranteed partition, and a row that
+    lands in no page does not error — it becomes a figure the renderer cannot
+    resolve, which D3 then DELETES. That is the bug that never announces itself.
+
+    Best-effort like every other fetch here: a failure logs and returns whatever
+    arrived. What makes that safe is a fail-soft direction that INVERTS the
+    tables one — a chunk whose figures did not arrive keeps
+    ``chunk_agent_content=""`` and so prompts on exactly the string it
+    prompts today, and renders prose with no figure rather than a dead
+    ``<img>``.
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for batch in _batched(chunk_ids, _ID_BATCH):
+        start = 0
+        while True:
+            try:
+                resp = (
+                    supabase.table("chunk_images")
+                    .select(_IMAGE_COLUMNS)
+                    .in_("chunk_id", batch)
+                    .order("image_ref")
+                    .range(start, start + _IMAGES_PAGE - 1)
+                    .execute()
+                )
+            except Exception as e:
+                logger.warning("enrich_ura: _fetch_chunk_images batch failed: %s", e)
+                break
+            page = resp.data or []
+            for r in page:
+                chunk_id = r.get("chunk_id")
+                if chunk_id is None:
+                    continue
+                out.setdefault(str(chunk_id), []).append(r)
+            if len(page) < _IMAGES_PAGE:
+                break
+            start += _IMAGES_PAGE
+            if start >= _IMAGES_MAX_ROWS:
+                logger.warning(
+                    "enrich_ura: chunk_images read hit the %d-row ceiling — "
+                    "some figures will not reach the model",
+                    _IMAGES_MAX_ROWS,
                 )
                 break
     return out
@@ -336,6 +473,14 @@ async def _enrich_regulations(
     Mutates each ``RegURAResult`` in ``reg_results`` in place. The empty-body
     filter is applied by the caller (``enrich_ura``) after this returns.
 
+    **Figures ride BOTH paths, and that is the difference from tables**
+    (``chunk_image_rendering.md`` §4.1, D12). A SIXTH fetch,
+    :func:`_fetch_chunk_images`, is issued whenever a fetched chunk carries
+    ``has_images`` — regardless of ``with_tables`` — because ``content`` holds a
+    figure as nothing but its own file path, so the consumer this repairs is the
+    aggregator itself. The gate is the boolean already on the chunk row, so the
+    98.4% of turns whose citations touch no figure issue no query at all.
+
     Args:
         with_tables: also read ``chunks_v2.content_display`` and the chunks'
             ``chunk_tables_v2`` rows, filling ``chunk_display`` /
@@ -383,6 +528,32 @@ async def _enrich_regulations(
     if with_tables:
         chunk_tables = await asyncio.to_thread(
             _fetch_chunk_tables, supabase, chunk_ids
+        )
+
+    # 1c. chunk_images — the LIVE read, and the ONE fetch in this function gated
+    #     on DATA rather than on a caller flag (D12). ``has_images`` came back
+    #     on the chunk rows above; when not one of them has it set, the query is
+    #     never issued — 98.4% of turns. The id list is narrowed to the
+    #     figure-bearing chunks for the same reason it is batched at all.
+    image_chunk_ids = sorted(
+        chunk_id for chunk_id, chunk in chunks.items() if chunk.get("has_images")
+    )
+    image_rows: dict[str, list[dict[str, Any]]] = {}
+    if image_chunk_ids:
+        image_rows = await asyncio.to_thread(
+            _fetch_chunk_images, supabase, image_chunk_ids
+        )
+
+    # ``images_by_chunk`` is THE constructor — the ``uploaded_at`` check (D6),
+    # the ``storage_path`` URL rule (D7) and the ``contains_text`` gate on the
+    # transcription all live inside it, so a figure that reaches a renderer has
+    # already passed every one of them. Called once for the whole batch; it keys
+    # by ``chunk_id`` itself.
+    figures_by_chunk: dict[str, list[ChunkImage]] = {}
+    if image_rows:
+        figures_by_chunk = images_by_chunk(
+            (row for rows in image_rows.values() for row in rows),
+            base_url=image_base_url(),
         )
 
     # 2. regulations_v2 by the chunks' regulation_id.
@@ -437,6 +608,43 @@ async def _enrich_regulations(
             res.chunk_context = chunk.get("context") or ""
             owns = chunk.get("owns")
             res.owns = owns if isinstance(owns, dict) else {}
+
+            # The AGENT fork (chunk_image_rendering.md D1/D12/D13) — the one
+            # place in this module that DERIVES a body instead of copying one.
+            #
+            # ⚠ Built from the RAW ``content`` this line just read, never from
+            # ``content_display``: the display body has its tables collapsed to
+            # ``TBL_…`` tokens, so feeding it here would hand the synthesis
+            # model a statute with its tables deleted and a token in their place.
+            #
+            # ⚠ And it rides BESIDE ``chunk_content``, never over it. «نسخ
+            # المحتوى», the forensic dumps and every consumer that ignores the
+            # new field keep exactly today's string; only ``for_aggregator()``
+            # prefers the substituted form.
+            #
+            # ``""`` whenever the chunk resolved no figure — 96.7% of the corpus
+            # by construction, plus the fail-soft cases (read failed, blank
+            # base URL, bytes not uploaded). ``for_aggregator()`` falls back to
+            # ``chunk_content`` on all of them, which is today's behaviour.
+            # ⚠ The condition is "has something to fix", NOT "has figures".
+            # 656 chunks carry image markup with NO row behind it — the figure
+            # was judged decorative, sat in front matter, or could not be
+            # attached — and 298 of those spans are on published pages. Gating
+            # on ``figures`` alone leaves the aggregator reading
+            # ``page_005_img_001.jpeg`` on exactly those chunks, which is the
+            # bug in §0, not a smaller version of it. ``render_for_agent``
+            # already deletes an unresolved span (D3) and already returns
+            # ``content`` byte-identical when there is no row AND no span, so
+            # the 96.7% case still costs nothing. No extra query: the span is
+            # in a string we are already holding.
+            figures = figures_by_chunk.get(chunk_id or "") or []
+            res.chunk_images = image_rows.get(chunk_id or "") or []
+            res.chunk_agent_content = (
+                render_for_agent(res.chunk_content, figures)
+                if figures or "](images/" in (res.chunk_content or "")
+                else ""
+            )
+
             reg = regs.get(chunk.get("regulation_id")) or {}
             if with_tables:
                 # The display fork (D1/D2). ``chunk_content`` above keeps the
@@ -460,6 +668,8 @@ async def _enrich_regulations(
             res.chunk_content = ""
             res.chunk_context = ""
             res.owns = {}
+            res.chunk_agent_content = ""
+            res.chunk_images = []
             if with_tables:
                 res.chunk_display = ""
                 res.chunk_tables = []

@@ -1600,6 +1600,12 @@ def _reader_visible_payload(view: ChunkSourceView) -> str:
     for seg in view.display_segments:
         if seg["kind"] == "text":
             parts.append(seg["text"])
+        elif seg["kind"] == "image":
+            # A figure's ``image_ref`` and ``url`` are excluded for the same
+            # reason a table's ``ref`` is: they are the resolution key and the
+            # ``src``, never text a reader reads. The caption and the alt text
+            # ARE read — by eye and by screen reader — so they are fair game.
+            parts.extend([seg["title"], seg["description"]])
         else:
             parts.extend([seg["html"], seg["md"]])
     return "\n".join(parts)
@@ -1642,11 +1648,19 @@ def test_the_live_search_turn_fetches_no_tables() -> None:
 
 
 def test_the_live_turn_column_list_is_exactly_todays() -> None:
-    """Pins the select string itself, so a stray column cannot ride in later."""
+    """Pins the select string itself, so a stray column cannot ride in later.
+
+    ``has_images`` is the one deliberate addition since
+    (``chunk_image_rendering.md`` D12), and it is here to make a read NOT happen:
+    a boolean already on the chunk row, true on 1,598 of 48,429 chunks, so
+    ``chunk_images`` is never queried on the 98.4% of turns whose citations land
+    nowhere near a figure. ``content_display`` is still absent, and THAT is the
+    property this test exists to keep.
+    """
     supabase = spy_supabase()
     run(enrich_ura(UnifiedRetrievalArtifact(high_results=[reg_shell()]), supabase))
     assert supabase.selects_for("chunks_v2") == [
-        "id, regulation_id, title, summary, context, content, owns"
+        "id, regulation_id, title, summary, context, content, owns, has_images"
     ]
 
 
@@ -1687,6 +1701,35 @@ def test_for_aggregator_is_byte_identical() -> None:
     # Neither field is even a member of the projected model.
     assert "chunk_display" not in type(after).model_fields
     assert "chunk_tables" not in type(after).model_fields
+
+    # --- …and the ONE deliberate exception: a chunk that carries a FIGURE ---
+    #
+    # ``chunk_agent_content`` IS projected (chunk_image_rendering.md §4.1/D12),
+    # and it has to be: for a table ``content`` already held the law as prose,
+    # so the model needed nothing; for a figure ``content`` holds NOTHING BUT
+    # THE FILE PATH, so the aggregator has been reading
+    # ``page_005_img_001.jpeg`` where a diagram belongs. The STRUCTURE of
+    # ``AggregatorItem`` is still unchanged, so the cached prompt prefix (system
+    # prompt + scaffolding) is untouched; only the per-item region moves, which
+    # varies by query anyway — and only on the 3.3% of chunks with a figure.
+    #
+    # The fixtures live with the rest of the figure work in §7 below.
+    figure_free = reg_shell()
+    figure_free.chunk_content = _FIGURE_PROSE
+    assert figure_free.for_aggregator(n=3).chunk_content == _FIGURE_PROSE
+
+    with_figure = reg_shell()
+    with_figure.chunk_content = _FIGURE_PROSE
+    with_figure.chunk_agent_content = _figure_agent_body()
+
+    substituted = with_figure.for_aggregator(n=3).chunk_content
+    assert substituted == with_figure.chunk_agent_content
+    assert substituted != with_figure.chunk_content
+    assert "](images/" not in substituted
+    assert IMG_DESCRIPTION in substituted
+    # The prose it rides beside is untouched — the copy string, the forensic
+    # dumps and every consumer that ignores the new field keep today's bytes.
+    assert with_figure.chunk_content == _FIGURE_PROSE
 
 
 def test_the_reference_card_projection_is_untouched_too() -> None:
@@ -1900,3 +1943,347 @@ def test_the_enrich_flag_is_keyword_only_and_defaults_off() -> None:
     ).parameters["with_tables"]
     assert shell_param.kind is inspect.Parameter.KEYWORD_ONLY
     assert shell_param.default is False
+# ===========================================================================
+# 7. Chunk images — the figure instead of the filename
+#    (`.claude/plans/chunk_image_rendering.md` §4, D1/D3/D12/D13)
+# ===========================================================================
+#
+# The tables section above opens on a degradation: a grid rendered as a
+# bulleted list, correct but ugly. This one opens on a DEFECT. A regulation
+# chunk is Arabic markdown and 1,839 of them carry
+# `![img-1.jpeg](images/page_005_img_001.jpeg)` — a relative path no app can
+# reach. `chunks_v2.content` therefore hands the aggregator a FILENAME where a
+# diagram belongs, and nothing at all where the figure carries the answer.
+#
+# That is the whole difference from tables, and it is why the fix reaches the
+# hot path: a table was flattened into prose before ingestion, so `content`
+# already held its law; a figure was flattened into nothing but its own path.
+# What keeps the extra read affordable is that its gate is DATA —
+# `chunks_v2.has_images`, true on 1,598 of 48,429 chunks, and on only 61 of
+# 3,800 written regulation citations (1.6%).
+
+IMAGE_CHUNK = "aaaaeeee-0000-4000-8000-00000000f00d"
+
+IMG_BASENAME = "page_005_img_001.jpeg"
+IMG_SPAN = f"![img-1.jpeg](images/{IMG_BASENAME})"
+IMG_REF = "17405_reg_603_img_5"
+IMG_STORAGE_PATH = "17405_reg_603/17405_reg_603_img_5.jpeg"
+IMG_TITLE = "مخطط تدفق إجراءات الترخيص"
+IMG_DESCRIPTION = (
+    "مخطط انسيابي يوضح مسار طلب الترخيص من التقديم حتى الإصدار عبر أربع مراحل "
+    "متتابعة، مع بيان الجهة المسؤولة عن كل مرحلة."
+)
+IMG_TRANSCRIPT = "تقديم الطلب ← الفحص الفني ← سداد المقابل المالي ← إصدار الرخصة"
+
+#: The corpus, byte for byte. The span sits on its own line — 3,630 of the
+#: 3,677 cited spans do — and the sentences on either side are what must still
+#: be there, in order, once the figure has taken its place.
+_FIGURE_PROSE = (
+    "المادة الأولى: يقدَّم طلب الترخيص وفق الإجراءات الموضحة أدناه.\n"
+    "\n"
+    f"{IMG_SPAN}\n"
+    "\n"
+    "وتصدر الرخصة خلال ثلاثين يوماً من تاريخ اكتمال الطلب."
+)
+
+
+def image_row(**over: Any) -> dict[str, Any]:
+    """One raw ``chunk_images`` row, in the ten columns the enrichment selects.
+
+    ``meta`` carries ``origin`` / ``n`` / ``width`` / ``height`` nested, which is
+    how PostgREST hands them over when the whole jsonb column is selected.
+    ``n`` is 5 and ``n_in_chunk`` is 3 on purpose: the caption number is a
+    RENDER-ORDER counter (D8) and must match NEITHER.
+    """
+    row: dict[str, Any] = {
+        "chunk_id": IMAGE_CHUNK,
+        "image_ref": IMG_REF,
+        "source_basename": IMG_BASENAME,
+        "title": IMG_TITLE,
+        "description": IMG_DESCRIPTION,
+        "transcribed_text": IMG_TRANSCRIPT,
+        "contains_text": True,
+        "storage_path": IMG_STORAGE_PATH,
+        "uploaded_at": "2026-08-29T09:00:00+00:00",
+        "meta": {
+            "origin": "cited",
+            "n": 5,
+            "n_in_chunk": 3,
+            "width": 1200,
+            "height": 800,
+        },
+    }
+    row.update(over)
+    return row
+
+
+def image_supabase(**over: Any) -> FakeSupabase:
+    """A FakeSupabase whose reg chunk carries a figure and NO table.
+
+    That combination is the point: 96.7% of the corpus has no ``TBL_`` token at
+    all, so a figure-bearing chunk usually has an empty ``content_display`` and
+    must still reach a segment payload (§4.2).
+    """
+    seeded: dict[str, Any] = {
+        "chunks_v2": [
+            {
+                "id": IMAGE_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {"MADDA": [1]},
+                "content": _FIGURE_PROSE,
+                "content_display": None,
+                "context": "",
+                "has_images": True,
+            },
+            {
+                "id": PLAIN_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {"MADDA": [2]},
+                "content": "المادة الثانية: نص بلا صور.",
+                "content_display": None,
+                "context": "",
+                "has_images": False,
+            },
+        ],
+        "chunk_images": [image_row()],
+    }
+    seeded.update(over)
+    return base_supabase(**seeded)
+
+
+def spy_image_supabase(**over: Any) -> SpySupabase:
+    base = image_supabase(**over)
+    return SpySupabase(quota_row=base.quota_row, **base.tables)
+
+
+def _figure_agent_body() -> str:
+    """What ``shared/`` produces for ``_FIGURE_PROSE`` plus this one figure.
+
+    Built through the shared module rather than spelled out here, so this file
+    asserts the WIRING (which string reaches ``for_aggregator``) and
+    ``shared/library/tests/test_chunk_images.py`` asserts the RENDERING. A
+    literal copy of the blockquote here would be a second implementation of the
+    format, and the two would drift.
+    """
+    from shared.library.chunk_images import images_by_chunk, render_for_agent
+
+    images = images_by_chunk([image_row()], base_url="https://fixture.supabase.co")
+    return render_for_agent(_FIGURE_PROSE, images[IMAGE_CHUNK])
+
+
+def _enriched(supabase: FakeSupabase, chunk_id: str = IMAGE_CHUNK) -> RegURAResult:
+    """Run one shell through ``enrich_ura`` end to end and hand it back."""
+    ura = UnifiedRetrievalArtifact(high_results=[reg_shell(chunk_id)])
+    run(enrich_ura(ura, supabase))
+    assert ura.high_results, "the chunk survived the empty-body filter"
+    return ura.high_results[0]
+
+
+def test_the_aggregator_reads_words_not_filenames() -> None:
+    """§0, and the reason this plan repairs the AGENT view and tables did not.
+
+    ``for_aggregator()`` on a figure-bearing chunk must carry the figure's
+    words. Asserted from both ends: the filename is gone, and the description,
+    the caption and the transcription — which is where a photographed spec
+    table's numbers live — are in its place, with the statute still in order
+    around them.
+    """
+    from agents.deep_search_v4.aggregator.preprocessor import (
+        render_aggregator_content,
+    )
+
+    res = _enriched(image_supabase())
+    body = res.for_aggregator(n=1).chunk_content
+
+    # The literal the plan writes as its assertion, and the basename behind it.
+    assert "](images/" not in body
+    assert IMG_BASENAME not in body
+
+    # The figure's WORDS, all three of them.
+    assert IMG_TITLE in body
+    assert IMG_DESCRIPTION in body
+    assert IMG_TRANSCRIPT in body
+
+    # …spliced where the span was, with the sentences either side intact and in
+    # reading order. A span replace (D4) is what buys that; a whole-line rule
+    # would leave the 47 inline spans' sentences looking finished.
+    assert body.index("المادة الأولى") < body.index(IMG_TITLE) < body.index("ثلاثين")
+
+    # Nothing ABOUT the image travels. The model cannot open one, so a URL, a
+    # bucket path, an image_ref or the bytes would be pure cost.
+    for leak in ("http", "storage/v1", IMG_STORAGE_PATH, IMG_REF):
+        assert leak not in body
+
+    # …and the same holds one layer up, in the block the prompt actually carries.
+    rendered = render_aggregator_content(res.for_aggregator(n=1))
+    assert "](images/" not in rendered
+    assert IMG_DESCRIPTION in rendered
+
+
+def test_the_images_read_is_skipped_when_no_chunk_has_images() -> None:
+    """D12's cost bound, asserted the only way that counts: no query issued.
+
+    ``chunks_v2.has_images`` is what makes reading figures on the LIVE turn
+    affordable at all — 61 of 3,800 regulation citations land on a chunk that
+    has it set, so the other 98.4% must pay nothing. "We only fetch when we need
+    it" is not a mechanism; a spy that records every read is.
+    """
+    quiet = spy_supabase()  # the tables fixture — its chunks carry no figure
+    res = _enriched(quiet, TABLE_CHUNK)
+
+    assert "chunk_images" not in quiet.tables_queried()
+    assert res.chunk_images == []
+    assert res.chunk_agent_content == ""
+    # …and the projection is byte-for-byte what it was before this shipped.
+    assert res.for_aggregator(n=1).chunk_content == _CHUNK_PROSE
+
+    # The positive control, so the assertion above cannot pass by being broken.
+    loud = spy_image_supabase()
+    _enriched(loud, IMAGE_CHUNK)
+    assert "chunk_images" in loud.tables_queried()
+    # One batched, column-narrow hop — and no ``mime_type``: the URL is built
+    # from ``storage_path``, which already carries the right extension (D7).
+    assert loud.selects_for("chunk_images") == [
+        "chunk_id, image_ref, source_basename, title, description, "
+        "transcribed_text, contains_text, storage_path, uploaded_at, meta"
+    ]
+
+
+def test_chunk_content_still_holds_the_prose() -> None:
+    """The ⚠ in §4.1: ``chunk_agent_content`` rides BESIDE, never OVER.
+
+    Every consumer that ignores the new field must keep exactly today's string —
+    «نسخ المحتوى» above all, because a user pasting a cited source into a memo
+    must get the law, not a CDN URL.
+    """
+    supabase = image_supabase()
+    res = _enriched(supabase)
+
+    # The stored field is ``chunks_v2.content``, byte for byte.
+    assert res.chunk_content == _FIGURE_PROSE
+    # …and the derived one exists and is a DIFFERENT string.
+    assert res.chunk_agent_content
+    assert res.chunk_agent_content != res.chunk_content
+
+    # «نسخ المحتوى» pastes ``view.content``, and that is the same string still.
+    row = ref_row(n=1, ref_id=f"reg:{IMAGE_CHUNK}", item_id=IMAGE_CHUNK)
+    view = run(references_service.build_reference_source_view(supabase, row))
+    assert isinstance(view, ChunkSourceView)
+    assert view.content == _FIGURE_PROSE
+    assert "storage/v1" not in view.content
+    assert IMG_DESCRIPTION not in view.content
+
+
+def test_a_span_with_no_row_still_leaves_the_agent_a_clean_body() -> None:
+    """The 656 chunks the plan's §4.1 condition would have skipped.
+
+    A chunk can carry image markup and NO ``chunk_images`` row at all — the
+    figure was judged decorative, sat in regulation front matter, or could not
+    be attached to a chunk. 656 chunks are in that state and 298 of their spans
+    are on published pages. ``has_images`` is false there, so no read is issued
+    and no figure is resolved.
+
+    Gating ``chunk_agent_content`` on "did we resolve a figure" would leave the
+    aggregator reading ``page_005_img_001.jpeg`` on exactly those chunks — which
+    is §0's bug, not a smaller version of it. The condition is "is there
+    anything to fix", and D3 does the fixing: an unresolved span emits NOTHING,
+    for the model as much as for the reader. It costs no query — the span is in
+    a string already in hand.
+    """
+    supabase = image_supabase(
+        chunks_v2=[
+            {
+                "id": IMAGE_CHUNK,
+                "regulation_id": REG_ID,
+                "owns": {"MADDA": [1]},
+                "content": _FIGURE_PROSE,
+                "content_display": None,
+                "context": "",
+                # The corpus says: markup, but nothing behind it.
+                "has_images": False,
+            }
+        ],
+        chunk_images=[],
+    )
+    res = _enriched(supabase)
+
+    body = res.for_aggregator(n=1).chunk_content
+    assert "](images/" not in body
+    assert IMG_BASENAME not in body
+
+    # The statute either side of the deleted span survives, in order.
+    assert body.index("المادة الأولى") < body.index("ثلاثين")
+
+    # And the stored prose is still byte-identical — the substitution rides
+    # beside ``chunk_content``, never over it, on this path too.
+    assert res.chunk_content == _FIGURE_PROSE
+
+
+def test_a_figure_bearing_chunk_segments_without_any_table() -> None:
+    """§4.2, and the early-return discipline it changes.
+
+    ``_reg_display_segments`` returns ``[]`` for every reason there is not to
+    segment, and "this chunk has no tables" has stopped being one of them.
+    Figures ride the LIVE fetch, so a chunk with a figure and no ``TBL_`` token
+    — the ordinary case, 96.7% of the corpus carries no token at all — has an
+    empty ``chunk_display`` and must segment over its PROSE instead.
+    """
+    supabase = image_supabase()
+    row = ref_row(n=1, ref_id=f"reg:{IMAGE_CHUNK}", item_id=IMAGE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+    assert isinstance(view, ChunkSourceView)
+
+    assert [seg["kind"] for seg in view.display_segments] == [
+        "text", "image", "text",
+    ]
+    figure = view.display_segments[1]
+    # The caption number is RENDER ORDER (D8) — neither ``meta->>'n'`` (5) nor
+    # ``n_in_chunk`` (3). 120 of 418 regulations have gaps in the former, worst
+    # case 383, so a reader would see «الصورة 402» and conclude 401 were lost.
+    assert figure["n"] == 1
+    assert figure["image_ref"] == IMG_REF
+    assert figure["title"] == IMG_TITLE
+    assert figure["description"] == IMG_DESCRIPTION
+    # Built from ``storage_path`` (D7), never ``image_ref + ".jpeg"``.
+    assert figure["url"].endswith(IMG_STORAGE_PATH)
+    assert (figure["width"], figure["height"]) == (1200, 800)
+
+    # The prose survives on both sides, and no SEGMENT carries a trace of the
+    # markup — not a text run, not the caption, not the alt text (D3).
+    for seg in view.display_segments:
+        if seg["kind"] == "text":
+            assert seg["text"].strip()
+            assert "](images/" not in seg["text"]
+        else:
+            assert "](images/" not in f"{seg['title']}{seg['description']}"
+
+    # ⚠ Deliberately NOT asserted over ``view.content``. That string is the
+    # PROSE and it keeps the corpus markup on purpose (D11): it is what «نسخ
+    # المحتوى» pastes, and ``test_chunk_content_still_holds_the_prose`` pins it
+    # byte for byte. No reader reads it on this path — a non-empty
+    # ``display_segments`` is what the panel renders instead — and swapping a
+    # relative corpus path for a public CDN URL in the copy buffer is exactly
+    # what D11 refuses. The residue therefore lives in one string, with one
+    # consumer, under one test.
+
+
+def test_a_failed_images_read_still_serves_the_source() -> None:
+    """Fail-soft, in the direction that INVERTS the tables rule (§3.2).
+
+    A failed ``chunk_tables_v2`` read falls back to the prose so the flattened
+    grids survive. There is no equivalent here: a failed ``chunk_images`` read
+    leaves the spans unresolved and D3 removes them, so the degradation is
+    *prose without its figures* — which is still strictly better than the
+    filename that ships today, and is the only safe direction.
+    """
+    supabase = image_supabase()
+    supabase.fail_tables.add("chunk_images")
+    row = ref_row(n=1, ref_id=f"reg:{IMAGE_CHUNK}", item_id=IMAGE_CHUNK)
+
+    view = run(references_service.build_reference_source_view(supabase, row))
+
+    assert isinstance(view, ChunkSourceView)
+    assert view.display_segments == []
+    # The citation still resolves, and the law is still there.
+    assert "المادة الأولى" in view.content

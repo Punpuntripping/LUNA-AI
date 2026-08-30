@@ -1464,6 +1464,44 @@ class TocEntry(BaseModel):
     kind: str = "article"
 
 
+class SectionImage(BaseModel):
+    """One figure resolved out of ``public.chunk_images`` and put on the wire.
+
+    THE CONTRACT IS ``frontend/lib/library/api.ts:RegulationImage`` — same seven
+    fields, same names, no more and no less. Everything here is settled
+    server-side and rendered verbatim by ``<ChunkFigure>``:
+
+    * ``url`` is built from ``storage_path`` (D7). **575 of 5,347 objects are
+      PNG**, so ``image_ref + ".jpeg"`` would 404 on every one of them. The
+      bucket is public, so the URL is plain and unsigned, and the CSP already
+      allows ``https://*.supabase.co`` for ``img-src``.
+    * ``n`` is a RENDER-ORDER counter minted by the server (D8) — never
+      ``meta->>'n'`` (120 of 418 regulations have gaps in it, worst case 383) and
+      never ``n_in_chunk`` (it restarts every chunk). It is also the digits the
+      caption prints, and the number inside this figure's own ``IMG_{n}`` key,
+      so the token and the label cannot disagree.
+    * ``title`` is the caption (4–77 chars); ``description`` is the ``alt``
+      (98–2,008 chars of machine-facing Arabic — right for a screen reader and a
+      crawler, wrong for the page).
+    * ``width``/``height`` are required, not decoration: one chunk carries 31
+      figures and the widest is 12,250px, so without intrinsic dimensions the
+      section reflows once per image.
+
+    ``transcribed_text`` is deliberately NOT here (D9). It runs to 4,854 chars of
+    photographed penalty schedule; it IS charged to the gate and it IS given to
+    the model, but putting it in the DOM is a gate-exposure decision and it has
+    not been taken.
+    """
+
+    image_ref: str = ""
+    n: int
+    title: str = ""
+    description: str = ""
+    url: str
+    width: int = 0
+    height: int = 0
+
+
 class VisibleSection(BaseModel):
     id: str
     title: Optional[str] = None
@@ -1494,6 +1532,20 @@ class VisibleSection(BaseModel):
     # `text` is the prose body, so absent ⇒ exactly today's rendering with no
     # token left dangling.
     tables: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # The rendered FIGURES of this section, keyed by the whole-line `IMG_{n}`
+    # token that stands in for each one INSIDE `text`
+    # (`.claude/plans/chunk_image_rendering.md` §3.3). Same trap as `tables`,
+    # and it bites harder: without this declaration `response_model` strips the
+    # map while `text` keeps the tokens, and a statute page renders naked
+    # `IMG_3` lines — or, once the client's unconditional strip eats them,
+    # prose with the diagram silently missing and no error anywhere.
+    #
+    # `{}` — never null — when the section has no figures, which is 96.7% of
+    # chunks. An ISR page baked before this shipped carries no `images` at all
+    # and its `text` still holds the RAW corpus markup; the client strips both
+    # shapes unconditionally, so an old bake degrades to prose-without-figures
+    # rather than to today's printed filename.
+    images: dict[str, SectionImage] = Field(default_factory=dict)
 
 
 class OfficialSource(BaseModel):
@@ -1610,6 +1662,16 @@ class RegulationArticleResponse(BaseModel):
     text: str
     is_truncated: bool
     hidden_placeholder_lines: int
+    # The figures of THIS مادة, keyed by the `IMG_{n}` token inside `text`
+    # (plan §3.5). Declared for the same reason `VisibleSection.images` is:
+    # `response_model` strips what it does not declare, and the failure is
+    # silent — a مادة page rendering prose where a diagram belongs.
+    #
+    # ⚠ The counter is PAGE-scoped here, not document-scoped (D17): the same
+    # figure is «الصورة 7» on /regulations/{slug} and «الصورة 1» on its own
+    # page, because a reader counting figures on a مادة page can only count the
+    # ones on it. Cited figures only on an extracted body (D16).
+    images: dict[str, SectionImage] = Field(default_factory=dict)
     sharh: SharhTeaser = Field(default_factory=SharhTeaser)
     prev: Optional[ArticleNavEntry] = None
     next: Optional[ArticleNavEntry] = None
@@ -2211,6 +2273,14 @@ class LibraryFullSection(BaseModel):
     #
     # Judgment sections come through this same model and simply carry `{}`.
     tables: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # ⚠ THE HIGHEST-SEVERITY LINE IN THIS FEATURE (plan §3.5.1). The reveal
+    # repeats the `TBL_` trap verbatim: this payload's `text` carries `IMG_{n}`
+    # token lines the moment the backend ships them, the client drops every
+    # token it cannot resolve, and a reveal WITHOUT this map therefore shows the
+    # reader who just PAID FEWER figures than the anonymous preview of the same
+    # page. `test_the_public_page_and_the_reveal_agree_on_the_appendix` compares
+    # section ids only and stays green straight through that bug.
+    images: dict[str, SectionImage] = Field(default_factory=dict)
 
 
 class LibraryFullResponse(BaseModel):
@@ -2251,6 +2321,10 @@ class LibraryFullResponse(BaseModel):
     key: str
     sections: Optional[list[LibraryFullSection]] = None
     text: Optional[str] = None
+    # The figures of a revealed مادة, keyed by the `IMG_{n}` token inside
+    # `text` — the `article` half of the §3.5.1 trap `LibraryFullSection.images`
+    # closes for `sections`. `{}` for every other content type.
+    images: dict[str, SectionImage] = Field(default_factory=dict)
     sharh_md: Optional[str] = None
     # «ملخص ريحان» — judgment only; null for every other content type.
     summary_md: Optional[str] = None

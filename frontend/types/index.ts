@@ -747,21 +747,50 @@ export type SourceView =
       title: string;
       content: string;
       /**
-       * The same مقطع split into prose runs and rendered tables — the corpus
-       * flattened every table into a bulleted list before ingestion, and this
-       * puts the grid back for the reader.
+       * The same مقطع split into prose runs, rendered tables and rendered
+       * FIGURES — the corpus flattened every table into a bulleted list before
+       * ingestion and flattened every figure into nothing but its own file
+       * path, and this puts the grid and the diagram back for the reader.
        *
        * `content` above stays the PROSE and is still what «نسخ المحتوى» copies:
-       * pasting a source into a memo must yield text, not `<table>` markup.
+       * pasting a source into a memo must yield text, not `<table>` markup and
+       * not a CDN url.
        *
        * Empty (or absent) means "render `content`, exactly as before" — which
-       * is the 82% of chunks with no table, every judgment riding this shape,
-       * and every artifact persisted before this shipped. Each `html` is
-       * sanitized server-side by an allowlist re-serializer.
+       * is the 82% of chunks with no table, the 96.7% with no figure, every
+       * judgment riding this shape, and every artifact persisted before this
+       * shipped. (Persisted citations rebuild from the DB on the click, so the
+       * 56 that point at raw image markup repair themselves; nothing is
+       * backfilled.) Each `html` is sanitized server-side by an allowlist
+       * re-serializer.
        */
       display_segments?: (
         | { kind: 'text'; text: string }
         | { kind: 'table'; ref: string; html: string; md: string }
+        /**
+         * A figure spliced in where the corpus wrote `![img-1.jpeg](images/…)`.
+         * Until this shipped, `MarkdownRenderer` turned that span into an
+         * `<img src="images/page_005_img_001.jpeg">` — a RELATIVE url against
+         * the app origin, so 56 already-written citations rendered a broken
+         * image icon inside a cited statute.
+         *
+         * `n` is the render-order caption number (chunk-scoped in this popup),
+         * `description` is the alt, `title` the caption. `weight` / `span_len`
+         * are the GATE's arithmetic, settled server-side and never rendered —
+         * carried so a caller holding a whole segment can pass it around whole.
+         */
+        | {
+            kind: 'image';
+            image_ref: string;
+            n: number;
+            title: string;
+            description: string;
+            url: string;
+            width: number;
+            height: number;
+            weight: number;
+            span_len: number;
+          }
       )[];
       regulation_title: string;
       /**

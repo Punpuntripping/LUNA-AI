@@ -236,7 +236,18 @@ export default async function RegulationArticlePage({ params }: PageProps) {
         >
           <div className="space-y-6">
             <section id="article-body" className="scroll-mt-24">
-              <ArticleBody visibleText={doc.text} gate={gate} plain />
+              {/* `images`: this مادة's own figures, numbered from 1 (the
+                  counter is PAGE-scoped — the same figure is «الصورة 7» on the
+                  document page). Cited figures only; an orphan's position is
+                  predicted against the whole chunk, and a مادة is a fragment of
+                  it. Absent on a pre-`images` bake ⇒ prose without figures,
+                  never the raw filename. */}
+              <ArticleBody
+                visibleText={doc.text}
+                gate={gate}
+                plain
+                images={doc.images}
+              />
             </section>
 
             {doc.sharh?.has_sharh ? (

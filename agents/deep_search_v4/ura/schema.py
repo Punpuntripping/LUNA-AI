@@ -358,6 +358,46 @@ class RegURAResult(URAResultBase):
     #: turn it into something a view renders.
     chunk_tables: list[dict] = Field(default_factory=list)  # stored only
 
+    # -- The AGENT fork (chunk_image_rendering.md §4.1, D1/D12/D13) ----------
+    # The mirror of the display fork above, and deliberately the OPPOSITE call.
+    # A table was flattened into PROSE before ingestion, so ``chunk_content``
+    # already carried its law and the model needed nothing — which is why the
+    # two fields above are reveal-only. A figure was flattened into NOTHING BUT
+    # ITS OWN FILE PATH (``![img-1.jpeg](images/page_005_img_001.jpeg)``), so
+    # the aggregator has been reading a filename where a diagram belongs, and
+    # reading nothing at all where the figure carries the answer. Here the
+    # broken consumer IS the hot path, so the read rides the live turn — bounded
+    # by ``chunks_v2.has_images``, true on 1,598 of 48,429 chunks (D12).
+    #: ``chunks_v2.content`` with every image span replaced by the figure's
+    #: WORDS: the caption, the description, and — when the row's
+    #: ``contains_text`` was set — the text the figure itself carries, which is
+    #: where a photographed spec table's numbers live. Capped per chunk at
+    #: ``AGENT_FIGURE_BUDGET``, past which the remaining figures collapse to
+    #: their captions plus a «(+N صورة أخرى لم تُدرج)» line, so the model is TOLD
+    #: what it is not being shown (D13).
+    #:
+    #: ``""`` for the 96.7% of chunks that carry no figure. Filled by
+    #: ``ura/enrich.py`` on BOTH paths.
+    #:
+    #: ⚠ NEVER indexed, embedded or reranked. ``chunk_content`` stays what BM25,
+    #: ``search_topics``, the embedder and every reranker read, image markup and
+    #: all (D2) — this string rides BESIDE it, never over it.
+    chunk_agent_content: str = ""
+    #: Raw ``chunk_images`` rows for this chunk: ``chunk_id``, ``image_ref``,
+    #: ``source_basename``, ``title``, ``description``, ``transcribed_text``,
+    #: ``contains_text``, ``storage_path``, ``uploaded_at``, ``meta``. RAW —
+    #: only ``shared.library.chunk_images.images_by_chunk`` may turn one into
+    #: something a view renders, because the ``uploaded_at`` check (D6), the
+    #: ``storage_path`` URL rule (D7, 575 of 5,347 rows are PNG) and the
+    #: ``contains_text`` gate on the transcription all live in that constructor.
+    #:
+    #: Stored only, and read by exactly one consumer:
+    #: ``source_viewer._reg_display_segments`` builds مراجع's figures from it.
+    #: It is NEVER projected into a prompt — the figure's words already travel
+    #: in ``chunk_agent_content``, and nothing about the image itself (no URL,
+    #: no bucket path, no bytes) is of any use to a model that cannot open it.
+    chunk_images: list[dict] = Field(default_factory=list)  # stored only
+
     def for_aggregator(self, n: int = 0) -> AggregatorItem:
         return AggregatorItem(
             ref_id=self.ref_id,
@@ -367,7 +407,16 @@ class RegURAResult(URAResultBase):
             reg_title=self.reg_title,
             reg_scope=self.reg_scope,
             reg_status=self.reg_status,
-            chunk_content=self.chunk_content,
+            # The figure's WORDS where the corpus wrote a filename (§4.1).
+            # ``chunk_agent_content`` is "" on the 96.7% of chunks that carry no
+            # figure, so this is ``chunk_content`` byte-for-byte on all of them.
+            # Where it is not, the change is confined to the per-item region of
+            # the prompt — which varies by query anyway — while the STRUCTURE of
+            # ``AggregatorItem`` is unchanged, so the cached prefix (system
+            # prompt + scaffolding) is untouched. Same trade ``reg_status``
+            # already shipped under, and it buys a model that stops reading
+            # ``page_005_img_001.jpeg`` as if it were law.
+            chunk_content=self.chunk_agent_content or self.chunk_content,
             cross_refs=list(self.cross_refs[:MAX_CROSS_REFS_AGG_REG]),
             corpus=self.corpus,
         )

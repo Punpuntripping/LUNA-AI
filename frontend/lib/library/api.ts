@@ -355,6 +355,46 @@ export interface RegulationVisibleSection {
    * failure this whole feature exists to prevent.
    */
   tables?: Record<string, { html: string; md: string }>;
+  /**
+   * Rendered figures for this section, keyed by the `IMG_{n}` token that stands
+   * in for each one inside `text`. `n` is the document-wide render number and is
+   * also what the caption prints — «الصورة {n}: {title}».
+   *
+   * Optional on the wire: a page baked before this shipped carries no `images`,
+   * and its `text` carries the raw corpus markup instead — which the client now
+   * strips, so an old bake degrades to prose-without-figures rather than to
+   * today's printed filename.
+   */
+  images?: Record<string, RegulationImage>;
+}
+
+/**
+ * One figure resolved out of `public.chunk_images` and projected onto the wire.
+ *
+ * Everything here is settled SERVER-SIDE and rendered verbatim by
+ * `<ChunkFigure>`; nothing is derived on the client. In particular `url` is
+ * built from `storage_path` (575 of 5,347 objects are PNG, so appending
+ * `.jpeg` to `image_ref` would 404), and `n` is a render-order counter, never
+ * `chunk_images.meta->>'n'`.
+ *
+ * `title` is the caption (4–77 chars), `description` is the `alt` (98–2,008
+ * chars of machine-facing analysis — right for a screen reader and a crawler,
+ * wrong for the page). `transcribed_text` is deliberately NOT on this wire: it
+ * runs to 4,854 chars of photographed penalty schedule and putting it in the
+ * DOM is a gate-exposure decision, not a rendering one.
+ */
+export interface RegulationImage {
+  /** Canonical corpus id (`{reg_ref}_img_{n}`). The React key, not the label. */
+  image_ref: string;
+  /** Render-order number. Also the digits the caption prints — LATIN. */
+  n: number;
+  title: string;
+  description: string;
+  /** Public Storage URL, built from `storage_path`. */
+  url: string;
+  /** Intrinsic px — required, so the section does not reflow per image. */
+  width: number;
+  height: number;
 }
 
 export interface RegulationOfficialSource {
@@ -460,6 +500,19 @@ export interface RegulationArticle {
    * «شرح قريباً» shell instead of a teaser + gate.
    */
   sharh?: ArticleSharh;
+  /**
+   * Rendered figures for THIS مادة, keyed by the `IMG_{n}` token inside `text`.
+   * Same shape as `RegulationVisibleSection.images`, and optional for the same
+   * reason (a payload baked before the backend shipped it carries none).
+   *
+   * ⚠ The counter is PAGE-scoped here, not document-scoped: the same figure is
+   * «الصورة 7» on `/regulations/{slug}` and «الصورة 1» on its own مادة page,
+   * because a reader counting figures on a مادة page can only count the ones on
+   * it. Cited figures only — an orphan figure's position is predicted against
+   * the whole CHUNK, and a مادة is a fragment of that chunk, so placing one here
+   * would be a claim the data does not support.
+   */
+  images?: Record<string, RegulationImage>;
   prev: ArticleNavEntry | null;
   next: ArticleNavEntry | null;
 }

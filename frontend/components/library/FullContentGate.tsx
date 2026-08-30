@@ -438,6 +438,14 @@ function renderFull(kind: GateKind, full: FullContentPayload): ReactNode {
               // gated preview hides this bug — it degrades oversized grids to
               // prose, so it often carries no tokens at all.
               tables={section.tables}
+              // ⚠ LOAD-BEARING FOR THE SAME REASON, and this one fails the
+              // OTHER way round. Every `IMG_{n}` token survives into
+              // `section.text` at gate="open" — and without this prop the
+              // client's unconditional strip DELETES each one silently, so the
+              // reader who just spent an unlock sees fewer figures than the
+              // anonymous preview of the same page did. Not a visible token, a
+              // missing diagram: nothing on screen says anything went wrong.
+              images={section.images}
               dedupeHeading={section.title ?? undefined}
             />
           </section>
@@ -453,12 +461,16 @@ function renderFull(kind: GateKind, full: FullContentPayload): ReactNode {
   }
 
   if (kind === "article") {
-    const { text, sharh_md } = full as FullArticle;
+    const { text, sharh_md, images } = full as FullArticle;
     if (!text && !sharh_md) return null;
     return (
       <div className="space-y-6">
         <section id="article-body" className="scroll-mt-24">
-          <ArticleBody visibleText={text} plain />
+          {/* ⚠ `images` for the same reason as the sections arm above: a مادة
+              whose `article_text` carries image markup resolves its figures
+              here, and dropping the prop degrades a PAID reveal to prose while
+              the anonymous preview of the same مادة keeps its diagrams. */}
+          <ArticleBody visibleText={text} plain images={images} />
         </section>
         {sharh_md && (
           <section

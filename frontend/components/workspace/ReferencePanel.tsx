@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { ChunkFigure } from "@/components/library/blocks/ChunkFigure";
 import { ChunkTable } from "@/components/library/blocks/ChunkTable";
 import {
   useLibraryBalance,
@@ -1247,13 +1248,43 @@ function SourceViewContent({
     if (segments.length > 0) {
       return (
         <div className="space-y-3">
-          {segments.map((segment, index) =>
-            segment.kind === "table" ? (
-              <ChunkTable key={`${segment.ref}-${index}`} html={segment.html} />
-            ) : (
-              <MarkdownRenderer key={index} content={segment.text} />
-            ),
-          )}
+          {segments.map((segment, index) => {
+            if (segment.kind === "table") {
+              return (
+                <ChunkTable key={`${segment.ref}-${index}`} html={segment.html} />
+              );
+            }
+            // ⚠ A figure is NOT handed to `MarkdownRenderer` either, and for a
+            // sharper reason than the tables: the corpus writes
+            // `![img-1.jpeg](images/page_005_img_001.jpeg)`, and react-markdown
+            // resolves that RELATIVE path against the app origin — a 404 and a
+            // broken-image icon inside a cited statute, which is what these 56
+            // citations render today. The server resolves it to a public
+            // Storage url instead and the same `<ChunkFigure>` the library uses
+            // draws it, so the two surfaces cannot drift.
+            //
+            // The caption number is chunk-scoped here — this popup shows one
+            // مقطع, so its first figure is «الصورة 1» whatever number it
+            // carries on the document page. `eager` on that first one: this
+            // dialog only opens on a click, so there is nothing below the fold
+            // to protect and the reader is already waiting on it.
+            if (segment.kind === "image") {
+              return (
+                <ChunkFigure
+                  key={`${segment.image_ref}-${index}`}
+                  url={segment.url}
+                  width={segment.width}
+                  height={segment.height}
+                  title={segment.title}
+                  description={segment.description}
+                  n={segment.n}
+                  eager={segment.n === 1}
+                  className="my-0"
+                />
+              );
+            }
+            return <MarkdownRenderer key={index} content={segment.text} />;
+          })}
         </div>
       );
     }

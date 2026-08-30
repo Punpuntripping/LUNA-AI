@@ -30,6 +30,22 @@ export type LegalBlock =
    * token it resolved from, kept for debugging and for keys.
    */
   | { type: "table"; ref: string; html: string }
+  /**
+   * A figure swapped back in for its `IMG_{n}` placeholder line. `ref` is the
+   * token it resolved from (the key and the debug handle); everything else is
+   * what `<ChunkFigure>` renders. `n` is the RENDER-ORDER number the caption
+   * prints — minted upstream, never `chunk_images.meta->>'n'` (see ChunkFigure).
+   */
+  | {
+      type: "image";
+      ref: string;
+      n: number;
+      title: string;
+      description: string;
+      url: string;
+      width: number;
+      height: number;
+    }
   | { type: "para"; text: string };
 
 /**
@@ -42,6 +58,24 @@ export type LegalBlock =
 export type LegalTableMap = Record<string, { html: string }>;
 
 /**
+ * Rendered figures keyed by the `IMG_{n}` token that stands in for each one
+ * inside the body text. Same discipline as {@link LegalTableMap}: the lifter
+ * asks for the least it needs, so the richer wire type (which also carries
+ * `image_ref`) stays assignable to it.
+ */
+export type LegalImageMap = Record<
+  string,
+  {
+    n: number;
+    title: string;
+    description: string;
+    url: string;
+    width: number;
+    height: number;
+  }
+>;
+
+/**
  * A whole line that is nothing but a `TBL_…` token — the placeholder the corpus
  * writes where a table was lifted out of the prose. Whole line, nothing else on
  * it. `[A-Za-z0-9_]+` and not something looser is what makes BOTH token shapes
@@ -49,6 +83,59 @@ export type LegalTableMap = Record<string, { html: string }>;
  * do not relax it.
  */
 const TABLE_PLACEHOLDER = /^[ \t]*(TBL_[A-Za-z0-9_]+)[ \t]*$/;
+
+/**
+ * A whole line that is nothing but an `IMG_{n}` token — OUR placeholder, minted
+ * by the server for each figure it resolved, never anything the corpus wrote.
+ *
+ * ⚠ `IMG_\d+`, and deliberately NOT the `[A-Za-z0-9_]+` shape `TBL_` uses. The
+ * token is not built from `image_ref`: four regulations carry ARABIC in their
+ * ref (`17645_reg_الانظمة_002_chunk_001`), so a ref-derived token could not use
+ * an ASCII anchor at all. `IMG_{n}` is ASCII by construction, is unique inside
+ * the payload the server just built, and IS the caption number — so the token
+ * and the label can never disagree. Verified corpus-wide: 0 chunks contain a
+ * whole-line `IMG_\d+` (8 contain one inline, which this anchor never matches).
+ */
+const IMAGE_PLACEHOLDER = /^[ \t]*(IMG_\d+)[ \t]*$/;
+
+/**
+ * The CORPUS's own image markup — `![img-1.jpeg](images/page_005_img_001.jpeg)`
+ * — matched ANYWHERE on a line, not just on one of its own.
+ *
+ * This is a DIFFERENT regex from {@link IMAGE_PLACEHOLDER} doing a different
+ * job, and the two must never be merged: that one is the stand-in we project
+ * onto the wire, this one is the raw markup we are deleting. 3,630 of the 3,677
+ * live spans are whole-line, but 47 sit INSIDE a prose sentence, so a whole-line
+ * rule would silently drop those 47 sentences' worth of context and leave the
+ * prose looking finished.
+ *
+ * Global — used ONLY with `String.replace`, which resets `lastIndex` itself.
+ * Never call `.test()` on it.
+ */
+const IMAGE_SPAN = /!\[[^\]]*\]\(images\/[^)]+\)/g;
+
+/**
+ * Delete every raw corpus image span from one line, leaving the sentence around
+ * it intact.
+ *
+ * ⚠ THIS RUNS UNCONDITIONALLY — it is not gated on an image map, and it must
+ * never become gated. Read {@link toLegalBlocks}'s docstring for why.
+ *
+ * The `includes` guard is not just speed: a line with no span is returned
+ * BYTE-IDENTICAL, so every non-regulation caller (circulars, forms, judgments,
+ * guides, summaries) is provably unchanged by this feature. Only a line that
+ * actually lost a span gets its whitespace tidied — collapsing the hole the span
+ * left («النص ![x](images/a.jpeg) يكمل» → «النص يكمل», not «النص  يكمل») and
+ * dropping what is left over on a line that was nothing BUT a span, so the
+ * caller can flush it exactly like a blank line.
+ */
+function stripImageSpans(line: string): string {
+  if (!line.includes("](images/")) return line;
+  return line
+    .replace(IMAGE_SPAN, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+$/, "");
+}
 
 const ARABIC_ORDINALS = new Set([
   "الأولى", "الاولى", "الثانية", "الثالثة", "الرابعة", "الخامسة", "السادسة",
@@ -134,10 +221,45 @@ function bareChapterLevel(text: string): 1 | 2 | 3 | null {
  * is byte-identical to the pre-tables behaviour for every input — which is what
  * lets every other caller (circulars, forms, judgments, guides, summaries) keep
  * calling this with one argument and change nothing.
+ *
+ * `images` (optional) turns each whole-line `IMG_{n}` placeholder into an
+ * `image` block, under the same "an unresolved token emits NOTHING" rule. Here
+ * that rule is not merely defensive: 656 chunks carry image markup with no row
+ * behind it at all — the figure was judged decorative, or sat in front matter,
+ * or could not be attached — so 298 spans on published pages point at an image
+ * that does not exist and never will. Deleting them IS the fix, not a fallback.
+ *
+ * ⚠⚠ TWO THINGS ARE MATCHED UNCONDITIONALLY HERE, GATED ON NOTHING, and this is
+ * the load-bearing part of the whole feature:
+ *
+ *   1. a whole-line `IMG_{n}` token — dropped when it does not resolve, exactly
+ *      like `TBL_`; and
+ *   2. **a raw `![…](images/…)` span, anywhere on a line — ALWAYS removed**,
+ *      map or no map, caller or no caller.
+ *
+ * Rule 2 is why this ships BEFORE any backend change and fixes something on its
+ * own: 168 published أنظمة print 1,956 of those spans as literal body text
+ * TODAY, plus 52 `seo_articles` rows in their `article_text`. The moment this
+ * deploys they stop, everywhere, including on every 24h ISR payload baked before
+ * the wire grew an `images` key and on every caller that never passes one.
+ *
+ * ⚠ DO NOT "SIMPLIFY" EITHER MATCH BY GATING IT ON `images`. That is the exact
+ * mistake that once shipped `TBL_…` reference ids to readers: `FullContentGate`
+ * rendered the paid reveal without passing the table map, every token fell
+ * through to the paragraph buffer, and a نظام that is mostly tables displayed
+ * almost nothing but its own ids. Gating rule 2 is strictly worse than that —
+ * it would not degrade a forgetful caller to a MISSING figure, it would restore
+ * today's bug and print `page_005_img_001.jpeg` inside a statute.
+ *
+ * The one thing a caller can still get wrong is passing `text` without its
+ * `images`: the figures vanish. That is why `FullSection`/`FullArticle` carry
+ * the map too — a reader who PAID for the reveal must never see fewer figures
+ * than the anonymous preview of the same page.
  */
 export function toLegalBlocks(
   text: string,
   tables?: LegalTableMap,
+  images?: LegalImageMap,
 ): LegalBlock[] {
   const blocks: LegalBlock[] = [];
   let buffer: string[] = [];
@@ -191,7 +313,15 @@ export function toLegalBlocks(
     if (items.length > 0) pushList(items);
   };
 
-  for (const line of text.split("\n")) {
+  for (const rawLine of text.split("\n")) {
+    // ⚠ FIRST, AND UNCONDITIONALLY. Raw corpus image markup is deleted from
+    // EVERY line before anything else looks at it — see the docstring's rule 2.
+    // A line that was nothing but a span now trims to empty and flushes like a
+    // blank line; an inline span leaves its sentence behind and that sentence
+    // goes on to be parsed exactly as before. A line with no span is untouched,
+    // byte for byte.
+    const line = stripImageSpans(rawLine);
+
     const heading = stripHashes(line);
     if (heading) {
       flush();
@@ -213,6 +343,13 @@ export function toLegalBlocks(
     // mostly tables displayed almost nothing but its own ids. Dropping instead
     // degrades a forgetful caller to a MISSING table — bad, but not a leak.
     const placeholder = line.match(TABLE_PLACEHOLDER);
+    // ⚠ MATCHED UNCONDITIONALLY TOO, and for the same reason — do NOT gate this
+    // on `images`. A whole-line `IMG_{n}` is a placeholder, never legal text, so
+    // it must vanish whether or not a map was supplied. The failure this
+    // prevents is a bare `IMG_3` on a statute page, which is what a payload
+    // whose `text` came from the new projector but whose `images` went missing
+    // (a half-formed 24h ISR bake) would otherwise render.
+    const figure = line.match(IMAGE_PLACEHOLDER);
     if (placeholder) {
       flush();
       const ref = placeholder[1];
@@ -220,6 +357,26 @@ export function toLegalBlocks(
       // Resolved ⇒ the grid. Unresolved, empty markup, or no map at all ⇒
       // nothing at all (the corpus contract's rule 2).
       if (html) blocks.push({ type: "table", ref, html });
+    } else if (figure) {
+      flush();
+      const ref = figure[1];
+      const image = images?.[ref];
+      // Resolved ⇒ the figure. Unresolved, no bytes behind it (`url` empty is
+      // how an `uploaded_at IS NULL` row would arrive), or no map at all ⇒
+      // nothing at all. A URL for absent bytes is a broken-image icon inside a
+      // statute, which is the exact thing this feature exists to stop.
+      if (image?.url) {
+        blocks.push({
+          type: "image",
+          ref,
+          n: image.n,
+          title: image.title,
+          description: image.description,
+          url: image.url,
+          width: image.width,
+          height: image.height,
+        });
+      }
     } else if (line.trim() === "") {
       flush();
     } else {

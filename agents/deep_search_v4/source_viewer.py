@@ -65,6 +65,9 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Field
 
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
+# The public bucket origin, read once in the agents layer so the fetch stage and
+# this view builder cannot disagree about where a figure lives.
+from agents.deep_search_v4.ura.enrich import image_base_url
 from agents.deep_search_v4.ura.schema import (
     CaseURAResult,
     CircularURAResult,
@@ -74,6 +77,7 @@ from agents.deep_search_v4.ura.schema import (
 )
 from shared.library.case_sources import entity_name as _entity_name
 from shared.library.case_sources import judgment_provenance
+from shared.library.chunk_images import ChunkImage, images_by_chunk, place_images
 from shared.library.chunk_tables import split_body, tables_by_ref
 
 logger = logging.getLogger(__name__)
@@ -122,10 +126,14 @@ class ChunkSourceView(BaseModel):
     each token. This is that walk, already done:
     ``shared.library.chunk_tables.split_body``.
 
-    Exactly two segment shapes::
+    Exactly three segment shapes::
 
         {"kind": "text",  "text": str}
         {"kind": "table", "ref": str, "html": str, "md": str, "weight": int}
+        {"kind": "image", "image_ref": str, "n": int, "title": str,
+                          "description": str, "url": str,
+                          "width": int, "height": int,
+                          "weight": int, "span_len": int}
 
     ``html`` is **sanitized server-side** by an allowlist re-serializer
     (``sanitize_table_html``, run inside ``tables_by_ref``) — that is what makes
@@ -133,17 +141,36 @@ class ChunkSourceView(BaseModel):
     by inspection of a corpus snapshot. Raw ``chunk_tables_v2.table_html`` never
     reaches this field.
 
+    A ``kind="image"`` segment is a FIGURE, and it is the half the tables work
+    did not need. The corpus writes ``![img-1.jpeg](images/page_005_img_001.jpeg)``
+    — a relative path no app can reach, which is why 56 already-written
+    citations render a broken-image icon inside a cited statute today. The
+    server resolves it against the public ``regulation-images`` bucket and ships
+    the caption, the ``alt`` text and the intrinsic dimensions, so the popup can
+    reserve the box before the bytes land. ``n`` is a RENDER-ORDER counter minted
+    server-side, chunk-scoped here (this popup shows one مقطع), and it is what
+    the caption prints — «الصورة {n}: {title}». It is never
+    ``chunk_images.meta->>'n'``: 120 of 418 regulations have gaps in that,
+    worst case 383, so a reader would see «الصورة 402» and conclude 401 figures
+    were lost (D8).
+
+    Unlike tables, figures ride the **live** enrichment fetch (D12) — gated on
+    ``chunks_v2.has_images``, true on 1.6% of regulation citations — because the
+    aggregator is the consumer that was broken, not just the reader.
+
     ⚠ **``[]`` is the normal case and it means "render ``content`` exactly as
-    today".** It covers all three of: a chunk with no tables (82% of the
-    corpus), a reveal built without ``with_tables=True``, and every artifact
-    persisted before this shipped. Because empty is the untouched path, no
-    consumer needs a compatibility branch — which is precisely why this field
-    was added beside ``content`` instead of replacing it.
+    today".** It covers all of: a chunk with neither tables nor figures, a
+    reveal built without ``with_tables=True`` whose chunk carries no figure, and
+    every artifact persisted before this shipped. Because empty is the untouched
+    path, no consumer needs a compatibility branch — which is precisely why this
+    field was added beside ``content`` instead of replacing it.
 
     ``content`` remains the PROSE and remains authoritative for text-only
     channels: «نسخ المحتوى» pastes it, and a client that cannot render HTML
     falls back to it. An unresolvable token produces NO segment and leaves no
-    trace, so the literal string ``TBL_`` can never appear in a ``text``.
+    trace, so the literal string ``TBL_`` can never appear in a ``text`` — and
+    the same rule, from the same walk, keeps ``](images/`` out of one (D3). A
+    user pasting a source into a memo must get the law, not a CDN URL.
     """
 
 
@@ -601,46 +628,87 @@ def _strip_line_indent(text: str) -> str:
     return "\n".join(line.lstrip() for line in text.splitlines())
 
 
+def _reg_figures(ura: RegURAResult) -> list[ChunkImage]:
+    """``RegURAResult.chunk_images`` (raw rows) → this chunk's figures.
+
+    ``images_by_chunk`` is the ONLY constructor used, for exactly the reason
+    ``tables_by_ref`` is the only one on the table side: every rule that decides
+    whether a figure exists at all — the ``uploaded_at`` check (D6), the
+    ``storage_path`` URL rule (D7, because 575 of 5,347 rows are PNG and
+    ``image_ref + ".jpeg"`` would 404 on every one of them) and the
+    ``contains_text`` gate on the transcription — lives inside it. A hand-built
+    ``ChunkImage`` would quietly skip all three.
+
+    It returns a ``{chunk_id: [...]}`` map because the library reads a whole
+    نظام at once. ``ura/enrich.py`` fills ``chunk_images`` with ONE chunk's
+    rows, so the map is flattened back rather than keyed on the ref_id: these
+    rows are this result's by construction, and a chunk re-chunked between the
+    write and the read would otherwise lose its figures to an id that no longer
+    matches anything.
+    """
+    rows = ura.chunk_images or []
+    if not rows:
+        return []
+    by_chunk = images_by_chunk(rows, base_url=image_base_url())
+    return [image for images in by_chunk.values() for image in images]
+
+
 def _reg_display_segments(ura: RegURAResult) -> list[dict]:
-    """``RegURAResult`` → prose/table segments, or ``[]`` for "render content".
+    """``RegURAResult`` → prose/table/figure segments, or ``[]`` for "render content".
 
-    PURE. The whole walk lives in ``shared.library.chunk_tables`` — the one
-    implementation the public library and this popup both call, so the two
-    surfaces cannot drift — and this is only the adapter onto a URA.
-
-    ``tables_by_ref`` is the ONLY constructor used, because it is what runs
-    ``sanitize_table_html``; raw ``table_html`` must never reach a view. A row
-    whose HTML sanitizes to nothing is dropped there, so its token behaves
-    exactly like one that was never ingested.
+    The whole walk lives in ``shared.library`` — ``chunk_tables.split_body``
+    then ``chunk_images.place_images``, the one implementation the public
+    library and this popup both call, so the two surfaces cannot drift — and
+    this is only the adapter onto a URA.
 
     Returns ``[]`` — meaning "render ``content``, exactly as today" — for every
-    reason there is not to segment: no display body, no table rows, nothing that
-    sanitized to a real grid, and (the case that matters) a body that split into
-    no table at all. That last guard is what keeps a table-free reveal off the
-    new path entirely: ``content_display`` is a DIFFERENT string from
-    ``content`` even when it carries no token, and a segment payload built from
-    it would quietly change what the popup shows for a chunk that has nothing to
-    gain from it.
+    reason there is not to segment: no table rows AND no image rows, nothing
+    that sanitized to a real grid or resolved to a real figure, and a body that
+    split into neither. That last guard is what keeps a bare reveal off the new
+    path entirely: ``content_display`` is a DIFFERENT string from ``content``
+    even when it carries no token, and a segment payload built from it would
+    quietly change what the popup shows for a chunk with nothing to gain.
 
-    Never raises. A blown parse costs the reader a grid; it must not cost them
-    the source.
+    **Which body is walked, and why it is not always the display one.** Tables
+    only exist in ``content_display``, so a chunk with grids must walk that.
+    Figures ride the live fetch and 96.7% of the corpus has no ``TBL_`` token at
+    all, so a chunk with figures and no tables has an EMPTY ``chunk_display``
+    and must still segment — over the PROSE, where every table already reads as
+    the flattened list the OCR pipeline wrote. That is the existing fail-soft
+    direction, unchanged; it simply no longer costs the reader their figures.
+    An image span survives the collapse either way: of the 799 cited rows on
+    chunks that also carry ``content_display``, all 799 keep their
+    ``source_basename`` in it — 0 were ever swallowed into a ``TBL_`` token.
+
+    Never raises. A blown parse costs the reader a grid or a figure; it must not
+    cost them the source.
     """
-    body = (ura.chunk_display or "").strip()
-    rows = ura.chunk_tables or []
-    if not body or not rows:
+    table_rows = ura.chunk_tables or []
+    image_rows = ura.chunk_images or []
+    if not table_rows and not image_rows:
         return []
     try:
-        tables = tables_by_ref(rows)
-        if not tables:
+        tables = tables_by_ref(table_rows) if table_rows else {}
+        figures = _reg_figures(ura)
+        display = (ura.chunk_display or "").strip()
+        if tables and display:
+            body, table_map = display, tables
+        elif figures:
+            body, table_map = (ura.chunk_content or "").strip(), {}
+        else:
             return []
-        segments = split_body(_strip_line_indent(body), tables)
+        if not body:
+            return []
+        segments = split_body(_strip_line_indent(body), table_map)
+        if figures:
+            segments, _next_index = place_images(segments, figures)
     except Exception as exc:  # noqa: BLE001 — degrade to the prose, never 500
         logger.warning(
-            "source_viewer: table segmentation failed for %s: %s",
+            "source_viewer: display segmentation failed for %s: %s",
             getattr(ura, "ref_id", "?"), exc,
         )
         return []
-    if not any(seg.get("kind") == "table" for seg in segments):
+    if not any(seg.get("kind") in ("table", "image") for seg in segments):
         return []
     return segments
 
@@ -664,23 +732,36 @@ async def _build_reg_view(
     The field survives on ``RegURAResult`` (stored, and still in the forensic
     dumps) — it just no longer reaches a user surface.
 
-    **Tables (chunk_table_rendering.md §4.2).** ``display_segments`` is filled
-    only when the URA arrived from a REVEAL — i.e. from
+    **Tables (chunk_table_rendering.md §4.2).** A TABLE segment appears only
+    when the URA arrived from a REVEAL — i.e. from
     ``_enrich_regulations(..., with_tables=True)``, which is the only caller
     that reads ``content_display`` and ``chunk_tables_v2``. A live-turn URA
-    carries neither, so this stays ``[]`` and the popup renders ``content``
-    exactly as it does today.
+    carries neither, so it yields no grid.
+
+    **Figures (chunk_image_rendering.md §4.2).** They do NOT wait for a reveal.
+    ``ura/enrich.py`` reads ``chunk_images`` on both paths, gated on
+    ``chunks_v2.has_images``, so ``display_segments`` gains image segments with
+    no new flag — a live-turn URA whose chunk carries a figure segments over its
+    PROSE, and a reveal whose chunk also carries tables segments over the
+    display body. Either way the corpus's ``![img-1.jpeg](images/…)`` becomes a
+    resolved public Storage URL and never reaches a reader.
 
     ``content`` is NEVER built from the display body: it is the prose, it is
     what «نسخ المحتوى» pastes (D11) and it is the fallback any consumer that
     ignores segments falls back to. The two strings diverge here deliberately.
 
     Fail-soft, and the safe direction is not the obvious one: if the tables did
-    not arrive, ``chunk_display`` is empty and we emit ``[]`` — the prose, with
-    every table intact as the flattened list it has always been. Splitting the
-    display body against an EMPTY table map would instead let each token resolve
-    to nothing, which does not degrade the نظام, it silently deletes tables from
-    it. ``_enrich_regulations`` fills the pair together for the same reason.
+    not arrive, ``chunk_display`` is empty and no grid is emitted — the prose,
+    with every table intact as the flattened list it has always been. Splitting
+    the display body against an EMPTY table map would instead let each token
+    resolve to nothing, which does not degrade the نظام, it silently deletes
+    tables from it. ``_enrich_regulations`` fills the pair together for the same
+    reason. Figures invert that rule and it is worth saying out loud: a failed
+    ``chunk_images`` read leaves the spans unresolved and D3 REMOVES them, so
+    the degradation is prose without its figures. That is the only safe
+    direction here, because the alternative is leaving
+    ``![img-1.jpeg](images/…)`` in front of a reader, which is precisely
+    today's bug.
     """
     _ = supabase  # unused -- reg views are fully URA-sourced post-enrich
 

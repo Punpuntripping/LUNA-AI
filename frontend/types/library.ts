@@ -19,7 +19,10 @@ import type { RegulationHubItem } from "@/lib/library/api";
 // Same rule, same reason: type-only. `lib/library/legal-text.tsx` is a value
 // module (it renders JSX), so importing it for real would drag a component
 // module into a pure type file.
-import type { LegalTableMap } from "@/lib/library/legal-text";
+import type {
+  LegalImageMap,
+  LegalTableMap,
+} from "@/lib/library/legal-text";
 
 // ------------------------------------------------------------------
 // Shared data primitives
@@ -442,6 +445,18 @@ export interface ArticleBodyProps {
    * backend shipped this forces — and the body renders exactly as before.
    */
   tables?: LegalTableMap;
+  /**
+   * `plain` only: rendered figures keyed by the `IMG_{n}` token that stands in
+   * for each one inside `visibleText`. Each resolved token renders as a real
+   * `<figure>`; an unresolved one renders as NOTHING (never a bare `IMG_3`).
+   *
+   * ⚠ Omitting it costs the FIGURES, not the fix. The raw `![…](images/…)`
+   * corpus markup is stripped by `toLegalBlocks` unconditionally for every
+   * caller, so a non-regulation body and an ISR payload baked before the backend
+   * shipped both degrade to prose-without-figures — never to the printed
+   * filename that 168 published أنظمة show today.
+   */
+  images?: LegalImageMap;
   /**
    * `plain` only: when the FIRST rendered block is a heading that duplicates
    * this value (colon/whitespace-insensitive), drop it — used where a styled

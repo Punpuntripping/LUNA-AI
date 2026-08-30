@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { ChunkFigure } from "@/components/library/blocks/ChunkFigure";
 import { ChunkTable } from "@/components/library/blocks/ChunkTable";
 import { renderInline, type LegalBlock } from "@/lib/library/legal-text";
 
@@ -21,6 +22,7 @@ import { renderInline, type LegalBlock } from "@/lib/library/legal-text";
  *   para                 mt-3.5
  *   repealed («ملغاة»)   mt-2   muted italic
  *   table (TBL_…)        mt-4   ChunkTable — its own scroll box, never the page
+ *   image (IMG_{n})      mt-5   ChunkFigure — the diagram, captioned «الصورة n»
  *
  * `tone="lead"` is the AI summary lead: same structure, secondary text colour.
  * Server component.
@@ -117,6 +119,31 @@ export function LegalBlocks({
                 <ChunkTable html={block.html} />
               </div>
             );
+          case "image":
+            // Same wrapper reason as the table: the gap rides the outside so
+            // `ChunkFigure` stays spacing-agnostic and the مراجع popup can
+            // render the identical component in its own rhythm.
+            //
+            // `eager` is DERIVED, not plumbed. «الصورة n» is a render-order
+            // counter threaded across a document's sections in reading order,
+            // so `n === 1` IS the first figure of the first section — the one
+            // element worth pre-loading — and every later one stays lazy. That
+            // holds on a مادة page too, whose counter is page-scoped and also
+            // starts at 1. Worst case if the counter's scope ever changed: a
+            // wrong loading HINT, never a wrong render.
+            return (
+              <div key={index} className={gap}>
+                <ChunkFigure
+                  url={block.url}
+                  width={block.width}
+                  height={block.height}
+                  title={block.title}
+                  description={block.description}
+                  n={block.n}
+                  eager={block.n === 1}
+                />
+              </div>
+            );
           default:
             return (
               <p key={index} className={cn(gap, "whitespace-pre-line")}>
@@ -135,4 +162,5 @@ const GAP: Record<Exclude<LegalBlock["type"], "heading">, string> = {
   para: "mt-3.5",
   repealed: "mt-2",
   table: "mt-4",
+  image: "mt-5",
 };

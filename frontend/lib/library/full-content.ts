@@ -36,7 +36,10 @@
 import { getAccessToken } from "@/lib/api";
 import type { UsageReport } from "@/types";
 // Type-only: `legal-text` renders JSX, and this is a plain fetch module.
-import type { LegalTableMap } from "@/lib/library/legal-text";
+import type {
+  LegalImageMap,
+  LegalTableMap,
+} from "@/lib/library/legal-text";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -68,6 +71,23 @@ export interface FullSection {
    * response cached before the backend shipped it both narrow cleanly.
    */
   tables?: LegalTableMap;
+  /**
+   * Rendered figures keyed by the whole-line `IMG_{n}` token that stands in for
+   * each one inside `text`. Mirrors `RegulationVisibleSection.images`.
+   *
+   * ⚠ AND THE REVEAL IS WHERE THIS ONE MATTERS MOST TOO — same trap, sharper
+   * edge. `renderFull` shipped `tables` and nothing else, and an article-surface
+   * reveal builds its ملاحق through the same section builder as the public page,
+   * so its `text` DOES carry `IMG_{n}` token lines. With no map the client's
+   * unconditional strip eats every one of them, and the reader who just spent an
+   * unlock sees FEWER figures than the anonymous preview of the same page. The
+   * gated preview hides the bug — it withholds figures it cannot afford, so it
+   * often carries few tokens at all.
+   *
+   * Optional on the wire so a judgment reveal (same envelope, no figures) and
+   * any response cached before the backend shipped it both narrow cleanly.
+   */
+  images?: LegalImageMap;
 }
 
 /** One «المصادر الرسمية» entry. Matches the backend's `OfficialSource`. */
@@ -117,6 +137,16 @@ export interface FullJudgment extends FullRegulation {
 
 export interface FullArticle extends WithOfficialSources {
   text: string;
+  /**
+   * Rendered figures keyed by the `IMG_{n}` token inside `text` — the مادة
+   * reveal's half of the trap documented on {@link FullSection.images}. Without
+   * it a reader who unlocked a مادة gets its prose and none of its diagrams,
+   * while the anonymous preview of the same page shows them.
+   *
+   * Page-scoped counter and CITED figures only, exactly as on the public مادة
+   * payload (`RegulationArticle.images`).
+   */
+  images?: LegalImageMap;
   /**
    * Nullable on the wire — `get_full_article` returns `None` when the مادة has
    * no شرح row. Typed honestly so nobody writes `sharh_md.length` and gets a
