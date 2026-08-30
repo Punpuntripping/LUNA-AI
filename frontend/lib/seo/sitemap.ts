@@ -154,6 +154,7 @@ export function getStaticUrls(): SitemapUrl[] {
     "/privacy",
     "/audiences",
     "/about_us",
+    "/for-lawyers",
     "/vs-chatgpt",
     "/learn",
     "/learn/how-it-works",

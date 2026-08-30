@@ -101,6 +101,18 @@ export const SITE_NAV: NavGroup[] = [
         section: "تعرّف على ريحان",
         enabled: true,
       },
+      // Sits between the two on purpose: «لمن ريحان؟» answers *who*, this one
+      // goes deep on the primary audience, and «ريحان مقابل ChatGPT» closes with
+      // *why not the alternative*. Anywhere before the legal rows is safe —
+      // `groupChildrenBySection` buckets by CONTIGUOUS runs, so only those two
+      // must stay last and adjacent.
+      {
+        label: "ريحان للقانونيين",
+        href: "/for-lawyers",
+        description: "هل يأخذ الذكاء الاصطناعي مكان المحامي؟",
+        section: "تعرّف على ريحان",
+        enabled: true,
+      },
       {
         label: "ريحان مقابل ChatGPT",
         href: "/vs-chatgpt",
