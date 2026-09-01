@@ -704,6 +704,21 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         input_price=0.4,
         output_price=1.6,
     ),
+    # Head model for the two reranker slots (see agents/utils/agent_models.py
+    # `_RERANKER`). Prices are the Singapore/international BASE tier (input
+    # <= 32K); the model is tiered above that (~3x to 256K, ~6x to 1M) — see
+    # migration 152 for the full note. Cache-read is $0.003/1M.
+    "qwen3.7-flash": ModelConfig(
+        model_id="qwen3.7-flash",
+        provider="alibaba",
+        display_name="Qwen3.7 Flash",
+        supports_vision=True,
+        max_tokens=131072,
+        context_length=1000000,
+        input_price=0.03,
+        output_price=0.13,
+        cached_input_price=0.003,
+    ),
 
     # --- Qwen3.6 series (April 2026) ---
     "qwen3.6-plus": ModelConfig(

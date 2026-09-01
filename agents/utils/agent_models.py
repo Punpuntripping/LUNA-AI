@@ -65,12 +65,23 @@ class ModelPolicy:
 
     ``provider`` and ``primary`` name the head of the fallback chain; the
     fallback provider and family are derived automatically.
+
+    ``head`` pins the FIRST cell to an explicit ``model_registry`` key,
+    bypassing the ``TIERS`` lookup for that cell only. It exists so one slot can
+    ride a newer model within its tier without dragging every other slot that
+    shares the tier/family cell along (the tier_2 qwen cell is the reranker's
+    HEAD but also the second fallback cell of every ``_FLASH`` slot). The
+    fallback cells are still derived from ``TIERS``, so a pinned head degrades
+    into the normal chain on a provider error. A CLI ``--model`` token clears it
+    — an explicit override replaces the head outright (see
+    :func:`apply_override`).
     """
 
     tier: Tier
     provider: Provider = "alibaba"
     primary: Family = "qwen"
     reasoning: Reasoning = "default"
+    head: str | None = None
 
 
 #: The single cross-provider safety net for every chain. One cheap, fast,
@@ -90,11 +101,15 @@ def resolve_chain(policy: ModelPolicy) -> list[str]:
     resilience, then a SINGLE cross-provider net. For the normal case (Alibaba
     primary — every agent today) that net is always ``or-deepseek-v4-flash``,
     regardless of the slot's tier or family. Replaces the old 4-cell 2×2 chain.
+
+    ``policy.head``, when set, replaces the first cell only (the two fallback
+    cells stay derived from ``TIERS``).
     """
     fb_family = _OTHER_FAMILY[policy.primary]
     cells = TIERS[policy.tier]
+    head = policy.head or cells[policy.primary][policy.provider]
     return [
-        cells[policy.primary][policy.provider],
+        head,
         cells[fb_family][policy.provider],
         _CROSS_PROVIDER_FALLBACK[policy.provider],
     ]
@@ -176,7 +191,8 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
 # flipped to deepseek-v4-flash (tier_2, deepseek-primary) to A/B the cheap/fast
 # model across the pipeline. The router (flipped 2026-06-14) now runs on the same
 # _FLASH policy too — nothing is left on tier_1.
-# Rerankers stay tier_2 qwen3.5-flash (never were 3.6-plus). Revert via git to
+# Rerankers stay tier_2 qwen-primary (never were 3.6-plus); as of 2026-08-31 their
+# head is pinned to qwen3.7-flash (see _RERANKER). Revert via git to
 # restore the all-tier_1 baseline.
 _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
 # Same flash head, but reasoning pushed to the provider ceiling (deepseek
@@ -185,6 +201,15 @@ _FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
 _FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
 # Flash head with mid-effort reasoning — used by the artifact_editor slot.
 _FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium")
+# The two reranker slots. Qwen-primary tier_2, but pinned to qwen3.7-flash
+# rather than the tier's qwen3.5-flash cell (2026-08-31). 3.7-flash is the
+# newer flash generation and ~3x cheaper on both legs ($0.03/$0.13 vs
+# $0.10/$0.40 per 1M, Singapore base tier). `head` scopes the swap to these two
+# slots: the tier_2 qwen CELL is also the second fallback of every `_FLASH`
+# slot, and moving that too would change fallback behaviour pipeline-wide for a
+# reranker change. Fallbacks here stay deepseek-v4-flash → or-deepseek-v4-flash.
+# Revert = drop the `head=` kwarg.
+_RERANKER = ModelPolicy("tier_2", head="qwen3.7-flash")
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
@@ -205,9 +230,17 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
     # planner no longer varies expander effort.
     "reg_compliance_expander":        _FLASH_MEDIUM,
-    "reg_compliance_reranker":        ModelPolicy("tier_2"),
+    "reg_compliance_reranker":        _RERANKER,
     "reg_compliance_aggregator":      _FLASH,
     "case_search_expander":       _FLASH_MEDIUM,
+    # NOT on _RERANKER yet — deliberately still the tier's qwen3.5-flash cell.
+    # The qwen3.7-flash swap was validated ONLY on the reg family: 3.7 under the
+    # un-recalibrated prompt collapsed downstream recall (0.59 vs 0.89 of the
+    # chunks the final answers actually cited), and only the paired reg prompt
+    # recalibration brought it back to parity. case_search has its own schema and
+    # its own scarcity calibration, and the replay harness has not been extended
+    # to it — so moving it would ship the same unmeasured risk into the judgments
+    # family. Flip to _RERANKER once scripts/reranker_model_ab.py covers it.
     "case_search_reranker":       ModelPolicy("tier_2"),
     "case_search_aggregator":     _FLASH,
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
@@ -301,15 +334,21 @@ def apply_override(slot: str, token: str | None) -> ModelPolicy:
     ``token`` may name a family (``qwen``/``deepseek``) or a provider
     (``alibaba``/``openrouter``); it tweaks the head of the chain only. The tier
     is fixed by the slot - an agent can only use models within its tier.
+
+    An override always clears ``policy.head``: the token names the cell the
+    caller wants at the head, so a pinned key would silently win over it (and a
+    provider flip would leave an Alibaba key pinned on an OpenRouter chain).
+    So ``--model qwen`` on a reranker means "this tier's qwen family cell"
+    (qwen3.5-flash), NOT the pinned qwen3.7-flash head.
     """
     base = AGENT_MODELS[slot]
     if not token:
         return base
     token = token.strip().lower()
     if token in ("qwen", "deepseek"):
-        return replace(base, primary=token)  # type: ignore[arg-type]
+        return replace(base, primary=token, head=None)  # type: ignore[arg-type]
     if token in ("alibaba", "openrouter"):
-        return replace(base, provider=token)  # type: ignore[arg-type]
+        return replace(base, provider=token, head=None)  # type: ignore[arg-type]
     raise ValueError(
         f"Invalid model override '{token}'. Expected one of: "
         f"qwen, deepseek, alibaba, openrouter (the agent is locked to its tier)."
@@ -359,7 +398,7 @@ def get_agent_model(
 # A deep_search sub-agent's role name (the ``agent`` field on inner_usage
 # entries) → its primary model on the happy path. Mirrors AGENT_MODELS:
 #   expander       → AGENT_MODELS["*_search_expander"]      = _FLASH (deepseek-v4-flash)
-#   reranker       → AGENT_MODELS["*_search_reranker"]      = ModelPolicy("tier_2") (qwen3.5-flash)
+#   reranker       → AGENT_MODELS["*_search_reranker"]      = _RERANKER (qwen3.7-flash)
 #   aggregator     → AGENT_MODELS["*_search_aggregator"]    = _FLASH (deepseek-v4-flash)
 #   sector_picker  → AGENT_MODELS["sector_picker"]          = deepseek primary tier_2
 # Unknown roles fall back to _DEFAULT_MODEL (a conservative tier_1 estimate; the
@@ -368,7 +407,10 @@ def get_agent_model(
 # caller) overrides this lookup.
 _SUBAGENT_MODEL: dict[str, str] = {
     "expander":      "deepseek-v4-flash",
-    "reranker":      "qwen3.5-flash",
+    # Legacy fallback only: BOTH rerankers now set an explicit per-slot ``model``
+    # on their usage entries (via primary_model_of_slot), which wins over this
+    # role lookup. Kept for entries emitted before that change.
+    "reranker":      "qwen3.7-flash",
     "aggregator":    "deepseek-v4-flash",
     "sector_picker": "deepseek-v4-flash",
 }
@@ -379,6 +421,24 @@ _DEFAULT_MODEL = "qwen3.7-plus"  # tier_1 qwen primary; used when no slot match
 def model_of_subagent(agent: str) -> str:
     """Return the primary model a deep_search sub-agent role runs on."""
     return _SUBAGENT_MODEL.get(agent, _DEFAULT_MODEL)
+
+
+def primary_model_of_slot(slot: str) -> str:
+    """Return the registry key at the HEAD of ``slot``'s fallback chain.
+
+    Per-SLOT, unlike :func:`model_of_subagent`, which is keyed by the coarser
+    sub-agent ROLE. That distinction became load-bearing on 2026-08-31: both
+    rerankers report ``agent="reranker"``, but `reg_compliance_reranker` now
+    heads on qwen3.7-flash while `case_search_reranker` is still on the tier's
+    qwen3.5-flash cell — so a single role→model entry must mis-price one of
+    them. Callers that know their slot should set ``model`` on the usage entry
+    from this, which takes precedence in ``usage_by_model``.
+    """
+    base = AGENT_MODELS[slot]
+    if isinstance(base, FallbackModel):
+        inner = getattr(base, "models", None) or []
+        return getattr(inner[0], "model_name", "") if inner else _DEFAULT_MODEL
+    return resolve_chain(base)[0]
 
 
 def cost_usd(

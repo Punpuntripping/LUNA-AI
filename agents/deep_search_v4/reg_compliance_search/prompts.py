@@ -388,7 +388,9 @@ A circular or a service has no نظام/نطاق النظام line — apply the
 
 You emit one entry **only for each chunk you KEEP**. Chunks you do not list are dropped — **never emit a drop entry**. `relevance` is REQUIRED on every kept entry.
 
-A chunk is keep-worthy when the system scope applies to the query **and** the chunk summary carries directly useful legal material. The relevance tier is decided by the **two gates** below.
+A chunk is keep-worthy when the system scope applies to the query **and** the chunk carries legal material the aggregator could actually use — either as the governing rule (`high`) or as supporting material that helps state, qualify, or situate the answer (`medium`).
+
+**The keep bar is asymmetric.** The aggregator can ignore a weak chunk it received; it cannot cite one you dropped. When a candidate sits on the genuine borderline between `medium` and drop, **keep it as `medium`**. Reserve dropping for candidates that are off-scope or off-topic — not for candidates that are merely not the governing rule. The relevance tier is decided by the **two gates** below.
 
 ### The two-gate test for `high`
 
@@ -397,13 +399,15 @@ A chunk is keep-worthy when the system scope applies to the query **and** the ch
 - **(A) ON-MECHANISM** — the chunk covers the **specific doctrine / mechanism** the sub-query asks about, not merely the broad legal area or the parent law. A chunk from a different chapter of the same law (even the same right) does not pass.
 - **(B) OPERATIVE** — the chunk is the **governing rule that decides the issue**, not a definition, a scope clause, a procedure, a penalty table, or a closing provision.
 
-If **either** gate fails but the chunk is still useful → `medium`.
+If **either** gate fails but the chunk is still useful → `medium`. Read "useful" broadly: `medium` is the **generous** band. A chunk earns `medium` when it supports the answer without deciding it — the definitions, scope clauses, procedures, penalties, obligations and adjacent provisions the aggregator needs to state the rule accurately and completely. Failing the two gates is a reason to downgrade to `medium`, **not** a reason to drop.
 
-Within a general-scope law (e.g. نظام المعاملات المدنية), the scope applying does NOT make every chunk relevant: that law covers real-property, gift (هبة), assignment of debt (حوالة الدين), companies, lease, and contract formation — each in a **different chapter**. A chunk from the gift-withdrawal chapter is not on-mechanism for a sub-query about contract rescission for breach (فسخ لإخلال). If the only overlap is "same parent law" → drop.
+Within a general-scope law (e.g. نظام المعاملات المدنية), the scope applying does NOT make every chunk relevant: that law covers real-property, gift (هبة), assignment of debt (حوالة الدين), companies, lease, and contract formation — each in a **different chapter**. A chunk from the gift-withdrawal chapter is not on-mechanism for a sub-query about contract rescission for breach (فسخ لإخلال). If the only overlap is "same parent law" → it is not `high`; keep it `medium` when it still carries material the aggregator could use for this sub-query, and drop it only when it does not.
 
 Distinguish the termination mechanisms: **انفساخ** (automatic dissolution upon impossibility), **فسخ اتفاقي** (a contractual rescission right exercised without the court), and **إبطال** (annulment for a consent defect) are **distinct** mechanisms. A sub-query about one is **not** satisfied by a chunk about another, even though all three "end a contract."
 
-**Scarcity:** `high` is scarce — typically about **1–3 high keeps per sub-query**. If you find yourself marking many chunks `high`, you are miscalibrating; downgrade to `medium`.
+**Scarcity:** `high` is scarce — typically about **1–3 high keeps per sub-query**. If you find yourself marking many chunks `high`, you are miscalibrating; downgrade to `medium` — downgrade, do not drop.
+
+Scarcity governs the **`high` tier only**; it is not a budget on your total keeps. Across both tiers a typical sub-query yields about **3–6 keeps**. Returning 0–1 keeps from a candidate set of ten or more almost always means you applied the `high` bar to the whole keep decision. Before you finalise a list of fewer than two keeps, re-read the candidates once against the `medium` bar specifically — not the two-gate `high` test — and keep every one that is on-scope and carries usable material. Only a genuinely off-scope or off-topic candidate set justifies a near-empty list.
 
 ## For خدمة candidates only — the two service gates
 
@@ -423,7 +427,7 @@ After deciding your keeps:
 
 ## Output rules
 
-- Emit one entry **only for each chunk you KEEP**. Do not list chunks you drop. A short `keeps` list is valid — never add or pad entries, and never drop a deserving chunk just to make the list shorter.
+- Emit one entry **only for each chunk you KEEP**. Do not list chunks you drop. A short `keeps` list is valid — never add or pad entries, and never drop a deserving chunk just to make the list shorter. But returning zero keeps while the candidate set still holds on-scope material is a miscalibration, not rigour.
 - `query_axes`: 2-3 distinguishing axes of the sub-query, **in Arabic** — **for documentation and guidance only**; do not change keep decisions based on them.
 - `label`: the chunk identifier exactly as it appeared, `[Cn]` — do not invent identifiers.
 - `relevance`: high / medium — REQUIRED on every kept entry, decided by the two-gate test above.

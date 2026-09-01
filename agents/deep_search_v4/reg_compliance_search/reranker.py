@@ -36,7 +36,7 @@ from typing import Any
 from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
-from agents.utils.agent_models import get_agent_model
+from agents.utils.agent_models import get_agent_model, primary_model_of_slot
 from agents.utils.structured_output import make_json_salvager
 from supabase import Client as SupabaseClient
 
@@ -77,10 +77,12 @@ RERANKER_LIMITS = UsageLimits(
 
 # -- Agent factory -------------------------------------------------------------
 
-# qwen3.5-flash with enable_thinking sometimes finalises as text
+# The qwen flash family with enable_thinking sometimes finalises as text
 # (``<thinking>…</thinking>{json}``) instead of calling the output tool. The
 # salvager rescues a schema-complete JSON without a (large) retry; a genuine
 # omission still raises ModelRetry. See agents/utils/structured_output.py.
+# Still needed on the qwen3.7-flash head (2026-08-31): the 44-case replay in
+# agents_reports/reranker_model_ab/ saw the salvager fire on both generations.
 _REG_RERANKER_RETRY_MSG = (
     "Re-emit the output as a single valid JSON object matching the schema "
     "(sufficient, query_axes, keeps[label, relevance, reasoning, "
@@ -114,9 +116,10 @@ def create_reranker_agent(
         output_type=[RegRerankerClassification, _reg_text_output()],
         instructions=system_prompt,
         retries=2,
-        # Cap reasoning at 15k — DashScope thinking on qwen3.5-flash is otherwise
-        # unbounded and one rogue worker can hit 9k+ reasoning tokens, dominating
-        # the concurrent fan-out (RerankerNode wall-clock = slowest worker).
+        # Cap reasoning at 15k — DashScope thinking on the qwen flash family is
+        # otherwise unbounded and one rogue worker can hit 9k+ reasoning tokens,
+        # dominating the concurrent fan-out (RerankerNode wall-clock = slowest
+        # worker). The cap still binds on the qwen3.7-flash head.
         model_settings={
             "extra_body": {
                 "enable_thinking": True,
@@ -426,6 +429,10 @@ async def run_reranker_for_query(
         ru = result.usage()
         usage_entries.append({
             "agent": "reranker",
+            # Explicit per-slot model: the "reranker" ROLE is shared with
+            # case_search, which heads on a different model — see
+            # primary_model_of_slot's docstring.
+            "model": primary_model_of_slot("reg_compliance_reranker"),
             "reranker_round": 1,
             "requests": ru.requests,
             "input_tokens": ru.input_tokens,

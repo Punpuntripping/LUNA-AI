@@ -40,6 +40,8 @@ OUT = _args.out or os.path.join("agents_reports", "agentic_monitor", f"convo_{CO
 MODEL_TIER = {
     "qwen3.6-plus": "tier_1", "deepseek-v4-pro": "tier_1",
     "qwen3.5-flash": "tier_2", "deepseek-v4-flash": "tier_2",
+    # Reranker head since 2026-08-31 (agents/utils/agent_models.py `_RERANKER`).
+    "qwen3.7-flash": "tier_2",
 }
 
 os.makedirs(os.path.join(OUT, "llm_calls"), exist_ok=True)

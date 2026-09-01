@@ -37,6 +37,18 @@ A `ModelPolicy` is fully described by three independent dimensions
 | **Family** | `Family` | `qwen`, `deepseek` | Model family. `qwen` is the default primary family; `deepseek` is the in-tier fallback family. |
 | **Provider** | `Provider` | `openrouter`, `alibaba` | Where the model is served. **`openrouter` is the default primary**; `alibaba` is the automatic fallback. |
 
+Plus one optional escape hatch (added 2026-08-31):
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| **`head`** | `str \| None` | Pins the FIRST chain cell to an explicit `model_registry` key, bypassing the `TIERS` lookup for that cell only. The two fallback cells are still derived from `TIERS`, so a pinned head still degrades into the normal chain on a provider error. A CLI `--model` token clears it (an explicit override replaces the head outright). |
+
+`head` exists because a `TIERS` cell is shared: the `tier_2 / qwen` cell is the
+rerankers' HEAD but also the second fallback cell of every `_FLASH` slot. Moving
+one slot to a newer in-tier model must not silently change fallback behaviour
+pipeline-wide. Today its only user is `_RERANKER`
+(`ModelPolicy("tier_2", head="qwen3.7-flash")`).
+
 Each `(tier × family × provider)` cell maps to exactly one registry key. The full
 mapping is the `TIERS` table (`agents/utils/agent_models.py:37-46`):
 
@@ -46,6 +58,10 @@ mapping is the `TIERS` table (`agents/utils/agent_models.py:37-46`):
 | **tier_1** | deepseek | `deepseek-v4-pro` | `or-deepseek-v4-pro` |
 | **tier_2** | qwen | `qwen3.5-flash` | `or-qwen3.5-flash` |
 | **tier_2** | deepseek | `deepseek-v4-flash` | `or-deepseek-v4-flash` |
+
+> The `tier_2 / qwen` cell is no longer any slot's head — since 2026-08-31 the
+> two reranker slots pin `head="qwen3.7-flash"`, and the cell survives only as
+> the second fallback of the `_FLASH` slots. See the `head` note above.
 
 The "other" provider and family are derived automatically — there is no second
 table to keep in sync (`agents/utils/agent_models.py:48-49`):
@@ -145,13 +161,13 @@ else is `tier_1`. All slots use the default `provider="openrouter"`.
 | `writer_planner_decider` | tier_1 | openrouter | qwen | Layer-2 Major planner in front of writing_executor. Talks to user (`ask_user`, `present_plan_for_approval`), calls `item_analyzer` for context distillation when prior-WI scope is wide, hands a `WriterPackage` to the writing executor. Multi-turn loop per user turn (capped at 3 `present_plan_for_approval` cycles). Output is a discriminated `list[PlannerDecision \| DeferredToolRequests]` — same shape as the deep_search planner. See `.claude/plans/writer_planner.md`. |
 | `router` | tier_1 | openrouter | qwen | |
 | `reg_search_expander` | tier_1 | openrouter | qwen | |
-| `reg_search_reranker` | tier_2 | openrouter | qwen | |
+| `reg_search_reranker` | tier_2 | openrouter | qwen | Head pinned to `qwen3.7-flash` via `_RERANKER` (2026-08-31) — ~3x cheaper on both legs than the tier's `qwen3.5-flash` cell, validated on a 44-case replay (`agents_reports/reranker_model_ab/`). |
 | `reg_search_aggregator` | tier_1 | openrouter | qwen | |
 | `case_search_expander` | tier_1 | openrouter | qwen | |
-| `case_search_reranker` | tier_2 | openrouter | qwen | |
+| `case_search_reranker` | tier_2 | openrouter | qwen | Head pinned to `qwen3.7-flash` via `_RERANKER` (2026-08-31) — ~3x cheaper on both legs than the tier's `qwen3.5-flash` cell, validated on a 44-case replay (`agents_reports/reranker_model_ab/`). |
 | `case_search_aggregator` | tier_1 | openrouter | qwen | |
 | `compliance_search_expander` | tier_1 | openrouter | qwen | |
-| `compliance_search_reranker` | tier_2 | openrouter | qwen | |
+| `compliance_search_reranker` | tier_2 | openrouter | qwen | Head pinned to `qwen3.7-flash` via `_RERANKER` (2026-08-31) — ~3x cheaper on both legs than the tier's `qwen3.5-flash` cell, validated on a 44-case replay (`agents_reports/reranker_model_ab/`). |
 | `artifact_summarizer` | tier_2 | openrouter | **deepseek** | DeepSeek-primary with reasoning enabled — runs once per published workspace item to produce an agent-facing coverage summary. |
 | `item_analyzer` | tier_2 | openrouter | **deepseek** | Layer-4 librarian that verdicts `workspace_items` against a caller's query. Two LLM calls max per `analyze()` (one per family: refs vs meta). Short structured outputs — reasoning mode is OFF. See `.claude/plans/item_analyzer_v2.md` §6. |
 | `sector_picker` | tier_2 | openrouter | **deepseek** | Runs once per deep_search invocation, in parallel with the expanders, to pick the 2–5 sector AND-filter. Replaces the old `planner_decider.sectors` output (decider had no per-sector corpus visibility — diagnosed in conv `faa3b71e`). DeepSeek-flash is fast/cheap; the call is a short two-field structured output. |
@@ -332,8 +348,14 @@ provider is unknown.
 |-----|----------|-------|--------|-----------|
 | `qwen3.6-plus` | `qwen3.6-plus` | 0.57 | 3.44 | — |
 | `deepseek-v4-pro` | `deepseek-v4-pro` | 1.74 | 3.48 | 0.0036 |
+| `qwen3.7-flash` | `qwen3.7-flash` | 0.03 | 0.13 | 0.003 |
 | `qwen3.5-flash` | `qwen3.5-flash` | 0.10 | 0.40 | — |
 | `deepseek-v4-flash` | `deepseek-v4-flash` | 0.14 | 0.28 | 0.0028 |
+
+> `qwen3.7-flash` rates are the Singapore/international BASE input tier
+> (input <= 32K); the model is tiered above that (~3x to 256K, ~6x to 1M).
+> Reranker calls run ~8-30K input, so the base tier is the right single rate —
+> see migration `152_qwen37_flash_pricing.sql`.
 
 **OpenRouter half** (`agents/model_registry.py:553-594`):
 

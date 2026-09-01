@@ -67,7 +67,7 @@ OR_MODEL_CHOICES = [
     "or-glm-5-turbo", "or-gemma-4-31b",
 ]
 ALIBABA_MODEL_CHOICES = [
-    "qwen3.6-plus", "qwen3.5-plus", "qwen3.5-flash", "qwen3-max",
+    "qwen3.6-plus", "qwen3.5-plus", "qwen3.7-flash", "qwen3.5-flash", "qwen3-max",
     "qwen3-coder-plus", "qwen3-coder-flash", "qwen3-vl-plus",
     "qwen3-vl-flash", "qwq-plus", "qvq-max", "qwen-plus",
     "qwen-long", "qwen-vl-ocr",

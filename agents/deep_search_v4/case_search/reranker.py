@@ -22,7 +22,7 @@ from agents.deep_search_v4.shared.court_levels import (
     COURT_LEVEL_FROM_AR,
     normalize_court_level,
 )
-from agents.utils.agent_models import get_agent_model
+from agents.utils.agent_models import get_agent_model, primary_model_of_slot
 from agents.utils.structured_output import make_json_salvager
 
 from .models import (
@@ -40,14 +40,14 @@ logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
     # 25k = 15k thinking budget + ~10k per-chunk text output headroom.
-    # Same shape as reg_search reranker — uncapped thinking on qwen3.5-flash
-    # is otherwise the wall-clock tail risk.
+    # Same shape as reg_search reranker — uncapped thinking on the qwen flash
+    # head is otherwise the wall-clock tail risk.
     # (`response_tokens_limit` was the deprecated alias — switched.)
     output_tokens_limit=25_000,
     request_limit=3,
 )
 
-# qwen3.5-flash with enable_thinking sometimes finalises as text
+# The qwen flash family with enable_thinking sometimes finalises as text
 # (``<thinking>…</thinking>{json}``) instead of calling the output tool. The
 # salvager rescues a schema-complete JSON without a (large) retry; a genuine
 # omission still raises ModelRetry. See agents/utils/structured_output.py.
@@ -323,6 +323,9 @@ async def run_reranker_for_query(
         ru = result.usage()
         usage_entry = {
             "agent": "reranker",
+            # Explicit per-slot model — the "reranker" ROLE is shared with
+            # reg_compliance, which heads on a different model.
+            "model": primary_model_of_slot("case_search_reranker"),
             "query": query[:80],
             "requests": ru.requests,
             "input_tokens": ru.input_tokens,
