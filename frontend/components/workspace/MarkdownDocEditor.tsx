@@ -136,7 +136,17 @@ export function MarkdownDocEditor({
     el.style.height = `${el.scrollHeight}px`;
   }, [content, mode, docId]);
 
-  // When the underlying doc changes, reset local state.
+  // Identity reset — ONLY when the doc itself changes.
+  //
+  // This effect must NEVER key on ``initialTitle``/``initialContent``. Every
+  // autosave writes the saved doc back into the query cache (`setQueryData` on
+  // the detail key), which hands this component fresh prop values ~800 ms after
+  // the user stops typing. Keyed on content, the reset then fired mid-session
+  // and did two damaging things: it flipped ``mode`` back to "preview" — the
+  // editor closing itself while you write — and it overwrote local state with
+  // the server snapshot, dropping every keystroke typed during the round-trip.
+  // It hit every تحرير surface (قوالب, notes, agent outputs) because they all
+  // share this component.
   useEffect(() => {
     setTitle(initialTitle);
     setContent(initialContent);
@@ -144,27 +154,67 @@ export function MarkdownDocEditor({
     setSavedAt(null);
     setIsSaving(false);
     setMode(initialContent.trim().length > 0 ? "preview" : "edit");
-  }, [docId, initialTitle, initialContent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docId]);
+
+  // Adopt a change that came from OUTSIDE this editor — the agent writing into
+  // an ``agent_writing`` item, or the same doc edited elsewhere. Two guards
+  // keep it off the two cases that hurt:
+  //   - ``initialX !== lastSent.current.X`` — the echo of our OWN save is equal
+  //     to what we sent, so it is not an external change and is ignored;
+  //   - ``x === lastSent.current.x`` — the user has no unsaved keystrokes, so
+  //     adopting cannot lose anything they typed.
+  useEffect(() => {
+    if (
+      initialTitle !== lastSent.current.title &&
+      title === lastSent.current.title
+    ) {
+      lastSent.current.title = initialTitle;
+      setTitle(initialTitle);
+    }
+    if (
+      initialContent !== lastSent.current.content &&
+      content === lastSent.current.content
+    ) {
+      const wasEmpty = content.trim().length === 0;
+      lastSent.current.content = initialContent;
+      setContent(initialContent);
+      // The ONE mode change the wire is still allowed to make: a doc that was
+      // empty when it opened (so it opened in "edit") and just received its
+      // first content while the agent holds the lock should present as a
+      // rendered read. It cannot interrupt anyone — the textarea is read-only
+      // and there is nothing typed to lose.
+      if (readOnly && wasEmpty && initialContent.trim().length > 0) {
+        setMode("preview");
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTitle, initialContent]);
 
   const debouncedTitle = useDebounce(title, AUTOSAVE_DELAY_MS);
   const debouncedContent = useDebounce(content, AUTOSAVE_DELAY_MS);
 
   useEffect(() => {
     if (readOnly) return;
-    const titleChanged = debouncedTitle !== lastSent.current.title;
+    // Compare (and store) the TRIMMED title: that is what the server holds, so
+    // the echo it sends back compares equal and the adoption effect above stays
+    // quiet. Storing the raw input here made a trailing space read as an
+    // external edit.
+    const nextTitle = debouncedTitle.trim();
+    const titleChanged = nextTitle !== lastSent.current.title;
     const contentChanged = debouncedContent !== lastSent.current.content;
     if (!titleChanged && !contentChanged) return;
-    if (!debouncedTitle.trim()) return;
+    if (!nextTitle) return;
 
     let cancelled = false;
     setIsSaving(true);
     void onSave({
-      title: titleChanged ? debouncedTitle.trim() : undefined,
+      title: titleChanged ? nextTitle : undefined,
       content_md: contentChanged ? debouncedContent : undefined,
     })
       .then(() => {
         if (cancelled) return;
-        lastSent.current = { title: debouncedTitle, content: debouncedContent };
+        lastSent.current = { title: nextTitle, content: debouncedContent };
         setSavedAt(Date.now());
       })
       .catch((err) => {
