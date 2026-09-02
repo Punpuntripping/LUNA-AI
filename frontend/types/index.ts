@@ -1167,33 +1167,15 @@ export interface ShareArtifactRequest {
   title: string | null;
 }
 
-/**
- * One card in the public ``/blog`` gallery — a lightweight listing row for a
- * publicly-curated (``is_public``) post. The full body is NOT included; the
- * card links to the public ``/blog/<token>`` page which carries the snapshot.
- */
-export interface BlogCardPublic {
-  /** Unguessable slug used in the public URL. */
-  token: string;
-  /** مدونة article title shown on the card. */
-  title: string | null;
-  /** Plain-text preview derived server-side from ``content_md``. */
-  snippet: string;
-  /** e.g. ``legal_synthesis`` → "تحليل قانوني". */
-  subtype: string | null;
-  /** Number of times the public post page has been opened. */
-  view_count: number;
-  /** ISO timestamp of publication. */
-  created_at: string;
-}
-
-/**
- * Response of ``GET /api/v1/public/blogs`` — the anonymous public gallery
- * listing (``is_public`` posts, newest first). No auth; SEO-indexable.
- */
-export interface PublicBlogsResponse {
-  posts: BlogCardPublic[];
-}
+// ⚠ `BlogCardPublic` / `PublicBlogsResponse` LIVED HERE AND ARE GONE
+// (blog_subjects.md §2, 2026-09-02). They described `GET /public/blogs` while it
+// listed `blog_posts` tokens; that endpoint now serves the versioned
+// `public_blogs` wing and returns `{ blogs: PublicBlogCard[] }` — see the PUBLIC
+// BLOG WING block near the end of this file. The `blog_posts` shapes above stay
+// exactly as they are: they still back the 99 share links, مدوناتي and the
+// import path. Nothing referenced the two removed types once `/blog` was
+// rewritten, and leaving a type that describes a payload the backend no longer
+// emits is how the next reader gets `undefined` with no error.
 
 /**
  * One row in مدوناتي — an owner-scoped listing of the user's own blog_posts
@@ -1257,11 +1239,15 @@ export interface LibraryItemResponse {
 
 /**
  * Response of ``GET /api/v1/blogs/mine`` — the owner-scoped مدوناتي listing.
- * ``can_publish_public`` reflects ``users.can_access_blog`` (the curate gate);
- * the management page shows the نشر في المدونة العامة toggle only when true.
+ *
+ * ⚠ ``can_publish_public`` IS GONE (blog_subjects.md §8, D12). It mirrored
+ * ``users.can_access_blog``, the curation gate on «نشر في المدونة العامة» —
+ * a gate exactly one account held and never used. The public wing is its own
+ * table now (``public_blogs``), written by the editorial service key, so the
+ * flag guarded a door that no longer leads anywhere and the toggle it drove is
+ * deleted. The column stays in the DB, dormant.
  */
 export interface MyBlogsResponse {
-  can_publish_public: boolean;
   posts: MyBlogItem[];
 }
 
@@ -1271,6 +1257,105 @@ export interface ShareArtifactResponse {
   token: string;
   /** Fully-qualified ``/blog/{token}`` URL, built server-side. */
   public_url: string;
+}
+
+// ==========================================
+// PUBLIC BLOG WING (public_blogs) — anon read surface
+// ==========================================
+// `.claude/plans/blog_subjects.md` §2/§3. A DIFFERENT TABLE from the
+// `blog_posts` snapshot above: versioned, addressed by an Arabic `slug` with no
+// token at all (D17 — a public blog is open by default, so the slug is the whole
+// address), carrying a `type` badge and many `subjects`. The legacy shapes above
+// stay exactly as they are; the 99 share tokens keep resolving on the same
+// route.
+
+/** One subject chip under a blog's byline — links to `/blog/{slug}`. */
+export interface BlogSubjectRef {
+  /** ASCII kebab-case, permanent. NEVER Arabic — see `lib/blog/slug.ts`. */
+  slug: string;
+  label_ar: string;
+}
+
+/**
+ * One entry in the browse vocabulary (مواضيع) — `GET /public/blogs/subjects`.
+ *
+ * ``blog_count`` counts blogs whose CURRENT version is public + published + not
+ * deleted. The endpoint returns the WHOLE active vocabulary with honest counts;
+ * the `>= 1` filter that keeps empty subjects off the hub grid, out of
+ * `/blog/subjects` and out of the sitemap (plan D13 + §7) is the CALLER's.
+ */
+export interface BlogSubject {
+  slug: string;
+  label_ar: string;
+  description_ar: string | null;
+  sort_rank: number;
+  blog_count: number;
+}
+
+/**
+ * One card in the public gallery or a subject feed —
+ * `GET /public/blogs` · `GET /public/blogs/subjects/{slug}`.
+ *
+ * ``type`` is one of `laws_explanation` | `judicial_research` | `compliance`
+ * (a DB CHECK, not an enum on the wire). Typed as a plain string on purpose:
+ * it renders through `blogTypeLabel`, which falls back to the raw value, so a
+ * fourth type added server-side degrades to a visible label instead of a
+ * TypeScript lie. **Never a URL** (plan D3).
+ */
+export interface PublicBlogCard {
+  slug: string;
+  title: string;
+  type: string;
+  snippet: string;
+  subjects: BlogSubjectRef[];
+  view_count: number;
+  created_at: string;
+  updated_at: string | null;
+}
+
+/** `GET /api/v1/public/blogs` — the anonymous gallery feed, newest first. */
+export interface PublicBlogListResponse {
+  blogs: PublicBlogCard[];
+}
+
+/** `GET /api/v1/public/blogs/subjects` — the full browse vocabulary. */
+export interface BlogSubjectsResponse {
+  subjects: BlogSubject[];
+}
+
+/**
+ * `GET /api/v1/public/blogs/subjects/{slug}` — one subject's blogs.
+ * ``subject.blog_count`` is the FULL qualifying count, not this page's length.
+ */
+export interface BlogSubjectFeedResponse {
+  subject: BlogSubject;
+  blogs: PublicBlogCard[];
+}
+
+/**
+ * `GET /api/v1/public/blogs/{slug}` — one blog, the CURRENT version.
+ *
+ * ⚠ ``is_public`` is part of the contract, not decoration. This endpoint also
+ * serves RETRACTED blogs (`is_public=false`): retraction delists, it does not
+ * delete and does not unpublish, so the URL keeps resolving for anyone holding
+ * the link (plan §5). The page reads this flag to set `robots: noindex` (§7) —
+ * that, and not a 404, is what deindexes it.
+ *
+ * ``references`` reuses the relational `Reference` type, exactly like
+ * `BlogPostPublic` above, so `ReferencePanel` renders both surfaces unchanged.
+ */
+export interface PublicBlogDetail {
+  is_public: boolean;
+  slug: string;
+  title: string;
+  type: string;
+  subjects: BlogSubjectRef[];
+  content_md: string;
+  references: Reference[];
+  /** ANONYMIZED question the article was generated from. Never rendered. */
+  question_text: string;
+  created_at: string;
+  updated_at: string | null;
 }
 
 // ==========================================

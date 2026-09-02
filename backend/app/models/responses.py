@@ -447,10 +447,14 @@ class MyBlogItem(BaseModel):
 class MyBlogsResponse(BaseModel):
     """GET /api/v1/blogs/mine — the caller's own blogs.
 
-    ``can_publish_public`` mirrors ``users.can_access_blog`` (the curation
-    gate): whether this user may push a post into the public gallery.
+    ⚠ ``can_publish_public`` was REMOVED on 2026-09-02 (``blog_subjects.md``
+    §8). It mirrored ``users.can_access_blog``, the curation gate that has been
+    retired: the public wing is ``public_blogs`` now, written by the service
+    key, so nothing this response could say about curation is true any more.
+    Publishing a ``blog_posts`` row stays owner-scoped, which needs no flag.
+    Do not re-add the field to "keep the client happy" — the frontend dropped
+    it in the same change, and ``response_model`` would silently strip it.
     """
-    can_publish_public: bool = False
     posts: list[MyBlogItem] = []
 
 
@@ -462,6 +466,96 @@ class ImportBlogResponse(BaseModel):
     """
     post: MyBlogItem
     already_saved: bool = False
+
+
+class PublicBlogSubjectRef(BaseModel):
+    """One subject chip under a blog's byline — links to /blog/{slug}.
+
+    Only ACTIVE subjects are ever projected here: a chip for a retired subject
+    would link to a page that 404s.
+    """
+    slug: str
+    label_ar: str
+
+
+class PublicBlogSubject(BaseModel):
+    """One entry in the browse vocabulary (مواضيع) — GET /public/blogs/subjects.
+
+    ``blog_count`` counts blogs whose CURRENT version is public + published +
+    not deleted. It is what the hub cap (blog_subjects plan D13) and the ``>=1``
+    sitemap filter (§7) key on — *a listed section with an empty urlset is a
+    file Google refetches hourly to learn nothing.*
+    """
+    slug: str
+    label_ar: str
+    description_ar: Optional[str] = None
+    sort_rank: int = 0
+    blog_count: int = 0
+
+
+class PublicBlogCard(BaseModel):
+    """One card in the public blog gallery / a subject feed.
+
+    Addressed by ``slug``, never a token: a public blog is open by default
+    (blog_subjects plan D17), so the slug is the whole address. ``type`` is
+    carried by the BLOG (D3) and renders as a badge — never a URL.
+    """
+    slug: str
+    title: str
+    type: str
+    snippet: str = ""
+    subjects: list[PublicBlogSubjectRef] = []
+    view_count: int = 0
+    created_at: str
+    updated_at: Optional[str] = None
+
+
+class PublicBlogListResponse(BaseModel):
+    """GET /api/v1/public/blogs — the anonymous gallery feed, newest first."""
+    blogs: list[PublicBlogCard] = []
+
+
+class PublicBlogSubjectsResponse(BaseModel):
+    """GET /api/v1/public/blogs/subjects — the full browse vocabulary."""
+    subjects: list[PublicBlogSubject] = []
+
+
+class PublicBlogSubjectFeedResponse(BaseModel):
+    """GET /api/v1/public/blogs/subjects/{slug} — one subject's blogs."""
+    subject: PublicBlogSubject
+    blogs: list[PublicBlogCard] = []
+
+
+class PublicBlogDetailResponse(BaseModel):
+    """GET /api/v1/public/blogs/{slug} — one blog, the CURRENT version.
+
+    ⚠ ``is_public`` is part of the contract, not decoration. This endpoint also
+    serves RETRACTED blogs (``is_public=false``): retraction delists, it does
+    not delete and does not unpublish, so the URL keeps resolving for anyone
+    holding the link (plan §5). The frontend reads this flag to set
+    ``robots: noindex`` (§7) — that, and not a 404, is what deindexes it.
+
+    ⚠ Every field here must stay declared: ``response_model`` STRIPS undeclared
+    keys, and a silently-dropped ``is_public`` would mean ``robots`` never goes
+    ``noindex``.
+
+    ``references`` is the stored ``references_json`` array verbatim (serialized
+    ``Reference`` dicts), typed ``list[dict]`` so it passes through unchanged
+    regardless of Reference schema drift. The FIELD is named for the client, not
+    for the column: ``BlogArticleView`` and ``ReferencePanel`` read
+    ``references`` on ``BlogPostPublicResponse`` already, so both blog surfaces
+    hand the reading UI the same shape and neither needs a mapping layer.
+    """
+    is_public: bool
+    slug: str
+    title: str
+    type: str
+    subjects: list[PublicBlogSubjectRef] = []
+    content_md: str
+    references: list[dict] = []
+    question_text: str = ""
+    created_at: str
+    updated_at: Optional[str] = None
 
 
 class BlogItemResponse(BaseModel):

@@ -72,7 +72,11 @@ export function useReferenceSource(
 ) {
   const queryClient = useQueryClient();
   // Two ways to address a source: an owned workspace item (in-app) or a public
-  // blog token (a reader on someone else's published post). Exactly one is set.
+  // blog page (a reader on someone else's published article). Exactly one is
+  // set. ⚠ `blogToken` is the blog's ADDRESS, not necessarily a token: a legacy
+  // `blog_posts` page passes its 32-hex token, a `public_blogs` article passes
+  // its Arabic slug (blog_subjects.md D17). `publicBlogApi.getReferenceSource`
+  // routes on that shape; the two never collide, so it is also a safe cache key.
   const blogToken = opts?.blogToken;
   const addressable = !!itemId || !!blogToken;
   const enabled = (opts?.enabled ?? true) && addressable && n !== null;

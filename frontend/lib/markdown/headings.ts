@@ -1,12 +1,14 @@
 // ==========================================
 // Markdown heading utilities (مدونة TOC)
 // ==========================================
-// Shared between the table-of-contents builder (BlogTableOfContents) and the
-// MarkdownRenderer's opt-in ``headingAnchors`` mode. Both surfaces MUST derive
-// the same anchor id for a given heading, so the slug is a DETERMINISTIC,
-// pure function of the heading text — no randomness, no document-order
-// suffixing. Two different headings may collide on the same slug; that's an
-// accepted trade-off in exchange for TOC links always matching rendered ids.
+// Shared between the table-of-contents builders (the library `TocList` /
+// `TocRail` / `TocFloating` trio, which `BlogArticleView` projects these
+// headings into) and the MarkdownRenderer's opt-in ``headingAnchors`` mode.
+// Both surfaces MUST derive the same anchor id for a given heading, so the slug
+// is a DETERMINISTIC, pure function of the heading text — no randomness, no
+// document-order suffixing. Two different headings may collide on the same
+// slug; that's an accepted trade-off in exchange for TOC links always matching
+// rendered ids.
 
 /** One heading extracted from a markdown document for the TOC. */
 export interface TocHeading {

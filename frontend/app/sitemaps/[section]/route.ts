@@ -16,7 +16,10 @@ import {
 //   calculators              → local code registry (no backend).
 //   compliance-entities      → local code registry, the 28 «الجهة» page-1 URLs.
 //   sectors                  → the 38 sector OVERVIEW pages, from `/sectors`.
-//   blog                     → backend feed `.../sitemap/blog?page=N`.
+//   blog                     → backend feed `.../sitemap/blog?page=N` — the
+//                              public wing's `public_blogs` SLUGS, not tokens.
+//   blog-subjects            → backend feed, the `/blog/{subject}` listings
+//                              that carry ≥1 public blog.
 //   regulations / articles   → backend feed `.../sitemap/{section}?page=N`.
 //   judgments                → backend feed, `indexable` rows only (3k of 10k).
 //   compliance               → backend feed, the service guides themselves.
@@ -75,7 +78,10 @@ export async function GET(
       urls = await getSectorUrls();
       break;
     case "blog":
-      // fetchBlogUrls never throws — returns [] on backend failure.
+      // fetchBlogUrls never throws — returns [] on backend failure. The feed
+      // now emits `public_blogs` SLUGS (current versions only), not the legacy
+      // `blog_posts` tokens: those pages carry `robots: noindex` by design, so
+      // listing them would be the self-contradiction this file exists to avoid.
       urls = await fetchBlogUrls();
       break;
     case "regulations":
@@ -84,6 +90,7 @@ export async function GET(
     case "forms":
     case "judgments":
     case "compliance":
+    case "blog-subjects":
       // Same feed contract; fetchSectionUrls never throws. `articles` is the
       // ~50k per-مادة URL feed (backend joins seo_articles × regulation slugs);
       // `forms` lists approved+published rows only (empty until review).
@@ -94,6 +101,11 @@ export async function GET(
       // leaves this case serving a valid empty <urlset> rather than a 404.
       // `compliance` lists the service guides — ungated pages with no `robots`
       // key of their own, so nothing here can contradict what the page serves.
+      // `blog-subjects` lists the `/blog/{subject}` listing pages, and ONLY the
+      // subjects carrying at least one public blog: ~100 are seeded ahead of
+      // their content, and an empty listing is the "refetched hourly to learn
+      // nothing" file that took `courts` out of this switch. The hub grid and
+      // /blog/subjects filter identically, so nothing listed here is unlinked.
       urls = await fetchSectionUrls(section);
       break;
     default:

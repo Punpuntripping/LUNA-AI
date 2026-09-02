@@ -43,7 +43,7 @@ from .logger import (
     EVENT_RETRIEVAL_DONE,
     emit,
 )
-from .models import PlannerDecision, PlannerResponse
+from .models import PinnedPlan, PlannerDecision, PlannerResponse
 from .prompts import build_decider_user_message, build_responder_user_message
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -101,6 +101,15 @@ def _default_decision(reason: str) -> PlannerDecision:
         support=False,
         rationale=f"planner_error_fallback: {reason}",
     )
+
+
+# Reason string for the headless pause conversion — see
+# ``.claude/plans/blog_subjects.md`` §5, "A pause has no user to answer it".
+# Distinct from the phase-1-raised reasons on purpose: a run that fell back
+# because nobody could answer a clarifying question is a DIFFERENT (and
+# expected) event from one that fell back because the decider blew up, and the
+# two must stay separable in the ledger and in Logfire.
+EDITORIAL_PAUSE_REASON = "editorial_pause_no_user"
 
 
 def _emit_planner_ledger(*results: Any) -> None:
@@ -201,6 +210,7 @@ async def handle_planner_turn(
     decision: PlannerDecision | None = None,
     *,
     run_retrieval: Callable | None = None,
+    pinned: PinnedPlan | None = None,
 ) -> PlannerTurnResult:
     """Public entry point — wraps :func:`_run_planner_turn` in a Logfire span.
 
@@ -211,6 +221,13 @@ async def handle_planner_turn(
 
     ``describe_query`` is the router-emitted query description (Wave 1/Phase B
     redesign — renamed from positional ``briefing`` in Phase C).
+
+    ``pinned`` (:class:`~.models.PinnedPlan`) is the headless editorial pin —
+    ``.claude/plans/blog_subjects.md`` §5. It does three things and nothing
+    else: overlays a partially-pinned ``mode``/``support`` onto phase 1's
+    output, selects the editorial aggregator prompt twin, and converts an
+    unanswerable phase-1 pause to the safe default. ``None`` (every in-app
+    turn) leaves this function behaviourally unchanged.
     """
     with track_stage(
         "deep_search.planner",
@@ -220,11 +237,19 @@ async def handle_planner_turn(
         resumed=decision is not None,
     ) as span:
         result = await _run_planner_turn(
-            describe_query, deps, decision, run_retrieval=run_retrieval,
+            describe_query, deps, decision,
+            run_retrieval=run_retrieval, pinned=pinned,
         )
         span.set(kind=result.kind, degraded=result.degraded)
         if result.decision is not None:
             span.set(mode=result.decision.mode, support=result.decision.support)
+        if pinned is not None:
+            span.set(
+                editorial=pinned.editorial,
+                pinned_mode=pinned.mode or "",
+                # "" reads as "not pinned"; False would read as "pinned off".
+                pinned_support="" if pinned.support is None else pinned.support,
+            )
         return result
 
 
@@ -261,6 +286,7 @@ async def _run_planner_turn(
     decision: PlannerDecision | None = None,
     *,
     run_retrieval: Callable | None = None,
+    pinned: PinnedPlan | None = None,
 ) -> PlannerTurnResult:
     """Run the planner-driven loop for one turn.
 
@@ -275,10 +301,13 @@ async def _run_planner_turn(
             (fresh dispatch) phase 1 runs and may pause via ``ask_user``.
         run_retrieval: optional injected retrieval coroutine — for tests. When
             ``None`` the real ``run_retrieval`` is lazy-imported.
+        pinned: the headless editorial pin (``blog_subjects.md`` §5), or
+            ``None`` for every in-app turn.
 
     Returns:
         :class:`PlannerTurnResult` — ``kind="completed"`` or ``kind="paused"``.
-        Never raises.
+        Never raises. ⚠ With ``pinned.headless`` set it can never return
+        ``kind="paused"`` at all: there is no user to answer the question.
     """
     query = describe_query or ""
     _decider_result: Any = None  # captured in phase 1 for the planner ledger row
@@ -310,58 +339,106 @@ async def _run_planner_turn(
             if isinstance(output, DeferredToolRequests):
                 # Normal pause — NOT a failure. Hand back to the orchestrator.
                 emit(deps, {"event": EVENT_PAUSED})
-                logger.info("planner: phase-1 paused via ask_user")
                 # Persist any articles fetched before the pause as their package.
                 flush_statute_package(deps)
                 # Bill the decider call that asked the question. (The orchestrator
                 # also emits on the pause path for the resume-decider case; this
                 # covers the fresh phase-1 pause. Same label → sums in SQL.)
                 _emit_planner_ledger(result)
-                return PlannerTurnResult(
-                    kind="paused", planner_result=result, deferred=output,
+                if pinned is None or not pinned.headless:
+                    logger.info("planner: phase-1 paused via ask_user")
+                    return PlannerTurnResult(
+                        kind="paused", planner_result=result, deferred=output,
+                    )
+                # ── Headless: a pause has no user to answer it (§5) ─────────
+                # `ask_user` is registered unconditionally on the decider and
+                # the prompt urges it for a vague query, an unattributed body,
+                # an article number with no named نظام. In an editorial job
+                # there is nobody to reply, so the run would sit paused until
+                # `catchup_stuck_jobs` reaps it. A blog generated from the
+                # default plan is a worse blog; a job stranded for an hour is no
+                # blog at all — and the `confidence` gate still catches a
+                # genuinely under-served article before it publishes.
+                logger.warning(
+                    "planner: phase-1 paused via ask_user on a HEADLESS run — "
+                    "no user can answer it; falling back to the default decision"
                 )
-            # PlannerDecision in hand.
-            decision = output
-            _decider_result = result
-            # One statute_package workspace item per search: flush the articles
-            # accumulated by fetch_article during this decider phase.
-            flush_statute_package(deps)
-            _decided_payload = {
-                "event": EVENT_DECIDED,
-                "mode": decision.mode,
-                "support": decision.support,
-                "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
-                "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
-                "context_labels": list(getattr(decision, "context_labels", []) or []),
-                "workspace_reads_count": _count_workspace_reads(deps._events),
-                "ask_user_invoked": False,  # paused-branch returned above
-                "duration_s": round(time.perf_counter() - t0, 3),
-            }
-            emit(deps, _decided_payload)
-            # §3.8 observability — surface the EVENT_DECIDED payload as
-            # attributes on the active `deep_search.planner` span so
-            # dashboards can filter/alert on them. Telemetry must never
-            # break the run, hence the broad except.
-            try:
-                _span = _logfire.current_span()
-                if _span is not None:
-                    _span.set_attributes({
-                        "planner.mode": _decided_payload["mode"],
-                        "planner.support": _decided_payload["support"],
-                        "planner.planner_brief_chars": _decided_payload["planner_brief_chars"],
-                        "planner.context_labels": _decided_payload["context_labels"],
-                        "planner.workspace_reads_count": _decided_payload["workspace_reads_count"],
-                        "planner.ask_user_invoked": _decided_payload["ask_user_invoked"],
-                    })
-            except Exception:
-                pass
-            logger.info(
-                "planner: decided mode=%s support=%s brief_chars=%d labels=%s reads=%d",
-                decision.mode, decision.support,
-                len(getattr(decision, "planner_brief", "") or ""),
-                list(getattr(decision, "context_labels", []) or []),
-                _count_workspace_reads(deps._events),
-            )
+                emit(deps, {
+                    "event": EVENT_ERROR,
+                    "phase": "decide",
+                    "error": EDITORIAL_PAUSE_REASON,
+                })
+                decision = _default_decision(EDITORIAL_PAUSE_REASON)
+                # `result` is the PAUSED run; it was billed just above and holds
+                # no PlannerDecision, so it must NOT ride into the phase-3
+                # ledger call as `_decider_result` (that would double-bill it).
+                _decided_payload = {
+                    "event": EVENT_DECIDED,
+                    "mode": decision.mode,
+                    "support": decision.support,
+                    "planner_brief_chars": 0,
+                    "query_restatement_chars": 0,
+                    "context_labels": [],
+                    "workspace_reads_count": _count_workspace_reads(deps._events),
+                    "ask_user_invoked": True,
+                    "headless_pause_converted": True,
+                    "duration_s": round(time.perf_counter() - t0, 3),
+                }
+                emit(deps, _decided_payload)
+                try:
+                    _span = _logfire.current_span()
+                    if _span is not None:
+                        _span.set_attributes({
+                            "planner.mode": decision.mode,
+                            "planner.support": decision.support,
+                            "planner.ask_user_invoked": True,
+                            "planner.headless_pause_converted": True,
+                        })
+                except Exception:
+                    pass
+            else:
+                # PlannerDecision in hand.
+                decision = output
+                _decider_result = result
+                # One statute_package workspace item per search: flush the
+                # articles accumulated by fetch_article during this decider phase.
+                flush_statute_package(deps)
+                _decided_payload = {
+                    "event": EVENT_DECIDED,
+                    "mode": decision.mode,
+                    "support": decision.support,
+                    "planner_brief_chars": len(getattr(decision, "planner_brief", "") or ""),
+                    "query_restatement_chars": len(getattr(decision, "query_restatement", "") or ""),
+                    "context_labels": list(getattr(decision, "context_labels", []) or []),
+                    "workspace_reads_count": _count_workspace_reads(deps._events),
+                    "ask_user_invoked": False,  # paused-branch returned above
+                    "duration_s": round(time.perf_counter() - t0, 3),
+                }
+                emit(deps, _decided_payload)
+                # §3.8 observability — surface the EVENT_DECIDED payload as
+                # attributes on the active `deep_search.planner` span so
+                # dashboards can filter/alert on them. Telemetry must never
+                # break the run, hence the broad except.
+                try:
+                    _span = _logfire.current_span()
+                    if _span is not None:
+                        _span.set_attributes({
+                            "planner.mode": _decided_payload["mode"],
+                            "planner.support": _decided_payload["support"],
+                            "planner.planner_brief_chars": _decided_payload["planner_brief_chars"],
+                            "planner.context_labels": _decided_payload["context_labels"],
+                            "planner.workspace_reads_count": _decided_payload["workspace_reads_count"],
+                            "planner.ask_user_invoked": _decided_payload["ask_user_invoked"],
+                        })
+                except Exception:
+                    pass
+                logger.info(
+                    "planner: decided mode=%s support=%s brief_chars=%d labels=%s reads=%d",
+                    decision.mode, decision.support,
+                    len(getattr(decision, "planner_brief", "") or ""),
+                    list(getattr(decision, "context_labels", []) or []),
+                    _count_workspace_reads(deps._events),
+                )
     else:
         # Resume path — decision already resolved by the orchestrator. The
         # decider's unfold_workspace_item tool-call events (if any) lived on the
@@ -395,10 +472,32 @@ async def _run_planner_turn(
         except Exception:
             pass
 
+    # ── Editorial partial pin — overlay (blog_subjects.md §5) ──────────────
+    # `mode` set / `support` null (or the mirror) means phase 1 RAN and whatever
+    # marketing supplied is laid over its output. A no-op on both the unpinned
+    # row of §5's table (nothing to overlay) and the fully-pinned row (phase 1
+    # never ran, so `decision` already IS the pin).
+    if pinned is not None and decision is not None and not pinned.is_fully_pinned:
+        overlaid = pinned.overlay(decision)
+        if overlaid is not decision:
+            logger.info(
+                "planner: editorial pin overlaid — mode %s→%s support %s→%s",
+                decision.mode, overlaid.mode, decision.support, overlaid.support,
+            )
+            decision = overlaid
+
     deps._decision = decision
 
     # ── PHASE 2 — retrieve ─────────────────────────────────────────────────
-    config = build_retrieval_config(decision)
+    # `editorial=True` swaps ONLY the aggregator prompt key for its editorial
+    # twin (blog_subjects.md §6 / apply.EDITORIAL_PROMPT_KEYS) — retrieval,
+    # budgets and executor selection stay byte-identical to the in-app path.
+    # ⚠ Until this argument existed the three `prompt_editorial_*` keys built in
+    # step 7 were unreachable: this call is the only place a RetrievalConfig is
+    # built for a fresh dispatch.
+    config = build_retrieval_config(
+        decision, editorial=bool(pinned is not None and pinned.editorial)
+    )
     # The planner's faithful, zero-bias restatement (when produced) is the
     # canonical retrieval query — it resolves colloquial / rambling phrasing
     # into a clean statement of the user's real question and legal posture,
@@ -508,4 +607,4 @@ async def _run_planner_turn(
     )
 
 
-__all__ = ["PlannerTurnResult", "handle_planner_turn"]
+__all__ = ["PlannerTurnResult", "handle_planner_turn", "EDITORIAL_PAUSE_REASON"]

@@ -1,21 +1,31 @@
 """Blog / public share-by-link routes (مدونة) — mounted under ``/api/v1``.
 
-v2 inverts the access model: viewing is open (anon, indexable); the only gate
-is *curation* (``users.can_access_blog``) — who may push a post into the public
-gallery (``is_public=true``).
+v2 inverted the access model: viewing is open (anon, indexable) and the only
+gate left was *curation*. ⚠ **That gate is gone** (``blog_subjects.md`` §8,
+2026-09-02): the public wing is a different table now (``public_blogs``,
+written by the service key), so ``users.can_access_blog`` guarded a door that
+no longer leads anywhere. Publishing here is **owner-scoped and nothing else** —
+which is all it ever really was, since moderating someone else's row was
+blocked by ownership, never by curation. The COLUMN stays in the DB, dormant
+(the ``conversations.case_id`` precedent); no code reads it.
 
     GET    /public/blog/{token}              — PUBLIC (no auth). The reading
                                                surface for one snapshot.
-    GET    /public/blogs                     — PUBLIC (no auth). The public
-                                               gallery list (is_public posts).
+    GET    /public/blog/{token}/references/{n}/source  — PUBLIC (optional auth).
+                                               Metered source reveal, keyed by
+                                               token (the legacy share links).
+    GET    /public/blogs/{slug}/references/{n}/source  — PUBLIC (optional auth).
+                                               The SAME reveal for the versioned
+                                               ``public_blogs`` wing, keyed by
+                                               slug (plan D17: no token exists).
     GET    /blogs/mine                        — auth. The caller's own blogs
                                                (مدوناتي), both display modes.
     GET    /workspace/{item_id}/share-draft  — auth. Pre-fills the publish
                                                dialog with the default question.
     POST   /workspace/{item_id}/share        — auth. Snapshots an agent_writing
                                                item into a blog_posts row.
-    POST   /blogs/{post_id}/publish          — auth + curation gate. Push a post
-                                               into the public gallery.
+    POST   /blogs/{post_id}/publish          — auth, owner. Push a post into
+                                               the public gallery.
     DELETE /blogs/{post_id}/publish          — auth, owner. Retract a post from
                                                the public gallery.
     DELETE /blog/posts/{post_id}             — auth, owner-only. Revoke a post.
@@ -38,7 +48,7 @@ token).
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, Field
@@ -53,13 +63,11 @@ from backend.app.deps import (
 from backend.app.errors import ErrorCode, LunaHTTPException, library_refusal_response
 from backend.app.middleware.route_limits import library_rate_limit
 from backend.app.models.responses import (
-    BlogCardPublic,
     BlogItemResponse,
     BlogPostPublicResponse,
     ImportBlogResponse,
     MyBlogItem,
     MyBlogsResponse,
-    PublicBlogsResponse,
     ShareArtifactResponse,
     ShareDraftResponse,
     SuccessResponse,
@@ -69,6 +77,7 @@ from backend.app.services import (
     blog_service,
     library_items_service,
     library_service,
+    public_blog_service,
     search_service,
     workspace_service,
 )
@@ -170,27 +179,23 @@ class _UnresolvableRef:
     stored_count = 0
 
 
-@router.get("/public/blog/{token}/references/{n}/source")
-async def get_blog_reference_source(
-    token: str,
+async def reveal_reference_source(
+    references: Any,
+    n: int,
     response: Response,
-    n: int = Path(..., ge=1, description="The reference's 1-based [n] citation number."),
-    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
-    supabase: SupabaseClient = Depends(get_supabase),
-    _rl=Depends(library_rate_limit),
+    current_user: Optional[AuthUser],
+    supabase: SupabaseClient,
 ):
-    """Reveal ONE cited source on a PUBLIC blog post — metered, same as in-app.
+    """THE metered source reveal, shared by both public blog wings.
 
-    «عرض المصدر» and the ``[n]`` preview behave exactly as they always did: the
-    click opens the source. The only change is that opening it now COSTS an
-    unlock, which is why this endpoint exists — the frozen snapshot no longer
-    carries bodies, so there is finally a server call for the meter to sit on.
-
-    Why this is not the workspace endpoint: a blog reader is not the author, so
-    ``get_workspace_item``'s ownership check would 404 them out of their own
-    reading. The post's token IS the capability here — it is unguessable and
-    already grants the page — so the reference is addressed by
-    ``(token, n)`` against the frozen ``references_json``.
+    Two routes address a published article — ``/public/blog/{token}`` (the
+    frozen ``blog_posts`` snapshot behind 99 legacy share links) and
+    ``/public/blogs/{slug}`` (the versioned ``public_blogs`` wing, which has no
+    token: the slug is the whole address, plan D17). **The addressing is the
+    only thing that differs.** Everything below — resolution, entitlement,
+    metering, the ledger, the refusal body, the no-store header — is one
+    implementation on purpose: two copies of an entitlement rule is two copies
+    that drift, and the direction they drift in is "free".
 
     Entitlement is evaluated against the READER, not the author:
       * anonymous → 402 ``reason='anonymous'`` → the panel shows «سجّل مجاناً».
@@ -199,26 +204,16 @@ async def get_blog_reference_source(
       * signed-in → ``resolve_access(..., surface='reference')`` charges once,
         permanently; re-opening is free forever.
 
-    So a published post can be read by anyone, and its SOURCES cost the reader
-    what they would have cost in chat — closing the bypass where one publish
-    would otherwise mint an unmetered public mirror of every source it cites.
+    ``references`` is the caller's frozen citation list; each route does its own
+    lookup + 404 first, because the two wings 404 in their own words.
     """
-    post = await run_db(blog_service.get_public_post, supabase, token)
-    if post is None:
-        raise LunaHTTPException(
-            status_code=404,
-            code=ErrorCode.ARTIFACT_NOT_FOUND,
-            detail="المنشور غير موجود",
-            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
-        )
-
     # The frozen snapshot entry stands in for the workspace_item_references row.
     # It carries ref_id + domain, which is all the resolver and the shell
     # builders need (they fall back to parsing ref_id when item_id is absent).
     entry = next(
         (
             r
-            for r in (post.get("references") or [])
+            for r in (references or [])
             if isinstance(r, dict) and int(r.get("n") or 0) == int(n)
         ),
         None,
@@ -329,6 +324,95 @@ async def get_blog_reference_source(
             ),
         },
     }
+
+
+@router.get("/public/blog/{token}/references/{n}/source")
+async def get_blog_reference_source(
+    token: str,
+    response: Response,
+    n: int = Path(..., ge=1, description="The reference's 1-based [n] citation number."),
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+    _rl=Depends(library_rate_limit),
+):
+    """Reveal ONE cited source on a PUBLIC blog post — metered, same as in-app.
+
+    «عرض المصدر» and the ``[n]`` preview behave exactly as they always did: the
+    click opens the source. The only change is that opening it now COSTS an
+    unlock, which is why this endpoint exists — the frozen snapshot no longer
+    carries bodies, so there is finally a server call for the meter to sit on.
+
+    Why this is not the workspace endpoint: a blog reader is not the author, so
+    ``get_workspace_item``'s ownership check would 404 them out of their own
+    reading. The post's token IS the capability here — it is unguessable and
+    already grants the page — so the reference is addressed by
+    ``(token, n)`` against the frozen ``references_json``.
+
+    Entitlement is evaluated against the READER, not the author:
+      * anonymous → 402 ``reason='anonymous'`` → the panel shows «سجّل مجاناً».
+        Deliberately a 402 and not a 401, so the frontend's global
+        redirect-to-login never fires on a public page (D14).
+      * signed-in → ``resolve_access(..., surface='reference')`` charges once,
+        permanently; re-opening is free forever.
+
+    So a published post can be read by anyone, and its SOURCES cost the reader
+    what they would have cost in chat — closing the bypass where one publish
+    would otherwise mint an unmetered public mirror of every source it cites.
+
+    The token addresses the post and nothing more; the entitlement rules live in
+    ``reveal_reference_source``, shared with the ``public_blogs`` wing below.
+    """
+    post = await run_db(blog_service.get_public_post, supabase, token)
+    if post is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المنشور غير موجود",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+    return await reveal_reference_source(
+        post.get("references") or [], n, response, current_user, supabase
+    )
+
+
+@router.get("/public/blogs/{slug}/references/{n}/source")
+async def get_public_blog_reference_source(
+    slug: str,
+    response: Response,
+    n: int = Path(..., ge=1, description="The reference's 1-based [n] citation number."),
+    current_user: Optional[AuthUser] = Depends(get_current_user_optional),
+    supabase: SupabaseClient = Depends(get_supabase),
+    _rl=Depends(library_rate_limit),
+):
+    """The same metered reveal, for the versioned wing — keyed by SLUG.
+
+    ``public_blogs`` has no token (plan D17): a public blog is *open*, so the
+    unguessable string that made a ``blog_posts`` link a capability has nothing
+    left to do and the slug is the whole address. Nothing about the meter moves
+    with it — the token was only ever the addressing, never the entitlement, and
+    ``reveal_reference_source`` is literally the same code the token route runs.
+
+    Reads the CURRENT version's frozen ``references_json``. Retracted blogs are
+    included, matching ``GET /public/blogs/{slug}``: retraction delists an
+    article, it does not take its page — or its sources — away from someone
+    holding the link.
+
+    404 «المدونة غير موجودة» when the slug resolves to nothing, in the wing's
+    own words rather than the share-link wing's «المنشور غير موجود».
+    """
+    references = await run_db(
+        public_blog_service.get_references_by_slug, supabase, slug
+    )
+    if references is None:
+        raise LunaHTTPException(
+            status_code=404,
+            code=ErrorCode.ARTIFACT_NOT_FOUND,
+            detail="المدونة غير موجودة",
+            headers={"Cache-Control": _SOURCE_CACHE_CONTROL},
+        )
+    return await reveal_reference_source(
+        references, n, response, current_user, supabase
+    )
 
 
 # ============================================
@@ -508,29 +592,6 @@ async def delete_blog_post(
 
 
 # ============================================
-# PUBLIC GALLERY — no auth (anon, SEO)
-# ============================================
-
-
-@router.get(
-    "/public/blogs",
-    response_model=PublicBlogsResponse,
-)
-async def list_public_blogs(
-    supabase: SupabaseClient = Depends(get_supabase),
-):
-    """Anonymous public gallery of published, public blogs (/blog).
-
-    v2 inverts the v1 gate: viewing is open to everyone (no login, indexable).
-    Keys on ``is_public`` — any user's published, public share appears, newest
-    first. The curation gate (``can_access_blog``) now lives only on the
-    publish-to-public action, not on this read.
-    """
-    rows = await run_db(blog_service.list_public_blogs, supabase)
-    return PublicBlogsResponse(posts=[BlogCardPublic(**r) for r in rows])
-
-
-# ============================================
 # مدوناتي — auth, owner-scoped (my own blogs)
 # ============================================
 
@@ -548,8 +609,9 @@ async def list_my_blogs(
 ):
     """The caller's own blogs (مدوناتي) — owner-scoped, both display_modes.
 
-    ``can_publish_public`` mirrors ``users.can_access_blog`` so the UI can show
-    the «نشر في المدونة العامة» toggle only to curators.
+    ⚠ ``can_publish_public`` was dropped from the response (plan §8) along with
+    the curation gate it mirrored. The frontend drops the publish toggle it fed;
+    nothing here reads ``users.can_access_blog`` any more.
 
     ``q`` ranks through the shared ``bm25_search()`` (bm25 plan §5.2), scoped to
     ``owner_user_id`` INSIDE the RPC — ``blog_posts`` is an owner-only corpus in
@@ -561,9 +623,6 @@ async def list_my_blogs(
     Ordered by relevance when searching, newest-first otherwise.
     """
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
-    can_pub = await run_db(
-        blog_service.user_can_access_blog, supabase, current_user.auth_id
-    )
 
     query = search_service.normalize_query(q)
     post_ids: Optional[list[str]] = None
@@ -576,15 +635,12 @@ async def list_my_blogs(
             owner_user_id=user_id,
         )
         if not post_ids:
-            return MyBlogsResponse(can_publish_public=can_pub, posts=[])
+            return MyBlogsResponse(posts=[])
 
     rows = await run_db(
         blog_service.list_my_blogs, supabase, user_id, post_ids=post_ids
     )
-    return MyBlogsResponse(
-        can_publish_public=can_pub,
-        posts=[MyBlogItem(**r) for r in rows],
-    )
+    return MyBlogsResponse(posts=[MyBlogItem(**r) for r in rows])
 
 
 # ============================================
@@ -684,19 +740,21 @@ async def publish_blog_public(
 ):
     """Push the caller's own post into the public gallery (``is_public=true``).
 
-    Gated by ``users.can_access_blog`` (the v2 curation gate) — 403 (Arabic)
-    when the caller is not a curator. Then owner-scoped: a post that isn't the
-    caller's surfaces as 404.
+    Owner-scoped and nothing more: a post that isn't the caller's surfaces as a
+    404, the same envelope a missing post gets.
+
+    ⚠ **The ``users.can_access_blog`` curation gate was REMOVED here** (plan §8).
+    It guarded a door that no longer leads anywhere: the public wing moved to
+    ``public_blogs``, which this route cannot write, and the ``blog_posts``
+    gallery it does write is no longer read by anything public. It also never
+    granted the power it looked like it granted — moderating someone else's row
+    is blocked by OWNERSHIP, not by curation, so a curator hitting another
+    user's post always got a 404 and no flag could change that. Exactly one
+    account ever held the flag and published exactly zero posts with it.
+    Moderation of the public wing lives at
+    ``POST /internal/public-blogs/{root_id}/retract``, behind the service key.
     """
     validate_uuid(post_id, "معرف المنشور")
-    if not await run_db(
-        blog_service.user_can_access_blog, supabase, current_user.auth_id
-    ):
-        raise LunaHTTPException(
-            status_code=403,
-            code=ErrorCode.FORBIDDEN,
-            detail="غير مصرح لك بالنشر في المدونة العامة",
-        )
     user_id = await run_db(get_user_id, supabase, current_user.auth_id)
     await run_db(
         blog_service.set_post_public, supabase, user_id, post_id, True

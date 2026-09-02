@@ -118,6 +118,37 @@ def test_blog_import_copy_strips_too():
 # check would 404 them. The post's unguessable token is the capability instead.
 
 
+def _body(fn) -> str:
+    """A function's source with its DOCSTRING removed.
+
+    These assertions are about what the code does, and every one of these
+    docstrings legitimately *names* the thing being asserted absent (the reveal
+    docstring explains `resolve_access`; `get_references_by_slug` explains why
+    it avoids `view_count`). Matching prose would make the tests pass or fail on
+    how carefully the behaviour was documented.
+
+    ⚠ Cut by AST line numbers, not by ``src.replace(fn.__doc__, "")`` —
+    Python 3.13 dedents ``__doc__``, so it is no longer a substring of the
+    source and the replace silently does nothing.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    src = inspect.getsource(fn)
+    node = ast.parse(textwrap.dedent(src)).body[0]
+    first = node.body[0] if getattr(node, "body", None) else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        lines = src.splitlines()
+        del lines[first.lineno - 1 : first.end_lineno]
+        return "\n".join(lines)
+    return src
+
+
 def test_the_blog_reveal_route_is_registered():
     from backend.app.main import create_app
 
@@ -164,15 +195,76 @@ def test_the_blog_reveal_is_not_cacheable():
 
 def test_the_blog_reveal_charges_against_the_READER_not_the_author():
     """The author published once; every reader pays their own way. Guards the
-    obvious wrong turn of resolving entitlement from the post's owner_user_id."""
+    obvious wrong turn of resolving entitlement from the post's owner_user_id.
+
+    Reads ``reveal_reference_source``, the shared body both wings run: the
+    entitlement code moved there on 2026-09-02 when `public_blogs` got its own
+    slug-keyed reveal (blog_subjects.md §3/D17). The route handlers are now
+    lookup + 404 + delegate, so this invariant lives where the logic does."""
     import inspect
 
     from backend.app.api import blog
 
-    src = inspect.getsource(blog.get_blog_reference_source)
+    src = inspect.getsource(blog.reveal_reference_source)
     assert "current_user.auth_id" in src
     assert "owner_user_id" not in src, (
         "entitlement is being resolved from the POST OWNER — a reader would "
         "inherit the author's unlocks, and the author would be charged for "
         "strangers' reads"
     )
+
+
+def test_both_blog_wings_run_the_SAME_reveal_body():
+    """The token wing and the slug wing must share one entitlement implementation.
+
+    The token was only ever the ADDRESSING, never the entitlement — so
+    `public_blogs` (which has no token: the slug is the whole address, plan D17)
+    keys the same reveal differently and changes nothing else. Two copies of an
+    entitlement rule is two copies that drift, and the direction they drift in
+    is 'free'."""
+    from backend.app.api import blog
+
+    for handler in (
+        blog.get_blog_reference_source,
+        blog.get_public_blog_reference_source,
+    ):
+        src = _body(handler)
+        assert "reveal_reference_source(" in src, handler.__name__
+        # Nothing that decides entitlement may live in a route handler.
+        assert "resolve_access" not in src, handler.__name__
+        assert "library_refusal_response" not in src, handler.__name__
+
+
+def test_the_slug_keyed_reveal_is_registered_and_anon_safe():
+    """`public_blogs` has no token, so its reveal is keyed by slug — with the
+    same optional auth (402, never 401) and the same shared rate-limit bucket."""
+    import inspect
+
+    from backend.app.main import create_app
+    from backend.app.middleware.route_limits import library_rate_limit
+
+    paths = {getattr(r, "path", "") for r in create_app().routes}
+    assert "/api/v1/public/blogs/{slug}/references/{n}/source" in paths
+    # The legacy token route stays: 99 share links are already in the wild.
+    assert "/api/v1/public/blog/{token}/references/{n}/source" in paths
+
+    from backend.app.api import blog
+
+    sig = inspect.signature(blog.get_public_blog_reference_source)
+    assert sig.parameters["current_user"].default.dependency.__name__ == (
+        "get_current_user_optional"
+    )
+    assert sig.parameters["_rl"].default.dependency is library_rate_limit
+
+
+def test_the_slug_reveal_does_not_bump_the_articles_view_count():
+    """A click on «عرض المصدر» is not a page view. `get_by_slug` increments
+    `view_count`; the reveal must not go through it, or every reference click
+    would inflate the counter the hub ranks on."""
+    from backend.app.api import blog
+    from backend.app.services import public_blog_service
+
+    src = _body(blog.get_public_blog_reference_source)
+    assert "get_references_by_slug" in src
+    assert "get_by_slug," not in src
+    assert "view_count" not in _body(public_blog_service.get_references_by_slug)

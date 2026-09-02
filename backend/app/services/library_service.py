@@ -56,6 +56,10 @@ from supabase import Client as SupabaseClient
 # module docstring of ``case_summary``. This is that rule applied to the library.
 from agents.deep_search_v4.shared.case_summary import strip_pipeline_sections
 from backend.app.errors import LunaHTTPException, ErrorCode
+# The public blog wing owns its own visibility predicate (migrations 153/154);
+# the ``blog-subjects`` sitemap section reuses it rather than restating it.
+# Import-safe: ``public_blog_service`` reaches only ``errors`` + ``blog_service``.
+from backend.app.services import public_blog_service
 from backend.app.services import search_service
 from shared.config import get_settings
 # THE chunk-table renderer, shared with مراجع so the two surfaces cannot drift
@@ -228,6 +232,7 @@ _published_ids_cache: dict[str, dict[str, Any]] = {}
 __all__ = [
     "SITEMAP_PAGE_SIZE",
     "sitemap_blog_urls",
+    "sitemap_blog_subject_urls",
     "sitemap_static_urls",
     # Phase 1 — gating engine
     "GATE_FREE_CHARS_DEFAULT",
@@ -331,12 +336,31 @@ def sitemap_blog_urls(
     page: int = 1,
     page_size: int = SITEMAP_PAGE_SIZE,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fetch one page of public blog-post URLs for the ``blog`` sitemap section.
+    """One page of PUBLIC BLOG URLs for the ``blog`` sitemap section.
 
-    Selects published, PUBLIC, non-deleted ``blog_posts`` (the same gallery
-    visibility rule the anon ``/public/blogs`` gallery uses), newest first, and
-    projects each into ``{"loc": "{base}/blog/{token}", "lastmod": <iso>}`` where
-    ``lastmod`` = ``updated_at`` (falling back to ``created_at``).
+    Reads ``public_blogs`` — the versioned wing of ``blog_subjects.md`` §7 —
+    and emits ``{base}/blog/{slug}``. It does **not** read ``blog_posts``: those
+    99 rows are unlisted *share links*, minted to be handed to one person, and
+    §7 makes them ``noindex`` retroactively. A sitemap listing a page the page
+    itself marks ``noindex`` is the "Submitted URL marked noindex"
+    self-contradiction, so the switch of table and the switch of ``robots`` are
+    one decision.
+
+    The predicate is the gallery's, restated whole because the service-role
+    client bypasses RLS: ``is_current AND is_public AND is_published AND
+    deleted_at IS NULL``. Dropping any one of them submits a draft or a
+    RETRACTED article to Google — retraction (plan D11) flips ``is_public`` and
+    nothing else, precisely so the URL keeps resolving while it leaves every
+    index.
+
+    ``lastmod`` = the CURRENT version's ``updated_at`` (falling back to
+    ``created_at``). An SEO rewrite appends a version and therefore bumps it;
+    that is a genuine freshness signal, not churn — the bytes at the URL really
+    did change.
+
+    Arabic slugs (plan D4) are percent-encoded for maximally-compatible
+    ``<loc>`` values, exactly as ``sitemap_library_urls`` does for the corpus
+    wings.
 
     Returns ``(urls, total_pages)``. ``page`` is 1-based and clamped to ``>= 1``;
     a page past the end yields an empty ``urls`` list with the real
@@ -348,8 +372,9 @@ def sitemap_blog_urls(
 
     try:
         result = (
-            supabase.table("blog_posts")
-            .select("token, updated_at, created_at", count="exact")
+            supabase.table("public_blogs")
+            .select("slug, updated_at, created_at", count="exact")
+            .eq("is_current", True)
             .eq("is_public", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
@@ -371,11 +396,75 @@ def sitemap_blog_urls(
     rows = result.data or []
     urls: list[dict[str, Any]] = []
     for row in rows:
-        token = row.get("token")
-        if not token:
+        slug = row.get("slug")
+        if not slug:
             continue
         lastmod: Optional[str] = row.get("updated_at") or row.get("created_at")
-        urls.append({"loc": _join(base_url, f"/blog/{token}"), "lastmod": lastmod})
+        encoded = urllib.parse.quote(slug, safe="")
+        urls.append({"loc": _join(base_url, f"/blog/{encoded}"), "lastmod": lastmod})
+
+    return urls, total_pages
+
+
+def sitemap_blog_subject_urls(
+    supabase: SupabaseClient,
+    base_url: str,
+    page: int = 1,
+    page_size: int = SITEMAP_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], int]:
+    """One page of SUBJECT listing URLs for the ``blog-subjects`` section.
+
+    Emits ``{base}/blog/{subject_slug}`` for the browse axis of
+    ``blog_subjects.md`` §7 — the same one-segment address space the blogs
+    themselves live in, kept unambiguous by migration 153/154's paired CHECKs
+    (subject slugs are ASCII, blog slugs are not).
+
+    ⚠ **Only subjects with at least one qualifying public blog are listed.**
+    That threshold is a CONTRACT, not an optimization: the vocabulary is seeded
+    ahead of the content it will carry, so most subjects sit at zero for months,
+    and ``SITEMAP_SECTIONS``' own comment records why ``courts`` was removed —
+    *"a listed section with an empty urlset is a file Google refetches hourly to
+    learn nothing."* An empty subject page is that same file, one URL at a time.
+    The identical ``>= 1`` filter governs the hub grid (plan D13) and
+    ``/blog/subjects``.
+
+    The counts come from ``public_blog_service.list_subjects`` rather than from
+    a predicate restated here, so "qualifies for the gallery" is defined in
+    exactly ONE place: a blog delisted by retraction stops counting toward its
+    subject the moment it leaves the gallery, with no second rule to keep in
+    step.
+
+    ``lastmod`` is deliberately ``None``. ``blog_subjects.updated_at`` tracks
+    vocabulary edits (an operator fixing a label), not the listing's contents,
+    and the page's real freshness is the newest blog on it — which this feed
+    would need a round-trip per subject to learn. An absent ``<lastmod>`` is
+    honest; a wrong one teaches a crawler to ignore the file's timestamps
+    everywhere. ``sitemap_static_urls`` has the same posture.
+
+    Same ``(urls, total_pages)`` contract as ``sitemap_blog_urls``. Read-only.
+    """
+    page = max(1, int(page or 1))
+    page_size = max(1, int(page_size or SITEMAP_PAGE_SIZE))
+    offset = (page - 1) * page_size
+
+    # Ordered by sort_rank then slug — the vocabulary's own order, so the feed
+    # is stable across fetches and pages cannot re-shuffle under a crawler.
+    subjects = public_blog_service.list_subjects(supabase)
+    listed = [
+        s
+        for s in subjects
+        if s.get("slug") and int(s.get("blog_count") or 0) >= 1
+    ]
+
+    total = len(listed)
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+
+    urls: list[dict[str, Any]] = []
+    for subject in listed[offset : offset + page_size]:
+        # ASCII by construction (migration 154's CHECK), but quote anyway: the
+        # projection must not depend on a constraint living in another repo.
+        encoded = urllib.parse.quote(subject["slug"], safe="")
+        urls.append({"loc": _join(base_url, f"/blog/{encoded}"), "lastmod": None})
 
     return urls, total_pages
 

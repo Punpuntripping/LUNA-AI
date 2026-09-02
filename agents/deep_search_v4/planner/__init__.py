@@ -29,12 +29,14 @@ from __future__ import annotations
 
 from .models import (
     Mode,
+    PinnedPlan,
     PlannerDecision,
     PlannerResponse,
     PriorSearchSummary,
     SuggestedAction,
 )
 from .apply import (
+    EDITORIAL_PROMPT_KEYS,
     FULL_PROFILE,
     MIN_EXPANDER_DIVISOR,
     MODE_PROFILES,
@@ -72,10 +74,12 @@ __all__ = [
     "Mode",
     "SuggestedAction",
     "PlannerDecision",
+    "PinnedPlan",
     "PriorSearchSummary",
     "PlannerResponse",
     # apply / caps
     "MODE_PROFILES",
+    "EDITORIAL_PROMPT_KEYS",
     "ROLE_PROFILES",
     "FULL_PROFILE",
     "MIN_EXPANDER_DIVISOR",

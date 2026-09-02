@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, AsyncGenerator
 from supabase import Client as SupabaseClient
 
 if TYPE_CHECKING:  # annotation only — the helpers are imported where used.
+    from agents.deep_search_v4.planner.models import PinnedPlan
     from agents.utils.welcome import WelcomeState
 
 import agents.memory.agent as memory
@@ -1925,6 +1926,26 @@ def _persist_paused_delivery(
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# Cap for the fallback workspace-item title on a pinned (router-less) dispatch.
+_HEADLESS_LABEL_CHARS = 60
+
+
+def _headless_task_label(question: str) -> str:
+    """Stand in for the router-emitted ``task_label`` on a pinned dispatch.
+
+    The router never runs on that path (blog_subjects.md §5), and ``task_label``
+    becomes the generated workspace item's title. A truncated question is a poor
+    title but an honest one; the editorial job overwrites it with the article's
+    real headline at publish time anyway, so this only ever shows in an admin
+    view of the throwaway conversation.
+    """
+    text = " ".join((question or "").split())
+    if not text:
+        return "بحث تحريري"
+    if len(text) <= _HEADLESS_LABEL_CHARS:
+        return text
+    return text[:_HEADLESS_LABEL_CHARS].rstrip() + "..."
+
 
 async def handle_message(
     question: str,
@@ -1935,6 +1956,7 @@ async def handle_message(
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
     codec: Any = None,
+    pinned_plan: "PinnedPlan | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Public entry point for all chat turns.
 
@@ -1954,6 +1976,17 @@ async def handle_message(
     workspace_items publishers can reach it via ``masking_service.active_codec()``.
     The mapping table is loaded even when masking is disabled — decode is
     always-on; only encode honours the flag.
+
+    ``pinned_plan`` (:class:`agents.deep_search_v4.planner.PinnedPlan`) is the
+    HEADLESS editorial pin — ``.claude/plans/blog_subjects.md`` §5. Set only by
+    the blog API's ``generate_answer_headless``; ``None`` for every in-app turn.
+
+    ⚠ **A pinned plan ALWAYS forces the agent family; it only SOMETIMES carries
+    a decision.** An editorial job always wants ``deep_search`` — that is what
+    the wing is for — so its presence bypasses the router's family choice
+    unconditionally, whether or not both ``mode`` and ``support`` were supplied.
+    Conflating "forces the family" with "carries a decision" is the easy mistake
+    here.
     """
     from backend.app.services.masking_service import (
         build_turn_codec,
@@ -1984,6 +2017,7 @@ async def handle_message(
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
                 codec=codec,
+                pinned_plan=pinned_plan,
             ):
                 yield ev
     finally:
@@ -1999,6 +2033,7 @@ async def _handle_message_inner(
     user_message_id: str | None = None,
     assistant_message_id: str | None = None,
     codec: Any = None,
+    pinned_plan: "PinnedPlan | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Main entry point for all chat turns.
 
@@ -2042,6 +2077,41 @@ async def _handle_message_inner(
         n_new = persist_new_mappings(supabase, user_id, codec)
         emit_encoded_count(n_new)
         audit_encoded(question, codec)
+
+    # ── Editorial pin — the router is BYPASSED (blog_subjects.md §5) ────────
+    # A pinned plan always forces the family, so there is nothing for the router
+    # to decide. Skipping it is not merely an optimisation: the router can
+    # answer directly with a ChatResponse, which produces NO workspace item, and
+    # a headless editorial job with no artifact is forced to `low` confidence
+    # and never publishes. One LLM call saved, one whole failure mode removed.
+    #
+    # Steps 0/1/1b/1c are skipped with it, and each is a no-op on this path by
+    # construction: the job creates a THROWAWAY conversation per run, so there
+    # can be no pending pause to resume, no history to compact, and no
+    # attachment to OCR.
+    if pinned_plan is not None:
+        async for ev in _dispatch(
+            agent_family=pinned_plan.agent_family,
+            # Marketing's questions are curated and self-contained — the raw
+            # question IS the query (the router never paraphrases either).
+            describe_query=question,
+            task_label=pinned_plan.task_label or _headless_task_label(question),
+            target_item_id=None,
+            attached_item_ids=[],
+            subtype=None,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+            compaction_summary_md=None,
+            # No greeting: there is no reader of this conversation.
+            welcome=None,
+            pinned_plan=pinned_plan,
+        ):
+            yield ev
+        return
 
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
@@ -2417,6 +2487,7 @@ async def _dispatch(
     assistant_message_id: str | None = None,
     compaction_summary_md: str | None = None,
     welcome: "WelcomeState | None" = None,
+    pinned_plan: "PinnedPlan | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -2439,6 +2510,10 @@ async def _dispatch(
     (see ``agents/utils/welcome.py``). It is stamped as spent only once the run
     has actually produced a result — a paused run leaves it unspent so the
     user's welcome survives to their next conversation.
+
+    ``pinned_plan`` rides the headless editorial path (blog_subjects.md §5) and
+    is consumed ONLY by the deep_search branch — which is the only family a pin
+    ever selects, since it is what forced this dispatch in the first place.
     """
     # ── Cap pre-flight ──────────────────────────────────────────────────
     if agent_family in ("deep_search", "writing") and target_item_id is None:
@@ -2550,6 +2625,7 @@ async def _dispatch(
                         major_input, supabase,
                         assistant_message_id=assistant_message_id,
                         emit_sse=progress_q.put_nowait,
+                        pinned_plan=pinned_plan,
                     )
                 )
                 try:
@@ -2985,6 +3061,7 @@ async def _run_deep_search(
     *,
     assistant_message_id: str | None = None,
     emit_sse: Callable[[dict], None] | None = None,
+    pinned_plan: "PinnedPlan | None" = None,
 ) -> _DeepSearchOutcome:
     """Run the planner-driven deep_search_v4 loop.
 
@@ -3006,6 +3083,15 @@ async def _run_deep_search(
 
     ``decision``: supplied on the resume path (phase 1 already resolved by
     ``_resume_major_agent``); ``None`` on fresh dispatch.
+
+    ``pinned_plan``: the headless editorial pin (blog_subjects.md §5). It
+    contributes a ``decision`` **only when BOTH ``mode`` and ``support`` were
+    supplied** — that is the one row of §5's table where phase 1 is skipped
+    entirely. With either half absent the pin rides through to the runner, which
+    runs phase 1 and overlays whatever was given. It also carries
+    ``editorial`` (the aggregator prompt twin) and ``headless`` (a phase-1 pause
+    has no user to answer it, so it becomes the safe default instead of
+    stranding the run).
 
     ``emit_sse``: sync sink for LIVE progress events (``_dispatch``'s queue
     ``put_nowait``). Threaded into ``PlannerDeps.emit_sse`` → fired by
@@ -3042,6 +3128,17 @@ async def _run_deep_search(
     settings = get_settings()
     sse_events: list[dict] = []
     output_item_id: str | None = None
+
+    # Editorial pin → a PlannerDecision, but ONLY when fully pinned (§5's table).
+    # `decision` is already set on the resume path; a pin never rides a resume.
+    if decision is None and pinned_plan is not None:
+        decision = pinned_plan.decision()
+        if decision is not None:
+            logger.info(
+                "deep_search: fully pinned by the editorial job "
+                "(mode=%s support=%s) — phase 1 skipped",
+                decision.mode, decision.support,
+            )
 
     # Phase C — hydrate the comprehension surface for the planner decider.
     # These loaders are best-effort; failures return safe defaults so a flaky
@@ -3118,7 +3215,9 @@ async def _run_deep_search(
         # `describe_query` is the renamed positional parameter (Phase C —
         # previously `briefing`, mechanical rename per the Wave 1 plan-reviewer
         # follow-up note).
-        turn = await handle_planner_turn(input.describe_query, deps, decision=decision)
+        turn = await handle_planner_turn(
+            input.describe_query, deps, decision=decision, pinned=pinned_plan,
+        )
 
         # Pipeline-accumulated SSE events (planner + executor progress).
         sse_events.extend(deps._events)

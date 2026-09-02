@@ -59,8 +59,6 @@ __all__ = [
     "get_public_post",
     "derive_default_question",
     "unpublish_post",
-    "user_can_access_blog",
-    "list_public_blogs",
     "list_my_blogs",
     "set_post_public",
     "make_snippet",
@@ -832,83 +830,18 @@ def unpublish_post(
 
 
 # ---------------------------------------------------------------------------
-# CURATION GATE + LISTINGS (v2 — viewing is open; only curation is gated)
+# LISTINGS (viewing is open; publishing is owner-scoped and ungated)
 # ---------------------------------------------------------------------------
-
-
-def user_can_access_blog(supabase: SupabaseClient, auth_id: str) -> bool:
-    """True when the caller may CURATE the public gallery (push a post public).
-
-    v2 inverts the meaning: this no longer gates *viewing* (the gallery and
-    every post are anonymous). It now gates *curation* — who may set a post's
-    ``is_public=true``. Reads ``users.can_access_blog`` for the JWT's auth_id;
-    any lookup miss / error is treated as NOT authorized (fail closed).
-    """
-    try:
-        result = (
-            supabase.table("users")
-            .select("can_access_blog")
-            .eq("auth_id", auth_id)
-            .maybe_single()
-            .execute()
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("user_can_access_blog lookup failed for %s: %s", auth_id, e)
-        return False
-
-    if result is None or result.data is None:
-        return False
-    return bool(result.data.get("can_access_blog"))
-
-
-def list_public_blogs(
-    supabase: SupabaseClient,
-    limit: int = 50,
-    offset: int = 0,
-) -> list[dict[str, Any]]:
-    """List published PUBLIC posts for the anonymous gallery (/blog).
-
-    Newest first. Returns lightweight card dicts (token, title, snippet,
-    subtype, view_count, created_at) — never the full body. Anonymous: there
-    is NO ``can_access_blog`` gate on this read (v2 inverts the model). The
-    gallery keys on ``is_public`` (any user's published, public share appears),
-    regardless of display_mode.
-    """
-    limit = max(1, min(int(limit or 50), 100))
-    offset = max(0, int(offset or 0))
-
-    try:
-        result = (
-            supabase.table("blog_posts")
-            .select("token, title, content_md, subtype, view_count, created_at")
-            .eq("is_public", True)
-            .eq("is_published", True)
-            .is_("deleted_at", "null")
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
-            .execute()
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Error listing public blogs: %s", e)
-        raise LunaHTTPException(
-            status_code=500,
-            code=ErrorCode.INTERNAL_ERROR,
-            detail="حدث خطأ أثناء جلب المدونة",
-        )
-
-    rows = result.data or []
-    return [
-        {
-            "token": row.get("token"),
-            "title": row.get("title"),
-            "snippet": make_snippet(row.get("content_md") or ""),
-            "subtype": row.get("subtype"),
-            "view_count": int(row.get("view_count") or 0),
-            "created_at": row.get("created_at"),
-        }
-        for row in rows
-        if row.get("token")
-    ]
+#
+# ``user_can_access_blog`` lived here until 2026-09-02 and was DELETED with the
+# gate it served (``blog_subjects.md`` §8). The public wing is ``public_blogs``
+# now — a different table, written by the service key — so the flag guarded a
+# door that no longer leads anywhere, and it never granted the moderation power
+# it looked like it granted: reaching another user's post is blocked by
+# OWNERSHIP, which no user-facing flag can lift. ``users.can_access_blog``
+# stays in the database, dormant and unread, for the same reason
+# ``conversations.case_id`` does: dropping a column is a migration with no
+# upside and a real drift risk.
 
 
 def list_my_blogs(
@@ -986,8 +919,9 @@ def set_post_public(
     Scoped to ``owner_user_id = user_id`` and non-deleted so a caller can only
     flip their own posts; a post that isn't theirs (or is missing / revoked)
     surfaces as 404 with the same envelope, leaking no existence information.
-    The *curation* gate (``can_access_blog``) is enforced by the route handler
-    for the publish-to-public direction; retracting your own post needs no gate.
+    Ownership is the WHOLE rule in both directions now — the ``can_access_blog``
+    curation gate the publish route used to enforce was retired 2026-09-02
+    (``blog_subjects.md`` §8).
     """
     from datetime import datetime, timezone
 

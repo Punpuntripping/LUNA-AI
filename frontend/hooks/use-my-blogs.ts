@@ -18,8 +18,12 @@ export const myBlogsKeys = {
 
 /**
  * مدوناتي — the caller's own blog_posts (both templates, owner-scoped) via
- * ``GET /blogs/mine``. The response also carries ``can_publish_public``, which
- * gates the «نشر في المدونة العامة» toggle on the management page.
+ * ``GET /blogs/mine``.
+ *
+ * ⚠ The response no longer carries ``can_publish_public`` (blog_subjects.md
+ * §8): the «نشر في المدونة العامة» toggle it gated is gone, because the public
+ * blog wing is its own table (``public_blogs``) written by the editorial
+ * service key. These rows are share snapshots and مدوناتي is their owner view.
  *
  * ``q`` (bm25_navigation_search.md Wave D) hands the SAME endpoint a search
  * term and gets the SAME envelope back, BM25-ranked instead of newest-first —

@@ -38,7 +38,7 @@ import type {
   RedeemCodeResponse,
   ShareDraftResponse,
   ShareArtifactResponse,
-  PublicBlogsResponse,
+  PublicBlogListResponse,
   MyBlogsResponse,
   ImportBlogResponse,
   BlogItemResponse,
@@ -65,6 +65,9 @@ import { getLastAuthIdentity } from "@/lib/auth-identity";
 // 402 body as `/library/full/*`, so it reuses that module's defensive parser
 // rather than growing a second one that could drift from it.
 import { parseRefusal, type LibraryRefusal } from "@/lib/library/full-content";
+// Pure string predicate — the same shape test the `/blog/[slug]` dispatcher
+// uses, so the client and the router can never disagree about what a key is.
+import { isLegacyTokenShape } from "@/lib/blog/slug";
 
 interface ApiErrorNested {
   code: string;
@@ -339,17 +342,23 @@ export const api = {
     }),
 
   /**
-   * List the PUBLIC ``/blog`` gallery (``is_public`` posts, newest first).
-   * Anonymous — no auth required; SEO-indexable. (v2: replaces the v1 gated
-   * ``/blog/directory``; the curate gate moved onto publish/unpublish.)
+   * List the PUBLIC ``/blog`` gallery — anonymous, SEO-indexable.
+   *
+   * ⚠ THE ENDPOINT CHANGED TABLES (blog_subjects.md §2/D16). It reads
+   * ``public_blogs`` now, so the envelope is ``{ blogs }`` (slug-addressed
+   * cards carrying ``type`` + ``subjects``) and NOT the old ``{ posts }`` of
+   * ``blog_posts`` tokens. The server-rendered blog pages do not come through
+   * here at all — they use the server fetchers in ``lib/blog/api.ts``.
    */
   listPublicBlogs: () =>
-    apiFetch<PublicBlogsResponse>(`/public/blogs`, { method: "GET" }),
+    apiFetch<PublicBlogListResponse>(`/public/blogs`, { method: "GET" }),
 
   /**
    * List مدوناتي — the caller's own blog_posts (both templates, owner-scoped).
-   * ``can_publish_public`` mirrors ``users.can_access_blog``: when true the
-   * management page exposes the نشر في المدونة العامة toggle.
+   *
+   * ⚠ The response no longer carries ``can_publish_public`` (blog_subjects.md
+   * §8, D12): the curation gate and the «نشر في المدونة العامة» toggle it drove
+   * are both retired — the public wing is its own service-key-written table.
    *
    * ``q`` ranks the SAME response shape through ``bm25_search()``
    * (bm25_navigation_search.md §5.2) instead of newest-first — the endpoint and
@@ -366,8 +375,14 @@ export const api = {
   },
 
   /**
-   * Curate a post INTO the public gallery (``is_public = true``). Authed +
-   * gated server-side on ``users.can_access_blog`` (403 otherwise).
+   * Curate a post INTO the public gallery (``is_public = true``). Authed and
+   * owner-scoped; the ``users.can_access_blog`` gate that also guarded it was
+   * dropped with the rest of D12.
+   *
+   * ⚠ NO CALLER since blog_subjects.md §8 removed the مدوناتي toggle, and it
+   * does NOT publish into the public blog wing — ``blog_posts.is_public`` is
+   * vestigial now; ``/blog`` reads ``public_blogs``. Kept because the route
+   * still exists; delete both together or neither.
    */
   publishBlogPublic: (postId: string) =>
     apiFetch<{ success: boolean }>(`/blogs/${postId}/publish`, {
@@ -972,18 +987,37 @@ async function fetchReferenceSource(
 }
 
 /**
- * Reveal one cited source on a PUBLIC blog post.
+ * Reveal one cited source on a PUBLIC blog page.
  *
- * Addressed by `(blog token, n)` rather than a workspace item id: the reader is
- * not the author, so the workspace endpoint's ownership check would 404 them.
- * The post's unguessable token is the capability — it already grants the page.
+ * Addressed by `(key, n)` rather than a workspace item id: the reader is not the
+ * author, so the workspace endpoint's ownership check would 404 them.
+ *
+ * ⚠ TWO WINGS, TWO ADDRESSES, ONE ENTITLEMENT RULE (blog_subjects.md §3). The
+ * key `ReferencePanel` hands down carries its own shape, and the backend
+ * declares a route for each:
+ *
+ *   32-hex TOKEN  → `/public/blog/{token}/references/{n}/source`   (blog_posts)
+ *   ARABIC SLUG   → `/public/blogs/{slug}/references/{n}/source`   (public_blogs)
+ *
+ * A `public_blogs` row has no token at all (plan D17) — the blog is open, so the
+ * slug is the whole address — which is why the endpoint had to grow a
+ * slug-keyed twin. Both routes run the SAME `reveal_reference_source` body
+ * server-side: the token was only ever the addressing, never the entitlement,
+ * and entitlement is still evaluated against the READER (anonymous → 402
+ * «سجّل مجاناً», never a 401, so the global redirect-to-login cannot fire on a
+ * public page).
+ *
+ * The discriminator is exact rather than heuristic: migration 153 CHECKs a blog
+ * slug OUT of the ASCII kebab shape a 32-hex token has, so a slug can never be
+ * mistaken for a token or the reverse.
  */
 export const publicBlogApi = {
-  getReferenceSource: (blogToken: string, n: number) =>
-    fetchReferenceSource(
-      `/public/blog/${encodeURIComponent(blogToken)}/references/${n}/source`,
-      { requireToken: false },
-    ),
+  getReferenceSource: (key: string, n: number) => {
+    const path = isLegacyTokenShape(key)
+      ? `/public/blog/${encodeURIComponent(key)}/references/${n}/source`
+      : `/public/blogs/${encodeURIComponent(key)}/references/${n}/source`;
+    return fetchReferenceSource(path, { requireToken: false });
+  },
 };
 
 /**

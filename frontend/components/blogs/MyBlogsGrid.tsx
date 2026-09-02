@@ -135,9 +135,14 @@ export function MyBlogsGrid() {
             <h2 className="mb-2 text-lg font-bold text-foreground">
               لا توجد مدونات محفوظة بعد
             </h2>
+            {/* ⚠ The old copy ended «— ثم يمكنك نشرها في المدونة العامة»,
+                which promised a door that no longer exists: publishing into
+                المدونة العامة moved to the editorial service key over
+                `public_blogs` (blog_subjects.md §8, D12). What a saved blog
+                actually gives its owner is a shareable link. */}
             <p className="max-w-md text-sm text-muted-foreground">
-              من أي إجابة، اضغط «حفظ كمدونة» لحفظها هنا — ثم يمكنك نشرها في المدونة
-              العامة.
+              من أي إجابة، اضغط «حفظ كمدونة» لحفظها هنا — ثم يمكنك مشاركتها
+              برابطها الخاص.
             </p>
           </div>
         ) : (
@@ -157,22 +162,14 @@ export function MyBlogsGrid() {
                       مستوردة
                     </span>
                   )}
-                  <span
-                    className={
-                      "inline-flex items-center gap-1 text-[10px] font-medium " +
-                      (post.is_public
-                        ? "text-success-fg"
-                        : "text-muted-foreground")
-                    }
-                  >
-                    <span
-                      className={
-                        "h-1.5 w-1.5 rounded-full " +
-                        (post.is_public ? "bg-success-fg" : "bg-muted-foreground/50")
-                      }
-                    />
-                    {post.is_public ? "عام" : "خاص"}
-                  </span>
+                  {/* ⚠ THE عام/خاص DOT WAS HERE AND IS GONE (blog_subjects.md
+                      §8). It read `post.is_public`, the curation flag the
+                      retired publish toggle set — a column nothing writes any
+                      more and that 0 rows carry, so the dot could only ever say
+                      «خاص» on every card forever. A badge with one possible
+                      value is not a status, and `blog_posts.is_public` is
+                      vestigial: /blog reads `public_blogs` now. The field stays
+                      on `MyBlogItem` because the endpoint still returns it. */}
                 </div>
 
                 <h3 className="line-clamp-2 text-sm font-bold text-foreground">

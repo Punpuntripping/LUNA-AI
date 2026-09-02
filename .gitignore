@@ -24,6 +24,16 @@ tests/
 !backend/tests/
 backend/tests/*
 !backend/tests/test_masking_wiring.py
+# the aggregator prompt-identity suite is durable: adding the editorial variants
+# meant extracting the three mode bodies out of PROMPT_MODE_*, and that refactor
+# is only safe because those three prompts stayed byte-identical — asserted by
+# pinned SHA-256 digests. Untracked, the guard protects one working tree and
+# nothing else, and a later edit to a shared block would ship a silently changed
+# in-app search prompt with nothing to catch it.
+!agents/deep_search_v4/aggregator/tests/
+agents/deep_search_v4/aggregator/tests/*
+!agents/deep_search_v4/aggregator/tests/test_prompts_mode_body_identity.py
+!agents/deep_search_v4/aggregator/tests/test_postvalidator_editorial.py
 # access-tiers / library-gating suites are durable — they pin revenue and
 # entitlement invariants (unlock idempotency, the frozen-library predicate, the
 # شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.
@@ -33,6 +43,22 @@ backend/tests/*
 !backend/tests/test_rate_limit_library.py
 !backend/tests/test_reference_source.py
 !backend/tests/test_blog_snapshot_gating.py
+# the public-blog sitemap + slug-keyed reveal suite is durable for the same
+# reasons, on a wing whose failures are all silent: a feed that keeps listing a
+# RETRACTED article resubmits it to Google forever, a listed subject with an
+# empty urlset is the file `courts` was pulled for, and the reveal's 402 (never
+# 401) is the one thing keeping an anonymous reader from being bounced off a
+# public page into a login. None of the three shows up in a type or a 500.
+!backend/tests/test_blog_sitemap_subjects.py
+# the editorial publishing suite is durable — every invariant it pins is
+# INVISIBLE at runtime. `support: bool = False` instead of Optional[bool]
+# compiles, returns 200, and silently drops the support executor from every
+# partially-pinned job; a headless ask_user pause looks like a live job for an
+# hour and then fails; `editorial=True` never reaching build_retrieval_config
+# publishes chat-voice answers as articles with nothing in any response to say
+# so; and a v1 row whose blog_id != root_id breaks /seo, /cards and /retract at
+# once. None of the four shows up in a type, a log line or a status code.
+!backend/tests/test_editorial_publishing.py
 # المشتركون الأوائل — the early-adopter promo suite is durable for the same
 # reason: it pins that a seat holder is precisely someone charged the promo
 # price, that cancelling forfeits it and a refund does not, and that a renewal

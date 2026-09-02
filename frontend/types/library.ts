@@ -416,6 +416,12 @@ export interface TocRailProps {
   /** Count pill in the header, e.g. «391 مادة». */
   badge?: string;
   className?: string;
+  /**
+   * Which same-page hrefs the scrollspy watches. Defaults to `#sec-` (every
+   * corpus document page). The مدونة wing passes `"#"` — its anchors are bare
+   * heading slugs, so without this no row ever lights up.
+   */
+  spyPrefix?: string;
 }
 
 export interface TocFloatingProps {
@@ -425,6 +431,9 @@ export interface TocFloatingProps {
   title?: string;
   /** Count pill in the sheet header, e.g. «391 مادة». */
   badge?: string;
+  /** See `TocRailProps.spyPrefix`. Must match the rail's, or the two surfaces
+   *  disagree about which section is current. */
+  spyPrefix?: string;
 }
 
 export interface ArticleBodyProps {

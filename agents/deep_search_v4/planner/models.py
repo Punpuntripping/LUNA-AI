@@ -42,6 +42,7 @@ agent runtime installed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -302,10 +303,115 @@ class PlannerResponse(BaseModel):
         return v
 
 
+# ---------------------------------------------------------------------------
+# Editorial pin — the headless publishing path (.claude/plans/blog_subjects.md §5)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PinnedPlan:
+    """What a headless editorial job pins onto one deep_search run.
+
+    ⚠ **A pinned plan ALWAYS forces the agent family; it only SOMETIMES carries
+    a decision.** These are two separate things and conflating them is the easy
+    mistake here. An editorial job always wants ``deep_search`` — that is not a
+    judgement call, it is what the wing is for — so the orchestrator bypasses
+    the router's family choice unconditionally whenever a ``PinnedPlan`` is
+    present. Whether phase 1 ALSO gets skipped depends on what marketing sent:
+
+    ==========  ==========  ====================================================
+    ``mode``    ``support`` behaviour
+    ==========  ==========  ====================================================
+    set         set         fully pinned — :meth:`decision` returns a
+                            ``PlannerDecision`` and phase 1 is skipped entirely
+    set         ``None``    phase 1 runs, then ``mode`` is overlaid on its output
+    ``None``    set         phase 1 runs, then ``support`` is overlaid
+    ``None``    ``None``    unpinned — phase 1 runs and decides both
+    ==========  ==========  ====================================================
+
+    ⚠ ``support`` is ``bool | None``, never a plain ``bool``. A plain boolean
+    cannot express "not pinned": an absent ``support`` would be
+    indistinguishable from a deliberate ``support=False``, and every
+    partially-pinned job would silently lose its support executor — no error, no
+    log line, just a thinner article.
+
+    ``headless`` is the other half of the contract: with no user in the loop a
+    phase-1 ``ask_user`` deferral has nobody to answer it, so the runner
+    converts that pause to ``_default_decision("editorial_pause_no_user")`` and
+    carries on rather than stranding the run until ``catchup_stuck_jobs`` reaps
+    it. The ``ask_user`` tool is deliberately NOT stripped from the decider —
+    ``prompts.py`` instructs it to use the tool in at least five places, and
+    removing the tool while leaving those instructions degrades the very
+    decision we want.
+
+    ``editorial`` selects the editorial aggregator prompt twin via
+    ``build_retrieval_config(decision, editorial=True)``; retrieval, budgets and
+    executor selection stay byte-identical to the in-app path.
+
+    Frozen + pure: this module imports only ``pydantic``, so the apply/models
+    tier stays usable without the agent runtime installed.
+    """
+
+    mode: Mode | None = None
+    support: bool | None = None
+    editorial: bool = False
+    headless: bool = True
+    # Consumed by the ORCHESTRATOR (it forces the dispatch), not by the planner.
+    agent_family: str = "deep_search"
+    # Stands in for the router-emitted label, since the router never runs on a
+    # pinned dispatch. Becomes the workspace item's title.
+    task_label: str = ""
+
+    @property
+    def is_fully_pinned(self) -> bool:
+        """True iff BOTH knobs were supplied ⇒ phase 1 can be skipped."""
+        return self.mode is not None and self.support is not None
+
+    def decision(self) -> "PlannerDecision | None":
+        """The pinned ``PlannerDecision``, or ``None`` when phase 1 must run.
+
+        ⚠ ``query_restatement`` is left empty on this path, which means the raw
+        query flows downstream verbatim — correct here, since marketing's
+        questions are already curated and self-contained. When phase 1 *does*
+        run, a restatement is produced and used normally.
+        """
+        if not self.is_fully_pinned:
+            return None
+        return PlannerDecision(
+            mode=self.mode,
+            support=bool(self.support),
+            rationale=(
+                f"editorial_pin: mode={self.mode}, support={bool(self.support)} "
+                "(pinned by the editorial job; phase 1 skipped)"
+            ),
+        )
+
+    def overlay(self, decision: PlannerDecision) -> PlannerDecision:
+        """Overlay whatever WAS pinned onto phase 1's output.
+
+        No-op when nothing was pinned (the unpinned row of the table) and, in
+        practice, on the fully-pinned row too — there phase 1 never ran and the
+        decision handed in is already the pinned one.
+        """
+        patch: dict = {}
+        if self.mode is not None:
+            patch["mode"] = self.mode
+        if self.support is not None:
+            patch["support"] = bool(self.support)
+        if not patch:
+            return decision
+        overlaid = ", ".join(f"{k}={patch[k]}" for k in sorted(patch))
+        patch["rationale"] = (
+            f"{(decision.rationale or '').strip()} | editorial_pin overlay: {overlaid}"
+        ).strip(" |")
+        return decision.model_copy(update=patch)
+
+
 __all__ = [
     "Mode",
     "SuggestedAction",
     "PlannerDecision",
+    "PinnedPlan",
     "PriorSearchSummary",
     "PlannerResponse",
 ]

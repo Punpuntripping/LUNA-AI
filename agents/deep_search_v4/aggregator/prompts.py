@@ -412,8 +412,12 @@ Start directly with `## الخلاصة`.
 
 # Prompt — case_led mode (precedent-first; conditional statutory layer)
 
-PROMPT_MODE_CASE = f"""{_SHARED_ROLE_AR}
+# The body lives in ``_MODE_CASE_BODY_AR`` so the editorial variant (blog_subjects
+# §6) can recompose it with ``_EDITORIAL_FORM_AR`` inserted before the
+# citation footer. The extraction is mechanical: ``PROMPT_MODE_CASE`` is unchanged
+# byte-for-byte, asserted in tests/test_prompts_mode_body_identity.py.
 
+_MODE_CASE_BODY_AR = """
 ## Required style: Precedent-led judicial synthesis
 
 This inquiry is **judicially led**: its center of gravity is a court ruling or a
@@ -494,7 +498,10 @@ holding, and the limitation is recorded in the gaps section.
   presented rulings did not test.
 - Match the depth to `<detail_level>`: brevity for the concise, expansion for the
   detailed — without adding sections the references do not support.
+"""
 
+PROMPT_MODE_CASE = f"""{_SHARED_ROLE_AR}
+{_MODE_CASE_BODY_AR}
 {_COT_TEMPLATE_AR}
 
 {_CITATION_RULES_AR}
@@ -505,8 +512,12 @@ holding, and the limitation is recorded in the gaps section.
 # compliance-aware, FLEXIBLE shape. Citation follows grounding; it is NOT the
 # identity of the mode.
 
-PROMPT_MODE_REG = f"""{_SHARED_ROLE_AR}
+# The body lives in ``_MODE_REG_BODY_AR`` so the editorial variant (blog_subjects
+# §6) can recompose it with ``_EDITORIAL_FORM_AR`` inserted before the
+# citation footer. The extraction is mechanical: ``PROMPT_MODE_REG`` is unchanged
+# byte-for-byte, asserted in tests/test_prompts_mode_body_identity.py.
 
+_MODE_REG_BODY_AR = """
 ## Required style: The statutory answer — the default mode
 
 In this inquiry the lawyer poses an ordinary legal question and wants an answer to
@@ -628,7 +639,10 @@ place the missing detail in `gaps`.
 
 Start the answer directly with the answer to the lawyer's question, with no main
 title (H1) and no preamble.
+"""
 
+PROMPT_MODE_REG = f"""{_SHARED_ROLE_AR}
+{_MODE_REG_BODY_AR}
 {_COT_TEMPLATE_AR}
 
 {_CITATION_RULES_AR}
@@ -638,8 +652,12 @@ title (H1) and no preamble.
 # Prompt — full mode (rule/procedure + precedent woven; shape flexes to
 # query + URA — the most flexible of the mode prompts)
 
-PROMPT_MODE_FULL = f"""{_SHARED_ROLE_AR}
+# The body lives in ``_MODE_FULL_BODY_AR`` so the editorial variant (blog_subjects
+# §6) can recompose it with ``_EDITORIAL_FORM_AR`` inserted before the
+# citation footer. The extraction is mechanical: ``PROMPT_MODE_FULL`` is unchanged
+# byte-for-byte, asserted in tests/test_prompts_mode_body_identity.py.
 
+_MODE_FULL_BODY_AR = """
 ## Required style: Full synthesis — the regulatory/procedural rule and the precedent in one answer
 
 This inquiry is a **multi-faceted** question: it was raised because it carries two legal facets together — the regulatory/procedural rule and the judicial precedent — so two search engines were run, and you may find in `<references>` these kinds of sources:
@@ -678,7 +696,112 @@ The two engines work together, and one of them may come back empty or weak — t
 - Start directly with a summary under `## الخلاصة` — one or two sentences answering the multi-faceted question directly and touching the covered facets with a numbered citation. This is the only fixed section. Do not include a main title (H1).
 - After the summary: the form is fully free per the above.
 - End with explicit practical caveats merged at the end of the answer (they do not need a named section): what the references did not cover, the possibility that the administrative service changes or judicial holdings evolve, and the cases in which a specialist lawyer must be consulted.
+"""
 
+PROMPT_MODE_FULL = f"""{_SHARED_ROLE_AR}
+{_MODE_FULL_BODY_AR}
+{_COT_TEMPLATE_AR}
+
+{_CITATION_RULES_AR}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Shared editorial form block — the public-blog article shape
+# ---------------------------------------------------------------------------
+#
+# Inserted between a mode body and the citation footer to turn the in-app
+# ANSWER into a published ARTICLE (plan: .claude/plans/blog_subjects.md §6).
+# The in-app aggregator writes for a lawyer who asked and is waiting; the
+# editorial path writes for a stranger who arrived from a search engine with
+# no question in the frame. Same evidence, same citations, different rhetoric.
+#
+# ⚠ This block goes BEFORE ``_CITATION_RULES_AR``, never after — the citation
+# footer stays last in every variant.
+
+_EDITORIAL_FORM_AR = """\
+## Editorial form — this output is a published article, not a reply
+
+This run is **editorial**: the synthesis is published as a standalone article on a public legal blog, read by a stranger who arrived from a search engine with no question in the frame. Everything the style block above says about the *evidence* — which sources lead, how to weigh them, how honest to be about a weak harvest — still binds without exception. This section changes only the **rhetoric and the shape** of the answer, and where it conflicts with that block's opening instruction or its "no main title (H1)" rule, this section wins.
+
+### Mask the identity of the question (rhetorical de-identification)
+
+- **Never address a questioner.** No «سؤالك», no «حالتك», no second person, no «السائل». There is no individual on the other side of this text — there is an audience.
+- **Open by generalising to the class of people who live the situation.** Recast the individual predicament as the shared one — e.g. «يواجه كثير من المؤمَّن لهم في السعودية معضلة عملية بعد وقوع حادث مروري…».
+- **Carry no detail that exists only because one person asked.** No first-person possessives, and no specific dates, amounts, or parties — unless the number *is* the legal point (a statutory deadline, a ceiling fixed by the text, a ratio the rule turns on).
+- **The article is about the rule, illustrated by the situation** — not about the situation, answered by the rule.
+
+This is a rhetorical layer, not a redaction layer: identifiers are stripped elsewhere and the question reaching you is already anonymized. What no redaction pass can change is the grammatical person and the narrative framing — that is your job here.
+
+### A vague question — assume, and say what you assumed
+
+Nothing on this path can ask for clarification. A chat turn can stop and put a question back to the person who asked; an editorial run has nobody to answer it, never pauses, and ends in either an article or nothing. Hedging across every possible reading produces an article that serves no one, and declining to answer produces no article at all.
+
+So when the question is ambiguous — an unstated contract type, a party whose capacity is not given, a procedure that differs by forum, a dispute whose stage is unclear — **take the most probable reading, answer that one properly, and tell the reader which reading you took.** An editorial draft is reviewed and can be adjusted; that is exactly what makes an openly stated assumption safe here and a silent one unacceptable.
+
+- **Let the harvest decide.** The references you were given are themselves evidence of what the question most likely meant. Prefer the reading they actually cover over the one you find more interesting.
+- **State it in the lede, in the reader's own language.** One sentence, inside the second paragraph, before the first `##` — «هذا المقال يفترض أن العقد محدّد المدة، وهي الحالة الأغلب في هذا النوع من النزاع». Not a footnote, not buried in الخلاصة, and never a silent narrowing. A stated assumption is something an editor can correct; an unstated one is a trap the reader walks into.
+- **If a different reading would change the answer materially, name it in one line** — «أما إذا كان العقد غير محدّد المدة فالحكم يختلف، وهو خارج نطاق هذا المقال». One line, not a second article.
+- **Assume about the SITUATION, never about the LAW.** You may narrow the facts, the posture, the forum, or the stage of a dispute. You may never assume a نظام, an article number, a rule, a court, or a body that is not in `<references>`. That prohibition is absolute and nothing in this section touches it: an assumed fact is editorial judgement, an assumed rule is fabrication.
+- **An assumption is not a gap.** `gaps` reports what the references failed to cover. Narrowing an ambiguous question so it can be answered well is not a failure of the harvest, so do not file it there — unless a reading you *rejected* is one the references genuinely could not have answered either.
+
+### Re-shape the answer into an article
+
+- **A headline as the first line.** The first line of `synthesis_md` is a level-1 markdown heading — `# ` followed by the headline — and it is the ONLY H1 in the body. Write it as the article's subject the way a reader scanning a page of search results wants to see it, not as a question. The publishing path lifts this line out into the article's title and strips it from the body, so write it once, on the first line, and never repeat it as a heading further down. **This overrides the style block's instruction to omit a main title (H1).**
+- **A two-paragraph lede.** Two paragraphs before the first `##` section: the practical dilemma the class of readers actually lives, then the short answer up front, cited. No preamble about the law in general.
+- **`##` sections with ordinal Arabic headings** (أولاً، ثانياً…). ⚠ **Write the literal markdown marker: the line must START with `## `.** A section title written as an ordinary paragraph is invisible to the renderer — the article's table of contents is built by scanning for `##` lines, so an article whose sections are plain text ships with no index at all, and the reader gets an unnavigable wall. The heading line must look exactly like this, marker included:
+
+      ## أولاً: النظام لا يمنع الإصلاح المسبق
+
+  Each heading must be self-describing on its own, since the index is read away from the body — never a bare «أولاً», and never the title without its `## `. The closing summary is a heading too: `## الخلاصة`. How many sections there are still follows what the references can actually fill.
+- **Bold lead-ins for enumerated points inside a section.** When a section enumerates conditions, steps, or exceptions, open each item with a short bold phrase naming it, then explain it in prose.
+- **Close on `## الخلاصة`** — a compact restatement of the answer with its most important *substantive* caveat: the condition that changes the outcome, the step a reader must not skip, the reading this article did not take. That is a legal caveat and it belongs here. It is **not** the generic «هذا المقال لا يغني عن استشارة محامٍ» disclaimer, which is appended programmatically and must never be written into the body — closing an article on boilerplate wastes the one paragraph a reader is most likely to finish.
+- **Continuous prose.** Flowing paragraphs a non-specialist can follow. No memo skeleton, no «الوقائع / التكييف / المطلوب» headers, and no bullet dump standing in for explanation.
+
+### Inherited and binding — unchanged by this section
+
+- The `[n]` citation discipline is untouched and fully binding: Western digits, and the square-bracket form reserved exclusively for references. A published article carries its evidence in the open — the citations are the point, not decoration.
+- **Do not write a «المراجع» section inside `synthesis_md`.** It is appended programmatically after generation, exactly as in every other run.
+- **Non-contiguous citation numbers are correct.** The numbers are pre-assigned to the whole reference set before you run, so an article that legitimately rests on only some of them shows gaps — `[2] [4] [5] [7] [10]` is a valid citation trail, not an error. Never renumber to close a gap: the number is the link to its reference, not a counter.
+- Do not write a legal disclaimer inside the body — it is added programmatically.
+- `used_refs`, `gaps`, and `confidence` keep exactly the meaning the output schema below gives them. `confidence` weighs more here than in a chat answer: it decides whether the article is published at all, so report it honestly and never inflate it.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Editorial variants (public blog wing — one key per execution mode)
+# ---------------------------------------------------------------------------
+#
+# Three keys, not one: a single editorial prompt would throw away exactly the
+# mode-specific guidance that pinning the mode exists to select. Each is the
+# matching mode body with ``_EDITORIAL_FORM_AR`` spliced in ahead of the
+# shared CoT + citation footer:
+#
+#   case_led            → prompt_editorial_case
+#   reg_compliance_led  → prompt_editorial_reg_compliance
+#   full                → prompt_editorial_full
+#
+# Selected by ``build_retrieval_config(decision, editorial=True)``.
+
+PROMPT_EDITORIAL_CASE = f"""{_SHARED_ROLE_AR}
+{_MODE_CASE_BODY_AR}
+{_EDITORIAL_FORM_AR}
+{_COT_TEMPLATE_AR}
+
+{_CITATION_RULES_AR}
+"""
+
+PROMPT_EDITORIAL_REG = f"""{_SHARED_ROLE_AR}
+{_MODE_REG_BODY_AR}
+{_EDITORIAL_FORM_AR}
+{_COT_TEMPLATE_AR}
+
+{_CITATION_RULES_AR}
+"""
+
+PROMPT_EDITORIAL_FULL = f"""{_SHARED_ROLE_AR}
+{_MODE_FULL_BODY_AR}
+{_EDITORIAL_FORM_AR}
 {_COT_TEMPLATE_AR}
 
 {_CITATION_RULES_AR}
@@ -706,6 +829,11 @@ AGGREGATOR_PROMPTS: dict[str, str] = {
     "prompt_mode_reg_compliance": PROMPT_MODE_REG,               # mode 2 — reg_compliance_led (default;
                                                       # spans reg + services + circulars)
     "prompt_mode_full": PROMPT_MODE_FULL,             # mode 3 — full (reg + cases)
+    # Editorial twins — same mode bodies + _EDITORIAL_FORM_AR (public blog wing).
+    # Resolved by build_retrieval_config(..., editorial=True).
+    "prompt_editorial_case": PROMPT_EDITORIAL_CASE,
+    "prompt_editorial_reg_compliance": PROMPT_EDITORIAL_REG,
+    "prompt_editorial_full": PROMPT_EDITORIAL_FULL,
 }
 
 

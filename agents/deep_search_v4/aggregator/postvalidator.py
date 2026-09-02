@@ -177,6 +177,8 @@ def check_structure(synthesis_md: str, prompt_key: str) -> tuple[bool, list[str]
     is_cases_only = key == "prompt_cases_only"     # CRAC-shaped, judicial principles
     is_comp_only = key == "prompt_comp_only"       # procedural, services + (optional) forms
     is_cases_focus = key == "prompt_cases_focus"   # cases-led + compliance paths
+    # Editorial variants (public blog wing — .claude/plans/blog_subjects.md §6)
+    is_editorial = key.startswith("prompt_editorial")
 
     if is_crac:
         # CRAC: الخلاصة / الأساس النظامي / التطبيق / الخلاصة النهائية
@@ -341,6 +343,48 @@ def check_structure(synthesis_md: str, prompt_key: str) -> tuple[bool, list[str]
             ok = False
         return ok, notes
 
+    if is_editorial:
+        # The ARTICLE shape, not the answer shape. Every in-app skeleton above
+        # would reject it on sight: an editorial article opens on an H1
+        # headline instead of «## الخلاصة», its section headings are ordinal
+        # and question-specific rather than drawn from a fixed vocabulary, and
+        # it *closes* on the summary instead of leading with it. So editorial
+        # gets its own, much looser, contract — only what the prompt actually
+        # pins: a headline, at least one section, and a closing «## الخلاصة».
+        ok = True
+        lines = body.splitlines()
+        h1_lines = [ln for ln in lines if re.match(r"^#\s+\S", ln)]
+        first_line = next((ln for ln in lines if ln.strip()), "")
+        if not re.match(r"^#\s+\S", first_line):
+            notes.append("editorial: first line is not an '# ' headline")
+            ok = False
+        if len(h1_lines) > 1:
+            # The publish path lifts the FIRST line into the title and strips
+            # it; a second H1 would survive into the body and double-render.
+            notes.append(
+                f"editorial: {len(h1_lines)} H1 headings — the headline must be the only one"
+            )
+            ok = False
+        h2_texts = [text for level, text in heading_lines if level == 2]
+        if not h2_texts:
+            notes.append("editorial: no '## ' section headings")
+            ok = False
+        elif not h2_texts[-1].startswith(_normalize_ar("الخلاصة")):
+            notes.append("editorial: article does not close on '## الخلاصة'")
+            ok = False
+        # Soft note only (does not flip ``ok``): headings become the article's
+        # TOC entries, so a bare ordinal («أولاً») renders as a useless entry.
+        # Detected structurally — a single-token heading — so no Arabic
+        # ordinal vocabulary has to be hard-coded here. The closing summary is
+        # legitimately one token, so it is excluded.
+        bare = [t for t in h2_texts[:-1] if len(t.split()) <= 1]
+        if bare:
+            notes.append(
+                f"editorial: non-self-describing heading(s) {bare} — "
+                "section headings become TOC entries"
+            )
+        return ok, notes
+
     # Unknown prompt_key: be lenient but flag it
     notes.append(f"unknown prompt_key '{prompt_key}' — structure not checked")
     return True, notes
@@ -441,8 +485,26 @@ def check_sub_query_coverage(
     return covered / len(sufficient_idxs)
 
 
-def check_query_anchoring(synthesis_md: str, original_query: str) -> bool:
-    """True if >=2 meaningful query words (len>=3, not stopwords) appear in first 500 chars."""
+def check_query_anchoring(
+    synthesis_md: str,
+    original_query: str,
+    prompt_key: str = "",
+) -> bool:
+    """True if >=2 meaningful query words (len>=3, not stopwords) appear in first 500 chars.
+
+    Editorial variants are EXEMPT and always pass. The article form is
+    explicitly instructed to de-identify the question — open by generalising
+    to the class of people who live the situation, never restate the query or
+    address a questioner — so echoing the query's own terms back in the
+    opening is precisely what an editorial answer must NOT do. Scoring that as
+    "weak anchoring" would put a false note on every editorial job.
+
+    ``prompt_key`` is optional so existing callers (and the audit script in
+    ``scripts/``) keep working unchanged; omitting it preserves the in-app
+    behaviour exactly.
+    """
+    if (prompt_key or "").lower().startswith("prompt_editorial"):
+        return True
     if not synthesis_md or not original_query:
         return False
     body = strip_thinking_block(synthesis_md)
@@ -531,7 +593,9 @@ def validate_llm_output(
     coverage = check_sub_query_coverage(used_refs, ref_to_sub_queries, agg_input)
 
     # 7) Query anchoring (soft)
-    anchoring_ok = check_query_anchoring(synthesis, agg_input.original_query)
+    anchoring_ok = check_query_anchoring(
+        synthesis, agg_input.original_query, prompt_key
+    )
     if not anchoring_ok:
         notes.append("query anchoring weak: original query terms missing from intro")
 
@@ -546,6 +610,13 @@ def validate_llm_output(
     # silent-pass for 95% of production traffic because the planner emits
     # ``prompt_mode_*`` keys not in ``check_structure``'s recognized list,
     # and the prompts themselves request flexible structure.
+    #
+    # This is also why the editorial variants (blog_subjects §6) are safe: an
+    # article that legitimately opens on an H1 headline instead of «## الخلاصة»
+    # reports ``structure_ok`` on its own article contract and, either way,
+    # never burns a correction retry. The two gates that DO retry —
+    # ``citation_ok`` and ``gap_honesty_ok`` — are shape-agnostic and stay
+    # strict for editorial exactly as they are in-app.
     passed = bool(citation_ok and gap_honesty_ok)
 
     return ValidationReport(

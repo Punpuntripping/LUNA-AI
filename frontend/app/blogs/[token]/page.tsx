@@ -7,9 +7,7 @@ import {
   Check,
   Copy,
   ExternalLink,
-  Globe,
   Loader2,
-  Lock,
   Trash2,
 } from "lucide-react";
 import { api, ApiClientError } from "@/lib/api";
@@ -59,13 +57,20 @@ export default function MyBlogPostPage() {
     enabled: !!token,
   });
 
-  // Owner-side metadata: which of MY posts this token maps to + the curate gate.
+  // Owner-side metadata: which of MY posts this token maps to.
+  //
+  // ⚠ NO PUBLISH TOGGLE HERE ANY MORE (blog_subjects.md §8, D12). «نشر في
+  // المدونة العامة» was gated on `can_publish_public` (mirroring
+  // `users.can_access_blog`) — a curation gate exactly one account held and
+  // never used, over a gallery that never had a post in it. The public wing is
+  // its own table now (`public_blogs`), written by the editorial service key
+  // from the marketing repo, so this button pointed at a door that no longer
+  // leads anywhere. Moderation lives at `POST /internal/public-blogs/{root_id}
+  // /retract`, which is service-key authed and deliberately NOT owner-scoped.
   const { data: myBlogs } = useMyBlogs();
   const item = myBlogs?.posts.find((p) => p.token === token);
-  const canPublishPublic = myBlogs?.can_publish_public ?? false;
 
   const [copied, setCopied] = useState(false);
-  const [isToggling, setIsToggling] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -84,52 +89,6 @@ export default function MyBlogPostPage() {
     } catch {
       // Clipboard can fail on insecure contexts / denied permission — the user
       // can still open the public page and copy the URL by hand.
-    }
-  }
-
-  // Optimistically flip is_public in the مدوناتي cache, then refetch to confirm.
-  //
-  // The patch targets `list()` — the UNFILTERED cache entry — while every
-  // invalidate below uses `lists()`, the prefix that also covers مدوناتي's live
-  // search caches. Splicing a BM25-ranked page by hand would be guessing at the
-  // server's ordering; refetching it is not.
-  function patchMyBlogsPublic(postId: string, isPublic: boolean) {
-    queryClient.setQueryData<MyBlogsResponse>(myBlogsKeys.list(), (prev) =>
-      prev
-        ? {
-            ...prev,
-            posts: prev.posts.map((p) =>
-              p.post_id === postId ? { ...p, is_public: isPublic } : p,
-            ),
-          }
-        : prev,
-    );
-  }
-
-  async function handleTogglePublic() {
-    if (!item) return;
-    const next = !item.is_public;
-    setActionError(null);
-    setIsToggling(true);
-    // Optimistic flip
-    patchMyBlogsPublic(item.post_id, next);
-    try {
-      if (next) {
-        await api.publishBlogPublic(item.post_id);
-      } else {
-        await api.unpublishBlogPublic(item.post_id);
-      }
-      void queryClient.invalidateQueries({ queryKey: myBlogsKeys.lists() });
-    } catch (err) {
-      // Roll back the optimistic flip on failure.
-      patchMyBlogsPublic(item.post_id, item.is_public);
-      setActionError(
-        err instanceof ApiClientError
-          ? err.message
-          : "تعذّر تحديث حالة النشر. حاول مرة أخرى.",
-      );
-    } finally {
-      setIsToggling(false);
     }
   }
 
@@ -222,27 +181,6 @@ export default function MyBlogPostPage() {
             فتح الصفحة العامة
           </a>
 
-          {/* Publish toggle — only when the user can curate the public gallery */}
-          {canPublishPublic && item && (
-            <Button
-              type="button"
-              variant={item.is_public ? "outline" : "default"}
-              size="sm"
-              onClick={handleTogglePublic}
-              disabled={isToggling}
-              className="h-8 gap-1.5 px-2.5 text-xs"
-            >
-              {isToggling ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : item.is_public ? (
-                <Lock className="h-3.5 w-3.5" />
-              ) : (
-                <Globe className="h-3.5 w-3.5" />
-              )}
-              {item.is_public ? "إلغاء النشر من المدونة" : "نشر في المدونة العامة"}
-            </Button>
-          )}
-
           <div className="ms-auto flex items-center gap-2">
             {item && (
               <Button
@@ -274,7 +212,7 @@ export default function MyBlogPostPage() {
       {/* Post body — reuses the public reading surfaces (incl. BlogPageShell) */}
       <div className="flex-1 overflow-y-auto">
         {post.display_mode === "title" ? (
-          <BlogArticleView post={post} blogToken={token!} />
+          <BlogArticleView post={post} sourceKey={token!} />
         ) : (
           <PublicAnswerView post={post} blogToken={token!} />
         )}

@@ -86,10 +86,27 @@ export const SITE_URL = "https://rayhanai.com";
  * carry `noindex, follow` whenever the anon depth cap walls it, so a deep entity
  * URL here would be precisely the "Submitted URL marked noindex" self-
  * contradiction the removed sector lists were pulled for.
+ *
+ * `blog-subjects` joined on 2026-09-02 with the public blog wing
+ * (`.claude/plans/blog_subjects.md` §7) — the `/blog/{subject}` listing pages,
+ * the browse axis of a wing whose article URLs ship in `blog` beside it. Both
+ * sections are served by the same backend feed contract, and both changed
+ * hands at once: `blog` switched from `blog_posts` TOKENS to `public_blogs`
+ * SLUGS (the tokens were minted unlisted and are `noindex` on the page, so they
+ * were never sitemap material), and `blog-subjects` is new.
+ *
+ * ⚠ THE FEED LISTS ONLY SUBJECTS CARRYING AT LEAST ONE PUBLIC BLOG, and that
+ * `>= 1` filter is the contract rather than an optimization — the same rule the
+ * `courts` removal wrote into this comment. ~100 subjects are seeded ahead of
+ * their content, so most will be empty for months, and *a listed section with
+ * an empty urlset is a file Google refetches hourly to learn nothing.* The hub
+ * grid and `/blog/subjects` apply the identical filter, so no URL is ever
+ * listed here that the site does not link to.
  */
 export const SITEMAP_SECTIONS = [
   "static",
   "blog",
+  "blog-subjects",
   "regulations",
   "articles",
   "circulars",
@@ -162,6 +179,10 @@ export function getStaticUrls(): SitemapUrl[] {
     "/learn/data-protection",
     "/learn/usage-limits",
     "/blog",
+    // The blog wing's two hardcoded pages (blog_subjects.md §7). The subject
+    // LISTINGS are a fed section (`blog-subjects`); this index page over them
+    // is a fixed URL, so it belongs here with `/blog` and `/library`.
+    "/blog/subjects",
     "/library",
   ];
   return paths.map((path) => ({
@@ -304,7 +325,16 @@ export async function fetchSectionUrls(section: string): Promise<SitemapUrl[]> {
   return collected;
 }
 
-/** Blog section feed — thin alias kept for the existing sitemap route case. */
+/**
+ * Blog section feed — thin alias kept for the existing sitemap route case.
+ *
+ * The FETCH CONTRACT is unchanged; what the backend puts in it is not. As of
+ * the public blog wing (blog_subjects.md §7) `sitemap_blog_urls` reads
+ * `public_blogs` and emits `/blog/{slug}` for CURRENT versions only, with
+ * `lastmod` = that version's `updated_at` — so an SEO rewrite bumps `lastmod`
+ * (a real freshness signal) instead of adding a URL. The legacy `blog_posts`
+ * tokens are deliberately absent: they are `noindex` on the page.
+ */
 export function fetchBlogUrls(): Promise<SitemapUrl[]> {
   return fetchSectionUrls("blog");
 }

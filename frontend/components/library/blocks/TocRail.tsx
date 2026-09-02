@@ -29,8 +29,11 @@ export function TocRail({
   title = "محتويات النظام",
   badge,
   className,
+  spyPrefix,
 }: TocRailProps) {
-  const { activeId, handleAnchorClick } = useTocScrollspy(entries);
+  const { activeId, handleAnchorClick } = useTocScrollspy(entries, {
+    spyPrefix,
+  });
 
   return (
     <div

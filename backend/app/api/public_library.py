@@ -2430,9 +2430,11 @@ async def get_library_sitemap(
 ):
     """Sitemap feed for one library ``section`` — the frontend XML routes' backend.
 
-    ``blog`` reads the public blog gallery; ``static`` returns the hardcoded
-    marketing/legal routes. Unknown sections 404 (Arabic). Read-only: no
-    counters are bumped. Sets ``Cache-Control: public, max-age=3600``.
+    ``blog`` reads the public blog wing (``public_blogs`` slugs, not the legacy
+    ``blog_posts`` tokens) and ``blog-subjects`` its browse axis; ``static``
+    returns the hardcoded marketing/legal routes. Unknown sections 404 (Arabic).
+    Read-only: no counters are bumped. Sets
+    ``Cache-Control: public, max-age=3600``.
 
     ⚠ NOT a general-purpose public endpoint, despite the ``/public/`` prefix — it
     is a 5,000-URL-per-page bulk feed and the largest enumeration surface here.
@@ -2469,6 +2471,17 @@ async def get_library_sitemap(
         page_out = max(1, int(page or 1))
         rows, total_pages = await run_db(
             library_service.sitemap_blog_urls, supabase, base_url, page_out
+        )
+        urls = [SitemapUrl(**r) for r in rows]
+    elif section == "blog-subjects":
+        # /blog/{subject} listing pages — the browse axis of the public blog
+        # wing (blog_subjects.md §7). Lists ONLY subjects carrying at least one
+        # qualifying public blog: the vocabulary is seeded ahead of its content,
+        # and an empty listing is the same "file Google refetches hourly to
+        # learn nothing" that took `courts` out of SITEMAP_SECTIONS.
+        page_out = max(1, int(page or 1))
+        rows, total_pages = await run_db(
+            library_service.sitemap_blog_subject_urls, supabase, base_url, page_out
         )
         urls = [SitemapUrl(**r) for r in rows]
     elif section == "articles":

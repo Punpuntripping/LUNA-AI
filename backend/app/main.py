@@ -666,6 +666,23 @@ def create_app() -> FastAPI:
         tags=["workspace"],
     )
 
+    # Public blog wing (مدونة ريحان — .claude/plans/blog_subjects.md). The
+    # versioned `public_blogs` table + its subject taxonomy. Every route here is
+    # ANONYMOUS by design (no auth dependency), same posture as
+    # /public/blog/{token} below.
+    #
+    # This wing OWNS `GET /public/blogs` now: api/blog.py's `blog_posts` gallery
+    # of the same path was deleted rather than shadowed, so there is exactly one
+    # handler and the OpenAPI document (which is keyed by PATH, not by
+    # registration order) describes the one that actually runs.
+    from backend.app.api.public_blogs import router as public_blogs_router
+
+    application.include_router(
+        public_blogs_router,
+        prefix="/api/v1",
+        tags=["public-blogs"],
+    )
+
     # Blog router (مدونة — public share-by-link). The public GET
     # /public/blog/{token} has no auth dependency by design.
     from backend.app.api.blog import router as blog_router

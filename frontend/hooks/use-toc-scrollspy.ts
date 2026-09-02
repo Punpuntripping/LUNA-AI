@@ -32,6 +32,19 @@ export interface UseTocScrollspyOptions {
    * desktop rail's 96px allowance — `TocFloating` passes its own value.
    */
   rootMargin?: string;
+  /**
+   * Which same-page hrefs take part in the spy. Defaults to `#sec-`, the shape
+   * every library document page emits — so the corpus wings are unaffected.
+   *
+   * The مدونة wing passes plain `"#"`: its anchors are bare heading slugs from
+   * `slugifyHeading`, not `sec-` ids. Without this the rail rendered but no row
+   * ever lit up — a silent regression against `BlogTableOfContents`, the
+   * component the blog TOC swap replaced, which had its own working
+   * IntersectionObserver. `sec-`-prefixing blog ids instead would have been the
+   * other fix, and would have broken every `#slug` link already copied out of a
+   * published article.
+   */
+  spyPrefix?: string;
 }
 
 export interface TocScrollspy {
@@ -63,6 +76,7 @@ export function useTocScrollspy(
   options?: UseTocScrollspyOptions,
 ): TocScrollspy {
   const rootMargin = options?.rootMargin ?? DEFAULT_ROOT_MARGIN;
+  const spyPrefix = options?.spyPrefix ?? SPY_HREF_PREFIX;
   const [activeId, setActiveId] = useState<string | null>(null);
 
   // Every anchor row is clickable. When the target section exists (the free
@@ -94,7 +108,7 @@ export function useTocScrollspy(
 
   useEffect(() => {
     const spyIds = entries
-      .filter((e) => e.href?.startsWith(SPY_HREF_PREFIX))
+      .filter((e) => e.href?.startsWith(spyPrefix))
       .map((e) => e.href!.slice(1));
     if (spyIds.length === 0) return;
 
@@ -114,7 +128,7 @@ export function useTocScrollspy(
     );
     targets.forEach((t) => observer.observe(t));
     return () => observer.disconnect();
-  }, [entries, rootMargin]);
+  }, [entries, rootMargin, spyPrefix]);
 
   return { activeId, jumpTo, handleAnchorClick, hasTarget };
 }

@@ -90,6 +90,10 @@ async def generate_answer_headless(
     bot_user_id: str,
     question: str,
     metadata: Optional[dict[str, Any]] = None,
+    mode: Optional[str] = None,
+    support: Optional[bool] = None,
+    editorial_voice: bool = True,
+    task_label: Optional[str] = None,
 ) -> HeadlessResult:
     """Run the full generation pipeline headlessly as the editorial bot.
 
@@ -97,9 +101,35 @@ async def generate_answer_headless(
     ``LUNA_PIPELINE_TIMEOUT_S`` (the caller maps that to ``generation_timeout``).
     Any pipeline exception propagates to the caller (mapped to
     ``generation_failed``).
+
+    ``mode`` / ``support`` / ``editorial_voice`` are the editorial pin
+    (``.claude/plans/blog_subjects.md`` §5), threaded to the planner through
+    ``handle_message(pinned_plan=…)``.
+
+    ⚠ **``support`` is ``Optional[bool]`` all the way down and must stay that
+    way.** ``None`` means "the planner decides"; ``False`` means "pinned off".
+    Collapsing the two — a ``bool = False`` anywhere on this path — makes every
+    partially-pinned job silently run without its support executor: no error, no
+    log line, just a thinner article (§11).
+
+    ⚠ **A ``PinnedPlan`` is built on EVERY headless run**, including the fully
+    unpinned ``mode=None, support=None`` one. It carries two things that are
+    unconditional here regardless of what was pinned: the agent family (an
+    editorial job always wants ``deep_search``) and ``headless=True`` (a phase-1
+    ``ask_user`` pause has nobody to answer it and must not strand the run).
     """
     # Deferred import — keeps module import cheap + avoids any import-order edge.
+    from agents.deep_search_v4.planner.models import PinnedPlan
     from agents.orchestrator import handle_message
+
+    pinned_plan = PinnedPlan(
+        mode=mode,                       # type: ignore[arg-type]  (validated upstream)
+        support=support,
+        editorial=bool(editorial_voice),
+        headless=True,
+        agent_family="deep_search",
+        task_label=(task_label or "").strip(),
+    )
 
     # 1. Throwaway conversation owned by the bot.
     conversation_id = await run_db(
@@ -139,6 +169,12 @@ async def generate_answer_headless(
         conversation_id=conversation_id,
         user_message_id=user_message_id,
         assistant_message_id=assistant_message_id,
+        # "" reads as "not pinned". `False` would read as "pinned off", which is
+        # a different request — see the support note above.
+        pinned_mode=pinned_plan.mode or "",
+        pinned_support="" if pinned_plan.support is None else pinned_plan.support,
+        fully_pinned=pinned_plan.is_fully_pinned,
+        editorial_voice=pinned_plan.editorial,
     ) as _span:
         async with asyncio.timeout(get_settings().LUNA_PIPELINE_TIMEOUT_S):
             async for event in handle_message(
@@ -149,6 +185,7 @@ async def generate_answer_headless(
                 case_id=None,
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
+                pinned_plan=pinned_plan,
             ):
                 etype = event.get("type")
                 if etype == "token":

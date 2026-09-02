@@ -394,7 +394,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # limiter would otherwise 429 the 61st submission in a minute, but we
         # want bursts up to the hourly cap. Prefix match (not exact) so the
         # /{job_id} poll sub-path is covered too; EXEMPT_PATHS is exact-match.
-        if request.url.path.startswith("/internal/blog-post-jobs"):
+        #
+        # /internal/public-blogs/* rides the same exemption (blog_subjects.md
+        # §5 / marketing_agents.md §3): the moderation + post-publication step
+        # routes are on the SAME service key, which is the actual security
+        # boundary here — this limiter is a cost damper, and a retraction is
+        # exactly the request you never want deferred by one.
+        if request.url.path.startswith(
+            ("/internal/blog-post-jobs", "/internal/public-blogs")
+        ):
             return await call_next(request)
 
         # Our own renderer's ISR bake — see the ISR_BAKE_SECRET block comment.

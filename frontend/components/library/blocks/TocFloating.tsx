@@ -47,10 +47,11 @@ export function TocFloating({
   entries,
   title = "محتويات النظام",
   badge,
+  spyPrefix,
 }: TocFloatingProps) {
   const { activeId, jumpTo, handleAnchorClick, hasTarget } = useTocScrollspy(
     entries,
-    { rootMargin: PHONE_ROOT_MARGIN },
+    { rootMargin: PHONE_ROOT_MARGIN, spyPrefix },
   );
 
   const [panelOpen, setPanelOpen] = useState(false);

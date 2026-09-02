@@ -72,6 +72,30 @@ MODE_PROFILES: dict[Mode, dict] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Editorial twins — in-app aggregator prompt key -> public-blog article key.
+# ---------------------------------------------------------------------------
+#
+# The editorial path (public blog wing — .claude/plans/blog_subjects.md §6)
+# runs the SAME retrieval as the in-app path and differs only in the
+# aggregator's rhetoric: the in-app prompt answers a lawyer who asked and is
+# waiting, the editorial twin writes an article for a stranger who arrived
+# from a search engine. Same mode body, same citation rules, so one twin per
+# mode rather than one editorial prompt for all three — otherwise pinning the
+# mode would select mode-specific guidance that the prompt then discards.
+#
+# Every value here is asserted to exist in ``AGGREGATOR_PROMPTS`` by
+# ``aggregator/tests/test_prompts_mode_body_identity.py``. The check lives
+# there, not here: this module stays import-pure (no aggregator import) so the
+# apply tier runs without the agent runtime.
+
+EDITORIAL_PROMPT_KEYS: dict[str, str] = {
+    "prompt_mode_case": "prompt_editorial_case",
+    "prompt_mode_reg_compliance": "prompt_editorial_reg_compliance",
+    "prompt_mode_full": "prompt_editorial_full",
+}
+
+
 @dataclass
 class RetrievalConfig:
     """Mode-derived retrieval knobs — the output of :func:`build_retrieval_config`.
@@ -101,12 +125,19 @@ class RetrievalConfig:
     # Echoed for telemetry / logging — not consumed downstream.
     mode: Mode | None = None
     support: bool = False
+    # True when ``aggregator_prompt_key`` was resolved to its editorial twin.
+    # Echo only — the key itself is what drives the aggregator.
+    editorial: bool = False
     # Phase C — planner-emitted context label list (placeholder; consumed in
     # Phase D when run_retrieval builds ContextBlock objects from it).
     context_labels: list[str] = field(default_factory=list)
 
 
-def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
+def build_retrieval_config(
+    decision: PlannerDecision,
+    *,
+    editorial: bool = False,
+) -> RetrievalConfig:
     """Expand a :class:`PlannerDecision` into a concrete :class:`RetrievalConfig`.
 
     Pure function — no I/O, no side effects. See MODE_PROFILES.md §6.
@@ -117,6 +148,11 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
     - ``full``: both executors run as peers; ``decision.support`` is ignored
       (structural — 'full' has no support role). Budgets come from
       ``FULL_PROFILE`` per executor.
+
+    ``editorial`` (keyword-only) swaps **only** the aggregator prompt key for
+    its :data:`EDITORIAL_PROMPT_KEYS` twin — retrieval, budgets, and executor
+    selection are byte-identical to the in-app path. Default ``False`` leaves
+    every existing caller unchanged.
     """
     profile = MODE_PROFILES[decision.mode]
     result_budget: dict[str, int] = {}
@@ -131,15 +167,30 @@ def build_retrieval_config(decision: PlannerDecision) -> RetrievalConfig:
             support = profile["support"]
             result_budget[support] = ROLE_PROFILES["support"]["result_budget"]
 
+    aggregator_prompt_key = profile["aggregator_prompt_key"]
+    if editorial:
+        # Fail LOUD on a mode with no twin. Falling back to the in-app key
+        # would silently publish a chat-shaped answer as an article — the
+        # failure mode that looks exactly like success.
+        try:
+            aggregator_prompt_key = EDITORIAL_PROMPT_KEYS[aggregator_prompt_key]
+        except KeyError:
+            raise KeyError(
+                f"No editorial aggregator prompt for mode {decision.mode!r} "
+                f"(key {aggregator_prompt_key!r}). "
+                f"Known twins: {sorted(EDITORIAL_PROMPT_KEYS)}"
+            ) from None
+
     included = set(result_budget)
     return RetrievalConfig(
         include_reg_compliance="reg_compliance" in included,
         include_cases="cases" in included,
         result_budget=result_budget,
-        aggregator_prompt_key=profile["aggregator_prompt_key"],
+        aggregator_prompt_key=aggregator_prompt_key,
         sectors_override=None,  # Wave B — picker future drives the filter
         mode=decision.mode,
         support=False if decision.mode == "full" else decision.support,
+        editorial=editorial,
         # Phase C — pass through the planner's label selection. Phase D will
         # consume these via ContextBlock objects in run_retrieval.
         context_labels=list(getattr(decision, "context_labels", []) or []),
@@ -151,6 +202,7 @@ __all__ = [
     "ROLE_PROFILES",
     "FULL_PROFILE",
     "MODE_PROFILES",
+    "EDITORIAL_PROMPT_KEYS",
     "RetrievalConfig",
     "build_retrieval_config",
 ]
