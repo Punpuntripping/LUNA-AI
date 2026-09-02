@@ -174,12 +174,12 @@ _SNIPPET_CHARS = 1_000
 # table is for PICKING, not reading — the body arrives after the pick.
 _LEAD_CHARS = 120
 
-# Shortest query token that may count toward coverage. A 1-character Arabic
-# token (a stray «و» / «ب» conjunction) is a substring of almost any title and
-# would inflate coverage toward 1.0 for free. Verified a no-op on the seven
-# calibration queries above (their shortest token is 3 chars), so it tightens
-# the gate without moving the measured floor.
-_MIN_TERM_CHARS = 2
+# Shortest query token that may count toward coverage — now defined next to the
+# coverage functions themselves, in ``fetch_article``, and imported with them
+# below so the constant and its only readers cannot drift apart. (Value 2:
+# a 1-character Arabic token — a stray «و» / «ب» conjunction — is a substring of
+# almost any title and would inflate coverage toward 1.0 for free. Verified a
+# no-op on the seven calibration queries above.)
 
 # §6 — the searcher's budget, exported so the searcher prompt/agent has ONE
 # definition to cite. Not enforced here: this module is stateless per call.
@@ -230,7 +230,13 @@ _CORPUS_BY_TYPE: dict[str, str] = {
 }
 
 # data_type → the noun used in the AMBIGUOUS: payload. «النظام» for regs/article
-# is byte-identical to ``fetch_article._build_ambiguous`` on purpose (§9).
+# WAS byte-identical to ``fetch_article._build_ambiguous`` (§9). It no longer
+# is: that resolver was rewritten 2026-09-02 so nothing below an exact pin
+# resolves, which turned its payload from "these two tie, ask the user" into
+# "here is a shortlist, pick one or take none" — addressed to the PLANNER, not
+# to the user. This one still means the original thing. The shared contract is
+# now the ``AMBIGUOUS:`` prefix and the 3-candidate cap, pinned by
+# test_ambiguous_payloads_share_a_prefix_but_diverge_on_the_ask.
 _AMBIGUOUS_NOUN: dict[str, str] = {
     "regs": "النظام",
     "article": "النظام",
@@ -307,75 +313,20 @@ def _resolve_embedder(embedding_fn: EmbedFn | None | _HouseEmbedder) -> EmbedFn 
 # --------------------------------------------------------------------------- #
 
 
-def _query_terms(query: str) -> list[str]:
-    """Normalized, de-duplicated query lexemes of at least ``_MIN_TERM_CHARS``.
-
-    Each token goes through ``fetch_article._normalize_title`` — the STRICT
-    fold (ة→ه, ى→ي, ؤ→و, ئ→ي, hamza-alef unification, and a dropped leading
-    «ال»), which is why «الفساد» and «فساد» count as the same term. That is a
-    deliberately deeper fold than SQL's ``luna_normalize_ar``; see ``_pin``.
-    """
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in (query or "").split():
-        term = _normalize_title(raw)
-        if len(term) >= _MIN_TERM_CHARS and term not in seen:
-            seen.add(term)
-            out.append(term)
-    return out
-
-
-def _term_in_title(term: str, norm_title: str) -> bool:
-    """Does one normalized query lexeme appear in a normalized title?
-
-    Substring containment, plus one fold the plain test misses: a «و»
-    conjunction the two sides attach differently. Arabic writes the conjunction
-    joined («والمشتريات»), so a title spelling the same word bare («المشتريات»)
-    fails a raw substring test on the user's token even though it is the very
-    same word. ``_normalize_title`` re-attaches a DETACHED waw, which fixes the
-    corpus side; this fixes the QUERY side, where the waw is a conjunction the
-    title has no reason to carry.
-
-    One-directional by construction — it can only ever count a term the plain
-    test already missed, so coverage never drops and the measured floor cannot
-    move underneath it.
-    """
-    if term in norm_title:
-        return True
-    if not term.startswith("و") or len(term) <= 1:
-        return False
-    stem = _normalize_title(term[1:])
-    return len(stem) >= _MIN_TERM_CHARS and stem in norm_title
-
-
-def coverage(query: str, title: str) -> float:
-    """Fraction of the query's lexemes that appear in ``title``. Pure.
-
-    Substring containment on the normalized forms, so «عمل» counts inside
-    «العمل». Reproduces every measured value in the module docstring's table
-    exactly — 1.00 / 1.00 / 0.67 / 0.67 for the correct resolutions and
-    0.50 / 0.33 / 0.20 for the wrong ones.
-    """
-    terms = _query_terms(query)
-    if not terms:
-        return 0.0
-    norm_title = _normalize_title(title or "")
-    if not norm_title:
-        return 0.0
-    return sum(1 for t in terms if _term_in_title(t, norm_title)) / len(terms)
-
-
-def _strict_exact(query: str, title: str) -> bool:
-    """Gate 1b — the strict-normalized Python probe.
-
-    SQL's ``luna_normalize_ar`` folds hamza-carrying alef, tatweel and harakat
-    ONLY; ``_normalize_title`` also folds ة/ى/ؤ/ئ and drops a leading «ال». The
-    two disagree on **91.7 %** of regulation titles, so relying on the SQL pin
-    alone silently loses most exact matches — «النظام العمل» scores 3.14 on
-    نظام العمل (no pin) where «نظام العمل» scores 1003.14. This recovers those.
-    """
-    q = _normalize_title(query or "")
-    return bool(q) and q == _normalize_title(title or "")
+# These four moved DOWN into ``fetch_article`` (2026-09-02) when its resolver
+# adopted the same coverage gate: ``manual_search`` already imports six names
+# from that module and the dependency may not run the other way, so the lower
+# layer is where a shared pure function has to live. Re-exported here unchanged
+# — ``coverage`` stays in this module's ``__all__``, so the eval harness and the
+# tests that import it from here are untouched. ONE definition, same house rule
+# that keeps ``_AMBIGUITY_MARGIN`` shared rather than copied.
+from agents.tool_repository.fetch_article import (  # noqa: E402
+    _MIN_TERM_CHARS,
+    _query_terms,
+    _strict_exact,
+    _term_in_title,
+    coverage,
+)
 
 
 # --------------------------------------------------------------------------- #

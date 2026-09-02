@@ -51,7 +51,7 @@ class ContextBlock:
     """A single structured context block carried by the planner's bundle.
 
     ``label`` — one of the frozen vocabulary strings: ``"case_brief"``,
-    ``"planner_brief"``, ``"prior_search_lessons"``.
+    ``"statute_articles"``, ``"planner_brief"``, ``"prior_search_lessons"``.
     ``body`` — Arabic prose, rendered verbatim into the ``<context_blocks>`` XML
     block in the expander + aggregator user messages.
     ``persistence`` — lifetime classification for telemetry / future caching:
@@ -59,7 +59,13 @@ class ContextBlock:
     conversation), or ``"turn"`` (recomputed each dispatch).
     ``source_item_id`` — optional ``workspace_items.item_id`` reference for
     audit / dedup / UI back-link; ``None`` for synthesized blocks
-    (``case_brief``, ``planner_brief``).
+    (``case_brief``, ``planner_brief``, ``statute_articles``).
+
+    ``statute_articles`` carries the verbatim text of every article
+    ``fetch_article`` resolved this turn, and is the one block whose body is NOT
+    prose the planner wrote — it is corpus text, forwarded structurally so that
+    capping what the PLANNER reads does not cap what the executors and the
+    aggregator read. See ``orchestrator._build_candidate_context_blocks``.
     """
 
     label: str

@@ -12,22 +12,28 @@ Why this exists: semantic search cannot reliably retrieve an article by its
 gaps say *"لم تتضمن المراجع النص الحرفي للمادة 81"*. The fix is a deterministic
 structured lookup against the article-grain table ``articles_v2``.
 
-Two deterministic steps (see FETCH_ARTICLE_PLAN.md §4):
+Two deterministic steps (see FETCH_ARTICLE_PLAN.md §4, and
+``.claude/plans/fetch_article_bm25_resolution.md`` for the 2026-09-02 rewrite):
 
 1. **Resolve ``regulation_title`` → ``regulation_id``** — the only fuzzy part.
-   PostgREST ILIKE candidate-fetch on ``title``/``clean_title`` (raw token,
-   exact-char), then normalize BOTH sides app-side and rank in Python: exact
-   normalized match wins outright; else string-similarity score
-   (``difflib.SequenceMatcher`` — ``rapidfuzz`` is not a dependency) with a
-   ``doc_type_bucket`` preference (``law_statute`` for «نظام»,
-   ``executive_regulation`` for «لائحة») and a shorter-title tiebreak. If no
-   exact match and the top-2 are close, return an ``AMBIGUOUS:`` payload so the
-   planner can ``ask_user`` — never silently grab the wrong law.
+   A three-rung ladder — ``bm25_search`` over the ``regulation`` corpus, the
+   full-string ILIKE, and a recall-only distinctive-token ILIKE — merged and
+   ranked by ``(pin, coverage, rung score)``. **A unique exact title pin is the
+   only thing that resolves.** Everything else returns a shortlist for the
+   planner to pick from or decline; nothing is ever accepted on similarity
+   alone. See :func:`resolve_regulation_id`.
 2. **Fetch the article** — ``articles_v2.content`` keyed by
    ``(regulation_id, article_number:text)``. ``article_number`` is matched by
    exact text equality (compound values like ``"1-1"`` exist). Returns the
    article body as TEXT only — never an ``[n]`` citation, never ``article_ref``
    or ``chunk_parent_id``.
+
+**Two audiences, one fetch.** ``FetchArticleResult.text`` is what the planner
+reads and is capped at :data:`_PLANNER_ARTICLE_CAP`; ``.content`` is the whole
+body and is what gets pinned and what reaches the executors and the aggregator
+through the ``statute_articles`` context block. The cap exists because article
+length has a brutal tail — p50 325 chars, max 244,419 — and the planner is the
+one reader that only needs enough to plan.
 
 The resolver / normalizer / fetch layers are split out as pure functions so
 they unit-test against a fake Supabase without an agent or a live DB. Mirrors
@@ -45,7 +51,6 @@ already does, via ``.supabase``).
 from __future__ import annotations
 
 import asyncio
-import difflib
 import logging
 import re
 from dataclasses import dataclass
@@ -70,26 +75,130 @@ _REG_COLUMNS = "id,title,clean_title,doc_type_bucket,status_class"
 # Article fetch — content is the ONLY column we need (never article_ref).
 _ARTICLE_COLUMNS = "content"
 
-# Ambiguity gate: if there is no exact normalized match AND the top-2
-# similarity scores are within this margin, ask the user instead of guessing.
+# Ambiguity gate margin. NO LONGER USED BY THIS MODULE — ``resolve_regulation_id``
+# stopped gating on a similarity margin when it moved to the BM25 ladder (below):
+# below the exact pin nothing resolves at all, so there is no "close call" left to
+# adjudicate. Kept because ``manual_search`` imports it BY NAME so the two tools
+# share ONE definition of the margin rather than a copy that drifts.
 _AMBIGUITY_MARGIN = 0.1
-# How many candidate titles to surface in the AMBIGUOUS: payload.
+# How many candidate titles to surface in the shortlist payload.
 _AMBIGUOUS_LIST_N = 3
-# Minimum similarity for a NON-exact match to be accepted. Below this the best
-# candidate is too weak to trust — return "no match" (→ the not-found path,
-# which names the USER's title) rather than confidently picking a wrong law.
-# Calibrated against the corpus: a genuine partial match («العمل» → «نظام
-# العمل») scores ≈ 0.48, whereas a spurious fallback-token hit («نظام الفساد
-# المالي والإداري», absent from the corpus, → «لائحة اشتراطات السلامة …
-# والإدارية») scores ≈ 0.38.
-_MIN_MATCH_SCORE = 0.40
 
-# doc_type_bucket nudges — «نظام» ⇒ a statute, «لائحة» ⇒ an executive reg.
-_BUCKET_PREF_BONUS = 0.05
-_LAW_KEYWORD = "نظام"
-_REG_KEYWORD = "لائحة"
+# --- BM25 resolution ladder ---------------------------------------------------
+# Rung ① of the title resolver. Ported from ``simple_search/manual_search.py``,
+# whose calibration this module now shares; see FETCH_ARTICLE_BM25 plan §2–3
+# (.claude/plans/fetch_article_bm25_resolution.md).
+_BM25_RPC = "bm25_search"
+# ``search_index.corpus`` holding regulations. ``articles`` has NO corpus (0 rows
+# indexed of 52,012), which is precisely why resolution is two-stage: BM25 can
+# never reach a مادة, so it resolves the parent نظام and ``articles_v2`` is keyed
+# exactly.
+_BM25_CORPUS = "regulation"
+# ``bm25_search``'s ``p_exact_bonus`` default (``pg_proc``: numeric DEFAULT
+# 1000.0). It fires on ``luna_normalize_ar(query) = luna_normalize_ar(title)``,
+# and the separation is absolute rather than a thumb on the scale. Measured live
+# 2026-09-02 on the two articles this ladder was built for:
+#   «نظام المرافعات الشرعية» → 1016.59 vs rank-2 11.41   (89×)
+#   «نظام الإيجار التمويلي»  → 1014.19 vs rank-2 13.40   (76×)
+# The second is the whole point: ``luna_normalize_ar`` folds the hamza, so the
+# corpus's bare-alef «نظام الايجار التمويلي» pins on a hamza query — the exact
+# match the old exact-char ILIKE could not see (it returned the لائحة instead,
+# silently, with a different مادة 22).
+_EXACT_PIN_SCORE = 1000.0
+# Rows the RPC returns. Identity needs few — the answer is one نظام or a
+# shortlist. 8 leaves headroom over ``_SHORTLIST_N``.
+_BM25_LIMIT = 8
+# ``bm25_search(p_candidates)``: the RPC narrows by ``ts_rank_cd`` and only THEN
+# applies the 1000-point bonus, so too small a cut can drop a title before its
+# pin is ever computed. 100 measured safe across 8 queries spanning 3 corpora
+# (manual_search trap #8); 500 costs 3.2× the latency for no rank change.
+_BM25_CANDIDATES = 100
+
+# Shortlist admission floor, applied to title-term COVERAGE — never to the raw
+# BM25 score. That inversion is the single most important calibration carried
+# over from ``manual_search``: BM25 magnitude tracks query-term RARITY, not match
+# quality, and measured on this corpus the two WRONG answers scored 14.79 and
+# 12.52 while every correct non-exact one scored 3.14–5.46. A score floor sits
+# above both or below both and therefore gets one of them wrong.
+#
+# The value is the brief's (0.85) and is deliberately STRICTER than
+# ``manual_search._MIN_TITLE_COVERAGE = 0.60``, which was calibrated at the widest
+# gap between correct resolutions (1.00 / 1.00 / 0.75 / 0.67) and wrong ones
+# (0.50 / 0.33 / 0.20). The trade is explicit: at 0.85 a correct near-miss like
+# «نظام العمل السعودي» (coverage 0.67) is not shown at all, so the planner sees an
+# empty list and falls through to the normal search. That can never produce a
+# WRONG article — it can only miss a right one — which is the safe side of this
+# particular fence, because a wrong article body reads exactly like a right one.
+# A one-line change to 0.60 buys the recall back; see the plan §3A.
+_SHORTLIST_MIN_COVERAGE = 0.85
+# Candidates shown to the planner when nothing pins. Matches _AMBIGUOUS_LIST_N.
+_SHORTLIST_N = _AMBIGUOUS_LIST_N
+
+# --- The planner-side cap -----------------------------------------------------
+# Ceiling on the article text handed to the PLANNER, and to the planner only.
+# ``FetchArticleResult`` already separated the two audiences — ``text`` is what
+# the model sees, ``content`` is the verbatim body that gets pinned — so the cap
+# lands on that seam and nowhere else: the downstream ``statute_articles`` context
+# block and the ``statute_package`` workspace item both carry ``content``, whole.
+#
+# Calibrated live 2026-09-02 over all 52,012 rows of ``articles_v2``:
+#   p50 325 · p90 1,332 · p95 2,008 · p99 5,088 · max 244,419
+#   >4,000 chars: 768 rows (1.48 %) · >8,000: 270 (0.52 %) · >20,000: 86 (0.17 %)
+# 4,000 passes 98.5 % of articles through untouched and trims only the
+# pathological tail. The tail is real, not theoretical: a live statute_package
+# row (conversation 90cd5a8d…, 2026-08-09) is 244,519 chars — ONE article of
+# اللائحة التنفيذية لنظام ضريبة القيمة المضافة that went whole into a decider
+# context window.
+_PLANNER_ARTICLE_CAP = 4_000
+# Appended when the cap bites. Load-bearing, not decoration: without it the
+# planner retypes a fragment into ``planner_brief`` as though it were the whole
+# rule. It also tells the planner the truth — the full text DID reach the search.
+_CAP_MARKER = (
+    "\n\n… [اقتُطع نص المادة هنا للتخطيط فقط — "
+    "النص الكامل وصل إلى البحث والتحرير كاملًا]"
+)
+
+# --- Ladder rung names --------------------------------------------------------
+# Forensic, and load-bearing for the recall bar below.
+RUNG_BM25 = "bm25"
+
+STAGE_FULL = "full"
+STAGE_TOKEN = "token"
+
+# Rungs that are pure RECALL — they answer "does this title share a word with the
+# query", a retrieval predicate, not a ranking one. A row fetched by one shared
+# word can clear a coverage floor without ever being a plausible answer, so these
+# rungs may POPULATE the shortlist but may never be its sole evidence. Measured in
+# manual_search's eval: 3 of 3 wins by a ``score == 0.0`` candidate were on
+# must-refuse fixtures; the token retry produced a correct winner ZERO times. The
+# pin gate is unaffected — an exact-title match is proof of identity no matter
+# which rung surfaced it.
+_RECALL_ONLY_RUNGS: frozenset[str] = frozenset({STAGE_TOKEN})
+
+# (``_RECALL_ONLY_RUNGS`` is defined next to STAGE_TOKEN, which it names.)
+
+# doc_type_bucket labels — used to name a candidate's type in the shortlist so
+# the planner can tell a نظام from its لائحة at a glance. No longer a scoring
+# nudge: ranking is (pin, coverage, rung score), and the bucket earned its
+# keep as INFORMATION rather than as a thumb on the scale.
 _BUCKET_LAW = "law_statute"
 _BUCKET_EXEC = "executive_regulation"
+_BUCKET_LABELS: dict[str, str] = {
+    _BUCKET_LAW: "نظام",
+    _BUCKET_EXEC: "لائحة تنفيذية",
+    "controls": "ضوابط",
+    "rules": "قواعد",
+    "instructions": "تعليمات",
+    "guide": "دليل",
+    "policy": "سياسة",
+    "organizational_framework": "إطار تنظيمي",
+    "regulation_generic": "لائحة",
+}
+
+# Shortest query token that may count toward coverage. A 1-character Arabic token
+# (a stray «و» / «ب» conjunction) is a substring of almost any title and would
+# inflate coverage toward 1.0 for free.
+_MIN_TERM_CHARS = 2
 
 # --- Statute-package pin config — a lean reuse of save_memo's persistence -------
 # Successful fetches in a turn accumulate on ``deps._fetched_articles`` and are
@@ -189,6 +298,158 @@ def _normalize_title(text: str) -> str:
     s = _DETACHED_WAW_RE.sub("و", s)
     s = _LEADING_AL_RE.sub("", s).strip()
     return s.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Title-term COVERAGE — the quantity every non-pin gate reads. Pure, no I/O.
+#
+# These four functions were written for ``simple_search/manual_search.py`` and
+# live HERE now because ``fetch_article`` is the lower layer: manual_search
+# already imports six names from this module, and the dependency may not run the
+# other way. ``manual_search`` re-exports ``coverage`` so its own importers (the
+# eval harness, its tests) are unaffected. ONE definition, per the same house
+# rule that keeps ``_AMBIGUITY_MARGIN`` shared rather than copied.
+#
+# WHY COVERAGE AND NOT SCORE — the calibration that inverts the obvious approach.
+# Measured live on this corpus:
+#
+#   query                                  BM25    coverage   correct?
+#   «نظام العمل»                           1003.14   1.00      yes
+#   «النظام العمل»                            3.14   1.00      yes
+#   «نظام العمل السعودي»                      3.51   0.67      yes
+#   «اصدار سجل تجاري»                         5.46   0.67      yes
+#   «نظام الفساد المالي والإداري» (absent)   14.79   0.50      NO
+#   «تعميم التسجيل العقاري»                   8.37   0.33      NO
+#   «نظام حماية الفضاء السيبراني» (absent)   12.52   0.20      NO
+#
+# The two WRONG answers score HIGHER than every correct non-exact one. A score
+# floor would not merely fail — it would invert. Coverage separates them cleanly.
+# --------------------------------------------------------------------------- #
+
+
+def _query_terms(query: str) -> list[str]:
+    """Normalized, de-duplicated query lexemes of at least ``_MIN_TERM_CHARS``.
+
+    Each token goes through :func:`_normalize_title` — the STRICT fold (ة→ه,
+    ى→ي, ؤ→و, ئ→ي, hamza-alef unification, and a dropped leading «ال») — which
+    is why «الفساد» and «فساد» count as the same term. A deliberately deeper fold
+    than SQL's ``luna_normalize_ar``; see :func:`_strict_exact`.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (query or "").split():
+        term = _normalize_title(raw)
+        if len(term) >= _MIN_TERM_CHARS and term not in seen:
+            seen.add(term)
+            out.append(term)
+    return out
+
+
+def _term_in_title(term: str, norm_title: str) -> bool:
+    """Does one normalized query lexeme appear in a normalized title?
+
+    Substring containment, plus one fold the plain test misses: a «و» conjunction
+    the two sides attach differently. Arabic writes the conjunction joined
+    («والمشتريات»), so a title spelling the same word bare («المشتريات») fails a
+    raw substring test on the user's token even though it is the very same word.
+    :func:`_normalize_title` re-attaches a DETACHED waw, which fixes the corpus
+    side; this fixes the QUERY side.
+
+    One-directional by construction — it can only ever count a term the plain
+    test already missed, so coverage never drops and the measured floor cannot
+    move underneath it.
+    """
+    if term in norm_title:
+        return True
+    if not term.startswith("و") or len(term) <= 1:
+        return False
+    stem = _normalize_title(term[1:])
+    return len(stem) >= _MIN_TERM_CHARS and stem in norm_title
+
+
+def coverage(query: str, title: str) -> float:
+    """Fraction of the query's lexemes that appear in ``title``. Pure.
+
+    Substring containment on the normalized forms, so «عمل» counts inside
+    «العمل». Reproduces every measured value in the table above exactly —
+    1.00 / 1.00 / 0.67 / 0.67 for the correct resolutions and 0.50 / 0.33 / 0.20
+    for the wrong ones.
+    """
+    terms = _query_terms(query)
+    if not terms:
+        return 0.0
+    norm_title = _normalize_title(title or "")
+    if not norm_title:
+        return 0.0
+    return sum(1 for t in terms if _term_in_title(t, norm_title)) / len(terms)
+
+
+def title_precision(query: str, title: str) -> float:
+    """The mirror of :func:`coverage` — how much of the TITLE the query explains.
+
+    Coverage is asymmetric on purpose, and that asymmetry has a blind spot: it
+    asks only how much of the QUERY appears in the title, so a long title
+    trivially contains a short query's terms. Measured live 2026-09-02 on
+    «نظام العمل السعودي» — terms {نظام، عمل، سعودي}:
+
+        «قواعد وإجراءات عمل لجنة النظر في مخالفات نظام كود البناء السعودي
+         ومكافأة أعضائها»                      coverage 1.00   ← ranked FIRST
+        «نظام العمل»                            coverage 0.67   ← the right answer
+
+    All three query terms really do occur in that 12-word title, scattered. So
+    coverage alone ranks a document about the building code above نظام العمل.
+
+    This is the other half: the fraction of the title's own lexemes the query
+    accounts for — 1.00 for «نظام العمل», ≈0.25 for the building-code title.
+    Neither number identifies a document alone; their harmonic mean
+    (:func:`_relevance`) does the ordering.
+
+    Pure. Same normalization and the same ``_MIN_TERM_CHARS`` floor as coverage,
+    so the two are measured on one vocabulary.
+    """
+    title_terms = _query_terms(title)
+    if not title_terms:
+        return 0.0
+    q_norm = _normalize_title(query or "")
+    if not q_norm:
+        return 0.0
+    return sum(1 for t in title_terms if _term_in_title(t, q_norm)) / len(title_terms)
+
+
+def _relevance(query: str, title: str) -> float:
+    """Harmonic mean of :func:`coverage` and :func:`title_precision`. Pure.
+
+    The ordering quantity — an F1 over title lexemes. Harmonic rather than
+    arithmetic because it must punish a lopsided pair: the building-code title
+    above averages to 0.63 but scores 0.40 here, while «نظام العمل» averages 0.84
+    and scores 0.80. That inversion is the whole reason this exists.
+
+    **This ranks; it does not admit.** Admission stays on
+    :data:`_SHORTLIST_MIN_COVERAGE` against raw coverage, which is the measured,
+    calibrated gate. Ranking and gating are kept separate deliberately — the
+    gate's calibration table would not transfer to a quantity it was never
+    measured against.
+    """
+    cov = coverage(query, title)
+    prec = title_precision(query, title)
+    if cov <= 0.0 or prec <= 0.0:
+        return 0.0
+    return 2 * cov * prec / (cov + prec)
+
+
+def _strict_exact(query: str, title: str) -> bool:
+    """The strict-normalized Python pin probe — Gate 1b.
+
+    SQL's ``luna_normalize_ar`` folds hamza-carrying alef, tatweel and harakat
+    ONLY; :func:`_normalize_title` also folds ة/ى/ؤ/ئ and drops a leading «ال».
+    The two disagree on **91.7 %** of regulation titles, so relying on the SQL
+    pin alone silently loses most exact matches — «النظام العمل» scores 3.14 on
+    نظام العمل (no SQL pin) where «نظام العمل» scores 1003.14. This recovers them,
+    and it is also the rung that pins a row the BM25 index does not carry at all
+    (57 % of regulations).
+    """
+    q = _normalize_title(query or "")
+    return bool(q) and q == _normalize_title(title or "")
 
 
 def _distinctive_token(title: str) -> str:
@@ -357,72 +618,120 @@ def article_number_keys(article_number: str) -> list[str]:
 
 @dataclass(frozen=True)
 class RegCandidate:
-    """One scored regulation candidate.
+    """One regulation candidate, scored the way the ladder's gates read it.
 
-    ``score`` ∈ [0, 1+bonus]; ``exact`` is True when the normalized titles
-    match outright. ``display`` is the human title (clean_title or title) used
-    in the AMBIGUOUS: payload and the success header.
+    ``exact`` is the **pin**: an exact normalized title match, by either the SQL
+    fold (BM25 ``score >= 1000``) or the strict Python fold
+    (:func:`_strict_exact`). A pin is proof of identity and is the ONLY thing
+    that resolves without the planner.
+
+    ``coverage`` is the fraction of query lexemes present in the title, and it is
+    what every non-pin gate reads — never ``score``. ``score`` is the rung-native
+    number (BM25's, or ``0.0`` from an ILIKE rung) and serves only as a last
+    tiebreak. ``rung`` is forensic and gates the recall bar. ``bucket_label`` is
+    the Arabic type word shown in the shortlist so «نظام» and its «لائحة
+    تنفيذية» are distinguishable at a glance.
     """
 
     reg_id: str
     display: str
     score: float
     exact: bool
+    coverage: float = 0.0
+    relevance: float = 0.0
+    rung: str = ""
+    bucket_label: str = ""
 
 
-def _score_candidate(query_norm: str, row: dict) -> RegCandidate:
-    """Score one ``regulations_v2`` row against the normalized query title.
+def _make_candidate(query_title: str, row: dict, *, rung: str,
+                    score: float = 0.0, sql_pin: bool = False) -> RegCandidate:
+    """Build one candidate with its coverage and pin flag computed. Pure.
 
-    Considers BOTH ``title`` and ``clean_title`` (best of the two wins); an
-    exact normalized match on either pins ``exact=True`` and score ``1.0``.
-    Adds a small ``doc_type_bucket`` preference bonus when the query implies a
-    statute («نظام») / executive reg («لائحة»). Shorter titles get a tiny
-    tiebreak so «نظام العمل» beats «نظام العمل التطوعي» on a near-tie.
+    Considers BOTH ``title`` and ``clean_title`` for the pin (best of the two
+    wins) and for coverage, mirroring the old scorer's two-column reach. The
+    ``display`` is ``clean_title or title`` — the human name shown in the
+    shortlist and in the success header.
     """
     title = (row.get("title") or "").strip()
     clean = (row.get("clean_title") or "").strip()
     display = clean or title
+    variants = [t for t in (title, clean) if t]
 
-    cand_norms = [_normalize_title(t) for t in (title, clean) if t]
-    exact = any(cn and cn == query_norm for cn in cand_norms)
-    if exact:
-        base = 1.0
-    elif cand_norms:
-        base = max(
-            difflib.SequenceMatcher(None, query_norm, cn).ratio() for cn in cand_norms
-        )
-    else:
-        base = 0.0
-
-    # doc_type_bucket preference: only a nudge, never overrides an exact match.
-    bonus = 0.0
+    pin = bool(sql_pin) or any(_strict_exact(query_title, t) for t in variants)
+    cov = max((coverage(query_title, t) for t in variants), default=0.0)
+    rel = max((_relevance(query_title, t) for t in variants), default=0.0)
     bucket = (row.get("doc_type_bucket") or "").strip()
-    if not exact and bucket:
-        if _LAW_KEYWORD in query_norm and bucket == _BUCKET_LAW:
-            bonus += _BUCKET_PREF_BONUS
-        if _REG_KEYWORD in query_norm and bucket == _BUCKET_EXEC:
-            bonus += _BUCKET_PREF_BONUS
-
-    # Shorter-title tiebreak: a hair of score per char saved (≤ the bucket
-    # bonus so it never reorders across a real similarity gap).
-    longest = max((len(n) for n in cand_norms), default=0)
-    tiebreak = max(0.0, 0.02 - 0.0005 * longest)
 
     return RegCandidate(
         reg_id=str(row.get("id") or ""),
         display=display or "—",
-        score=min(base, 1.0) + bonus + tiebreak,
-        exact=exact,
+        score=float(score or 0.0),
+        exact=pin,
+        coverage=cov,
+        relevance=rel,
+        rung=rung,
+        bucket_label=_BUCKET_LABELS.get(bucket, ""),
     )
 
 
-def _rank_candidates(query_title: str, rows: list[dict]) -> list[RegCandidate]:
-    """Score + sort candidate rows best-first. Pure (no DB)."""
-    query_norm = _normalize_title(query_title)
-    scored = [_score_candidate(query_norm, r) for r in rows if r.get("id")]
-    # Exact matches first, then by score desc.
-    scored.sort(key=lambda c: (c.exact, c.score), reverse=True)
-    return scored
+def _rank_candidates(
+    query_title: str, rows: list[dict], *, rung: str = STAGE_FULL
+) -> list[RegCandidate]:
+    """Score + sort rows best-first, de-duplicated. Pure (no DB).
+
+    Order: **pinned first, then coverage, then the rung-native score.** Coverage
+    outranks score deliberately — that is the whole point of the calibration
+    above. De-dupes by ``reg_id`` and then by normalized title, so the same
+    نظام arriving from two rungs is ONE candidate rather than a fake plurality
+    (which would otherwise defeat the pin-uniqueness test).
+
+    Kept as a thin wrapper over :func:`_rank_mixed` for the single-rung callers
+    (the eval harness) that still hand it a bare row list.
+    """
+    return _rank_mixed([(rung, rows)], query_title)
+
+
+def _rank_mixed(
+    rung_rows: list[tuple[str, list[dict]]], query_title: str
+) -> list[RegCandidate]:
+    """Rank candidates gathered from several rungs at once. Pure.
+
+    ``rung_rows`` is ordered strongest-rung-first; on a de-dup collision the
+    first occurrence wins, so a row that BM25 also returned keeps BM25's score
+    and rung rather than an ILIKE rung's ``0.0``.
+    """
+    built: list[RegCandidate] = []
+    for rung, rows in rung_rows:
+        for row in rows or []:
+            if not row.get("id"):
+                continue
+            built.append(
+                _make_candidate(
+                    query_title, row, rung=rung,
+                    score=float(row.get("_score") or 0.0),
+                    sql_pin=bool(row.get("_sql_pin")),
+                )
+            )
+
+    # pin ▸ relevance ▸ coverage ▸ rung score. Relevance leads because coverage
+    # alone ranks a long, loosely-related title above the right answer (see
+    # `title_precision`); coverage stays in the key as the tiebreak that keeps
+    # the calibrated quantity visible in the ordering.
+    built.sort(key=lambda c: (c.exact, c.relevance, c.coverage, c.score), reverse=True)
+
+    out: list[RegCandidate] = []
+    seen_ids: set[str] = set()
+    seen_titles: set[str] = set()
+    for c in built:
+        norm = _normalize_title(c.display)
+        if (c.reg_id and c.reg_id in seen_ids) or (norm and norm in seen_titles):
+            continue
+        if c.reg_id:
+            seen_ids.add(c.reg_id)
+        if norm:
+            seen_titles.add(norm)
+        out.append(c)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -434,8 +743,8 @@ def _rank_candidates(query_title: str, rows: list[dict]) -> list[RegCandidate]:
 # The candidate-fetch stages, weakest last. ``full`` means a title CONTAINS the
 # user's whole phrase; ``token`` means it merely shares one word with it. The
 # difference is the whole of eval bug #1 — see :func:`_fetch_reg_candidates_staged`.
-STAGE_FULL = "full"
-STAGE_TOKEN = "token"
+# (STAGE_FULL / STAGE_TOKEN / _RECALL_ONLY_RUNGS are defined with the other
+# ladder constants near the top — they are referenced by default arguments.)
 
 
 def _reg_ilike_patterns(raw: str) -> list[str]:
@@ -483,6 +792,58 @@ def _reg_ilike_patterns(raw: str) -> list[str]:
     ):
         if variant and variant not in out:
             out.append(variant)
+    return out
+
+
+def _bm25_regulations(supabase, query_title: str) -> list[dict]:
+    """Rung ① — ``public.bm25_search()`` over the ``regulation`` corpus.
+
+    Returns rows shaped like ``regulations_v2`` rows (``id`` / ``title``) plus
+    two private keys the ranker reads: ``_score`` (the BM25 score) and
+    ``_sql_pin`` (``score >= _EXACT_PIN_SCORE``, i.e. the RPC's own
+    ``luna_normalize_ar`` title equality fired).
+
+    ``p_owner=None`` matches ``owner_user_id IS NULL`` — the public corpus. The
+    RPC is called directly rather than through ``backend.app.services.
+    search_service`` because ``agents/`` never imports ``backend/``.
+
+    ``bm25_search`` returns ``content_id``, which for the ``regulation`` corpus
+    IS ``regulations_v2.id`` (verified live 2026-09-02). It does NOT return
+    ``clean_title`` or ``doc_type_bucket``; those stay empty here and are filled
+    in by the ILIKE rungs when the same row arrives from both. Never raises: a
+    failed rung contributes nothing and the ladder walks on.
+    """
+    q = (query_title or "").strip()
+    if not q:
+        return []
+    try:
+        resp = supabase.rpc(
+            _BM25_RPC,
+            {
+                "p_corpora": [_BM25_CORPUS],
+                "p_query": q,
+                "p_owner": None,
+                "p_facets": {},
+                "p_limit": _BM25_LIMIT,
+                "p_offset": 0,
+                "p_candidates": _BM25_CANDIDATES,
+            },
+        ).execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_article: bm25 ~ %r failed: %s", q, exc)
+        return []
+
+    out: list[dict] = []
+    for row in list(getattr(resp, "data", None) or []):
+        score = float(row.get("score") or 0.0)
+        out.append({
+            "id": str(row.get("content_id") or ""),
+            "title": (row.get("title") or "").strip(),
+            "clean_title": None,
+            "doc_type_bucket": "",
+            "_score": score,
+            "_sql_pin": score >= _EXACT_PIN_SCORE,
+        })
     return out
 
 
@@ -644,85 +1005,201 @@ def _fetch_article_content(supabase, regulation_id: str, article_number: str) ->
 class ResolveResult:
     """Outcome of resolving a regulation title.
 
-    Exactly one of ``reg_id`` (resolved) or ``ambiguous`` (needs ask_user) is
-    populated; both empty ⇒ no candidate matched at all.
+    Exactly one of ``reg_id`` (**pinned** — an exact normalized title match) or
+    ``ambiguous`` (the shortlist payload for the planner to pick from) is
+    populated; both empty ⇒ nothing worth showing matched at all.
+
+    ``exact`` is now redundant with ``reg_id`` — below the pin nothing resolves —
+    and is kept so existing readers (the eval harness) keep working.
+    ``shortlist`` is the structured form of ``ambiguous``, for tests and callers
+    that want the candidates rather than the rendered Arabic.
     """
 
     reg_id: str = ""
     display: str = ""
-    ambiguous: str = ""  # the full "AMBIGUOUS: ..." payload when set
+    ambiguous: str = ""  # the rendered shortlist payload when set
     exact: bool = False  # True only on an exact normalized title match (→ HIGH)
+    shortlist: tuple[RegCandidate, ...] = ()
 
 
 def _build_ambiguous(candidates: list[RegCandidate]) -> str:
-    """Render the ``AMBIGUOUS:`` payload listing 2–3 candidate titles."""
-    titles = []
-    seen: set[str] = set()
-    for c in candidates:
-        if c.display and c.display not in seen:
-            seen.add(c.display)
-            titles.append(c.display)
-        if len(titles) >= _AMBIGUOUS_LIST_N:
-            break
-    listed = "، ".join(titles)
+    """Render the shortlist the planner picks from — or declines.
+
+    Replaces the old ``AMBIGUOUS:`` / «اسأل المستخدم» payload. The contract
+    changed with the gates: below a pin, nothing resolves, so this is no longer
+    "two candidates are too close to call" — it is "here is what exists; you hold
+    the user's wording, you decide."
+
+    Two properties are load-bearing:
+
+    * **Titles are quoted VERBATIM in corpus spelling**, because the re-call is
+      keyed on them — and because seeing «الايجار» next to the «الإيجار» that was
+      asked for is exactly how the planner catches an orthography split.
+    * **"Choose nothing" is written in as an explicit option.** A model handed a
+      numbered list picks from it; an implicit refusal would rebuild the silent
+      auto-commit this rewrite exists to delete.
+    """
+    lines: list[str] = []
+    for c in candidates[:_SHORTLIST_N]:
+        suffix = f" — {c.bucket_label}" if c.bucket_label else ""
+        lines.append(f"{len(lines) + 1}. «{c.display}»{suffix}")
+    listed = "\n".join(lines)
     return (
-        "AMBIGUOUS: تعذّر تحديد النظام المقصود بدقة. "
-        f"المرشحون المحتملون: {listed}. "
-        "اسأل المستخدم أيّ نظام يقصد قبل المتابعة."
+        "AMBIGUOUS: لم يتطابق الاسم المذكور مع نظام واحد بعينه. أقرب المرشحين:\n"
+        f"{listed}\n\n"
+        "إن كان أحدها هو المقصود فأعد النداء باسمه كما هو مكتوب أعلاه حرفيًّا.\n"
+        "وإن لم يكن أيٌّ منها المقصود فلا تختر — اترك الأمر للبحث العادي."
     )
 
 
 def resolve_regulation_id(supabase, regulation_title: str) -> ResolveResult:
     """Resolve a user-supplied regulation title to a ``regulations_v2.id``.
 
-    Returns a :class:`ResolveResult`: a resolved ``reg_id`` on a confident
-    match, an ``ambiguous`` payload when the top-2 non-exact candidates are too
-    close (within :data:`_AMBIGUITY_MARGIN`), or an empty result when nothing
-    matched at all. Synchronous (sync PostgREST reads inside).
-    """
-    rows = _fetch_reg_candidates(supabase, regulation_title)
-    if not rows:
-        return ResolveResult()
+    Returns a :class:`ResolveResult` in exactly one of three states:
 
-    ranked = _rank_candidates(regulation_title, rows)
+    * **pinned** — ``reg_id`` set, ``exact=True``. A unique exact normalized
+      title match. The only state that resolves without the planner.
+    * **shortlist** — ``ambiguous`` / ``shortlist`` set. Nothing pinned, but
+      candidates cleared :data:`_SHORTLIST_MIN_COVERAGE`. The planner picks one
+      by re-calling with the corpus spelling, or declines.
+    * **empty** — nothing worth showing.
+
+    There is deliberately no fourth state. The old resolver had one — accept a
+    non-exact match above a similarity floor, hedge it with «ثقة متوسطة» — and
+    that state is what returned the wrong law's article for
+    «نظام الإيجار التمويلي» (see :func:`_bm25_regulations` for the fold that
+    fixes it). Synchronous (sync PostgREST + RPC reads inside).
+    """
+    ranked = _resolve_candidates(supabase, regulation_title)
     if not ranked:
         return ResolveResult()
 
-    top = ranked[0]
-    # An exact normalized match wins outright — never ambiguous (→ HIGH).
-    if top.exact:
+    # --- Gate 1 / 1b — the pin. The ONLY thing that resolves on its own. ------
+    # An exact normalized title match, by either fold. Uniqueness is checked
+    # rather than assumed: 10 duplicate-normalized-title groups exist among
+    # regulations (and 44 among circulars, 176 among judgments), so "there is a
+    # pin" is not "there is ONE pin". A tie falls through to the shortlist.
+    pins = [c for c in ranked if c.exact]
+    if len(pins) == 1:
+        top = pins[0]
         return ResolveResult(reg_id=top.reg_id, display=top.display, exact=True)
+    if len(pins) > 1:
+        return ResolveResult(
+            ambiguous=_build_ambiguous(pins), shortlist=tuple(pins[:_SHORTLIST_N])
+        )
 
-    # Score floor: the best candidate is too weak to trust. A clean "no match"
-    # (→ the not-found path, which names the USER's title) beats confidently
-    # picking a low-similarity wrong law — e.g. «نظام الفساد المالي والإداري»
-    # (absent from the corpus) resolving onto «لائحة اشتراطات السلامة …
-    # والإدارية» via the fallback token. A genuine partial match stays above it.
-    if top.score < _MIN_MATCH_SCORE:
+    # --- Gate 2 — no pin ⇒ NOTHING resolves. Shortlist or nothing. -----------
+    # This is the behavioural change. The old resolver accepted a non-exact match
+    # above a similarity floor and hung a «ثقة متوسطة» note on it; that is how
+    # «نظام الإيجار التمويلي» came back as its لائحة with a different مادة 22
+    # (conversation 631a69af, 2026-09-02). A wrong article body reads exactly like
+    # a right one, so the resolver no longer guesses — it shows its work.
+    #
+    # Admission is on COVERAGE, never on the rung score (see the calibration
+    # table above), and a candidate found ONLY by a recall-only rung may not
+    # stand alone: sharing one word with the query is retrieval, not identity.
+    above = [c for c in ranked if c.coverage >= _SHORTLIST_MIN_COVERAGE]
+    shortlist = [c for c in above if c.rung not in _RECALL_ONLY_RUNGS]
+    if not shortlist:
         return ResolveResult()
 
-    # Single candidate above the floor, no exact match — accept it (the planner
-    # still searches).
-    if len(ranked) == 1:
-        return ResolveResult(reg_id=top.reg_id, display=top.display)
+    return ResolveResult(
+        ambiguous=_build_ambiguous(shortlist),
+        shortlist=tuple(shortlist[:_SHORTLIST_N]),
+    )
 
-    # No exact match + top-2 close ⇒ ambiguous → ask the user.
-    second = ranked[1]
-    if (top.score - second.score) <= _AMBIGUITY_MARGIN:
-        return ResolveResult(ambiguous=_build_ambiguous(ranked))
 
-    return ResolveResult(reg_id=top.reg_id, display=top.display)
+def _resolve_candidates(supabase, regulation_title: str) -> list[RegCandidate]:
+    """Walk the ladder and return one ranked, de-duplicated candidate pool.
+
+    Rungs, strongest first:
+
+    ① ``bm25_search`` — carries the SQL exact pin, and is the rung that fixes the
+      orthography split: ``luna_normalize_ar`` folds hamza-alef, so a hamza query
+      pins the corpus's bare-alef title. Reaches 1,689 of 3,956 regulations.
+    ② full-string ILIKE — every row whose title CONTAINS the user's whole phrase,
+      across the orthographic variants :func:`_reg_ilike_patterns` enumerates.
+      Reaches all 3,956, which is why BM25 does not replace it: dropping this
+      rung would make 57 % of the corpus unresolvable by title.
+    ③ distinctive-token ILIKE — one shared word. RECALL ONLY, and run only when
+      ① and ② found nothing at all, because it is a full sequential scan whose
+      rows may never stand alone as evidence anyway.
+
+    Rows are merged, not raced: a non-empty strong rung is no evidence that a
+    weaker one has nothing better, and the de-dup in :func:`_rank_mixed` keeps
+    the strongest rung's score when the same نظام arrives twice.
+    """
+    title = (regulation_title or "").strip()
+    if not title:
+        return []
+
+    bm25_rows = _bm25_regulations(supabase, title)
+    full_rows = _fetch_reg_candidates_full(supabase, title)
+
+    rung_rows: list[tuple[str, list[dict]]] = [
+        (RUNG_BM25, bm25_rows),
+        (STAGE_FULL, full_rows),
+    ]
+    if not bm25_rows and not full_rows:
+        rung_rows.append((STAGE_TOKEN, _fetch_reg_candidates_token(supabase, title)))
+
+    ranked = _rank_mixed(rung_rows, title)
+    return _enrich_buckets(supabase, ranked)
+
+
+def _enrich_buckets(supabase, ranked: list[RegCandidate]) -> list[RegCandidate]:
+    """Fill ``bucket_label`` for candidates that only BM25 returned.
+
+    ``bm25_search`` does not select ``doc_type_bucket``, so a نظام the ILIKE rungs
+    missed would reach the shortlist with no type word — and telling a نظام from
+    its لائحة تنفيذية is the entire reason the shortlist shows one. One batched
+    read over at most ``_SHORTLIST_N`` ids, and only when something is actually
+    missing. Best-effort: on failure the labels stay empty and the shortlist is
+    merely less legible.
+    """
+    missing = [c.reg_id for c in ranked[:_SHORTLIST_N] if c.reg_id and not c.bucket_label]
+    if not missing:
+        return ranked
+    try:
+        resp = (
+            supabase.table(_REGS_TABLE)
+            .select("id,doc_type_bucket")
+            .in_("id", missing)
+            .execute()
+        )
+        buckets = {
+            str(r.get("id")): _BUCKET_LABELS.get((r.get("doc_type_bucket") or "").strip(), "")
+            for r in (getattr(resp, "data", None) or [])
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fetch_article: bucket enrich failed: %s", exc)
+        return ranked
+
+    return [
+        c if c.bucket_label or not buckets.get(c.reg_id)
+        else RegCandidate(
+            reg_id=c.reg_id, display=c.display, score=c.score, exact=c.exact,
+            coverage=c.coverage, relevance=c.relevance, rung=c.rung,
+            bucket_label=buckets[c.reg_id],
+        )
+        for c in ranked
+    ]
 
 
 @dataclass(frozen=True)
 class FetchArticleResult:
     """Rich outcome of a fetch — drives both the tool return and the pin.
 
-    ``text`` is what the model sees. ``status`` is one of ``"ok"`` /
-    ``"ambiguous"`` / ``"not_found"``. ``confidence`` is ``"high"`` (exact
-    regulation match) / ``"medium"`` (above-floor non-exact match) / ``""``
-    (no confident result). ``content`` is the verbatim article body (no header /
-    no confidence note) — the body that gets pinned.
+    ``text`` is what the **planner** sees — header + body, and the body is capped
+    at :data:`_PLANNER_ARTICLE_CAP`. ``content`` is the verbatim, UNCAPPED article
+    body (no header) — the body that gets pinned and that reaches the executors
+    and the aggregator via the ``statute_articles`` context block. Those two
+    fields are the audience seam; do not collapse them.
+
+    ``status`` is one of ``"ok"`` / ``"ambiguous"`` (a shortlist to pick from) /
+    ``"not_found"``. ``confidence`` is ``"high"`` (the only resolving state — a
+    unique exact title pin) or ``""``. The former ``"medium"`` value is gone with
+    the non-exact auto-commit that produced it.
     """
 
     text: str
@@ -772,20 +1249,45 @@ def fetch_article_result(
             article_number=num,
         )
 
-    confidence = "high" if resolved.exact else "medium"
+    # Only a pin gets here, so confidence is always high — there is no longer a
+    # "medium" state to hedge (see resolve_regulation_id's third-state note).
     body = content.strip()
-    text = f"## نص المادة {num} من {reg_name}\n\n{body}"
-    if confidence == "medium":
-        # Non-exact match: the resolved law is a best-guess for the title typed.
-        text += (
-            f"\n\n— (ثقة متوسطة: «{reg_name}» هو أقرب نظام مطابق للاسم المذكور، "
-            "وليس تطابقًا تامًّا؛ تأكّد أنه النظام المقصود قبل اعتماده.)"
-        )
+    header = f"## نص المادة {num} من {reg_name}"
+    # The header names the RESOLVED title, not the one that was asked for. That
+    # is the receipt for the orthography fold: a planner that asked for
+    # «الإيجار» and reads «الايجار» back can see which row it actually got.
     return FetchArticleResult(
-        text=text, status="ok", confidence=confidence,
+        text=f"{header}\n\n{_cap_for_planner(body)}",
+        status="ok", confidence="high",
         reg_id=resolved.reg_id, reg_name=reg_name,
         article_number=num, content=body,
     )
+
+
+def _cap_for_planner(body: str) -> str:
+    """Trim an article body to :data:`_PLANNER_ARTICLE_CAP` for the planner ONLY.
+
+    Applied to ``FetchArticleResult.text`` and never to ``.content`` — the seam
+    that lets the planner read a summary-length article while the executors, the
+    aggregator and the pinned workspace item all receive the whole thing. 98.5 %
+    of articles are shorter than the cap and pass through byte-identical.
+
+    Cuts on the last paragraph break inside the budget when there is one, so the
+    fragment ends on a complete clause rather than mid-sentence, and always
+    appends :data:`_CAP_MARKER` so the planner knows it is holding a fragment.
+    """
+    text = body or ""
+    if len(text) <= _PLANNER_ARTICLE_CAP:
+        return text
+    head = text[:_PLANNER_ARTICLE_CAP]
+    # Prefer a paragraph boundary, but only if it keeps most of the budget —
+    # otherwise a document whose first break is at char 20 would lose everything.
+    cut = head.rfind("\n\n")
+    if cut < _PLANNER_ARTICLE_CAP // 2:
+        cut = head.rfind("\n")
+    if cut < _PLANNER_ARTICLE_CAP // 2:
+        cut = _PLANNER_ARTICLE_CAP
+    return head[:cut].rstrip() + _CAP_MARKER
 
 
 def fetch_article_text(supabase, regulation_title: str, article_number: str) -> str:
@@ -876,6 +1378,20 @@ def flush_statute_package(deps) -> str | None:
     articles = list(bucket)
     bucket.clear()
 
+    # Hand the snapshot to the sibling slot BEFORE any early return below.
+    #
+    # This flush runs inside the planner's decider phase (runner.py — both the
+    # decided branch and the ask_user pause branch), which is EARLIER than
+    # ``run_retrieval``'s context-block construction. The snapshot-and-clear
+    # above is the guard that stops a second flush double-writing the workspace
+    # item; without this line it would also erase the only copy of the article
+    # text the downstream ``statute_articles`` block is built from, and the
+    # executors would receive nothing — the failure the whole cap depends on
+    # not happening. Assigned unconditionally: the block must survive a missing
+    # user_id/conversation_id scope, and even a failed insert.
+    if isinstance(getattr(deps, "_flushed_articles", None), list):
+        deps._flushed_articles.extend(articles)
+
     user_id = getattr(deps, "user_id", "") or ""
     conversation_id = getattr(deps, "conversation_id", "") or ""
     if not (user_id and conversation_id):
@@ -904,8 +1420,15 @@ def flush_statute_package(deps) -> str | None:
                 "subtype": _STATUTE_PACKAGE_SUBTYPE,
                 "articles": [
                     {
+                        # The RESOLVED corpus title, not what was asked for. On a
+                        # corpus/query orthography split («نظام الايجار التمويلي»
+                        # vs «نظام الإيجار التمويلي») this is the only record of
+                        # which row was actually read — a later turn reading this
+                        # package can tell without re-resolving.
                         "regulation": a.get("regulation", ""),
                         "article_number": str(a.get("article_number", "")),
+                        # Always "high" now — only a unique exact pin resolves.
+                        # Kept as a field so older rows stay readable.
                         "confidence": a.get("confidence", ""),
                     }
                     for a in uniq
@@ -1047,8 +1570,19 @@ __all__ = [
     "_fetch_reg_candidates_staged",
     "_fetch_reg_candidates_token",
     "_normalize_title",
+    # The pure coverage layer — manual_search re-exports `coverage` from here so
+    # both resolvers share ONE definition of the quantity their gates read.
+    "coverage",
+    "title_precision",
+    "_query_terms",
+    "_term_in_title",
+    "_strict_exact",
+    "_MIN_TERM_CHARS",
+    "_bm25_regulations",
+    "_cap_for_planner",
     "STAGE_FULL",
     "STAGE_TOKEN",
+    "RUNG_BM25",
     "FetchArticleResult",
     "RegCandidate",
     "ResolveResult",

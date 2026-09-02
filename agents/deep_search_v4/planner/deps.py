@@ -131,6 +131,14 @@ class PlannerDeps:
     # flushes them into ONE ``statute_package`` workspace item per turn/search
     # (``flush_statute_package``). Rebuilt empty every turn.
     _fetched_articles: list[dict] = field(default_factory=list)
+    # The same records, kept AFTER ``flush_statute_package`` snapshot-and-clears
+    # ``_fetched_articles``. Two slots rather than one because the flush happens
+    # in the decider phase while the downstream ``statute_articles`` context
+    # block is built later, in ``run_retrieval`` — clearing is what stops a
+    # second flush double-writing the workspace item, so the block needs its own
+    # surviving copy. Carries the FULL article bodies (the cap applies only to
+    # what the planner reads). Rebuilt empty every turn.
+    _flushed_articles: list[dict] = field(default_factory=list)
 
     # --- read-back slots (populated by run_retrieval from FullLoopDeps) ----
     _per_executor_stats: dict[str, dict] = field(default_factory=dict)

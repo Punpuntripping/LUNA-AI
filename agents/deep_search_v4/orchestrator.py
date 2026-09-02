@@ -961,6 +961,37 @@ def _build_candidate_context_blocks(
             persistence="turn",
         )
 
+    # statute_articles — persistence="turn". The VERBATIM text of every article
+    # `fetch_article` resolved this turn, uncapped.
+    #
+    # This block exists so the article text stops travelling by way of the
+    # planner's typing. Before it, `planner_brief` was the only channel: the
+    # decider prompt asked the planner to "carry the returned article text
+    # verbatim into planner_brief", and whatever it retyped — or forgot to — was
+    # what the expanders and the aggregator got. That coupling already cost one
+    # incident (see _CANONICAL_LABEL_ORDER's ccd1afea scar) and it is what made a
+    # planner-side length cap impossible: capping what the planner reads would
+    # have capped what everyone downstream reads.
+    #
+    # Now the two are independent. `fetch_article` caps `.text` for the planner
+    # and keeps `.content` whole; the whole bodies arrive here, and the brief goes
+    # back to being what it is named — the planner's own framing.
+    #
+    # Reads `_flushed_articles`, NOT `_fetched_articles`: `flush_statute_package`
+    # snapshot-and-clears the latter during the decider phase (so a second flush
+    # cannot double-write the workspace item), which runs BEFORE this builder.
+    # Rendered by the same `build_statute_package_md` that writes the pinned
+    # workspace item, so the block and the item can never drift apart.
+    fetched = list(getattr(deps, "_flushed_articles", None) or [])
+    if fetched:
+        from agents.tool_repository.fetch_article import build_statute_package_md
+
+        candidates["statute_articles"] = ContextBlock(
+            label="statute_articles",
+            body=build_statute_package_md(fetched),
+            persistence="turn",
+        )
+
     # prior_search_lessons — persistence="conversation".
     # Rendered per §4.2: list of {title, describe_query, confidence, summary}.
     # NEVER the full content_md or original references. When summary is empty
@@ -1000,8 +1031,19 @@ def _build_candidate_context_blocks(
 # planner wrote the brief but emitted ``context_labels=["prior_search_lessons"]``
 # so the 3 fetched articles reached nobody). ``prior_search_lessons`` stays
 # opt-in via the declared labels.
-_CANONICAL_LABEL_ORDER = ("case_brief", "planner_brief", "prior_search_lessons")
-_FORCE_FORWARD_LABELS = frozenset({"case_brief", "planner_brief"})
+# ``statute_articles`` sits ahead of ``planner_brief``: it is the primary source
+# — verbatim statute text — and the brief is the planner's commentary on it, so
+# the reader meets the rule before the gloss. It is force-forwarded for the same
+# reason the two briefs are, and with more at stake: since the decider prompt no
+# longer asks the planner to retype article bodies into ``planner_brief``, this
+# block is now the ONLY path those bodies have downstream. Dropping it would not
+# degrade the context, it would empty it.
+_CANONICAL_LABEL_ORDER = (
+    "case_brief", "statute_articles", "planner_brief", "prior_search_lessons",
+)
+_FORCE_FORWARD_LABELS = frozenset(
+    {"case_brief", "statute_articles", "planner_brief"}
+)
 
 
 def _select_forwarded_blocks(

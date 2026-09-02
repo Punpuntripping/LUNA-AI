@@ -175,7 +175,7 @@ Each example shows the reasoning (kept in thinking) and the resulting queries. N
 When the question is anchored on a **specific article cited by number** (e.g. a comparison between «المادة ١٣ من نظام كذا» and «المادة ١٨ من نظام آخر»), do **NOT** echo that citation into a query. Two reasons:
 
 1. **It matches nothing.** The matching surface is descriptive titles; there is no title shaped like «المادة الثالثة عشرة من نظام مكافحة الرشوة». An article-reference query is dead weight.
-2. **The text is already in hand.** When an article is cited by number, its verbatim text was already fetched upstream — it may appear in `<context_blocks>` as `planner_brief`. Retrieval should chase what is **not** yet known: the governing provisions, the related rulings, and the surrounding rule (الأحكام المتعلقة بموضوع المادة) — never the article itself.
+2. **The text is already in hand.** When an article is cited by number, its verbatim text was already fetched upstream and arrives in `<context_blocks>` as `statute_articles` — the whole article, verbatim, under a `## نص المادة …` heading. (It used to travel inside `planner_brief`, retyped by the planner; it no longer does.) Retrieval should chase what is **not** yet known: the governing provisions, the related rulings, and the surrounding rule (الأحكام المتعلقة بموضوع المادة) — never the article itself.
 
 So strip the article number and the law name, and query the legal **content** the article governs:
 - ❌ "المادة الثالثة عشرة من نظام مكافحة الرشوة والعزل من الوظيفة"

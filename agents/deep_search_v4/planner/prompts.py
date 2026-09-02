@@ -117,18 +117,27 @@ When the user refers to **a law, a ruling, or a service by a specific name** tha
 
 ## The `fetch_article` tool — pull the verbatim text of a cited article
 
-When the user **cites a specific article number inside a specific named law or regulation** («المادة الحادية والثمانون من نظام العمل»، «المادة 81 من نظام العمل»، «م/1-1 من اللائحة التنفيذية لنظام …»), call `fetch_article(regulation_title, article_number)` to retrieve that article's exact text.
+Whenever **a specific article number inside a specific named law or regulation** is in play this turn («المادة الحادية والثمانون من نظام العمل»، «المادة 81 من نظام العمل»، «م/1-1 من اللائحة التنفيذية لنظام …»), call `fetch_article(regulation_title, article_number)` to retrieve that article's exact text.
+
+**The citation does not have to be the user's.** It counts wherever you find it:
+
+- **The user cited it** — the obvious case.
+- **An attached item cites it** (`<attached_items>`). A ruling, a memo, a contract, an official letter — when it reasons from a numbered article, that article is the load-bearing text of the turn. Fetch it. This is the most important case and the easiest to miss, because the user's own message may be a single short line («هل تقدر تعترض على الحكم») while the whole legal substance sits in the attachment.
+- **A prior search cites it** (`<prior_searches>`) and the user is now asking about it.
+
+The test is not "who typed the number" but "does the answer depend on what that article actually says". If the user is asking whether a ruling's reasoning is sound, whether a clause is enforceable, or what a cited provision requires, then you cannot plan — and the search cannot answer — without the real text. **Fetch every article the turn genuinely turns on, in parallel.**
 
 - **رقم مادة بلا نظام؟ اسأل، لا تخمّن ولا تبحث.** If the user cites an article **by number but does not name the law**, and the نظام is not unambiguous from context (e.g. «نُفّذت عليّ المادة 46» — could be نظام التنفيذ، أو نظام التنفيذ أمام ديوان المظالم، أو لائحة مقدمي خدمات التنفيذ…), do **not** fall through to a generic search and do **not** guess the نظام. First use `ask_user` to ask «المادة (رقمها) من أي نظام؟», then call `fetch_article` with the regulation the user names.
 - Pass `article_number` as its **plain string form** — `"81"`, or a compound like `"1-1"`. Convert Arabic ordinals («الحادية والثمانون» → `"81"`) and Arabic-Indic digits («٨١» → `"81"`) to that form **first**.
-- If the tool returns a string that begins with `AMBIGUOUS:`, more than one regulation matched the title — use `ask_user` to ask which regulation is meant, then call again with the precise title.
-- If the text carries a **«(ثقة متوسطة …)»** note, the match was approximate (the resolved law isn't an exact name match) — verify it's the law the user meant (`ask_user` if unsure), and carry **only the article body**, not that note, into `planner_brief`.
-- Carry the returned article text **verbatim into `planner_brief`** so it flows to the executors and the aggregator. The article moves as **TEXT ONLY** — it never becomes a citation, and it never substitutes for retrieval. (All articles you fetch this turn are bundled into one reference card saved for later turns — you don't manage that.)
+- If the tool returns a string beginning `AMBIGUOUS:`, the title did not match one regulation outright and you are being handed a **shortlist**. Read it against what the user (or the attachment) actually named, then do one of two things: call `fetch_article` again with **one listed title, copied exactly as printed**, or — if none of them is the law meant — **choose nothing** and let the normal search cover it. Do not pick the closest-looking one to have picked something; a wrong article reads exactly like a right one. Reserve `ask_user` for when the user alone can settle which law they meant.
+- **Check the title in the returned header.** It names the regulation that was actually resolved, which may be spelled differently from what you asked for — the corpus writes «نظام الايجار التمويلي» where a ruling writes «الإيجار». A different spelling of the same law is correct and expected; a different **law** is not, and means you should have taken the shortlist instead.
+- The article text **reaches the executors and the aggregator on its own** — every article you fetch is forwarded downstream verbatim and in full, and is bundled into one reference card saved for later turns. You do **not** need to copy it into `planner_brief`, and you should not: what you receive may be shortened for planning, while what they receive is complete. Say in the brief *which* articles you fetched and what the attachment does with them; leave the quoting to the channel that carries the whole text.
+- The article moves as **TEXT ONLY** — it never becomes a citation, and it never substitutes for retrieval.
 - **Still run the normal search.** `fetch_article` supplies the exact wording; the search supplies the answer's supporting sources and citations from the corpus.
 
 ## `planner_brief` — the facts channel for downstream
 
-A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question — and in particular: the content of `<attached_items>` reaches the search only through this field. Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
+A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question — and in particular: the content of `<attached_items>` reaches the search only through this field. (The one exception: articles you fetched with `fetch_article` are forwarded downstream in full on their own channel, so they do not need to be quoted here.) Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
 
 ## `context_labels` — opt in `prior_search_lessons` only
 
@@ -297,7 +306,8 @@ _PLANNER_BRIEF_DETAIL_RULES = """\
 - **Descriptive, not directive.** State the discovered facts, not the angles you suggest searching.
   - ✗ «ركّز على المادة 81 من نظام العمل».
   - ✓ «المستخدم أرفق عقد عمل محدد المدة سنةً، يتضمّن شرط عدم منافسة بعد انتهاء العقد لمدة سنتين في الرياض».
-- **Excerpt, do not copy.** For long attachments: pick out the facts the search needs (parties, dates, amounts, conditions, cited articles, quoted rulings), and do not copy a whole text.
+- **Excerpt, do not copy.** For long attachments: pick out the facts the search needs (parties, dates, amounts, conditions, quoted rulings), and do not copy a whole text.
+- **Cited articles: name them, don't quote them.** When the attachment reasons from a numbered article, fetch it with `fetch_article` and then say in the brief which article it is and what the attachment concludes from it. The verbatim text travels downstream on its own — quoting it here duplicates it, and what you were shown may be shortened while what the executors receive is complete.
 - **Name the source briefly:** «من المذكرة المرفقة:…» or «من الحكم المرفق:…».
 - **Do not repeat `case_brief` or `prior_searches`** — those blocks arrive on their own.
 - **Length:** usually 3–15 sentences after excerpting, even for large attachments. The final test: "the executors read `query_restatement` + `planner_brief` only (they do not see the attachments) — is that enough for them to steer their queries precisely?" If the answer is no, fill out `planner_brief`. Write `planner_brief` in Arabic."""
