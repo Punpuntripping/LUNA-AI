@@ -98,6 +98,7 @@ _JOB_LOOKUP_FIELDS = _DETAIL_FIELDS + ", job_id, confidence, source_item_id"
 __all__ = [
     "BLOG_TYPES",
     "RESERVED_BLOG_SLUGS",
+    "normalize_frozen_references",
     # reads
     "list_gallery",
     "list_subjects",
@@ -372,6 +373,227 @@ def _attach_cards(
     live = [r for r in rows if r.get("slug")]
     chips = _subjects_for_roots(supabase, [r.get("root_id") for r in live])
     return [_to_card(r, chips.get(r.get("root_id"), [])) for r in live]
+
+
+# ---------------------------------------------------------------------------
+# FROZEN REFERENCES — the strip, plus the has_source backfill
+# ---------------------------------------------------------------------------
+#
+# ``ReferencePanel`` gates the «عرض المصدر» affordance on
+# ``(!!itemId || !!blogToken) && ref.has_source === true``. The blog token (the
+# slug, here) is passed; ``has_source`` is what was missing. The publish path now
+# freezes it (``deepsearch_api.service._publish_to_public_blog``), but the two
+# articles already live carry 15 references with no such key, and they must start
+# offering the reveal without a data migration — hence a read-time derivation.
+
+_REF_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+# ``ref_id`` prefix → the ``domain`` it must be paired with, for every citation
+# family the slug-keyed reveal can rebuild from a FROZEN entry.
+#
+# Both halves are load-bearing and they are checked TOGETHER on purpose:
+# ``reference_resolver.resolve_ref`` dispatches on the PREFIX (and charges), while
+# ``references_service.build_reference_source_view`` dispatches on the DOMAIN (and
+# builds the body). An entry whose two disagree would be charged by the first and
+# refused by the second — the one outcome this flag exists to prevent.
+_REVEAL_PREFIX_DOMAIN = {
+    "reg": "regulations",            # reg:<chunks_v2.id>
+    "case": "cases",                 # case:<case_ref>  — NOT a uuid
+    "circular": "circulars",         # circular:<circulars.id>
+    "article": "articles",           # article:<articles_v2.id>
+    "regdoc": "regulation_docs",     # regdoc:<regulations_v2.id>
+}
+
+
+def _derive_has_source(entry: dict[str, Any]) -> bool:
+    """Can the slug-keyed reveal actually serve a body for this frozen entry?
+
+    ⚠ **CONSERVATIVE BY CONSTRUCTION.** A ``True`` the reveal endpoint then
+    refuses sells the reader an unlock we cannot deliver, so every branch below
+    answers the question the endpoint will ask, with the information the endpoint
+    will have — which is the entry itself and nothing else
+    (``blog.reveal_reference_source`` builds its row from
+    ``entry['ref_id'] / ['domain'] / ['item_id']``, never from the blog).
+
+    What the endpoint needs, and therefore what is checked:
+
+    * ``resolve_ref`` must return non-``None`` — it parses the ``ref_id``
+      PREFIX and requires a uuid tail for every family except ``case:``, whose
+      tail is a ``case_ref``;
+    * ``build_reference_source_view`` must return non-``None`` — it dispatches on
+      ``domain`` and its shell builders re-parse the same prefix.
+
+    Three deliberate conservatisms:
+
+    1. **A missing prefix is False**, even though ``resolve_ref`` would fall back
+       to ``domain`` and resolve. The shell builders do NOT have that fallback
+       (``_reg_chunk_id_from_row`` and friends require the literal prefix once
+       ``item_id`` is absent), so a prefix-less entry is exactly the shape that
+       gets CHARGED and then 404s.
+    2. **``domain='compliance'`` is False** unless the entry carries a
+       ``services.id``. ``_build_compliance_shells`` has no ref_id fallback at
+       all — the ``compliance:<sha1>`` hash is not a service handle — and a
+       frozen ``Reference`` has no ``item_id`` field, so the body cannot be
+       rebuilt. (No charge is at stake there: services are ``always_free``. The
+       reader would simply get «تعذّر عرض هذا المصدر» from a button we promised.)
+    3. **Unknown domains and malformed entries are False.**
+
+    The ONE axis this cannot cover is EXISTENCE: a ``reg:<uuid>`` whose chunk was
+    re-chunked away still looks resolvable here. Answering that honestly costs one
+    DB round-trip per citation on an anonymous, uncached page read (15 on the live
+    articles), and it would still be a TOCTOU. It is also the safe direction to be
+    wrong in: a vanished source fails at ``resolve_ref``, which is BEFORE
+    ``resolve_access``, so the reader gets a refusal card and is never charged.
+    The publish-time flag has the identical exposure — a source can vanish after
+    the snapshot is frozen — so this adds no failure mode the wing did not have.
+
+    ``source_type`` is deliberately NOT consulted: it is a display discriminator
+    for the card, and the reveal route never reads it.
+    """
+    if not isinstance(entry, dict):
+        return False
+
+    ref_id = str(entry.get("ref_id") or "").strip()
+    domain = str(entry.get("domain") or "").strip().lower()
+    item_id = str(entry.get("item_id") or "").strip()
+
+    if domain == "compliance":
+        return bool(_REF_UUID_RE.match(item_id))
+
+    prefix, sep, tail = ref_id.partition(":")
+    if not sep:
+        return False
+    prefix = prefix.strip().lower()
+    tail = tail.strip()
+
+    if _REVEAL_PREFIX_DOMAIN.get(prefix) != domain:
+        return False
+
+    # ``case:<case_ref>`` is the one family whose tail is not a uuid — it is the
+    # court's own reference string, which ``_enrich_cases`` looks up by.
+    if prefix == "case":
+        return bool(tail)
+
+    return bool(_REF_UUID_RE.match(tail))
+
+
+def _library_urls_for_entries(
+    supabase: SupabaseClient, entries: list[dict[str, Any]]
+) -> dict[int, str]:
+    """``{n: url}`` for frozen entries — «افتح في ريحان», the in-app exit.
+
+    ⚠ **NAVIGATION, never a metered unlock.** It is a path to a page that
+    enforces its own access tier, so it is resolved for free, for every card, and
+    is never charged and never gated on entitlement here. It is also never
+    GUESSED: a reference with no published library page gets ``None``, because a
+    button into a 404 is strictly worse than no button.
+
+    The derivation is `library_items_service`'s, not a second one — the same sync
+    resolver ``fetch_item_references_payload`` reaches through its async wrapper.
+    It reads exactly ``n`` / ``domain`` / ``item_id`` / ``ref_id`` off each row,
+    which is precisely what a frozen entry carries, so the entries ARE valid rows
+    and no adapter shape is invented in between. ≤7 batched round-trips for the
+    whole panel, independent of reference count.
+
+    Sync, like everything else in this module: the resolver is itself the SYNC
+    half of ``library_items_service`` (that module's ``_``-prefix marks "touches
+    Supabase, runs under ``run_db``", not "private"), so calling it from inside
+    this ``run_db`` hop costs no extra thread and no extra round-trip.
+
+    Fail-soft to ``{}``: a blocked sidecar must cost the reader a link, never the
+    article.
+    """
+    if not entries:
+        return {}
+    try:
+        # Imported lazily: ``library_items_service`` reaches back into
+        # ``references_service`` at call time, and this module is imported from
+        # the API layer early. A function-local import is the same posture the
+        # two of them already take toward each other.
+        from backend.app.services import library_items_service
+
+        return library_items_service._public_page_urls_for_reference_rows(
+            supabase, entries
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("public blog library url resolution failed: %s", e)
+        return {}
+
+
+def normalize_frozen_references(
+    references: Any, supabase: Optional[SupabaseClient] = None
+) -> list[dict[str, Any]]:
+    """THE public projection of a frozen ``references_json``, for this wing.
+
+    Three things, in this order:
+
+    1. :func:`strip_frozen_source_views` — a stored ``source_view`` on an
+       anonymously-served page is an unmetered mirror of full corpus text.
+       Reused verbatim rather than reimplemented; the legacy ``blog_posts`` wing
+       runs the same function and must keep behaving exactly as it does.
+    2. **``has_source`` backfill** for any entry that lacks the key. Entries that
+       HAVE it keep it — a publish-time flag was computed from the enrichment
+       itself (``references_service``'s ``resolvable_ns``) and is strictly better
+       information than anything derivable from the entry's shape. This only ever
+       fills a hole; it never overrides. A stored ``False`` is a real answer and
+       survives; a present-but-``null`` is not an answer at all (the client tests
+       ``has_source === true``, so a null reads as "no reveal") and is derived
+       like a missing key.
+
+    3. **``library_url`` backfill**, and ONLY when ``supabase`` is supplied and
+       at least one entry lacks the key. Same rule as step 2 — fill the hole,
+       never override — and the same reason: the two live articles were frozen
+       before the publish path captured it. This one cannot be derived from the
+       entry's shape (it needs the sidecar), so it costs a bounded, batched,
+       fail-soft lookup. Articles published after the fix carry the key on every
+       entry and skip it entirely.
+
+    Note the two paths through step 1: an entry that carried a ``source_view``
+    comes back with ``has_source=True`` already set by the stripper, so it never
+    reaches the derivation. Entries with ``source_view is None`` — every row this
+    wing has ever written — fall through untouched, which is the exact hole the
+    live articles fell into.
+
+    ⚠ **``supabase`` is passed by the ARTICLE read and withheld by the REVEAL
+    read**, and that asymmetry is deliberate rather than drift. ``library_url``
+    is rendered on the card, so ``get_by_slug`` resolves it; the reveal endpoint
+    resolves its OWN ``library_url`` after unlocking and never reads this key, so
+    making a citation click pay for a sidecar lookup would buy nothing. The keys
+    that decide what the panel OFFERS — the strip and ``has_source`` — are
+    computed identically on both paths, which is the part that must never drift.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in strip_frozen_source_views(references):
+        if isinstance(entry.get("has_source"), bool):
+            out.append(entry)
+            continue
+        out.append({**entry, "has_source": _derive_has_source(entry)})
+
+    if supabase is None:
+        return out
+
+    # Indices, not the dicts: an entry that needed no ``has_source`` backfill is
+    # still the very object PostgREST handed us, and stamping a key onto it in
+    # place would mutate the caller's row. Copy-on-write instead.
+    missing = [i for i, e in enumerate(out) if "library_url" not in e]
+    if not missing:
+        return out
+
+    urls = _library_urls_for_entries(supabase, [out[i] for i in missing])
+    for i in missing:
+        entry = out[i]
+        try:
+            n = int(entry.get("n"))
+        except (TypeError, ValueError):
+            n = -1
+        # ``None`` when nothing resolved — the key is always PRESENT afterwards,
+        # matching what ``fetch_item_references_payload`` freezes, so the client
+        # reads one shape whichever era the row is from.
+        out[i] = {**entry, "library_url": urls.get(n)}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -654,14 +876,21 @@ def get_references_by_slug(
         «عرض المصدر» is not a page view, and would inflate the counter the hub
         ranks on. It also fetches the whole body and the subject chips, none of
         which a reveal needs.
-      * **Not the raw column.** ``strip_frozen_source_views`` runs here too — a
+      * **Not the raw column.** ``normalize_frozen_references`` runs here too — a
         stored ``source_view`` would be an unmetered, anon-readable mirror of
         full corpus text, which is the entire hole the reveal meter closes.
+
+    The SAME projection as ``get_by_slug`` on purpose: the article's panel and
+    the reveal it calls must never disagree about which entries exist or which
+    of them claim a body. ``has_source`` is inert for the reveal itself — it
+    reads ``ref_id``/``domain`` and re-resolves from scratch — but drifting the
+    two projections is how the panel starts offering a button this endpoint
+    refuses.
     """
     row = _fetch_current_row(supabase, slug, "blog_id, references_json")
     if row is None:
         return None
-    return strip_frozen_source_views(row.get("references_json")) or []
+    return normalize_frozen_references(row.get("references_json")) or []
 
 
 def get_by_slug(supabase: SupabaseClient, slug: str) -> Optional[dict[str, Any]]:
@@ -711,7 +940,21 @@ def get_by_slug(supabase: SupabaseClient, slug: str) -> Optional[dict[str, Any]]
         # anon-readable mirror of full corpus text on a public page. Writes on
         # this wing never capture one, so this normally passes through unchanged
         # — it costs nothing and closes the hole if one ever lands.
-        "references": strip_frozen_source_views(row.get("references_json")),
+        #
+        # ⚠ It also backfills the two keys the publish path used to drop, on the
+        # rows frozen before it captured them:
+        #
+        # * ``has_source`` — without it ``ReferencePanel`` renders the card and
+        #   no «عرض المصدر» button at all: the reveal is not refused, it is
+        #   ABSENT, a deleted feature rather than a metered one. Never gate the
+        #   KEY on entitlement — anon must SEE the button and get the 402
+        #   «سجّل مجاناً» card from the reveal endpoint.
+        # * ``library_url`` — «افتح في ريحان», free navigation. ``supabase`` is
+        #   handed over HERE because this is the read whose output renders the
+        #   card; the reveal read deliberately does not (see the docstring).
+        "references": normalize_frozen_references(
+            row.get("references_json"), supabase
+        ),
         "question_text": row.get("question_text") or "",
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),

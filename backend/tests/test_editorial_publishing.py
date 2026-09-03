@@ -152,6 +152,8 @@ def publish(monkeypatch, _settings):
         wi_title: Optional[str] = "عنوان البطاقة",
         workspace_item_id: Optional[str] = "wi-1",
         references: Optional[list] = None,
+        resolvable: Optional[set] = None,
+        library_urls: Optional[dict] = None,
     ):
         monkeypatch.setattr(
             service,
@@ -164,10 +166,31 @@ def publish(monkeypatch, _settings):
                 "kind": "agent_search",
             },
         )
+        # The publish path snapshots ``fetch_item_references_payload`` — plain
+        # dicts already carrying ``has_source`` and ``library_url`` — which is
+        # the SAME builder the legacy ``blog_posts`` share snapshot uses. Tests
+        # still author references as ``_Ref`` objects; the payload shape is
+        # derived here so a call site only has to say what it cares about.
+        #
+        # ``resolvable`` defaults to every cited n (the normal case: a citation
+        # the panel shows is a citation whose source rebuilt); ``library_urls``
+        # defaults to none resolving (the honest default — most cited items have
+        # no published library page).
+        refs = references if references is not None else [_Ref(1), _Ref(2)]
+        resolvable_ns = {r.n for r in refs} if resolvable is None else set(resolvable)
+        payload = [
+            {
+                **r.model_dump(mode="json"),
+                "source_view": None,
+                "has_source": r.n in resolvable_ns,
+                "library_url": (library_urls or {}).get(r.n),
+            }
+            for r in refs
+        ]
         monkeypatch.setattr(
             service,
-            "fetch_item_references",
-            AsyncMock(return_value=references if references is not None else [_Ref(1), _Ref(2)]),
+            "fetch_item_references_payload",
+            AsyncMock(return_value=payload),
         )
         full_job = {
             "job_id": "job-1",
@@ -1188,6 +1211,98 @@ def test_references_are_frozen_onto_the_row(publish) -> None:
     row = db.tables["public_blogs"][0]
     assert [r["n"] for r in row["references_json"]] == [1, 2, 4]
     assert result.references.count == 3
+
+
+def test_the_frozen_references_carry_has_source(publish) -> None:
+    """🚨 THE «عرض المصدر» FLAG. Without it the metered reveal does not render.
+
+    `ReferencePanel` gates the affordance on `has_source === true`, and a blog
+    reader has no workspace item to probe — so the flag has to be IN the frozen
+    snapshot. Dumping `Reference` models straight to JSON (what this path did
+    until 2026-09-03) drops it: `Reference` has no such field. Measured on the
+    two live articles: 15 references, not one carrying the key, so the button
+    never appeared even though the reveal endpoint could serve every one of them.
+    """
+    db = FakeDB()
+    publish(db, references=[_Ref(1), _Ref(2)])
+    frozen = db.tables["public_blogs"][0]["references_json"]
+    assert [r["has_source"] for r in frozen] == [True, True]
+
+
+def test_a_reference_whose_source_cannot_be_rebuilt_is_frozen_false(publish) -> None:
+    """The flag is the READ's answer, not a constant.
+
+    `resolvable_ns` is the set of `n` whose URA shell was reconstructed — a
+    citation whose source row is gone renders as a stub card with nothing to
+    reveal, and freezing True for it would offer a button that 404s.
+    """
+    db = FakeDB()
+    publish(db, references=[_Ref(1), _Ref(2), _Ref(4)], resolvable={1, 4})
+    frozen = db.tables["public_blogs"][0]["references_json"]
+    assert {r["n"]: r["has_source"] for r in frozen} == {1: True, 2: False, 4: True}
+
+
+def test_the_snapshot_is_built_by_the_PAYLOAD_builder_not_by_dumping_models(
+    publish,
+) -> None:
+    """🚨 THE ROOT CAUSE, pinned.
+
+    `fetch_item_references` returns `Reference` MODELS, and a `Reference` knows
+    nothing about `has_source` or `library_url` — both are added by
+    `fetch_item_references_payload`, which is what a READER needs and what the
+    legacy `blog_posts` share snapshot has always frozen. This path used to
+    `model_dump` the models, so the public wing captured strictly less than the
+    legacy wing from the same data: measured on the two live articles, 15
+    references with neither key.
+
+    Reverting to the model dump would leave almost every other test in this file
+    passing, which is exactly why this one names the call.
+    """
+    import inspect
+
+    src = inspect.getsource(service._publish_to_public_blog)
+    assert "fetch_item_references_payload" in src
+    # Comments stripped: the block above deliberately NAMES the mistake it
+    # replaced, and matching prose would make this pass or fail on how carefully
+    # the fix was documented.
+    code = "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
+    )
+    assert "model_dump" not in code, (
+        "the snapshot is being rebuilt from models again — has_source and "
+        "library_url do not survive a Reference.model_dump()"
+    )
+
+
+def test_the_frozen_references_carry_library_url(publish) -> None:
+    """«افتح في ريحان» — NAVIGATION, never a charge, never guessed.
+
+    A blog reader has no workspace item, so this link has to be IN the snapshot
+    like `has_source` is. Its absence is what left the two compliance citations
+    on the live articles with no affordance whatsoever: empty `landing_url`, no
+    reveal, no in-app link.
+    """
+    db = FakeDB()
+    publish(
+        db,
+        references=[_Ref(1), _Ref(2)],
+        library_urls={1: "/regulations/nizam-al-amal"},
+    )
+    frozen = db.tables["public_blogs"][0]["references_json"]
+    assert frozen[0]["library_url"] == "/regulations/nizam-al-amal"
+    # Present-and-null, never absent: an unresolved reference is a card with no
+    # in-app button, and the client reads one shape either way.
+    assert frozen[1]["library_url"] is None
+    assert "library_url" in frozen[1]
+
+
+def test_a_reference_with_no_library_page_gets_no_link_not_a_guess(publish) -> None:
+    """A button into a 404 is strictly worse than no button. The resolver returns
+    keys only for references that actually resolved; nothing in this path may
+    synthesise a URL for the rest."""
+    db = FakeDB()
+    publish(db, references=[_Ref(1)], library_urls={})
+    assert db.tables["public_blogs"][0]["references_json"][0]["library_url"] is None
 
 
 def test_provenance_links_back_to_the_workspace_item(publish) -> None:

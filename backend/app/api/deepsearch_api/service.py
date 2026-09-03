@@ -70,7 +70,7 @@ from backend.app.api.deepsearch_api.models import (
     BlogPostJobRequest,
 )
 from backend.app.services import blog_service, public_blog_service
-from backend.app.services.references_service import fetch_item_references
+from backend.app.services.references_service import fetch_item_references_payload
 from shared.config import get_settings
 from shared.seo.judgment_naming import slugify_ar
 from shared.db.client import get_supabase_client
@@ -695,7 +695,10 @@ async def _publish_to_public_blog(
     wi_metadata: dict = {}
     wi_title: Optional[str] = None
     content_md = gen.content_text or ""
-    references: list = []
+    # The FROZEN citation payload — serialized ``Reference`` dicts, each already
+    # carrying ``has_source`` and ``library_url``. Empty on the chat-only route
+    # (no workspace item ⇒ no citations at all).
+    references_json: list[dict] = []
 
     if have_wi:
         wi = await run_db(_load_workspace_item, supabase, wi_id)
@@ -703,19 +706,50 @@ async def _publish_to_public_blog(
             wi_metadata = wi.get("metadata") or {}
             wi_title = wi.get("title")
             content_md = wi.get("content_md") or ""
-        # Cited references only (used_only=True) — same as the in-app share.
-        # No ``source_view`` rides along (the default is the metered shape):
+        # Cited references only (used_only=True) — the SAME call, and therefore
+        # the same frozen shape, as the legacy ``blog_posts`` share snapshot
+        # (``blog.share_artifact``). That is the whole point of using the
+        # PAYLOAD builder rather than ``fetch_item_references``: a snapshot is
+        # everything the reader will ever get, so it must be built by the
+        # function that knows what a reader needs — not by dumping the models
+        # and hoping the two paths captured the same things. They did not.
+        #
+        # No ``source_view`` rides along (the payload is the metered shape):
         # this lands in ``public_blogs.references_json``, which anonymous
         # readers fetch, and the reveal is entitlement-checked per READER.
         #
         # ⚠ D18 — this array is COPIED VERBATIM into every later version. The
         # citation set of a published blog is CLOSED, which is what makes the
         # SEO rewrite checkable rather than merely instructed.
+        #
+        # TWO KEYS ONLY THIS CALL PRODUCES, both measured missing on the first
+        # two live articles (2026-09-03) because this path used to
+        # ``model_dump`` the models instead:
+        #
+        # * ``has_source`` — ``ReferencePanel`` gates «عرض المصدر» on it, and a
+        #   blog reader has no workspace item to probe, so it MUST be frozen.
+        #   All 15 references shipped without it: the metered reveal never
+        #   rendered, on references the endpoint could have served.
+        # * ``library_url`` — «افتح في ريحان», NAVIGATION and never a charge.
+        #   Its absence is what left the two compliance citations with no
+        #   affordance at all: empty ``landing_url``, no reveal, no in-app link.
+        #   A citation a reader cannot act on in ANY way is worse than one that
+        #   costs an unlock.
         try:
-            references = await fetch_item_references(supabase, wi_id, used_only=True)
+            references_json = await fetch_item_references_payload(
+                supabase, wi_id, used_only=True
+            )
         except Exception:  # noqa: BLE001
             logger.warning("publish: fetch_item_references failed", exc_info=True)
-            references = []
+            references_json = []
+
+    # ``derive_confidence`` / ``_references_summary`` read ``.n`` / ``.title`` /
+    # ``.relevance`` off Reference-LIKE objects, and the payload above is plain
+    # dicts. ``_StoredRef`` is the wrapper that already exists for exactly this
+    # (the re-drive path wraps a frozen ``references_json`` the same way), so
+    # both functions are reused verbatim rather than growing a dict-or-model
+    # branch each.
+    references = [_StoredRef(r) for r in references_json]
 
     confidence = derive_confidence(wi_metadata, references, have_workspace_item=have_wi)
     is_published = decide_publish(
@@ -726,7 +760,6 @@ async def _publish_to_public_blog(
     is_public = bool(cfg.get("publish_public"))
 
     question_text = job["question"]        # ANONYMIZED upstream — never a raw one.
-    references_json = [r.model_dump(mode="json") for r in references]
 
     # Title precedence: request title → the body's first-line H1 → the WI title.
     # The H1 is stripped from the body either way (§6's H1 contract), which

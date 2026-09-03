@@ -59,6 +59,16 @@ agents/deep_search_v4/aggregator/tests/*
 # so; and a v1 row whose blog_id != root_id breaks /seo, /cards and /retract at
 # once. None of the four shows up in a type, a log line or a status code.
 !backend/tests/test_editorial_publishing.py
+# the public_blogs service suite is durable for the same wing and was SHIPPED
+# WITHOUT ITS GUARD (commit d912137 carried the code, not this file). It pins the
+# versioned write: that `append_version` goes through the migration-155 RPC —
+# asserted as exactly one rpc call and ZERO manual updates on public_blogs, so
+# reintroducing hand-rolled flipping fails here rather than in production — plus
+# mint-time slug refusal, the reserved `subjects` literal, and H1 extract/strip.
+# Its FakeDB also enforces the three unique indexes and rolls back refused
+# writes; without that, any row-count assertion after a constraint violation is
+# measuring debris.
+!backend/tests/test_public_blogs.py
 # المشتركون الأوائل — the early-adopter promo suite is durable for the same
 # reason: it pins that a seat holder is precisely someone charged the promo
 # price, that cancelling forfeits it and a refund does not, and that a renewal
@@ -178,6 +188,13 @@ agents/deep_search_v4/aggregator/tests/*
 # was caught. Also pins UPDATE-before-DELETE, which is what makes a deploy
 # landing ahead of migration 125 a no-op instead of unrecoverable file loss.
 !backend/tests/test_attachment_retention.py
+# «عرض المصدر» on the public_blogs wing. Durable because it pins an invariant
+# neither surface can check alone: has_source=True is a PROMISE the reveal
+# endpoint must keep — a True it then refuses sells the reader an unlock we
+# cannot deliver, and for a chargeable family it sells it after taking payment.
+# Also pins that the flag is NOT an entitlement signal (anon sees the button and
+# gets a 402, never a 401) and that the legacy blog_posts stripper is unchanged.
+!backend/tests/test_blog_reference_reveal_flag.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock
