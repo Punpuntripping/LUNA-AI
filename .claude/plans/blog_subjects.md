@@ -351,6 +351,33 @@ and the metered source reveal all stay **exactly** as they are. This is the deli
 the surface: the references panel is the visible proof-of-work that sells deep_search, and the
 one thing on the page a reader cannot get from a chatbot.
 
+🚨 **"Untouched" was not enough — snapshot the PAYLOAD builder, not the models.** Found in
+production 2026-09-03, reported by the operator: clicking `[n]` only flashed the card. No
+«عرض المصدر», no «افتح في ريحان». The publisher called `fetch_item_references`, which returns
+`Reference` **models**, and `model_dump`ed them — and **a `Reference` carries neither
+`has_source` nor `library_url`**. Both are added by `fetch_item_references_**payload**`, which is
+what a *reader* needs and what the legacy `blog_posts` snapshot has always frozen.
+`ReferencePanel` gates the reveal on `has_source === true`, so an absent key meant the affordance
+was **never rendered — not hidden**, while the capability was there the whole time (the reveal
+route resolves from `ref_id` + `domain` and never reads `source_view`). One wrong function, two
+dead affordances, and nothing in a type, a log line or a status code to say so. Fixed by
+snapshotting the payload builder verbatim, exactly as `blog.share_artifact` does, plus a read-time
+backfill so already-published rows recover without a migration.
+
+⚠ The two keys are asymmetric **on purpose**. A frozen `library_url: null` is KEPT — null is a
+real answer ("no published page"), so re-resolving would tax every read forever. A missing
+`has_source` is DERIVED — it has no null convention, so absent means never computed.
+
+⚠ The derivation is deliberately **stricter** than `resolve_ref`: a prefix-less `ref_id`, a prefix
+disagreeing with `domain`, and a `compliance:` sha1 (not a service handle) all return False.
+A `True` the endpoint then refuses would **sell an unlock we cannot deliver**. The one axis it
+cannot cover is EXISTENCE — a re-chunked source still looks resolvable — and that is safe because
+`resolve_ref` runs *before* `resolve_access`, so the reader gets a refusal card and is never
+charged. A test pins that ordering; if anyone moves the charge earlier, it fails.
+
+Measured on the first two published articles (30 references): 28 reveal · 17 library link ·
+13 outbound · **0 with no affordance at all**.
+
 ### Subject chips + type badge
 
 Under the byline: the blog's `type` badge plus a row of subject chips, each linking to
