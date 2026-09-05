@@ -156,8 +156,18 @@ export function UsageLimitsDialog({
   const { data, isLoading, isError } = useUsageLimits(open);
   const [now, setNow] = useState<number>(() => Date.now());
 
+  // Re-read the clock the INSTANT the dialog opens, not just once a minute
+  // after that. This component is mounted permanently with the sidebar
+  // (`SidebarDialogs`) — `open` is a prop, not a mount — so the lazy
+  // `useState` initialiser above captures PAGE-LOAD time and `setInterval`
+  // does not fire its first tick until 60s later. Without this line a user who
+  // loaded the page, ran a 3-minute turn and then opened «حدود الاستخدام» saw
+  // the countdown diffed against a 3-minute-stale `now` and got «خلال 5 ساعة
+  // و3 دقيقة» on a window that is 5 hours long — a value the backend can never
+  // emit.
   useEffect(() => {
     if (!open) return;
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
   }, [open]);

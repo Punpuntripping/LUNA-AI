@@ -83,9 +83,13 @@ export function QuotaUpgradeDialog({
   const [now, setNow] = useState<number>(() => Date.now());
 
   // Keep the countdown honest while the dialog sits open — a user reading three
-  // plan cards can easily be here past the minute boundary.
+  // plan cards can easily be here past the minute boundary. The `setNow` on
+  // entry matters just as much: the banner can sit dismissed-but-mounted for a
+  // long while before «عرض الباقات» is clicked, and the modal must not open
+  // showing the same `resets_at` differently from the banner behind it.
   useEffect(() => {
     if (!open) return;
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
   }, [open]);

@@ -51,8 +51,14 @@ export function QuotaBanner() {
   const [now, setNow] = useState<number>(() => Date.now());
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Re-stamp on every new block, then tick. The banner mounts with the chat
+  // and only *renders* once `quotaInfo` arrives, so the lazy initialiser above
+  // holds page-load time — minutes or hours stale by the time a block fires.
+  // Same defect as `UsageLimitsDialog`: it inflates the countdown past the
+  // window length instead of shrinking it, so it reads as a backend bug.
   useEffect(() => {
     if (!quotaInfo) return;
+    setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
   }, [quotaInfo]);
