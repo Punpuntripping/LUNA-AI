@@ -77,8 +77,23 @@ rather than an answer**, and hands publishing to `C:\Programming\marketing`.
 
 ### The three types (on the blog, D3)
 
-`laws_explanation` (أنظمة — شروحات وتعديلات) · `judicial_research` (أبحاث قضائية) ·
-`compliance` (امتثال). Rendered as a badge, filterable. **Never a URL.**
+Rendered as a badge, filterable. **Never a URL.** The type describes the article's **intent**,
+not its subject matter — the same subject can carry all three (سند لأمر as a term to explain is
+`laws_explanation`; a fight over one before قاضي التنفيذ is `judicial_research`).
+
+**`compliance` (امتثال)** — a standing obligation the reader must hold in mind **even when
+nothing has happened to them yet**. السعودة · التوطين · اشتراطات المطاعم. This is the
+preventive register: not triggered by a dispute, and the reader is not in trouble. It is the
+"know this before it bites you" article.
+
+**`judicial_research` (أبحاث قضائية)** — the reader is after something **specific**: a
+موقف معين, a مبدأ معين, or judicial treatment of one واقعة معينة. The question has a definite
+target and the answer is what the courts have actually done about it.
+
+**`laws_explanation` (أنظمة — شروحات وتعديلات)** — what a نظام or a legal term *means* and how
+it lands in practice. Covers a law itself, a defined term (سند لأمر، سند لنهي), a تحديث قانوني,
+«النظام وما يعنيه», and «النظام وما يُطبَّق في هذه الحالة واقعياً». Broadest of the three, and
+the one whose retrieval shape genuinely varies article to article.
 
 ---
 
@@ -493,13 +508,23 @@ questions are already curated and self-contained. When phase 1 *does* run, a res
 produced and used normally. Both are fine; just do not assume one behaviour in code that sees
 both.
 
-Section → mode is marketing's rule; Luna only honours what arrives:
+Type → mode is marketing's rule; Luna only honours what arrives. **Revised 2026-09-04 by the
+operator** — the first version of this table had `judicial_research` on `case_led` and both
+others on `reg_compliance_led`, which was wrong on two of three rows:
 
-| Type | mode | support |
-|---|---|---|
-| `judicial_research` | `case_led` | `true` |
-| `laws_explanation` | `reg_compliance_led` | operator's call |
-| `compliance` | `reg_compliance_led` | operator's call |
+| Type | mode | support | why |
+|---|---|---|---|
+| `compliance` | `reg_compliance_led` | operator's call | The reg executor already spans the statutory rule AND the procedural/services side, which is exactly what a standing obligation needs. |
+| `judicial_research` | **`full`** | n/a — `full` has no support role | ~~`case_led`~~. Looking for a موقف or a مبدأ is not a case-only errand: the position only means something against the نظام it construes, so the answer needs the case law **and** the regulatory ground together. That is the definition of `full`. |
+| `laws_explanation` | **unset — let the planner decide** | unset | ~~`reg_compliance_led`~~. This type is genuinely variable: «النظام وما يعنيه» is regulatory, «ما يُطبَّق في هذه الحالة واقعياً» often needs cases, and a تحديث قانوني may need neither. Pinning it would force one shape onto three different jobs. |
+
+⚠ **`laws_explanation` is the type that exercises the unpinned path** — send `mode: null` and
+`support: null` and let phase 1 run. That path is built (§5) and unit-tested but, as of
+2026-09-04, has **never run against a live planner**, so the first such job is also the test of
+the `ask_user` → `_default_decision` conversion. Watch it rather than firing and forgetting.
+
+⚠ `support` is meaningless when `mode="full"` — the field's own docstring says it is ignored
+there. Send `null`, not `false`, so the request says "not applicable" rather than "pinned off".
 
 ### Retraction (D11)
 

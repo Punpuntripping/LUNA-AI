@@ -75,6 +75,23 @@ _ASCII_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 _MAX_SLUG_LEN = 200
 
+# ``public_blogs.review_status`` (migration 157) — the CHECK's full domain.
+# ⚠ NOT ENFORCED ANYWHERE. No read predicate in this module filters on it, so a
+# ``pending`` row is publicly visible exactly like an ``approved`` one. Wiring
+# the gate means adding ``review_status = 'approved'`` to all FOUR visibility
+# predicates (the gallery, the subject feed, ``_fetch_current_row`` and the
+# sitemap feed) — missing one leaks a pending draft.
+REVIEW_STATUSES = frozenset({"pending", "approved"})
+
+# What a freshly generated article is worth: nobody has read it yet.
+# ⚠ Migration 157 backfilled the already-live rows to ``approved`` so that
+# switching the gate on could not retroactively un-publish them. Every row
+# written from now until the gate exists lands ``pending`` and would vanish the
+# moment it is switched on — writing ``approved`` here instead would be a lie
+# about a human decision that did not happen, so the honest value is kept and
+# the re-backfill is left as an explicit step for whoever wires enforcement.
+DEFAULT_REVIEW_STATUS = "pending"
+
 # Bound on a full scan of the join table. public_blog_subjects is one row per
 # (blog, subject) and the wing is designed to reach ~100 subjects over a few
 # hundred blogs, so this is far above the real ceiling; it exists so a runaway
@@ -98,6 +115,8 @@ _JOB_LOOKUP_FIELDS = _DETAIL_FIELDS + ", job_id, confidence, source_item_id"
 __all__ = [
     "BLOG_TYPES",
     "RESERVED_BLOG_SLUGS",
+    "REVIEW_STATUSES",
+    "DEFAULT_REVIEW_STATUS",
     "normalize_frozen_references",
     # reads
     "list_gallery",
@@ -1043,6 +1062,8 @@ def insert_public_blog(
     is_public: bool = True,
     is_published: bool = True,
     job_id: Optional[str] = None,
+    review_status: str = DEFAULT_REVIEW_STATUS,
+    generation_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Write **version 1** of a public blog. Returns the inserted row.
 
@@ -1063,6 +1084,24 @@ def insert_public_blog(
     ``is_public`` defaults **true** — inverted from ``blog_posts`` (plan D17). A
     public blog is open the moment it exists; there is no token, the slug is the
     whole address. ``publish_public=false`` still lands the row, unlisted.
+
+    ``review_status`` (migration 157) is stamped EXPLICITLY rather than left to
+    the column default, so the value a new article carries is readable at this
+    call site instead of in a migration. It is state only: nothing in this
+    module filters on it, and this write does not change what is visible.
+
+    ``generation_context`` (migration 157) is the first draft plus the complete
+    context the aggregator worked from, frozen for a later editor. ⚠ **v1 ONLY.**
+    ``append_public_blog_version`` carries both columns forward unchanged
+    (migration 158), so a rewrite must never re-stamp them — the whole point is
+    that they describe the GENERATION, not the current prose.
+
+    ⚠ **SERVICE-ROLE ONLY, and never reader-facing.** ``SELECT
+    (generation_context)`` is revoked from anon/authenticated because migration
+    153 gives anon a row-level policy on this table and RLS filters rows, not
+    columns. Nothing in this module may add it to ``_CARD_FIELDS`` or
+    ``_DETAIL_FIELDS``: it carries verbatim corpus bodies, and putting them on a
+    public read would mint an unmetered corpus feed on a public table.
 
     ``job_id`` (migration 156) is the editorial job that produced this blog, and
     it is the ONLY thing standing between a re-driven job and a duplicate
@@ -1122,6 +1161,12 @@ def insert_public_blog(
         "is_public": bool(is_public),
         "is_published": bool(is_published),
         "job_id": job_id,
+        "review_status": _assert_review_status(review_status),
+        # ``None`` is a first-class value here, not a missing one: a publish
+        # whose forensic rows never landed writes an honest NULL rather than a
+        # half-filled object that reads as complete (plan: the column is
+        # provenance, the article is the product).
+        "generation_context": generation_context,
     }
 
     try:
@@ -1149,6 +1194,24 @@ def insert_public_blog(
             detail="حدث خطأ أثناء نشر المدونة",
         )
     return result.data[0]
+
+
+def _assert_review_status(value: Optional[str]) -> str:
+    """Coerce to a value migration 157's CHECK accepts. Never raises.
+
+    An unknown value is a programming error, and the DB would answer it with a
+    23514 that fails the whole publish — losing a finished article over a
+    metadata field that nothing reads yet. Falling back to ``pending`` keeps the
+    article and leaves the loudest possible trace.
+    """
+    resolved = (value or "").strip()
+    if resolved in REVIEW_STATUSES:
+        return resolved
+    logger.error(
+        "public blog insert: unknown review_status %r; storing %r",
+        value, DEFAULT_REVIEW_STATUS,
+    )
+    return DEFAULT_REVIEW_STATUS
 
 
 def _is_job_conflict(exc: BaseException) -> bool:

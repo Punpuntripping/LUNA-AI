@@ -54,6 +54,7 @@ the SAME plan and the SAME slug rather than silently reverting to defaults.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -421,14 +422,68 @@ def _select_stuck_jobs(supabase: SupabaseClient) -> list[dict]:
 
 
 def _load_workspace_item(supabase: SupabaseClient, item_id: str) -> Optional[dict]:
+    # ``describe_query`` (migration 038) is the router's own reading of the
+    # question. It is part of what the pipeline understood the query to BE, so
+    # it belongs in the frozen generation context; nothing else here reads it.
     res = (
         supabase.table("workspace_items")
-        .select("item_id, content_md, title, metadata, kind")
+        .select("item_id, content_md, title, metadata, kind, describe_query")
         .eq("item_id", item_id)
         .maybe_single()
         .execute()
     )
     return res.data if res is not None else None
+
+
+def _load_retrieval_artifact(
+    supabase: SupabaseClient, item_id: str
+) -> Optional[dict]:
+    """The forensic URA row this workspace item was built from, or ``None``.
+
+    ``retrieval_artifacts.artifact_id`` points at ``workspace_items.item_id``
+    (the FK followed migration 026's rename). The row is written **best-effort**
+    by ``agents/agent_search/publisher._persist_forensics`` — a hiccup there is
+    swallowed so it cannot break a live turn — so its absence is normal-ish and
+    must never be treated as an error.
+
+    Newest-first + ``limit(1)``: the publisher writes one row per turn, and
+    ``generate_answer_headless`` already resolves >1 publish with "last wins".
+    """
+    res = (
+        supabase.table("retrieval_artifacts")
+        .select(
+            "ura_id, ura_json, schema_version, high_count, medium_count, "
+            "produced_by, duration_ms, created_at"
+        )
+        .eq("artifact_id", item_id)
+        .is_("deleted_at", "null")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = getattr(res, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _load_reranker_runs(supabase: SupabaseClient, ura_id: str) -> list[dict]:
+    """Per-sub-query reranker forensics for one URA. Empty list when absent.
+
+    ``sub_query_index`` is GLOBAL across the executors (reg, then compliance,
+    then case — ``retrieval_artifacts_service._EXECUTOR_ORDER``) and uses the
+    same scheme as the URA's own ``sub_queries[].index``, which is what lets the
+    two be merged by index below without a join key of their own.
+    """
+    res = (
+        supabase.table("reranker_runs")
+        .select(
+            "agent_family, sub_query_index, sub_query_text, sub_query_rationale, "
+            "kept_results, dropped_results, sufficient, summary_note"
+        )
+        .eq("ura_id", ura_id)
+        .order("sub_query_index")
+        .execute()
+    )
+    return getattr(res, "data", None) or []
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +709,440 @@ async def _complete_job(
         await _post_callback(callback_url, job_id, "completed", payload)
 
 
+# ---------------------------------------------------------------------------
+# generation_context — migration 157
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS COLUMN IS FOR
+# -----------------------
+# The article is the product; this column is provenance. It holds the FIRST
+# DRAFT plus the complete context the aggregator worked from, frozen at
+# generation, so a later editor — a human, or the SEO agent in
+# ``marketing_agents.md`` — has the whole picture and not only the finished
+# prose. A rewrite replaces ``content_md``; it must not be able to replace what
+# the article was BUILT from.
+#
+# ⚠ SERVICE-ROLE ONLY, NEVER READER-FACING. ``SELECT (generation_context)`` is
+# revoked from anon/authenticated (migration 157) because migration 153 gives
+# anon a row-level policy on ``public_blogs`` and RLS filters ROWS, not COLUMNS.
+# This object carries verbatim corpus bodies; on a public read it would be an
+# unmetered corpus feed on a public table — the same hole the access-tiers work
+# exists to close. It appears in no response model and in no ``select()`` list.
+#
+# ⚠ SNAPSHOT, NEVER A POINTER. The forensic rows this is built from
+# (``retrieval_artifacts``, ``reranker_runs``) are written best-effort and are
+# keyed to a ``workspace_items`` row, while the whole design of ``public_blogs``
+# says a published article must outlive its workspace item. So every value is
+# COPIED in. Nothing here is an id to be resolved later.
+#
+# ⚠ BEST-EFFORT. A missing or failed capture writes NULL and logs at WARNING; it
+# never fails the publish. A partial snapshot that reads as complete is worse
+# than an honest null, which is why the URA is required rather than patched
+# around: without it there is no aggregator input to record, only the article
+# that is already on the row.
+#
+# WHAT IS *NOT* IN HERE, AND WHY
+# ------------------------------
+# * ``aggregator_input.context_blocks`` — the planner-curated bundle
+#   (``AggregatorInput.context_blocks``) is rendered into the aggregator's user
+#   message and then dropped. It is not on the URA, not on the workspace item
+#   and not in any forensic table, so it is genuinely unrecoverable here.
+# * ``first_draft.gaps`` — ``AggregatorOutput.gaps`` reaches the CLI and the log
+#   renderer and nothing else; no DB column holds it.
+# Both are named in ``unavailable`` on every object rather than silently
+# omitted, so a reader can tell "not captured" from "was empty".
+
+GENERATION_CONTEXT_SCHEMA = "1"
+
+# Ceiling on the stored object, in bytes of UTF-8 JSON.
+#
+# ⚠ The scale here is NOT the one migration 157 quotes. Measured on the two live
+# articles (2026-09-05), raw and uncapped, this object is **263 kB and 330 kB** —
+# ``ura_json`` alone is 186 kB / 255 kB, plus 72 kB / 64 kB of ``reranker_runs``,
+# against a 9 kB and 12 kB article. The migration's 51 kB average / 154 kB peak
+# describes the CHAT fleet; an editorial run fans out wider (27 and 39 kept
+# results across 13 and 11 sub-queries), so both live articles are already past
+# that peak and the guard below is load-bearing rather than theoretical.
+#
+# 256 KiB is ~20x the article and leaves both live runs holding the majority of
+# their retrieval bodies (90 kB of 148 kB, and 115 kB of 123 kB) after a few
+# rungs of the ladder. It is a stop against a pathological run — the URA schema
+# documents a single 168 kB circular, and a case-heavy fan-out can double the
+# result count — not a target. Nothing reads this column on a request path (every
+# ``select()`` in ``public_blog_service`` names its columns), so the cost is
+# TOAST storage on a row nobody fetches, and ~100 articles a year is ~25 MB.
+_CONTEXT_BUDGET_BYTES = 262_144
+
+# Slack for the counters written back into ``truncation`` after the last
+# measurement, so the recorded size cannot end up a hair over the ceiling it
+# reports.
+_BUDGET_HEADROOM_BYTES = 1_024
+
+_TRUNC_MARK = " … [اقتُطع]"
+
+# Fields on a URA result that carry SOURCE BODY text. These are the largest
+# thing in the object by an order of magnitude — measured across both live
+# articles they are 137 kB of 178 kB and 191 kB of 250 kB — so they are what
+# gets cut, ahead of any structure.
+_BODY_FIELDS: tuple[str, ...] = (
+    "chunk_content",
+    "chunk_agent_content",
+    "chunk_display",
+    "chunk_context",
+    "case_content",
+    "short_summary",
+    "content",
+)
+
+# Body carriers nested one level down: resolved cross-referenced مادة bodies on
+# the regulation domain, and the case domain's ``referenced_regulations`` (which
+# stores its body under ``reference_content``).
+_NESTED_BODY_LISTS: tuple[str, ...] = ("cross_refs", "referenced_regulations")
+_NESTED_BODY_KEYS: tuple[str, ...] = ("content", "reference_content")
+
+# The identity of a result, kept when even an emptied body will not fit. An
+# editor can still see WHAT was retrieved and re-fetch it by ``ref_id``.
+_RESULT_STUB_KEYS: tuple[str, ...] = (
+    "ref_id",
+    "domain",
+    "relevance",
+    "source_type",
+    "appears_in_sub_queries",
+)
+
+_UNAVAILABLE_ALWAYS: tuple[str, ...] = (
+    "aggregator_input.context_blocks",
+    "first_draft.gaps",
+)
+
+
+def _json_bytes(value: Any) -> int:
+    """Size of ``value`` as stored: UTF-8 bytes of its JSON form.
+
+    ``ensure_ascii=False`` because that is what Postgres stores — counting the
+    escaped form would overstate an Arabic payload by ~3x and make the ceiling
+    meaningless.
+    """
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+def _as_index(value: Any) -> Optional[int]:
+    """The shared global sub-query index, or ``None`` for anything unusable."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cut(text: Any, cap: int) -> tuple[Any, bool]:
+    """Cut one string to ``cap`` chars, marked. Non-strings pass through."""
+    if not isinstance(text, str) or len(text) <= cap:
+        return text, False
+    return text[:cap].rstrip() + _TRUNC_MARK, True
+
+
+def _trim_result_bodies(result: dict, cap: int) -> bool:
+    """Cut every source body on ONE result to ``cap``. True if anything was cut."""
+    cut_any = False
+    for key in _BODY_FIELDS:
+        value, cut = _cut(result.get(key), cap)
+        if cut:
+            result[key] = value
+            cut_any = True
+    for list_key in _NESTED_BODY_LISTS:
+        for entry in result.get(list_key) or []:
+            if not isinstance(entry, dict):
+                continue
+            for body_key in _NESTED_BODY_KEYS:
+                value, cut = _cut(entry.get(body_key), cap)
+                if cut:
+                    entry[body_key] = value
+                    cut_any = True
+    return cut_any
+
+
+def _trim_results(ctx: dict, cap: int, tier: Optional[str] = None) -> bool:
+    """Cut bodies across the retrieval results, optionally one relevance tier."""
+    results = (ctx.get("aggregator_input") or {}).get("results") or []
+    cut_any = False
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if tier is not None and result.get("relevance") != tier:
+            continue
+        cut_any = _trim_result_bodies(result, cap) or cut_any
+    return cut_any
+
+
+def _drop_reranker_dropped_results(ctx: dict) -> bool:
+    """Drop the reranker's REJECTED candidates from each sub-query.
+
+    They are the one part of this object the aggregator provably never saw, so
+    they go before anything it did. ``dropped_count`` survives on the sub-query,
+    so the shape of the rejection stays legible.
+    """
+    dropped_any = False
+    for sub_query in (ctx.get("aggregator_input") or {}).get("sub_queries") or []:
+        if not isinstance(sub_query, dict):
+            continue
+        if sub_query.get("dropped_results"):
+            sub_query["dropped_results"] = []
+            dropped_any = True
+    return dropped_any
+
+
+def _stub_results(ctx: dict) -> bool:
+    """Last resort before the draft itself: keep result IDENTITY only."""
+    agg = ctx.get("aggregator_input") or {}
+    results = agg.get("results") or []
+    if not results:
+        return False
+    stubbed = [
+        {k: r.get(k) for k in _RESULT_STUB_KEYS if k in r}
+        for r in results
+        if isinstance(r, dict)
+    ]
+    if stubbed == results:
+        return False
+    agg["results"] = stubbed
+    return True
+
+
+def _trim_first_draft(ctx: dict, cap: int) -> bool:
+    """Cut the draft body. Unreachable in practice — an article is ~10 kB."""
+    draft = ctx.get("first_draft") or {}
+    value, cut = _cut(draft.get("content_md"), cap)
+    if cut:
+        draft["content_md"] = value
+    return cut
+
+
+# Applied in order, stopping the moment the object fits. Bodies first (the
+# largest thing), structure last — a context that has lost its shape cannot be
+# read at all, while one with shortened bodies still says what was retrieved,
+# for which sub-query, and why it was kept.
+_CONTEXT_TRIM_LADDER: tuple[tuple[str, Any], ...] = (
+    # Medium before high at every width: the reranker already said which tier it
+    # trusted, and the aggregator weighted them the same way.
+    ("medium_bodies@6000", lambda c: _trim_results(c, 6_000, "medium")),
+    ("high_bodies@6000", lambda c: _trim_results(c, 6_000, "high")),
+    ("medium_bodies@3000", lambda c: _trim_results(c, 3_000, "medium")),
+    ("high_bodies@3000", lambda c: _trim_results(c, 3_000, "high")),
+    ("medium_bodies@1200", lambda c: _trim_results(c, 1_200, "medium")),
+    ("high_bodies@1200", lambda c: _trim_results(c, 1_200, "high")),
+    ("reranker_dropped_results", _drop_reranker_dropped_results),
+    ("all_bodies@400", lambda c: _trim_results(c, 400)),
+    ("bodies_removed", lambda c: _trim_results(c, 0)),
+    ("results_stubbed", _stub_results),
+    ("first_draft@4000", lambda c: _trim_first_draft(c, 4_000)),
+)
+
+
+def _fit_generation_context(ctx: dict) -> dict:
+    """Bring ``ctx`` under the ceiling, recording exactly what was given up.
+
+    ``truncated`` is the flag a consumer checks; ``truncation.steps`` is the
+    audit trail, in the order applied. ``stored_bytes`` is measured before the
+    counters themselves are written back, so it is accurate to a few dozen bytes
+    — hence ``_BUDGET_HEADROOM_BYTES`` between the loop's target and the ceiling
+    the object reports.
+    """
+    ceiling = _CONTEXT_BUDGET_BYTES - _BUDGET_HEADROOM_BYTES
+    steps: list[str] = []
+    ctx["truncated"] = False
+    ctx["truncation"] = {
+        "budget_bytes": _CONTEXT_BUDGET_BYTES,
+        "raw_bytes": 0,
+        "stored_bytes": 0,
+        "within_budget": True,
+        "steps": steps,
+    }
+
+    raw = _json_bytes(ctx)
+    size = raw
+    if size > ceiling:
+        for label, operation in _CONTEXT_TRIM_LADDER:
+            if not operation(ctx):
+                continue
+            steps.append(label)
+            size = _json_bytes(ctx)
+            if size <= ceiling:
+                break
+
+    ctx["truncated"] = bool(steps)
+    ctx["truncation"]["raw_bytes"] = raw
+    ctx["truncation"]["stored_bytes"] = size
+    ctx["truncation"]["within_budget"] = size <= _CONTEXT_BUDGET_BYTES
+    return ctx
+
+
+async def _build_generation_context(
+    supabase: SupabaseClient,
+    *,
+    job: dict,
+    cfg: dict[str, Any],
+    wi_id: Optional[str],
+    wi: Optional[dict],
+    first_draft_md: str,
+    first_draft_title: Optional[str],
+    references_json: list[dict],
+) -> Optional[dict]:
+    """Freeze the first draft + the aggregator's whole input, or return ``None``.
+
+    ``None`` — an honest null — whenever the retrieval artifact is missing: no
+    workspace item (the chat-only route), no ``retrieval_artifacts`` row (the
+    best-effort forensic write did not land), or an empty ``ura_json``. In each
+    of those cases the only thing left to store is the article, which is already
+    on the row, and an object carrying it under an ``aggregator_input`` key with
+    nothing in it would read as "the aggregator had no input".
+
+    ``reranker_runs`` are the one part that IS optional: the URA alone
+    reconstructs the aggregator's input — that is precisely what
+    ``AggregatorInput.from_ura`` does, rebuilding ``sub_queries`` from
+    ``ura.sub_queries`` and filling each one's results from the two tiers. The
+    reranker rows only add the per-sub-query keep/drop forensics on top, so when
+    they are absent the object records that in ``unavailable`` and stands.
+    """
+    if not wi_id:
+        return None
+
+    artifact = await run_db(_load_retrieval_artifact, supabase, wi_id)
+    ura = dict((artifact or {}).get("ura_json") or {})
+    if not ura:
+        logger.warning(
+            "publish: no retrieval artifact for workspace item %s — "
+            "generation_context written as null",
+            wi_id,
+        )
+        _logfire.warning(
+            "editorial.generation_context_unavailable",
+            workspace_item_id=str(wi_id),
+            job_id=str(job.get("job_id") or ""),
+            reason="no_retrieval_artifact",
+        )
+        return None
+
+    ura_id = str((artifact or {}).get("ura_id") or "")
+    runs: list[dict] = []
+    if ura_id:
+        try:
+            runs = await run_db(_load_reranker_runs, supabase, ura_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "publish: reranker_runs read failed for ura %s", ura_id, exc_info=True
+            )
+            runs = []
+
+    wi_metadata: dict = (wi or {}).get("metadata") or {}
+
+    # Merge the URA's own sub-query record with the reranker forensics for the
+    # same index. Both use the GLOBAL sub_query_index scheme (reg, then
+    # compliance, then case), so the index is the join key and no other one is
+    # needed.
+    # Both index reads are defensive: a single odd row must not cost the whole
+    # snapshot. The alternative is a TypeError inside the builder, which the
+    # caller correctly turns into a NULL — losing the other twelve sub-queries
+    # over one.
+    runs_by_index: dict[int, dict] = {}
+    for run in runs:
+        index = _as_index(run.get("sub_query_index"))
+        if index is None:
+            continue
+        runs_by_index[index] = run
+
+    sub_queries: list[dict] = []
+    for entry in ura.get("sub_queries") or []:
+        if not isinstance(entry, dict):
+            continue
+        merged = dict(entry)
+        index = _as_index(merged.get("index"))
+        run = runs_by_index.get(index) if index is not None else None
+        if run:
+            merged["agent_family"] = run.get("agent_family") or ""
+            merged["kept_results"] = run.get("kept_results") or []
+            merged["dropped_results"] = run.get("dropped_results") or []
+        sub_queries.append(merged)
+
+    # One flat list, tier-tagged. The aggregator was handed both buckets; which
+    # bucket a result sat in rides on the result itself as ``relevance``, which
+    # is also what the trim ladder cuts by.
+    results: list[dict] = []
+    for bucket, tier in (("high_results", "high"), ("medium_results", "medium")):
+        for entry in ura.get(bucket) or []:
+            if not isinstance(entry, dict):
+                continue
+            result = dict(entry)
+            if not result.get("relevance"):
+                result["relevance"] = tier
+            results.append(result)
+
+    # The join key between the article's inline [n] markers and the retrieval
+    # above. Tiny, and it is what makes this object readable on its own rather
+    # than only alongside the sibling ``references_json`` column.
+    used_refs = [
+        {"n": ref.get("n"), "ref_id": ref.get("ref_id") or ""}
+        for ref in references_json or []
+        if isinstance(ref, dict)
+    ]
+
+    unavailable = list(_UNAVAILABLE_ALWAYS)
+    if not runs:
+        unavailable.append("aggregator_input.sub_queries[].kept_results")
+
+    context: dict[str, Any] = {
+        "schema_version": GENERATION_CONTEXT_SCHEMA,
+        "captured_at": _now_iso(),
+        "first_draft": {
+            # Deliberately a COPY of what v1 publishes. The v1 row does keep the
+            # original body forever, but reaching for it is a lookup, and this
+            # object is meant to answer "what was this article when it was
+            # generated" without one.
+            "title": first_draft_title or (wi or {}).get("title") or "",
+            "content_md": first_draft_md or "",
+            "confidence": wi_metadata.get("confidence"),
+            "prompt_key": wi_metadata.get("prompt_key"),
+            "model_used": wi_metadata.get("model_used"),
+            "ref_count": wi_metadata.get("ref_count"),
+            "cited_count": wi_metadata.get("cited_count"),
+            "used_refs": used_refs,
+        },
+        "aggregator_input": {
+            # The query as the retrieval pipeline saw it, NOT the job's stored
+            # question — they are written by different steps and are allowed to
+            # differ, so both are kept.
+            "original_query": ura.get("original_query") or "",
+            "question_text": job.get("question") or "",
+            "describe_query": (wi or {}).get("describe_query") or "",
+            "detail_level": wi_metadata.get("detail_level"),
+            # The §5 editorial pin. Which family ran, and whether the planner
+            # was allowed to decide, is part of why the article reads as it does.
+            "editorial": {
+                "type": cfg.get("type") or "",
+                "subtype": job.get("subtype"),
+                "mode": cfg.get("mode"),
+                "support": cfg.get("support"),
+                "editorial_voice": cfg.get("editorial_voice"),
+                "subjects": list(cfg.get("subjects") or []),
+            },
+            "ura_schema_version": ura.get("schema_version") or "",
+            "produced_by": ura.get("produced_by") or {},
+            "produced_at": ura.get("produced_at") or "",
+            "log_id": ura.get("log_id") or "",
+            "sector_filter": list(ura.get("sector_filter") or []),
+            "sub_queries": sub_queries,
+            "results": results,
+        },
+        "captured_from": {
+            "workspace_item_id": str(wi_id),
+            "ura_id": ura_id,
+            "reranker_runs": len(runs),
+        },
+        "unavailable": unavailable,
+    }
+
+    return _fit_generation_context(context)
+
+
 async def _publish_to_public_blog(
     supabase: SupabaseClient, job: dict, gen, cfg: dict[str, Any]
 ) -> BlogJobResult:
@@ -694,6 +1183,10 @@ async def _publish_to_public_blog(
 
     wi_metadata: dict = {}
     wi_title: Optional[str] = None
+    # Held past the ``if have_wi`` block: ``_build_generation_context`` reads
+    # ``describe_query`` off it, and re-reading the row would be a second trip
+    # for a value this one already returned.
+    wi_row: Optional[dict] = None
     content_md = gen.content_text or ""
     # The FROZEN citation payload — serialized ``Reference`` dicts, each already
     # carrying ``has_source`` and ``library_url``. Empty on the chat-only route
@@ -701,11 +1194,11 @@ async def _publish_to_public_blog(
     references_json: list[dict] = []
 
     if have_wi:
-        wi = await run_db(_load_workspace_item, supabase, wi_id)
-        if wi:
-            wi_metadata = wi.get("metadata") or {}
-            wi_title = wi.get("title")
-            content_md = wi.get("content_md") or ""
+        wi_row = await run_db(_load_workspace_item, supabase, wi_id)
+        if wi_row:
+            wi_metadata = wi_row.get("metadata") or {}
+            wi_title = wi_row.get("title")
+            content_md = wi_row.get("content_md") or ""
         # Cited references only (used_only=True) — the SAME call, and therefore
         # the same frozen shape, as the legacy ``blog_posts`` share snapshot
         # (``blog.share_artifact``). That is the whole point of using the
@@ -792,6 +1285,40 @@ async def _publish_to_public_blog(
         # per-job unique index simply does not apply to it (partial index).
         logger.error("publish: job row has no job_id; per-job dedupe is OFF")
 
+    # The provenance snapshot (migration 157). Best-effort in the strongest
+    # sense: the article is already written and this column is the only thing
+    # that could be lost, so EVERY failure mode — a missing forensic row, a read
+    # error, a serialization surprise — lands on a logged NULL rather than on a
+    # failed job holding a finished article hostage.
+    generation_context: Optional[dict] = None
+    try:
+        generation_context = await _build_generation_context(
+            supabase,
+            job=job,
+            cfg=cfg,
+            wi_id=wi_id,
+            wi=wi_row,
+            # The draft AS GENERATED, headline included. ``insert_public_blog``
+            # strips the H1 out of the published body (§6's H1 contract); the
+            # frozen draft keeps it, because that line is what the aggregator
+            # actually wrote.
+            first_draft_md=content_md,
+            first_draft_title=title,
+            references_json=references_json,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "publish: generation_context capture failed for job %s; writing null",
+            job_id or "?",
+            exc_info=True,
+        )
+        _logfire.warning(
+            "editorial.generation_context_failed",
+            job_id=job_id or "",
+            workspace_item_id=str(wi_id or ""),
+        )
+        generation_context = None
+
     try:
         row = await run_db(
             public_blog_service.insert_public_blog,
@@ -809,6 +1336,14 @@ async def _publish_to_public_blog(
             is_public=is_public,
             is_published=is_published,
             job_id=job_id or None,
+            # ⚠ v1 ONLY. Migration 158 carries both columns forward on every
+            # later version, so a rewrite must never re-stamp them: they
+            # describe the GENERATION, not the current prose.
+            #
+            # ``review_status`` is left at the service default (``pending``) —
+            # nobody has read this article. Nothing filters on it yet, so this
+            # changes nothing about what is visible today.
+            generation_context=generation_context,
         )
     except public_blog_service.JobAlreadyPublishedError:
         # ⚠ SUCCESS, not failure. Another attempt at this same job won the race

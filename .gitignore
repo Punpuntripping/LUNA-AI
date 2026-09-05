@@ -195,6 +195,17 @@ agents/deep_search_v4/aggregator/tests/*
 # Also pins that the flag is NOT an entitlement signal (anon sees the button and
 # gets a 402, never a 401) and that the legacy blog_posts stripper is unchanged.
 !backend/tests/test_blog_reference_reveal_flag.py
+# public_blogs.generation_context + review_status (migrations 157/158). Durable
+# because every invariant it pins is invisible at runtime: the column is written
+# by a background job, read by nobody and rendered nowhere, so a publish that
+# stops writing it, writes a half-filled object, or leaks it into a public
+# payload returns the same 200 with the same article. It pins the honest NULL
+# (the forensic rows are best-effort, so "missing" is normal and a shell that
+# reads as complete is worse), that a capture failure never fails a publish
+# holding a finished article, the size guard's ORDER (bodies before structure —
+# the live objects are 263 kB and 330 kB raw against a 9 kB article), and
+# absence from every public response model asserted against the JSON schema.
+!backend/tests/test_blog_generation_context.py
 .claude/worktrees/
 test_pdfs/
 **/scheduled_tasks.lock

@@ -194,8 +194,18 @@ published blog.
   // Either null → the PLANNER is invoked to determine it; whatever was
   //               supplied is overlaid on its output.
   // `support` MUST be nullable — `false` and "unset" are different requests.
-  "mode": "case_led",                  // case_led | reg_compliance_led | full | null
-  "support": true,                     // true | false | null
+  //
+  // TYPE → MODE (operator's rule, revised 2026-09-04):
+  //   compliance         → reg_compliance_led   (a standing obligation: the reg
+  //                        executor already spans statute + services/procedure)
+  //   judicial_research  → full                 (a موقف or مبدأ only means
+  //                        something against the نظام it construes — cases AND
+  //                        regulatory ground; `support` is ignored on `full`)
+  //   laws_explanation   → null, null           (genuinely varies per article —
+  //                        let phase 1 decide; this is the type that exercises
+  //                        the still-unproven unpinned path)
+  "mode": "full",                      // case_led | reg_compliance_led | full | null
+  "support": null,                     // true | false | null  (null on `full`)
   "editorial_voice": true,             // the §6 aggregator prompt
 
   // ── publication ────────────────────────────────────────────────

@@ -282,6 +282,13 @@ class _Rpc:
                     "is_public": cur["is_public"],
                     "is_published": cur["is_published"],
                     "view_count": 0,
+                    # migration 158 — both columns added by 157 are carried
+                    # FORWARD by the RPC, not re-stamped by the caller. Without
+                    # this the fake would let a rewrite silently reset an
+                    # approved article to `pending` and drop the generation
+                    # record from v2 on, which is the exact bug 158 exists for.
+                    "review_status": cur.get("review_status"),
+                    "generation_context": cur.get("generation_context"),
                 },
             )
             rows.append(new)
@@ -305,6 +312,11 @@ class FakeDB:
             "deleted_at": None,
             "job_id": None,
             "references_json": [],
+            # migration 157 — the column DEFAULT, mirrored. Nothing in the
+            # service filters on `review_status`, so this only ever shows up in
+            # a write assertion.
+            "review_status": "pending",
+            "generation_context": None,
             "created_at": "2026-09-01T00:00:00+00:00",
             "updated_at": "2026-09-01T00:00:00+00:00",
         },
