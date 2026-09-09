@@ -76,20 +76,37 @@ _ASCII_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _MAX_SLUG_LEN = 200
 
 # ``public_blogs.review_status`` (migration 157) — the CHECK's full domain.
-# ⚠ NOT ENFORCED ANYWHERE. No read predicate in this module filters on it, so a
-# ``pending`` row is publicly visible exactly like an ``approved`` one. Wiring
-# the gate means adding ``review_status = 'approved'`` to all FOUR visibility
-# predicates (the gallery, the subject feed, ``_fetch_current_row`` and the
-# sitemap feed) — missing one leaks a pending draft.
+# ✅ ENFORCED since migration 159. ``approved`` is a precondition of EVERY public
+# read, stated in FIVE places — four here (``list_gallery``, ``_visible_root_ids``
+# which counts for the subject vocabulary, ``list_blogs_for_subject`` and
+# ``_fetch_current_row``, the by-slug read behind both the article and its
+# metered source reveal) and one in ``library_service.sitemap_blog_urls``.
+# Missing any one of them leaks a pending draft, so they are listed here rather
+# than left to be rediscovered by grep.
+#
+# ⚠ ``get_by_job_id`` is deliberately NOT gated: it is the service-authed
+# read-back that hands a publisher the row it just wrote, which is ``pending``
+# by definition. Gating it would break the idempotent re-drive.
+#
+# A pending row therefore 404s by slug rather than serving with ``noindex``. The
+# hold has to be invisible — a resolving URL is a shareable URL, and nothing has
+# linked a never-approved article yet, so there is no link in the wild to keep
+# alive. That is the opposite of RETRACTION, which keeps serving precisely
+# because links already exist (see ``get_by_slug``).
 REVIEW_STATUSES = frozenset({"pending", "approved"})
 
 # What a freshly generated article is worth: nobody has read it yet.
-# ⚠ Migration 157 backfilled the already-live rows to ``approved`` so that
-# switching the gate on could not retroactively un-publish them. Every row
-# written from now until the gate exists lands ``pending`` and would vanish the
-# moment it is switched on — writing ``approved`` here instead would be a lie
-# about a human decision that did not happen, so the honest value is kept and
-# the re-backfill is left as an explicit step for whoever wires enforcement.
+# ⚠ Migrations 157 and 159 each backfilled the already-LIVE rows to ``approved``
+# so that switching the gate on could not retroactively un-publish them; 159 is
+# the one that ran with enforcement, and it scoped itself to rows that were
+# actually public (``is_current AND is_public AND is_published``) precisely so a
+# deliberately held draft would not be auto-approved by the deploy that closed
+# the gate. Keeping the honest ``pending`` here is what makes the hold real:
+# writing ``approved`` would be a lie about a human decision that did not happen.
+#
+# ``append_public_blog_version()`` (migration 155) carries ``cur.review_status``
+# forward, so an SEO rewrite of an approved article stays approved and does not
+# fall off the site on every revision.
 DEFAULT_REVIEW_STATUS = "pending"
 
 # Bound on a full scan of the join table. public_blog_subjects is one row per
@@ -625,12 +642,13 @@ def list_gallery(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """The /blog gallery feed: current, public, published, not deleted; newest
-    first. Card dicts (never the full body — the snippet stands in for it).
+    """The /blog gallery feed: current, public, published, APPROVED, not
+    deleted; newest first. Card dicts (never the full body — the snippet stands
+    in for it).
 
     Every predicate is stated explicitly because the service-role client
-    bypasses RLS. Dropping any one of them leaks a draft or a retracted article
-    into the gallery AND (via plan §7) back into the sitemap.
+    bypasses RLS. Dropping any one of them leaks a draft, an unreviewed article
+    or a retracted one into the gallery AND (via plan §7) back into the sitemap.
     """
     limit = max(1, min(int(limit or 50), 100))
     offset = max(0, int(offset or 0))
@@ -643,6 +661,7 @@ def list_gallery(
             .eq("is_public", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
+            .eq("review_status", "approved")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
             .execute()
@@ -664,6 +683,12 @@ def _visible_root_ids(supabase: SupabaseClient) -> set[str]:
     The counting half of the subject vocabulary. Deliberately NOT a count(*)
     per subject: PostgREST has no group-by, and one bounded scan of two small
     tables beats N round-trips over a ~100-row vocabulary.
+
+    ⚠ Its predicate must stay IDENTICAL to ``list_gallery``'s, review gate
+    included. This is the count a subject card shows and the ``>= 1`` filter
+    that decides whether a subject reaches the hub and the sitemap at all; if it
+    counted pending rows the hub would advertise a subject whose listing then
+    renders empty.
     """
     try:
         result = (
@@ -673,6 +698,7 @@ def _visible_root_ids(supabase: SupabaseClient) -> set[str]:
             .eq("is_public", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
+            .eq("review_status", "approved")
             .limit(_JOIN_SCAN_CAP)
             .execute()
         )
@@ -823,6 +849,7 @@ def list_blogs_for_subject(
             .eq("is_public", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
+            .eq("review_status", "approved")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
             .execute()
@@ -845,10 +872,17 @@ def _fetch_current_row(
 ) -> Optional[dict[str, Any]]:
     """THE by-slug read predicate, stated once, for every reader of this wing.
 
-    ``is_current`` + ``is_published`` + not deleted, and deliberately **no
-    ``is_public`` filter** — see ``get_by_slug``. Every caller that addresses a
-    blog by its slug goes through here, so the article and its metered source
-    reveal can never drift into disagreeing about which rows exist.
+    ``is_current`` + ``is_published`` + ``review_status='approved'`` + not
+    deleted, and deliberately **no ``is_public`` filter** — see ``get_by_slug``.
+    Every caller that addresses a blog by its slug goes through here, so the
+    article and its metered source reveal can never drift into disagreeing about
+    which rows exist.
+
+    ⚠ The two omissions are opposites and both deliberate. ``is_public`` is left
+    out so a RETRACTED article keeps resolving for links already in the wild.
+    ``review_status`` is filtered IN so a PENDING one never resolves at all:
+    nothing has linked it yet, and a URL that resolves during the editorial hold
+    is a URL that can be shared past it.
 
     Returns the row, or ``None`` when nothing resolves. ``fields`` is the
     PostgREST projection the caller needs; nothing else varies.
@@ -865,6 +899,7 @@ def _fetch_current_row(
             .eq("is_current", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
+            .eq("review_status", "approved")
             .limit(1)
             .execute()
         )

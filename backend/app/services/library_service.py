@@ -348,10 +348,16 @@ def sitemap_blog_urls(
 
     The predicate is the gallery's, restated whole because the service-role
     client bypasses RLS: ``is_current AND is_public AND is_published AND
-    deleted_at IS NULL``. Dropping any one of them submits a draft or a
-    RETRACTED article to Google — retraction (plan D11) flips ``is_public`` and
-    nothing else, precisely so the URL keeps resolving while it leaves every
-    index.
+    review_status = 'approved' AND deleted_at IS NULL``. Dropping any one of
+    them submits a draft or a RETRACTED article to Google — retraction (plan
+    D11) flips ``is_public`` and nothing else, precisely so the URL keeps
+    resolving while it leaves every index.
+
+    ``review_status`` joined the predicate with migration 159. It is the FIFTH
+    and last place the review gate is stated; the other four live in
+    ``public_blog_service`` next to a comment that names them all. A pending
+    row 404s by slug, so listing one here would submit a URL that answers 404 —
+    the same self-contradiction as submitting a ``noindex`` page.
 
     ``lastmod`` = the CURRENT version's ``updated_at`` (falling back to
     ``created_at``). An SEO rewrite appends a version and therefore bumps it;
@@ -378,6 +384,7 @@ def sitemap_blog_urls(
             .eq("is_public", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
+            .eq("review_status", "approved")
             .order("created_at", desc=True)
             .range(offset, offset + page_size - 1)
             .execute()

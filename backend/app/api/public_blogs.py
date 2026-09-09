@@ -156,10 +156,16 @@ async def get_public_blog(
 ):
     """One blog by its Arabic slug — the CURRENT version.
 
-    404 (Arabic) when nothing resolves, i.e. no current, published, non-deleted
-    row holds that slug. A RETRACTED blog (``is_public=false``) DOES resolve:
-    retraction delists it from the gallery and the sitemap, and the returned
-    ``is_public=false`` is what makes the page ``noindex`` (plan §5/§7).
+    404 (Arabic) when nothing resolves, i.e. no current, published, APPROVED,
+    non-deleted row holds that slug.
+
+    The two edge cases pull opposite ways, both on purpose. A RETRACTED blog
+    (``is_public=false``) DOES resolve: retraction delists it from the gallery
+    and the sitemap, and the returned ``is_public=false`` is what makes the page
+    ``noindex`` (plan §5/§7) — links already in the wild must keep working. A
+    PENDING blog (``review_status='pending'``, migration 159) does NOT resolve:
+    it 404s like an unknown slug, because the editorial hold is only real if the
+    URL is unreachable while it lasts, and nothing has linked it yet.
 
     ⚠ Arabic slugs arrive percent-encoded from Next's dynamic segment; Starlette
     decodes the path param once before it gets here, so ``slug`` is already the
