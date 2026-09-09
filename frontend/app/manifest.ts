@@ -47,9 +47,9 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "any",
       },
       {
-        // Android crops icons to a circle/squircle. This variant keeps the
-        // lavender inside the 80% safe zone on an opaque canvas so the flower
-        // tips survive the mask.
+        // Android crops icons to a circle/squircle. This variant sits the
+        // «ريحان» lockup inside the 80% safe zone on the opaque brand ground
+        // so neither the wordmark nor the leaf gets clipped by the mask.
         src: "/icon-maskable-512.png",
         sizes: "512x512",
         type: "image/png",
