@@ -45,7 +45,7 @@ export const SUPPORT_WHATSAPP_HREF = "https://wa.me/966552517086";
 // ---------------------------------------------------------------------------
 
 export const HERO = {
-  badge: "منصة سعودية · إطلاق تجريبي",
+  badge: "منصة سعودية",
   // Split so the differentiator clause renders in the brand color.
   titleLead: "من سؤالك إلى تقرير قانوني كامل،",
   titleEmphasis: "موثّق بمصادره الرسمية",
