@@ -3,6 +3,7 @@ import { LegalLinksFooter } from "@/components/legal/LegalLinksFooter";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { SignupStartedTracker } from "@/components/analytics/SignupStartedTracker";
 import { AskRayhanLoginIntent } from "@/components/auth/AskRayhanLoginIntent";
+import { BrandLockup } from "@/components/brand/BrandLockup";
 
 export default function LoginPage() {
   return (
@@ -28,9 +29,11 @@ export default function LoginPage() {
       <div className="w-full max-w-md space-y-8">
         {/* Header */}
         <div className="text-center space-y-2">
-          {/* Rayhan Logo */}
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-primary-foreground text-2xl font-bold">
-            ريحان
+          {/* Rayhan logo. Shown large here, which is the size the outline leaf
+              was drawn for — it reads as a leaf rather than the faint strokes
+              it becomes in the 40px header slot. */}
+          <div className="flex justify-center pb-2">
+            <BrandLockup className="h-16" priority />
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
             مرحباً بك في ريحان

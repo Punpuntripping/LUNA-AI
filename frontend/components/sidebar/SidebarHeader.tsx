@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { BrandLockup } from "@/components/brand/BrandLockup";
 import { Button } from "@/components/ui/button";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -39,14 +40,13 @@ export function SidebarHeader({ expanded }: SidebarHeaderProps = {}) {
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-semibold">
             {initial}
           </div>
-          <div className="flex flex-col min-w-0 leading-tight">
-            <span className="text-sm font-semibold text-sidebar-foreground truncate">
-              ريحان
-            </span>
-            <span className="text-xs text-muted-foreground truncate">
-              القانونية
-            </span>
-          </div>
+          {/* The lockup replaces the «ريحان» / «القانونية» text pair outright.
+              «القانونية» was a subtitle to a WORDMARK MADE OF TEXT; under an
+              image wordmark that already carries its own leaf it just crowds a
+              narrow rail, and the site header names the brand with the lockup
+              alone. `min-w-0` keeps it shrinking with the rail rather than
+              pushing the collapse button off the edge. */}
+          <BrandLockup className="h-7 min-w-0" />
         </div>
       )}
 

@@ -6,6 +6,7 @@ import { useCreateConversation } from "@/hooks/use-conversations";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { useChatStore } from "@/stores/chat-store";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { BrandLockup } from "@/components/brand/BrandLockup";
 
 // eslint-disable-next-line import/no-default-export
 export default function ChatEmptyPage() {
@@ -79,9 +80,10 @@ export default function ChatEmptyPage() {
   return (
     <div className="flex flex-1 flex-col h-full">
       <div className="flex flex-1 flex-col items-center justify-center px-4 text-center">
-        <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl bg-primary text-primary-foreground text-3xl font-bold mb-6">
-          ريحان
-        </div>
+        {/* Shown large, so the outline leaf resolves properly here — same
+            reason the login page gets the lockup at h-16 rather than the
+            header's h-10. */}
+        <BrandLockup className="h-20 mb-6" />
 
         <h1 className="text-2xl font-bold text-foreground mb-2">
           مرحبا بك في ريحان

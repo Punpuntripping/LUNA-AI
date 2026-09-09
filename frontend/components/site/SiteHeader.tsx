@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BrandLockup } from "@/components/brand/BrandLockup";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { HeaderAuthActions } from "@/components/site/HeaderAuthActions";
 import { SiteNav } from "@/components/site/SiteNav";
@@ -22,14 +23,17 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-30 border-b border-border/60 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4">
-        {/* Brand → public front door (AuthGuard bounces authed users onward). */}
-        <Link href="/" className="flex shrink-0 items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-sm font-bold text-primary-foreground">
-            ريحان
-          </span>
-          <span className="text-base font-bold tracking-tight text-foreground">
-            ريحان
-          </span>
+        {/* Brand → public front door (AuthGuard bounces authed users onward).
+            The lockup carries the «ريحان» wordmark itself, so the text label
+            that used to sit beside the green box is gone — it would render the
+            brand name twice. `priority` because this is above the fold on every
+            public page. */}
+        <Link
+          href="/"
+          className="flex shrink-0 items-center"
+          aria-label="ريحان — الصفحة الرئيسية"
+        >
+          <BrandLockup className="h-10" priority />
         </Link>
 
         {/* The nav travels WITH the action cluster rather than hugging the brand,
