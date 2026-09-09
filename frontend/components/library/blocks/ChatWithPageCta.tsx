@@ -23,13 +23,16 @@ import { isDemoConversation } from "@/hooks/use-demo-conversation";
 import { useAuthStore } from "@/stores/auth-store";
 import { useChatStore } from "@/stores/chat-store";
 import { useSidebarStore } from "@/stores/sidebar-store";
-import { setPendingIntent } from "@/lib/post-login-intent";
+import {
+  LIBRARY_ITEM_PAGE_TYPES,
+  setPendingIntent,
+} from "@/lib/post-login-intent";
 import type { LibraryItemPageType } from "@/types";
 import type { LibraryPageType } from "@/types/library";
 
 /**
- * The page types that can actually be carried into a conversation
- * (`.claude/plans/simple_search_family.md` §8, §12a C3).
+ * Can this page be carried into a conversation
+ * (`.claude/plans/simple_search_family.md` §8, §12a C3)?
  *
  * `fetch_grounding` has no grounder for `circular` / `form` / `calculator` /
  * `topic`, and there is no `/services` route at all, so the backend answers
@@ -37,20 +40,15 @@ import type { LibraryPageType } from "@/types/library";
  * CTA: on those page types this component degrades to the plain «افتح محادثة
  * مع ريحان» link it replaced, which still works — it just carries nothing.
  *
- * The `is` predicate is what pins `LibraryItemPageType ⊆ LibraryPageType` at
- * compile time: widen either union out of step and this stops type-checking.
+ * The list itself lives in `@/lib/post-login-intent` — the anon return path
+ * validates against the same set, and this used to be a second copy of it. The
+ * `is` predicate is what pins `LibraryItemPageType ⊆ LibraryPageType` at compile
+ * time: widen either union out of step and this stops type-checking.
  */
-const CARRYABLE_PAGE_TYPES: readonly LibraryItemPageType[] = [
-  "regulation",
-  "article",
-  "judgment",
-  "blog",
-];
-
 export function isCarryablePageType(
   pageType: LibraryPageType,
 ): pageType is LibraryItemPageType {
-  return (CARRYABLE_PAGE_TYPES as readonly string[]).includes(pageType);
+  return (LIBRARY_ITEM_PAGE_TYPES as readonly string[]).includes(pageType);
 }
 
 /** «هذا النظام» / «هذه المادة» / «هذا الحكم» — the object, named. */
@@ -59,6 +57,7 @@ const DEFINITE_PAGE_NOUN: Record<LibraryItemPageType, string> = {
   article: "هذه المادة",
   judgment: "هذا الحكم",
   blog: "هذه المدونة",
+  compliance: "هذا الدليل",
 };
 
 interface ChatWithPageCtaProps {

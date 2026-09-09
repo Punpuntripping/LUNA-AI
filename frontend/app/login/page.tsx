@@ -2,6 +2,7 @@ import { LoginForm } from "@/components/auth/LoginForm";
 import { LegalLinksFooter } from "@/components/legal/LegalLinksFooter";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { SignupStartedTracker } from "@/components/analytics/SignupStartedTracker";
+import { AskRayhanLoginIntent } from "@/components/auth/AskRayhanLoginIntent";
 
 export default function LoginPage() {
   return (
@@ -12,6 +13,12 @@ export default function LoginPage() {
           reading the query string forces the whole route into client rendering
           (see the useSearchParams note in LoginForm). Renders no DOM. */}
       <SignupStartedTracker />
+
+      {/* «اسأل ريحان» on a public library page sends an anon reader here with
+          the page in the querystring. This turns that into the post-login carry
+          intent AuthGuard already consumes, so signing in lands them in a chat
+          holding the page. Another client LEAF, same reason. Renders no DOM. */}
+      <AskRayhanLoginIntent />
 
       {/* Theme toggle — top-start corner (top-right in RTL) */}
       <div className="absolute top-4 start-4">
@@ -31,12 +38,6 @@ export default function LoginPage() {
           <p className="text-muted-foreground">
             المساعد القانوني الذكي
           </p>
-          <div className="flex justify-center pt-1">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3.5 py-1 text-xs font-semibold text-primary-foreground shadow-sm">
-              <span className="h-1.5 w-1.5 rounded-full bg-primary-foreground/80" />
-              إطلاق تجريبي
-            </span>
-          </div>
         </div>
 
         {/* Login Form */}

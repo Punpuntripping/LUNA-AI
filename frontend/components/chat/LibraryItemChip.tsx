@@ -1,7 +1,15 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
-import { BookText, Gavel, Loader2, Scale, ScrollText, X } from "lucide-react";
+import {
+  BookText,
+  ClipboardList,
+  Gavel,
+  Loader2,
+  Scale,
+  ScrollText,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { LibraryItemPageType, PendingLibraryItem } from "@/types";
 
@@ -25,6 +33,10 @@ const PAGE_TYPE_META: Record<
   article: { Icon: ScrollText, label: "مادة" },
   judgment: { Icon: Gavel, label: "حكم" },
   blog: { Icon: BookText, label: "مدونة" },
+  // `ClipboardList` — the same step-list glyph `LibrarySearchResultRow` gives a
+  // خدمة, because a service guide IS a numbered walkthrough. One glyph per wing,
+  // wherever the wing shows up.
+  compliance: { Icon: ClipboardList, label: "دليل خدمة" },
 };
 
 /**

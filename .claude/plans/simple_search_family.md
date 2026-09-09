@@ -939,15 +939,46 @@ is **uncapped** — the 15-item cap counts only `agent_search | agent_writing | 
 **Anon return path** already exists: `post-login-intent.ts` + `AuthGuard.tsx:152-157`
 (`chat_with_blog`) does create-convo → import → navigate. Add a fourth intent variant.
 
+> **2026-09-07 — the half of it that was never wired.** The intent variant only ever fired
+> from `ChatWithPageCta`'s own button. Every OTHER «اسأل ريحان» affordance sends an anon
+> reader to `/login?intent=ask_rayhan&page_type=…&page_id=…&page_title=…` — the popup's
+> «سجّل وجرّب اسأل ريحان» stub (**what every anon reader gets while `ANON_ASK_ENABLED` is
+> off, which is the live state**) and the مادة page's inline card — and **nothing anywhere
+> read that querystring.** They signed in and landed on an empty /chat.
+>
+> `AskRayhanLoginIntent` (a `/login` client leaf, the `SignupStartedTracker` idiom) converts
+> that URL into the SAME `chat_with_library_item` intent, so `AuthGuard` stays the one
+> consumer. It yields to an already-stored intent — a teaser's `claim_anon_answer` is the
+> stronger claim. The two popup walls additionally stash the reader's TYPED QUESTION, which
+> `AuthGuard` puts in `pendingComposerDraft`; it travels in sessionStorage and **never in the
+> URL** (a legal question is what «وضع السرية» exists to protect, and query strings reach CDN
+> logs, history and `Referer`).
+>
+> Trap found while wiring it: the intent bounces through a transient `/chat` (the guard's
+> «authenticated user on /login → /chat» redirect wins the race against the async
+> create-conversation) and `/chat`'s composer drained `pendingComposerDraft` on mount, eating
+> the question. `ChatInput`'s drain is now guarded on `conversationId` — every writer of that
+> slot writes it from a conversation-less composer, so draining it without one is always
+> wrong.
+
 **New-chat carry** clones `pendingBlogTokens` (`chat-store.ts:208-209`, `:432-433`,
 `:581-599`) plus the two drain effects (`ChatInput.tsx:444-450`, `:379-385`) and the
 `onError` clears (`app/chat/page.tsx:62-67`). Mind the documented ordering constraint at
 `ChatInput.tsx:440-443`.
 
-**Coverage today: regulation · article · judgment · blog.** `fetch_grounding` returns `""`
-for `circular`, `form`, `calculator`, `topic`, and there is **no `/services` route** and no
-`service` member of `LibraryPageType`. Circulars and services reach simple_search via cases
-A and C only. Building those grounders is **deferred**, not forgotten.
+**Coverage today: regulation · article · judgment · blog · compliance.** `fetch_grounding`
+returns `""` for `circular`, `form`, `calculator`, `topic`, and there is **no `/services`
+route** and no `service` member of `LibraryPageType`. Circulars reach simple_search via cases
+A and C only. Building that grounder is **deferred**, not forgotten.
+
+`compliance` joined on **2026-09-07** and is the one wing whose carry has no gate behind it
+(/compliance is published whole and ungated). Its grounder delegates to
+`agents.simple_search.unfold.render_service_guide`, so the screenshots reach the model as
+`service_guide_images.description` at each hole's own position rather than as bare
+`{guide_ref}_{n}` tokens — the ONE renderer, not a fourth copy of the hole regex. Its bridge
+hops a column the other types do not: /compliance is addressed by a `service_guides` slug
+while simple_search L6 opens a **`services`** row, so the identity is
+`service_guides.service_id`, never the guide uuid.
 
 **Zero backend plumbing on the send payload.** `SendMessageRequest`
 (`backend/app/models/requests.py:166-174`) has exactly one non-text field, `attachment_ids`,
@@ -1148,7 +1179,8 @@ async def manual_search_core(supabase, query: str,
 
 ```
 POST /api/v1/conversations/{conversation_id}/library-items
-body  { "page_type": "regulation|article|judgment|blog", "page_id": "<slug>" }
+body  { "page_type": "regulation|article|judgment|blog|compliance",
+        "page_id": "<slug>" }
 200   { "item": { "item_id": "...", "title": "...", "kind": "references" } }
 ```
 

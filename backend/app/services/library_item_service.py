@@ -60,10 +60,18 @@ Two invariants this module owes the rest of the system:
     resolution feeds ``metadata.simple_search_object``, so the label on the card
     and the object the family opens are the same row by construction.
 
-Coverage is FOUR page types — ``regulation | article | judgment | blog``.
-``fetch_grounding`` has no grounder for ``circular`` / ``form`` / ``calculator`` /
-``topic`` (nor, despite its docstring, for ``service``), so those get a clean
-Arabic 400 rather than an empty item. See ``SUPPORTED_PAGE_TYPES``.
+Coverage is FIVE page types — ``regulation | article | judgment | blog |
+compliance``. ``fetch_grounding`` has no grounder for ``circular`` / ``form`` /
+``calculator`` / ``topic``, so those get a clean Arabic 400 rather than an empty
+item. See ``SUPPORTED_PAGE_TYPES``.
+
+``compliance`` (a /compliance «الدليل الشامل» service guide) joined on
+2026-09-07, and it is the type that made the anon return path real on that wing:
+an anonymous reader who hits «اسأل ريحان» there now signs in and lands in a chat
+holding the guide, instead of an empty /chat. It is the only carried type with no
+gate anywhere behind it — the whole wing is published open — and it bridges to
+``simple_search``'s L6 ``service`` level through ``service_guides.service_id``,
+so the family opens the same خدمة the reader was looking at.
 
 Sync throughout (service-role client) — call via ``run_db``. Every user-facing
 message is Arabic. The service-role client bypasses RLS, so the explicit
@@ -96,6 +104,10 @@ from backend.app.services.blog_service import make_snippet
 # published rulings, the tail made 10,000/10,000 WI titles differ from their own
 # page. See ``test_reference_library_links`` — the المراجع panel settled the same
 # question the same way.
+# The «بالصور» prefix rewrite — the OTHER half of a guide's rendered H1. Pure,
+# shared, and mirrored from ``frontend/lib/library/guide.ts`` so the carried
+# card's label is the string the page shows rather than the raw corpus title.
+from shared.library.guide_titles import guide_display_title
 from shared.seo.judgment_naming import judgment_subject
 
 logger = logging.getLogger(__name__)
@@ -109,7 +121,9 @@ logger = logging.getLogger(__name__)
 # ``LibraryPageType`` — mirrored there as ``LibraryItemPageType``
 # (``frontend/types/index.ts``), whose type predicate keeps the UI from ever
 # offering the button on a type this tuple does not list.
-SUPPORTED_PAGE_TYPES: tuple[str, ...] = ("regulation", "article", "judgment", "blog")
+SUPPORTED_PAGE_TYPES: tuple[str, ...] = (
+    "regulation", "article", "judgment", "blog", "compliance",
+)
 
 # Arabic label per carried type — used for the WI's content frame so the agent
 # (and the workspace panel) can tell a نظام from a حكم at a glance.
@@ -118,6 +132,7 @@ _PAGE_TYPE_LABEL_AR: dict[str, str] = {
     "article": "مادة",
     "judgment": "حكم قضائي",
     "blog": "مدونة",
+    "compliance": "دليل خدمة",
 }
 
 # Public route shape per type, used to record where the object came from.
@@ -129,6 +144,7 @@ _PUBLIC_PREFIX: dict[str, str] = {
     "article": "/regulations",
     "judgment": "/judgments",
     "blog": "/blog",
+    "compliance": "/compliance",
 }
 
 # Same cap blog imports use for a derived item title.
@@ -138,8 +154,12 @@ _ITEM_TITLE_MAX = 150
 _ELLIPSIS = "…"
 # The page types that HAVE a simple_search entry level. ``blog`` is deliberately
 # absent (there is no level for it), so a blog carry's missing identity is not a
-# downgrade and must not log like one.
-_BRIDGEABLE_PAGE_TYPES: frozenset[str] = frozenset({"regulation", "article", "judgment"})
+# downgrade and must not log like one. ``compliance`` IS here: it bridges to L6
+# ``service`` (``agents/simple_search/models.py``), so a guide that fails to
+# resolve is a real degradation and says so.
+_BRIDGEABLE_PAGE_TYPES: frozenset[str] = frozenset(
+    {"regulation", "article", "judgment", "compliance"}
+)
 # Pre-filled agent-facing summary length — matches ``create_blog_item``.
 _SUMMARY_CHARS = 400
 # The placeholder a brand-new conversation is born with. Only ever replaced,
@@ -500,6 +520,50 @@ def _title_blog(supabase: SupabaseClient, page_id: str) -> str:
     return (row.get("title") or "").strip() or (row.get("question_text") or "").strip()
 
 
+def _title_compliance(supabase: SupabaseClient, page_id: str) -> str:
+    """The /compliance/{slug} page H1 — ``guideDisplayTitle(title, image_count)``.
+
+    TWO rewrites live at opposite ends of a guide title and BOTH have to be here,
+    or the card names a page that does not exist:
+
+      * the TAIL is composed at build time (migration 146: «… في السعودية» →
+        «… في بوابة ناجز»), and ``library_compliance_v.title`` already carries
+        that form — which is why this reads the VIEW and never
+        ``service_guides.title``. The raw column still says «في السعودية» on 666
+        guides.
+      * the HEAD is rewritten at render time by ``guide_display_title``:
+        «الدليل الشامل:» → «الدليل الشامل بالصور:», but only when the guide
+        actually ships screenshots. Ten guides are legitimately text-only.
+
+    ``image_count`` comes from the same row the page reads, so a guide whose
+    screenshots were pulled loses its «بالصور» here on the same deploy it loses
+    them there.
+    """
+    content_id = _resolve_content_id(supabase, "compliance", page_id)
+    if not content_id:
+        return ""
+    try:
+        res = (
+            supabase.table("library_compliance_v")
+            .select("title, image_count")
+            .eq("id", str(content_id))
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("library carry: compliance title lookup failed (%s): %s", page_id, e)
+        return ""
+    if not rows:
+        return ""
+    row = rows[0]
+    try:
+        count = int(row.get("image_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    return guide_display_title(row.get("title") or "", count).strip()
+
+
 def resolve_title(supabase: SupabaseClient, page_type: str, page_id: str) -> str:
     """Human title for the carried page — the label the chip and the WI card show.
 
@@ -515,6 +579,7 @@ def resolve_title(supabase: SupabaseClient, page_type: str, page_id: str) -> str
         "article": _title_article,
         "judgment": _title_judgment,
         "blog": _title_blog,
+        "compliance": _title_compliance,
     }.get(page_type)
 
     title = ""
@@ -758,6 +823,35 @@ def resolve_page_identity(
             # No simple_search level for a post — but the token IS the identity,
             # so the dedup key is exact. Hex, hence casefold-safe.
             return PageIdentity(f"blog:{page_id.casefold()}", None)
+
+        if page_type == "compliance":
+            # /compliance is the GUIDE wing, but simple_search's L6 opens a
+            # SERVICE (``services.id``) and renders its guide underneath
+            # (``unfold.render_service``). So the bridge hops one column:
+            # slug → ``service_guides.id`` → ``service_id``. Handing the guide id
+            # over as ``service_id`` would resolve to nothing — they are
+            # different tables with different uuids.
+            guide_id = _resolve_content_id(supabase, "compliance", page_id)
+            if not guide_id:
+                return PageIdentity(_fallback_key(page_type, page_id), None)
+            res = (
+                supabase.table("service_guides")
+                .select("service_id")
+                .eq("id", str(guide_id))
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(res, "data", None) or []
+            service_id = str((rows[0] if rows else {}).get("service_id") or "")
+            if not service_id:
+                # A published guide with no service row to open. Still a stable
+                # DEDUP identity — the guide uuid names exactly one page — but
+                # nothing for the family to unfold.
+                return PageIdentity(f"compliance:{guide_id}", None)
+            return PageIdentity(
+                f"service:{service_id}",
+                {"level": "service", "service_id": service_id},
+            )
     except Exception as exc:  # noqa: BLE001 — identity is an optimisation
         logger.warning(
             "library_item: page identity unresolved for %s/%s: %s",
@@ -787,7 +881,8 @@ def build_simple_search_object(
 
     Returns a ``ResolvedObject``-shaped dict for
     ``metadata.simple_search_object``, or ``None``. ``blog`` has no
-    simple_search level and always returns None.
+    simple_search level and always returns None; ``compliance`` bridges to L6
+    ``service`` via ``service_guides.service_id``.
     """
     obj = resolve_page_identity(supabase, page_type, page_id).obj
     return {**obj, "title": title} if obj else None
@@ -841,8 +936,8 @@ def create_library_item(
             detail="معرف الصفحة غير صالح",
         )
     if page_type not in SUPPORTED_PAGE_TYPES:
-        # circular / form / calculator / topic / service have no grounder — an
-        # empty item is worse than a refusal, so refuse (§8 «Coverage today»).
+        # circular / form / calculator / topic have no grounder — an empty item
+        # is worse than a refusal, so refuse (§8 «Coverage today»).
         raise LunaHTTPException(
             status_code=400,
             code=ErrorCode.VALIDATION_ERROR,

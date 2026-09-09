@@ -155,11 +155,12 @@ export function AuthGuard({ children }: Props) {
   //   open_form_in_writer → copy the form into قوالبي, open the writer.
   //   chat_with_library_item
   //                       → create a conversation, stash the library page in the
-  //                         chat-store carry slot, land in chat. The POST itself
-  //                         happens in the destination ChatInput's drain effect so
-  //                         the page arrives as a composer CHIP — which is what
-  //                         makes it ride `attachment_ids` on the first message
-  //                         (simple_search_family §8).
+  //                         chat-store carry slot (plus any question the reader
+  //                         had already typed into «اسأل ريحان»), land in chat.
+  //                         The POST itself happens in the destination ChatInput's
+  //                         drain effect so the page arrives as a composer CHIP —
+  //                         which is what makes it ride `attachment_ids` on the
+  //                         first message (simple_search_family §8).
   useEffect(() => {
     if (isLoading || !isAuthenticated) return;
     const intent = consumePendingIntent();
@@ -192,6 +193,13 @@ export function AuthGuard({ children }: Props) {
               title: intent.title,
             },
           ]);
+          // The question they had already typed into «اسأل ريحان» before the
+          // signup wall, drained by the destination ChatInput on mount. Set only
+          // when there is one — the slot is otherwise the new-chat handoff's.
+          const draft = (intent.question ?? "").trim();
+          if (draft) {
+            useChatStore.getState().setPendingComposerDraft(draft);
+          }
           useSidebarStore.getState().setSelectedConversation(newId);
           router.replace(`/chat/${newId}`);
         }

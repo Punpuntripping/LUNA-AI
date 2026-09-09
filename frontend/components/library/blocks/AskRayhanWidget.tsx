@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Send, Sparkles, X, Lock, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -49,9 +48,11 @@ interface QuestionRef {
  *
  *   Anon:  ask one question grounded in THIS page → teaser prefix + decorative
  *          bars + «سجّل مجاناً لعرض الإجابة كاملة» (stashes a claim intent → login).
- *          503 (kill switch) shows the login stub; 429 (session cap) shows a CTA.
- *          A refresh re-shows the teaser from localStorage without spending a
- *          new question.
+ *          503 (kill switch) shows the login stub; 429 (session cap) shows a CTA
+ *          — and BOTH now stash the page + the typed question as a carry intent
+ *          (`goSignup`), so signing in lands the reader in a chat that holds
+ *          them, not on an empty /chat. A refresh re-shows the teaser from
+ *          localStorage without spending a new question.
  *   Authed: «تحدّث مع ريحان عن هذه الصفحة» → `ChatWithPageCta`, which CARRIES the
  *          page into the conversation (simple_search_family §8 — it used to be a
  *          bare `/chat` link that lost the object at the door). After a
@@ -161,6 +162,35 @@ export function AskRayhanWidget({
     }
   }
 
+  /**
+   * The two signup walls — «الخدمة غير متاحة» (the ANON_ASK_ENABLED kill switch)
+   * and «سؤالك المجاني مستخدم» — send the reader to /login. Before this, that
+   * was all they did: `loginHref` carries the page in its querystring and
+   * NOTHING read it, so the reader signed in and landed on an empty /chat
+   * holding neither the page they were reading nor the question they had typed.
+   *
+   * So both walls now stash the same `chat_with_library_item` intent the authed
+   * CTA uses. `AskRayhanLoginIntent` would rebuild a page-only version of this
+   * from `loginHref` anyway (it has to — the مادة page's inline CTA is a
+   * server-rendered link with no handler to run); doing it here is what adds the
+   * DRAFT, which must not travel in a URL.
+   *
+   * An uncarryable wing stashes nothing and just goes to /login, exactly as
+   * before — an intent the backend would refuse is worse than none.
+   */
+  function goSignup(): void {
+    if (isCarryablePageType(pageType)) {
+      setPendingIntent({
+        type: "chat_with_library_item",
+        page_type: pageType,
+        page_id: pageId,
+        title: pageTitle || null,
+        question: trimmed || null,
+      });
+    }
+    router.push(loginHref);
+  }
+
   function goClaim(): void {
     if (!questionRef) return;
     setPendingIntent({
@@ -252,9 +282,9 @@ export function AskRayhanWidget({
               loginHref={loginHref}
             />
           ) : errorKind === "disabled" ? (
-            <DisabledStub loginHref={loginHref} />
+            <DisabledStub onSignup={goSignup} />
           ) : errorKind === "rate_limited" ? (
-            <RateLimited onSignup={() => router.push("/login")} />
+            <RateLimited onSignup={goSignup} />
           ) : teaserPrefix !== null ? (
             <Teaser prefix={teaserPrefix} onClaim={goClaim} />
           ) : (
@@ -463,7 +493,7 @@ function AuthedCta({ pageType, pageId, pageTitle, loginHref }: PageContext) {
   );
 }
 
-function DisabledStub({ loginHref }: { loginHref: string }) {
+function DisabledStub({ onSignup }: { onSignup: () => void }) {
   return (
     <div className="space-y-3 text-center">
       <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -473,12 +503,13 @@ function DisabledStub({ loginHref }: { loginHref: string }) {
       <p className="mx-auto max-w-xs text-xs leading-relaxed text-muted-foreground">
         سجّل مجاناً وجرّب طرح أسئلتك القانونية على ريحان مع إجابات موثّقة.
       </p>
-      <Link
-        href={loginHref}
+      <button
+        type="button"
+        onClick={onSignup}
         className={cn(buttonVariants({ size: "default" }), "w-full")}
       >
         سجّل وجرّب اسأل ريحان
-      </Link>
+      </button>
     </div>
   );
 }

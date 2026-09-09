@@ -456,6 +456,45 @@ def brand_already_in_title(channel: str, title: Optional[str]) -> bool:
     return _fold(brand) in _fold(title or "")
 
 
+# ─── The «الدليل الشامل» prefix ───────────────────────────────────────────────
+# The OTHER end of the title. `compose_guide_title` rewrites the tail; this pair
+# rewrites the head — and the two must stay ignorant of each other, which is
+# exactly why the prefix is never normalised here (see that function's docstring).
+#
+# Mirrored, character for character, from `frontend/lib/library/guide.ts`
+# (`GUIDE_PREFIX` / `GUIDE_PREFIX_IMAGES`). The frontend owns the reader's H1;
+# this module exists so a SERVER-side consumer — the library carrier, which must
+# label a carried guide with the same string the page shows — can compose the
+# identical title without a round trip. Change one, change both.
+GUIDE_PREFIX = "الدليل الشامل:"
+GUIDE_PREFIX_IMAGES = "الدليل الشامل بالصور:"
+
+
+def guide_display_title(corpus_title: str, image_count: int) -> str:
+    """The title a READER sees on /compliance/{slug} — the page's own H1.
+
+    Python twin of `guideDisplayTitle` (`frontend/lib/library/guide.ts`), with
+    both of its carve-outs kept verbatim, because they are the whole point:
+
+      * ``image_count <= 0`` keeps «الدليل الشامل:». Ten guides are legitimately
+        text-only, and promising «بالصور» on a guide with no صور is a lie the
+        reader catches in one scroll.
+      * a title that does NOT open with the prefix is returned untouched.
+        Inventing a prefix for an unknown title shape is worse than leaving it
+        alone.
+
+    ⚠ ``corpus_title`` must be the title as the API SERVES it — i.e. the
+    channel-composed form on ``library_compliance_v``, not the raw
+    ``service_guides.title``. The two differ on 666 guides (the locale tail was
+    replaced at build time), so reading the raw column here would label a carried
+    guide «… في السعودية» while its own page says «… في بوابة ناجز».
+    """
+    text = (corpus_title or "").strip()
+    if image_count is None or image_count <= 0 or not text.startswith(GUIDE_PREFIX):
+        return text
+    return GUIDE_PREFIX_IMAGES + text[len(GUIDE_PREFIX):]
+
+
 def strip_locale_tail(title: str) -> str:
     """The corpus title with a trailing «في السعودية» removed, if present.
 
@@ -556,6 +595,8 @@ def compose_guide_title(corpus_title: str, label: Optional[str]) -> str:
 
 
 __all__ = [
+    "GUIDE_PREFIX",
+    "GUIDE_PREFIX_IMAGES",
     "MIN_ATTESTATIONS",
     "attested_channels",
     "brand_already_in_title",
@@ -564,6 +605,7 @@ __all__ = [
     "channel_is_grounded",
     "channel_shape_error",
     "compose_guide_title",
+    "guide_display_title",
     "normalize_channel",
     "strip_locale_tail",
 ]

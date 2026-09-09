@@ -244,7 +244,16 @@ export function ChatInput({
   // New-chat handoff: prefill the composer with any draft text carried from the
   // empty page when the user attached a file before sending. Runs once on mount;
   // a no-op on every normal mount (the slot is null).
+  //
+  // ⚠ DESTINATION ONLY. Every writer of these two slots stashes them from a
+  // composer that has NO conversation and then navigates to one that does, so
+  // draining them here without a `conversationId` can only mean this composer is
+  // the SOURCE — or the transient /chat the AuthGuard intent bounces through on
+  // its way to a brand-new conversation, which would eat the question an
+  // anonymous reader typed into «اسأل ريحان» before signing up. The guard is
+  // what makes that bounce invisible.
   useEffect(() => {
+    if (!conversationId) return;
     const draft = useChatStore.getState().pendingComposerDraft;
     if (draft) {
       setContent(draft);

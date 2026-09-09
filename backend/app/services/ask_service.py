@@ -23,8 +23,9 @@ Environment variables (read fresh per request so a deploy flip needs no restart)
                            skipped entirely.
 
 Grounding is page-context ONLY (no deep_search): the answer is grounded in the
-current page's own text (first chunks of a regulation, a مادة's text, a service's
-structured fields, or a blog post's body), capped at ~6000 chars. Unknown/missing
+current page's own text (first chunks of a regulation, a مادة's text, a ruling's
+narrative, a blog post's body, or a /compliance «الدليل الشامل» with its
+screenshots rendered as descriptions), capped at ~6000 chars. Unknown/missing
 pages degrade gracefully to an ungrounded (but cautious) answer.
 
 Cost ledger: ``llm_calls`` (migration 058) requires ``user_id`` + ``conversation_id``
@@ -485,15 +486,91 @@ def _ground_blog(supabase: SupabaseClient, page_id: str) -> str:
         return ""
 
 
+def _ground_compliance(supabase: SupabaseClient, page_id: str) -> str:
+    """Grounding context for a /compliance/{slug} page — «الدليل الشامل» itself.
+
+    The guide is RAYHAN'S OWN authored rewrite of the entity's official PDF and
+    is published whole and ungated (`library_service` § "the service-guides
+    wing"), so there is no gate to reason about here: the bytes a reader sees
+    are the bytes the model sees.
+
+    **The screenshots arrive as WORDS.** 324 of the guides carry lines that are
+    nothing but a bare ``{guide_ref}_{n}`` token — holes the page renderer swaps
+    for an ``<img>``. Handing those to a model verbatim is worse than dropping
+    them: it would try to interpret them. So the rendering is delegated to
+    ``agents.simple_search.unfold.render_service_guide``, which substitutes
+    ``service_guide_images.description`` at each hole's own position (the
+    position is the step the screenshot illustrates) and REMOVES any hole with no
+    image row. That function is the ONE renderer for this — reimplementing the
+    hole regex here would make it the fourth copy, and the copies would drift.
+
+    Imported lazily for the same reason ``library_item_service`` imports the
+    message stack lazily: this module backs a PUBLIC route and must stay
+    importable without pulling the agent stack behind it.
+
+    ``library_compliance_v`` — not ``service_guides`` — because the view is the
+    published surface: it joins only canonical rows and serves the
+    channel-composed title (migration 146). Reading the raw table would ground on
+    a guide the wing does not publish.
+    """
+    content_id = _resolve_content_id(supabase, "compliance", page_id)
+    if not content_id:
+        return ""
+    try:
+        res = (
+            supabase.table("library_compliance_v")
+            .select("id, title, guide_md")
+            .eq("id", str(content_id))
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return ""
+        guide = rows[0]
+        img = (
+            supabase.table("service_guide_images")
+            .select("image_ref, description")
+            .eq("guide_id", str(guide.get("id") or content_id))
+            .execute()
+        )
+        image_rows = img.data or []
+    except Exception as e:  # noqa: BLE001
+        logger.warning("anon_ask: compliance grounding failed (%s): %s", page_id, e)
+        return ""
+
+    try:
+        from agents.simple_search.unfold import render_service_guide
+
+        text, unresolved = render_service_guide(guide, image_rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("anon_ask: guide render failed (%s): %s", page_id, e)
+        return ""
+    if unresolved:
+        # Live the unresolved set is empty on every guide (the ingest pairs every
+        # hole), so this is a corpus alarm, not routine noise.
+        logger.warning(
+            "anon_ask: %d unpaired image hole(s) dropped from guide %s",
+            unresolved, page_id,
+        )
+    return text
+
+
 def fetch_grounding(
     supabase: SupabaseClient, page_type: str, page_id: str
 ) -> str:
     """Return the current page's own text as grounding context (≤ MAX_CONTEXT_CHARS).
 
     Page-context ONLY — no deep_search, no retrieval. Handles the five grounded
-    page types (regulation / article / service / judgment / blog); any other type
-    or a missing page yields ``""`` (the model then answers cautiously without
-    grounding). Sync — call via ``run_db``.
+    page types (regulation / article / judgment / blog / compliance); any other
+    type or a missing page yields ``""`` (the model then answers cautiously
+    without grounding). Sync — call via ``run_db``.
+
+    ⚠ ``service`` IS NOT ONE OF THEM, despite what this docstring claimed for
+    months: there has never been a ``services`` branch here, and /services is not
+    a route. ``compliance`` — the /compliance service-GUIDE wing — is, since
+    2026-09-07; it is what the «اسأل ريحان» popup and the library carrier both
+    resolve on that wing.
     """
     page_type = (page_type or "").strip().lower()
     page_id = (page_id or "").strip()
@@ -507,6 +584,8 @@ def fetch_grounding(
         text = _ground_judgment(supabase, page_id)
     elif page_type == "blog":
         text = _ground_blog(supabase, page_id)
+    elif page_type == "compliance":
+        text = _ground_compliance(supabase, page_id)
     else:
         text = ""
     return (text or "")[:MAX_CONTEXT_CHARS]

@@ -17,6 +17,7 @@ from shared.library.guide_titles import (
     channel_is_grounded,
     channel_shape_error,
     compose_guide_title,
+    guide_display_title,
     normalize_channel,
     strip_locale_tail,
 )
@@ -437,3 +438,55 @@ def test_attestation_separates_the_two_in_title_cases() -> None:
 def test_the_threshold_is_exclusive_of_two() -> None:
     assert not attested_channels(["منصة قبول"] * 2)
     assert attested_channels(["منصة قبول"] * 3)
+
+
+# ── guide_display_title: the «بالصور» prefix, mirrored from the frontend ──────
+def test_a_guide_with_screenshots_gets_the_images_prefix() -> None:
+    """The prefix is REWRITTEN, never appended: «الدليل الشامل: إصدار تأشيرة عمل
+    — الدليل الشامل بالصور» is the bug this shape avoids."""
+    assert guide_display_title("الدليل الشامل: إصدار تأشيرة عمل", 12) == (
+        "الدليل الشامل بالصور: إصدار تأشيرة عمل"
+    )
+
+
+def test_a_text_only_guide_keeps_the_plain_prefix() -> None:
+    """Ten guides ship no screenshots, and promising «بالصور» on one of them is
+    a lie the reader catches immediately."""
+    title = "الدليل الشامل: خدمة بلا صور"
+    assert guide_display_title(title, 0) == title
+    assert guide_display_title(title, None) == title  # type: ignore[arg-type]
+
+
+def test_an_unknown_title_shape_is_returned_untouched() -> None:
+    """Inventing a prefix for a title that never asked for one is worse than
+    leaving it alone."""
+    assert guide_display_title("عنوان لا يبدأ بالبادئة", 9) == "عنوان لا يبدأ بالبادئة"
+
+
+def test_it_composes_with_the_tail_rewrite_without_either_knowing() -> None:
+    """The two rewrites live at OPPOSITE ends and must not interfere: the tail
+    is replaced at build time, the head at render time. This is the live
+    «حساب المواطن» title, end to end."""
+    composed = compose_guide_title(
+        "الدليل الشامل: التسجيل في برنامج حساب المواطن في السعودية",
+        "وزارة الموارد البشرية والتنمية الاجتماعية",
+    )
+    assert guide_display_title(composed, 47) == (
+        "الدليل الشامل بالصور: التسجيل في برنامج حساب المواطن في وزارة الموارد "
+        "البشرية والتنمية الاجتماعية"
+    )
+
+
+def test_the_frontend_owns_the_same_two_strings() -> None:
+    """`frontend/lib/library/guide.ts` renders the reader's H1; this module lets
+    the SERVER compose the identical label for a carried guide. Two copies, one
+    string — so the test reads the other one."""
+    from pathlib import Path
+
+    from shared.library.guide_titles import GUIDE_PREFIX, GUIDE_PREFIX_IMAGES
+
+    ts = (
+        Path(__file__).resolve().parents[3] / "frontend/lib/library/guide.ts"
+    ).read_text(encoding="utf-8")
+    assert f'const GUIDE_PREFIX = "{GUIDE_PREFIX}";' in ts
+    assert f'const GUIDE_PREFIX_IMAGES = "{GUIDE_PREFIX_IMAGES}";' in ts

@@ -16,13 +16,34 @@ import type { LibraryItemPageType } from "@/types";
 
 const KEY = "luna_pending_intent";
 
-/** The four page types the Case-B carrier accepts (§12a C3). */
-const LIBRARY_ITEM_PAGE_TYPES: readonly LibraryItemPageType[] = [
+/**
+ * The page types the Case-B carrier accepts (§12a C3) — the ONE list.
+ *
+ * Exported because three call sites need it and a second copy is how they drift:
+ * `isCarryablePageType` (`ChatWithPageCta`) gates the CTA on it, this module
+ * re-validates an intent on the way out of storage, and `AskRayhanLoginIntent`
+ * validates a page type that arrived in a URL. Kept byte-for-byte in step with
+ * `library_item_service.SUPPORTED_PAGE_TYPES` — a type the backend refuses is a
+ * button that 400s in Arabic.
+ */
+export const LIBRARY_ITEM_PAGE_TYPES: readonly LibraryItemPageType[] = [
   "regulation",
   "article",
   "judgment",
   "blog",
+  "compliance",
 ];
+
+/** A carryable page type, or null — for narrowing an untrusted string (a URL
+ * parameter, a stale storage payload). */
+export function asLibraryItemPageType(
+  raw: string | null | undefined,
+): LibraryItemPageType | null {
+  const value = (raw ?? "").trim();
+  return (LIBRARY_ITEM_PAGE_TYPES as readonly string[]).includes(value)
+    ? (value as LibraryItemPageType)
+    : null;
+}
 
 /** Intents older than this are silently dropped (stale tab, abandoned login). */
 const MAX_AGE_MS = 30 * 60 * 1000;
@@ -78,6 +99,18 @@ export interface ChatWithLibraryItemIntent {
   page_id: string;
   /** Page heading — the chip label until the POST returns the real title. */
   title: string | null;
+  /**
+   * The question the reader had already typed into «اسأل ريحان» when they were
+   * sent here, prefilled into the destination composer so the resume finishes
+   * their sentence instead of handing them a blank box (`pendingComposerDraft`).
+   *
+   * ⚠ IT TRAVELS IN sessionStorage AND NOWHERE ELSE. It is never appended to the
+   * `/login?…` URL: a legal question is exactly the text this product masks by
+   * default («وضع السرية»), and a query string is written into CDN access logs,
+   * browser history and any `Referer` the next page sends. Storage is same-tab,
+   * same-origin, and dies with the tab.
+   */
+  question?: string | null;
   at: number;
 }
 
@@ -99,6 +132,29 @@ export function setPendingIntent(intent: DistributiveOmit<PendingIntent, "at">):
     sessionStorage.setItem(KEY, JSON.stringify({ ...intent, at: Date.now() }));
   } catch {
     // Storage unavailable — the visitor just lands on /chat normally.
+  }
+}
+
+/**
+ * True when SOMETHING is already stashed — without reading or clearing it.
+ *
+ * The one caller is `AskRayhanLoginIntent`, which turns a `/login?intent=…` URL
+ * into a stored intent. A URL is the WEAKER claim: `«اسأل ريحان»` puts that
+ * querystring on every login link it renders, including the one under a teaser
+ * whose «سجّل مجاناً لعرض الإجابة كاملة» button has just stored a
+ * `claim_anon_answer`. Overwriting that would swap the reader's paid-for answer
+ * for a generic carry, so the URL yields to whatever is already there.
+ */
+export function hasPendingIntent(): boolean {
+  try {
+    const raw = sessionStorage.getItem(KEY);
+    if (!raw) return false;
+    // Freshness matters here, not just presence: an abandoned intent from 40
+    // minutes ago is one `consumePendingIntent` will DROP, so yielding to it
+    // would trade a working carry for nothing at all.
+    return isFresh((JSON.parse(raw) as Record<string, unknown>)?.at);
+  } catch {
+    return false;
   }
 }
 
@@ -138,9 +194,7 @@ export function consumePendingIntent(): PendingIntent | null {
         // Arabic error the user never asked for.
         return typeof parsed.page_id === "string" &&
           parsed.page_id.length > 0 &&
-          LIBRARY_ITEM_PAGE_TYPES.includes(
-            parsed.page_type as LibraryItemPageType,
-          )
+          asLibraryItemPageType(parsed.page_type as string) !== null
           ? (parsed as unknown as ChatWithLibraryItemIntent)
           : null;
       default:

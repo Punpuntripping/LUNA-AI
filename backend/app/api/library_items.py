@@ -5,7 +5,8 @@
 The pinned contract (``.claude/plans/simple_search_family.md`` §12a C3, which the
 frontend codes against byte for byte):
 
-    body  { "page_type": "regulation|article|judgment|blog", "page_id": "<slug>" }
+    body  { "page_type": "regulation|article|judgment|blog|compliance",
+            "page_id": "<slug>" }
     200   { "item": { "item_id": "...", "title": "...", "kind": "references" } }
 
 ``item`` is the full ``WorkspaceItemResponse`` — a superset of the three pinned
@@ -58,7 +59,9 @@ class CreateLibraryItemRequest(BaseModel):
     ``library_item_service.SUPPORTED_PAGE_TYPES`` rather than by a Pydantic
     ``Literal``: an unsupported-but-real library type (``circular`` / ``form`` /
     ``calculator`` / ``topic``) deserves the explicit Arabic 400 «لا يمكن إحضار
-    هذا النوع…», not a 422 schema dump the UI cannot render.
+    هذا النوع…», not a 422 schema dump the UI cannot render. (That the set can
+    GROW without touching this file — ``compliance`` joined on 2026-09-07 — is
+    the other half of why it is not a ``Literal``.)
 
     ``page_id`` is the public slug — and for an ``article`` the composite
     ``{reg_slug}/{article_slug}`` shape ``fetch_grounding`` already parses. The

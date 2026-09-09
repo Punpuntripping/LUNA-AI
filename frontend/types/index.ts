@@ -375,14 +375,18 @@ export interface PendingBlog {
  * has no grounder for `circular` / `form` / `calculator` / `topic`, so the
  * backend answers those with an Arabic error. The UI must therefore never
  * offer the carry button on them — see `isCarryablePageType` in
- * `components/library/blocks/AskRayhanWidget.tsx`, whose type predicate is
+ * `components/library/blocks/ChatWithPageCta.tsx`, whose type predicate is
  * what pins this subset relation at compile time.
+ *
+ * Kept byte-for-byte in step with `library_item_service.SUPPORTED_PAGE_TYPES`.
+ * `compliance` (a /compliance «الدليل الشامل») joined on 2026-09-07.
  */
 export type LibraryItemPageType =
   | "regulation"
   | "article"
   | "judgment"
-  | "blog";
+  | "blog"
+  | "compliance";
 
 /**
  * A library page the user asked to bring into the chat, before a conversation
