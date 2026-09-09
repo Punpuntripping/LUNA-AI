@@ -104,6 +104,36 @@ because Cloudflare's `contains` is case-sensitive and crawler UA casing varies.
 signed-in user would also bypass rule 3 — the origin-probing block would be trivially defeated by
 holding a session cookie.
 
+⚠⚠ **CORRECTION 2026-09-06 — the header-presence matches were CASE-SENSITIVE, and
+that is why `/internal/*` was blocked in production for three weeks.**
+
+`http.request.headers.names` returns header names **with the case the client
+sent**; Cloudflare does not normalise it. Rules 1 and 3 both matched with a bare
+`any(http.request.headers.names[*] == "authorization")`, so a caller sending the
+conventional `Authorization:` (capital A) failed BOTH the rule-1 skip and the
+rule-3 `and not (...)` guard, and was blocked. Measured, same client, one
+variable changed: `curl --http1.1 -H "Authorization: ..."` → 403 block page,
+`curl --http1.1 -H "authorization: ..."` → 404 from the origin.
+
+The failure was invisible because **`pg_net` sends header names lowercased**, so
+the Supabase summarizer webhook kept returning 200 the whole time while the
+marketing dashboard got a block page — an asymmetry that looks exactly like an IP
+allowlist and is not one (the zone and account IP Access Rule lists are both
+empty). It also silently disabled rule 1's `x-isr-bake-secret` and
+`x-revalidate-secret` skips, which is the real reason ops scripts needed a
+spoofed browser UA to clear Browser Integrity Check.
+
+Fixed by wrapping every header-presence test in `lower()`, per Cloudflare's own
+"Require specific HTTP headers" use case:
+`any(lower(http.request.headers.names[*])[*] == "authorization")`.
+Ruleset `4b51ef4e3064404c89035be504cce963` went version 3 → 5. Verified after the
+change: capital-`A` `Authorization` reaches the origin (JSON 401), a request with
+no auth header is still blocked, `pg_net` still reaches the origin, and the
+crawler-UA block and public site are unaffected.
+
+→ **Never write a header-presence match without `lower()`.** A rule that reads
+correctly in the dashboard can still never match.
+
 ⚠ **CORRECTION 2026-07-28 — `/internal/*` is NOT internal.** The original rule 3 ("`/internal/*` →
 Block") and step **1.5** both assume nothing outside reaches it. Both are wrong, and shipping the
 blanket block would have broken production at flip time:
