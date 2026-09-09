@@ -48,8 +48,11 @@ export default function manifest(): MetadataRoute.Manifest {
       },
       {
         // Android crops icons to a circle/squircle. This variant sits the
-        // «ريحان» lockup inside the 80% safe zone on the opaque brand ground
-        // so neither the wordmark nor the leaf gets clipped by the mask.
+        // «ريحان» lockup inside the 80% safe zone on the cream ground so
+        // neither the wordmark nor the leaf gets clipped by the mask.
+        // The cap is on the DIAGONAL, not the width: a lockup of aspect r
+        // needs `width × √(1 + 1/r²) ≤ 0.80`, which at r = 1.473 allows 0.662
+        // — hence 63% here against 84% for the uncropped icons.
         src: "/icon-maskable-512.png",
         sizes: "512x512",
         type: "image/png",
