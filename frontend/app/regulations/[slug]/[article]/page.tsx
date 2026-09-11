@@ -15,7 +15,6 @@ import {
   TrustLine,
   StatusBadge,
   ArticleBody,
-  GateBanner,
   CalculatorBlock,
   AskRayhanWidget,
 } from "@/components/library/blocks";
@@ -24,7 +23,7 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
 import { getRegulationArticle, toDocStatus, toSnippet } from "@/lib/library/api";
 import { getCalculatorsForArticle } from "@/lib/calculators/registry";
-import type { BreadcrumbItem, GateInfo } from "@/types/library";
+import type { BreadcrumbItem } from "@/types/library";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -102,13 +101,6 @@ export default async function RegulationArticlePage({ params }: PageProps) {
     },
     { label: doc.article_label },
   ];
-
-  const gate: GateInfo | undefined = doc.is_truncated
-    ? {
-        isTruncated: true,
-        hiddenPlaceholderLines: doc.hidden_placeholder_lines,
-      }
-    : undefined;
 
   // Bidirectional mesh: calculators whose legal basis cites this exact مادة.
   const calculators = getCalculatorsForArticle(
@@ -244,7 +236,7 @@ export default async function RegulationArticlePage({ params }: PageProps) {
                   never the raw filename. */}
               <ArticleBody
                 visibleText={doc.text}
-                gate={gate}
+                gated={doc.is_truncated}
                 plain
                 images={doc.images}
               />
@@ -269,16 +261,12 @@ export default async function RegulationArticlePage({ params }: PageProps) {
                     </p>
                   </div>
                 </div>
+                {/* The teaser simply STOPS — the reveal panel below the
+                    document is the one action, and it already says «اعرض الشرح
+                    كاملاً» (revealTarget="sharh"). */}
                 <p className="text-read text-foreground">
                   {doc.sharh.teaser}
                 </p>
-                <GateBanner
-                  hiddenPlaceholderLines={Math.min(
-                    Math.max(doc.sharh.hidden_placeholder_lines, 2),
-                    8,
-                  )}
-                  ctaLabel="سجّل مجانًا لعرض الشرح كاملًا"
-                />
               </section>
             ) : (
               /* No cached شرح for this مادة yet — the «قريباً» shell + an inline

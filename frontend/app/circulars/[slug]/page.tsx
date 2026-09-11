@@ -20,7 +20,6 @@ import type {
   BreadcrumbItem,
   MetadataItem,
   OfficialSourceLink,
-  GateInfo,
 } from "@/types/library";
 
 const SITE_URL = "https://rayhanai.com";
@@ -95,13 +94,6 @@ export default async function CircularDocPage({ params }: PageProps) {
     (source) => ({ label: source.title, href: source.href }),
   );
 
-  const gate: GateInfo | undefined = doc.is_truncated
-    ? {
-        isTruncated: true,
-        hiddenPlaceholderLines: doc.hidden_placeholder_lines,
-      }
-    : undefined;
-
   // NO `datePublished`/`dateModified`: this wing's payload carries no real
   // content date, and a render-time stamp would churn on every ISR revalidation
   // (see `ArticleInput.datePublished`). Plumb the corpus date through the API
@@ -158,7 +150,7 @@ export default async function CircularDocPage({ params }: PageProps) {
         >
           <ArticleBody
             visibleText={doc.text}
-            gate={gate}
+            gated={doc.is_truncated}
             plain
             dedupeHeading={doc.title}
           />

@@ -1,6 +1,5 @@
 import { cn } from "@/lib/utils";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
-import { GateBanner } from "@/components/library/blocks/GateBanner";
 import { LegalBlocks } from "@/components/library/blocks/LegalBlocks";
 import {
   toLegalBlocks,
@@ -9,8 +8,14 @@ import {
 import type { ArticleBodyProps } from "@/types/library";
 
 /**
- * Renders the VISIBLE document body (نص المادة، ملخص الوقائع، متن التعميم…) and,
- * when `gate.isTruncated`, drops a GateBanner immediately after it.
+ * Renders the VISIBLE document body (نص المادة، ملخص الوقائع، متن التعميم…).
+ *
+ * A gated body simply STOPS where the server truncated it. Nothing is drawn in
+ * place of the hidden text — the decorative skeleton bars that used to sit here
+ * were removed 2026-09-11: they read as broken layout (a stack of empty grey
+ * lines that vanished on reveal) while saying nothing the gate panel below the
+ * document does not already say. The gate owns the one action; the body just
+ * ends.
  *
  * Pass `plain` to render pre-formatted legal text as typed blocks (see
  * `toLegalBlocks` + `LegalBlocks`): chapter lines and مادة headers gain their
@@ -36,8 +41,8 @@ import type { ArticleBodyProps } from "@/types/library";
  * raw `![…](images/…)` markup is stripped by `toLegalBlocks` unconditionally,
  * for every caller, map or no map — which is what stops 168 published أنظمة
  * printing `page_005_img_001.jpeg` as body text. The five non-regulation callers
- * (circulars, forms, judgments, guides, `GateBanner`) pass nothing here and are
- * unaffected: those wings carry no image spans at all.
+ * (circulars, forms, judgments, guides) pass nothing here and are unaffected:
+ * those wings carry no image spans at all.
  *
  * `dedupeHeading` (plain only): when the FIRST rendered block is a heading or
  * clause label that duplicates this value (colon/whitespace-insensitive), it is
@@ -50,27 +55,21 @@ import type { ArticleBodyProps } from "@/types/library";
  * from the same slugger (`/compliance/{slug}`, and the مدونة before it). Either
  * way the markdown path renders on the reading scale (`prose`).
  *
- * `gateBarsOnly`: render the trailing GateBanner as decorative skeleton bars
- * WITHOUT its CTA card — for per-section gates when a single document-level CTA
- * card is the one conversion surface (avoids stacked back-to-back cards).
- *
  * IMPORTANT: `visibleText` is ONLY the visible portion — the server already
- * truncated the gated remainder, so no hidden text reaches the DOM. When gated,
- * the body carries `.gated-body` so the page's paywall JSON-LD fragment
- * (`buildPaywallFragment(".gated-body")`) can target it.
+ * truncated the gated remainder, so no hidden text reaches the DOM. When
+ * `gated`, the body carries `.gated-body` so the page's paywall JSON-LD
+ * fragment (`buildPaywallFragment(".gated-body")`) can target it.
  */
 export function ArticleBody({
   visibleText,
-  gate,
+  gated,
   plain,
   tables,
   images,
   dedupeHeading,
-  gateBarsOnly,
   headingAnchors,
   className,
 }: ArticleBodyProps) {
-  const truncated = Boolean(gate?.isTruncated);
   const blocks = plain
     ? dropDuplicateLeadingHeading(
         toLegalBlocks(visibleText, tables, images),
@@ -79,7 +78,7 @@ export function ArticleBody({
     : [];
 
   return (
-    <div dir="rtl" className={cn(truncated && "gated-body", className)}>
+    <div dir="rtl" className={cn(gated && "gated-body", className)}>
       {plain ? (
         <LegalBlocks blocks={blocks} />
       ) : (
@@ -87,14 +86,6 @@ export function ArticleBody({
           content={visibleText}
           headingAnchors={headingAnchors}
           prose
-        />
-      )}
-
-      {truncated && gate && (
-        <GateBanner
-          hiddenPlaceholderLines={gate.hiddenPlaceholderLines}
-          ctaHref={gate.ctaHref}
-          barsOnly={gateBarsOnly}
         />
       )}
     </div>

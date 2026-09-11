@@ -32,8 +32,9 @@ import type { AskRayhanWidgetProps } from "@/types/library";
 const MIN_LEN = 3;
 const MAX_LEN = 500;
 
-// Decorative skeleton bar widths (matches GateBanner's ragged-text look). The
-// hidden answer bytes never reach the client — these are purely cosmetic.
+// Decorative skeleton bar widths for the anon teaser, inside the widget panel.
+// The hidden answer bytes never reach the client — these are purely cosmetic.
+// (The library DOCUMENT body has no such bars: see `ArticleBody`.)
 const BAR_WIDTHS = ["100%", "92%", "84%", "96%", "78%"] as const;
 
 interface QuestionRef {

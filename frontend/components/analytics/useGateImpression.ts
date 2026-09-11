@@ -11,8 +11,8 @@ import { stashGateAttribution } from "@/components/analytics/signup-attribution"
  * of `.claude/plans/product_analytics.md` («where did the visitor decide NOT to
  * sign in?»).
  *
- * ⚠ T6 — A GATE THAT RENDERED IS NOT A GATE THAT WAS SEEN. `GateBanner` and
- * `HubCtaWall` sit far below the fold on documents several viewports tall, so
+ * ⚠ T6 — A GATE THAT RENDERED IS NOT A GATE THAT WAS SEEN. `FullContentGate`
+ * and `HubCtaWall` sit far below the fold on documents several viewports tall, so
  * counting renders would report a huge fake denominator and make gate conversion
  * look catastrophic. The impression is therefore an `IntersectionObserver`
  * measurement, modelled on `AnonCtaPopup`'s own `whenAnonCtaVisibility` (the
@@ -48,14 +48,13 @@ export type GateCta = "register" | "login" | "google";
 export interface GateImpressionOptions {
   /**
    * Overrides the path-derived content type, for a surface that knows its own
-   * (`FullContentGate` is handed a `contentType`; a `GateBanner` is not).
+   * (`FullContentGate` is handed a `contentType`; a hub wall is not).
    */
   contentType?: string;
   /**
    * Counted at all? Defaults to true. Pass false for a surface that is on the
-   * page but is NOT the conversion surface — a `GateBanner` suppressed by
-   * `GateCtaSuppressor`, or a wall that pitches a plan rather than an account.
-   * Firing from a suppressed gate would double-count the denominator.
+   * page but is NOT the conversion surface — e.g. a wall that pitches a plan
+   * rather than an account. Firing from one would double-count the denominator.
    */
   enabled?: boolean;
 }

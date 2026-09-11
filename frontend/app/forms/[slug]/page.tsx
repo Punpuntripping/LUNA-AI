@@ -15,7 +15,7 @@ import { FullContentGate } from "@/components/library/FullContentGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
 import { getFormDetail, toSnippet } from "@/lib/library/api";
-import type { BreadcrumbItem, GateInfo } from "@/types/library";
+import type { BreadcrumbItem } from "@/types/library";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -77,13 +77,6 @@ export default async function FormDetailPage({ params }: PageProps) {
     { label: "النماذج", href: "/forms" },
     { label: detail.title },
   ];
-
-  const gate: GateInfo | undefined = detail.body_preview.is_truncated
-    ? {
-        isTruncated: true,
-        hiddenPlaceholderLines: detail.body_preview.hidden_placeholder_lines,
-      }
-    : undefined;
 
   // NO `datePublished`/`dateModified`: this wing's payload carries no real
   // content date, and a render-time stamp would churn on every ISR revalidation
@@ -166,7 +159,10 @@ export default async function FormDetailPage({ params }: PageProps) {
             fullKey={detail.slug}
             gated={detail.body_preview.is_truncated}
           >
-            <ArticleBody visibleText={detail.body_preview.text} gate={gate} />
+            <ArticleBody
+              visibleText={detail.body_preview.text}
+              gated={detail.body_preview.is_truncated}
+            />
           </FullContentGate>
         </section>
 

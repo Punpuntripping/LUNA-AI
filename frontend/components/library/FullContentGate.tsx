@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 import { loginHref } from "@/lib/safe-next";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ArticleBody } from "@/components/library/blocks/ArticleBody";
-import { GateCtaSuppressor } from "@/components/library/blocks/GateBanner";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import {
   BalanceChip,
@@ -166,10 +165,7 @@ export function FullContentGate({
 
   return (
     <>
-      {/* Renders no DOM — it only tells the GateBanners inside the server-rendered
-          body that THIS component owns the conversion CTA, so the reader never
-          sees two stacked calls to action. */}
-      <GateCtaSuppressor>{children}</GateCtaSuppressor>
+      {children}
       {gated && (
         <RevealPanel
           contentType={contentType}

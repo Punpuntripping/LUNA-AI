@@ -15,7 +15,6 @@ import {
   TocRail,
   TocFloating,
   ArticleBody,
-  GateBanner,
   OfficialSources,
   RelatedStrip,
   AskRayhanWidget,
@@ -33,7 +32,6 @@ import type {
   MetadataItem,
   TocEntry,
   OfficialSourceLink,
-  GateInfo,
 } from "@/types/library";
 
 const SITE_URL = "https://rayhanai.com";
@@ -340,55 +338,40 @@ export default async function JudgmentDocPage({ params }: PageProps) {
               >
                 {doc.sections.length > 0 && (
                   <div className="space-y-10">
-                    {doc.sections.map((section) => {
-                      const gate: GateInfo | undefined = section.is_truncated
-                        ? {
-                            isTruncated: true,
-                            hiddenPlaceholderLines:
-                              section.hidden_placeholder_lines,
-                          }
-                        : undefined;
-                      return (
-                        <section
-                          key={section.id}
-                          id={`sec-${section.id}`}
-                          // scroll-mt-20 (80px): the library header is 60–64px,
-                          // so the old 96px offset left every TOC jump short of
-                          // its section heading.
-                          className="scroll-mt-20 space-y-3.5"
-                        >
-                          <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
-                            {section.title}
-                          </h2>
-                          <ArticleBody
-                            visibleText={section.text}
-                            gate={gate}
-                            plain
-                            dedupeHeading={section.title}
-                            // When the document also has a trailing hidden-section
-                            // CTA card, every per-section gate renders bars-only
-                            // so that single card is the ONE conversion surface
-                            // (no stacked cards at the truncation tail).
-                            gateBarsOnly={doc.hidden_section_count > 0}
-                          />
-                        </section>
-                      );
-                    })}
+                    {doc.sections.map((section) => (
+                      <section
+                        key={section.id}
+                        id={`sec-${section.id}`}
+                        // scroll-mt-20 (80px): the library header is 60–64px,
+                        // so the old 96px offset left every TOC jump short of
+                        // its section heading.
+                        className="scroll-mt-20 space-y-3.5"
+                      >
+                        <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
+                          {section.title}
+                        </h2>
+                        <ArticleBody
+                          visibleText={section.text}
+                          gated={section.is_truncated}
+                          plain
+                          dedupeHeading={section.title}
+                        />
+                      </section>
+                    ))}
                   </div>
                 )}
 
                 {doc.hidden_section_count > 0 && (
-                  /* id = the TocRail click-fallback target: an anon click on a
-                     section that isn't rendered lands here (the gate). */
-                  <div id="library-doc-gate" className="scroll-mt-20">
-                    <GateBanner
-                      hiddenPlaceholderLines={Math.min(
-                        doc.hidden_section_count,
-                        6,
-                      )}
-                      ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا من الحكم بانتظارك — سجّل مجانًا لعرضه كاملًا`}
-                    />
-                  </div>
+                  /* The TocRail click-fallback target: an anon click on a
+                     section that isn't rendered lands here — immediately above
+                     the reveal panel, which is the gate's one action. An empty
+                     anchor on purpose: nothing is drawn where the hidden
+                     sections would be. */
+                  <div
+                    id="library-doc-gate"
+                    aria-hidden="true"
+                    className="scroll-mt-20"
+                  />
                 )}
               </FullContentGate>
 

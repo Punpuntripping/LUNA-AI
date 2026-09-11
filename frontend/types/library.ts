@@ -106,22 +106,6 @@ export interface TopicChip {
   href: string;
 }
 
-/**
- * Gate decision surfaced to the client. The hidden text is NEVER shipped —
- * `hiddenPlaceholderLines` only tells the GateBanner how many DECORATIVE
- * skeleton bars to draw. Truncation happens server-side in `library_service`.
- */
-export interface GateInfo {
-  isTruncated: boolean;
-  hiddenPlaceholderLines: number;
-  /**
-   * Where the «سجّل مجاناً» CTA links. OMIT for signup — `GateBanner` then
-   * builds `/login?next=<page>&mode=register` from the pathname itself. Set it
-   * only to aim the card somewhere that is not signup.
-   */
-  ctaHref?: string;
-}
-
 // ------------------------------------------------------------------
 // Judgments (الأحكام القضائية) — wire payloads
 // ------------------------------------------------------------------
@@ -194,8 +178,8 @@ export interface JudgmentHubResponse {
 
 /**
  * One rendered section of a judgment. `text` is ALREADY gate-truncated
- * server-side — the hidden bytes never reach the client; `hidden_placeholder_
- * lines` only sizes the GateBanner skeleton. Section ids/labels, in order:
+ * server-side — the hidden bytes never reach the client, and nothing is drawn
+ * in their place. Section ids/labels, in order:
  *   facts الوقائع (free) · claims الطلبات · plaintiff_grounds أسانيد المدعي ·
  *   defendant_response رد المدعى عليه · defendant_grounds أسانيد المدعى عليه ·
  *   reasoning الأسباب والتسبيب · ruling المنطوق (free) ·
@@ -442,8 +426,13 @@ export interface ArticleBodyProps {
    * as markdown by default.
    */
   visibleText: string;
-  /** When present + `isTruncated`, a GateBanner renders right after the body. */
-  gate?: GateInfo;
+  /**
+   * The server truncated this body at the gate. Adds `.gated-body`, which is
+   * what the page's paywall JSON-LD fragment (`buildPaywallFragment
+   * (".gated-body")`) targets. Purely a marker — nothing is drawn where the
+   * hidden text would have been (see the note on `ArticleBody`).
+   */
+  gated?: boolean;
   /** Render `visibleText` as plain blank-line paragraphs instead of markdown. */
   plain?: boolean;
   /**
@@ -473,39 +462,12 @@ export interface ArticleBodyProps {
    */
   dedupeHeading?: string;
   /**
-   * Render the trailing GateBanner as decorative bars WITHOUT its CTA card, so
-   * a single document-level GateBanner owns the one conversion card. Only has
-   * an effect when the body is truncated.
-   */
-  gateBarsOnly?: boolean;
-  /**
    * Markdown path only: emit deterministic `slugifyHeading` ids on `h1..h6` so a
    * table of contents can link INTO the body. Opt-in — default off keeps every
    * existing caller byte-identical. Only meaningful where the TOC's hrefs are
    * built from the SAME slugger, or the anchors dead-link.
    */
   headingAnchors?: boolean;
-  className?: string;
-}
-
-export interface GateBannerProps {
-  /** How many decorative skeleton bars to draw (purely cosmetic). */
-  hiddenPlaceholderLines: number;
-  /**
-   * CTA link target. OMIT IT for the signup card — the banner then builds
-   * `/login?next=<this page>&mode=register` from `usePathname()` itself, which
-   * is the only form that opens the form on signup (so `signup_started` can
-   * fire) and returns the new account to the page it was reading. Pass a value
-   * only to point the card somewhere that is NOT signup, e.g. `/pricing`.
-   */
-  ctaHref?: string;
-  /** CTA card headline. Default «سجّل مجاناً لعرض المحتوى كاملاً». */
-  ctaLabel?: string;
-  /**
-   * Render ONLY the faded skeleton bars, with no CTA card — for per-section
-   * gates when a single document-level GateBanner is the one conversion card.
-   */
-  barsOnly?: boolean;
   className?: string;
 }
 

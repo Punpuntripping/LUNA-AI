@@ -17,7 +17,6 @@ export { TocList } from "./TocList";
 export { TocRail } from "./TocRail";
 export { TocFloating } from "./TocFloating";
 export { ArticleBody } from "./ArticleBody";
-export { GateBanner } from "./GateBanner";
 export { CalculatorBlock } from "./CalculatorBlock";
 export { FaqBlock } from "./FaqBlock";
 export { ReferencesMesh } from "./ReferencesMesh";

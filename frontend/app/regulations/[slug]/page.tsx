@@ -13,7 +13,6 @@ import {
   TocRail,
   TocFloating,
   ArticleBody,
-  GateBanner,
   OfficialSources,
   RelatedStrip,
   AskRayhanWidget,
@@ -33,7 +32,6 @@ import type {
   MetadataItem,
   TocEntry,
   OfficialSourceLink,
-  GateInfo,
 } from "@/types/library";
 
 const SITE_URL = "https://rayhanai.com";
@@ -309,80 +307,68 @@ export default async function RegulationDocPage({ params }: PageProps) {
             >
               {doc.visible_sections.length > 0 && (
                 <div className="space-y-10">
-                  {doc.visible_sections.map((section) => {
-                    const gate: GateInfo | undefined = section.is_truncated
-                      ? {
-                          isTruncated: true,
-                          hiddenPlaceholderLines:
-                            section.hidden_placeholder_lines,
-                        }
-                      : undefined;
-                    return (
-                      <section
-                        key={section.id}
-                        id={`sec-${section.id}`}
-                        // scroll-mt-20 (80px): the library header is 60–64px, so
-                        // the old 96px offset left every TOC jump a third of a
-                        // screen short of its مادة.
-                        className="scroll-mt-20 space-y-3.5"
-                      >
-                        <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
-                          {/* A merged fallback run covers several مواد but renders
-                              once. Their TOC rows still target `#sec-art-{n}`, so
-                              each swallowed مادة gets an empty inline anchor —
-                              nested INSIDE the heading so it takes no space and
-                              never trips the parent's `space-y` rhythm. */}
-                          {section.also_ids?.map((id) => (
-                            <span
-                              key={id}
-                              id={`sec-${id}`}
-                              aria-hidden="true"
-                              className="scroll-mt-20"
-                            />
-                          ))}
-                          {withContinuation(section.id, section.title)}
-                        </h2>
-                        <ArticleBody
-                          visibleText={section.text}
-                          gate={gate}
-                          plain
-                          // Grids where the ingestion left a flattened list.
-                          // Undefined on any page baked before the backend
-                          // shipped `tables` — `visibleText` is then the prose
-                          // body, which carries no token to leave dangling.
-                          tables={section.tables}
-                          // The diagram where the ingestion left a filename —
-                          // «الصورة {n}» keyed by the `IMG_{n}` token in
-                          // `visibleText`. Undefined on any page baked before
-                          // the backend shipped `images`, in which case
-                          // `visibleText` still carries the raw
-                          // `![…](images/…)` markup — which `toLegalBlocks`
-                          // strips unconditionally, so an old bake reads as
-                          // prose without its figures instead of printing
-                          // `page_005_img_001.jpeg` at a reader.
-                          images={section.images}
-                          dedupeHeading={section.title}
-                          // When the document has a trailing hidden-section CTA
-                          // card, every per-section gate renders bars-only so
-                          // that single card is the one conversion surface (no
-                          // stacked back-to-back cards at the truncation tail).
-                          gateBarsOnly={doc.hidden_section_count > 0}
-                        />
-                      </section>
-                    );
-                  })}
+                  {doc.visible_sections.map((section) => (
+                    <section
+                      key={section.id}
+                      id={`sec-${section.id}`}
+                      // scroll-mt-20 (80px): the library header is 60–64px, so
+                      // the old 96px offset left every TOC jump a third of a
+                      // screen short of its مادة.
+                      className="scroll-mt-20 space-y-3.5"
+                    >
+                      <h2 className="border-s-[3px] border-primary/50 ps-3 text-2xl font-bold leading-snug text-foreground">
+                        {/* A merged fallback run covers several مواد but renders
+                            once. Their TOC rows still target `#sec-art-{n}`, so
+                            each swallowed مادة gets an empty inline anchor —
+                            nested INSIDE the heading so it takes no space and
+                            never trips the parent's `space-y` rhythm. */}
+                        {section.also_ids?.map((id) => (
+                          <span
+                            key={id}
+                            id={`sec-${id}`}
+                            aria-hidden="true"
+                            className="scroll-mt-20"
+                          />
+                        ))}
+                        {withContinuation(section.id, section.title)}
+                      </h2>
+                      <ArticleBody
+                        visibleText={section.text}
+                        gated={section.is_truncated}
+                        plain
+                        // Grids where the ingestion left a flattened list.
+                        // Undefined on any page baked before the backend
+                        // shipped `tables` — `visibleText` is then the prose
+                        // body, which carries no token to leave dangling.
+                        tables={section.tables}
+                        // The diagram where the ingestion left a filename —
+                        // «الصورة {n}» keyed by the `IMG_{n}` token in
+                        // `visibleText`. Undefined on any page baked before
+                        // the backend shipped `images`, in which case
+                        // `visibleText` still carries the raw
+                        // `![…](images/…)` markup — which `toLegalBlocks`
+                        // strips unconditionally, so an old bake reads as
+                        // prose without its figures instead of printing
+                        // `page_005_img_001.jpeg` at a reader.
+                        images={section.images}
+                        dedupeHeading={section.title}
+                      />
+                    </section>
+                  ))}
                 </div>
               )}
 
               {doc.hidden_section_count > 0 && (
-                /* id = the TocRail click-fallback target: an anon click on a
-                   مادة whose section isn't rendered lands here (the gate). */
-                <div id="library-doc-gate" className="scroll-mt-20">
-                  <GateBanner
-                    hiddenPlaceholderLines={Math.min(doc.hidden_section_count, 6)}
-                    ctaLabel={`${doc.hidden_section_count} قسمًا إضافيًا بانتظارك — سجّل مجانًا لعرض النظام كاملًا`}
-                  />
-                </div>
+                /* The TocRail click-fallback target: an anon click on a مادة
+                   whose section isn't rendered lands here — immediately above
+                   the reveal panel, which is the gate's one action. An empty
+                   anchor on purpose: nothing is drawn where the hidden مواد
+                   would be. */
+                <div
+                  id="library-doc-gate"
+                  aria-hidden="true"
+                  className="scroll-mt-20"
+                />
               )}
             </FullContentGate>
 

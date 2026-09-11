@@ -77,8 +77,7 @@ export function JudgmentSummaryButton({
   // `FullContentGate` panel sits at the bottom of the ruling, so ONE judgment
   // page can legitimately report two impressions of two different `gate_kind`s.
   // That is per-surface conversion, which is what §6.6 groups by — it is not a
-  // stacked CTA (the two are viewports apart) and not the suppression case
-  // `GateCtaSuppressor` exists for.
+  // stacked CTA (the two are viewports apart).
   const pathname = usePathname() ?? "";
   const anonCtaRef = useGateImpression("judgment_summary", {
     contentType: "judgment",

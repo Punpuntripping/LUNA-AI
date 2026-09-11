@@ -479,9 +479,10 @@ export interface ArticleSharh {
 /**
  * Full /regulations/{slug}/articles/{article_slug} payload (mirrors the backend
  * `RegulationArticleResponse`). `text` is ALREADY gate-truncated server-side —
- * the hidden bytes never reach the client; `hidden_placeholder_lines` only sizes
- * the GateBanner skeleton. When `is_fallback_body` is true the body is the whole
- * owning chunk (`context_title`), not the isolated مادة text.
+ * the hidden bytes never reach the client, and nothing is drawn in their place
+ * (`hidden_placeholder_lines` is a legacy wire field the client no longer
+ * reads). When `is_fallback_body` is true the body is the whole owning chunk
+ * (`context_title`), not the isolated مادة text.
  */
 export interface RegulationArticle {
   slug: string;
@@ -677,10 +678,11 @@ export interface CircularsFilters {
 /**
  * Full /circulars/{slug} payload. `gate_effective` is the post-`effective_
  * circular_gate` value — a short (<=800-char) تعميم renders fully `'open'`;
- * `text` is already gate-truncated server-side (hidden bytes never shipped),
- * `hidden_placeholder_lines` only sizes the GateBanner skeleton. `source_label`
- * is the internal provenance token and is NEVER rendered — a real URL surfaces
- * in `official_sources` instead.
+ * `text` is already gate-truncated server-side (hidden bytes never shipped, and
+ * nothing drawn in their place — `hidden_placeholder_lines` is a legacy wire
+ * field the client no longer reads). `source_label` is the internal provenance
+ * token and is NEVER rendered — a real URL surfaces in `official_sources`
+ * instead.
  */
 export interface CircularDoc {
   slug: string;
@@ -767,8 +769,8 @@ export interface FormsFilters {
 
 /**
  * The gate-truncated preview of a form's template body. The FULL body is NEVER
- * in the anon payload — `text` is only the free preview; `hidden_placeholder_
- * lines` sizes the GateBanner skeleton.
+ * in the anon payload — `text` is only the free preview. `hidden_placeholder_
+ * lines` is a legacy wire field the client no longer reads.
  */
 export interface FormBodyPreview {
   text: string;

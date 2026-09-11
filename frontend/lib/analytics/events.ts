@@ -73,7 +73,8 @@ export type AnalyticsEventName =
  * The real conversion surfaces, so the funnel can tell them apart (§3). The
  * names match the components that own them:
  * `anon_popup` = AnonCtaPopup · `full_content` = FullContentGate ·
- * `gate_banner` = GateBanner · `hub_wall` = HubCtaWall ·
+ * `gate_banner` = the retired library GateBanner (kept so historical rows stay
+ * readable; nothing emits it any more) · `hub_wall` = HubCtaWall ·
  * `blog_cta` = BlogConversionCta · `search_modal` = SearchCtaModal ·
  * `judgment_summary` = JudgmentSummary.
  */
