@@ -24,6 +24,15 @@ tests/
 !backend/tests/
 backend/tests/*
 !backend/tests/test_masking_wiring.py
+# the audit request-context suite is durable: audit_logs.ip_address/user_agent
+# are filled from a ContextVar rather than from arguments, so NOTHING at a call
+# site would fail if that plumbing silently stopped working — the rows would
+# just go back to NULL, which is what they were for the whole life of the table
+# until 2026-09-13. It also pins the trust boundary: with TRUST_CF_HEADERS off a
+# client-supplied CF-Connecting-IP must never win, or the audit trail's origin
+# becomes forgeable by anyone who can reach the Railway origin directly. A
+# forged IP in an abuse investigation is worse than no IP.
+!backend/tests/test_audit_request_context.py
 # the aggregator prompt-identity suite is durable: adding the editorial variants
 # meant extracting the three mode bodies out of PROMPT_MODE_*, and that refactor
 # is only safe because those three prompts stayed byte-identical — asserted by

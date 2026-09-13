@@ -36,6 +36,7 @@ from shared import pricing
 from shared.auth.jwt import prewarm_jwks
 from shared.config import get_settings
 from shared.db.client import get_supabase_client, get_supabase_anon_client
+from backend.app.middleware.request_context import capture_request_context
 from shared.cache.redis import get_async_redis_client
 from shared.observability import (
     configure_logfire,
@@ -475,6 +476,11 @@ def create_app() -> FastAPI:
     async def request_id_middleware(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
         request.state.request_id = request_id
+        # Publish caller IP + User-Agent on ContextVars so write_audit_log() can
+        # fill audit_logs.ip_address / user_agent without every service call site
+        # having to thread a Request through. Innermost middleware, so this runs
+        # after the rate limiter and origin lock have already vetted the request.
+        capture_request_context(request)
         response: Response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response
