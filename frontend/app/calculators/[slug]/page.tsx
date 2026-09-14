@@ -14,6 +14,7 @@ import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { CalculatorForm } from "@/components/calculators/CalculatorForm";
 import { CALCULATORS, getCalculator } from "@/lib/calculators/registry";
 import type { BreadcrumbItem, ReferenceItem } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -49,7 +50,7 @@ export async function generateMetadata({
 
   const title = `حاسبة ${calc.title_ar} — احسبها مجاناً | ريحان`;
   const canonical = `/calculators/${encodeURIComponent(calc.slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(`حاسبة ${calc.title_ar}`)}`;
+  const ogImage = ogImageUrl(`حاسبة ${calc.title_ar}`);
 
   return {
     title,

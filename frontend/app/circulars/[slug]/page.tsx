@@ -21,6 +21,7 @@ import type {
   MetadataItem,
   OfficialSourceLink,
 } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -46,7 +47,7 @@ export async function generateMetadata({
     toSnippet(doc.text) ||
     `${doc.title} — نص التعميم وجهته المصدرة عبر ريحان.`;
   const canonical = `/circulars/${encodeURIComponent(doc.slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(doc.title)}`;
+  const ogImage = ogImageUrl(doc.title);
 
   return {
     title,

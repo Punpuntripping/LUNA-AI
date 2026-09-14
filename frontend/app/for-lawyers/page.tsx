@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { ForLawyersView } from "@/components/marketing/ForLawyersView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "ريحان للقانونيين — هل يأخذ الذكاء الاصطناعي مكان المحامي؟";
 const DESCRIPTION =
   "إجابات صريحة على مخاوف المحامي السعودي من الذكاء الاصطناعي: وظيفتك، ومعرفتك، وبيانات عملائك. وكيف يقلّص ريحان وقت الصياغة، ويعطيك إلماماً شاملاً بالقضية، ويفتح لك قطاعات خارج تخصّصك.";
 const URL = "https://rayhanai.com/for-lawyers";
-const OG_IMAGE = `/og?title=${encodeURIComponent("ريحان للقانونيين")}`;
+const OG_IMAGE = ogImageUrl("ريحان للقانونيين");
 
 export const metadata: Metadata = {
   title: TITLE,

@@ -33,6 +33,7 @@ import type {
   TocEntry,
   OfficialSourceLink,
 } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -101,7 +102,7 @@ export async function generateMetadata({
     (doc.summary_md ? toSnippet(doc.summary_md) : "") ||
     `${doc.subject} — حكم صادر عن ${doc.court}: الوقائع والأسباب والمنطوق والأنظمة المستند إليها عبر ريحان.`;
   const canonical = `/judgments/${encodeURIComponent(doc.slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(doc.subject)}`;
+  const ogImage = ogImageUrl(doc.subject);
 
   return {
     title,

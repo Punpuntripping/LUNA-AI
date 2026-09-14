@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { VsChatGptView } from "@/components/marketing/VsChatGptView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "ريحان مقابل ChatGPT — لماذا لا تكفي الأدوات العامة للقانون السعودي";
 const DESCRIPTION =
   "مقارنة مباشرة بين ريحان والأدوات العامة مثل ChatGPT في العمل القانوني السعودي: دقّة المصادر، تغطية الأنظمة والأحكام، التخصّص للمحامي، واستخراج بيانات المستندات.";
 const URL = "https://rayhanai.com/vs-chatgpt";
-const OG_IMAGE = `/og?title=${encodeURIComponent("ريحان مقابل الأدوات العامة")}`;
+const OG_IMAGE = ogImageUrl("ريحان مقابل الأدوات العامة");
 
 export const metadata: Metadata = {
   title: TITLE,

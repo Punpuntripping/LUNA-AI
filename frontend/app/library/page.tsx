@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { LibraryHubView } from "@/components/library/sectors/LibraryHubView";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // `/library` — «المكتبة القانونية», the unified public hub (library_sectors.md
 // §8.1). Server component, ISR via the fetch revalidate window in
@@ -18,7 +19,7 @@ const HUB_DESCRIPTION =
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

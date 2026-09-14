@@ -9,6 +9,7 @@ import {
   isCourtSlug,
   normalizeCourtSlug,
 } from "@/lib/library/courts";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public library — page 1 of ONE court section: `/judgments/courts/{court}`.
 // Server component; the DATA is ISR via the fetch revalidate window in
@@ -88,7 +89,7 @@ export async function generateMetadata({
   const title = `${heading} | ريحان`;
   const description = `${label} — أحكامها ووقائعها وأسبابها ومنطوقها، والأنظمة التي استندت إليها، موثّقة عبر ريحان.`;
   const canonical = `/judgments/courts/${encodeURIComponent(slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(heading)}`;
+  const ogImage = ogImageUrl(heading);
 
   return {
     title,

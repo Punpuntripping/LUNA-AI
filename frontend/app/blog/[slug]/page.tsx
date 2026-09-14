@@ -27,6 +27,7 @@ import type {
   BlogSubjectFeedResponse,
   PublicBlogDetail,
 } from "@/types";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -210,7 +211,7 @@ export async function generateMetadata({
     const title = truncate(blog.title);
     const description = blogDescription(blog.content_md);
     const canonical = blogCanonicalPath(blog.slug);
-    const ogImage = `/og?title=${encodeURIComponent(title)}&kind=blog`;
+    const ogImage = ogImageUrl(title, "blog");
     return {
       title,
       description,
@@ -247,7 +248,7 @@ export async function generateMetadata({
   // address. (A legacy post that is ever backfilled into `public_blogs` would
   // gain one; that is a content decision, plan §12.4.)
   const canonical = `/blog/${token}`;
-  const ogImage = `/og?title=${encodeURIComponent(title)}&kind=blog`;
+  const ogImage = ogImageUrl(title, "blog");
   return {
     title,
     description: GENERIC_DESCRIPTION,
@@ -347,7 +348,7 @@ export default async function BlogSlugPage({ params }: PageProps) {
       // a render-time stamp.
       datePublished: blog.created_at,
       dateModified: blog.updated_at ?? blog.created_at,
-      image: `${SITE_URL}/og?title=${encodeURIComponent(headline)}&kind=blog`,
+      image: `${SITE_URL}${ogImageUrl(headline, "blog")}`,
     });
 
     return (
@@ -369,7 +370,7 @@ export default async function BlogSlugPage({ params }: PageProps) {
     url: `${SITE_URL}/blog/${token}`,
     datePublished: post.created_at,
     dateModified: post.created_at,
-    image: `${SITE_URL}/og?title=${encodeURIComponent(headline)}&kind=blog`,
+    image: `${SITE_URL}${ogImageUrl(headline, "blog")}`,
   });
 
   // Branch on the share template: `title` → editorial blog article;

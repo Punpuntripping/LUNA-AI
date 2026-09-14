@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { FormsHubView } from "@/components/library/hub/FormsHubView";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public SEO hub — page 1 of /forms (نماذج). PUBLISHED forms only; empty until a
 // reviewer approves + publishes. Server component, ISR (NO force-dynamic).
@@ -10,7 +11,7 @@ const HUB_DESCRIPTION =
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

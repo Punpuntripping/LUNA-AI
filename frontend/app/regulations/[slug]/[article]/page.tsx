@@ -24,6 +24,7 @@ import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
 import { getRegulationArticle, toDocStatus, toSnippet } from "@/lib/library/api";
 import { getCalculatorsForArticle } from "@/lib/calculators/registry";
 import type { BreadcrumbItem } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -57,7 +58,7 @@ export async function generateMetadata({
     toSnippet(doc.text, 150) ||
     `${heading} — نصّها النظامي وشرحها والمواد المرتبطة عبر ريحان.`;
   const canonical = articlePath(doc.regulation.slug, doc.slug);
-  const ogImage = `/og?title=${encodeURIComponent(heading)}`;
+  const ogImage = ogImageUrl(heading);
 
   return {
     title,

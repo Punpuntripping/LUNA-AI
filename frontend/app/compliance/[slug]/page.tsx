@@ -32,6 +32,7 @@ import type {
   OfficialSourceLink,
   TocEntry,
 } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // One service guide — «الدليل الشامل بالصور» for a government service.
 //
@@ -125,7 +126,7 @@ export async function generateMetadata({
     // guide branch below there is nothing for `encodeURIComponent` to do here
     // (the header note in `lib/library/entities.ts` explains why).
     const entityCanonical = entityPath(slug);
-    const entityOgImage = `/og?title=${encodeURIComponent(heading)}`;
+    const entityOgImage = ogImageUrl(heading);
     return {
       title: entityTitle,
       description: entityDescription,
@@ -166,7 +167,7 @@ export async function generateMetadata({
   const description =
     toSnippet(doc.summary) || `${display} — خطوات الخدمة عبر ريحان.`;
   const canonical = `/compliance/${encodeURIComponent(doc.slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(display)}`;
+  const ogImage = ogImageUrl(display);
 
   // NO `robots` KEY, and that is the point of the whole wing: these pages are
   // the indexable half of /compliance. The hub's deep pages still go `noindex`

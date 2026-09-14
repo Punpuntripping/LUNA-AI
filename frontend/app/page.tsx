@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { LandingPageBody } from "@/components/landing/LandingPageBody";
 import { SitePageShell } from "@/components/site/SitePageShell";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const OG_TITLE = "ريحان — المساعد القانوني الذكي في الأنظمة السعودية";
-const OG_IMAGE = `/og?title=${encodeURIComponent("المساعد القانوني الذكي في الأنظمة السعودية")}`;
+const OG_IMAGE = ogImageUrl("المساعد القانوني الذكي في الأنظمة السعودية");
 
 export const metadata: Metadata = {
   title: OG_TITLE,

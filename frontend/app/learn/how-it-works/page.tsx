@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { HowItWorksView } from "@/components/learn/HowItWorksView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "كيف يعمل ريحان — من السؤال إلى التقرير الموثّق";
 const DESCRIPTION =
   "تعرّف على وكلاء ريحان الثلاثة: الموجّه الذي يفهم طلبك، والباحث الذي يغوص في المكتبة القانونية بوضعَي بحث الأنظمة والأحكام القضائية، والكاتب الذي يصوغ مستنداتك من بحث موثّق وقوالبك الخاصة.";
 const URL = "https://rayhanai.com/learn/how-it-works";
-const OG_IMAGE = `/og?title=${encodeURIComponent("كيف يعمل ريحان؟")}`;
+const OG_IMAGE = ogImageUrl("كيف يعمل ريحان؟");
 
 export const metadata: Metadata = {
   title: TITLE,

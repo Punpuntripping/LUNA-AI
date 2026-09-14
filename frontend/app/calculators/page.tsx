@@ -4,6 +4,7 @@ import { TopicBreadcrumbs } from "@/components/library/blocks/TopicBreadcrumbs";
 import { CalculatorCard } from "@/components/calculators/CalculatorCard";
 import { CALCULATORS } from "@/lib/calculators/registry";
 import type { BreadcrumbItem } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public /calculators hub. Static — the calculator set is a code registry, so
 // there is no data fetch and no ISR revalidation window; prerendered at build.
@@ -14,7 +15,7 @@ const HUB_DESCRIPTION =
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} — احسب حقوقك مجاناً | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

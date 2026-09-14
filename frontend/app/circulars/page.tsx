@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CircularsHubView } from "@/components/library/hub/CircularsHubView";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public SEO hub — page 1 of /circulars. Server component, ISR via the fetch
 // revalidate window in `lib/library/api.ts` (NO force-dynamic).
@@ -10,7 +11,7 @@ const HUB_DESCRIPTION =
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

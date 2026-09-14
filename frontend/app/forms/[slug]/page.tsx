@@ -16,6 +16,7 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle, buildPaywallFragment } from "@/lib/seo/schema";
 import { getFormDetail, toSnippet } from "@/lib/library/api";
 import type { BreadcrumbItem } from "@/types/library";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
 
@@ -41,7 +42,7 @@ export async function generateMetadata({
     toSnippet(detail.use_case_md || detail.intro_md || "") ||
     `${detail.title} — نموذج قانوني جاهز: متى تستخدمه وأساسه النظامي عبر ريحان.`;
   const canonical = `/forms/${encodeURIComponent(detail.slug)}`;
-  const ogImage = `/og?title=${encodeURIComponent(detail.title)}`;
+  const ogImage = ogImageUrl(detail.title);
 
   return {
     title,

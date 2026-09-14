@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { JudgmentsHubView } from "@/components/library/hub/JudgmentsHubView";
 import { readParam, type RawSearchParams } from "@/lib/library/hub-query";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public library hub — page 1 of /judgments. Server component; the DATA is ISR
 // via the fetch revalidate window in `lib/library/api.ts` (NO force-dynamic).
@@ -33,7 +34,7 @@ interface PageProps {
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

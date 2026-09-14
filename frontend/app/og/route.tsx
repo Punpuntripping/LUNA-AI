@@ -3,63 +3,55 @@ import { join } from "node:path";
 import { ImageResponse } from "next/og";
 import { Shaper, type TextImage } from "@/lib/og/shape-text";
 
-// Dynamic Open Graph card, 1200×630, served at `/og?title=…[&kind=blog]`.
-// Used by `openGraph.images` across the site so link unfurls (WhatsApp, X,
-// LinkedIn) show a branded Arabic card instead of a bare URL.
+// Dynamic Open Graph card, 1200×630, served at `/og?title=…&v=N[&kind=blog]`.
+// Used by `openGraph.images` across the site — always through `lib/seo/og.ts`,
+// never hand-built — so link unfurls (WhatsApp, X, LinkedIn) show a branded
+// Arabic card instead of a bare URL.
 //
-// DESIGN. This is the marketing card kit's cover (`main`, landscape cut —
-// marketing_dashboard/templates/cards/main.html + _card.html) redrawn for
-// Satori, so a link preview reads as one of the social cards: a full-bleed
-// accent masthead (chevron strip, lockup + «مساعدك القانوني الذكي»), the
-// headline on the cream ground under an accent rule and kicker, and the accent
-// pill carrying the contact cluster. Tokens, sizes and the headline ladder are
-// the kit's. `kind=blog` adds the kicker «من مدوّنة ريحان» and moves a CTA
-// into the pill — on a link preview the whole image IS the link, so «اقرأ
-// المقال كاملاً» is a true statement there and nowhere else. The kit's muted
-// caption under the pill is dropped: at preview size (~500px wide) it would be
-// ~8px tall.
+// DESIGN. One deep-green field, cream headline. A link preview is ~500px wide
+// and lands in a column of white cards; the green field is what separates it
+// from them at a glance, and it carries the brand colour without asking the
+// reader to resolve a small logo. Reading order is RTL: the lockup takes the
+// right of the header and the headline the right of the stage, both against a
+// left margin the tagline and the domain occupy. `kind=blog` adds the kicker
+// «من مدوّنة ريحان» over a sage rule and the CTA «اقرأ المقال كاملاً» in the
+// footer — in a link preview the whole image IS the link, so the CTA is a true
+// statement there and nowhere else.
 //
-// TEXT. Every Arabic string is shaped by HarfBuzz in the kit's Noto Naskh
-// Arabic and placed as an SVG image — see lib/og/shape-text.ts for why Satori's
-// own text cannot do it. Satori still sets the Latin contact cluster, in Cairo.
+// The kit's social handles are deliberately NOT drawn: at preview scale
+// «rayhanai_sa» is ~8px tall, which buys nothing and crowds the domain.
+//
+// TEXT. Every Arabic string is shaped by HarfBuzz in Noto Naskh Arabic and
+// placed as an SVG image — see lib/og/shape-text.ts for why Satori's own text
+// cannot do it. Satori still sets the Latin domain, in Cairo.
 //
 // ASSETS are read with `fs` from `process.cwd()/assets` (NOT `fetch(new
 // URL(..., import.meta.url))` — that silently failed to resolve in the
 // standalone server). `next.config.mjs`'s `outputFileTracingIncludes` copies
 // them, and HarfBuzz's wasm, into the standalone bundle. If loading fails the
-// card still renders — masthead and pill, no text — rather than 500.
+// card still renders — the green field and its rules, no text — rather than
+// 500.
 
 export const runtime = "nodejs";
 
-// Kit tokens (templates/cards/base.css, light theme) and the kit's default
-// accent (catalog.json `mode`: light + aubergine).
 const KIT = {
-  accent: "#4C4158",
-  bg: "#F7F2EC",
-  ink: "#18141A",
+  ground: "#22362C", // deep green, one step under --primary-hover
   cream: "#FCF8F2",
-  creamSoft: "rgba(252, 248, 242, 0.8)",
-  creamTagline: "rgba(252, 248, 242, 0.72)",
-  creamRule: "rgba(252, 248, 242, 0.4)",
-  chevron: "rgba(252, 248, 242, 0.34)",
+  creamSoft: "rgba(252, 248, 242, 0.72)",
+  creamRule: "rgba(252, 248, 242, 0.28)",
+  sage: "#A8B6B0",
 } as const;
 
 const WIDTH = 1200;
 const HEIGHT = 630;
-const INSET = 72;
+const INSET = 76;
 const BODY_WIDTH = WIDTH - 2 * INSET;
-const LOGO_HEIGHT = 48;
-const LOGO_RATIO = 1.386; // both kit cuts share one 444×320 crop box
+const LOGO_HEIGHT = 96;
+const LOGO_RATIO = 480 / 326; // the cream lockup's own crop box
 
 const DEFAULT_TITLE = "المساعد القانوني الذكي في الأنظمة السعودية";
 const TAGLINE = "مساعدك القانوني الذكي";
 const BLOG = { kicker: "من مدوّنة ريحان", cta: "اقرأ المقال كاملاً" } as const;
-
-// Simple Icons (CC0), the same marks the kit's contact cluster draws.
-const LINKEDIN_PATH =
-  "M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z";
-const X_PATH =
-  "M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z";
 
 interface Assets {
   shaper: Shaper;
@@ -78,7 +70,12 @@ function loadAssets(): Promise<Assets | null> {
       readFile(join(fonts, "NotoNaskhArabic-wght.ttf")),
       readFile(join(fonts, "Cairo-Regular.ttf")),
       readFile(join(fonts, "Cairo-Bold.ttf")),
-      readFile(join(root, "assets", "brand", "rayhan-logo-on-accent.png")),
+      // The cream-ink lockup: `public/brand/lockup-on-light.png` — the
+      // OUTLINE-leaf artwork — with every opaque pixel repainted `#FCF8F2`.
+      // `lockup-on-dark.png` cannot stand in: its leaf body is charcoal so it
+      // can merge into the dark canvas `#1A1917`, and on this green it reads
+      // as a dark blob instead of line art.
+      readFile(join(root, "assets", "brand", "rayhan-logo-cream-ink.png")),
     ]);
     return {
       shaper: new Shaper({
@@ -98,8 +95,8 @@ function loadAssets(): Promise<Assets | null> {
   return assets;
 }
 
-// The kit's landscape headline ladder (main.html): ≤30 chars → 84, ≤55 → 70,
-// ≤78 → 62, ≤90 → 56, else 50.
+// The marketing kit's landscape headline ladder (main.html): ≤30 chars → 84,
+// ≤55 → 70, ≤78 → 62, ≤90 → 56, else 50.
 function headlineSize(length: number): number {
   if (length <= 30) return 84;
   if (length <= 55) return 70;
@@ -122,33 +119,6 @@ function Text({ image }: { image: TextImage }) {
   );
 }
 
-function Icon({ path, size }: { path: string; size: number }) {
-  return (
-    <svg viewBox="0 0 24 24" width={size} height={size} fill={KIT.cream}>
-      <path d={path} />
-    </svg>
-  );
-}
-
-/** rayhanai.com │ [in] rayhanai-sa  [X] rayhanai_sa — kit `brand.contact(20)`
- * inverted for the accent pill. Laid out LTR, as on the cards. */
-function Contact() {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 16, color: KIT.cream }}>
-      <div style={{ display: "flex", fontSize: 20, fontWeight: 700 }}>rayhanai.com</div>
-      <div style={{ display: "flex", width: 1, height: 20, backgroundColor: KIT.creamRule }} />
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon path={LINKEDIN_PATH} size={19} />
-        <div style={{ display: "flex", fontSize: 19, color: KIT.creamSoft }}>rayhanai-sa</div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon path={X_PATH} size={19} />
-        <div style={{ display: "flex", fontSize: 19, color: KIT.creamSoft }}>rayhanai_sa</div>
-      </div>
-    </div>
-  );
-}
-
 export async function GET(request: Request): Promise<Response> {
   const { searchParams } = new URL(request.url);
 
@@ -158,40 +128,20 @@ export async function GET(request: Request): Promise<Response> {
 
   const loaded = await loadAssets();
   const shaper = loaded?.shaper;
+  const line = (text: string, size: number, weight: 400 | 500 | 600 | 700, color: string) =>
+    shaper?.render(text, { size, weight, color, lineHeight: 1.4, maxWidth: BODY_WIDTH });
 
   const headline = shaper?.render(title, {
     size: headlineSize(title.length),
     weight: 700,
-    color: KIT.ink,
+    color: KIT.cream,
     lineHeight: 1.35,
     maxWidth: BODY_WIDTH,
     balance: true,
   });
-  const tagline = shaper?.render(TAGLINE, {
-    size: 21,
-    weight: 500,
-    color: KIT.creamTagline,
-    lineHeight: 1.4,
-    maxWidth: BODY_WIDTH,
-  });
-  const kicker = blog
-    ? shaper?.render(BLOG.kicker, {
-        size: 24,
-        weight: 600,
-        color: KIT.accent,
-        lineHeight: 1.4,
-        maxWidth: BODY_WIDTH,
-      })
-    : undefined;
-  const cta = blog
-    ? shaper?.render(BLOG.cta, {
-        size: 24,
-        weight: 700,
-        color: KIT.cream,
-        lineHeight: 1.4,
-        maxWidth: BODY_WIDTH,
-      })
-    : undefined;
+  const tagline = line(TAGLINE, 24, 500, KIT.creamSoft);
+  const kicker = blog ? line(BLOG.kicker, 25, 600, KIT.sage) : undefined;
+  const cta = blog ? line(BLOG.cta, 24, 600, KIT.creamSoft) : undefined;
 
   // Rows are `row-reverse` so JSX order is reading order, right to left.
   return new ImageResponse(
@@ -202,66 +152,33 @@ export async function GET(request: Request): Promise<Response> {
           height: "100%",
           display: "flex",
           flexDirection: "column",
-          backgroundColor: KIT.bg,
+          backgroundColor: KIT.ground,
+          padding: `54px ${INSET}px 48px`,
           fontFamily: "Cairo",
         }}
       >
-        {/* Masthead — kit card.band(), landscape. */}
+        {/* Header — lockup on the reading edge, tagline against the margin. */}
         <div
           style={{
             display: "flex",
-            flexDirection: "column",
-            gap: 12,
-            padding: "18px 0",
-            backgroundColor: KIT.accent,
+            flexDirection: "row-reverse",
+            alignItems: "center",
+            justifyContent: "space-between",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              height: 20,
-              padding: "0 44px",
-            }}
-          >
-            {Array.from({ length: 18 }, (_, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  width: 14,
-                  height: 14,
-                  borderTop: `3px solid ${KIT.chevron}`,
-                  borderRight: `3px solid ${KIT.chevron}`,
-                  transform: "rotate(-45deg)",
-                }}
-              />
-            ))}
-          </div>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "row-reverse",
-              alignItems: "center",
-              gap: 16,
-              padding: `0 ${INSET}px`,
-            }}
-          >
-            {loaded ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={loaded.logo}
-                alt="ريحان"
-                width={Math.round(LOGO_HEIGHT * LOGO_RATIO)}
-                height={LOGO_HEIGHT}
-              />
-            ) : null}
-            {tagline ? <Text image={tagline} /> : null}
-          </div>
+          {loaded ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={loaded.logo}
+              alt="ريحان"
+              width={Math.round(LOGO_HEIGHT * LOGO_RATIO)}
+              height={LOGO_HEIGHT}
+            />
+          ) : null}
+          {tagline ? <Text image={tagline} /> : null}
         </div>
 
-        {/* Body — kicker block and headline, centred in what is left. */}
+        {/* Stage — kicker block and headline, centred in what is left. */}
         <div
           style={{
             display: "flex",
@@ -269,39 +186,28 @@ export async function GET(request: Request): Promise<Response> {
             alignItems: "flex-end",
             justifyContent: "center",
             flexGrow: 1,
-            gap: 20,
-            padding: `18px ${INSET}px 14px`,
+            gap: 22,
           }}
         >
           {kicker ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 14 }}>
-              <div
-                style={{
-                  display: "flex",
-                  width: 64,
-                  height: 5,
-                  borderRadius: 3,
-                  backgroundColor: KIT.accent,
-                }}
-              />
+              <div style={{ display: "flex", width: 72, height: 5, borderRadius: 3, backgroundColor: KIT.sage }} />
               <Text image={kicker} />
             </div>
           ) : null}
           {headline ? <Text image={headline} /> : null}
         </div>
 
-        {/* Pill — kit card.pill(); the blog CTA takes the reading edge. */}
-        <div style={{ display: "flex", padding: `0 ${INSET}px 26px` }}>
+        {/* Footer — hairline, then the CTA on the reading edge and the domain
+            against the margin, where a reader looks for an address. */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", height: 1, backgroundColor: KIT.creamRule, marginBottom: 22 }} />
           <div
             style={{
               display: "flex",
               flexDirection: "row-reverse",
-              flexGrow: 1,
               alignItems: "center",
-              justifyContent: cta ? "space-between" : "center",
-              padding: cta ? "10px 28px" : "12px 24px",
-              borderRadius: 12,
-              backgroundColor: KIT.accent,
+              justifyContent: "space-between",
             }}
           >
             {cta ? (
@@ -312,7 +218,7 @@ export async function GET(request: Request): Promise<Response> {
                   width={24}
                   height={24}
                   fill="none"
-                  stroke={KIT.cream}
+                  stroke={KIT.sage}
                   strokeWidth={2.5}
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -320,8 +226,10 @@ export async function GET(request: Request): Promise<Response> {
                   <path d="M19 12H5M11 6l-6 6 6 6" />
                 </svg>
               </div>
-            ) : null}
-            <Contact />
+            ) : (
+              <div style={{ display: "flex" }} />
+            )}
+            <div style={{ display: "flex", fontSize: 24, fontWeight: 700, color: KIT.cream }}>rayhanai.com</div>
           </div>
         </div>
       </div>

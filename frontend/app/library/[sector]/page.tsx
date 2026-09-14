@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { SectorOverviewView } from "@/components/library/sectors/SectorOverviewView";
 import { getSectorDetail, getSectors } from "@/lib/library/api";
 import { isReservedSectorSlug, sectorHeading } from "@/lib/library/sectors";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // `/library/{sector}` — one القطاع's overview (library_sectors.md §8.3).
 // Server component, ISR via the fetch revalidate window (NO force-dynamic, NO
@@ -52,7 +53,7 @@ export async function generateMetadata({
   const heading = sectorHeading(detail.name_ar);
   const title = `${heading} — المكتبة القانونية | ريحان`;
   const description = `كل ما يخص قطاع ${detail.name_ar} في مكتبة ريحان القانونية: الأنظمة واللوائح، والأحكام القضائية، والتعاميم التنظيمية.`;
-  const ogImage = `/og?title=${encodeURIComponent(heading)}`;
+  const ogImage = ogImageUrl(heading);
 
   return {
     title,

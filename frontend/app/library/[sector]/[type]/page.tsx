@@ -10,6 +10,7 @@ import {
   sectorTypeHeading,
   sectorTypeRobots,
 } from "@/lib/library/sectors";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // `/library/{sector}/{type}` — page 1 of one sector×type list
 // (library_sectors.md §8.3, D7: real paginated paths, not client-side tabs).
@@ -61,7 +62,7 @@ export async function generateMetadata({
   const heading = sectorTypeHeading(type, detail.name_ar);
   const title = `${heading} | ريحان`;
   const description = `${LIBRARY_TYPE_META[type].description} — قطاع ${detail.name_ar} في مكتبة ريحان القانونية.`;
-  const ogImage = `/og?title=${encodeURIComponent(heading)}`;
+  const ogImage = ogImageUrl(heading);
 
   // Always `noindex` since the wing went paid-only (2026-08-11): this page's
   // anonymous body — which, being statically prerendered, is the body Googlebot

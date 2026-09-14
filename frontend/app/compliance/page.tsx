@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ComplianceHubView } from "@/components/library/hub/ComplianceHubView";
+import { ogImageUrl } from "@/lib/seo/og";
 
 // Public SEO hub — page 1 of /compliance, backed by `service_guides`: 169
 // guides to the most-used Saudi government services, each one OUR OWN authored
@@ -17,7 +18,7 @@ const HUB_DESCRIPTION =
 
 export function generateMetadata(): Metadata {
   const title = `${HUB_TITLE} | ريحان`;
-  const ogImage = `/og?title=${encodeURIComponent(HUB_TITLE)}`;
+  const ogImage = ogImageUrl(HUB_TITLE);
   return {
     title,
     description: HUB_DESCRIPTION,

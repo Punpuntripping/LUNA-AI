@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { UsageLimitsView } from "@/components/learn/UsageLimitsView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "سياسة حد الاستخدام — كم تستهلك كل عملية في ريحان؟";
 const DESCRIPTION =
   "ريحان يحاسبك بالنقطة لا بعدد الرسائل: البحث المعمّق 3–5 نقاط، صياغة المستند نقطة واحدة، والسؤال العام جزء من نقطة. أرقام مقاسة على استخدام حقيقي، مع ما تتيحه كل باقة في الجلسة والأسبوع.";
 const URL = "https://rayhanai.com/learn/usage-limits";
-const OG_IMAGE = `/og?title=${encodeURIComponent("سياسة حد الاستخدام")}`;
+const OG_IMAGE = ogImageUrl("سياسة حد الاستخدام");
 
 export const metadata: Metadata = {
   title: TITLE,

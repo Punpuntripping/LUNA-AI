@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { WorkspaceView } from "@/components/learn/WorkspaceView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "مساحة العمل في ريحان — ذاكرة موثّقة لمحادثتك القانونية";
 const DESCRIPTION =
   "تعرّف على مساحة العمل في ريحان: المسودات ونتائج البحث والملاحظات والمرفقات والمراجع المرقّمة وملخص المحادثة — ولماذا تُحفظ الحقائق المهمة بجانب الحوار حتى تبقى إجابات الوكلاء موثّقة لا مرتجلة.";
 const URL = "https://rayhanai.com/learn/workspace";
-const OG_IMAGE = `/og?title=${encodeURIComponent("مساحة العمل في ريحان")}`;
+const OG_IMAGE = ogImageUrl("مساحة العمل في ريحان");
 
 export const metadata: Metadata = {
   title: TITLE,

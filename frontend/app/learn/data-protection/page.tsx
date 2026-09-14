@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { DataProtectionView } from "@/components/learn/DataProtectionView";
 import { buildArticle } from "@/lib/seo/schema";
+import { ogImageUrl } from "@/lib/seo/og";
 
 const TITLE = "كيف نحمي بياناتك وبيانات عملائك؟ — الأمان في ريحان";
 const DESCRIPTION =
   "بياناتك محفوظة في خوادم ريحان: معزولة على حسابك، مشفّرة، لا تُباع ولا تُستخدم للتدريب. تعرّف على شركاء المعالجة — Alibaba Cloud للحوسبة ومُيسّر للمدفوعات — وكيف تقنّع خدمة تقنيع المعرّفات أرقام هويات موكليك وجوالاتهم قبل أن يغادر النص خوادمنا.";
 const URL = "https://rayhanai.com/learn/data-protection";
-const OG_IMAGE = `/og?title=${encodeURIComponent("كيف نحمي بياناتك؟")}`;
+const OG_IMAGE = ogImageUrl("كيف نحمي بياناتك؟");
 
 export const metadata: Metadata = {
   title: TITLE,
