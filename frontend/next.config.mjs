@@ -5,13 +5,23 @@ const nextConfig = {
   // Standalone output for Railway deployment
   output: "standalone",
 
-  // The /og ImageResponse route reads its Arabic TTFs from
-  // `assets/fonts/` at runtime via `fs`. Standalone builds only copy files the
-  // tracer can see, and a dynamic `fs.readFile(join(process.cwd(), ...))` isn't
-  // statically analyzable — so include the fonts explicitly for the /og route.
+  // The /og ImageResponse route reads its fonts and logo from `assets/` at
+  // runtime via `fs`. Standalone builds only copy files the tracer can see, and
+  // a dynamic `fs.readFile(join(process.cwd(), ...))` isn't statically
+  // analyzable — so include them explicitly for the /og route, along with
+  // HarfBuzz's wasm, which harfbuzzjs loads relative to its own module.
   outputFileTracingIncludes: {
-    "/og": ["./assets/fonts/**"],
+    "/og": [
+      "./assets/fonts/**",
+      "./assets/brand/**",
+      "./node_modules/harfbuzzjs/dist/harfbuzz.wasm",
+    ],
   },
+
+  // harfbuzzjs is ESM with a top-level await that fetches its wasm from
+  // `new URL("harfbuzz.wasm", import.meta.url)`. Left to Node, that resolves
+  // to the file in node_modules; bundled, it would point into .next/server.
+  serverExternalPackages: ["harfbuzzjs"],
 
   // Enable React strict mode
   reactStrictMode: true,
