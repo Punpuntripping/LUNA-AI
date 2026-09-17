@@ -39,8 +39,16 @@ export const ENGAGE_RATIOS = [0.3, 0.8] as const;
  * Without it, a fling-scroll to the bottom of a long نظام — the most common
  * gesture on a phone — fires the popup in under two seconds, which reads as an
  * ambush and converts nobody.
+ *
+ * Cut 8s → 4s on 2026-09-17. Eight seconds was set blind, before anyone had
+ * ever watched the popup fire (it could not: see the gate-4 note in
+ * `AnonCtaPopup`), and in practice it held the pitch back past the point where
+ * a reader who had already crossed 30% moved on. Four still clears the
+ * fling-ambush case this floor exists for — a fling resolves in under two
+ * seconds — while landing the popup inside the reader's attention rather than
+ * after it.
  */
-export const MIN_DWELL_MS = 8_000;
+export const MIN_DWELL_MS = 4_000;
 
 /**
  * Minimum quiet stretch between two impressions on the SAME document.
