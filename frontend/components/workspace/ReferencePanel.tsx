@@ -1461,6 +1461,20 @@ export function referenceLabel(ref: Reference): string {
  * FROZEN at publish time, so a post published before the case fields shipped has
  * neither, and the filter below degrades it to exactly the label it copies today.
  */
+/**
+ * `«{title} — {entity}»`, unless the title already says the entity.
+ *
+ * Both corpora embed the issuing body in the document's own name often enough
+ * that a blind append is the common case, not the edge one — see the service
+ * numbers at the call site. Substring, not equality: the name that swallows the
+ * entity usually PREFIXES it rather than equalling it.
+ */
+function appendOnce(title: string, entity: string | undefined): string {
+  const tail = (entity ?? "").trim();
+  if (!tail || title.includes(tail)) return title;
+  return `${title} — ${tail}`;
+}
+
 export function referenceCopyLabel(ref: Reference): string {
   const title = referenceLabel(ref);
 
@@ -1480,13 +1494,18 @@ export function referenceCopyLabel(ref: Reference): string {
     // `regulation_title` is where the compliance mapping parks
     // `services.provider_name` — the panel's "parent label" slot. Not
     // `entity_name`, which that mapping leaves empty for this domain.
-    const provider = (ref.regulation_title ?? "").trim();
-    return provider && provider !== title ? `${title} — ${provider}` : title;
+    //
+    // ⚠ `services.service_name_ar` ALREADY OPENS WITH THE PROVIDER on 4,944 of
+    // 4,985 rows («وزارة العدل - الحاسبة العمالية»), so appending it there
+    // yields «… الحاسبة العمالية — وزارة العدل» — the ministry twice in one
+    // line. The corpus is the reason this is a containment test and not the
+    // equality test it started as: equality catches none of those 4,944.
+    // Appending is for the 41 rows whose name stands alone.
+    return appendOnce(title, ref.regulation_title);
   }
 
   if (ref.domain === "circulars") {
-    const entity = (ref.entity_name ?? "").trim();
-    return entity && entity !== title ? `${title} — ${entity}` : title;
+    return appendOnce(title, ref.entity_name);
   }
 
   return title;
