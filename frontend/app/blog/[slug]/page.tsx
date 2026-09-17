@@ -57,11 +57,24 @@ const SITE_URL = "https://rayhanai.com";
 // decode (`lib/blog/slug.ts`); everything below reads its output, and
 // `lib/blog/api.ts` performs the single re-encode for the wire.
 //
-// Server component. `force-dynamic` (not ISR) is inherited from the route this
-// replaced: the legacy read bumps `view_count` server-side on every fetch, and
-// a revalidation window would silently stop counting reads of the 99 links.
-
-export const dynamic = "force-dynamic";
+// Server component. ISR SINCE 2026-09-17 — there is deliberately no `dynamic`
+// export. The caching mode is inferred per render from the fetchers in
+// `lib/blog/api.ts`: an Arabic slug goes through the cached `getPublicBlog` and
+// lands in the Full Route Cache, a 32-hex legacy token goes through the
+// `no-store` `getLegacyBlogPost` and renders dynamically. That split is what
+// lets the public wing get cached WITHOUT stopping the `view_count` bump on the
+// 99 hand-delivered share links, which is the reason the whole route was
+// `force-dynamic` until now.
+//
+// ⚠ WHY THIS CHANGED, so nobody "restores" it: under `force-dynamic` every
+// crawl re-rendered the page, and every render bumped `public_blogs.view_count`
+// server-side, which fired the `updated_at` trigger, which IS this article's
+// `<lastmod>` and JSON-LD `dateModified`. Googlebot's own visit therefore
+// re-dated the article it had just crawled — the wing announced "modified
+// seconds ago" forever over content that never changed, and none of the 18
+// articles got indexed. Migration 162 detached the counter from the date;
+// caching the render keeps the counter (and the backend) out of the crawl path
+// in the first place.
 
 // Next 15: route `params` is async and must be awaited.
 interface PageProps {

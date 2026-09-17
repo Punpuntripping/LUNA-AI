@@ -25,6 +25,12 @@ import { getBlogSubjects } from "@/lib/blog/api";
 // than the subject there is no grouping key left, so volume is the order.
 //
 // Server component; soft-fails to an empty index rather than a 5xx.
+//
+// ⚠ STAYS `force-dynamic` for the same reason `app/blog/page.tsx` does: a
+// STATIC route with a revalidate window prerenders at build, and a build that
+// cannot reach the backend bakes the empty index into a 200. See the long note
+// there. `/blog/[slug]` is ISR because it is a dynamic segment and never
+// prerenders.
 
 export const dynamic = "force-dynamic";
 

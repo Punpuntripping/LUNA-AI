@@ -19,6 +19,21 @@ import type { BlogSubject } from "@/types";
 // server→server origin, `X-Edge-Secret` re-attached). Both fetchers soft-fail
 // to an empty list, so an unreachable backend renders an empty gallery instead
 // of a 5xx — Google must never see an error from a public page.
+//
+// ⚠ STAYS `force-dynamic` WHILE `/blog/[slug]` MOVED TO ISR (2026-09-17), and
+// the asymmetry is deliberate. This is a STATIC route, so a revalidate window
+// would make Next prerender it during `npm run build` — and the Railway build
+// runs while the backend may be unreachable, where `getPublicBlogGallery` soft-
+// fails to `[]`. That bakes an EMPTY gallery into a 200 response, the exact
+// trap `project_isr_bake_docker_cache_trap` records, and a same-commit rebuild
+// cannot clear it. `/blog/[slug]` is immune because it is a dynamic segment
+// with no `generateStaticParams`: nothing prerenders at build, each article is
+// rendered on first request and cached from there.
+//
+// The cost of staying dynamic is one uncached render of one URL. The gallery is
+// also the ONLY crawl path into the articles (they link to the library, never
+// to each other), so serving it live means a newly approved article is
+// reachable immediately rather than at the end of a window.
 
 export const dynamic = "force-dynamic";
 
