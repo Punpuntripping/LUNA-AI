@@ -57,7 +57,9 @@ type Wing = (typeof WINGS)[number];
  *   /regulations/page/2         → false  (a hub page)
  *   /regulations/labor-law      → true
  *   /regulations/labor-law/74   → true   (a مادة)
- *   /blog/<token>               → true
+ *   /blog/subjects              → false  (the موضوع index — a grid)
+ *   /blog/<slug>                → true   (an editorial article)
+ *   /blog/<token>               → true   (a legacy share snapshot)
  *   /compliance/<slug>          → true   (a service guide)
  *   /forms/<slug>               → true   (walled ones stand down at fire time)
  *   /calculators/<slug>         → true   (a حاسبة — short page, dwell path)
@@ -68,5 +70,12 @@ export function isEligibleDoc(pathname: string): boolean {
   if (seg.length < 2) return false; // the bare hub (or "/")
   if (!WINGS.includes(seg[0] as Wing)) return false;
   if (seg[1] === "page") return false; // /{wing}/page/{n} is a hub
+  // `/blog/subjects` — the LITERAL static segment that lists every موضوع, and
+  // the one blog surface under `/blog/{x}` whose path proves it is a grid. The
+  // subject LISTINGS it links to (`/blog/{ascii-kebab}`) cannot be told apart
+  // here and are deliberately not guessed at: a legacy share token is 32 hex,
+  // which satisfies the very same shape, and those 99 reading pages are exactly
+  // what this popup is for.
+  if (seg[0] === "blog" && seg[1] === "subjects") return false;
   return true;
 }

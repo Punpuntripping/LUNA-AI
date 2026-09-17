@@ -11,14 +11,14 @@
  *   Axis 2 — the quiet period:  a round arms a cooldown of `QUIET_DOCS` further
  *                               eligible DOCUMENTS (the `{n+1}` period).
  *
- *     doc 1  35% + 8s          →  POPUP   ← opens round 1, arms quietFor
+ *     doc 1  30% + 8s          →  POPUP   ← opens round 1, arms quietFor
  *            80% (+ MIN_GAP)   →  POPUP   ← same round: the cooldown it just
  *                                            armed must NOT block this
  *     doc 2                    →  silent  (quietFor 3 → 2)
  *     doc 3                    →  silent  (quietFor 2 → 1)
- *     doc 4  35% / 80%         →  POPUP ×2  ← round 2, the {n+1} period
+ *     doc 4  30% / 80%         →  POPUP ×2  ← round 2, the {n+1} period
  *     doc 5, 6                 →  silent
- *     doc 7  35% / 80%         →  POPUP ×2  ← round 3 = last of the session
+ *     doc 7  30% / 80%         →  POPUP ×2  ← round 3 = last of the session
  *     doc 8 …                  →  silent forever (cap reached)
  *
  * ⚠ Counting raw impressions instead of rounds is the mistake this shape exists

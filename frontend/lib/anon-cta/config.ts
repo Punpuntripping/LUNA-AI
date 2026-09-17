@@ -26,8 +26,13 @@
  *
  * Must stay ASCENDING — `AnonCtaPopup` fires the lowest unfired threshold the
  * reader has crossed, so an out-of-order list would fire them out of order.
+ *
+ * Retuned to 30% on 2026-09-17, alongside the gate-4 fix that made the popup
+ * fire at all. The first pitch now lands a little earlier in a long document,
+ * which is the point of a depth trigger on a page whose last third is مراجع and
+ * chrome rather than prose.
  */
-export const ENGAGE_RATIOS = [0.35, 0.8] as const;
+export const ENGAGE_RATIOS = [0.3, 0.8] as const;
 
 /**
  * Floor on the scroll path, measured from the moment the document mounted.
@@ -52,7 +57,7 @@ export const MIN_GAP_MS = 5_000;
  * shorter than the viewport, whose scroll progress is 1.0 on load). Twenty
  * seconds on a one-screen page is a reader who finished it and is thinking.
  *
- * A page with no scrollable distance has no 35% or 80% to cross, so this path
+ * A page with no scrollable distance has no 30% or 80% to cross, so this path
  * yields exactly ONE impression for that document — there is no second timer.
  */
 export const SHORT_PAGE_DWELL = 20_000;

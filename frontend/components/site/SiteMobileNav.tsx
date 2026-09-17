@@ -75,8 +75,21 @@ export function SiteMobileNav() {
 
       {/* Panel — slides in from the inline-start (right in RTL) */}
       <div
-        role="dialog"
-        aria-modal="true"
+        // ⚠ `role="dialog"` ONLY WHILE OPEN. This panel SLIDES, so it cannot be
+        // conditionally mounted — it is in the DOM of every page the site shell
+        // serves, at every width. A permanent `role="dialog"` therefore made
+        // `document.querySelector('[role="dialog"]')` truthy sitewide, which is
+        // exactly the probe `AnonCtaPopup`'s gate 4 runs before firing ("no
+        // other dialog open"). Result: from the day this drawer shipped, the
+        // reading-depth popup was silently DROPPED on every public wing — blog,
+        // compliance, regulations, judgments, forms, calculators — and recorded
+        // zero impressions. It also lied to assistive tech, announcing an open
+        // modal on a page that had none.
+        role={open ? "dialog" : undefined}
+        aria-modal={open ? true : undefined}
+        // Closed = off-screen and not perceivable; say so rather than leaving a
+        // labelled, unreachable region in the accessibility tree.
+        aria-hidden={open ? undefined : true}
         aria-label="التنقّل"
         dir="rtl"
         className={`fixed inset-y-0 right-0 z-50 flex w-80 max-w-[85vw] flex-col border-l border-border bg-background shadow-xl transition-transform duration-200 lg:hidden ${

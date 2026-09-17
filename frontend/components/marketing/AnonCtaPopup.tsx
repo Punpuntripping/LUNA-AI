@@ -52,7 +52,7 @@ import {
  * on arrival and never on a hub. A reader who bounced in three seconds is not
  * asked for an account.
  *
- * TWO depths per document (2026-08-02): `ENGAGE_RATIOS` = 35% and 80%, each
+ * TWO depths per document (2026-08-02): `ENGAGE_RATIOS` = 30% and 80%, each
  * firing at most once, so an engaged reader working through a whole نظام meets
  * the pitch twice while a reader who stops halfway meets it once. Both belong to
  * ONE round — the session cap counts rounds (documents), not raw impressions.
@@ -186,7 +186,7 @@ export function AnonCtaPopup() {
      *
      * Gates 3–5 are evaluated HERE, at the moment of firing, and a blocked fire
      * is DROPPED, not queued (§5) — the THRESHOLD is spent either way, so a
-     * blocked 35% never comes back, while the reader's 80% still can.
+     * blocked 30% never comes back, while the reader's 80% still can.
      */
     function attempt(index: number | null): void {
       if (disposed || doc.spent) return;
@@ -206,11 +206,27 @@ export function AnonCtaPopup() {
       // later threshold; a new round needs the cap and the quiet period).
       if (!canFire(readAnonCtaState(), pathname)) return;
 
-      // Gate 4 — no other dialog open. The reference-source dialog, the usage
-      // limits dialog, the onboarding tour and the اسأل ريحان panel all register
-      // as `role="dialog"`; stacking a pitch on top of one is the worst version
-      // of this feature.
-      if (document.querySelector('[role="dialog"]') !== null) return;
+      // Gate 4 — no other dialog ON SCREEN. The reference-source dialog, the
+      // usage limits dialog, the onboarding tour and the اسأل ريحان panel all
+      // register as `role="dialog"`; stacking a pitch on top of one is the worst
+      // version of this feature.
+      //
+      // ⚠ PRESENCE IS NOT THE TEST — VISIBILITY IS. This was a bare
+      // `querySelector('[role="dialog"]') !== null` until 2026-09-17, and
+      // `SiteMobileNav`'s drawer is always in the DOM (it slides; it cannot be
+      // conditionally mounted) on every page `SitePageShell` serves. So the
+      // probe was permanently truthy and this gate dropped EVERY fire on EVERY
+      // wing — the feature recorded zero impressions sitewide. The drawer no
+      // longer claims the role while closed (that is the fix); this check is the
+      // belt to its braces, so the next always-mounted dialog cannot silently
+      // kill the feature again.
+      if (
+        Array.from(document.querySelectorAll('[role="dialog"]')).some(
+          isDialogOnScreen,
+        )
+      ) {
+        return;
+      }
 
       // Gate 5 — no anon CTA already on screen (T6).
       cancelVisibility = whenAnonCtaVisibility((visible) => {
@@ -246,7 +262,7 @@ export function AnonCtaPopup() {
       if (disposed || doc.spent) return;
       if (openRef.current) return;
       // ⚠ The long-page path REQUIRES a real gesture. A document between 1.2 and
-      // ~1.8 viewports already sits above 0.35 at scroll 0 — with the lower
+      // ~1.8 viewports already sits above 0.30 at scroll 0 — with the lower
       // threshold this trips more easily than it did at 0.55 — and a
       // gesture-free fire would also put the popup into a headless render (T10).
       if (!hasScrolled) return;
@@ -494,7 +510,7 @@ function freshProgress(path: string): DocProgress {
  * The LOWEST unfired threshold the reader has crossed, or -1.
  *
  * Lowest-first matters for the fling case: a reader who lands at the bottom has
- * crossed both, so the 35% one is spent first and the pair still arrives in
+ * crossed both, so the 30% one is spent first and the pair still arrives in
  * order — with `MIN_GAP_MS` between them.
  */
 function nextThreshold(progress: number, done: boolean[]): number {
@@ -566,6 +582,35 @@ function whenAnonCtaVisibility(
   });
   targets.forEach((target) => observer.observe(target));
   return () => observer.disconnect();
+}
+
+/**
+ * Gate 4's visibility test — is this `role="dialog"` element actually PRESENTED
+ * to the reader right now?
+ *
+ * Deliberately stricter, and differently shaped, from `isRectOnScreen` above.
+ * That one answers "is any pixel of this CTA panel in view", which is the right
+ * question for a block that scrolls into the page. A dialog is a different
+ * animal: it is usually always mounted and moved out of the way, so the two
+ * cases this must survive are
+ *
+ *   · `display:none` (the drawer at ≥lg) → a 0×0 rect AT THE ORIGIN, which is
+ *     inside the viewport; an any-pixel test would call that visible;
+ *   · translated off-screen (the drawer below lg) → its leading edge can still
+ *     graze the viewport by the width of the scrollbar gutter (MEASURED: a 320px
+ *     drawer sitting at x=374.8 in a 390px viewport), so an any-pixel test calls
+ *     a fully closed drawer visible too.
+ *
+ * Both fall out of one rule: a real dialog has a non-empty box AND its CENTRE
+ * lands on screen. An open drawer, a centred modal and a bottom sheet all pass;
+ * a hidden or parked one does not.
+ */
+function isDialogOnScreen(element: Element): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  return x >= 0 && y >= 0 && x <= window.innerWidth && y <= window.innerHeight;
 }
 
 function isRectOnScreen(element: Element): boolean {
