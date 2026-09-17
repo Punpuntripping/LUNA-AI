@@ -261,6 +261,12 @@ class ReferenceView(BaseModel):
     city: str | None = None
     details_url: str | None = None
     entity_name: str = ""
+    # Free-text Hijri date («17 ربيع الآخر 1444»), carried so
+    # ``preprocessor._reference_from_ura`` can reduce it to the bare year with
+    # ``judgment_naming.hijri_year`` — the ONE parser that knows about tashkeel,
+    # Arabic-Indic digits and the plausible-year range. Raw here, derived there:
+    # the reference the frontend receives carries the year alone.
+    date_hijri: str | None = None
     referenced_regulations: list[dict] = Field(default_factory=list)
     # DERIVATION INPUT ONLY — these two feed ``shared.seo.judgment_naming``
     # ``judgment_subject()`` so a judgment reference card is labelled with what
@@ -614,6 +620,7 @@ class CaseURAResult(URAResultBase):
             city=self.city,
             details_url=self.details_url,
             entity_name=self.entity_name,
+            date_hijri=self.date_hijri,
             referenced_regulations=gate_cross_refs_for_reference(
                 self.referenced_regulations[:MAX_CROSS_REFS_REF]
             ),

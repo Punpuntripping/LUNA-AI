@@ -973,6 +973,23 @@ export interface Reference {
   details_url: string;
   entity_name: string;
   /**
+   * `cases.case_number` (falling back to `judgment_number`) — the ruling's own
+   * number, and `cases.date_hijri` already reduced to its bare 4-digit year by
+   * the backend's `judgment_naming.hijri_year`.
+   *
+   * NEITHER IS RENDERED on the card: its title is the ruling's SUBJECT, which
+   * is what tells two judgments apart while reading. These exist for
+   * `referenceCopyLabel` — a subject sentence does not LOCATE a ruling, and
+   * «434939 — 1443 — وزارة العدل» is what a pasted مذكرة needs.
+   *
+   * Optional because a blog snapshot frozen into `references_json` before these
+   * shipped has neither key; the copy label falls back to the title there. The
+   * year is also absent for the 3,552 rulings whose date does not parse.
+   * `cases` domain only.
+   */
+  case_number?: string;
+  hijri_year?: string;
+  /**
    * `regulations_v2.doc_type_raw` — the document's own Arabic type
    * (لائحة / تنظيم / دليل / مواصفة قياسية / …). Rendered as the card's type
    * chip in place of the blanket نظام label. Empty string (or absent, on

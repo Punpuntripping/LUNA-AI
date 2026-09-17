@@ -1430,6 +1430,69 @@ export function referenceLabel(ref: Reference): string {
 }
 
 /**
+ * The label a reference gets when it is COPIED, as opposed to rendered.
+ *
+ * A card and a clipboard answer different questions. On screen the reader has
+ * the panel around them — the type chip, the snippet, «عرض المصدر» — so the
+ * card's title only has to tell this reference apart from the one under it, and
+ * `referenceLabel` is right to be a bare subject line. Pasted into a مذكرة the
+ * list is ALONE, and the question becomes "how would someone find this?" —
+ * which a subject sentence cannot answer for a ruling and a bare service name
+ * cannot answer for a procedure.
+ *
+ * So each wing contributes the fields that LOCATE its document, joined on one
+ * line so the `n-` numbering keeps working:
+ *
+ *   regulations / articles  «نظام العمل»                     (title alone)
+ *   cases        «434939 — 1443 — وزارة العدل»               (رقم / سنة / جهة)
+ *   compliance   «إصدار رخصة — وزارة التجارة»                (خدمة / مقدّمها)
+ *   circulars    «تعميم بشأن مهلة السداد — البنك المركزي»    (عنوان / جهة)
+ *
+ * A نظام is deliberately left as-is: its title IS its citation.
+ *
+ * ⚠ CIRCULARS CARRY NO NUMBER COLUMN. `circulars.circ_ref` looks like one and is
+ * not — it is the ingest handle (`18308_circ_4950`, `{entity}_circ_{n}`), which
+ * would paste into a memo as a string that identifies nothing and reads as a
+ * bug. The real number, where the issuing entity assigned one, is already inside
+ * `title` («تعميم رقم 2/2/ت — جنسية وجوازات» — 420 of 1,843 rows), so it arrives
+ * for free and must not be prefixed a second time.
+ *
+ * Every part is optional-safe on purpose: blog `references_json` snapshots are
+ * FROZEN at publish time, so a post published before the case fields shipped has
+ * neither, and the filter below degrades it to exactly the label it copies today.
+ */
+export function referenceCopyLabel(ref: Reference): string {
+  const title = referenceLabel(ref);
+
+  if (ref.domain === "cases") {
+    // Number and year first, entity last — the reading order of a citation.
+    const number = (ref.case_number ?? "").trim();
+    const year = (ref.hijri_year ?? "").trim();
+    const entity = (ref.entity_name ?? "").trim();
+    // The entity ALONE does not identify a ruling — «وزارة العدل» names 20,671
+    // of them. With no number and no year the subject title is the more useful
+    // line, so fall back to it rather than emit a court name on its own.
+    if (!number && !year) return title;
+    return [number, year, entity].filter(Boolean).join(" — ");
+  }
+
+  if (ref.domain === "compliance") {
+    // `regulation_title` is where the compliance mapping parks
+    // `services.provider_name` — the panel's "parent label" slot. Not
+    // `entity_name`, which that mapping leaves empty for this domain.
+    const provider = (ref.regulation_title ?? "").trim();
+    return provider && provider !== title ? `${title} — ${provider}` : title;
+  }
+
+  if (ref.domain === "circulars") {
+    const entity = (ref.entity_name ?? "").trim();
+    return entity && entity !== title ? `${title} — ${entity}` : title;
+  }
+
+  return title;
+}
+
+/**
  * Fallback external URL, read off the revealed source view.
  *
  * Only consulted when the reference row itself carries no URL — the row is the

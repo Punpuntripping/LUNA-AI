@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
-import { ReferencePanel, referenceLabel } from "@/components/workspace/ReferencePanel";
+import { ReferencePanel, referenceCopyLabel } from "@/components/workspace/ReferencePanel";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
 import { ChatWithBlogButton } from "@/components/blog/ChatWithBlogButton";
 import type { BlogPostPublic } from "@/types";
@@ -80,9 +80,10 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
   const showHeading = heading.length > 0 && !(hasQuestion && !title);
   const heroHeading = !hasQuestion;
 
-  // Copy button: body + a plain «n-title» reference list under «المراجع», so a
+  // Copy button: body + an «n-label» reference list under «المراجع», so a
   // reader who copies the answer keeps the [n] markers resolvable. Matches
-  // AgentSearchViewer.copyContent.
+  // AgentSearchViewer.copyContent, ``referenceCopyLabel`` included — the
+  // pasted list stands alone, so each wing adds what locates its document.
   const body = post.content_md ?? "";
   const copyContent =
     references.length === 0
@@ -90,7 +91,7 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
       : (() => {
           const refLines = [...references]
             .sort((a, b) => a.n - b.n)
-            .map((ref) => `${ref.n}-${referenceLabel(ref)}`)
+            .map((ref) => `${ref.n}-${referenceCopyLabel(ref)}`)
             .join("\n");
           return body.trim().length > 0
             ? `${body}\n\nالمراجع\n${refLines}`

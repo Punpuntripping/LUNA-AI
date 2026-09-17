@@ -39,7 +39,7 @@ from agents.deep_search_v4.ura.schema import (
     ReferenceView,
     URAResultBase,
 )
-from shared.seo.judgment_naming import judgment_subject
+from shared.seo.judgment_naming import hijri_year, judgment_subject
 
 from .models import AggregatorInput, Reference
 
@@ -534,6 +534,19 @@ def _reference_from_ura(n: int, r: URAResultBase) -> Reference:
             domain="cases",
             details_url=view.details_url or "",
             entity_name=view.entity_name or "",
+            # The citation triple «رقم — سنة — جهة». Not rendered on the card —
+            # see Reference.case_number — but it is what «نسخ» writes, so a
+            # pasted مذكرة carries something a reader can actually look up.
+            #
+            # `case_number` first, `judgment_number` second: the SAME precedence
+            # ``judgment_subject`` uses, and the one the corpus supports —
+            # case_number is on all 30,531 rows, judgment_number on 15,510.
+            #
+            # `hijri_year` reduces the free-text «17 ربيع الآخر 1444» to «1444».
+            # Never re-derive it inline: that helper is what knows about
+            # tashkeel, Arabic-Indic digits and the 1300–1500 sanity range.
+            case_number=(view.case_number or view.judgment_number or "").strip(),
+            hijri_year=hijri_year(view.date_hijri) or "",
             cross_refs=case_refs,
         )
 

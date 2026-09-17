@@ -124,6 +124,27 @@ class Reference(BaseModel):
         default="",
         description="Resolved court/entity Arabic name (cases domain)",
     )
+    # -- Citation identifiers (cases domain) --------------------------------
+    # NOT shown on the reference card — the card's title is the ruling's
+    # SUBJECT, which is what tells two judgments apart while reading. These are
+    # what «نسخ» writes instead, because a subject sentence does not LOCATE a
+    # ruling: «434939 — 1443 — وزارة العدل» does. Both empty on a blog snapshot
+    # frozen before they existed; the copy label falls back to the title there.
+    case_number: str = Field(
+        default="",
+        description=(
+            "cases.case_number, falling back to judgment_number — the ruling's "
+            "own number, for the copied citation line (cases domain)"
+        ),
+    )
+    hijri_year: str = Field(
+        default="",
+        description=(
+            "Bare 4-digit Hijri year reduced from cases.date_hijri by "
+            "judgment_naming.hijri_year. Empty when the row has no parseable "
+            "date (3,552 of 30,531 rows) (cases domain)"
+        ),
+    )
     cross_refs: list[CrossRef] = Field(
         default_factory=list,
         description=(

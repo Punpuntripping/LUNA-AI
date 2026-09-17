@@ -14,7 +14,7 @@ import { TocList } from "@/components/library/blocks/TocList";
 import { TocRail } from "@/components/library/blocks/TocRail";
 import {
   ReferencePanel,
-  referenceLabel,
+  referenceCopyLabel,
 } from "@/components/workspace/ReferencePanel";
 import { Button } from "@/components/ui/button";
 import { extractHeadings } from "@/lib/markdown/headings";
@@ -192,14 +192,17 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
   const showToc = tocEntries.length >= 2;
   const badge = tocBadge(tocEntries.length);
 
-  // Copy button: body + a plain «n-title» reference list under «المراجع», so a
+  // Copy button: body + an «n-label» reference list under «المراجع», so a
   // reader who copies the article keeps the [n] markers resolvable. Matches
-  // PublicAnswerView.copyContent.
+  // PublicAnswerView.copyContent, ``referenceCopyLabel`` included — the pasted
+  // list stands alone, so each wing adds what locates its document. A post
+  // published before the case fields shipped has a FROZEN references_json and
+  // degrades to the subject title it copies today.
   const copyContent = useMemo(() => {
     if (references.length === 0) return body;
     const refLines = [...references]
       .sort((a, b) => a.n - b.n)
-      .map((ref) => `${ref.n}-${referenceLabel(ref)}`)
+      .map((ref) => `${ref.n}-${referenceCopyLabel(ref)}`)
       .join("\n");
     return body.trim().length > 0
       ? `${body}\n\nالمراجع\n${refLines}`

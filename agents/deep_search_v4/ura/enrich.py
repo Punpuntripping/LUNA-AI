@@ -408,7 +408,15 @@ _CASE_COLS = (
     # ``judgment_subject()`` needs to label a reference card with what the
     # ruling is about (and `court` was silently empty on the panel-rebuild
     # path, which is what made its fallback render as a bare «حكم»).
-    "short_summary, court"
+    "short_summary, court, "
+    # The CITATION triple — what «نسخ» writes into a pasted مذكرة
+    # («434939 — 1443 — وزارة العدل»). Tens of bytes each, so they ride the
+    # cheap path alongside `court` rather than hiding behind `with_summary`.
+    # Same failure mode `court` had: the adapter fills them on the LIVE search
+    # path and the panel-rebuild path starts from a bare ``ref_id``, so without
+    # them here every rebuilt judgment copies as a subject sentence with no
+    # number and no year — silently, and only on the rebuild path.
+    "case_number, judgment_number, date_hijri"
 )
 
 # ``cases.summary`` is ~3 KB/row. The live search path already holds it (the
@@ -785,6 +793,14 @@ async def _enrich_cases(
         # the row's own column is empty (never downgrade a known court to "").
         res.short_summary = (case.get("short_summary") or "").strip()
         res.court = (case.get("court") or "").strip() or res.court
+        # Citation triple — same "never downgrade a known value to empty" rule
+        # as ``court`` above: the live path's adapter already carried these in,
+        # and this fill is for the rebuild path that starts with nothing.
+        res.case_number = (case.get("case_number") or "").strip() or res.case_number
+        res.judgment_number = (
+            (case.get("judgment_number") or "").strip() or res.judgment_number
+        )
+        res.date_hijri = (case.get("date_hijri") or "").strip() or res.date_hijri
         if with_summary and not (res.case_content or "").strip():
             res.case_content = strip_pipeline_sections(
                 (case.get("summary") or "").strip()
