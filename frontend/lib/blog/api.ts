@@ -168,6 +168,31 @@ export const getPublicBlog = cache(
 );
 
 /**
+ * «اقرأ تاليًا» — other public blogs built on the same أنظمة as this one.
+ *
+ * `[]` on an unknown slug, on an article that shares no topic, AND on an
+ * unreachable backend, all indistinguishable on purpose: the caller renders no
+ * strip for an empty list, so every failure mode degrades to the same page
+ * minus a trailing section. A related strip must never be able to 404 or 500 an
+ * article that has already rendered.
+ *
+ * Cached on the SAME window as `getPublicBlog`, deliberately. The two are
+ * fetched by one render of `/blog/[slug]`, and Next takes the MINIMUM
+ * revalidate across a render — a shorter window here would silently become the
+ * whole route's window and multiply the re-renders of every baked article (the
+ * `sectorSlugs` trap the regulations page documents, from the other side).
+ */
+export const getRelatedBlogs = cache(
+  async (slug: string, limit = 6): Promise<PublicBlogCard[]> => {
+    const data = await fetchPublic<PublicBlogListResponse>(
+      `/public/blogs/${encodeURIComponent(slug)}/related?limit=${limit}`,
+      BLOG_DOC_REVALIDATE,
+    );
+    return data?.blogs ?? [];
+  },
+);
+
+/**
  * A LEGACY `blog_posts` share snapshot by its 32-hex token — the 99 links that
  * are already in the wild (plan D7). Unchanged behaviour, moved here verbatim
  * from `app/blog/[token]/page.tsx` when that route became the dispatcher.

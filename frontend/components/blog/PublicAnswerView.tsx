@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel, referenceCopyLabel } from "@/components/workspace/ReferencePanel";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
-import { ChatWithBlogButton } from "@/components/blog/ChatWithBlogButton";
+// Own module, not the `blocks` barrel: this is a client component and a
+// barrel import would drag every other library block into the bundle.
+import { ChatWithPageCta } from "@/components/library/blocks/ChatWithPageCta";
 import type { BlogPostPublic } from "@/types";
 
 // Subtype → Arabic chip label. Mirrors WorkspaceCard.tsx SUBTYPE_LABEL so the
@@ -39,7 +41,7 @@ interface PublicAnswerViewProps {
  *
  * Anon-accessible: receives the frozen snapshot (``content_md`` +
  * ``references``) as props — NO useWorkspaceItemReferences. The only
- * auth-aware element is the ``ChatWithBlogButton`` action, which degrades to
+ * auth-aware element is the ``ChatWithPageCta`` action, which degrades to
  * a login-redirect for anonymous readers.
  *
  * The brand header, «جرّب ريحان مجاناً» CTA, and footer come from the shared
@@ -79,6 +81,20 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
   // the السؤال card (no distinct title + a question → the card already shows it).
   const showHeading = heading.length > 0 && !(hasQuestion && !title);
   const heroHeading = !hasQuestion;
+
+  // The `/login?…` target an anon reader's «تحدّث مع ريحان» falls back to; the
+  // `chat_with_library_item` intent the button stashes is what resumes the
+  // carry after sign-in. Same shape `AskRayhanWidget` builds, so both agree on
+  // the querystring `AskRayhanLoginIntent` reads back.
+  const loginHref = useMemo(() => {
+    const params = new URLSearchParams({
+      intent: "ask_rayhan",
+      page_type: "blog",
+      page_id: blogToken,
+      page_title: heading,
+    });
+    return `/login?${params.toString()}`;
+  }, [blogToken, heading]);
 
   // Copy button: body + an «n-label» reference list under «المراجع», so a
   // reader who copies the answer keeps the [n] markers resolvable. Matches
@@ -143,9 +159,20 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
           </header>
         )}
 
-        {/* Chat-with-blog action — between the question/heading and the answer */}
+        {/* Chat-with-blog action — between the question/heading and the answer.
+            ⚠ Was `ChatWithBlogButton`, which rendered NOTHING on this route: it
+            read `useParams().token` and the segment became `[slug]` when /blog
+            turned into the three-vocabulary dispatcher, so its `if (!token)`
+            guard fired on every render. `blogToken` is a prop this component
+            already receives — see the same note in `BlogArticleView`. */}
         <div className="mt-4 flex justify-center">
-          <ChatWithBlogButton className="h-8 gap-1.5 px-3 text-xs" />
+          <ChatWithPageCta
+            pageType="blog"
+            pageId={blogToken}
+            pageTitle={heading}
+            loginHref={loginHref}
+            className="h-8 w-auto gap-1.5 px-3 text-xs"
+          />
         </div>
 
         {/* Answer + references — same fluidity as the in-app artifact view */}

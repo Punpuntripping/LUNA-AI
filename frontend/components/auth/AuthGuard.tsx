@@ -150,6 +150,17 @@ export function AuthGuard({ children }: Props) {
   //
   //   chat_with_blog      → create a conversation, import the blog, land in chat
   //                         (blog_import plan §D6).
+  //                         ⚠ NOTHING STASHES THIS ANY MORE. `ChatWithBlogButton`
+  //                         was its only producer and was retired 2026-09-21 —
+  //                         it read the blog key from `useParams().token` and
+  //                         had rendered `null` on every `/blog/*` URL since the
+  //                         segment became `[slug]`. Both reading surfaces now
+  //                         use `ChatWithPageCta`, which stashes
+  //                         `chat_with_library_item` instead and lands the blog
+  //                         in the composer rather than only in the workspace
+  //                         pane. This branch stays for the ROLLOVER: an intent
+  //                         stashed in a tab opened before the deploy is still
+  //                         in localStorage and still valid for `MAX_AGE_MS`.
   //   claim_anon_answer   → claim the full اسأل ريحان answer, stash it for the
   //                         widget, return to the source page (continuity moment).
   //   open_form_in_writer → copy the form into قوالبي, open the writer.

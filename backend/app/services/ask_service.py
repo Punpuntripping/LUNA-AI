@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -469,21 +470,83 @@ def _ground_judgment(supabase: SupabaseClient, page_id: str) -> str:
     return "\n\n".join(parts)
 
 
+# A legacy `blog_posts` share token: exactly 32 lowercase hex, the shape
+# `blog_service._BARE_TOKEN_RE` mints. The frontend dispatcher
+# (`lib/blog/slug.ts`) tests the same thing to tell the wing's two vocabularies
+# apart, and the two must agree or a page would ground on a different row than
+# it renders.
+_BLOG_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
 def _ground_blog(supabase: SupabaseClient, page_id: str) -> str:
+    """Ground on a مدونة's own body. TWO VOCABULARIES ADDRESS THIS WING.
+
+    ``/blog`` serves both a legacy ``blog_posts`` snapshot (32-hex TOKEN — the 99
+    hand-delivered share links) and a `public_blogs` article (Arabic SLUG, its own
+    canonical). They are separate tables with separate keys, and for months only
+    the token half existed here: a slug fell through the ``.eq("token", …)`` and
+    grounded on ``""``, so «اسأل ريحان» on a public article answered from no
+    article at all — silently, because empty grounding is a supported state (the
+    model just answers cautiously) rather than an error anyone would see.
+
+    A FALL-THROUGH CHAIN, not an exclusive branch, matching the frontend's
+    ``resolveBlogRef``: the shape test only decides which table is asked FIRST.
+    A token-shaped ref could not be a slug (migration 153 CHECKs a public slug
+    out of ASCII-kebab shape), so in practice the first lookup answers — but a
+    miss falls through rather than returning empty, which is what keeps this
+    function honest if either vocabulary ever widens.
+    """
+    token_shaped = bool(_BLOG_TOKEN_RE.match(page_id))
+
+    if token_shaped:
+        try:
+            res = (
+                supabase.table("blog_posts")
+                .select("content_md")
+                .eq("token", page_id)
+                .is_("deleted_at", "null")
+                .limit(1)
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                return (rows[0].get("content_md") or "").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("anon_ask: blog grounding failed (%s): %s", page_id, e)
+            return ""
+
+    # Imported lazily for the reason `_ground_compliance` states: this module
+    # backs a PUBLIC route and must stay importable without dragging the rest of
+    # the blog wing behind it.
+    from backend.app.services import public_blog_service
+
     try:
-        res = (
-            supabase.table("blog_posts")
-            .select("content_md")
-            .eq("token", page_id)
-            .is_("deleted_at", "null")
-            .limit(1)
-            .execute()
-        )
-        rows = res.data or []
-        return (rows[0].get("content_md") or "").strip() if rows else ""
+        row = public_blog_service.get_body_by_slug(supabase, page_id)
     except Exception as e:  # noqa: BLE001
-        logger.warning("anon_ask: blog grounding failed (%s): %s", page_id, e)
+        logger.warning("anon_ask: public blog grounding failed (%s): %s", page_id, e)
         return ""
+    if row:
+        return row["content_md"]
+
+    if not token_shaped:
+        # Last resort for a ref that is neither: a `blog_posts` row whose token
+        # is not lowercase-hex shaped. Cheap, and it keeps any odd legacy link
+        # grounding exactly as it did before this function learned about slugs.
+        try:
+            res = (
+                supabase.table("blog_posts")
+                .select("content_md")
+                .eq("token", page_id)
+                .is_("deleted_at", "null")
+                .limit(1)
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                return (rows[0].get("content_md") or "").strip()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("anon_ask: blog grounding failed (%s): %s", page_id, e)
+    return ""
 
 
 def _ground_compliance(supabase: SupabaseClient, page_id: str) -> str:
@@ -571,6 +634,10 @@ def fetch_grounding(
     a route. ``compliance`` — the /compliance service-GUIDE wing — is, since
     2026-09-07; it is what the «اسأل ريحان» popup and the library carrier both
     resolve on that wing.
+
+    ⚠ ``blog`` IS TWO TABLES, not one — see ``_ground_blog``. The page_id is a
+    32-hex token on the legacy share links and an Arabic slug on the public wing,
+    and until 2026-09-21 only the token half resolved.
     """
     page_type = (page_type or "").strip().lower()
     page_id = (page_id or "").strip()

@@ -274,3 +274,16 @@ agents/simple_search/eval/*.log
 # marker the CLI writes on every invocation — machine-local, zero bytes of
 # project content, and it reappears the moment anyone runs the CLI again.
 supabase/.temp/
+
+# the blog relatedness suite is durable: «اقرأ تاليًا» groups articles by the
+# أنظمة they both cite, and TWO guards are the entire difference between that
+# and noise. Only `domain=="regulations"` entries count — on a `cases` entry
+# `regulation_title` holds the COURT («وزارة العدل»), which nearly every
+# judicial article cites, so dropping that filter relates all of them to all of
+# them through the courthouse. And `doc_type` weights the topic: ranking on
+# citation rarity alone put a commercial-debt article ABOVE a labour one in a
+# LABOUR strip, because the booklet it shared was rarer than نظام العمل is.
+# Both were measured on live data, both fail SILENTLY — the strip still renders,
+# it just stops meaning anything. It also pins that the marketing-card images
+# are stripped before the body is handed to a model as grounding.
+!backend/tests/test_blog_related_topics.py

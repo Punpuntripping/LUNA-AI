@@ -9,10 +9,12 @@ import { JsonLd } from "@/components/seo/JsonLd";
 import { buildArticle } from "@/lib/seo/schema";
 import { toSnippet } from "@/lib/library/api";
 import { formatCount } from "@/lib/library/sectors";
+import { RelatedStrip, TopicBreadcrumbs } from "@/components/library/blocks";
 import {
   getBlogSubjectFeed,
   getLegacyBlogPost,
   getPublicBlog,
+  getRelatedBlogs,
 } from "@/lib/blog/api";
 import {
   RESERVED_BLOG_SLUGS,
@@ -27,6 +29,7 @@ import type {
   BlogSubjectFeedResponse,
   PublicBlogDetail,
 } from "@/types";
+import type { BreadcrumbItem } from "@/types/library";
 import { ogImageUrl } from "@/lib/seo/og";
 
 const SITE_URL = "https://rayhanai.com";
@@ -351,6 +354,16 @@ export default async function BlogSlugPage({ params }: PageProps) {
   // ── 2. A PUBLIC BLOG (public_blogs, the current version) ──────────────────
   if (resolved.kind === "blog") {
     const { blog } = resolved;
+    // «اقرأ تاليًا» — other articles built on the same أنظمة this one cites.
+    // NOT the subject chip and not the `type`: 23 of the 25 live rows read
+    // `judicial_research`, so the type groups nothing, and a subject is an
+    // editorial shelf. The rule lives in `public_blog_service` (see
+    // `.claude/plans/blog_mobile_parity.md` Wave B).
+    //
+    // Fetched on the SAME ISR window as the article itself, so it cannot become
+    // the route's revalidate floor. `[]` on any failure ⇒ no strip, never a
+    // broken page.
+    const related = await getRelatedBlogs(blog.slug);
     const headline = truncate(blog.title);
     const articleSchema = buildArticle({
       title: headline,
@@ -364,12 +377,47 @@ export default async function BlogSlugPage({ params }: PageProps) {
       image: `${SITE_URL}${ogImageUrl(headline, "blog")}`,
     });
 
+    // The current crumb is TRUNCATED, and only the current crumb. A blog
+    // headline runs to ~70 characters, which wraps the trail onto three lines on
+    // a phone and pushes the article's own `<h1>` — the thing that states the
+    // same title in full, immediately below — off the first screen.
+    //
+    // No SEO cost: `TopicBreadcrumbs` builds its `BreadcrumbList` from the
+    // crumbs that carry an `href`, and the current page deliberately carries
+    // none, so the shortened label never reaches the structured data.
+    const crumbs: BreadcrumbItem[] = [
+      { label: "الرئيسية", href: "/" },
+      { label: "المدونة", href: "/blog" },
+      { label: truncate(blog.title, 38) },
+    ];
+
     return (
       <>
         <JsonLd data={articleSchema} />
         {/* The SLUG is the reveal key on this wing — there is no token to pass
-            (plan D17). See `BlogArticleView`'s `sourceKey` docs. */}
-        <BlogArticleView post={blog} sourceKey={blog.slug} />
+            (plan D17). See `BlogArticleView`'s `sourceKey` docs.
+
+            ⚠ `breadcrumbs` and `relatedStrip` are passed as ELEMENTS, not data.
+            `BlogArticleView` is a client component and `RelatedStrip` is a
+            server component by contract (it is ISR-baked and must never read
+            auth); handing finished server-rendered nodes down as props is what
+            keeps them out of the client bundle. Rendering them from inside the
+            view would silently pull the strip, its track and every card across
+            the boundary. */}
+        <BlogArticleView
+          post={blog}
+          sourceKey={blog.slug}
+          breadcrumbs={<TopicBreadcrumbs items={crumbs} />}
+          relatedStrip={
+            related.length > 0 ? (
+              <RelatedStrip title="اقرأ تاليًا">
+                {related.map((item) => (
+                  <BlogCard key={item.slug} blog={item} />
+                ))}
+              </RelatedStrip>
+            ) : undefined
+          }
+        />
       </>
     );
   }
@@ -389,11 +437,27 @@ export default async function BlogSlugPage({ params }: PageProps) {
   // Branch on the share template: `title` → editorial blog article;
   // everything else (`question`) → the default السؤال layout. Unchanged from
   // the route this replaced — the 99 links render exactly what they did.
+  //
+  // NO «اقرأ تاليًا» HERE, and it is not an oversight: relatedness is computed
+  // over `public_blogs` topics, and a legacy snapshot has no row in that table
+  // to be related to or from. The crumbs still render — orientation costs
+  // nothing and these pages are `noindex` anyway, so the `BreadcrumbList` node
+  // is for the reader, not the crawler.
+  const legacyCrumbs: BreadcrumbItem[] = [
+    { label: "الرئيسية", href: "/" },
+    { label: "المدونة", href: "/blog" },
+    { label: truncate(headline, 38) },
+  ];
+
   return (
     <>
       <JsonLd data={articleSchema} />
       {post.display_mode === "title" ? (
-        <BlogArticleView post={post} sourceKey={token} />
+        <BlogArticleView
+          post={post}
+          sourceKey={token}
+          breadcrumbs={<TopicBreadcrumbs items={legacyCrumbs} />}
+        />
       ) : (
         <PublicAnswerView post={post} blogToken={token} />
       )}

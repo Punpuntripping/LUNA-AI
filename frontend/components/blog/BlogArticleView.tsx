@@ -1,14 +1,15 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
 import { SubjectChips } from "@/components/blog/SubjectChips";
-import { ChatWithBlogButton } from "@/components/blog/ChatWithBlogButton";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 // Imported from their own modules, NOT the `blocks` barrel: this is a client
 // component, so a barrel import would drag every other block (the page
-// shells, the guide body, the ask widget) into the browser bundle with it.
+// shells, the guide body, the related strip) into the browser bundle with it.
+import { AskRayhanWidget } from "@/components/library/blocks/AskRayhanWidget";
+import { ChatWithPageCta } from "@/components/library/blocks/ChatWithPageCta";
 import { TocFloating } from "@/components/library/blocks/TocFloating";
 import { TocList } from "@/components/library/blocks/TocList";
 import { TocRail } from "@/components/library/blocks/TocRail";
@@ -44,6 +45,13 @@ const SUBTYPE_LABEL: Record<string, string> = {
 // working IntersectionObserver. Widening the spy is the safe half of the fix —
 // `sec-`-prefixing blog heading ids instead would break every `#slug` link
 // already copied out of a published article.
+//
+// ⚠ The OTHER half took a second pass (2026-09-21). Matching the hrefs only got
+// the rows observed; the spy still named the wrong one, because it picked the
+// first target INTERSECTING its band and a blog's targets are `<h2>` lines
+// rather than the `<section>` spans a corpus page emits — so most of the time
+// none intersected and the label was whatever it last saw. The fallback now
+// lives in `useTocScrollspy`; see the note there.
 const TOC_SPY_PREFIX = "#";
 
 // Gregorian Arabic byline date (e.g. «30 يونيو 2026»). No shared date helper
@@ -109,8 +117,23 @@ interface BlogArticleViewProps {
    * for this wing (plan §3). The entitlement rules are unchanged either way —
    * they are evaluated against the READER, and an anonymous one gets the 402
    * «سجّل مجاناً» card rather than a login redirect.
+   *
+   * ⚠ IT IS ALSO THE `page_id` FOR «اسأل ريحان» AND THE CHAT CARRY, and that is
+   * not a coincidence worth undoing: `ask_service._ground_blog` resolves the
+   * same two vocabularies by the same shape test, so whatever addresses the
+   * article here addresses it there.
    */
   sourceKey: string;
+  /**
+   * SERVER-RENDERED SLOTS. Both are rendered by the route (a server component)
+   * and handed down as elements, because `RelatedStrip` is a server component
+   * by contract — importing it here would pull it, `RelatedStripTrack` and every
+   * card into this client bundle and quietly break that contract. Passing
+   * finished elements through props is what keeps them on the server.
+   */
+  breadcrumbs?: ReactNode;
+  /** «اقرأ تاليًا». Absent on the legacy wing, which has no `public_blogs` row. */
+  relatedStrip?: ReactNode;
 }
 
 /**
@@ -137,10 +160,14 @@ interface BlogArticleViewProps {
  * the full heading with no gutter chip. That fallback IS the correct blog
  * behaviour — do not "fix" it.
  *
- * ⚠ `useTocScrollspy` only tracks `#sec-` hrefs (the library's gated chunk
- * anchors). A blog heading anchor is a bare slug, so no rail row lights up and
- * the phone pill keeps its «المحتويات» fallback label. Clicks, smooth scroll
- * and the missing-anchor fallback all work unchanged.
+ * ⚠ `useTocScrollspy` defaults to tracking `#sec-` hrefs (the library's gated
+ * chunk anchors); a blog heading anchor is a bare slug, so this wing passes
+ * `spyPrefix="#"`. Both statements this comment used to make after that — «no
+ * rail row lights up» and «the phone pill keeps its «المحتويات» fallback label»
+ * — described a spy that has since been rewritten: it now resolves the active
+ * row from live rects against the reading line, which works the same for a
+ * heading anchor as for a section. Clicks, smooth scroll and the missing-anchor
+ * fallback are unchanged.
  *
  * المراجع — UNTOUCHED (plan §4). Citation fluidity mirrors PublicAnswerView /
  * AgentSearchViewer EXACTLY: clicking `[n]` in the body sets `focusedN`
@@ -152,7 +179,12 @@ interface BlogArticleViewProps {
  * The brand header, «جرّب ريحان مجاناً» CTA, and footer come from
  * `BlogPageShell` — they are NOT duplicated here.
  */
-export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
+export function BlogArticleView({
+  post,
+  sourceKey,
+  breadcrumbs,
+  relatedStrip,
+}: BlogArticleViewProps) {
   const [focusedN, setFocusedN] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -192,6 +224,20 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
   // nothing they cannot already see.
   const showToc = tocEntries.length >= 2;
   const badge = tocBadge(tocEntries.length);
+
+  // The `/login?…` target an anon reader's «تحدّث مع ريحان» falls back to.
+  // Built the same way `AskRayhanWidget` builds its own so the two agree on the
+  // querystring `AskRayhanLoginIntent` reads back; the `chat_with_library_item`
+  // intent the button stashes is what actually resumes the carry after sign-in.
+  const loginHref = useMemo(() => {
+    const params = new URLSearchParams({
+      intent: "ask_rayhan",
+      page_type: "blog",
+      page_id: sourceKey,
+      page_title: title,
+    });
+    return `/login?${params.toString()}`;
+  }, [sourceKey, title]);
 
   // Copy button: body + an «n-label» reference list under «المراجع», so a
   // reader who copies the article keeps the [n] markers resolvable. Matches
@@ -235,6 +281,14 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
           body does with no TOC. Every inner block stays max-w-3xl, so the wider
           container is invisible on an article without a rail. */}
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-8">
+        {/* «الرئيسية / المدونة / …» — the orientation every library wing gives
+            a reader who landed here from a search result, and the article's
+            `BreadcrumbList` node. Inline-start aligned, above the centered hero:
+            a trail is navigation chrome, not part of the title block. */}
+        {breadcrumbs && (
+          <div className="mx-auto mb-6 max-w-3xl">{breadcrumbs}</div>
+        )}
+
         {/* Hero — centered kicker, title, branded byline, divider */}
         <header className="mx-auto max-w-3xl text-center">
           {subtypeLabel && (
@@ -258,7 +312,7 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
           />
 
           {/* Unobtrusive actions under the byline: copy + chat-with-blog */}
-          <div className="mt-4 flex justify-center gap-2">
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
             <Button
               type="button"
               variant="secondary"
@@ -279,7 +333,28 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
                 </>
               )}
             </Button>
-            <ChatWithBlogButton className="h-7 gap-1.5 px-2 text-[11px]" />
+            {/* ⚠ THIS REPLACED `ChatWithBlogButton`, WHICH RENDERED NOTHING AT
+                ALL IN PRODUCTION. That component read the blog key from
+                `useParams().token`, and the route segment was renamed `[token]`
+                → `[slug]` when `/blog` became the three-vocabulary dispatcher —
+                so `token` was `undefined` on every `/blog/*` URL and its
+                `if (!token) return null` fired on every render. The article's
+                only action was «نسخ المقال». Taking the key from a PROP is the
+                fix: this surface is already given the address it renders.
+
+                `ChatWithPageCta` is also the better destination. It carries the
+                page through `/library-items` + `fetch_grounding` — which now
+                resolves BOTH blog vocabularies — instead of the token-only
+                `createBlogItem` import endpoint, which cannot serve a slug.
+                `w-auto` overrides its default `w-full`; tailwind-merge keeps the
+                later class. */}
+            <ChatWithPageCta
+              pageType="blog"
+              pageId={sourceKey}
+              pageTitle={title}
+              loginHref={loginHref}
+              className="h-7 w-auto gap-1.5 px-2 text-[11px]"
+            />
           </div>
         </header>
 
@@ -360,7 +435,28 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
             </aside>
           )}
         </div>
+
+        {/* «اقرأ تاليًا» — the last in-flow content, above the conversion CTA
+            the shell adds. Full container width, OUTSIDE the reading column and
+            its TOC grid, exactly as the library wings place it: cards to scan,
+            not text to read. Renders nothing when nothing shares a topic —
+            `RelatedStrip` collapses on empty children, and the route passes the
+            slot only when the list came back non-empty. */}
+        {relatedStrip && <div className="mt-12">{relatedStrip}</div>}
       </main>
+
+      {/* The «اسأل ريحان» FAB — bottom-LEFT, the physical corner opposite the
+          TOC pill's `start-4`, both `z-40`, neither ever overlapping the other.
+          Every other reading wing has mounted this for months; the مدونة was the
+          only one without it, and it is the wing anonymous readers arrive on
+          from Google.
+
+          ⚠ `pageId` MUST be `sourceKey`, not the title or a rebuilt path: it is
+          the grounding key, and `ask_service._ground_blog` resolves a 32-hex
+          token against `blog_posts` and anything else against `public_blogs`.
+          Handing it the wrong string does not error — it grounds on an empty
+          document and the answer quietly stops being about this article. */}
+      <AskRayhanWidget pageType="blog" pageId={sourceKey} pageTitle={title} />
     </BlogPageShell>
   );
 }

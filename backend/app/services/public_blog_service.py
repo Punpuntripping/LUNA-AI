@@ -46,7 +46,9 @@ All functions are SYNCHRONOUS and are invoked from route handlers via ``run_db``
 from __future__ import annotations
 
 import logging
+import math
 import re
+import unicodedata
 import uuid
 from typing import Any, Optional
 
@@ -141,8 +143,10 @@ __all__ = [
     "get_subject_by_slug",
     "list_blogs_for_subject",
     "get_by_slug",
+    "get_body_by_slug",
     "get_by_job_id",
     "get_references_by_slug",
+    "list_related_by_topic",
     "JobAlreadyPublishedError",
     # writes
     "insert_public_blog",
@@ -867,6 +871,256 @@ def list_blogs_for_subject(
     return int(total if total is not None else len(rows)), _attach_cards(supabase, rows)
 
 
+# ---------------------------------------------------------------------------
+# «اقرأ تاليًا» — relatedness by the أنظمة two articles both cite
+# ---------------------------------------------------------------------------
+#
+# THE RELATEDNESS RULE IS THE SHARED نظام, not the subject chip and not the type.
+# `public_blogs.type` reads `judicial_research` on 23 of the 25 live rows, so it
+# discriminates nothing, and a subject («أبحاث قضائية») is an editorial shelf,
+# not a topic. What a reader means by "more like this" on this wing is *another
+# article about نظام العمل* — and the frozen `references_json` already says which
+# أنظمة an article is built on, per entry, in `regulation_title`.
+#
+# ⚠ ONLY `domain == "regulations"` ENTRIES COUNT, and only those carrying a
+# `doc_type`. On a `cases` entry `regulation_title` holds the COURT that issued
+# the judgment — «وزارة العدل», «ديوان المظالم» — which nearly every judicial
+# article cites. Keying on the field unfiltered would relate all of them to all
+# of them through the courthouse, which is the most confident possible way to be
+# useless.
+
+# Tatweel + Arabic diacritics. Stripped for the topic KEY only — the corpus is
+# inconsistent about harakah and these are never displayed from here.
+_TOPIC_DIACRITICS_RE = re.compile(r"[ـً-ْٰۖ-ۭ]")
+
+# ⚠ NOT EVERY CITED DOCUMENT IS A TOPIC, and `doc_type` is what tells them apart.
+# A نظام or a لائحة is the subject matter itself: two articles citing «نظام العمل»
+# are both about labour. A دليل is a cross-cutting booklet — «دليل الخدمات
+# المقدمة للوافدين» is cited by a labour article AND by a mortgage-restructuring
+# article, because both touch an expat, not because they share a topic.
+#
+# Measured on the live wing, this is not hypothetical: ranking on citation
+# rarity alone put «تقادم الديون» (commercial debt) ABOVE «تشغيل عمال دون نقل
+# خدماتهم» in the strip of a labour-claim article — the debt piece scored higher
+# because the booklet it shared was rarer than نظام العمل is. Rarity measures how
+# unusual a citation is; it cannot tell you whether the citation is ABOUT
+# anything.
+#
+# Binding instruments (the folded forms `_fold_topic` produces). Everything else
+# — دليل, إجراءات, تقرير/وثيقة — is guidance and carries `_TOPIC_GUIDANCE_WEIGHT`.
+_TOPIC_BINDING_TYPES: frozenset[str] = frozenset(
+    {
+        "نظام",
+        "لائحه تنفيذيه",
+        "لائحه",
+        "ضوابط",
+        "تعليمات",
+        "قواعد",
+        "امر ملكي",
+        "قرار",
+    }
+)
+_TOPIC_GUIDANCE_WEIGHT = 0.35
+
+# The scan bound for relatedness, ordered newest-first so the cap (if it is ever
+# reached) keeps the articles most likely to be worth surfacing. Deliberately far
+# below `_JOIN_SCAN_CAP`: that one bounds a two-column join table, while this
+# scan drags `references_json` — tens of KB per row — so the honest ceiling is
+# hundreds of rows, not tens of thousands. The wing is at 25.
+_RELATED_SCAN_CAP = 500
+
+# How many candidates a strip can hold before it stops being a recommendation.
+_RELATED_MAX = 12
+
+
+def _fold_topic(text: str) -> str:
+    """Comparison form for a نظام title: NFKC, diacritics gone, alef/ya/ta-marbuta
+    unified, whitespace collapsed.
+
+    ⚠ THE FOLD IS WHAT MAKES THIS ONE TOPIC INSTEAD OF TWO. The corpus splits the
+    same نظام across alef spellings — the `fetch_article` pin-resolution notes the
+    same hazard, where a bare-alef corpus title silently answered a hamza query
+    with the wrong law. Here the cost of not folding is quieter but the same
+    shape: «نظام الإثبات» and «نظام الاثبات» would be two unrelated topics and the
+    strip would simply come back short.
+
+    Mirrors `shared/library/guide_titles._fold`, which is private to that module
+    and scoped to guide CHANNELS. Copied rather than imported because the two
+    answer different questions and must be free to diverge.
+    """
+    folded = unicodedata.normalize("NFKC", text or "")
+    folded = _TOPIC_DIACRITICS_RE.sub("", folded)
+    folded = (
+        folded.replace("أ", "ا")
+        .replace("إ", "ا")
+        .replace("آ", "ا")
+        .replace("ى", "ي")
+        .replace("ة", "ه")
+    )
+    return re.sub(r"\s+", " ", folded).strip().lower()
+
+
+def _topic_keys(references: Any) -> dict[str, float]:
+    """``{folded نظام title: weight}`` for one article — what it is ABOUT.
+
+    Reads the FROZEN `references_json` verbatim — the same bytes the article's
+    «المراجع» panel renders — so an article's topics can never disagree with its
+    own citations. Tolerant of every shape a stored column can take: a non-list,
+    a non-dict entry, a missing key. A row that yields nothing simply has no
+    topics and drops out of the feature.
+
+    The weight is the instrument class (see `_TOPIC_BINDING_TYPES`): 1.0 for a
+    binding نظام/لائحة/ضوابط, `_TOPIC_GUIDANCE_WEIGHT` for a دليل. A title cited
+    twice under different `doc_type`s keeps the STRONGER reading — the corpus
+    labels the same document inconsistently, and taking the max means an
+    inconsistency can only ever cost precision, never silently demote a real نظام.
+    """
+    if not isinstance(references, list):
+        return {}
+    keys: dict[str, float] = {}
+    for entry in references:
+        if not isinstance(entry, dict):
+            continue
+        if (entry.get("domain") or "") != "regulations":
+            continue
+        # The `doc_type` guard is the second half of the courthouse filter: a
+        # `regulations`-domain entry always carries one («نظام», «لائحة تنفيذية»,
+        # «دليل»), so a blank there is a malformed entry, not a نظام.
+        doc_type = _fold_topic(entry.get("doc_type") or "")
+        if not doc_type:
+            continue
+        folded = _fold_topic(entry.get("regulation_title") or "")
+        if not folded:
+            continue
+        weight = (
+            1.0 if doc_type in _TOPIC_BINDING_TYPES else _TOPIC_GUIDANCE_WEIGHT
+        )
+        keys[folded] = max(keys.get(folded, 0.0), weight)
+    return keys
+
+
+def list_related_by_topic(
+    supabase: SupabaseClient, slug: str, limit: int = 6
+) -> list[dict[str, Any]]:
+    """«اقرأ تاليًا» for one article: other public blogs citing the same أنظمة.
+
+    Empty list when the article is unknown, cites no نظام, or shares none with
+    anything else. ⚠ **IT NEVER PADS WITH RECENCY.** A strip that fills itself
+    with whatever was published last teaches the reader within two articles that
+    it means nothing, and then the real matches below it go unclicked too.
+
+    QUALIFYING (the floor, and the reason this strip can come back empty): a
+    candidate must share at least one BINDING instrument — a نظام, a لائحة,
+    ضوابط — or else at least two topics of any class. Sharing exactly one دليل is
+    not a topic in common; it is two articles that happened to cite the same
+    booklet, and «تقادم الديون» under a labour-claim article is what that looks
+    like to a reader.
+
+    RANKING: the sum over shared topics of `instrument_weight / √df`. The rarity
+    term stops «نظام العمل» — cited by a third of the wing — from flattening the
+    order, so two articles on «ضوابط التمويل الاستهلاكي» rank above two that
+    merely both touch labour; the instrument weight stops rarity from promoting a
+    rare-but-generic booklet over the law the article is actually about. Ties go
+    to the newest.
+
+    The SOURCE article is resolved through `_fetch_current_row` (no `is_public`
+    filter), so a RETRACTED article still gets a strip — its link works, so its
+    page should be whole. The CANDIDATES use the full gallery predicate: a
+    retracted or pending article must never be surfaced by one that links to it.
+    """
+    limit = max(1, min(int(limit or 6), _RELATED_MAX))
+
+    row = _fetch_current_row(supabase, slug, "root_id, references_json")
+    if row is None:
+        return []
+    mine = _topic_keys(row.get("references_json"))
+    if not mine:
+        return []
+    self_root = row.get("root_id")
+
+    try:
+        scan = (
+            supabase.table("public_blogs")
+            .select("root_id, references_json, created_at")
+            .eq("is_current", True)
+            .eq("is_public", True)
+            .eq("is_published", True)
+            .is_("deleted_at", "null")
+            .eq("review_status", "approved")
+            .order("created_at", desc=True)
+            .limit(_RELATED_SCAN_CAP)
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        # Best-effort: «اقرأ تاليًا» is a trailing strip, never the page. A
+        # failure here renders an article without it rather than a 500 on a
+        # public URL that Google is crawling.
+        logger.warning("public blog related scan failed for %s: %s", slug, e)
+        return []
+
+    # One pass to collect each candidate's topics, one to count how common each
+    # topic is across the scan — the `df` the rarity weight divides by.
+    candidates: list[tuple[str, dict[str, float], str]] = []
+    doc_freq: dict[str, int] = {}
+    for other in scan.data or []:
+        root_id = other.get("root_id")
+        if not root_id or root_id == self_root:
+            continue
+        topics = _topic_keys(other.get("references_json"))
+        if not topics:
+            continue
+        candidates.append((root_id, topics, other.get("created_at") or ""))
+        for topic in topics:
+            doc_freq[topic] = doc_freq.get(topic, 0) + 1
+
+    scored: list[tuple[float, str, str]] = []
+    for root_id, topics, created_at in candidates:
+        shared = set(mine) & set(topics)
+        if not shared:
+            continue
+        # The floor: one shared binding instrument, or two shared anything.
+        if not (
+            any(mine[t] == 1.0 for t in shared) or len(shared) >= 2
+        ):
+            continue
+        score = sum(mine[t] / math.sqrt(doc_freq.get(t, 1)) for t in shared)
+        scored.append((score, created_at, root_id))
+    if not scored:
+        return []
+
+    # Both terms descend together — strongest overlap, then newest — so one
+    # `reverse=True` says it, and the ISO `created_at` string sorts
+    # chronologically without parsing.
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    top_roots = [s[2] for s in scored[:limit]]
+
+    try:
+        result = (
+            supabase.table("public_blogs")
+            .select(_CARD_FIELDS)
+            .in_("root_id", top_roots)
+            .eq("is_current", True)
+            .eq("is_public", True)
+            .eq("is_published", True)
+            .is_("deleted_at", "null")
+            .eq("review_status", "approved")
+            .execute()
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("public blog related card fetch failed for %s: %s", slug, e)
+        return []
+
+    # PostgREST answers an `in_` in its own order, so the ranking is re-applied
+    # here — otherwise the scoring above would decide WHICH articles appear and
+    # nothing would decide the order they appear in.
+    rank = {root_id: i for i, root_id in enumerate(top_roots)}
+    rows = sorted(
+        (r for r in (result.data or []) if r.get("root_id") in rank),
+        key=lambda r: rank[r["root_id"]],
+    )
+    return _attach_cards(supabase, rows)
+
+
 def _fetch_current_row(
     supabase: SupabaseClient, slug: str, fields: str
 ) -> Optional[dict[str, Any]]:
@@ -913,6 +1167,87 @@ def _fetch_current_row(
 
     rows = result.data or []
     return rows[0] if rows else None
+
+
+# Inline markdown image: `![alt](url)`, the shape a published blog's marketing
+# cards take. Mirrors `frontend/lib/markdown/images.ts`'s `MARKDOWN_IMAGE` — the
+# leading `!` is what separates an image from a `[نص](url)` LINK, which must
+# survive because a link's text is prose.
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
+
+
+def _strip_markdown_images(markdown: str) -> str:
+    """Drop every markdown image, keep the prose.
+
+    ⚠ A PUBLISHED BLOG CARRIES ITS MARKETING CARDS INSIDE `content_md` — the
+    cover, the «أبرز النقاط» panels — as images pointing at the public
+    `blog-cards` bucket. On the page they ARE the article. Handed to a model as
+    grounding they are a wall of Supabase storage URLs: context the answer
+    cannot use, spent out of a budget `MAX_CONTEXT_CHARS` then truncates. The
+    measured cost on a live article was the cover URL landing in the FIRST 120
+    characters of the context window.
+
+    This is the same rule `stripMarkdownImages` applies to «نسخ المقال», and for
+    the same reason — every text surface over a public blog has to strip these
+    or the alt text and the URL leak into it.
+
+    Simpler than the TypeScript one on purpose: it does not skip fenced code
+    blocks. That carve-out exists so a reader copying sample code keeps it
+    verbatim; this output is never read by a human, and an image inside a fence
+    is no more useful to a model than one outside it.
+    """
+    if "![" not in markdown:
+        return markdown
+    kept: list[str] = []
+    for line in markdown.splitlines():
+        if "![" not in line:
+            kept.append(line)
+            continue
+        stripped = _MARKDOWN_IMAGE_RE.sub("", line)
+        # A line that held nothing but cards disappears rather than leaving a
+        # blank where a paragraph used to look like it was.
+        if not stripped.strip():
+            continue
+        kept.append(re.sub(r"[^\S\n]{2,}", " ", stripped).rstrip())
+    return _BLANK_RUN_RE.sub("\n\n", "\n".join(kept)).strip()
+
+
+def get_body_by_slug(
+    supabase: SupabaseClient, slug: str
+) -> Optional[dict[str, Any]]:
+    """``{title, content_md}`` for one blog by slug, or ``None``.
+
+    ``content_md`` is PROSE — the marketing cards are stripped (see
+    ``_strip_markdown_images``). Both consumers want it that way: the model
+    cannot use a storage URL, and a workspace note rendering one is noise beside
+    the three other items in the pane.
+
+    The reader for the BLOG-KEYED backend paths that are not page renders:
+    ``ask_service._ground_blog`` (the «اسأل ريحان» popup's page context) and
+    ``library_item_service._title_blog`` / ``build_content`` (the workspace carry).
+    Both used to see this wing as empty — they query ``blog_posts`` by TOKEN, and
+    a public blog has no token (plan D17), so a slug grounded on ``""``.
+
+    ⚠ **Not ``get_by_slug``, and the difference is the whole reason this exists.**
+    That one bumps ``view_count`` — the same counter whose ``updated_at`` trigger
+    made the wing unindexable (plan §5B.3). Grounding an answer and titling a
+    workspace item are not page views, and a popup question that silently
+    inflated the number the hub ranks on would be that bug's second edition.
+    ``get_references_by_slug`` is kept apart from ``get_by_slug`` for exactly
+    this reason; this is the third reader on the same side of that line.
+
+    Same visibility rule as every by-slug read (``_fetch_current_row``): a
+    RETRACTED article still grounds, because its direct link still works and a
+    reader who is on the page must be able to ask about what they can see.
+    """
+    row = _fetch_current_row(supabase, slug, "title, content_md")
+    if row is None:
+        return None
+    return {
+        "title": (row.get("title") or "").strip(),
+        "content_md": _strip_markdown_images((row.get("content_md") or "").strip()),
+    }
 
 
 def get_references_by_slug(

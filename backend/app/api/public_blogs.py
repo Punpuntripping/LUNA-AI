@@ -7,6 +7,7 @@ Tables: migrations 153 (``public_blogs``, versioned) + 154 (``blog_subjects``).
     GET /public/blogs/subjects           — the browse vocabulary + counts
     GET /public/blogs/subjects/{slug}    — the blogs carrying one subject
     GET /public/blogs/{slug}             — one blog, the CURRENT version
+    GET /public/blogs/{slug}/related     — «اقرأ تاليًا», by shared نظام
 
 ⚠ ONE MORE ROUTE OF THIS WING LIVES NEXT DOOR, deliberately:
 
@@ -56,6 +57,7 @@ from backend.app.models.responses import (
     PublicBlogCard,
     PublicBlogDetailResponse,
     PublicBlogListResponse,
+    PublicBlogRelatedResponse,
     PublicBlogSubject,
     PublicBlogSubjectFeedResponse,
     PublicBlogSubjectsResponse,
@@ -179,3 +181,36 @@ async def get_public_blog(
             detail="المدونة غير موجودة",
         )
     return PublicBlogDetailResponse(**blog)
+
+
+@router.get(
+    "/public/blogs/{slug}/related",
+    response_model=PublicBlogRelatedResponse,
+)
+async def list_related_blogs(
+    slug: str,
+    limit: int = Query(6, ge=1, le=12),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """«اقرأ تاليًا» — other public blogs built on the same أنظمة as this one.
+
+    Relatedness is the SHARED نظام, read off the frozen ``references_json`` both
+    articles carry: an article citing «نظام العمل» is related to the other
+    labour-law articles, not to whatever the editorial calendar published next.
+    ``public_blog_service.list_related_by_topic`` owns the rule and the ranking.
+
+    ⚠ **A 200 WITH AN EMPTY LIST IS THE NORMAL ANSWER, NOT AN ERROR**, and it is
+    also what an unknown slug gets. The strip is trailing furniture on a page
+    whose body has already rendered — 404ing it would mean an article that
+    resolves everywhere else fails here, on a public URL, for a section the
+    reader was never promised. The caller renders no strip on an empty list, so
+    the two cases are indistinguishable by design.
+
+    ⚠ No route-order hazard against ``/public/blogs/{slug}``: the extra segment
+    makes the patterns disjoint, unlike the ``/subjects`` literal above, which
+    genuinely had to be declared first.
+    """
+    rows = await run_db(
+        public_blog_service.list_related_by_topic, supabase, slug, limit=limit
+    )
+    return PublicBlogRelatedResponse(blogs=[PublicBlogCard(**r) for r in rows])

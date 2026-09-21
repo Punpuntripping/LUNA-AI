@@ -526,6 +526,17 @@ class PublicBlogSubjectFeedResponse(BaseModel):
     blogs: list[PublicBlogCard] = []
 
 
+class PublicBlogRelatedResponse(BaseModel):
+    """GET /api/v1/public/blogs/{slug}/related — «اقرأ تاليًا».
+
+    The SAME ``PublicBlogCard`` the gallery and the subject feeds return, on
+    purpose: three surfaces, one client contract, one card component. The list
+    is ranked (most shared أنظمة first) and is EMPTY rather than padded when
+    nothing shares a topic — the caller renders no strip at all in that case.
+    """
+    blogs: list[PublicBlogCard] = []
+
+
 class PublicBlogDetailResponse(BaseModel):
     """GET /api/v1/public/blogs/{slug} — one blog, the CURRENT version.
 

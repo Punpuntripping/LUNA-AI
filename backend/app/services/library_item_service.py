@@ -81,6 +81,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, NamedTuple, Optional
+from urllib.parse import quote
 
 from supabase import Client as SupabaseClient
 
@@ -91,6 +92,7 @@ from backend.app.errors import ErrorCode, LunaHTTPException
 # than reimplemented so the carrier and the anon popup can never disagree about
 # what a page's text is.
 from backend.app.services.ask_service import (
+    _BLOG_TOKEN_RE,
     _looks_like_uuid,
     _resolve_content_id,
     fetch_grounding,
@@ -243,12 +245,20 @@ def _public_path(page_type: str, page_id: str) -> Optional[str]:
     guard would reject every real blog token and silently drop the path. The
     token IS the public segment (``/blog/<token>``), so there is nothing to
     guard against.
+
+    ⚠ ``blog`` is also the one wing whose segment needs ENCODING. A public blog
+    is addressed by an ARABIC slug, and an unencoded one is not a URL — this
+    value is recorded as the item's provenance and is what a reader clicks to get
+    back to the page. ``quote`` with an empty ``safe`` set, because the segment is
+    a single path component: a ``/`` inside a slug would otherwise read as a path
+    separator. Token-shaped ids are pure hex and pass through untouched, so the
+    99 legacy links record exactly the string they recorded before.
     """
     prefix = _PUBLIC_PREFIX.get(page_type)
     if not prefix or not page_id:
         return None
     if page_type == "blog":
-        return f"{prefix}/{page_id}"
+        return f"{prefix}/{quote(page_id, safe='')}"
     if page_type == "article":
         # Only the composite '{reg_slug}/{article_slug}' shape is a real URL.
         if "/" not in page_id or _looks_like_uuid(page_id.split("/", 1)[0]):
@@ -500,7 +510,29 @@ def _title_blog(supabase: SupabaseClient, page_id: str) -> str:
     تأمينية» (= ``title``) while ``<title>`` = «عندي قضية تأمينية…». Measured
     over all 100 live posts, this chain matches the rendered H1 100/100 and
     ``postHeadline`` matches it 9/100. Do not "fix" this to ``postHeadline``.
+    ⚠ **THE WING HAS A SECOND TABLE**, and everything above describes only the
+    first. ``/blog`` also serves ``public_blogs`` articles keyed by an Arabic
+    SLUG, whose ``<h1>`` is ``public_blogs.title`` outright (``BlogArticleView``
+    renders ``title || question_text`` there too, but the publish path refuses a
+    titleless row). A slug used to fall through the token lookup and return "",
+    so the carry fell back to ``_title_from_slug`` — readable, but the slug is
+    the URL-safe rewrite, not the headline. Same fall-through shape as
+    ``ask_service._ground_blog``; see its docstring for why the chain is ordered
+    rather than branched.
     """
+    if not _BLOG_TOKEN_RE.match(page_id):
+        from backend.app.services import public_blog_service
+
+        try:
+            row = public_blog_service.get_body_by_slug(supabase, page_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "library carry: public blog title lookup failed (%s): %s", page_id, e
+            )
+            row = None
+        if row and row["title"]:
+            return row["title"]
+
     try:
         res = (
             supabase.table("blog_posts")
@@ -820,8 +852,14 @@ def resolve_page_identity(
             )
 
         if page_type == "blog":
-            # No simple_search level for a post — but the token IS the identity,
-            # so the dedup key is exact. Hex, hence casefold-safe.
+            # No simple_search level for a post — but the ADDRESS is the identity
+            # on both halves of this wing, so the dedup key is exact either way:
+            # a legacy token is unique per snapshot, and a public slug is unique
+            # per logical article (migration 153 enforces it) and stays stable
+            # across versions. `casefold` was noted as safe because a token is
+            # hex; it is also safe on an Arabic slug, where it is a no-op — Arabic
+            # is caseless, and the ASCII-kebab shape a public slug is CHECKed out
+            # of is what would otherwise vary.
             return PageIdentity(f"blog:{page_id.casefold()}", None)
 
         if page_type == "compliance":

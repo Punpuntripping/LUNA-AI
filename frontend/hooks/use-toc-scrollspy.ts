@@ -117,17 +117,94 @@ export function useTocScrollspy(
       .filter((el): el is HTMLElement => Boolean(el));
     if (targets.length === 0) return;
 
-    const observer = new IntersectionObserver(
-      (observed) => {
-        const inView = observed
-          .filter((o) => o.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (inView[0]) setActiveId(inView[0].target.id);
-      },
-      { rootMargin, threshold: 0 },
-    );
+    // The `rootMargin` bottom inset, resolved against the viewport, IS the
+    // reading line: `-60%` puts it at 40% of the screen height. Read back off
+    // the string the caller passed so the threshold and the observer below can
+    // never drift apart.
+    const readingLine = (): number => {
+      const parts = rootMargin.trim().split(/\s+/);
+      const bottom = parts[2] ?? parts[0] ?? "0px";
+      const m = /^(-?\d+(?:\.\d+)?)(px|%)$/.exec(bottom);
+      const viewport = window.innerHeight;
+      if (!m) return viewport;
+      const value = Number(m[1]);
+      return viewport + (m[2] === "%" ? (value / 100) * viewport : value);
+    };
+
+    // ⚠ ONE RULE, NOT TWO: the active row is the LAST target whose top edge has
+    // risen above the reading line.
+    //
+    // It used to be "the topmost target currently INTERSECTING the band", which
+    // is only a true answer when the targets tile the page. A library document
+    // anchors its rows to `<section>` elements that span their text, so
+    // something always overlaps the band. The مدونة anchors its rows to the
+    // `<h2>` itself — a 53px line with a thousand px of prose after it — so for
+    // most of the scroll NOTHING intersects, the observer had nothing to report,
+    // and `activeId` simply kept whatever it had last seen. Measured on the live
+    // labour-claim article: the pill read «الخلاصة», the LAST of five headings,
+    // while the viewport sat between headings one and two.
+    //
+    // The replacement rule needs no special case for either shape, and it is
+    // computed from LIVE rects, so it cannot be stale.
+    //
+    // `cursor` is where the last answer was found. Targets are in document
+    // order, so their tops increase monotonically and the two walks below
+    // converge from whichever side the reader moved — O(1) for an ordinary
+    // scroll delta, O(distance) for a jump. That is what keeps this affordable
+    // on a 700-مادة نظام, where a naive full scan measured 1.7ms per frame.
+    let cursor = 0;
+    const pick = () => {
+      const line = readingLine();
+      let i = Math.min(cursor, targets.length - 1);
+      while (i > 0 && targets[i]!.getBoundingClientRect().top >= line) i--;
+      while (
+        i + 1 < targets.length &&
+        targets[i + 1]!.getBoundingClientRect().top < line
+      ) {
+        i++;
+      }
+      cursor = i;
+      // Above the first heading, nothing is being read yet — the rail shows no
+      // active row and the phone pill keeps its «المحتويات» label.
+      const first = targets[0]!.getBoundingClientRect().top;
+      setActiveId(first >= line ? null : targets[i]!.id);
+    };
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        pick();
+      });
+    };
+
+    // ⚠ SCROLL IS THE PRIMARY TRIGGER, and the observer alone could not be.
+    // IntersectionObserver fires on a CHANGE of intersection state, so a jump —
+    // `scrollTo`, a restored position, a hash landing, a fast flick — can move a
+    // target from above the band to below it within one frame without ever
+    // intersecting: false → false, no change, no callback. Reproduced while
+    // building this: jumping from the foot of an article back to y=2500 left the
+    // pill on heading three while the reader was at heading two.
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule, { passive: true });
+
+    // The observer is kept as a SECOND trigger for the things scroll does not
+    // report: the first paint (no scroll event fires on load) and a layout shift
+    // under the reader — `FullContentGate` swapping the full section list in
+    // after mount moves every anchor below it.
+    const observer = new IntersectionObserver(schedule, {
+      rootMargin,
+      threshold: 0,
+    });
     targets.forEach((t) => observer.observe(t));
-    return () => observer.disconnect();
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, [entries, rootMargin, spyPrefix]);
 
   return { activeId, jumpTo, handleAnchorClick, hasTarget };
