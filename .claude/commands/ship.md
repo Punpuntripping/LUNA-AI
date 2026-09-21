@@ -90,14 +90,31 @@ memory files to update) and **ask the user to confirm before deploying**.
   --rebase origin master`, re-run the frontend tsc preflight if the rebase
   touched frontend files, then push. Never force-push.
 
-### Step 5 — Deploy
-For each affected service, call `mcp__railway-mcp-server__deploy` with
-`workspacePath: "C:\Programming\LUNA_AI"`. Both services → launch in
-parallel. Skip the deploy entirely for docs-only ships (say so).
-- A snapshot deploy reported **SKIPPED** usually means no watched-path
-  change — check `list_deployments`: the GitHub master-pull deploy from your
-  push may already be the live one carrying the same commit. That counts as
-  shipped; verify it like any other deploy.
+### Step 5 — Deploy (usually: DON'T)
+**Read `list_deployments` for each affected service BEFORE deploying
+anything.** The push in Step 4 auto-triggers the correct build from the
+committed SHA on every service whose watched paths it touched. If a
+deployment carrying your SHA is already `BUILDING`, **deploy nothing** — go
+straight to Step 6 and verify it. A snapshot deploy fired afterwards lands
+LATER and WINS, replacing the committed build with your dirty tree.
+
+Snapshot-deploy ONLY when the push could not trigger the service — the
+frontend's root is `/frontend`, so a backend-only commit leaves it
+`SKIPPED` on the old image. Then, and only then:
+- `git worktree add --detach <scratch>/clean HEAD`, confirm
+  `git -C <scratch>/clean status` is empty, and deploy FROM THERE. Never
+  from the repo root: this tree is permanently dirty and `deploy` tarballs
+  the directory, not git.
+- ⚠ **THE PARAMETER NAMES ARE `service_id` AND `path`.** Unknown keys are
+  silently DROPPED — pass `service`/`workspacePath` and the call still
+  succeeds, having deployed the **linked service** (`luna-backend`) from the
+  **current directory** (the dirty root). That is how a frontend-only ship
+  deploys uncommitted backend WIP to production; it happened on 2026-09-21.
+  Pass `project_id`, `environment_id` and `service_id` explicitly, then
+  confirm in `list_deployments` that the new deployment appeared under the
+  service you meant.
+- A deployment listing with `-` where the SHA belongs IS a snapshot. A real
+  git deploy shows the hash.
 
 ### Step 6 — Verify
 - Poll `mcp__railway-mcp-server__list_deployments` (limit 1 per service)

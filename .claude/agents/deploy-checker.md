@@ -44,7 +44,13 @@ Determine what to deploy based on changed files:
 - Changes in `frontend/` → deploy **luna-frontend**
 - Changes in both → deploy **both in parallel**
 
-Use `mcp__railway-mcp-server__deploy` with `workspacePath: "C:\Programming\LUNA_AI"` and the service name.
+Use `mcp__railway-mcp-server__deploy` with **`service_id`** (the id, not the
+name) and **`path`** pointing at a CLEAN worktree
+(`git worktree add --detach <scratch>/clean HEAD`) — those are the real
+parameter names, unknown keys like `workspacePath`/`service` are silently
+dropped and the call then deploys the LINKED service from the dirty repo
+root. Always confirm in `list_deployments` that the deployment appeared
+under the service you intended.
 
 If deploying both, run them in parallel.
 

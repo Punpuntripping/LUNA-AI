@@ -20,7 +20,20 @@ Parse `$ARGUMENTS` (case-insensitive, trimmed). If it doesn't match `backend` or
 
 ## Deployment
 
-Use `mcp__railway-mcp-server__deploy` with `workspacePath: "C:\Programming\LUNA_AI"`.
+Use `mcp__railway-mcp-server__deploy` with **`service_id`** and **`path`** —
+those are the real parameter names. Anything else (`service`, `workspacePath`)
+is silently dropped, and the call then deploys the LINKED service
+(`luna-backend`) from the CURRENT directory. Pass `project_id`
+(`a1e7045f-bd90-4f46-9cf4-f1a6c50f11d6`), `environment_id`
+(`f9cf6025-7982-42d5-9b56-5f2945fcfd27`) and `service_id` explicitly, then
+confirm in `list_deployments` that the deployment landed under the intended
+service.
+
+`path` must point at a CLEAN tree (`git worktree add --detach <scratch>/clean
+HEAD`) — `deploy` tarballs the directory, not git, and this repo's root is
+permanently dirty. If the work is already pushed, check `list_deployments`
+first: the push's own build is the correct one and a snapshot deploy would
+override it.
 
 ### Backend
 - Service: `luna-backend`

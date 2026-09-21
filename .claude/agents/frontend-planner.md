@@ -205,9 +205,15 @@ C4. [criterion] — FAIL: [evidence from evaluator]
 
 If the user requested production deployment or the sprint involves deploy-visible changes:
 
-1. Deploy via `mcp__railway-mcp-server__deploy`:
-   - `workspacePath`: `C:\Programming\LUNA_AI`
-   - `service`: `luna-frontend`
+1. Deploy via `mcp__railway-mcp-server__deploy` — the parameter names are
+   `service_id` and `path`, and anything else is silently dropped (a call
+   with `workspacePath`/`service` deploys the LINKED service, `luna-backend`,
+   from the dirty repo root):
+   - `project_id`: `a1e7045f-bd90-4f46-9cf4-f1a6c50f11d6`
+   - `environment_id`: `f9cf6025-7982-42d5-9b56-5f2945fcfd27`
+   - `service_id`: `6384a36e-d7f2-4a9f-8691-491de1ad4c82` (luna-frontend)
+   - `path`: a clean worktree (`git worktree add --detach <scratch>/clean HEAD`),
+     never the repo root — `deploy` tarballs the directory, not git
 
 2. Poll `mcp__railway-mcp-server__list-deployments` (limit 1) until status resolves:
    - **SUCCESS** → proceed to evaluation
