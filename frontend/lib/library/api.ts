@@ -26,6 +26,7 @@ import type {
   JudgmentHubResponse,
 } from "@/types/library";
 import type { LibraryType } from "@/lib/library/sectors";
+import { stripMarkdownImages } from "@/lib/markdown/images";
 
 /**
  * Backend origin for SERVER→SERVER calls. Precedence:
@@ -263,9 +264,14 @@ export function findMetadataValue(
 /**
  * Strip light markdown + collapse whitespace into a plain meta-description
  * snippet, truncated to `max` chars with an ellipsis.
+ *
+ * IMAGES GO FIRST, and they go whole. The link rule below keeps the text inside
+ * the brackets, so an image survived it as its bare alt («!غلاف المقال …») and
+ * a carded blog opened its Google snippet with that instead of its first
+ * sentence. An alt is never snippet prose — on any surface.
  */
 export function toSnippet(text: string, max = 155): string {
-  const clean = text
+  const clean = stripMarkdownImages(text)
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/[#>*_`~]+/g, " ")
     .replace(/\s+/g, " ")

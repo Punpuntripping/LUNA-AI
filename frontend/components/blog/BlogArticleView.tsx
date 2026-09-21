@@ -18,6 +18,7 @@ import {
 } from "@/components/workspace/ReferencePanel";
 import { Button } from "@/components/ui/button";
 import { extractHeadings } from "@/lib/markdown/headings";
+import { stripMarkdownImages } from "@/lib/markdown/images";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { BlogSubjectRef, Reference } from "@/types";
 import type { TocEntry } from "@/types/library";
@@ -198,14 +199,20 @@ export function BlogArticleView({ post, sourceKey }: BlogArticleViewProps) {
   // list stands alone, so each wing adds what locates its document. A post
   // published before the case fields shipped has a FROZEN references_json and
   // degrades to the subject title it copies today.
+  //
+  // THE BODY IS STRIPPED OF ITS MARKETING CARDS FIRST. A published blog carries
+  // its cover and «أبرز النقاط» panels inline as ``![…](…blog-cards…)``, which
+  // render as the article but paste as raw Supabase URLs wedged between the
+  // paragraphs. The clipboard gets the prose and the references — nothing else.
   const copyContent = useMemo(() => {
-    if (references.length === 0) return body;
+    const text = stripMarkdownImages(body);
+    if (references.length === 0) return text;
     const refLines = [...references]
       .sort((a, b) => a.n - b.n)
       .map((ref) => `${ref.n}-${referenceCopyLabel(ref)}`)
       .join("\n");
-    return body.trim().length > 0
-      ? `${body}\n\nالمراجع\n${refLines}`
+    return text.trim().length > 0
+      ? `${text}\n\nالمراجع\n${refLines}`
       : `المراجع\n${refLines}`;
   }, [body, references]);
 
