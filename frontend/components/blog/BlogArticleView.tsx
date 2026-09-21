@@ -13,6 +13,7 @@ import { ChatWithPageCta } from "@/components/library/blocks/ChatWithPageCta";
 import { TocFloating } from "@/components/library/blocks/TocFloating";
 import { TocList } from "@/components/library/blocks/TocList";
 import { TocRail } from "@/components/library/blocks/TocRail";
+import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
 import {
   ReferencePanel,
   referenceCopyLabel,
@@ -422,6 +423,18 @@ export function BlogArticleView({
                 />
               </div>
             )}
+
+            {/* ⚠ UNCONDITIONAL, and that is the point — the notice is required
+                on every blog, so it cannot sit inside the `references.length`
+                branch above the way the artifact's does. A post that cites
+                nothing is if anything the one that needs it most.
+
+                Same component the search artifact uses, imported rather than
+                re-typed: `AGENT_OUTPUT_DISCLAIMER_AR` is the single source of
+                this wording (it used to be baked into `content_md` and was
+                pulled out to one place in migration 074), and a second copy is
+                a second copy to keep in sync with legal. */}
+            <AgentOutputDisclaimer />
           </div>
 
           {showToc && (

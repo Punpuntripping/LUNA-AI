@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import { AgentOutputDisclaimer } from "@/components/workspace/AgentOutputDisclaimer";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { ReferencePanel, referenceCopyLabel } from "@/components/workspace/ReferencePanel";
 import { BlogPageShell } from "@/components/blog/BlogPageShell";
@@ -181,15 +182,24 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
             content={body}
             copyContent={copyContent}
             onCitationClick={handleBodyCitationClick}
+            // References then the notice — the exact footer order
+            // `AgentSearchViewer` renders in-app, so the public copy of an
+            // answer ends the way the artifact it came from does. The
+            // disclaimer is OUTSIDE the `references.length` guard: it is
+            // required on every blog, and an answer citing nothing is the one
+            // that needs it most.
             footer={
-              references.length > 0 ? (
-                <ReferencePanel
-              blogToken={blogToken}
-                  references={references}
-                  focusedReferenceN={focusedN}
-                  onFlashDone={handleFlashDone}
-                />
-              ) : null
+              <>
+                {references.length > 0 && (
+                  <ReferencePanel
+                    blogToken={blogToken}
+                    references={references}
+                    focusedReferenceN={focusedN}
+                    onFlashDone={handleFlashDone}
+                  />
+                )}
+                <AgentOutputDisclaimer />
+              </>
             }
           />
         </section>
