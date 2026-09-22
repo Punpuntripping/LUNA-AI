@@ -1,0 +1,164 @@
+/* National Day card — type and page chrome.
+ *
+ * Only two faces are declared here: Camel, the default, which must be present
+ * at first paint, and Domain, the small Latin face under the card. The other
+ * seven families are registered at runtime by fonts.ts when the visitor picks
+ * one — together they weigh ~460KB, which is not something to hand someone
+ * who never opens the picker.
+ *
+ * `font-display: block` — a card drawn to canvas before its face loads would
+ * bake the fallback into the PNG, so the draw waits on document.fonts instead
+ * of racing it.
+ */
+
+@font-face {
+  font-family: "ND96 Camel";
+  src: url("/nd96/fonts/camel-display.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "ND96 Camel";
+  src: url("/nd96/fonts/camel-body.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "ND96 Domain";
+  src: url("/nd96/fonts/saudi-display.woff2") format("woff2");
+  font-weight: 500 700;
+  font-style: normal;
+  font-display: block;
+}
+
+.nd96-display {
+  font-family: "ND96 Camel", "Noto Naskh Arabic", serif;
+}
+
+/* The three text fields are set in whichever face the visitor picked, so what
+   they type looks like what the card will print.
+ *
+ * `--nd96-face-scale` is the same ink-height normaliser the canvas uses, but
+ * CAPPED by the component before it reaches here, so the small-ink faces stay
+ * legible without taking the field over.
+ *
+ * THE 10px BASE IS MEASURED, NOT CHOSEN. Mobile is the priority here and the
+ * field is ~70px wide beside a card taking 75%; after padding and border its
+ * content box is 56px. Two words ("عبدالله محمد") must fit in that box in
+ * every one of the eight faces, and the binding one is Alnaseeb, which needs
+ * a base at or under 10.8px once its 1.35 cap is applied. 10px clears all
+ * eight with margin. Raising it drops the second word on the widest faces. */
+.nd96-field,
+.nd96-field-lg {
+  font-family: var(--nd96-face, inherit);
+  font-size: calc(10px * var(--nd96-face-scale, 1));
+}
+
+/* globals.css forces every field to >=16px under 640px — the iOS zoom guard:
+ * Safari zooms the page when a field smaller than that takes focus. Its
+ * selector (input:not(…):not(…):not(…)) outranks a single class, hence the
+ * !important, scoped to this page.
+ *
+ * Safari decides whether to zoom at the MOMENT OF FOCUS and not before, so the
+ * guard only has to hold then. Small at rest, 16px the instant it is focused:
+ * the resting field shows two words, and tapping it still never zooms. */
+@media (max-width: 639px) {
+  input.nd96-field:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  input.nd96-field-lg:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea.nd96-field {
+    font-size: calc(10px * var(--nd96-face-scale, 1)) !important;
+  }
+
+  input.nd96-field:focus:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  input.nd96-field-lg:focus:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea.nd96-field:focus {
+    font-size: max(1rem, 1em) !important;
+  }
+}
+
+@media (min-width: 640px) {
+  .nd96-field {
+    font-size: calc(16px * var(--nd96-face-scale, 1));
+  }
+  .nd96-field-lg {
+    font-size: calc(18px * var(--nd96-face-scale, 1));
+  }
+}
+
+/* The card is authored at 1080×1350 and scaled by CSS alone, so the preview
+   and the downloaded PNG can never drift apart. */
+.nd96-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1080 / 1350;
+  border-radius: 14px;
+  box-shadow:
+    0 1px 2px rgb(24 20 26 / 8%),
+    0 18px 40px -16px rgb(24 20 26 / 28%);
+}
+
+.nd96-swatch {
+  position: relative;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  padding: 3px;
+  line-height: 0;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.nd96-swatch:hover {
+  transform: translateY(-1px);
+}
+
+/* The swatches sit in a ~70px rail on a phone, beside a card that takes 75%
+   of the width. At 34px they were one per row and six rows tall; at 18px with
+   a 6px gap three fit per row, so the whole palette is two rows. */
+.nd96-swatch {
+  padding: 2px;
+}
+
+.nd96-swatch > span {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+}
+
+@media (min-width: 640px) {
+  .nd96-swatch {
+    padding: 3px;
+  }
+}
+
+@media (min-width: 640px) {
+  .nd96-swatch > span {
+    width: 34px;
+    height: 34px;
+  }
+}
+
+.nd96-swatch[aria-pressed="true"] {
+  border-color: var(--primary, #4a6b5f);
+}
+
+.nd96-swatch:focus-visible {
+  outline: 2px solid var(--primary, #4a6b5f);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nd96-swatch {
+    transition: none;
+  }
+  .nd96-swatch:hover {
+    transform: none;
+  }
+}

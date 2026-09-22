@@ -79,6 +79,10 @@ const PUBLIC_PREFIXES = [
   "/circulars",
   "/forms",
   "/judgments",
+  // The National Day card generator. It is a campaign link handed out cold, so
+  // every visitor arrives logged out — without this entry isPublicPath() below
+  // returns false and the whole audience lands on /login.
+  "/national-day",
   // «نسيت كلمة المرور» — reachable only by someone who cannot log in, so it has
   // to render logged-out. Its sibling /reset-password is deliberately NOT here:
   // that one is entered through /auth/callback, which establishes a session
