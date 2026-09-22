@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  NATIONAL_DAY_PATH,
+  isNationalDayWindow,
+} from "@/lib/campaigns/national-day";
 
 const publicPaths = ["/login", "/register"];
 
@@ -24,6 +28,50 @@ const NOINDEX_SEARCH = "noindex, follow";
 
 export function middleware(request: NextRequest) {
   const { pathname, searchParams } = request.nextUrl;
+
+  // ── اليوم الوطني السعودي 96 ────────────────────────────────────────────
+  // While the campaign window is open the anonymous front door is the greeting
+  // card generator, not the marketing page. The window's clock lives in
+  // `lib/campaigns/national-day.ts` and closes at Saudi midnight on the 24th —
+  // this branch then goes inert on its own, with nothing to deploy and nothing
+  // to remember.
+  //
+  // ⚠ ANONYMOUS VISITORS ONLY, and not as a hedge. `/` already bounces
+  // authenticated users to /chat (AuthGuard), so the marketing page this
+  // replaces is one they never see — but `SiteHeader`'s brand link points at
+  // `/` from every public page, and redirecting them too would land every
+  // signed-in user who clicks the logo on a card generator instead of the app.
+  // The Supabase session cookie is the only session signal a middleware has;
+  // @supabase/ssr CHUNKS it (`sb-<ref>-auth-token.0`, `.1`) once it outgrows
+  // the 4 KB cookie limit, so this matches the prefix — an equality test on the
+  // unchunked name reads «signed out» for exactly the users with the biggest
+  // sessions.
+  //
+  // ⚠ MIDDLEWARE, NOT A `redirect()` IN THE PAGE. `/` is ISR-prerendered
+  // (`x-nextjs-prerender: 1`, `s-maxage=60`); redirecting from inside the
+  // component would force the route dynamic and surrender that cache
+  // permanently for a one-day campaign. Middleware runs ahead of the cache
+  // lookup, so the prerendered page sits untouched and resumes serving the
+  // instant the window shuts.
+  if (pathname === "/" && isNationalDayWindow()) {
+    const signedIn = request.cookies
+      .getAll()
+      .some((cookie) => /^sb-.+-auth-token/.test(cookie.name));
+
+    if (!signedIn) {
+      // `clone()` carries the query string across, so utm_* attribution on a
+      // campaign link survives the hop instead of dying at the front door.
+      const destination = request.nextUrl.clone();
+      destination.pathname = NATIONAL_DAY_PATH;
+
+      const redirect = NextResponse.redirect(destination, 307);
+      // 307 is already uncacheable by default — say it out loud anyway. A proxy
+      // that stored this response would keep bouncing `/` long after the window
+      // closed, and the fix would be a cache purge nobody would know to run.
+      redirect.headers.set("Cache-Control", "no-store");
+      return redirect;
+    }
+  }
 
   // Allow public paths
   if (publicPaths.some((p) => pathname.startsWith(p))) {
