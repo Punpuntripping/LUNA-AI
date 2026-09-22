@@ -49,6 +49,25 @@ export const FONTS: readonly FontEntry[] = [
     preloaded: true,
   },
   {
+    // The same family as the heading and the default, at Regular/Light instead
+    // of ExtraBold/Medium — the plain cut, for a card that should read quietly
+    // rather than shout. Its own entry and not a weight toggle, because the
+    // picker's unit is "how the card looks", and weight changes that as much
+    // as a different face does.
+    id: "camel-plain",
+    label: "عادي",
+    family: "ND96 Camel Plain",
+    files: {
+      display: "camelplain-display.woff2",
+      body: "camelplain-body.woff2",
+    },
+    displayWeight: 400,
+    bodyWeight: 300,
+    // 1.059, not 1: Regular's cap height is 658 against ExtraBold's 697, so
+    // set at the same nominal it would sit ~6% shorter than every other face.
+    scale: 1.059,
+  },
+  {
     id: "saudi",
     label: "السعودي",
     family: "ND96 Saudi",

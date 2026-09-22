@@ -26,6 +26,10 @@ export const COMPANY_MAX = 46;
 /** Offered as the placeholder, and used when the visitor clears the field. */
 export const DEFAULT_GREETING = "كل عام والوطن بخير";
 
+/** Set beside the «اليوم الوطني السعودي» band. Latin digits, per the app's
+ *  one numeral convention (lib/format/numerals.ts). */
+const YEAR = "96";
+
 // Two full motif periods across the card. Two, not three: at three the camels
 // fall to ~40px and read as noise; at two they keep their silhouette. A
 // non-integer count would break the repeat at the corners.
@@ -365,13 +369,34 @@ export function drawCard(
   );
   y += lockupH + g("lockupSub");
 
+  // «اليوم الوطني السعودي» is a raster cut from the official artboard, so the
+  // 96 cannot be baked into it — it is set alongside, in the card's own face.
+  // Reading order is RTL, so the year sits at the LEFT end of the pair, and
+  // the two are centred as one block rather than each on its own.
+  ctx.font = face(font, font.displayWeight, Math.round(sublineH));
+  const yearW = ctx.measureText(YEAR).width;
+  const yearGap = Math.round(sublineH * 0.34);
+  const pairW = sublineW + yearGap + yearW;
+  const pairRight = mid + pairW / 2;
+
   ctx.drawImage(
     tinted(assets.subline, sublineW * 2, sublineH * 2, cw.ink),
-    mid - sublineW / 2,
+    pairRight - sublineW,
     y,
     sublineW,
     sublineH,
   );
+
+  ctx.save();
+  ctx.direction = "ltr";
+  ctx.textAlign = "left";
+  ctx.fillStyle = cw.ink;
+  // 0.765 of the crop is where the Arabic baseline falls inside it: the glyph
+  // bodies occupy y 5..52 of the 68px source band and the descenders 54..63,
+  // so centring the digits on the box instead would float them high.
+  ctx.fillText(YEAR, pairRight - sublineW - yearGap - yearW, y + sublineH * 0.765);
+  ctx.restore();
+
   y += sublineH + g("subName");
 
   ctx.fillStyle = cw.ink;
