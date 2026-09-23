@@ -823,6 +823,8 @@ async def capture_payment_method(
       * the feature flag is off — nothing is ever stored;
       * the plan does not renew (``basic``: storing its card collects a
         credential with no purpose, which PDPL does not love);
+      * the payment IS a renewal — it was charged against the stored card, so
+        there is nothing to capture and nothing to warn about;
       * no consent artefact for this payment — a token without consent is not
         chargeable, so storing it would only create a liability;
       * no token in the provider payload — WARNING + an ``audit_logs`` row, see
@@ -838,6 +840,19 @@ async def capture_payment_method(
         if not auto_renewal_enabled():
             return None
         if not user_id or str(plan_id) not in RENEWABLE_PLAN_IDS:
+            return None
+
+        # A RENEWAL has nothing to capture — it was charged against the card
+        # this function stored in the first place, and Moyasar's response to a
+        # token charge carries no `source.token` (it echoes the ORIGINAL
+        # instrument's type instead, e.g. "applepay"). Without this gate the
+        # no-token branch below fires on every SUCCESSFUL renewal and writes an
+        # audit row announcing that the subscription will not auto-renew —
+        # which it just did. Observed live on the first real renewal
+        # (2026-09-23, payment 9a37f744): two false `card_token_missing` rows
+        # for a charge the provider APPROVED. An alarm that fires on success is
+        # worse than no alarm, because the one real case is now unfindable.
+        if str(payment_row.get("initiated_by") or "") == "renewal":
             return None
 
         card = extract_card_token(fetched)

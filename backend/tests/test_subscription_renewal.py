@@ -1293,6 +1293,36 @@ def test_a_renewable_purchase_that_stores_no_token_is_loud_and_queryable(
     assert audited[0]["metadata"]["plan_id"] == "pro"
 
 
+def test_a_successful_renewal_never_reports_a_missing_token(flag_on, caplog):
+    """The alarm must not fire on the thing working.
+
+    OBSERVED LIVE on the first real renewal (2026-09-23, payment 9a37f744, a mada
+    card tokenized through Apple Pay and charged merchant-initiated): the provider
+    APPROVED it, the term extended — and capture wrote TWO `card_token_missing`
+    audit rows saying the subscription would not auto-renew. A renewal is charged
+    against the already-stored card, and Moyasar's response to a token charge
+    carries no `source.token` — it echoes the ORIGINAL instrument's type
+    (`applepay`) instead. So the no-token branch read a success as a failure.
+
+    An alarm that fires on every success buries the one real case, which is the
+    entire reason this event exists.
+    """
+    caplog.set_level(logging.INFO, logger="backend.app.services.payment_method_service")
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro",
+           "initiated_by": "renewal", "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _applepay_payload(pid))) is None
+
+    assert [r for r in db.tables["audit_logs"]
+            if (r.get("metadata") or {}).get("event") == pm.NO_TOKEN_EVENT] == [], (
+        "a renewal has nothing to capture and must not be audited as a failure"
+    )
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "no card token" in r.getMessage()]
+
+
 def test_a_missing_token_on_a_card_purchase_is_audited_too(flag_on):
     """Not an Apple-Pay-only tripwire. A `creditcard` source that yields no token
     is a DIFFERENT and more alarming failure — we did ask for `save_card` there —
