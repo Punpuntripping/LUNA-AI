@@ -39,6 +39,7 @@ The load-bearing assertions:
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -772,13 +773,48 @@ def test_the_method_shape_is_flat_and_tokenless():
     branch on — everything else is display."""
     row = {"payment_method_id": "m", "provider_token": TOKEN, "provider": "moyasar",
            "brand": "mada", "last4": "1111", "exp_month": 12, "exp_year": 2030,
+           "source_type": "creditcard",
            "consent_given_at": "2026-08-11T00:00:00+00:00", "created_at": "x"}
     described = pm.describe_method(row)
     assert set(described) == {
         "has_method", "payment_method_id", "provider", "brand", "last4",
-        "exp_month", "exp_year", "consent_given_at", "created_at",
+        "exp_month", "exp_year", "source_type", "consent_given_at", "created_at",
     }
     assert described["has_method"] is True and described["last4"] == "1111"
+    assert described["source_type"] == "creditcard"
+
+
+def test_the_method_shape_carries_wallet_provenance_and_the_funding_card():
+    """`source_type` is provenance, NOT a second brand (163).
+
+    A wallet credential is a device PAN behind a funding card, so «Apple Pay» and
+    «فيزا ••2796» are both true of the same row and the dialog renders BOTH. The
+    frontend brand map falls back to the raw string, so a row that said only
+    `brand: "applepay"` would put bare Latin text inside an RTL panel — which is
+    exactly why this is a separate field rather than an overloaded `brand`.
+    """
+    described = pm.describe_method(
+        {"payment_method_id": "m", "brand": "visa", "last4": "2796",
+         "source_type": "applepay", "consent_given_at": "x", "created_at": "x"}
+    )
+    assert described["source_type"] == "applepay"
+    assert (described["brand"], described["last4"]) == ("visa", "2796")
+
+
+def test_a_pre_163_row_reads_as_unknown_provenance_not_as_a_broken_row():
+    """Every row that existed when 163 landed is NULL and was deliberately never
+    back-labelled — provenance cannot be reconstructed after the fact. The key
+    must still be PRESENT so the settings dialog can branch on it rather than
+    crash on a missing field, and null must mean "unknown", never "not a card"."""
+    described = pm.describe_method(
+        {"payment_method_id": "m", "brand": "mada", "last4": "1111",
+         "consent_given_at": "x", "created_at": "x"}
+    )
+    assert "source_type" in described and described["source_type"] is None
+    assert described["has_method"] is True
+    # …and the same key exists on the empty shape, so "no card" and "old card"
+    # do not differ in SHAPE, only in value.
+    assert "source_type" in pm.describe_method(None)
 
 
 def test_the_renewal_job_is_registered_only_behind_the_flag():
@@ -934,16 +970,47 @@ def _paid_payload(pid, *, token=TOKEN):
     }
 
 
+def _applepay_payload(pid, *, token=None):
+    """The REAL Apple Pay source, transcribed from a production payment
+    (2026-09-20) and confirmed by Moyasar in writing 2026-09-22.
+
+    Two fields matter and they are easy to swap by mistake:
+      * ``number`` (…2796) is the FUNDING card — what the customer sees on their
+        bank statement, and therefore what «فيزا ••2796» must show;
+      * ``dpan`` (…2764) is the DEVICE PAN — what actually processes, and what no
+        customer has ever seen.
+
+    ``token`` defaults to None because that is the shape every Apple Pay buyer
+    produced for a month: the source carries the ``token`` KEY, populated with
+    null, because ``apple_pay.save_card`` was never passed.
+    """
+    return {
+        "id": str(uuid.uuid4()), "status": "paid", "amount": 8990, "currency": "SAR",
+        "live": True, "metadata": {"payment_id": pid},
+        "source": {"type": "applepay", "company": "visa",
+                   "number": "XXXX-XXXX-XXXX-2796",
+                   "dpan": "4326-9974-XXXX-2764",
+                   "name": "MOHAMMED", "message": None, "token": token},
+    }
+
+
 def test_token_extraction_reads_brand_last4_and_expiry():
     card = pm.extract_card_token(_paid_payload("x"))
     assert card == {"provider_token": TOKEN, "brand": "mada", "last4": "1111",
-                    "exp_month": 12, "exp_year": 2030}
+                    "exp_month": 12, "exp_year": 2030, "source_type": "creditcard"}
 
 
 @pytest.mark.parametrize(
     "payload",
     [None, {}, {"source": None}, {"source": {}}, {"source": {"type": "creditcard"}},
-     {"source": {"token": "   "}}],
+     {"source": {"token": "   "}},
+     # The shape that cost a month of Apple Pay buyers their auto-renewal: a
+     # complete, successful, LIVE applepay source whose `token` key exists and is
+     # null. It must read as "no token" exactly like the others — the defect was
+     # never that this crashed, it was that it was indistinguishable from them.
+     {"source": {"type": "applepay", "company": "visa",
+                 "number": "XXXX-XXXX-XXXX-2796",
+                 "dpan": "4326-9974-XXXX-2764", "token": None}}],
 )
 def test_token_extraction_is_silent_when_there_is_no_token(payload):
     """The ordinary case today (save_card is never requested) and the failure
@@ -951,18 +1018,42 @@ def test_token_extraction_is_silent_when_there_is_no_token(payload):
     assert pm.extract_card_token(payload) is None
 
 
+def test_an_applepay_token_reads_the_funding_card_not_the_dpan():
+    """Once `apple_pay.save_card` ships, THIS is what arrives — and the parse has
+    to get two things right at once.
+
+    1. ``source_type`` must come out as ``applepay``. Capture is a pure duck-type
+       on ``source.token``, so without this the wallet population and the card
+       population become indistinguishable in our own database, permanently.
+    2. ``brand``/``last4`` must come from ``company``/``number`` — visa/2796, the
+       FUNDING card — and NOT from the ``dpan`` (…2764). Moyasar confirmed the
+       split in writing; 2796 is the number on the customer's statement, 2764 is
+       a number they have never seen. A "fix" that reads the dpan would replace a
+       recognisable card with an unrecognisable one and look like a bug to them.
+    """
+    card = pm.extract_card_token(_applepay_payload("x", token=TOKEN))
+    assert card == {"provider_token": TOKEN, "brand": "visa", "last4": "2796",
+                    "exp_month": None, "exp_year": None, "source_type": "applepay"}
+    assert "2764" not in str(card)          # the dpan never leaks into display
+
+
 def test_token_object_spellings_are_understood():
     """The TOKEN object names things differently from a payment source — `brand`
     not `company`, `last_four` not `number` — and carries the expiry the payment
     response omits entirely. Production feeds it through this same parser with
-    `token` injected from `id`, which is what this asserts."""
+    `token` injected from `id`, which is what this asserts.
+
+    ``source_type`` is None here and that is correct: a token object carries no
+    `type`, provenance is a fact about the PAYMENT, and the enrichment in
+    ``capture_payment_method`` deliberately never overwrites it.
+    """
     token_obj = {
         "id": TOKEN, "status": "active", "brand": "visa", "funding": "credit",
         "country": "SA", "month": "9", "year": "2029", "last_four": "4242",
     }
     card = pm.extract_card_token({"source": {**token_obj, "token": token_obj["id"]}})
     assert card == {"provider_token": TOKEN, "brand": "visa", "last4": "4242",
-                    "exp_month": 9, "exp_year": 2029}
+                    "exp_month": 9, "exp_year": 2029, "source_type": None}
 
 
 @pytest.fixture(autouse=True)
@@ -1146,6 +1237,211 @@ def test_a_second_card_replaces_and_revokes_the_first(flag_on, provider_revokes)
     active = [m for m in db.tables["payment_methods"] if not m.get("revoked_at")]
     assert len(active) == 1 and active[0]["provider_token"] == "token_new"
     assert provider_revokes == ["token_old"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Apple Pay — provenance (163) and the loud failure (Phase 0)
+#
+# Context: `pro`/`max` renew by charging a stored token, and that token only
+# exists if `save_card` was passed at checkout. We passed it inside
+# `credit_card` and never inside `apple_pay`, so for a month every Apple Pay
+# buyer got a normal grant and was silently never enrolled — 3 of the first 10
+# paid purchases. Nothing in the backend branched on `source.type`, so the two
+# populations would have stayed indistinguishable even after the token arrived.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_renewable_purchase_that_stores_no_token_is_loud_and_queryable(
+    flag_on, caplog
+):
+    """The line that let this run for a month, and the two things wrong with it.
+
+    It was **INFO**, which is indistinguishable from a `basic` purchase or a
+    flag-off deploy — so a renewable purchase silently storing nothing looked
+    exactly like the two cases where storing nothing is correct. And it asserted
+    a CAUSE ("save_card not requested") that this function cannot know: from
+    there, a wallet payment we never asked to tokenize, a `save_card` the
+    provider refused, and a payload whose field names moved are the same event.
+
+    So: WARNING, carrying `source.type` — the one field that separates the
+    populations — plus an `audit_logs` row, because "grep the logs" is not a way
+    to find out how many customers this has happened to.
+    """
+    caplog.set_level(logging.INFO, logger="backend.app.services.payment_method_service")
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro",
+           "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _applepay_payload(pid))) is None
+    assert db.tables["payment_methods"] == []
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "no card token" in r.getMessage()]
+    assert len(warnings) == 1, "a renewable purchase storing nothing must not be INFO"
+    assert "applepay" in warnings[0].getMessage()
+    assert "save_card" not in warnings[0].getMessage(), (
+        "the message must not assert a cause this function cannot know"
+    )
+
+    audited = [r for r in db.tables["audit_logs"]
+               if (r.get("metadata") or {}).get("event") == pm.NO_TOKEN_EVENT]
+    assert len(audited) == 1
+    assert audited[0]["resource_type"] == "payment_transaction"
+    assert audited[0]["resource_id"] == pid
+    assert audited[0]["metadata"]["source_type"] == "applepay"
+    assert audited[0]["metadata"]["plan_id"] == "pro"
+
+
+def test_a_missing_token_on_a_card_purchase_is_audited_too(flag_on):
+    """Not an Apple-Pay-only tripwire. A `creditcard` source that yields no token
+    is a DIFFERENT and more alarming failure — we did ask for `save_card` there —
+    so it must be just as visible, and the audit row must say which it was."""
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro",
+           "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _paid_payload(pid, token=None))) is None
+    audited = [r for r in db.tables["audit_logs"]
+               if (r.get("metadata") or {}).get("event") == pm.NO_TOKEN_EVENT]
+    assert len(audited) == 1 and audited[0]["metadata"]["source_type"] == "creditcard"
+
+
+def test_capture_records_that_the_credential_came_from_a_wallet(flag_on):
+    """The state the frontend fix creates: an Apple Pay payment that DOES carry a
+    token. The row must record `applepay` while still displaying the FUNDING card
+    — «Apple Pay» and «فيزا ••2796» are both true of it, and 2764 (the device PAN)
+    is not a number the customer has ever seen."""
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    _consent_row(db, pid)
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro"}
+
+    assert run(pm.capture_payment_method(db, row, _applepay_payload(pid, token=TOKEN)))
+    stored = db.tables["payment_methods"][0]
+    assert stored["source_type"] == "applepay"
+    assert (stored["brand"], stored["last4"]) == ("visa", "2796")
+    assert "2764" not in str(stored)
+
+
+def test_capture_records_a_card_purchase_as_a_card(flag_on):
+    """The other half of the same contract — provenance is recorded on BOTH
+    paths, or a NULL would be ambiguous between "old row" and "wallet"."""
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    _consent_row(db, pid)
+    assert run(pm.capture_payment_method(
+        db, {"payment_id": pid, "user_id": USER, "plan_id": "pro"}, _paid_payload(pid)
+    ))
+    assert db.tables["payment_methods"][0]["source_type"] == "creditcard"
+
+
+def test_the_card_is_still_stored_when_163_is_not_applied(flag_on):
+    """`source_type` is a label; the row is the whole feature.
+
+    Migration 163 may land after the deploy that writes it (unlike 132, which
+    must land first). If the INSERT went down with the column, a backend running
+    ahead of the migration would store NO credential at all — reintroducing, in a
+    new costume, the exact bug the column exists to make visible. Same tolerance,
+    for the same reason, as `_mark_failed`'s `decline_reason` retry (133).
+    """
+    db = FakeSupabase(sub("pro", hours_left=720))
+    db.missing_columns = {"source_type"}
+    pid = str(uuid.uuid4())
+    _consent_row(db, pid)
+    row = {"payment_id": pid, "user_id": USER, "plan_id": "pro"}
+
+    assert run(pm.capture_payment_method(db, row, _applepay_payload(pid, token=TOKEN)))
+    stored = db.tables["payment_methods"][0]
+    assert stored["provider_token"] == TOKEN
+    assert "source_type" not in stored
+    # The credential is complete in every way that can actually charge it.
+    assert stored["consent_given_at"] and stored["consent_text_hash"]
+
+
+def test_an_unknown_source_type_never_costs_us_the_credential(flag_on):
+    """163's CHECK admits exactly three values, and `source_type` rides the SAME
+    insert as the token. If Moyasar invents a fourth instrument, sending it would
+    fail the INSERT WHOLE — trading a stored card, and therefore a renewal, for a
+    label. The backend mirrors the CHECK domain and stores NULL instead."""
+    db = FakeSupabase(sub("pro", hours_left=720))
+    pid = str(uuid.uuid4())
+    _consent_row(db, pid)
+    payload = _paid_payload(pid)
+    payload["source"]["type"] = "stcpay"          # not in KNOWN_SOURCE_TYPES
+
+    assert run(pm.capture_payment_method(
+        db, {"payment_id": pid, "user_id": USER, "plan_id": "pro"}, payload
+    ))
+    stored = db.tables["payment_methods"][0]
+    assert stored["provider_token"] == TOKEN
+    assert stored.get("source_type") is None
+    # The parse still tells the truth; only the WRITE is filtered.
+    assert pm.extract_card_token(payload)["source_type"] == "stcpay"
+
+
+def test_the_backend_domain_matches_163s_check_constraint():
+    """The frozenset and the CHECK are two copies of one fact, in two languages.
+    If they drift, the safe-looking one (Python) starts sending values the other
+    rejects — on the insert that stores a payment credential."""
+    sql = (
+        Path(__file__).resolve().parents[2]
+        .joinpath("shared", "db", "migrations", "163_payment_method_source_type.sql")
+        .read_text(encoding="utf-8")
+    )
+    assert pm.KNOWN_SOURCE_TYPES == {"creditcard", "applepay", "samsungpay"}
+    for value in pm.KNOWN_SOURCE_TYPES:
+        assert f"'{value}'" in sql, f"163's CHECK does not admit {value!r}"
+
+
+def test_a_backend_ahead_of_163_still_shows_the_user_their_card():
+    """The read fallback, and why it is not tidiness.
+
+    `_select_active` asks for `source_type`. Without the retry, a 42703 from a
+    database without the column would reach `get_active_method`'s missing-relation
+    handler — which answers "no stored card". A user with a perfectly good card
+    would be told, in إعدادات الحساب, that they have none, and would be invited to
+    buy again to fix it.
+
+    Stubbed rather than driven through FakeSupabase because that fake models a
+    missing column only on the FILTER and the PAYLOAD, never on the selected
+    column list — so it cannot see this failure at all.
+    """
+    calls: list[str] = []
+
+    class _Res:
+        data = [{"payment_method_id": "m", "brand": "mada", "last4": "1111"}]
+
+    class _Q:
+        def select(self, columns):
+            calls.append(columns)
+            if "source_type" in columns:
+                raise RuntimeError(
+                    'column payment_methods.source_type does not exist (42703)'
+                )
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def is_(self, *_a):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def execute(self):
+            return _Res()
+
+    class _DB:
+        def table(self, _name):
+            return _Q()
+
+    row = pm.get_active_method(_DB(), USER)
+    assert row is not None and row["last4"] == "1111"
+    assert len(calls) == 2 and "source_type" not in calls[1]
+    assert pm.describe_method(row)["source_type"] is None
 
 
 def test_the_public_shape_never_carries_the_token():

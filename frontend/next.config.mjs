@@ -46,12 +46,40 @@ const nextConfig = {
     // plus connect-src for the API. A missing host here is a SILENTLY BLANK
     // form (trap 7), and the CSP is baked at build time, so this must ship
     // before or with /pay. `frame-src` needs nothing: 3DS is a full-page
-    // redirect, not an embedded challenge.
+    // redirect, not an embedded challenge — still true on 2.x, whose bundle
+    // contains zero iframes despite what Moyasar support said.
+    //
+    // ⚠ CSP IS BAKED AT BUILD TIME. These are `next.config.mjs` literals, not
+    // env vars, so changing them needs a frontend REBUILD + REDEPLOY — an
+    // env flip on Railway does nothing. Ship this with the form migration or
+    // the checkout goes blank for everyone.
+    //
+    // The bundle now comes from jsDelivr (`moyasar-payment-form@2.2.13` npm —
+    // `cdn.moyasar.com/mpf/` is a deprecated track that cannot tokenize Apple
+    // Pay; see `frontend/lib/moyasar.ts`), and 2.x injects Apple's OWN SDK
+    // from applepay.cdn-apple.com whenever an `apple_pay` config is present —
+    // that host is a hard requirement of Apple Pay working at all, not a
+    // nice-to-have. `cdn.moyasar.com` stays allowlisted deliberately: nothing
+    // loads from it after the migration, but dropping it in the same change
+    // would fuse the migration to a tightening that cannot be rolled back
+    // independently of it.
+    //
+    // jsDelivr has a second consumer already: `lib/pdf-thumbnail.ts` pulls
+    // pdfjs-dist's worker from it, and worker-src falls back through
+    // child-src to script-src — so that worker was blocked until this line
+    // existed.
     const moyasarCdn = "https://cdn.moyasar.com";
     const moyasarApi = "https://api.moyasar.com";
+    const jsdelivrCdn = "https://cdn.jsdelivr.net";
+    const applePaySdk = "https://applepay.cdn-apple.com";
+    // Deliberately NOT allowlisted: the 2.x bundle ships an AppSignal client
+    // that POSTs to appsignal-endpoint.net/collect. It is blocked by omission
+    // from connect-src and stays that way — shipping our checkout's error
+    // telemetry to an unnamed third party is a data-protection decision nobody
+    // made, and the form works without it.
     const scriptSrc = isDev
-      ? `'self' 'unsafe-inline' 'unsafe-eval' ${cdnCgi} ${turnstile} ${moyasarCdn}`
-      : `'self' 'unsafe-inline' ${cdnCgi} ${turnstile} ${moyasarCdn}`;
+      ? `'self' 'unsafe-inline' 'unsafe-eval' ${cdnCgi} ${turnstile} ${moyasarCdn} ${jsdelivrCdn} ${applePaySdk}`
+      : `'self' 'unsafe-inline' ${cdnCgi} ${turnstile} ${moyasarCdn} ${jsdelivrCdn} ${applePaySdk}`;
     const frameSrc = `https://www.youtube-nocookie.com ${turnstile}`;
 
     return [
@@ -60,7 +88,7 @@ const nextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' ${moyasarCdn}; img-src 'self' https://*.supabase.co https://img.youtube.com data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://api.rayhanai.com https://*.supabase.co https://*.railway.app wss://*.supabase.co ${moyasarApi}; font-src 'self' https://fonts.gstatic.com; frame-src ${frameSrc}`,
+            value: `default-src 'self'; script-src ${scriptSrc}; style-src 'self' 'unsafe-inline' ${moyasarCdn} ${jsdelivrCdn}; img-src 'self' https://*.supabase.co https://img.youtube.com data:; connect-src 'self' ${isDev ? "http://localhost:8000 " : ""}https://api.rayhanai.com https://*.supabase.co https://*.railway.app wss://*.supabase.co ${moyasarApi}; font-src 'self' https://fonts.gstatic.com; frame-src ${frameSrc}`,
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },

@@ -1850,8 +1850,15 @@ export interface PaymentCheckoutResponse {
    * The single gate for the whole feature — true only for `pro`/`max` with the
    * backend renewal flag on. A backend that predates the feature omits the
    * field entirely, which reads as `undefined` → falsy → today's behaviour
-   * exactly. Card tokenization (`credit_card.save_card`) is gated on this and
-   * nothing else.
+   * exactly.
+   *
+   * It gates tokenization on BOTH checkout paths, and has since 2026-09-23:
+   * `credit_card.save_card` on this alone, and `apple_pay.save_card` on this
+   * AND the Apple Pay capability gate (the wallet config only exists when
+   * Apple Pay is actually being offered). Until that date it gated the card
+   * path only — the wallet spread carried no tokenization key at all, so every
+   * Apple Pay buyer on pro/max silently never auto-renewed. If you add a third
+   * payment method, this flag is the thing it has to consult.
    */
   requires_recurring_consent: boolean;
 }
@@ -1989,6 +1996,21 @@ export interface PaymentMethodState {
   /** When the recurring disclosure was accepted. A method with no consent is
    *  not chargeable — the renewal job treats it as absent. */
   consent_given_at: string | null;
+  /**
+   * How the credential was created — `creditcard` for a PAN typed into the
+   * form, `applepay` / `samsungpay` for a wallet token.
+   *
+   * ⚠ `brand` + `last4` describe the FUNDING card in every case (Moyasar
+   * returns the FPAN, not the device PAN), so a wallet credential must be
+   * rendered as «Apple Pay» **plus** its funding card — never as a bare card
+   * brand, which is what a wallet used to silently claim to be.
+   *
+   * `null` means unknown and is NOT recoverable: rows stored before the
+   * provenance column existed can never be classified retroactively. Optional
+   * for deploy skew — a backend that predates the field omits it entirely, and
+   * `undefined` must read exactly like `null` (see `early_adopter`).
+   */
+  source_type?: "creditcard" | "applepay" | "samsungpay" | null;
 }
 
 /**

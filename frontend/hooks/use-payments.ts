@@ -108,6 +108,15 @@ export function useRecurringConsent() {
 }
 
 /**
+ * What the CLIENT knows about the stored card, which is not the same as what
+ * the server said. `unavailable` is set only when the read itself failed, and
+ * it is deliberately NOT part of `PaymentMethodState`: the server never sends
+ * it, and putting a read artefact in the API response type would invite
+ * somebody to trust it as an answer from the backend.
+ */
+export type PaymentMethodRead = PaymentMethodState & { unavailable?: boolean };
+
+/**
  * The stored card for إعدادات الحساب — fetched only while the dialog is open.
  *
  * Fails QUIET by design: a rejected read (404 on a backend that predates the
@@ -115,15 +124,22 @@ export function useRecurringConsent() {
  * disappears rather than blocking passwords and account deletion behind a
  * billing error. `retry:false` for the same reason — three round trips to
  * re-confirm a 404 only delay the same empty answer.
+ *
+ * ⚠ But "we could not read it" is NOT "there is no card", and since 2026-09-23
+ * the difference is user-visible: the dialog now warns a pro/max subscriber
+ * with no stored card that nothing will renew. Resolving a network hiccup to
+ * that warning would tell a paying subscriber their billing is broken when it
+ * is not. So the failure still resolves (nothing is blocked, nothing throws)
+ * but carries `unavailable`, and the warning refuses to fire on it.
  */
 export function usePaymentMethod(enabled: boolean) {
-  return useQuery<PaymentMethodState>({
+  return useQuery<PaymentMethodRead>({
     queryKey: paymentKeys.method(),
     queryFn: async () => {
       try {
         return await paymentsApi.getPaymentMethod();
       } catch {
-        return NO_PAYMENT_METHOD;
+        return { ...NO_PAYMENT_METHOD, unavailable: true };
       }
     },
     enabled,

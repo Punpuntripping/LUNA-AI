@@ -152,6 +152,82 @@ function formatCardBrand(brand: string | null | undefined): string {
   return CARD_BRANDS[brand.trim().toLowerCase()] ?? brand;
 }
 
+/** Wallet `source_type` → the product name, which Apple and Samsung do not
+ *  translate and which is marketed in Latin here. */
+const METHOD_SOURCES: Record<string, string> = {
+  applepay: "Apple Pay",
+  samsungpay: "Samsung Pay",
+};
+
+/**
+ * How the credential should introduce itself — or null when the card brand is
+ * the whole answer.
+ *
+ * A wallet is NOT a card brand. An Apple Pay credential carries the FUNDING
+ * card's brand and last4 (Moyasar returns the FPAN, never the device PAN), so
+ * showing «فيزا ••••2796» alone described the plastic behind the wallet and
+ * quietly claimed to be the wallet's own identity. Both facts are true and both
+ * are shown; this function supplies the first one.
+ *
+ * `creditcard` → null: a typed PAN has no wrapper, and the line stays exactly
+ * as it has always rendered. Absent/null → null as well — provenance was added
+ * to `payment_methods` after these rows existed and can never be recovered
+ * retroactively, so silence is the only honest answer.
+ *
+ * ⚠ Deliberately does NOT fall back to the raw string the way `formatCardBrand`
+ * does. An unmapped brand is still a word the user reads off their card; an
+ * unmapped `source_type` is a provider identifier («googlepay») that would land
+ * as bare Latin machine text inside an RTL panel. Whatever it is, it is a
+ * wallet — say that in Arabic and stop.
+ */
+function formatMethodSource(
+  sourceType: string | null | undefined,
+): string | null {
+  if (!sourceType) return null;
+  const key = sourceType.trim().toLowerCase();
+  if (key === "creditcard") return null;
+  return METHOD_SOURCES[key] ?? "محفظة رقمية";
+}
+
+/**
+ * «فيزا ••••2796» — the funding card, wherever it happens to be shown.
+ *
+ * Extracted because a wallet credential moves it onto its own muted line while
+ * a plain card keeps it on the first one. Exactly one of the two renders, so
+ * `payment-method-last4` stays a unique test id.
+ */
+function CardMask({
+  brand,
+  last4,
+}: {
+  brand: string | null;
+  last4: string | null;
+}) {
+  return (
+    <>
+      {formatCardBrand(brand)}
+      {last4 && (
+        // Latin digits, LTR: these four characters exist to be matched against
+        // the plastic (and the banking app), where they are printed in Latin.
+        // Amounts and dates stay Arabic-Indic — an identifier is not a number.
+        <span
+          dir="ltr"
+          className="tabular-nums"
+          data-testid="payment-method-last4"
+        >
+          •••• {last4}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** The plans that renew by charging a stored card — mirrors
+ *  `payment_method_service.RENEWABLE_PLAN_IDS`, which stays authoritative; this
+ *  decides display only. `basic` is a one-time 7-day term that ends without a
+ *  further charge, so it must never be warned about a renewal it never had. */
+const RENEWING_PLAN_IDS = new Set(["pro", "max"]);
+
 /**
  * «أغسطس 2027» from `exp_month` + `exp_year`, or null for anything unusable.
  *
@@ -535,6 +611,40 @@ export function AccountSettingsDialog({
     paymentMethod?.exp_year,
   );
   const cardConsentAt = formatTermDate(paymentMethod?.consent_given_at);
+  // «Apple Pay» / «Samsung Pay» when the credential came out of a wallet — null
+  // for a typed card and for every row stored before provenance existed.
+  const walletLabel = formatMethodSource(paymentMethod?.source_type);
+
+  // The silent non-renewal. A pro/max term that is still running and has not
+  // been cancelled renews by charging a stored card; with no card there is
+  // nothing to charge, and the renewal sweep drops the user without a word.
+  // Apple Pay buyers land here by construction (the checkout form tokenizes
+  // card purchases only), and so does anyone who removed their card. Until
+  // now this surface rendered NOTHING for them — the one fact that costs them
+  // their plan was the one fact never shown.
+  //
+  // `cancellable` already means source='payment' AND a term still running —
+  // the same two walls the renewal sweep applies — so only the plan and the
+  // opt-out need adding on top. An ALREADY-CANCELLED subscription is excluded
+  // deliberately: the section above it already says «لن يُجدَّد اشتراكك», and
+  // repeating that as a warning would read as a second, different problem.
+  //
+  // ⚠ `paymentMethod` must be DEFINED before this may fire. The hook fails
+  // quiet — a 404 on a backend without the endpoint, or any hiccup, resolves
+  // to "no method" — so `undefined` is the only value meaning "not known yet",
+  // and firing on it would flash the warning at every subscriber on open.
+  //
+  // ⚠ And `unavailable` means the read FAILED, which is not the same answer as
+  // "no card". Telling a paying subscriber their subscription will not renew
+  // because one request hiccuped is a worse lie than saying nothing, so a
+  // failed read shows what it showed before this warning existed: nothing.
+  const showMissingCard =
+    Boolean(paymentMethod) &&
+    paymentMethod?.unavailable !== true &&
+    !hasCard &&
+    RENEWING_PLAN_IDS.has(subscription?.plan_id ?? "") &&
+    subscription?.cancellable === true &&
+    !isCancelled;
 
   return (
     <>
@@ -895,23 +1005,46 @@ export function AccountSettingsDialog({
                     وسيلة الدفع
                   </h3>
 
-                  <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground">
                     <CreditCard className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    {formatCardBrand(paymentMethod.brand)}
-                    {paymentMethod.last4 && (
-                      // Latin digits, LTR: these four characters exist to be
-                      // matched against the plastic (and the banking app),
-                      // where they are printed in Latin. Amounts and dates
-                      // stay Arabic-Indic — an identifier is not a number.
-                      <span
-                        dir="ltr"
-                        className="tabular-nums"
-                        data-testid="payment-method-last4"
-                      >
-                        •••• {paymentMethod.last4}
+                    {walletLabel ? (
+                      // dir=ltr: «Apple Pay» is a two-word Latin product name,
+                      // and RTL reorders its words without its own direction.
+                      <span dir="ltr" data-testid="payment-method-wallet">
+                        {walletLabel}
                       </span>
+                    ) : (
+                      <CardMask
+                        brand={paymentMethod.brand}
+                        last4={paymentMethod.last4}
+                      />
                     )}
                   </p>
+
+                  {/* The funding card, kept and never replaced: Moyasar
+                      confirmed `last_four` is the FPAN — the number printed on
+                      the plastic and shown on the bank statement — while the
+                      device PAN the wallet actually charges is a different
+                      number the user has never seen. Dropping it would leave
+                      someone with two wallet-eligible cards unable to tell
+                      which one renews. */}
+                  {walletLabel &&
+                    (paymentMethod.brand || paymentMethod.last4) && (
+                      <p
+                        className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
+                        data-testid="payment-method-funding-card"
+                      >
+                        {/* Its own element, not a bare text node: two adjacent
+                            text runs in a flex row collapse into ONE anonymous
+                            flex item, and `gap` would then never separate the
+                            label from the brand. */}
+                        <span>البطاقة المرتبطة:</span>
+                        <CardMask
+                          brand={paymentMethod.brand}
+                          last4={paymentMethod.last4}
+                        />
+                      </p>
+                    )}
 
                   {cardExpiry && (
                     <p className="text-sm text-muted-foreground">
@@ -940,6 +1073,44 @@ export function AccountSettingsDialog({
                   >
                     إزالة البطاقة
                   </Button>
+                </div>
+
+                <Separator />
+              </>
+            )}
+
+            {showMissingCard && (
+              <>
+                <div
+                  className="flex flex-col gap-3"
+                  data-testid="payment-method-missing"
+                >
+                  <h3 className="text-sm font-semibold text-foreground">
+                    وسيلة الدفع
+                  </h3>
+
+                  {/* «لن يُجدَّد» and never «سيتم إيقاف الدفع التلقائي» — the
+                      same rule the removal dialog below follows, for the same
+                      reason: the forward-looking wording is the one sentence
+                      true regardless of what the renewal engine is doing. */}
+                  <p
+                    className="text-sm font-medium text-foreground"
+                    data-testid="payment-method-missing-consequence"
+                  >
+                    لا توجد بطاقة محفوظة، ولن يُجدَّد اشتراكك تلقائياً.
+                  </p>
+
+                  {/* NO «أضف بطاقة» button: there is no endpoint behind one.
+                      A card can only be stored by completing a payment, which
+                      is exactly what the removal dialog already tells the
+                      user — same sentence, so the two surfaces cannot drift
+                      into promising different things. */}
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {termEndsAt
+                      ? `تبقى باقتك فعّالة حتى ${termEndsAt} ثم تنتقل إلى الباقة المجانية. `
+                      : ""}
+                    يمكنك حفظ بطاقة عند أي عملية دفع لاحقة.
+                  </p>
                 </div>
 
                 <Separator />

@@ -149,6 +149,11 @@ export default function PayPlanPage() {
           // purchase. `basic` never gets here: the server does not set the flag
           // for a plan that cannot renew, and storing a credential with no
           // purpose is exactly what PDPL data-minimisation forbids.
+          //
+          // ⚠ The SAME rule applies to the wallet, via `apple_pay.save_card`
+          // below — see the comment there. These two gates were disjoint until
+          // 2026-09-23 and that is precisely what the Apple Pay non-renewal
+          // defect was.
           ...(requiresConsent ? { credit_card: { save_card: true } } : {}),
           ...(canApplePay
             ? {
@@ -170,6 +175,21 @@ export default function PayPlanPage() {
                   // MOYASAR_APPLEPAY_VALIDATE_URL for why proxying it through
                   // our origin silently killed every Apple Pay payment.
                   validate_merchant_url: MOYASAR_APPLEPAY_VALIDATE_URL,
+                  // The wallet half of tokenization, gated on BOTH conditions:
+                  // Apple Pay is offered here, and the server said this plan
+                  // renews. Until 2026-09-23 `save_card` lived only in
+                  // `credit_card` while this object was gated on `canApplePay`
+                  // alone — two spreads that never met — so every Apple Pay
+                  // buyer on pro/max paid, got no stored token, and was never
+                  // a renewal candidate. Nobody was warned: the capture logs
+                  // "nothing stored" at INFO and the sweep skips them.
+                  //
+                  // `requiresConsent` is not optional decoration here. It is
+                  // the same PDPL data-minimisation line the card path holds:
+                  // a plan that cannot renew has no business leaving a
+                  // chargeable credential behind, and the buyer has only seen
+                  // the renewal reminder when the server sent one.
+                  ...(requiresConsent ? { save_card: true } : {}),
                 },
               }
             : {}),
@@ -221,8 +241,14 @@ export default function PayPlanPage() {
             } catch {
               // Diagnostics must never break the error banner.
             }
+            // Method-neutral on purpose. This callback fires for the Apple Pay
+            // sheet too — merchant validation, a cancelled sheet, a declined
+            // wallet charge — and an Apple Pay buyer never typed a card
+            // number, so «تأكد من بيانات البطاقة» (the old copy) told them to
+            // check a field that was never on their screen. The banner is the
+            // ONLY thing they see; the real reason goes to `track` above.
             setFormError(
-              "تعذّر إتمام الدفع. تأكد من بيانات البطاقة ثم حاول مرة أخرى.",
+              "تعذّر إتمام الدفع. تحقّق من وسيلة الدفع ثم حاول مرة أخرى.",
             );
           },
         });

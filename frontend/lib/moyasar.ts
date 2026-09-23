@@ -1,29 +1,54 @@
 /**
  * Moyasar embedded payment form — asset pinning, types, and the one-shot loader.
- * (`.claude/plans/moyasar_payments.md` Phase D.)
+ * (`.claude/plans/moyasar_payments.md` Phase D;
+ * `.claude/plans/applepay_auto_renewal_fix.md` Phase 2 for the 2.x migration.)
  *
- * ⚠ THE VERSION IS PINNED IN THE CDN PATH AND THERE IS NO `latest` ALIAS
- * (`/mpf/latest/` → 403). Bumping it is a manual edit of the constant below,
- * which is why it lives here and never inline in JSX: a stale form version rots
- * silently, and is the likely cause of a future "a payment method stopped
- * appearing" report (plan trap 10). Available at the time of writing: 1.13.0,
- * 1.14.0, 1.15.0, 1.16.0, 1.18.0, 1.19.0 (no 1.17.0).
+ * ⚠ WE MOVED CHANNELS ON 2026-09-23: `cdn.moyasar.com/mpf/` → the npm package
+ * `moyasar-payment-form` on jsDelivr. This was NOT a version bump for its own
+ * sake. `mpf/` is a frozen track — Moyasar's docs no longer reference it,
+ * support confirmed it is deprecated and receives no feature updates, our
+ * 1.19.0 was last touched 2025-07-26, and every other `mpf/` path (2.2.13
+ * included) 403s. Concretely it cost us money: 1.x's Apple Pay source builder
+ * emits `{type:"applepay", token}` with NO `save_card`, so every Apple Pay
+ * buyer on a renewing plan completed a purchase, got no stored token, and was
+ * silently never enrolled in auto-renewal. 2.x emits
+ * `{type:"applepay", token, manual, save_card}` — that key is the whole fix.
+ *
+ * ⚠ THE VERSION STAYS PINNED EXACTLY, and on this channel that matters MORE,
+ * not less: unlike `/mpf/`, jsDelivr happily resolves `@latest`, a bare
+ * `/npm/moyasar-payment-form/`, and range specs like `@2`. Any of those would
+ * silently swap the checkout bundle under us on Moyasar's release schedule, and
+ * the form's failure mode is a blank div, not an exception. Bumping is a manual
+ * edit of the constant below — which is why it lives here and never inline in
+ * JSX. Moyasar publishes no changelog, so a bump means diffing bundles.
+ *
+ * ⚠ NO SRI on these URLs. jsDelivr GENERATES `*.umd.min.js` on demand (it
+ * answers with "Skipped minification because the original file appears to be
+ * already minified" and names `moyasar.umd.js` as the source), and its own
+ * banner warns that dynamically generated files have no stable hash. An
+ * `integrity` attribute here would be a checkout that dies on a CDN-side
+ * re-generation.
  *
  * The assets are loaded ONLY on /pay — never from the root layout. Two reasons:
- * a 98 KB script + 70 KB stylesheet on every page is dead weight for the 99% of
- * navigations that are not a checkout, and the surface reachable by a CDN script
- * should be as small as the feature that needs it.
+ * a ~245 KB script plus its stylesheet on every page is dead weight for the 99%
+ * of navigations that are not a checkout, and the surface reachable by a CDN
+ * script should be as small as the feature that needs it.
  *
- * The three CSP hosts this needs (`cdn.moyasar.com` on script-src + style-src,
- * `api.moyasar.com` on connect-src) live in `next.config.mjs`. A missing host is
- * a silently blank form, not an error — if the form never appears, check the CSP
- * report before anything else.
+ * The CSP hosts this needs (`cdn.jsdelivr.net` on script-src + style-src,
+ * `applepay.cdn-apple.com` on script-src because 2.x injects Apple's own SDK
+ * itself whenever an `apple_pay` config is present, `api.moyasar.com` on
+ * connect-src) live in `next.config.mjs`. A missing host is a silently blank
+ * form, not an error — if the form never appears, check the CSP report before
+ * anything else. `frame-src` needs nothing: 3DS in 2.2.13 is still a full-page
+ * `window.location.href = transaction_url` redirect. Moyasar support claimed
+ * 2.x wraps 3DS in an iframe overlay; the shipped bundle contains zero iframes
+ * (verified 2026-09-22). Do not design around that claim.
  */
 
-export const MOYASAR_FORM_VERSION = "1.19.0";
+export const MOYASAR_FORM_VERSION = "2.2.13";
 
-export const MOYASAR_SCRIPT_URL = `https://cdn.moyasar.com/mpf/${MOYASAR_FORM_VERSION}/moyasar.js`;
-export const MOYASAR_STYLE_URL = `https://cdn.moyasar.com/mpf/${MOYASAR_FORM_VERSION}/moyasar.css`;
+export const MOYASAR_SCRIPT_URL = `https://cdn.jsdelivr.net/npm/moyasar-payment-form@${MOYASAR_FORM_VERSION}/dist/moyasar.umd.min.js`;
+export const MOYASAR_STYLE_URL = `https://cdn.jsdelivr.net/npm/moyasar-payment-form@${MOYASAR_FORM_VERSION}/dist/moyasar.css`;
 
 /**
  * Apple Pay merchant validation — **Moyasar's endpoint, not ours.**
@@ -90,11 +115,37 @@ export interface MoyasarApplePayConfig {
    */
   label: string;
   /**
-   * Our backend route that proxies Moyasar's `GET /v1/applepay/initiate`. Apple
-   * requires merchant validation to come from a server, so this cannot be a
-   * client-side call.
+   * Where the SDK performs Apple's merchant validation. **Moyasar's own
+   * endpoint, called straight from the browser** — always
+   * `MOYASAR_APPLEPAY_VALIDATE_URL`; see that constant for the full story.
+   *
+   * ⚠ This docstring used to claim the opposite ("our backend route that
+   * proxies…"). That belief is what shipped a proxy route here until
+   * 2026-08-18 and silently killed every Apple Pay payment in production:
+   * Web Merchant Registration means Moyasar holds the merchant identity, so
+   * the server-side half of validation is THEIRS, not ours, and putting our
+   * origin between their SDK and their API broke both the preflight and the
+   * auth. Never point this at our own host.
    */
   validate_merchant_url: string;
+  /**
+   * Tokenize the wallet credential after a successful charge — the Apple Pay
+   * twin of `credit_card.save_card`, and the only way an Apple Pay buyer ever
+   * auto-renews.
+   *
+   * Reaches the source verbatim: 2.2.13 builds
+   * `{type:"applepay", token, manual: !!apple_pay.manual, save_card: !!apple_pay.save_card}`.
+   * On 1.19.0 this key did not exist in the bundle at all, which is why every
+   * Apple Pay purchase on a renewing plan came back with `source.token: null`
+   * and dropped out of the renewal sweep as `skipped_no_method` — at INFO,
+   * indistinguishable from a `basic` purchase. Nothing is recoverable
+   * retroactively; an affected buyer can only be re-enrolled by buying again.
+   *
+   * Pass it ONLY when the server says the plan renews (`requiresConsent`), the
+   * same PDPL data-minimisation rule the card path follows: no credential is
+   * stored for a purchase that will never be charged a second time.
+   */
+  save_card?: boolean;
 }
 
 export interface MoyasarInitOptions {
@@ -109,6 +160,10 @@ export interface MoyasarInitOptions {
    * kills itself with "Element: null is not a valid element". Their docs'
    * `.mysr-form` class selector survives the rewrite — but the node reference
    * is immune by construction, so that is what we pass.
+   *
+   * The 2.2.13 migration did NOT re-verify that 2.x still clobbers the id, and
+   * deliberately so: the node reference cannot break either way, so there is
+   * nothing to gain from finding out.
    */
   element: string | HTMLElement;
   /** ⚠ HALALAS, not SAR — a missed ×100 charges 0.49 SAR (plan trap 2). */

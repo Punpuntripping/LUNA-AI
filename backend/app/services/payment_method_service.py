@@ -50,6 +50,12 @@ DB dependency: migration ``132_subscription_auto_renewal.sql`` — the
 ``payment_methods`` table (§5.1). ⚠ APPLY 132 BEFORE DEPLOYING WITH THE FLAG ON.
 Every read here treats a missing table as "no stored method" so a flag-off
 deploy ahead of the migration is inert rather than broken.
+
+Also ``163_payment_method_source_type.sql`` — ``payment_methods.source_type``,
+which instrument a credential came from. That one is deliberately NOT a hard
+dependency: both the read and the write fall back when the column is absent, so
+this module works applied or unapplied, in either order. See
+``_METHOD_OPTIONAL_COLUMNS`` and ``capture_payment_method``'s insert.
 """
 from __future__ import annotations
 
@@ -62,6 +68,7 @@ from urllib.parse import quote
 import httpx
 from supabase import Client as SupabaseClient
 
+from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
 
@@ -82,8 +89,30 @@ RECURRING_CYCLE = "recurring_30d"
 # does not renew) or from silently renewing nothing.
 RENEWABLE_PLAN_IDS = frozenset({"pro", "max"})
 
+# ── Instrument provenance (migration 163) ────────────────────────────────────
+#
+# WHY THIS EXISTS. Until 163 nothing anywhere recorded WHICH instrument a stored
+# credential came from: capture is a pure duck-type on ``source.token``, so an
+# Apple Pay wallet token would be stored as a plain card and the two populations
+# would be indistinguishable forever after. That mattered the moment Apple Pay
+# started returning tokens at all — a wallet credential is a DEVICE PAN behind a
+# funding PAN, and if wallet renewals ever start declining differently from card
+# renewals, this column is the only thing that makes the question answerable.
+#
+# ⚠ THE DOMAIN IS CHECK-CONSTRAINED IN 163. Moyasar is free to invent a fourth
+# source type tomorrow, and a value outside this set would make the INSERT fail —
+# i.e. it would cost us the whole stored credential (and therefore the renewal)
+# to record a label. So the value is only PERSISTED when it is one of these;
+# anything else is logged and stored as NULL. `extract_card_token` still carries
+# the raw value out so the logs and the audit row tell the truth.
+KNOWN_SOURCE_TYPES = frozenset({"creditcard", "applepay", "samsungpay"})
+
 # Consent bookkeeping.
 CONSENT_EVENT = "recurring_consent"
+# Telemetry, NOT consent: a renewable purchase that produced no token at all.
+# See ``capture_payment_method`` — this is the event that makes the "silently
+# never enrolled" population queryable instead of only greppable.
+NO_TOKEN_EVENT = "card_token_missing"
 # v2 (2026-08-12): shortened to renewal-is-on + how-to-stop; the amount and
 # cadence moved out of the hashed text and are carried by the /pay layout. v1
 # consents keep their own hash and remain evidence of the longer text those
@@ -390,9 +419,23 @@ def extract_card_token(fetched: Optional[dict]) -> Optional[dict]:
     ``brand``, ``number`` vs ``last_four`` — so both spellings are accepted below
     and this function works on either.
 
-    Returns ``{"provider_token", "brand", "last4", "exp_month", "exp_year"}`` or
-    None. Only ``provider_token`` is required; the display fields are best-effort
-    and a missing one renders as «بطاقة محفوظة» rather than failing the capture.
+    ⚠ WALLET SOURCES (Apple Pay / Samsung Pay) — verified with Moyasar in writing
+    2026-09-22. An ``applepay`` source looks like::
+
+        {"type": "applepay", "token": "<token or null>", "company": "visa",
+         "number": "XXXX-XXXX-XXXX-2796", "dpan": "4326-9974-XXXX-2764", …}
+
+    ``number``/``last_four`` and the expiry describe the **FUNDING** card (…2796);
+    ``dpan`` is the device PAN (…2764) that actually processes. The parse below
+    reads the funding PAN and that is DELIBERATE and CORRECT — …2796 is the number
+    the user recognises from their bank statement, so it is the one «فيزا ••2796»
+    must show. Do **not** "fix" this to read ``dpan``: it would replace a number
+    the customer knows with one they have never seen.
+
+    Returns ``{"provider_token", "brand", "last4", "exp_month", "exp_year",
+    "source_type"}`` or None. Only ``provider_token`` is required; the display
+    fields are best-effort and a missing one renders as «بطاقة محفوظة» rather
+    than failing the capture.
     """
     if not isinstance(fetched, dict):
         return None
@@ -452,12 +495,27 @@ def extract_card_token(fetched: Optional[dict]) -> Optional[dict]:
     if exp_month is not None and not (1 <= exp_month <= 12):
         exp_month = None
 
+    # Provenance (163). Carried RAW (lowercased/trimmed) rather than filtered to
+    # KNOWN_SOURCE_TYPES here: a value we do not recognise is exactly the value a
+    # log line and an audit row need to say out loud. The filtering to the CHECK
+    # domain happens at the INSERT, where getting it wrong would cost a credential.
+    # A token object (GET /v1/tokens/:id) carries no `type`, so the reuse of this
+    # parser during enrichment yields None — the payment's source is the authority
+    # on provenance and the enrichment deliberately never overwrites it.
+    source_type = source.get("type")
+    source_type = (
+        source_type.strip().lower()[:32]
+        if isinstance(source_type, str) and source_type.strip()
+        else None
+    )
+
     return {
         "provider_token": token,
         "brand": brand,
         "last4": last4,
         "exp_month": exp_month,
         "exp_year": exp_year,
+        "source_type": source_type,
     }
 
 
@@ -592,21 +650,43 @@ _METHOD_PUBLIC_COLUMNS = (
 # renewal charge and the revoke.
 _METHOD_SECRET_COLUMNS = _METHOD_PUBLIC_COLUMNS + ", provider_token"
 
+# Columns added by a migration that MAY NOT BE APPLIED YET. Selected in a
+# separate attempt so that a backend running ahead of 163 degrades to "we don't
+# know the instrument" instead of to "you have no stored card" — which is what a
+# bare 42703 would look like to ``get_active_method``'s missing-relation handler,
+# i.e. a user with a perfectly good card being told, in إعدادات الحساب, that they
+# have none. Delete this and fold ``source_type`` into the list above once 163 is
+# applied everywhere.
+_METHOD_OPTIONAL_COLUMNS = "source_type"
+
 
 def _select_active(
     supabase: SupabaseClient, user_id: str, *, with_token: bool
 ) -> Optional[dict]:
-    columns = _METHOD_SECRET_COLUMNS if with_token else _METHOD_PUBLIC_COLUMNS
-    res = (
-        supabase.table("payment_methods")
-        .select(columns)
-        .eq("user_id", str(user_id))
-        .is_("revoked_at", "null")
-        .limit(1)
-        .execute()
-    )
-    rows = getattr(res, "data", None) or []
-    return rows[0] if rows else None
+    base = _METHOD_SECRET_COLUMNS if with_token else _METHOD_PUBLIC_COLUMNS
+
+    def _read(columns: str) -> Optional[dict]:
+        res = (
+            supabase.table("payment_methods")
+            .select(columns)
+            .eq("user_id", str(user_id))
+            .is_("revoked_at", "null")
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+
+    try:
+        return _read(base + ", " + _METHOD_OPTIONAL_COLUMNS)
+    except Exception as exc:  # noqa: BLE001
+        # Same tolerance as the INSERT below, and for the same reason. If it was
+        # the TABLE that was missing rather than the column, the retry raises the
+        # identical error class and every caller's existing `_is_missing_relation`
+        # handler still sees it — so this cannot mask a flag-off-before-132 deploy.
+        if not _is_missing_relation(exc):
+            raise
+        return _read(base)
 
 
 def get_active_method(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
@@ -682,6 +762,14 @@ def describe_method(row: Optional[dict]) -> dict:
     "no such endpoint" must look identical to it, so a backend that predates
     the feature degrades to an absent section rather than a billing error in
     front of the password and delete-account controls.
+
+    ``source_type`` (163) is ``"creditcard" | "applepay" | "samsungpay" | null``
+    and is DISPLAY PROVENANCE, not a second brand: a wallet purchase still carries
+    the funding card's ``brand``/``last4``, so the settings dialog renders «Apple
+    Pay» *plus* «فيزا ••2796» rather than one instead of the other. It is null for
+    every row written before 163 and for every row written by a backend running
+    ahead of it — the UI must treat null as "a card", not as a broken row, because
+    that is what all existing rows are.
     """
     if not row:
         return {
@@ -692,6 +780,7 @@ def describe_method(row: Optional[dict]) -> dict:
             "last4": None,
             "exp_month": None,
             "exp_year": None,
+            "source_type": None,
             "consent_given_at": None,
             "created_at": None,
         }
@@ -703,6 +792,7 @@ def describe_method(row: Optional[dict]) -> dict:
         "last4": row.get("last4"),
         "exp_month": row.get("exp_month"),
         "exp_year": row.get("exp_year"),
+        "source_type": row.get("source_type"),
         "consent_given_at": row.get("consent_given_at"),
         "created_at": row.get("created_at"),
     }
@@ -735,8 +825,8 @@ async def capture_payment_method(
         credential with no purpose, which PDPL does not love);
       * no consent artefact for this payment — a token without consent is not
         chargeable, so storing it would only create a liability;
-      * no token in the provider payload (the ordinary case today: ``save_card``
-        was never requested).
+      * no token in the provider payload — WARNING + an ``audit_logs`` row, see
+        below. This is the only refusal that is a symptom rather than a policy.
 
     Returns the ``payment_method_id`` when a row was written or already existed.
     """
@@ -752,10 +842,53 @@ async def capture_payment_method(
 
         card = extract_card_token(fetched)
         if not card:
-            logger.info(
-                "no card token on payment=%s (save_card not requested, or the "
-                "extraction adapter needs correcting) — nothing stored",
-                payment_id,
+            # ⚠ PRODUCTION INCIDENT, 2026-09-20 — READ BEFORE LOWERING THIS AGAIN.
+            #
+            # This line was logger.INFO with the message "save_card not requested",
+            # and that pair of mistakes is why Apple Pay buyers went a month
+            # without a single one of them being enrolled in auto-renewal. At INFO
+            # it is indistinguishable from a `basic` purchase or a flag-off deploy,
+            # so nothing ever stood out; and the message asserted a CAUSE this
+            # function cannot possibly know — from here, a wallet payment whose
+            # tokenization was never requested, a save_card that was requested and
+            # refused by the provider, and a payload whose field names moved all
+            # look exactly the same. It said "save_card not requested" for a month
+            # while the truth was "we ask for it on the card path only".
+            #
+            # So: WARNING (a renewable purchase that stores nothing is a revenue
+            # event, not a routine one), it names only what it can see, and it
+            # carries `source.type` — because "which instrument" is the single
+            # field that separates the populations and it was the field missing
+            # from every log we had to go on.
+            source = fetched.get("source") if isinstance(fetched, dict) else None
+            source_type = (
+                source.get("type") if isinstance(source, dict) else None
+            ) or "unknown"
+            logger.warning(
+                "no card token on payment=%s source_type=%s plan=%s — nothing "
+                "stored, so this subscription will NOT auto-renew",
+                payment_id, source_type, plan_id,
+            )
+            # And an audit row, so the affected population is QUERYABLE rather
+            # than greppable across log retention. Fire-and-forget on purpose —
+            # the opposite of `_insert_consent_row`, which raises: a consent we
+            # cannot record must stop the flow, while a telemetry row we cannot
+            # record must never turn a successful purchase into an exception. The
+            # money is already in and the plan is already granted by the time this
+            # runs.
+            await run_db(
+                write_audit_log,
+                supabase,
+                user_id=str(user_id),
+                action="update",
+                resource_type="payment_transaction",
+                resource_id=str(payment_id),
+                metadata={
+                    "event": NO_TOKEN_EVENT,
+                    "plan_id": str(plan_id) if plan_id else None,
+                    "source_type": source_type,
+                    "provider_ref": fetched.get("id") if isinstance(fetched, dict) else None,
+                },
             )
             return None
 
@@ -826,6 +959,12 @@ async def capture_payment_method(
             enriched = extract_card_token(
                 {"source": {**token_obj, "token": token_obj.get("id") or "x"}}
             ) or {}
+            #
+            # `source_type` is deliberately NOT in this list. Provenance is a fact
+            # about the PAYMENT, and the token object carries no `type` of its own;
+            # letting the enrichment write it would mean a field of the token
+            # object we have not verified could relabel a wallet credential as a
+            # card, which is precisely the confusion 163 exists to prevent.
             for field in ("brand", "last4", "exp_month", "exp_year"):
                 if card.get(field) in (None, "") and enriched.get(field) not in (None, ""):
                     card[field] = enriched[field]
@@ -847,11 +986,46 @@ async def capture_payment_method(
             "consent_given_at": consent.get("consent_given_at") or _now_iso(),
             "consent_text_hash": consent.get("consent_text_hash"),
         }
+
+        # `source_type` (migration 163) — which instrument this credential came
+        # from, promoted out of nowhere at all (before 163 the information was
+        # simply discarded). Only written when it is inside 163's CHECK domain:
+        # an unknown fourth source type would fail the INSERT, and losing the
+        # whole credential — and therefore the renewal — to record a label would
+        # be a far worse trade than a NULL.
+        raw_source_type = card.get("source_type")
+        if raw_source_type in KNOWN_SOURCE_TYPES:
+            payload["source_type"] = raw_source_type
+        elif raw_source_type:
+            logger.warning(
+                "payment=%s carries source.type=%r, which is outside 163's CHECK "
+                "domain %s — storing the credential with source_type NULL. If this "
+                "is a real new Moyasar instrument, widen the constraint.",
+                payment_id, raw_source_type, sorted(KNOWN_SOURCE_TYPES),
+            )
+
         try:
             row = await run_db(_insert_method, supabase, payload)
         except Exception as exc:  # noqa: BLE001
             text = str(exc).lower()
-            if "23505" in text or "duplicate key" in text:
+            if "source_type" in payload and _is_missing_relation(exc):
+                # 163 is not applied yet. Exactly the `decline_reason` / migration
+                # 133 pattern in `payment_service._mark_failed`: the column is a
+                # reporting nicety, the row is the whole feature, and a backend
+                # that refuses to store a card because it cannot label it would
+                # reintroduce the very bug this column exists to make visible.
+                logger.warning(
+                    "payment=%s: insert rejected (%s) — retrying without "
+                    "source_type; apply migration 163 to record it",
+                    payment_id, exc,
+                )
+                payload.pop("source_type")
+                # NOT followed by a `raise`. ⚠ The retry branch below returns and
+                # the fall-through re-raises, so a branch that RECOVERS has to say
+                # so by leaving `row` bound and skipping the raise — an `elif`
+                # chain ending in `else: raise`, never a trailing bare `raise`.
+                row = await run_db(_insert_method, supabase, payload)
+            elif "23505" in text or "duplicate key" in text:
                 # The other confirmation path inserted between our read and our
                 # write. Its row is as good as ours.
                 logger.info(
@@ -860,12 +1034,18 @@ async def capture_payment_method(
                 )
                 again = await run_db(_select_active_with_token_safe, supabase, str(user_id))
                 return str((again or {}).get("payment_method_id") or "") or None
-            raise
+            else:
+                raise
 
+        # `source_type` is on this line for the same reason it is on the WARNING
+        # above: brand=visa last4=2796 reads identically for a card and for an
+        # Apple Pay wallet whose funding card is that visa, and telling the two
+        # apart after the fact was impossible for a month.
         logger.info(
-            "card token stored: user=%s payment=%s method=%s brand=%s last4=%s",
+            "card token stored: user=%s payment=%s method=%s brand=%s last4=%s "
+            "source_type=%s",
             user_id, payment_id, row.get("payment_method_id"),
-            card.get("brand"), card.get("last4"),
+            card.get("brand"), card.get("last4"), card.get("source_type"),
         )
         return str(row.get("payment_method_id"))
     except Exception as exc:  # noqa: BLE001
@@ -1008,6 +1188,8 @@ def revoke_all_for_user_sync(supabase: SupabaseClient, user_id: str, *, reason: 
 __all__ = [
     "RENEWABLE_PLAN_IDS",
     "RECURRING_CYCLE",
+    "KNOWN_SOURCE_TYPES",
+    "NO_TOKEN_EVENT",
     "auto_renewal_enabled",
     "plan_renews",
     "requires_recurring_consent",
