@@ -185,7 +185,17 @@ export interface MoyasarInitOptions {
    * (plan trap 9). May return a promise — the form awaits it.
    */
   on_completed?: (payment: MoyasarPayment) => void | Promise<unknown>;
-  on_failure?: (error: unknown) => void;
+  /**
+   * ⚠ MUST BE DECLARED `async`, and the return type says so — 2.x validates
+   * `constructor.name === "AsyncFunction" || String(fn).startsWith("async")`
+   * on BOTH callbacks and, when it fails, throws away the form and renders its
+   * own «Form configuration issue!» panel instead. A plain arrow here is a
+   * total checkout outage on every device, which is exactly what shipped on
+   * 2026-09-23 — 1.19.0 never checked, so the 2.x migration surfaced it.
+   * `Promise<unknown>` alone (no bare `void`) is deliberate: it makes a
+   * non-async handler a type error rather than a production incident.
+   */
+  on_failure?: (error: unknown) => Promise<unknown>;
 }
 
 export interface MoyasarGlobal {

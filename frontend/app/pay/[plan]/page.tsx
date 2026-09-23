@@ -205,7 +205,19 @@ export default function PayPlanPage() {
               // Swallowed on purpose — see above.
             }
           },
-          on_failure: (error: unknown) => {
+          // ⚠ `async` IS LOAD-BEARING, not style. moyasar.js 2.x validates both
+          // callbacks and REFUSES TO RENDER THE FORM otherwise — it checks
+          // `constructor.name === "AsyncFunction" || String(fn).startsWith("async")`
+          // and, on failure, replaces the entire form with its own red
+          // «Form configuration issue!» panel. A plain arrow here took the whole
+          // checkout down on every device for the life of one deploy
+          // (2026-09-23); 1.19.0 had no such check, so the migration surfaced it.
+          // Verified against the live 2.2.13 bundle: identical config with a
+          // plain arrow logs "On failure must be a promise based callback", with
+          // `async` it validates clean. The build preserves `async` (the emitted
+          // chunk shows `on_completed:async e=>`), so this survives minification.
+          // Nothing here awaits — the async keyword alone is the contract.
+          on_failure: async (error: unknown) => {
             // The raw failure object, shipped home. moyasar.js hands this
             // callback the ACTUAL reason a payment died — a fetch TypeError, a
             // non-ok Response, a cancel string, or null — and then we show one
