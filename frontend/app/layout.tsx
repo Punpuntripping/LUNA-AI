@@ -3,6 +3,7 @@ import { Noto_Naskh_Arabic } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { JsonLd } from "@/components/seo/JsonLd";
+import { ServiceWorkerRegistrar } from "@/components/pwa/ServiceWorkerRegistrar";
 import { buildOrganization, buildWebSite } from "@/lib/seo/schema";
 
 const notoNaskhArabic = Noto_Naskh_Arabic({
@@ -16,6 +17,16 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://rayhanai.com"),
   title: "ريحان - المساعد القانوني الذكي",
   description: "مساعد ذكاء اصطناعي للمحامين السعوديين",
+  // Home-screen app on iOS (`.claude/plans/pwa_step1.md` §1B). `title` is the
+  // label under the icon — without it iOS falls back to the full <title>.
+  // `statusBarStyle: "default"` keeps the status bar opaque and tinted by
+  // `themeColor` below; "black-translucent" would slide the page under it and
+  // every top edge would need a safe-area inset.
+  appleWebApp: {
+    capable: true,
+    title: "ريحان",
+    statusBarStyle: "default",
+  },
 };
 
 /**
@@ -54,6 +65,9 @@ export default function RootLayout({
         {/* Site-wide structured data — rendered once, brand + site identity. */}
         <JsonLd data={[buildOrganization(), buildWebSite()]} />
         <Providers>{children}</Providers>
+        {/* Registers /sw.js (offline screen + push). Outside Providers — it
+            needs no context and must not sit behind AuthGuard. Renders nothing. */}
+        <ServiceWorkerRegistrar />
       </body>
     </html>
   );

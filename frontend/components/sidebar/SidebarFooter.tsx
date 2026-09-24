@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BookMarked,
   ChevronDown,
@@ -11,6 +11,7 @@ import {
   LogOut,
   Receipt,
   Settings,
+  Smartphone,
   SlidersHorizontal,
   Sparkles,
   User,
@@ -42,6 +43,12 @@ import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
 import { PaymentHistoryDialog } from "@/components/Settings/PaymentHistoryDialog";
+import { InstallAppDialog } from "@/components/Settings/InstallAppDialog";
+import {
+  detectInstallPlatform,
+  isStandalone,
+  useDeferredInstallPrompt,
+} from "@/lib/install-app";
 
 /**
  * عن ريحان expandable — a mirror of the public header's «عن ريحان» dropdown
@@ -85,6 +92,18 @@ export function SidebarFooter() {
   const [receiptsOpen, setReceiptsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [lessonsOpen, setLessonsOpen] = useState(false);
+  const [installOpen, setInstallOpen] = useState(false);
+  // «ثبّت ريحان على جوالك» shows on phones (or wherever Chrome offers an
+  // install prompt) and disappears inside the installed app. Resolved after
+  // mount — UA and display-mode are client-only.
+  const [isPhone, setIsPhone] = useState(false);
+  const [installed, setInstalled] = useState(false);
+  const { canPrompt } = useDeferredInstallPrompt();
+  useEffect(() => {
+    setIsPhone(detectInstallPlatform() !== "other");
+    setInstalled(isStandalone());
+  }, []);
+  const showInstallRow = !installed && (isPhone || canPrompt);
   // The settings popover is CONTROLLED so a lesson click can close the whole
   // menu stack. Without it the flyout and its parent stay open on top of the
   // lesson card the click just summoned.
@@ -251,6 +270,20 @@ export function SidebarFooter() {
                   </span>
                   <span className="text-muted-foreground">›</span>
                 </Button>
+                {showInstallRow && (
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-between gap-2 px-2 text-sm font-medium"
+                    onClick={() => setInstallOpen(true)}
+                    data-testid="sidebar-settings-install-app"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Smartphone className="h-4 w-4" />
+                      ثبّت ريحان على جوالك
+                    </span>
+                    <span className="text-muted-foreground">›</span>
+                  </Button>
+                )}
                 <Separator />
                 {/* Bottom group = 2 expandables mirroring the public header:
                     عن ريحان (السياسات folded in) · اكتشف ريحان (the 8 lessons
@@ -399,6 +432,7 @@ export function SidebarFooter() {
             open={receiptsOpen}
             onOpenChange={setReceiptsOpen}
           />
+          <InstallAppDialog open={installOpen} onOpenChange={setInstallOpen} />
           <ThemeToggle />
           <Tooltip>
             <TooltipTrigger asChild>

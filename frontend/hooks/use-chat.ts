@@ -3,6 +3,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { messagesApi } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { useEduStore } from "@/stores/edu-store";
+import { useInstallNudgeStore } from "@/stores/install-nudge-store";
 import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
@@ -680,6 +681,9 @@ export function useSendMessage(): UseSendMessageReturn {
               // Every gate lives in the store; this call site stays dumb and is
               // safe to over-fire.
               useEduStore.getState().bumpTurn();
+              // «ثبّت ريحان» nudge — same contract: dumb call, gates in the store.
+              // AFTER bumpTurn so a lesson that wins this turn blocks the card.
+              useInstallNudgeStore.getState().noteTurn();
               break;
             }
             case "workspace_item_created": {

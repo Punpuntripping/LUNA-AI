@@ -83,10 +83,27 @@ CHAT_EVENT_NAMES = frozenset(
     }
 )
 
+# PWA (.claude/plans/pwa_step1.md §1E) — install surfaces + web push. Carries a
+# user_id when fired from the chat shell; `/app` fires anonymously.
+PWA_EVENT_NAMES = frozenset(
+    {
+        "install_nudge_shown",      # chat nudge card rendered
+        "install_nudge_how",        # «كيف؟» tapped
+        "install_nudge_dismissed",  # ✕ — 14-day snooze
+        "install_dialog_opened",    # guide opened: props.source settings|nudge|app_page
+        "install_prompt_result",    # Android beforeinstallprompt outcome
+        "app_installed",            # `appinstalled` (Android/desktop only)
+        "standalone_session",       # a session running as the installed app — the iOS install KPI
+        "push_permission",          # Notification.requestPermission result
+        "push_subscribed",
+        "push_unsubscribed",
+    }
+)
+
 # The allowlist the endpoint validates against. Adding a name here is the ONLY
 # way a new event becomes storable — deliberately, so a typo in the client is a
 # dropped event rather than a silent new bucket that no §6 query counts.
-EVENT_NAMES = PUBLIC_EVENT_NAMES | CHAT_EVENT_NAMES
+EVENT_NAMES = PUBLIC_EVENT_NAMES | CHAT_EVENT_NAMES | PWA_EVENT_NAMES
 
 # The gate surfaces §3 enumerates. NOT enforced (gate_kind rides in `props`,
 # which is open by design — see sanitize_props); kept here so the funnel query

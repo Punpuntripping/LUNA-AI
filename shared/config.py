@@ -274,6 +274,17 @@ class Settings(BaseSettings):
     RECEIPTS_SMTP_PASSWORD: Optional[str] = None        # Google App Password — the on/off switch
     RECEIPTS_FROM_EMAIL: str = "noreply@rayhanai.com"   # From: header — must be the authenticated user or its Send-as alias
 
+    # ── Web push «إجابتك جاهزة» (VAPID) — .claude/plans/pwa_step1.md §1D ────
+    # Env var name == field name (no validation_alias). Fail-closed-silently:
+    # while the keys are unset, GET /api/v1/push/vapid-public-key answers 503
+    # and push_service.notify_turn_ready is a no-op — a turn never degrades.
+    # Generate a pair with `npx web-push generate-vapid-keys` (URL-safe base64:
+    # the public key is the 65-byte uncompressed point, the private key the raw
+    # 32-byte scalar — both forms pywebpush/py-vapid accept).
+    VAPID_PUBLIC_KEY: Optional[str] = None    # served to the browser by /push/vapid-public-key (not a secret)
+    VAPID_PRIVATE_KEY: Optional[str] = None   # backend only, never leaves the server
+    VAPID_SUBJECT: Optional[str] = None       # "mailto:support@rayhanai.com" — push services contact this on abuse; defaulted in push_service if unset
+
     # ========================================
     # ENVIRONMENT
     # ========================================

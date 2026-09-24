@@ -96,6 +96,18 @@ const nextConfig = {
           { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },
         ],
       },
+      // The service worker (`public/sw.js`, pwa_step1.md §1C). Never cached,
+      // so a fix — or the kill-switch worker — reaches phones on the next
+      // navigation instead of after an HTTP-cache TTL. This covers the ORIGIN
+      // only: Cloudflare needs its own bypass cache rule for /sw.js, or the
+      // edge pins a broken worker regardless of this header.
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
     ];
   },
 

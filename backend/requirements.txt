@@ -72,3 +72,8 @@ tiktoken>=0.7.0,<1.0.0
 # Mistral SDK — OCR text extraction from PDF/image attachments
 # (agents/memory/ocr_extractor uses client.ocr.process_async / mistral-ocr-latest).
 mistralai>=1.5.0,<2.0.0
+
+# Web push «إجابتك جاهزة» (pwa_step1.md §1D) — VAPID-signed, aes128gcm-encrypted
+# pushes from backend/app/services/push_service.py. Pulls http-ece + py-vapid;
+# cryptography>=47 is already satisfied by the lock (49.0.0).
+pywebpush==2.5.0

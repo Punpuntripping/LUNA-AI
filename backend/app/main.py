@@ -813,6 +813,16 @@ def create_app() -> FastAPI:
         tags=["payments"],
     )
 
+    # Web push «إجابتك جاهزة» (pwa_step1.md §1D) — AUTHED subscription CRUD +
+    # the VAPID public key. ⚠ Requires migration 165 (push_subscriptions).
+    from backend.app.api.push import router as push_router
+
+    application.include_router(
+        push_router,
+        prefix="/api/v1",
+        tags=["push"],
+    )
+
     # Templates router (قوالبي — per-user markdown templates)
     from backend.app.api.templates import router as templates_router
 

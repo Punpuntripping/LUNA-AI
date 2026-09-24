@@ -300,7 +300,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  delete: <T>(path: string) => apiFetch<T>(path, { method: "DELETE" }),
+  // `body` is optional — most DELETEs address the row by path; a few (e.g.
+  // `/push/subscribe`, keyed by endpoint URL) need a JSON body instead.
+  delete: <T>(path: string, body?: unknown) =>
+    apiFetch<T>(path, {
+      method: "DELETE",
+      body: body ? JSON.stringify(body) : undefined,
+    }),
 
   upload: <T>(path: string, formData: FormData) =>
     apiFetch<T>(path, {

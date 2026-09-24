@@ -67,7 +67,29 @@ export type AnalyticsEventName =
   /** The workspace viewer was closed. Props: `wi_id`, `dwell_ms`. */
   | "wi_dwell"
   /** A conversation was loaded. Props: `conversation_id`, `has_unseen_answer`. */
-  | "conversation_opened";
+  | "conversation_opened"
+  // ---- install surfaces (install_app_nudge.md, pwa_step1 §1E) -----------
+  /** Chat nudge card appeared. Props: `platform`. */
+  | "install_nudge_shown"
+  /** «كيف؟» on the nudge. Props: `platform`. */
+  | "install_nudge_how"
+  /** ✕ on the nudge (14-day snooze). */
+  | "install_nudge_dismissed"
+  /** Install guide shown. Props: `source` (settings | nudge | app_page). */
+  | "install_dialog_opened"
+  /** Chrome install prompt answered. Props: `outcome` (accepted | dismissed). */
+  | "install_prompt_result"
+  /** `appinstalled` fired (Android / desktop Chrome only). Props: `platform`. */
+  | "app_installed"
+  /** Tab opened as the installed app — the iOS install KPI. Props: `platform`. */
+  | "standalone_session"
+  // ---- pwa_step1 §1D/§1E web push ----------------------------------------
+  /** Permission prompt answered. Props: `result`, `source`. */
+  | "push_permission"
+  /** Push subscription registered with the backend. Props: `source`. */
+  | "push_subscribed"
+  /** Push turned off on this device. Props: `source`. */
+  | "push_unsubscribed";
 
 /**
  * The real conversion surfaces, so the funnel can tell them apart (§3). The

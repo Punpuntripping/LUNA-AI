@@ -178,6 +178,8 @@ export function getStaticUrls(): SitemapUrl[] {
     "/learn/workspace",
     "/learn/data-protection",
     "/learn/usage-limits",
+    // «ريحان على جوالك» — the static install guide (install_app_nudge.md §C).
+    "/app",
     "/blog",
     // The blog wing's two hardcoded pages (blog_subjects.md §7). The subject
     // LISTINGS are a fed section (`blog-subjects`); this index page over them

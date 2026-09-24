@@ -9,6 +9,7 @@ import { PromoCodePopup } from "@/components/promo/PromoCodePopup";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
+import { InstallNudgeCard } from "@/components/install/InstallNudgeCard";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -222,6 +223,12 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           not ask for, and the engine refuses to show it while any of the three
           above are open. */}
       <EduLessonHost />
+
+      {/* «ثبّت ريحان على شاشتك الرئيسية» — phones only, after 2 completed
+          answers, once per session, 14-day snooze. Same slot and z-40 as the
+          lesson card, and the two engines gate on each other so they never
+          stack (`install-nudge-store` ↔ `edu-store` gate 5b). */}
+      <InstallNudgeCard />
 
       {/* «حدود الاستخدام» / «إعدادات المحادثة» are NOT mounted here. They hang
           off `Sidebar` (see SidebarDialogs) so they also exist on /templates,

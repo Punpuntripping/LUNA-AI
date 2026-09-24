@@ -8,6 +8,9 @@ import {
 } from "@/components/edu/edu-syllabus";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { useTourStore } from "@/stores/tour-store";
+// Cycle: install-nudge-store imports this store back. Safe — both sides only
+// read each other inside functions, never at module load.
+import { useInstallNudgeStore } from "@/stores/install-nudge-store";
 
 /**
  * «سلسلة تعلّم ريحان» — the engine. Design: `.claude/plans/edu_series.md`.
@@ -226,6 +229,9 @@ export const useEduStore = create<EduState>((set, get) => ({
     if (useOnboardingStore.getState().isOpen) return;
     if (useTourStore.getState().isOpen) return;
 
+    // 5b — nor on the «ثبّت ريحان» nudge card (install_app_nudge.md §B)
+    if (useInstallNudgeStore.getState().isOpen) return;
+
     // 6 — nor on any other open dialog/sheet/overlay
     if (aModalIsOpen()) return;
 
@@ -257,6 +263,7 @@ export const useEduStore = create<EduState>((set, get) => ({
       if (now.shownThisSession.length >= SESSION_CAP) return;
       if (useOnboardingStore.getState().isOpen) return;
       if (useTourStore.getState().isOpen) return;
+      if (useInstallNudgeStore.getState().isOpen) return;
       if (aModalIsOpen()) return;
 
       const counts = readImpressions();

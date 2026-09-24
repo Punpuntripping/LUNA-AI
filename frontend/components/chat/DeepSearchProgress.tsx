@@ -6,6 +6,7 @@ import { Check, Info, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEEP_SEARCH_TOPIC_PREFIX, useChatStore } from "@/stores/chat-store";
 import { TypingIndicator } from "@/components/chat/TypingIndicator";
+import { PushReadyChip } from "@/components/chat/PushReadyChip";
 import type { DeepSearchStage } from "@/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -290,8 +291,13 @@ function CrossfadeLine({
  * The expectation-setting note that sits above the tracker for the whole run.
  * Static copy — it never reacts to progress, so it stays out of the tracker's
  * render path and out of the card's live region.
+ *
+ * While the run is in flight it also carries the web-push opt-in
+ * (PushReadyChip, pwa_step1.md §1D): the note already says «you can leave»,
+ * the chip is how they get called back. It owns its own state and renders
+ * nothing when push can't help, so the note is unchanged for most users.
  */
-function DeepSearchNote() {
+function DeepSearchNote({ running }: { running: boolean }) {
   return (
     <div
       dir="rtl"
@@ -308,6 +314,7 @@ function DeepSearchNote() {
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {NOTE_BODY}
           </p>
+          {running && <PushReadyChip className="mt-2" />}
         </div>
       </div>
     </div>
@@ -415,7 +422,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
   if (!progress) {
     return (
       <div className={cn("w-full space-y-2", className)}>
-        <DeepSearchNote />
+        <DeepSearchNote running />
         <TypingIndicator />
       </div>
     );
@@ -503,7 +510,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
 
   return (
     <div className={cn("w-full space-y-2", className)}>
-      <DeepSearchNote />
+      <DeepSearchNote running={!isDone} />
 
       <div
         dir="rtl"

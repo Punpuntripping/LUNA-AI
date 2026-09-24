@@ -22,6 +22,7 @@ from backend.app.errors import LunaHTTPException, ErrorCode
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.case_service import get_user_id
 from backend.app.services.demo_service import is_demo_conversation
+from backend.app.services import push_service
 from backend.app.services.masking_service import (
     build_turn_codec,
     decode_text,
@@ -859,6 +860,7 @@ async def send_message_stream(
     paused = False
     _stream_outcome = "unknown"
     _disconnect_detected = False
+    _turn_started_at = time.monotonic()  # web push: «إجابتك جاهزة» only for long / detached turns
     # PII note: user_id intentionally NOT propagated here. The pre-existing
     # router.classify + dispatch.specialist spans (which DO carry user_id)
     # cover the per-turn user identity; downstream spans pivot by
@@ -1157,6 +1159,21 @@ async def send_message_stream(
                             "artifact_ids": captured_artifact_ids or None,
                             "referenced_item_ids": captured_referenced_ids or None,
                         }))
+
+                        # Web push «إجابتك جاهزة» (pwa_step1.md §1D). Only when
+                        # the turn was long (>20s) or the SSE consumer already
+                        # left (disconnect / cancelled stream → _stream_outcome
+                        # is no longer "unknown"); never for a pause (that is a
+                        # question, not an answer). Fire-and-forget: sync,
+                        # never raises, content-free payload.
+                        if not paused and (
+                            _disconnect_detected
+                            or _stream_outcome != "unknown"
+                            or time.monotonic() - _turn_started_at > 20
+                        ):
+                            push_service.schedule_turn_ready(
+                                user_id, conversation_id, supabase=supabase,
+                            )
 
         except TimeoutError:
             # Pipeline exceeded LUNA_PIPELINE_TIMEOUT_S. Log, update the
