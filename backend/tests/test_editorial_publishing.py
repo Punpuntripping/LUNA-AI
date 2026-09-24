@@ -439,19 +439,17 @@ def test_no_slug_no_title_and_no_subjects_costs_no_db_round_trip() -> None:
 # -- the slug we WOULD mint, checked before the run is paid for -------------
 
 
-def test_an_english_title_is_rejected_at_SUBMIT_not_after_the_run() -> None:
+def test_a_title_minting_a_subject_slug_is_rejected_at_SUBMIT_not_after_the_run() -> None:
     """⚠ The operational footgun this closes.
 
-    ``slugify_ar`` over a Latin title yields ASCII kebab-case — the shape
-    migration 153 reserves to SUBJECTS — so ``insert_public_blog`` refuses it.
-    Correctly, but at the very END: the job has already spent 1–4 minutes and a
-    full retrieval budget on a title the operator could have fixed in a second.
+    ``slugify_ar`` over «Work Law» mints ``work-law`` — a SUBJECT's slug — so
+    ``insert_public_blog`` refuses it. Correctly, but at the very END: the job
+    has already spent 1–4 minutes and a full retrieval budget on a title the
+    operator could have fixed in a second.
     """
     db = _db_with_subjects()
     with pytest.raises(LunaHTTPException) as e:
-        asyncio.run(
-            _validate_against_db(db, _req(title="Labor Law Explained", slug=None))
-        )
+        asyncio.run(_validate_against_db(db, _req(title="Work Law", slug=None)))
     assert e.value.status_code == 400
     # The message must name the TITLE. Every 400 out of assert_slug_available is
     # written for a caller who SENT a slug; this caller sent a title, and those
@@ -459,6 +457,12 @@ def test_an_english_title_is_rejected_at_SUBMIT_not_after_the_run() -> None:
     assert "عنوان" in _detail(e)
     # Nothing was queued — the point is that no pipeline run is paid for.
     assert db.tables["public_blogs"] == []
+
+
+def test_an_english_title_mints_an_english_slug_and_passes() -> None:
+    """Migration 164 — English article slugs are legal."""
+    db = _db_with_subjects()
+    asyncio.run(_validate_against_db(db, _req(title="Labor Law Explained", slug=None)))
 
 
 def test_an_arabic_title_mints_a_valid_slug_and_passes() -> None:
@@ -1141,13 +1145,14 @@ def test_a_supplied_slug_is_used_verbatim(publish) -> None:
     assert result.slug == ARABIC_SLUG
 
 
-def test_an_ascii_title_cannot_mint_a_subject_shaped_slug(publish) -> None:
-    """A blog slug is Arabic by construction (D4) — the ASCII shape is a
-    SUBJECT's, and a blog wearing it would be unreachable through the
-    dispatcher. Refused with a clean Arabic 400, not an opaque 23514."""
+def test_a_title_cannot_mint_a_subject_slug(publish) -> None:
+    """A blog wearing a SUBJECT's slug would be unreachable through the
+    dispatcher (subjects resolve first). Refused with a clean Arabic 400, not
+    an opaque 23505 out of migration 164's trigger."""
     db = FakeDB()
+    db.seed_subjects()
     with pytest.raises(LunaHTTPException) as e:
-        publish(db, job={"title": "Labor Law Explained"}, content_md="نص بلا عنوان.")
+        publish(db, job={"title": "Work Law"}, content_md="نص بلا عنوان.")
     assert e.value.status_code == 400
     assert db.tables["public_blogs"] == []
 

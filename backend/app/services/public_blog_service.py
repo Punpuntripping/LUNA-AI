@@ -69,11 +69,16 @@ BLOG_TYPES = frozenset({"laws_explanation", "judicial_research", "compliance"})
 # discovered by its reader.
 RESERVED_BLOG_SLUGS = frozenset({"subjects"})
 
-# ASCII kebab-case — the shape a SUBJECT slug takes (migration 154's CHECK), and
-# the shape migration 153 forbids a blog slug from taking. Blog slugs are Arabic
-# (plan D4), which is what makes the /blog/{ref} dispatch unambiguous by
-# construction rather than by convention.
+# ASCII kebab-case — the shape every SUBJECT slug takes (migration 154's CHECK)
+# and, since migration 164, the shape an English BLOG slug takes too. The two
+# vocabularies no longer differ in shape; migration 164's triggers keep them
+# from ever holding the same VALUE, which is what the /blog/{ref} dispatch
+# actually needs. A pure-ASCII blog slug must match this exactly.
 _ASCII_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# A legacy ``blog_posts`` share token (``blog_service._BARE_TOKEN_RE``). The
+# dispatcher tries that table for this shape, so no blog may take it.
+_TOKEN_SHAPE_RE = re.compile(r"^[0-9a-f]{32}$")
 
 _MAX_SLUG_LEN = 200
 
@@ -243,11 +248,12 @@ def assert_slug_available(supabase: SupabaseClient, slug: str) -> str:
       2. a RESERVED literal (``subjects``) — that segment is the subject index;
       3. a slug that collides with an existing ``blog_subjects.slug`` — subjects
          WIN the dispatch (plan D6), so such a blog would be unreachable;
-      4. any ASCII kebab-case slug at all — that shape is reserved to subjects
-         by construction (migration 153's CHECK), so minting one would fail on a
-         constraint later even if no subject holds it today.
+      4. a malformed shape — pure ASCII that is not kebab-case, or a 32-hex
+         legacy-token lookalike (migration 164's CHECK backstops both).
 
-    Then a uniqueness pre-check: one live slug per current, non-deleted row.
+    Then two uniqueness pre-checks: one live slug per current, non-deleted row,
+    and no slug another blog USED to have (``public_blog_slug_aliases``) —
+    taking one would hijack that blog's redirect.
 
     The DB CHECKs are the backstop. THIS is the gate — a publisher must get a
     400 that names the problem, not an opaque 23514 constraint error out of
@@ -294,11 +300,13 @@ def assert_slug_available(supabase: SupabaseClient, slug: str) -> str:
             detail="هذا الرابط يخص موضوعاً في المدونة ولا يمكن استخدامه لمقال",
         )
 
-    if _ASCII_SLUG_RE.match(normalized):
+    if _TOKEN_SHAPE_RE.match(normalized) or (
+        normalized.isascii() and not _ASCII_SLUG_RE.match(normalized)
+    ):
         raise LunaHTTPException(
             status_code=400,
             code=ErrorCode.VALIDATION_ERROR,
-            detail="رابط المدونة يجب أن يكون بالعربية",
+            detail="رابط المدونة يجب أن يكون بالعربية أو بحروف إنجليزية صغيرة مفصولة بشرطات",
         )
 
     try:
@@ -311,6 +319,13 @@ def assert_slug_available(supabase: SupabaseClient, slug: str) -> str:
             .limit(1)
             .execute()
         )
+        aliased = (
+            supabase.table("public_blog_slug_aliases")
+            .select("root_id")
+            .eq("slug", normalized)
+            .limit(1)
+            .execute()
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("Error checking public blog slug uniqueness: %s", e)
         raise LunaHTTPException(
@@ -318,7 +333,7 @@ def assert_slug_available(supabase: SupabaseClient, slug: str) -> str:
             code=ErrorCode.INTERNAL_ERROR,
             detail="حدث خطأ أثناء التحقق من رابط المدونة",
         )
-    if taken.data:
+    if taken.data or aliased.data:
         raise LunaHTTPException(
             status_code=409,
             code=ErrorCode.VALIDATION_ERROR,
@@ -1138,6 +1153,13 @@ def _fetch_current_row(
     nothing has linked it yet, and a URL that resolves during the editorial hold
     is a URL that can be shared past it.
 
+    ⚠ **A FORMER slug resolves too** (migration 164). When no current row holds
+    ``slug``, ``public_blog_slug_aliases`` is asked which blog used to, and that
+    blog's current row is returned under the SAME predicates. The row carries
+    its current ``slug``, so a caller that must redirect can compare. That is
+    how an English slug swapped in at publish leaves the Arabic address — and
+    every link already shared with it — working.
+
     Returns the row, or ``None`` when nothing resolves. ``fields`` is the
     PostgREST projection the caller needs; nothing else varies.
     """
@@ -1145,18 +1167,31 @@ def _fetch_current_row(
     if not key:
         return None
 
-    try:
-        result = (
+    def _current(column: str, value: str) -> list[dict[str, Any]]:
+        return (
             supabase.table("public_blogs")
             .select(fields)
-            .eq("slug", key)
+            .eq(column, value)
             .eq("is_current", True)
             .eq("is_published", True)
             .is_("deleted_at", "null")
             .eq("review_status", "approved")
             .limit(1)
             .execute()
-        )
+        ).data or []
+
+    try:
+        rows = _current("slug", key)
+        if not rows:
+            alias = (
+                supabase.table("public_blog_slug_aliases")
+                .select("root_id")
+                .eq("slug", key)
+                .limit(1)
+                .execute()
+            ).data or []
+            if alias:
+                rows = _current("root_id", alias[0]["root_id"])
     except Exception as e:  # noqa: BLE001
         logger.exception("Error fetching public blog by slug: %s", e)
         raise LunaHTTPException(
@@ -1165,7 +1200,6 @@ def _fetch_current_row(
             detail="حدث خطأ أثناء جلب المدونة",
         )
 
-    rows = result.data or []
     return rows[0] if rows else None
 
 
@@ -1619,6 +1653,7 @@ def append_version(
     revision_note: Optional[str] = None,
     blog_type: Optional[str] = None,
     confidence: Optional[str] = None,
+    slug: Optional[str] = None,
 ) -> dict[str, Any]:
     """Append version N+1 for a logical blog and make it the current one.
 
@@ -1630,10 +1665,12 @@ def append_version(
     rollback logic. Two concurrent appends serialize on the row lock instead of
     racing to ``idx_public_blogs_current``.
 
-    ⚠ **The slug is carried over UNCHANGED and is not a parameter.** A published
-    slug is permanent across every version: there is no redirect layer, so a
-    rename 404s (``corpus_supersession_retirement`` learned that expensively).
-    A rewrite may change ``title``; it must never change ``slug``.
+    ⚠ **``slug`` left as ``None`` carries the current slug UNCHANGED.** A new
+    one (migration 164) moves the blog: the function files the old slug in
+    ``public_blog_slug_aliases`` and every by-slug read redirects it, so links
+    already shared keep working. Only an address nobody holds yet is free to
+    move without cost — the marketing publish swaps the Arabic submit-time slug
+    for the rewriter's English one exactly once, at «نشر».
 
     ⚠ **``references_json`` is carried VERBATIM by the function** and is not a
     parameter either (plan D18): the citation set of a published blog is CLOSED,
@@ -1665,6 +1702,7 @@ def append_version(
                 "p_revision_note": revision_note,
                 "p_type": resolved_type,
                 "p_confidence": confidence,
+                "p_slug": (slug or "").strip() or None,
             },
         ).execute()
     except Exception as e:  # noqa: BLE001
@@ -1677,6 +1715,17 @@ def append_version(
                 status_code=404,
                 code=ErrorCode.ARTIFACT_NOT_FOUND,
                 detail="المدونة غير موجودة",
+            )
+        # A new ``slug`` another blog or a subject already holds (migration
+        # 164's triggers, or the current-slug index) — a naming problem, not a
+        # concurrent edit, so it must not read like one.
+        if slug and code in ("23505", "23514") and (
+            "slug" in text or "idx_public_blogs_slug" in text
+        ):
+            raise LunaHTTPException(
+                status_code=409,
+                code=ErrorCode.VALIDATION_ERROR,
+                detail="هذا الرابط مستخدم لمدونة أخرى أو غير صالح",
             )
         # A unique-index violation can still reach us — a concurrent INSERT of a
         # brand-new blog claiming this slug is not covered by the row lock. Do

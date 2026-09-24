@@ -82,9 +82,11 @@ class BlogPostJobRequest(BaseModel):
     slug: Optional[str] = Field(
         default=None,
         description=(
-            "The blog's permanent Arabic address. Minted from the resolved title "
-            "when null. Refused at mint time when it is reserved ('subjects'), "
-            "collides with a subject slug, or is ASCII kebab-shaped (D4/§3)."
+            "The blog's address at submit — Arabic, or ASCII kebab-case. Minted "
+            "from the resolved title when null. Publish may later swap in an "
+            "English slug; the old one keeps redirecting (migration 164). Refused "
+            "at mint time when it is reserved ('subjects'), collides with a "
+            "subject slug or another blog's live or former slug, or is malformed."
         ),
     )
     publish_public: bool = Field(

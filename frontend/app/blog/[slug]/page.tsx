@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import { PublicAnswerView } from "@/components/blog/PublicAnswerView";
 import { BlogArticleView } from "@/components/blog/BlogArticleView";
 import { BlogCard } from "@/components/blog/BlogCard";
@@ -39,7 +39,8 @@ const SITE_URL = "https://rayhanai.com";
 // one level, so `/blog/[slug]` resolves everything under `/blog`:
 //
 //   1. `blog_subjects.slug`  (ASCII kebab)  → the subject listing page
-//   2. `public_blogs.slug`   (Arabic)       → the blog, its own canonical
+//   2. `public_blogs.slug`   (English or Arabic) → the blog, its own canonical;
+//      a FORMER slug (migration 164's alias table) → 308 to the current one
 //   3. `blog_posts.token`    (32 hex)       → a LEGACY share snapshot
 //   4.                                      → notFound()
 //
@@ -132,7 +133,17 @@ async function resolveBlogRef(raw: string): Promise<Resolved> {
 
   if (isBlogSlugShape(ref)) {
     const blog = await getPublicBlog(ref);
-    if (blog) return { kind: "blog", blog };
+    if (blog) {
+      // A FORMER slug: the backend resolved it through the alias table and
+      // answered with the blog's CURRENT slug. Every link shared before the
+      // rewriter's English slug replaced the Arabic one lands here. Thrown from
+      // the resolver so metadata and page both redirect — a crawler that only
+      // reads the head (Twitterbot) must see the 308, not a duplicate page.
+      if (blog.slug && blog.slug !== ref) {
+        permanentRedirect(blogCanonicalPath(blog.slug));
+      }
+      return { kind: "blog", blog };
+    }
   }
 
   if (tokenShaped) {

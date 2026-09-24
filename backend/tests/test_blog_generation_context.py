@@ -380,7 +380,7 @@ def test_both_new_columns_are_carried_forward_by_the_rpc_never_re_stamped(
     assert name == "append_public_blog_version"
     assert set(params) == {
         "p_root_id", "p_content_md", "p_title", "p_revision_note",
-        "p_type", "p_confidence",
+        "p_type", "p_confidence", "p_slug",
     }, "append_version must not pass either column — the RPC carries them"
 
     v2 = next(r for r in db.tables["public_blogs"] if r["version_no"] == 2)

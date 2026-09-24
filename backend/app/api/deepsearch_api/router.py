@@ -150,8 +150,8 @@ async def _validate_against_db(
         )
 
     # Mint-time slug refusal — reserved literal, subject-vocabulary collision,
-    # ASCII-kebab shape (that shape belongs to subjects by construction), then
-    # uniqueness (409). Checked here so a typo costs a round trip instead of a
+    # malformed shape (non-kebab ASCII, legacy-token lookalike), then uniqueness
+    # against live slugs and former ones (409). Checked here so a typo costs a round trip instead of a
     # full deep_search run.
     supplied = (req.slug or "").strip()
     if supplied:
@@ -168,9 +168,9 @@ async def _assert_mintable_slug(
 
     ⚠ **This is the difference between a 400 now and a 400 after a full
     deep_search run.** With no ``slug``, the publisher mints one from the
-    resolved title — and ``slugify_ar`` over a Latin title yields ASCII
-    kebab-case, precisely the shape reserved to SUBJECTS by migration 153's
-    CHECK. ``insert_public_blog`` then refuses it, correctly, but only at the
+    resolved title — and that slug can collide with a subject, a live blog or
+    a former slug, or come out malformed. ``insert_public_blog`` then refuses
+    it, correctly, but only at the
     very end: the job has already spent 1–4 minutes and a full retrieval budget,
     and the operator learns about a title they could have fixed in a second.
 
@@ -195,7 +195,7 @@ async def _assert_mintable_slug(
             # the real problem ("this link belongs to another blog"), and it is
             # about the slug, not the title — pass it through untouched.
             raise
-        # Every 400 here (empty, reserved, subject collision, ASCII shape) has a
+        # Every 400 here (empty, reserved, subject collision, bad shape) has a
         # message written for a caller who SENT a slug. This caller sent a
         # title, so those messages would send them hunting for a field they
         # never filled in. Name the actual cause instead.

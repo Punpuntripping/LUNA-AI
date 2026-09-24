@@ -13,20 +13,25 @@
 // That vocabulary is ASCII, so nothing about it can arrive encoded. Half of
 // THIS segment's address space is Arabic.
 //
-// THE THREE SHAPES, and why the checks below are guarantees rather than
-// conventions (`.claude/plans/blog_subjects.md` §2 + §3):
+// THE THREE VOCABULARIES (`.claude/plans/blog_subjects.md` §2 + §3, revised by
+// migration 164):
 //
 //   subject slug  ASCII kebab-case   `blog_subjects_slug_ascii`
-//                                    CHECK (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$')
-//   blog slug     Arabic             `public_blogs_slug_nonascii`
-//                                    CHECK (slug !~ '^[a-z0-9]+(-[a-z0-9]+)*$')
+//   blog slug     English kebab-case (set at publish) OR Arabic (minted at
+//                 submit) — never 32-hex, never a subject's VALUE
 //   legacy token  32 lowercase hex   minted by `blog_service`; the same shape
 //                                    `_BARE_TOKEN_RE` matches server-side
 //
-// The two CHECK constraints are what make the dispatcher's resolution order
-// unambiguous: a subject slug can never be a blog slug and vice versa, so the
-// cheap in-process shape test below can skip a lookup that could not possibly
-// match — never a lookup that could.
+// Subject and blog slugs can now SHARE a shape, so shape alone no longer picks
+// the table. What keeps the dispatch unambiguous is migration 164's pair of
+// triggers: no value is ever held by both vocabularies, so trying subjects
+// first and blogs second always lands on the one table that has it. The shape
+// tests below still skip lookups that could not possibly match — never a
+// lookup that could.
+//
+// A blog slug can also MOVE (the rewriter's English slug replaces the Arabic
+// one at «نشر»). The old slug is kept as an alias; the backend resolves it to
+// the blog and reports the CURRENT slug, and the page 308s to it.
 
 /**
  * The ASCII kebab-case shape a SUBJECT slug has, mirroring migration 154's
@@ -73,12 +78,15 @@ export function isSubjectSlugShape(ref: string): boolean {
 }
 
 /**
- * Could this ref be a `public_blogs.slug`? The CHECK is the NEGATION of the
- * subject shape, so anything that is not ASCII kebab-case qualifies — Arabic in
- * practice, every time.
+ * Could this ref be a `public_blogs.slug` (current or former)? Migration 164's
+ * CHECK: anything but a 32-hex token and the reserved segments — pure ASCII
+ * must additionally be kebab-case.
  */
 export function isBlogSlugShape(ref: string): boolean {
-  return ref.length > 0 && !SUBJECT_SLUG_RE.test(ref);
+  if (ref.length === 0 || RESERVED_BLOG_SLUGS.has(ref)) return false;
+  if (LEGACY_TOKEN_RE.test(ref)) return false;
+  // Any non-ASCII character makes it an Arabic slug.
+  return /[^\u0000-\u007f]/.test(ref) || SUBJECT_SLUG_RE.test(ref);
 }
 
 /** Is this ref a legacy `blog_posts` share token? (32 lowercase hex.) */

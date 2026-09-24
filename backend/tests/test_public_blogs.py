@@ -259,7 +259,19 @@ class _Rpc:
             )
 
         rollback = [dict(r) for r in rows]
+        aliases = db.tables["public_blog_slug_aliases"]
+        alias_rollback = [dict(a) for a in aliases]
+        # migration 164 — a new ``p_slug`` moves the blog; the old slug is filed
+        # as an alias (reclaiming one this blog held before un-files it).
+        new_slug = (p.get("p_slug") or "").strip() or cur["slug"]
         try:
+            if new_slug != cur["slug"]:
+                db.tables["public_blog_slug_aliases"] = aliases = [
+                    a for a in aliases
+                    if not (a["slug"] == new_slug and a["root_id"] == cur["root_id"])
+                ]
+                if not any(a["slug"] == cur["slug"] for a in aliases):
+                    aliases.append({"slug": cur["slug"], "root_id": cur["root_id"]})
             cur["is_current"] = False
             new = db._with_defaults(
                 "public_blogs",
@@ -269,7 +281,7 @@ class _Rpc:
                     "version_no": int(cur["version_no"]) + 1,
                     "is_current": True,
                     "revision_note": p.get("p_revision_note"),
-                    "slug": cur["slug"],                       # PERMANENT
+                    "slug": new_slug,                          # carried unless p_slug
                     "title": p.get("p_title") or cur["title"],
                     "type": p.get("p_type") or cur["type"],
                     "question_text": cur["question_text"],
@@ -295,6 +307,7 @@ class _Rpc:
             db._check_indexes("public_blogs")
         except Exception:
             db.tables["public_blogs"] = rollback   # the transaction aborts
+            db.tables["public_blog_slug_aliases"] = alias_rollback
             raise
         return _Result(dict(new))
 
@@ -329,6 +342,7 @@ class FakeDB:
             "public_blogs": [],
             "blog_subjects": [],
             "public_blog_subjects": [],
+            "public_blog_slug_aliases": [],
         }
         self.calls: list[tuple] = []
         self.rpc_calls: list[tuple] = []
@@ -602,14 +616,36 @@ def test_slug_colliding_with_a_subject_slug_is_refused() -> None:
     assert any(t == "blog_subjects" for _op, t, _f in db.calls)
 
 
-def test_any_ascii_kebab_slug_is_refused() -> None:
-    """Migration 153's CHECK forbids the shape outright — refuse it cleanly
-    rather than letting PostgREST raise a constraint error at insert time."""
+def test_english_kebab_slug_is_accepted() -> None:
+    """Migration 164 — an English article slug is legal; only the subject
+    VALUES are off limits, and ``work-law`` (a subject) is refused above."""
+    db = FakeDB()
+    db.seed_subjects()
+    assert svc.assert_slug_available(db, "unfair-dismissal-saudi") == "unfair-dismissal-saudi"
+
+
+@pytest.mark.parametrize(
+    "slug",
+    ["Unfair Dismissal", "unfair_dismissal", "unfair--dismissal", "0123456789abcdef0123456789abcdef"],
+)
+def test_malformed_ascii_or_token_shaped_slug_is_refused(slug: str) -> None:
+    """Pure ASCII must be kebab-case, and a 32-hex slug would be dispatched to
+    the legacy ``blog_posts`` table (migration 164's CHECK)."""
     db = FakeDB()
     db.seed_subjects()
     with pytest.raises(LunaHTTPException) as exc:
-        svc.assert_slug_available(db, "some-future-subject")
+        svc.assert_slug_available(db, slug)
     assert exc.value.status_code == 400
+
+
+def test_another_blogs_former_slug_is_a_409() -> None:
+    """Taking a slug another blog used to have would hijack its redirect."""
+    db = FakeDB()
+    db.seed_subjects()
+    db.tables["public_blog_slug_aliases"].append({"slug": "old-address", "root_id": "blog-9"})
+    with pytest.raises(LunaHTTPException) as exc:
+        svc.assert_slug_available(db, "old-address")
+    assert exc.value.status_code == 409
 
 
 def test_duplicate_live_slug_is_a_409() -> None:
@@ -1145,3 +1181,54 @@ def test_http_subjects_segment_is_not_read_as_a_blog_slug() -> None:
     r = _client(db).get("/api/v1/public/blogs/subjects")
     assert r.status_code == 200
     assert "subjects" in r.json()
+
+
+# ---------------------------------------------------------------------------
+# migration 164 — a slug can move at publish, and the old one keeps resolving
+# ---------------------------------------------------------------------------
+
+
+def test_append_version_with_slug_moves_the_blog_and_files_an_alias() -> None:
+    db = FakeDB()
+    db.seed_subjects()
+    v1 = _insert_v1(db)
+    new = svc.append_version(
+        db, v1["root_id"], content_md=REWRITE_MD, slug=" unfair-dismissal-saudi "
+    )
+    assert new["slug"] == "unfair-dismissal-saudi"
+    assert db.rpc_calls[-1][1]["p_slug"] == "unfair-dismissal-saudi"
+    assert db.tables["public_blog_slug_aliases"] == [
+        {"slug": ARABIC_SLUG, "root_id": v1["root_id"]}
+    ]
+
+
+def test_append_version_without_slug_sends_null_and_keeps_the_slug() -> None:
+    db = FakeDB()
+    db.seed_subjects()
+    v1 = _insert_v1(db)
+    new = svc.append_version(db, v1["root_id"], content_md=REWRITE_MD)
+    assert db.rpc_calls[-1][1]["p_slug"] is None
+    assert new["slug"] == ARABIC_SLUG
+    assert db.tables["public_blog_slug_aliases"] == []
+
+
+def test_get_by_slug_resolves_a_former_slug_to_the_current_row() -> None:
+    """The old Arabic address resolves to the moved blog and reports its CURRENT
+    slug — that difference is what the frontend 308s on."""
+    db = FakeDB()
+    db.seed_subjects()
+    v1 = _insert_v1(db, review_status="approved")
+    svc.append_version(db, v1["root_id"], content_md=REWRITE_MD, slug="unfair-dismissal-saudi")
+    blog = svc.get_by_slug(db, ARABIC_SLUG)
+    assert blog is not None
+    assert blog["slug"] == "unfair-dismissal-saudi"
+    assert svc.get_by_slug(db, "unfair-dismissal-saudi")["slug"] == "unfair-dismissal-saudi"
+    # The body reader behind «اسأل ريحان» follows the alias too.
+    assert svc.get_body_by_slug(db, ARABIC_SLUG) is not None
+
+
+def test_unknown_slug_with_no_alias_is_none() -> None:
+    db = FakeDB()
+    db.seed_subjects()
+    _insert_v1(db)
+    assert svc.get_by_slug(db, "no-such-blog") is None
