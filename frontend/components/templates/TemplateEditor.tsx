@@ -22,6 +22,9 @@ export function TemplateEditor({ template }: TemplateEditorProps) {
 
   return (
     <MarkdownDocEditor
+      // One editor instance per قالب — never carry one template's local
+      // title/body/autosave state over to another.
+      key={template.template_id}
       docId={template.template_id}
       initialTitle={template.title}
       initialContent={template.content_md ?? ""}

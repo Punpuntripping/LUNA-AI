@@ -290,6 +290,7 @@ export function NoteEditor({ item }: NoteEditorProps) {
   return (
     <>
       <MarkdownDocEditor
+        key={item.item_id}
         docId={item.item_id}
         initialTitle={item.title}
         initialContent={item.content_md ?? ""}

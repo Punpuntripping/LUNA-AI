@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -10,14 +11,16 @@ import {
 import { Save, Loader2 } from "lucide-react";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { WorkspaceItemActionBar } from "@/components/workspace/WorkspaceItemActionBar";
-import { useDebounce } from "@/hooks/use-debounce";
 import { cn } from "@/lib/utils";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import type { WorkspaceFeedback } from "@/types";
 
 interface MarkdownDocEditorProps {
-  /** Stable identity of the document being edited. Changing it resets the
-   *  local title/content/savedAt state (e.g. user switches to another doc). */
+  /** Stable identity of the document being edited. Hosts should ALSO pass
+   *  ``key={docId}`` so a doc switch remounts the editor. If it does change
+   *  under a live instance, the old doc's queued edit is flushed to the old
+   *  doc (via the ``onSave`` captured when it was typed) and local state is
+   *  reset to the new doc. */
   docId: string;
   initialTitle: string;
   initialContent: string;
@@ -26,7 +29,7 @@ interface MarkdownDocEditorProps {
    * returned promise rejects, the error is surfaced via ``onSaveError``; on
    * resolve the savedAt indicator updates and the dirty baseline advances.
    */
-  onSave: (patch: { title?: string; content_md?: string }) => Promise<unknown>;
+  onSave: (patch: SavePatch) => Promise<unknown>;
   /** ISO timestamp shown in the footer ("آخر تحديث"). */
   updatedAt: string;
   /** When true the body textarea is read-only and autosave is suspended. */
@@ -74,6 +77,26 @@ interface MarkdownDocEditorProps {
 
 const AUTOSAVE_DELAY_MS = 800;
 
+type SavePatch = { title?: string; content_md?: string };
+
+/**
+ * One autosave waiting out its debounce window, captured AT EDIT TIME.
+ *
+ * ``docId`` + ``save`` + ``onError`` are snapshotted together with the text,
+ * so a flush can never pair one document's text with another document's id:
+ * ``save`` is the host's ``onSave`` from the render the keystroke happened in,
+ * i.e. bound to THAT document. Reading the current props at flush time is the
+ * bug this replaces — switching A → B under one editor instance PATCHed B
+ * with A's title and body (code review 2026-09-25, finding 1).
+ */
+interface PendingSave {
+  docId: string;
+  title: string;
+  content: string;
+  save: (patch: SavePatch) => Promise<unknown>;
+  onError?: (error: unknown) => void;
+}
+
 /**
  * Generic markdown document editor: title input + edit/preview toggle + RTL
  * textarea + ArtifactPreview-based preview + debounced autosave footer.
@@ -114,10 +137,24 @@ export function MarkdownDocEditor({
   const initialMode: "edit" | "preview" =
     initialContent.trim().length > 0 ? "preview" : "edit";
   const [mode, setMode] = useState<"edit" | "preview">(initialMode);
-  const lastSent = useRef<{ title: string; content: string }>({
+  // What the server holds for ``docId`` (the dirty baseline). Tagged with the
+  // doc it belongs to, so a save resolving after a switch can never advance
+  // the NEXT doc's baseline.
+  const lastSent = useRef<{ docId: string; title: string; content: string }>({
+    docId,
     title: initialTitle,
     content: initialContent,
   });
+  const pendingSave = useRef<PendingSave | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic save counter: only the newest save may move the baseline / UI.
+  const saveSeq = useRef(0);
+  // The doc this instance is showing; ``null`` while it is being torn down
+  // (unmount, or the old doc during a docId switch). A save whose docId is not
+  // this one touches no UI state.
+  const activeDocId = useRef<string | null>(docId);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Auto-grow the edit textarea to its full content height.
@@ -150,7 +187,7 @@ export function MarkdownDocEditor({
   useEffect(() => {
     setTitle(initialTitle);
     setContent(initialContent);
-    lastSent.current = { title: initialTitle, content: initialContent };
+    lastSent.current = { docId, title: initialTitle, content: initialContent };
     setSavedAt(null);
     setIsSaving(false);
     setMode(initialContent.trim().length > 0 ? "preview" : "edit");
@@ -191,46 +228,107 @@ export function MarkdownDocEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTitle, initialContent]);
 
-  const debouncedTitle = useDebounce(title, AUTOSAVE_DELAY_MS);
-  const debouncedContent = useDebounce(content, AUTOSAVE_DELAY_MS);
+  // Send the captured pending save. Everything it needs travels inside the
+  // ``PendingSave`` — nothing is read from the current render's props.
+  //
+  // ``teardown`` = leaving the doc (unmount / docId switch): send right away,
+  // never touch UI state.
+  const flushPendingSave = useCallback((teardown = false) => {
+    if (saveTimer.current !== null) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const pending = pendingSave.current;
+    if (!pending) return;
+    const isActive = () => activeDocId.current === pending.docId;
+    // Agent holds the lock: keep the edit queued; the readOnly effect below
+    // re-arms it the moment the lock clears (the old debounce effect had
+    // ``readOnly`` in its deps for the same reason). On teardown it is dropped
+    // — the server would 409 a write against a held lock anyway.
+    if (readOnlyRef.current && !teardown) return;
+    pendingSave.current = null;
+    if (readOnlyRef.current) return;
 
-  useEffect(() => {
-    if (readOnly) return;
     // Compare (and store) the TRIMMED title: that is what the server holds, so
     // the echo it sends back compares equal and the adoption effect above stays
     // quiet. Storing the raw input here made a trailing space read as an
     // external edit.
-    const nextTitle = debouncedTitle.trim();
-    const titleChanged = nextTitle !== lastSent.current.title;
-    const contentChanged = debouncedContent !== lastSent.current.content;
-    if (!titleChanged && !contentChanged) return;
+    const nextTitle = pending.title.trim();
     if (!nextTitle) return;
+    const base =
+      lastSent.current.docId === pending.docId ? lastSent.current : null;
+    const titleChanged = !base || nextTitle !== base.title;
+    const contentChanged = !base || pending.content !== base.content;
+    if (!titleChanged && !contentChanged) return;
 
-    let cancelled = false;
-    setIsSaving(true);
-    void onSave({
-      title: titleChanged ? nextTitle : undefined,
-      content_md: contentChanged ? debouncedContent : undefined,
-    })
-      .then(() => {
-        if (cancelled) return;
-        lastSent.current = { title: nextTitle, content: debouncedContent };
-        setSavedAt(Date.now());
+    const seq = ++saveSeq.current;
+    const isLatest = () => seq === saveSeq.current;
+    if (isActive()) setIsSaving(true);
+    void pending
+      .save({
+        title: titleChanged ? nextTitle : undefined,
+        content_md: contentChanged ? pending.content : undefined,
       })
-      .catch((err) => {
-        if (cancelled) return;
-        onSaveError?.(err);
+      .then(() => {
+        if (!isLatest()) return;
+        if (lastSent.current.docId === pending.docId) {
+          lastSent.current = {
+            docId: pending.docId,
+            title: nextTitle,
+            content: pending.content,
+          };
+        }
+        if (isActive()) setSavedAt(Date.now());
+      })
+      .catch((err: unknown) => {
+        // A teardown flush that fails has no editor left to show a banner in.
+        if (!isLatest() || !isActive()) return;
+        pending.onError?.(err);
       })
       .finally(() => {
-        if (cancelled) return;
+        if (!isLatest() || !isActive()) return;
         setIsSaving(false);
       });
+  }, []);
 
-    return () => {
-      cancelled = true;
+  // Record an edit: capture the doc id + this render's save/error handlers
+  // together with the text, then (re)arm the debounce.
+  const scheduleSave = (nextTitle: string, nextContent: string) => {
+    pendingSave.current = {
+      docId,
+      title: nextTitle,
+      content: nextContent,
+      save: onSave,
+      onError: onSaveError,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedTitle, debouncedContent, readOnly, docId]);
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(
+      () => flushPendingSave(),
+      AUTOSAVE_DELAY_MS,
+    );
+  };
+
+  // Leaving a doc — unmount, or ``docId`` switching under a reused instance —
+  // sends its queued edit to ITS OWN id immediately, instead of dropping it
+  // (pane closed inside the 800 ms window) or leaking it into the next doc.
+  // All effect cleanups run before any setup in a commit, so ``lastSent``
+  // still holds the old doc's baseline when this fires.
+  useEffect(() => {
+    activeDocId.current = docId;
+    return () => {
+      activeDocId.current = null;
+      flushPendingSave(true);
+    };
+  }, [docId, flushPendingSave]);
+
+  // Lock released with an edit still queued → save it.
+  useEffect(() => {
+    if (readOnly || !pendingSave.current || saveTimer.current !== null) return;
+    saveTimer.current = setTimeout(
+      () => flushPendingSave(),
+      AUTOSAVE_DELAY_MS,
+    );
+  }, [readOnly, flushPendingSave]);
 
   const titleEditable = !titleReadOnly && !readOnly;
   const titleMissing = titleRequired && !title.trim();
@@ -259,7 +357,10 @@ export function MarkdownDocEditor({
         <input
           type="text"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            setTitle(e.target.value);
+            scheduleSave(e.target.value, content);
+          }}
           readOnly={!titleEditable}
           dir="rtl"
           aria-invalid={titleMissing}
@@ -307,7 +408,10 @@ export function MarkdownDocEditor({
           <textarea
             ref={bodyRef}
             value={content}
-            onChange={(e) => setContent(e.target.value)}
+            onChange={(e) => {
+              setContent(e.target.value);
+              scheduleSave(title, e.target.value);
+            }}
             readOnly={readOnly}
             dir="rtl"
             rows={1}

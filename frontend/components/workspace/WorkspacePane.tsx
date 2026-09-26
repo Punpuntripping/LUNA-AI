@@ -201,7 +201,10 @@ function KindRouter({
       return <AttachmentRenderer item={item} />;
     case "note":
     case "agent_writing":
-      return <NoteEditor item={item} />;
+      // Keyed by item: switching straight from one cached note/draft to another
+      // must REMOUNT the editor, never reuse A's local title/body/autosave
+      // state under B's id (that PATCHed B with A's content).
+      return <NoteEditor key={item.item_id} item={item} />;
     case "agent_search":
       return (
         <AgentSearchViewer

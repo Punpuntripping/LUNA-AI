@@ -30,5 +30,5 @@ export default function TemplatePage() {
     );
   }
 
-  return <TemplateEditor template={template} />;
+  return <TemplateEditor key={template.template_id} template={template} />;
 }
