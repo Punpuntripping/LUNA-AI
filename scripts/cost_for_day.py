@@ -36,6 +36,10 @@ from agents.utils.agent_models import cost_usd
 #     multi-model turn). For these we trust the stored cost_usd instead.
 ROLLUP_AGENTS = {"deep_search"}
 
+# Flat per-search fee rows (agents/utils/usage_sink.py::record_search_fee) are a
+# quota charge, not provider spend — kept out of the per-model LLM totals.
+SEARCH_FEE_SUBTYPE = "search_fee"
+
 
 def window(day: str, tz_offset_h: int):
     y, m, d = (int(x) for x in day.split("-"))
@@ -49,7 +53,7 @@ def fetch_all(client, start_iso: str, end_iso: str):
     rows, page, PAGE = [], 0, 1000
     while True:
         r = (client.table("llm_calls")
-             .select("agent,model,tokens_in,tokens_out,tokens_reasoning,tokens_cached,cost_usd")
+             .select("agent,subtype,model,tokens_in,tokens_out,tokens_reasoning,tokens_cached,cost_usd,requests")
              .gte("created_at", start_iso).lt("created_at", end_iso)
              .order("created_at").range(page * PAGE, page * PAGE + PAGE - 1).execute())
         d = r.data or []
@@ -74,7 +78,12 @@ def main():
 
     agg = defaultdict(lambda: {"in": 0, "out": 0, "reason": 0, "cached": 0,
                                "naive": 0.0, "corrected": 0.0, "stored": 0.0, "calls": 0})
+    fee_searches, fee_cost = 0, 0.0
     for row in rows:
+        if row.get("subtype") == SEARCH_FEE_SUBTYPE:
+            fee_searches += int(row.get("requests") or 0)
+            fee_cost += float(row.get("cost_usd") or 0)
+            continue
         model = row.get("model") or "(null)"
         ti = int(row.get("tokens_in") or 0); to = int(row.get("tokens_out") or 0)
         tr = int(row.get("tokens_reasoning") or 0); tc = int(row.get("tokens_cached") or 0)
@@ -103,6 +112,9 @@ def main():
     print(f"  naive  reprice-by-model   : ${T['naive']:.4f}   (biased high by rollup/slot rows)")
     print(f"  CORRECTED per-call cost    : ${T['corrected']:.4f}   <-- best estimate")
     print(f"  stored ledger cost_usd     : ${T['stored']:.4f}")
+    if fee_searches:
+        print(f"  search fee (quota only)    : {fee_searches:,} searches = "
+              f"{fee_cost * 100:.1f} points — excluded above, not provider spend")
 
 
 if __name__ == "__main__":

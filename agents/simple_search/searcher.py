@@ -90,6 +90,7 @@ from agents.simple_search.prompts import (
     build_searcher_instructions,
 )
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_sink import record_search_fee
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,10 @@ def create_searcher_agent(
         Args:
             regulation_title: the regulation as the user named it, e.g. «نظام العمل».
         """
+        record_search_fee(
+            agent="simple_search.search_fee.resolve_regulation",
+            agent_family="simple_search", count=1,
+        )
         resolved = await asyncio.to_thread(
             resolve_regulation_id, ctx.deps.supabase, regulation_title
         )
@@ -800,6 +805,10 @@ def create_searcher_agent(
             regulation_title: the regulation as the user named it.
             article_number: the article number as an exact-text key.
         """
+        record_search_fee(
+            agent="simple_search.search_fee.resolve_article",
+            agent_family="simple_search", count=1,
+        )
         num = (article_number or "").strip()
         resolved = await asyncio.to_thread(
             resolve_regulation_id, ctx.deps.supabase, regulation_title

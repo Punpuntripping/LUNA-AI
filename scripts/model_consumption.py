@@ -41,6 +41,11 @@ from scripts.telemetry_aliases import agent_prefix_variants
 # plus, detected dynamically: any model not present in model_pricing (slot labels).
 ROLLUP_AGENTS = {"deep_search"}
 
+# Flat per-search fee rows (agents/utils/usage_sink.py::record_search_fee): a
+# quota charge, not provider spend — no model, no tokens, `requests` = searches.
+# Reported on their own line so they never inflate per-model calls or LLM cost.
+SEARCH_FEE_SUBTYPE = "search_fee"
+
 
 def day_window(day: str, tz_offset_h: int) -> tuple[str, str]:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
@@ -56,7 +61,7 @@ def fetch(client, start_iso: str, end_iso: str, agent_prefix: str | None) -> lis
     rows, page, PAGE = [], 0, 1000
     while True:
         q = (client.table("llm_calls")
-             .select("agent,model,tokens_in,tokens_out,tokens_reasoning,tokens_cached,cost_usd")
+             .select("agent,subtype,model,tokens_in,tokens_out,tokens_reasoning,tokens_cached,cost_usd,requests")
              .gte("created_at", start_iso).lt("created_at", end_iso))
         if agent_prefix:
             variants = agent_prefix_variants(agent_prefix)
@@ -101,7 +106,12 @@ def main() -> None:
     # data-quality accounting
     bad_tokens = 0  # tokens under an unreliable model label
     bad_cost = 0.0
+    fee_searches, fee_cost = 0, 0.0
     for row in rows:
+        if row.get("subtype") == SEARCH_FEE_SUBTYPE:
+            fee_searches += int(row.get("requests") or 0)
+            fee_cost += float(row.get("cost_usd") or 0)
+            continue
         model = row.get("model") or "(null)"
         ti = int(row.get("tokens_in") or 0); to = int(row.get("tokens_out") or 0)
         tr = int(row.get("tokens_reasoning") or 0); tc = int(row.get("tokens_cached") or 0)
@@ -134,6 +144,9 @@ def main() -> None:
           f"{T['cached']:>10,}{gtot:>13,}{T['cost']:>12.5f}")
     print(f"\nTOTAL cost: ${T['cost']:.4f}   |   total tokens: {gtot:,} "
           f"(in {T['in']:,} / out {T['out']:,} / reasoning {T['re']:,})")
+    if fee_searches:
+        print(f"\nsearch fee (quota charge, NOT provider spend): {fee_searches:,} searches "
+              f"= {fee_cost * 100:.1f} points (${fee_cost:.4f} in llm_calls.cost_usd)")
 
     if bad_tokens or any(get_price(m) is None for m in agg):
         print("\n(!) data-quality note:")

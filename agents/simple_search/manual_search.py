@@ -1105,6 +1105,14 @@ def register_manual_search(agent: Agent) -> None:
                 plain string form ("81", "1-1"). Convert Arabic-Indic digits
                 («٨١») or Arabic ordinals («الحادية والثمانون») first.
         """
+        # Flat per-search fee (agents/utils/usage_sink.py), billed on the tool
+        # call, not in manual_search_core, so non-agent callers stay free.
+        from agents.utils.usage_sink import record_search_fee
+
+        record_search_fee(
+            agent="simple_search.search_fee.manual_search",
+            agent_family="simple_search", count=1,
+        )
         dep_fn = getattr(ctx.deps, "embedding_fn", None)
         embedder: EmbedFn | None | _HouseEmbedder = (
             dep_fn if callable(dep_fn) else USE_HOUSE_EMBEDDER

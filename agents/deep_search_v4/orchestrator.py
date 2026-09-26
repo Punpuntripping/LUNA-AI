@@ -292,6 +292,20 @@ def _emit_executor_ledger(executor_short: str, inner_usage: list[dict]) -> None:
         logger.debug("executor ledger emit failed for %s", executor_short, exc_info=True)
 
 
+def _emit_search_fee(executor_short: str, queries_used: list[str]) -> None:
+    """Bill the flat per-search fee for every sub-query this executor ran
+    (all rounds, incl. the focus-instruction fallback). Never raises."""
+    try:
+        from agents.utils.usage_sink import record_search_fee
+        record_search_fee(
+            agent=f"deep_search.search_fee.{executor_short}",
+            agent_family="deep_search",
+            count=len(queries_used or []),
+        )
+    except Exception:
+        logger.debug("search fee emit failed for %s", executor_short, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Phase wrappers
 # ---------------------------------------------------------------------------
@@ -410,6 +424,7 @@ async def _run_reg_compliance_phase(
             "per_model": usage_by_model(state.inner_usage),
         }
         _emit_executor_ledger("reg_compliance", state.inner_usage)
+        _emit_search_fee("reg_compliance", state.all_queries_used)
 
         placeholder = RegSearchResult(
             quality="pending",
@@ -626,6 +641,7 @@ async def _run_case_phase(
         "per_model": usage_by_model(result.inner_usage),
     }
     _emit_executor_ledger("case", result.inner_usage)
+    _emit_search_fee("case", result.queries_used)
     try:
         from agents.deep_search_v4.case_search.logger import LOGS_DIR as _CASE_LOGS
         if case_deps._log_id:

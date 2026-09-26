@@ -163,6 +163,34 @@ def record_call(
     buf.append(row)
 
 
+# Flat per-search fee, in quota POINTS. Charged per search a turn actually runs
+# (each deep_search sub-query, each simple_search lookup tool call), on top of —
+# and independent from — the LLM token cost. Embeddings are not billed
+# separately; this fee is the whole charge for the search itself.
+SEARCH_QUERY_FEE_POINTS = 0.1
+# Mirrors shared.quota.POINTS_PER_USD — not imported, so this never-raise sink
+# does not pull redis into agent-only contexts.
+_POINTS_PER_USD = 100.0
+
+
+def record_search_fee(*, agent: str, agent_family: str, count: int) -> None:
+    """Append one ``llm_calls`` row billing ``count`` searches at the flat fee.
+
+    ``model`` is NULL and tokens are zero, so a by-model reprice falls back to
+    the stored ``cost_usd`` (see ``scripts/model_consumption.py``). ``requests``
+    carries the search count. No-op for ``count <= 0`` or outside a scope.
+    """
+    if count <= 0:
+        return
+    record_call(
+        agent=agent,
+        agent_family=agent_family,
+        subtype="search_fee",
+        cost_usd=count * SEARCH_QUERY_FEE_POINTS / _POINTS_PER_USD,
+        requests=count,
+    )
+
+
 def _compute_cost(
     model: str | None,
     tokens_in: int,
@@ -221,4 +249,4 @@ def _flush(supabase: Any, buf: list[dict[str, Any]] | None) -> int:
     return len(buf)
 
 
-__all__ = ["collect_llm_calls", "record_call", "in_scope", "bind_run_id"]
+__all__ = ["collect_llm_calls", "record_call", "record_search_fee", "in_scope", "bind_run_id"]
