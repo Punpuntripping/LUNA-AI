@@ -4,6 +4,7 @@ User preferences business logic.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from supabase import Client as SupabaseClient
 
@@ -79,6 +80,49 @@ def get_privacy_masking(supabase: SupabaseClient, user_id: str) -> bool:
     prefs = rows[0].get("preferences") or {}
     # Only an explicit boolean False disables; everything else stays ON.
     return prefs.get("privacy_masking") is not False
+
+
+# ============================================
+# MARKETING-EMAIL CONSENT (users.marketing_opt_in, migration 167)
+# ============================================
+# Lives on public.users, not in the preferences JSONB: it is consent evidence
+# (PDPL Art. 25) with its own timestamp + source columns, read by the
+# marketing repo's segment query.
+
+def get_marketing_opt_in(supabase: SupabaseClient, auth_id: str) -> bool:
+    """Current consent. A pre-167 default TRUE with no recorded decision reads
+    as FALSE — the toggle must show what we would actually act on."""
+    user_id = get_user_id(supabase, auth_id)
+    try:
+        result = (
+            supabase.table("users")
+            .select("marketing_opt_in, marketing_consent_at")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+    except Exception as e:
+        logger.exception("Error fetching marketing consent: %s", e)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء جلب الإعدادات")
+    row = result.data or {}
+    return bool(row.get("marketing_opt_in")) and row.get("marketing_consent_at") is not None
+
+
+def set_marketing_opt_in(supabase: SupabaseClient, auth_id: str, opt_in: bool) -> bool:
+    """Record the user's decision from the settings toggle, stamped."""
+    user_id = get_user_id(supabase, auth_id)
+    try:
+        supabase.table("users").update(
+            {
+                "marketing_opt_in": opt_in,
+                "marketing_consent_at": datetime.now(timezone.utc).isoformat(),
+                "marketing_consent_src": "settings_toggle",
+            }
+        ).eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.exception("Error updating marketing consent: %s", e)
+        raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء تحديث الإعدادات")
+    return opt_in
 
 
 # ============================================

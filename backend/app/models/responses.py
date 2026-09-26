@@ -348,6 +348,11 @@ class PreferencesResponse(BaseModel):
     preferences: dict
 
 
+class MarketingEmailResponse(BaseModel):
+    """GET/PATCH /api/v1/preferences/marketing-email"""
+    marketing_opt_in: bool
+
+
 # ── Templates (قوالبي — per-user markdown templates) ────
 
 class TemplateResponse(BaseModel):

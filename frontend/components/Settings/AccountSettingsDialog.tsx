@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { useMarketingEmail, useUpdateMarketingEmail } from "@/hooks/use-preferences";
 import { cn } from "@/lib/utils";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -268,6 +270,8 @@ export function AccountSettingsDialog({
   onOpenChange,
 }: AccountSettingsDialogProps) {
   const router = useRouter();
+  const marketingEmail = useMarketingEmail(open);
+  const updateMarketingEmail = useUpdateMarketingEmail();
   const logoutAll = useAuthStore((s) => s.logoutAll);
   const savePreferredName = useAuthStore((s) => s.savePreferredName);
   const loadUser = useAuthStore((s) => s.loadUser);
@@ -870,6 +874,45 @@ export function AccountSettingsDialog({
                     {isChangingPassword ? "جارٍ الحفظ…" : "تعيين كلمة المرور"}
                   </Button>
                 </form>
+
+                <Separator />
+              </>
+            )}
+
+            {/* Marketing email — the in-product half of PDPL Art. 25's "clear
+                mechanism to stop" (migration 167). Silent on a failed read,
+                like the subscription section: no state → no section. */}
+            {marketingEmail.data && (
+              <>
+                <div
+                  className="flex flex-col gap-3"
+                  data-testid="marketing-email-section"
+                >
+                  <h3 className="text-sm font-semibold text-foreground">
+                    البريد الإلكتروني
+                  </h3>
+                  <div className="flex items-start justify-between gap-4">
+                    <label
+                      htmlFor="marketing-email-switch"
+                      className="text-sm leading-relaxed text-muted-foreground"
+                    >
+                      استلام محتوى ترويجي وتحديثات عبر البريد الإلكتروني. رسائل
+                      حسابك (كتأكيد التسجيل وانتهاء الاشتراك) تصلك في كل الأحوال.
+                    </label>
+                    <Switch
+                      id="marketing-email-switch"
+                      checked={marketingEmail.data.marketing_opt_in}
+                      onCheckedChange={(v) => updateMarketingEmail.mutate(v)}
+                      disabled={updateMarketingEmail.isPending}
+                      data-testid="marketing-email-switch"
+                    />
+                  </div>
+                  {updateMarketingEmail.isError && (
+                    <p className="text-sm text-destructive">
+                      تعذّر حفظ التفضيل. حاول مرة أخرى.
+                    </p>
+                  )}
+                </div>
 
                 <Separator />
               </>
