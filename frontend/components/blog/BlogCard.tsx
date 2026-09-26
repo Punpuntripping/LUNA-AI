@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { Eye } from "lucide-react";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
 import { blogPath } from "@/lib/blog/slug";
 import { blogTypeLabel } from "@/components/blog/SubjectChips";
@@ -55,12 +54,8 @@ export function BlogCard({ blog }: { blog: PublicBlogCard }) {
         </p>
       )}
 
-      <div className="mt-4 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div className="mt-4 text-xs text-muted-foreground">
         <span>{date}</span>
-        <span className="inline-flex items-center gap-1 tabular-nums">
-          <Eye className="h-3.5 w-3.5" />
-          {blog.view_count}
-        </span>
       </div>
     </Link>
   );
