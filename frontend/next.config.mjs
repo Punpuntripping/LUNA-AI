@@ -122,6 +122,13 @@ const nextConfig = {
         destination: "https://rayhanai.com/:path*",
         permanent: true,
       },
+      // The PWA install guide moved under «عن ريحان» (2026-09-24). `/app` was
+      // live, in the sitemap and shared for a few hours — keep it resolving.
+      {
+        source: "/app",
+        destination: "/about_us/app",
+        permanent: true,
+      },
     ];
   },
 

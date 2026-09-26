@@ -120,6 +120,15 @@ export const SITE_NAV: NavGroup[] = [
         section: "تعرّف على ريحان",
         enabled: true,
       },
+      // The PWA install guide (pwa_step1.md §1A). Last of the «تعرّف على ريحان»
+      // run — the legal pair below must stay last and adjacent.
+      {
+        label: "ريحان على جوالك",
+        href: "/about_us/app",
+        description: "ثبّت ريحان على شاشتك الرئيسية كتطبيق",
+        section: "تعرّف على ريحان",
+        enabled: true,
+      },
       // Folded in from the deleted «السياسات» slot. `groupChildrenBySection`
       // buckets by CONTIGUOUS runs, so these two must stay last and adjacent or
       // the الوثائق النظامية heading splits into two headings.

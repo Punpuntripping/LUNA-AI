@@ -523,6 +523,18 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post<AuthResponse>("/auth/login", { email, password }),
 
+  // «الدخول برمز عبر البريد» (.claude/plans/email_otp_login.md). Unauthenticated
+  // like /login — no token is in memory on the login page, so none is sent.
+  /** Always `{sent: true}` on 200, whether or not the email is allowed or
+   *  exists — the UI must never read membership into it. 429 when throttled. */
+  otpRequest: (email: string) =>
+    api.post<{ sent: boolean }>("/auth/otp/request", { email }),
+
+  /** Same response shape as `login` — the store treats it as a normal login.
+   *  401 = wrong/expired code, 429 = too many attempts (Arabic `detail`). */
+  otpVerify: (email: string, code: string) =>
+    api.post<AuthResponse>("/auth/otp/verify", { email, code }),
+
   // Signup runs entirely in the browser via supabase.auth.signUp() — see
   // stores/auth-store.ts. No backend endpoint to call here. The signup
   // consent version (option B) rides along as options.data.terms_version on

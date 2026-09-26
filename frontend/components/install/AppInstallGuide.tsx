@@ -17,7 +17,7 @@ import {
 type GuideTab = "ios" | "android";
 
 /**
- * The interactive half of `/app`: platform-aware steps with «آيفون / أندرويد»
+ * The interactive half of `/about_us/app`: platform-aware steps with «آيفون / أندرويد»
  * tabs (so a desktop visitor, or someone helping a colleague, can read either),
  * and the already-installed swap. UA and display-mode are client-only, so the
  * server HTML renders the iPhone tab and this corrects it after mount.
@@ -90,10 +90,10 @@ export function AppInstallGuide() {
           className="rounded-xl border border-dashed border-border p-4 text-sm leading-relaxed text-muted-foreground"
           data-testid="app-page-desktop-hint"
         >
-          {/* TODO(install_app_nudge §C): QR code to https://rayhanai.com/app,
+          {/* TODO(install_app_nudge §C): QR code to https://rayhanai.com/about_us/app,
               rendered as inline SVG at build time. No QR library is in
               package.json and new deps are out of scope for this pass. */}
-          افتح <span dir="ltr">rayhanai.com/app</span> من متصفح جوالك (Safari
+          افتح <span dir="ltr">rayhanai.com/about_us/app</span> من متصفح جوالك (Safari
           في الآيفون أو Chrome في الأندرويد) واتبع الخطوات هناك.
         </div>
       )}

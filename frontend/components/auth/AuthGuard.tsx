@@ -84,10 +84,10 @@ const PUBLIC_PREFIXES = [
   // returns false and the whole audience lands on /login.
   "/national-day",
   // PWA: `/offline` is the service worker's cached fallback — it must render
-  // with no session and no network. `/app` is the public install guide,
-  // shared cold on WhatsApp. See .claude/plans/pwa_step1.md.
+  // with no session and no network. The install guide lives at
+  // `/about_us/app` — already public via "/about_us"; old `/app` links 308
+  // there (next.config.mjs). See .claude/plans/pwa_step1.md.
   "/offline",
-  "/app",
   // «نسيت كلمة المرور» — reachable only by someone who cannot log in, so it has
   // to render logged-out. Its sibling /reset-password is deliberately NOT here:
   // that one is entered through /auth/callback, which establishes a session

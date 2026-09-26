@@ -89,7 +89,14 @@ export type AnalyticsEventName =
   /** Push subscription registered with the backend. Props: `source`. */
   | "push_subscribed"
   /** Push turned off on this device. Props: `source`. */
-  | "push_unsubscribed";
+  | "push_unsubscribed"
+  // ---- email_otp_login.md — «الدخول برمز عبر البريد» (dev-gated) ---------
+  /** `/auth/otp/request` answered 200 (says nothing about delivery). */
+  | "otp_requested"
+  /** Code accepted and the session is live. */
+  | "otp_verified"
+  /** Request or verify refused. Props: `reason` (invalid | rate_limited | error). */
+  | "otp_failed";
 
 /**
  * The real conversion surfaces, so the funnel can tell them apart (§3). The

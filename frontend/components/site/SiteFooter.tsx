@@ -22,8 +22,8 @@ const PLATFORM_LINKS = [
   { href: "/audiences", label: "لمن ريحان؟" },
   { href: "/vs-chatgpt", label: "ريحان مقابل ChatGPT" },
   { href: "/pricing", label: "الباقات والأسعار" },
-  // Footer (+ mobile nav) only — never the desktop header (install_app_nudge §C).
-  { href: "/app", label: "تطبيق ريحان" },
+  // Also listed under «عن ريحان» in the header menu (site-nav.ts) — owner asked for both.
+  { href: "/about_us/app", label: "تطبيق ريحان" },
 ] as const;
 
 const LIBRARY_LINKS = [

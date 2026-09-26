@@ -60,6 +60,30 @@ function cancelProactiveRefresh() {
   }
 }
 
+type LoginResponse = Awaited<ReturnType<typeof authApi.login>>;
+
+/**
+ * The post-login tail shared by password login and email-OTP login — both
+ * endpoints return the same `LoginResponse`, so what happens after is one path.
+ * Callers own the `set({ user, isAuthenticated: true })` that follows.
+ */
+async function establishSession(response: LoginResponse): Promise<void> {
+  // Seed the browser supabase client so it writes the session cookie.
+  // Without this, no `sb-<ref>-auth-token` cookie exists — and opening
+  // a new tab finds nothing to hydrate from, signing the user out.
+  // (OAuth login already seeds the cookie via exchangeCodeForSession in
+  // app/auth/callback/route.ts; email/password used to skip this step.)
+  await supabase.auth.setSession({
+    access_token: response.access_token,
+    refresh_token: response.refresh_token,
+  });
+  setTokens({
+    access_token: response.access_token,
+    refresh_token: response.refresh_token,
+  });
+  scheduleProactiveRefresh();
+}
+
 /** Local session teardown shared by logout / logout-all / delete-account.
  *  Callers own the `set({ user: null, isAuthenticated: false })` that follows. */
 async function teardownSession(): Promise<void> {
@@ -99,6 +123,9 @@ interface AuthState {
    */
   subscriptionProbed: boolean;
   login: (email: string, password: string) => Promise<void>;
+  /** «الدخول برمز عبر البريد» — verify the emailed code, then the exact same
+   *  post-login path as `login()`. Errors propagate (401 / 429, Arabic). */
+  loginWithOtp: (email: string, code: string) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -171,20 +198,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (email, password) => {
     set({ error: null });
     const response = await authApi.login(email, password);
-    // Seed the browser supabase client so it writes the session cookie.
-    // Without this, no `sb-<ref>-auth-token` cookie exists — and opening
-    // a new tab finds nothing to hydrate from, signing the user out.
-    // (OAuth login already seeds the cookie via exchangeCodeForSession in
-    // app/auth/callback/route.ts; email/password used to skip this step.)
-    await supabase.auth.setSession({
-      access_token: response.access_token,
-      refresh_token: response.refresh_token,
-    });
-    setTokens({
-      access_token: response.access_token,
-      refresh_token: response.refresh_token,
-    });
-    scheduleProactiveRefresh();
+    await establishSession(response);
+    set({ user: response.user, isAuthenticated: true });
+  },
+
+  loginWithOtp: async (email, code) => {
+    set({ error: null });
+    const response = await authApi.otpVerify(email, code);
+    await establishSession(response);
     set({ user: response.user, isAuthenticated: true });
   },
 

@@ -7,7 +7,7 @@ import type { InstallPlatform } from "@/lib/install-app";
 /**
  * «ثبّت ريحان» — the ONE copy of the install instructions. Used by the settings
  * dialog (`InstallAppDialog`), the chat nudge's «كيف؟» (through that dialog) and
- * the public `/app` page. The iOS wording changes with every Safari redesign,
+ * the public `/about_us/app` page. The iOS wording changes with every Safari redesign,
  * so it lives here and nowhere else.
  */
 

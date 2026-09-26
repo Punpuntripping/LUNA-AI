@@ -3,7 +3,7 @@ import { detectInstallPlatform, isStandalone } from "@/lib/install-app";
 
 /**
  * Per-device install state + install measurement — the LIGHT half of the
- * nudge engine. Split from `stores/install-nudge-store.ts` so the public `/app`
+ * nudge engine. Split from `stores/install-nudge-store.ts` so the public `/about_us/app`
  * page can share it without pulling the chat/edu/onboarding stores into a
  * marketing bundle.
  *
@@ -65,7 +65,7 @@ export function writeInstallState(patch: Partial<InstallDeviceState>): void {
 
 /**
  * Replay Chrome's install prompt and record the outcome. Shared by the nudge,
- * the settings dialog and `/app` so `install_prompt_result` has one emitter.
+ * the settings dialog and `/about_us/app` so `install_prompt_result` has one emitter.
  */
 export async function runInstallPrompt(
   install: () => Promise<boolean>,
@@ -87,7 +87,7 @@ export function onAppInstalled(listener: () => void): () => void {
 
 // ---------------------------------------------------------------------------
 // Module-load measurement. Imported by the chat shell (via the nudge store) and
-// by `/app`, so it runs on every load of either.
+// by `/about_us/app`, so it runs on every load of either.
 // ---------------------------------------------------------------------------
 
 if (typeof window !== "undefined") {

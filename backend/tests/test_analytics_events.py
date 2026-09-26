@@ -210,11 +210,20 @@ def test_a_batch_is_accepted_and_written_in_order() -> None:
 
 
 def test_the_whole_taxonomy_is_accepted() -> None:
-    """All 22 names in §3 + §3b must be storable — a name the plan lists but the
-    endpoint rejects is a funnel with a silent hole in it."""
+    """Every allowlisted name (§3 + §3b + PWA + auth OTP) must be storable — a
+    name the plan lists but the endpoint rejects is a funnel with a silent hole
+    in it. Compared against the named sets rather than a fixed count, so adding
+    a taxonomy group doesn't break this test but a stray name outside every
+    group still does."""
     fake = FakeSupabase()
     names = sorted(svc.EVENT_NAMES)
-    assert len(names) == 22
+    assert set(names) == (
+        svc.PUBLIC_EVENT_NAMES
+        | svc.CHAT_EVENT_NAMES
+        | svc.PWA_EVENT_NAMES
+        | svc.AUTH_EVENT_NAMES
+    )
+    assert len(svc.PUBLIC_EVENT_NAMES | svc.CHAT_EVENT_NAMES) == 22
     for chunk_start in range(0, len(names), svc.MAX_BATCH_EVENTS):
         chunk = names[chunk_start : chunk_start + svc.MAX_BATCH_EVENTS]
         assert _post(_client(fake), [_event(n) for n in chunk]).status_code == 204

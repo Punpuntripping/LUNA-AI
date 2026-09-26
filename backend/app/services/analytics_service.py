@@ -100,10 +100,22 @@ PWA_EVENT_NAMES = frozenset(
     }
 )
 
+# Email OTP login (.claude/plans/email_otp_login.md) — fired from the login card,
+# so always anonymous at fire time.
+AUTH_EVENT_NAMES = frozenset(
+    {
+        "otp_requested",  # «أرسل الرمز» accepted (always 200 — not proof of delivery)
+        "otp_verified",   # code accepted, session issued
+        "otp_failed",     # props.reason: invalid | rate_limited | network | ...
+    }
+)
+
 # The allowlist the endpoint validates against. Adding a name here is the ONLY
 # way a new event becomes storable — deliberately, so a typo in the client is a
 # dropped event rather than a silent new bucket that no §6 query counts.
-EVENT_NAMES = PUBLIC_EVENT_NAMES | CHAT_EVENT_NAMES | PWA_EVENT_NAMES
+EVENT_NAMES = (
+    PUBLIC_EVENT_NAMES | CHAT_EVENT_NAMES | PWA_EVENT_NAMES | AUTH_EVENT_NAMES
+)
 
 # The gate surfaces §3 enumerates. NOT enforced (gate_kind rides in `props`,
 # which is open by design — see sanitize_props); kept here so the funnel query

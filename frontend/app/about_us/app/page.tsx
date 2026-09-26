@@ -12,12 +12,12 @@ const OG_IMAGE = ogImageUrl("ريحان على جوالك");
 export const metadata: Metadata = {
   title: TITLE,
   description: DESCRIPTION,
-  alternates: { canonical: "/app" },
+  alternates: { canonical: "/about_us/app" },
   openGraph: {
     title: TITLE,
     description: DESCRIPTION,
     type: "website",
-    url: "/app",
+    url: "/about_us/app",
     siteName: "ريحان",
     locale: "ar_SA",
     images: [{ url: OG_IMAGE, width: 1200, height: 630, alt: TITLE }],

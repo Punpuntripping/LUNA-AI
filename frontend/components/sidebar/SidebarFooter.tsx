@@ -63,6 +63,7 @@ const ABOUT_LINKS = [
     href: "/vs-chatgpt",
     testId: "sidebar-settings-vs-chatgpt",
   },
+  { label: "ريحان على جوالك", href: "/about_us/app", testId: "sidebar-settings-app" },
   {
     label: "الشروط والأحكام",
     href: LEGAL_ROUTES.terms,

@@ -20,6 +20,11 @@ import {
 // and this form render the identical logo.
 import { GoogleIcon } from "@/components/auth/GoogleQuickSignup";
 import { PasswordInput } from "@/components/ui/password-input";
+import { EmailOtpLogin } from "@/components/auth/EmailOtpLogin";
+import {
+  applyEmailOtpFlagFromUrl,
+  isEmailOtpEnabled,
+} from "@/lib/feature-flags";
 
 // -----------------------------------------------
 // Zod schemas with Arabic error messages
@@ -70,6 +75,19 @@ export function LoginForm() {
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   // Marketing consent: optional, default ON — never blocks registration.
   const [marketingOptIn, setMarketingOptIn] = useState(true);
+  // «الدخول برمز عبر البريد» (email_otp_login.md Phase A). Device flag only —
+  // read in an effect so the server render and a flag-off device stay
+  // byte-identical to the plain password card.
+  const [otpEnabled, setOtpEnabled] = useState(false);
+  const [showOtp, setShowOtp] = useState(false);
+
+  // `?otp=1|0` sets/clears the device flag, then leaves the address bar.
+  // Declared BEFORE the query-reading effect below so it runs first and that
+  // effect's own replaceState (the OAuth-error path) never sees `otp`.
+  useEffect(() => {
+    applyEmailOtpFlagFromUrl();
+    setOtpEnabled(isEmailOtpEnabled());
+  }, []);
 
   // Read every query parameter this form understands, once, on mount.
   //
@@ -290,6 +308,25 @@ export function LoginForm() {
     }
   };
 
+  // Email-code sign-in replaces the password card. Login mode only — the link
+  // to it is never rendered in register mode. Lands exactly where a password
+  // login would (resolveLanding: safe `next` + the `u` identity scoping).
+  if (otpEnabled && showOtp && mode === "login") {
+    return (
+      <EmailOtpLogin
+        initialEmail={email}
+        onSuccess={async () => {
+          router.push(await resolveLanding());
+        }}
+        onBack={() => {
+          setShowOtp(false);
+          setServerError(null);
+          setNotice(null);
+        }}
+      />
+    );
+  }
+
   // Registration success message
   if (registrationSuccess) {
     return (
@@ -506,6 +543,27 @@ export function LoginForm() {
           {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
           {mode === "login" ? "تسجيل الدخول" : "إنشاء حساب"}
         </button>
+
+        {/* Email-code alternative — flag-gated, login mode only. Absent
+            entirely when the flag is off, so that render is unchanged. */}
+        {otpEnabled && mode === "login" && (
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setShowOtp(true);
+                setErrors({});
+                setServerError(null);
+                setNotice(null);
+              }}
+              disabled={isSubmitting || isGoogleLoading}
+              className="min-h-11 px-2 text-sm font-medium text-primary hover:text-primary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              data-testid="email-otp-link"
+            >
+              الدخول برمز عبر البريد
+            </button>
+          </div>
+        )}
 
         {/* Divider */}
         <div className="flex items-center gap-3">

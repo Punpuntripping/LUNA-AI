@@ -198,6 +198,27 @@ class Settings(BaseSettings):
     INTERNAL_WEBHOOK_SECRET: Optional[str] = None
 
     # ========================================
+    # EMAIL OTP LOGIN — «الدخول برمز عبر البريد» (Phase A, dev-gated)
+    # ========================================
+    # Comma-separated, case-insensitive allowlist of emails that may receive a
+    # login code via POST /api/v1/auth/otp/request (.claude/plans/email_otp_login.md).
+    # This is THE server-side gate — the frontend's device flag is visibility
+    # only. Fail-closed: unset/empty => the feature is off and no email is ever
+    # sent. Settings is lru_cache'd, so editing the list needs a redeploy.
+    EMAIL_OTP_ALLOWED_EMAILS: Optional[str] = None
+
+    @property
+    def email_otp_allowlist(self) -> frozenset[str]:
+        """Parse EMAIL_OTP_ALLOWED_EMAILS into a lowercased frozenset (empty = off)."""
+        if not self.EMAIL_OTP_ALLOWED_EMAILS:
+            return frozenset()
+        return frozenset(
+            e.strip().lower()
+            for e in self.EMAIL_OTP_ALLOWED_EMAILS.split(",")
+            if e.strip()
+        )
+
+    # ========================================
     # EDITORIAL / BLOG-POST GENERATION API
     # ========================================
     # Internal blog-post-jobs API (marketing content generation). Fail-closed on
