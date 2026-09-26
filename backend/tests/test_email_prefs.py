@@ -7,7 +7,8 @@ The traps these guard:
 * **Tokens are purpose-bound.** An unsubscribe link must not work as an opt-in.
 * **POST is not an oracle.** A bad token gets the same 200 page as a good one.
 * **Evidence is stamped.** Every write carries consent_at + consent_src.
-* **The toggle reads a pre-167 default TRUE as OFF** — no recorded decision.
+* **The toggle shows the flag as stored** — a pre-167 default TRUE reads ON,
+  because marketing mails it until an unsubscribe (no re-permission, 2026-09-26).
 """
 from __future__ import annotations
 
@@ -197,12 +198,12 @@ def test_unsubscribe_token_cannot_opt_in(client: TestClient, fake: FakeSupabase)
 @pytest.mark.parametrize(
     "row, expected",
     [
-        ({"marketing_opt_in": True, "marketing_consent_at": None}, False),  # pre-167 default
+        ({"marketing_opt_in": True, "marketing_consent_at": None}, True),  # pre-167 default
         ({"marketing_opt_in": True, "marketing_consent_at": "2026-09-24T00:00:00Z"}, True),
         ({"marketing_opt_in": False, "marketing_consent_at": "2026-09-24T00:00:00Z"}, False),
     ],
 )
-def test_toggle_reads_default_true_as_off(
+def test_toggle_shows_the_stored_flag(
     monkeypatch: pytest.MonkeyPatch, row: dict, expected: bool
 ) -> None:
     monkeypatch.setattr(preferences_service, "get_user_id", lambda _s, _a: USER_ID)

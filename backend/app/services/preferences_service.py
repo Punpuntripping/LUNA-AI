@@ -90,13 +90,14 @@ def get_privacy_masking(supabase: SupabaseClient, user_id: str) -> bool:
 # marketing repo's segment query.
 
 def get_marketing_opt_in(supabase: SupabaseClient, auth_id: str) -> bool:
-    """Current consent. A pre-167 default TRUE with no recorded decision reads
-    as FALSE — the toggle must show what we would actually act on."""
+    """Current consent — the flag as stored. Pre-167 default TRUEs read as ON:
+    the marketing side mails them until they unsubscribe (no re-permission,
+    decided 2026-09-26), so the toggle must show ON to match what we act on."""
     user_id = get_user_id(supabase, auth_id)
     try:
         result = (
             supabase.table("users")
-            .select("marketing_opt_in, marketing_consent_at")
+            .select("marketing_opt_in")
             .eq("user_id", user_id)
             .single()
             .execute()
@@ -105,7 +106,7 @@ def get_marketing_opt_in(supabase: SupabaseClient, auth_id: str) -> bool:
         logger.exception("Error fetching marketing consent: %s", e)
         raise LunaHTTPException(status_code=500, code=ErrorCode.PREFERENCES_FAILED, detail="حدث خطأ أثناء جلب الإعدادات")
     row = result.data or {}
-    return bool(row.get("marketing_opt_in")) and row.get("marketing_consent_at") is not None
+    return bool(row.get("marketing_opt_in"))
 
 
 def set_marketing_opt_in(supabase: SupabaseClient, auth_id: str, opt_in: bool) -> bool:
