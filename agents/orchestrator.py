@@ -146,6 +146,39 @@ def _count_artifact_kinds(supabase: SupabaseClient, conversation_id: str) -> int
     return count
 
 
+def _owned_item_exists(
+    supabase: SupabaseClient,
+    item_id: str,
+    user_id: str,
+    conversation_id: str,
+) -> bool:
+    """True iff ``item_id`` is a live workspace item of (user_id, conversation_id).
+
+    Gate for the router-emitted ``target_item_id`` before it reaches any
+    service-role write path (writer revision soft-delete, cap bypass). Same
+    load-bearing scope filters as :func:`_load_attached_items`. Fails CLOSED:
+    any lookup error returns False (code review 2026-09-25 A3/A12).
+    """
+    if not (item_id and user_id and conversation_id):
+        return False
+    try:
+        res = (
+            supabase.table("workspace_items")
+            .select("item_id, user_id")
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+            .eq("conversation_id", conversation_id)
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("_owned_item_exists: lookup failed for %s: %s", item_id, e)
+        return False
+    data = getattr(res, "data", None) if res is not None else None
+    return bool(data) and str(data.get("user_id") or "") == str(user_id)
+
+
 def _load_attached_items(
     supabase: SupabaseClient,
     item_ids: list[str],
@@ -2491,9 +2524,16 @@ async def _dispatch(
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
+    Ownership gate: a router-emitted ``target_item_id`` that is not a live
+    item of (user_id, conversation_id) is dropped to None before anything
+    downstream sees it — the writer's revision path soft-deletes the target
+    with the service-role client.
+
     Cap pre-flight: families deep_search and writing refuse when workspace_items
-    would exceed _WORKSPACE_CAP, UNLESS target_item_id is set (editing
-    an existing item does not create a new one). Memory family bypasses cap.
+    would exceed _WORKSPACE_CAP, UNLESS this is a writing revision of a
+    verified owned item (the publisher soft-deletes the revised row, so the
+    count does not grow). deep_search always inserts a new row, so the cap
+    always applies to it. Memory family bypasses cap.
 
     ``describe_query`` is the router-emitted query description (Wave 1
     redesign — was ``briefing`` pre-redesign). ``task_label`` is the
@@ -2515,8 +2555,21 @@ async def _dispatch(
     is consumed ONLY by the deep_search branch — which is the only family a pin
     ever selects, since it is what forced this dispatch in the first place.
     """
+    # ── Ownership gate on the router-emitted target ─────────────────────
+    if target_item_id is not None and not _owned_item_exists(
+        supabase, target_item_id, user_id, conversation_id
+    ):
+        logger.warning(
+            "_dispatch: dropping target_item_id %s — not a live item of this "
+            "user/conversation", target_item_id,
+        )
+        target_item_id = None
+
     # ── Cap pre-flight ──────────────────────────────────────────────────
-    if agent_family in ("deep_search", "writing") and target_item_id is None:
+    # Bypass ONLY for a writing revision of a verified owned item (the gate
+    # above has already nulled any unverified target).
+    _is_owned_revision = agent_family == "writing" and target_item_id is not None
+    if agent_family in ("deep_search", "writing") and not _is_owned_revision:
         count = _count_artifact_kinds(supabase, conversation_id)
         if count >= _WORKSPACE_CAP:
             yield {

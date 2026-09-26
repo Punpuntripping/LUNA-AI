@@ -67,6 +67,14 @@ class EditorDeps:
     # The router's scoped quote: the user's words for the part of the request
     # that applies to THIS artifact (needed to split a multi-artifact request).
     task: str
+    # Ownership scope the ``edit_supabase_md`` tool re-applies on its own
+    # fetch AND write (service-role client — these filters are load-bearing).
+    # ``item_id`` above is the ONLY row the tool may touch: an item_id the LLM
+    # names in its tool args that differs from it is refused (code review
+    # 2026-09-25 A1/A5 — a steered/injected editor must not redirect writes).
+    user_id: str = ""
+    conversation_id: str | None = None
+    allowed_kinds: frozenset = ALLOWED_KINDS
 
 
 # ── Output model ──────────────────────────────────────────────────────────────
@@ -228,21 +236,37 @@ The full document content (quote from it verbatim):
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 
-def _fetch_item(supabase, item_id: str) -> dict | None:
-    """Fetch the artifact row (content_md, title, kind) by item_id.
+def _fetch_item(
+    supabase,
+    item_id: str,
+    user_id: str,
+    conversation_id: str | None = None,
+) -> dict | None:
+    """Fetch the artifact row (content_md, title, kind) in the caller's scope.
 
-    Returns ``None`` when the row is missing/deleted. Exceptions propagate to
-    the caller's defensive wrapper.
+    The client is service-role (RLS bypassed), so ``.eq("user_id", user_id)``
+    (+ ``conversation_id`` when known) is the load-bearing ownership filter —
+    mirrors ``unfold_workspace_item._fetch_item``. The returned row's
+    ``user_id`` is re-compared in Python as a belt-and-braces check.
+
+    Returns ``None`` when the row is missing / deleted / not the caller's.
+    Exceptions propagate to the caller's defensive wrapper.
     """
-    res = (
+    if not user_id:
+        return None
+    q = (
         supabase.table("workspace_items")
         .select("content_md, title, kind, user_id")
         .eq("item_id", item_id)
-        .is_("deleted_at", "null")
-        .maybe_single()
-        .execute()
+        .eq("user_id", user_id)
     )
-    return getattr(res, "data", None) if res is not None else None
+    if conversation_id:
+        q = q.eq("conversation_id", conversation_id)
+    res = q.is_("deleted_at", "null").maybe_single().execute()
+    row = getattr(res, "data", None) if res is not None else None
+    if not row or str(row.get("user_id") or "") != str(user_id):
+        return None
+    return row
 
 
 async def run_artifact_editor(
@@ -251,6 +275,8 @@ async def run_artifact_editor(
     item_id: str,
     user_message: str,
     task: str,
+    user_id: str,
+    conversation_id: str | None = None,
 ) -> EditorResult:
     """Run one surgical-edit pass over a single workspace artifact.
 
@@ -259,13 +285,18 @@ async def run_artifact_editor(
     ``"artifact_editor"``, agent_family ``"editing"`` — the llm_calls ledger
     row lands automatically inside the turn's capture scope).
 
+    ``user_id`` / ``conversation_id`` are the CALLER's scope (the router's
+    deps): the row must belong to them, and the same scope is bound into the
+    editor's deps so the ``edit_supabase_md`` tool re-applies it on its own
+    fetch + write. A foreign / other-conversation item reads as "not found".
+
     Never raises — every failure path returns ``status="failed"`` with an
     Arabic reason so the router's tool loop briefs the user instead of
     retrying forever.
     """
     # ── Fetch + guards (deterministic, pre-LLM) ──────────────────────────────
     try:
-        row = _fetch_item(supabase, item_id)
+        row = _fetch_item(supabase, item_id, user_id, conversation_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("artifact_editor: fetch failed for %s: %s", item_id, exc)
         row = None
@@ -312,9 +343,8 @@ async def run_artifact_editor(
             _title = _codec.encode(_title)
         except Exception:  # noqa: BLE001
             logger.debug("artifact_editor: content encode failed", exc_info=True)
-        _editor_user_id = str(row.get("user_id") or "")
-        if _editor_user_id:
-            persist_new_mappings(supabase, _editor_user_id, _codec)
+        # The caller's id — the row is verified to be theirs above.
+        persist_new_mappings(supabase, str(user_id), _codec)
 
     deps = EditorDeps(
         supabase=supabase,
@@ -323,6 +353,8 @@ async def run_artifact_editor(
         artifact_content_md=_content_md,
         user_message=user_message,
         task=task,
+        user_id=str(user_id),
+        conversation_id=conversation_id,
     )
 
     # ── LLM run (defensive: never raise into the router's tool loop) ─────────

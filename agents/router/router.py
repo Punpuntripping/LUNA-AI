@@ -59,9 +59,12 @@ def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
     """Resolve ``"WI-{seq}"`` → workspace_items.item_id UUID.
 
     Returns the UUID on success, ``None`` if the alias is malformed or its
-    seq is not in the conversation's alias map. Accepts a raw UUID
-    verbatim (defence-in-depth — older orchestrator paths may still pass
-    UUIDs directly).
+    seq is not in the conversation's alias map. A raw UUID is accepted ONLY
+    when it is one of this conversation's own items (a value of
+    ``alias_map``) — the LLM output is user-steerable, so a verbatim UUID
+    from anywhere else (another user's item, another conversation's item, a
+    made-up id) must never reach the service-role write paths downstream
+    (writer revision soft-delete, artifact edits). Code review 2026-09-25 A3.
     """
     if not alias:
         return None
@@ -73,9 +76,13 @@ def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
         except ValueError:
             return None
         return alias_map.get(seq)
-    # Verbatim UUID — accept for backward compat.
+    # Verbatim UUID — accept only when it belongs to this conversation.
     if _UUID_RE.match(s):
-        return s
+        lowered = s.lower()
+        for item_id in alias_map.values():
+            if item_id and str(item_id).lower() == lowered:
+                return str(item_id)
+        return None
     return None
 
 

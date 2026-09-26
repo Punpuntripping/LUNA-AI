@@ -75,15 +75,34 @@ def _assemble_content(llm_output: WriterLLMOutput) -> str:
     return "\n".join(parts).rstrip()
 
 
-def _soft_delete_revising(supabase, item_id: str) -> None:
-    """Mark the revised row as deleted -- best-effort, never raises."""
-    if not item_id:
+def _soft_delete_revising(
+    supabase,
+    item_id: str,
+    *,
+    user_id: str,
+    conversation_id: str | None = None,
+) -> None:
+    """Mark the revised row as deleted -- best-effort, never raises.
+
+    The client is service-role (RLS bypassed), so the ``user_id`` (+
+    ``conversation_id`` when known) filters are the load-bearing ownership
+    check: a revision id that is not the caller's own row matches zero rows
+    instead of deleting someone else's item (code review 2026-09-25 A3).
+    Fails closed (no-op) without a user_id.
+    """
+    if not item_id or not user_id:
         return
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        supabase.table("workspace_items").update(
-            {"deleted_at": now_iso, "updated_at": now_iso}
-        ).eq("item_id", item_id).execute()
+        q = (
+            supabase.table("workspace_items")
+            .update({"deleted_at": now_iso, "updated_at": now_iso})
+            .eq("item_id", item_id)
+            .eq("user_id", user_id)
+        )
+        if conversation_id:
+            q = q.eq("conversation_id", conversation_id)
+        q.is_("deleted_at", "null").execute()
     except Exception as exc:
         logger.warning(
             "agent_writer: soft-delete of revising row %s failed: %s",
@@ -350,7 +369,12 @@ async def publish_writer_result(
     ) as _pub_span:
         # 1. Revision: soft-delete the row being revised.
         if input.revising_item_id:
-            _soft_delete_revising(deps.supabase, input.revising_item_id)
+            _soft_delete_revising(
+                deps.supabase,
+                input.revising_item_id,
+                user_id=input.user_id,
+                conversation_id=input.conversation_id,
+            )
 
         # 2. Build the markdown body.
         content_md = _assemble_content(llm_output)

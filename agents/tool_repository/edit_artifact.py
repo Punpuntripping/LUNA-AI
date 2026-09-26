@@ -76,8 +76,11 @@ def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
     """Resolve ``"WI-{seq}"`` → workspace_items.item_id UUID.
 
     Returns the UUID on success, ``None`` if the alias is malformed or its
-    seq is not in the conversation's alias map. Accepts a raw UUID verbatim
-    (defence-in-depth — mirrors the router's resolver).
+    seq is not in the conversation's alias map. A raw UUID is accepted ONLY
+    when it is one of this conversation's own items (a value of
+    ``alias_map``) — mirrors the router's resolver. A verbatim UUID from
+    anywhere else would let a steered router edit another user's document
+    through the service-role client (code review 2026-09-25 A4).
     """
     if not alias:
         return None
@@ -90,7 +93,11 @@ def _resolve_wi_alias(alias: str, alias_map: dict[int, str]) -> str | None:
             return None
         return alias_map.get(seq)
     if _UUID_RE.match(s):
-        return s
+        lowered = s.lower()
+        for item_id in alias_map.values():
+            if item_id and str(item_id).lower() == lowered:
+                return str(item_id)
+        return None
     return None
 
 
@@ -149,11 +156,16 @@ def register_edit_artifact(agent: Agent) -> None:
         # ``agents.artifact_editor.run_artifact_editor``.
         from agents.artifact_editor import run_artifact_editor
 
+        # Ownership is re-checked inside the editor (user_id + conversation_id
+        # filters on the fetch AND the write) — the alias map above is the
+        # first gate, not the only one.
         result = await run_artifact_editor(
             ctx.deps.supabase,
             item_id=item_id,
             user_message=(getattr(ctx.deps, "user_message", "") or ""),
             task=task,
+            user_id=str(getattr(ctx.deps, "user_id", "") or ""),
+            conversation_id=(getattr(ctx.deps, "conversation_id", None) or None),
         )
 
         if result.status == "edited":

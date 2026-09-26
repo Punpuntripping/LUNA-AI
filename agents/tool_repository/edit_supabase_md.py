@@ -57,6 +57,11 @@ VERSION_COL = "updated_at"
 # Pre-edit snapshot written in the same guarded UPDATE as the new content.
 # One-level undo, overwritten on each edit (added by migration 068).
 PREV_CONTENT_COL = "prev_content_md"
+# Ownership-scope columns (service-role client: these filters are load-bearing).
+OWNER_COL = "user_id"
+CONVERSATION_COL = "conversation_id"
+KIND_COL = "kind"
+DELETED_COL = "deleted_at"
 
 
 @runtime_checkable
@@ -285,20 +290,61 @@ def unified_diff(before: str, after: str, item_id: str) -> str:
 # `_fetch`/`_write` in `anyio.to_thread.run_sync`.
 
 
-def _fetch(supabase, item_id: str) -> tuple[str, object]:
+def _scoped(query, *, user_id: str, conversation_id: str | None, allowed_kinds):
+    """Apply the ownership scope to a ``workspace_items`` query.
+
+    The client is service-role (RLS bypassed), so these filters are the
+    load-bearing ownership check on BOTH the read and the write: the row must
+    be the caller's, in the caller's conversation (when known), not
+    soft-deleted, and of an editable kind (code review 2026-09-25 A1/A5).
+    """
+    query = query.eq(OWNER_COL, user_id)
+    if conversation_id:
+        query = query.eq(CONVERSATION_COL, conversation_id)
+    if allowed_kinds:
+        query = query.in_(KIND_COL, sorted(allowed_kinds))
+    return query.is_(DELETED_COL, "null")
+
+
+def _fetch(
+    supabase,
+    item_id: str,
+    *,
+    user_id: str,
+    conversation_id: str | None = None,
+    allowed_kinds=None,
+) -> tuple[str, object]:
+    if not user_id:
+        raise MatchError(f"Artifact {item_id} not found.")
     res = (
-        supabase.table(TABLE)
-        .select(f"{CONTENT_COL}, {VERSION_COL}")
-        .eq(ID_COL, item_id)
-        .single()
+        _scoped(
+            supabase.table(TABLE)
+            .select(f"{CONTENT_COL}, {VERSION_COL}")
+            .eq(ID_COL, item_id),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            allowed_kinds=allowed_kinds,
+        )
+        .maybe_single()
         .execute()
     )
-    if not res.data:
+    data = getattr(res, "data", None) if res is not None else None
+    if not data:
         raise MatchError(f"Artifact {item_id} not found.")
-    return res.data[CONTENT_COL] or "", res.data[VERSION_COL]
+    return data[CONTENT_COL] or "", data[VERSION_COL]
 
 
-def _write(supabase, item_id: str, new_content: str, version_token, prev_content: str) -> bool:
+def _write(
+    supabase,
+    item_id: str,
+    new_content: str,
+    version_token,
+    prev_content: str,
+    *,
+    user_id: str,
+    conversation_id: str | None = None,
+    allowed_kinds=None,
+) -> bool:
     """Write guarded by the version token. Returns False on a lost-update race.
 
     The ``.eq(VERSION_COL, version_token)`` clause means the UPDATE matches zero
@@ -309,11 +355,18 @@ def _write(supabase, item_id: str, new_content: str, version_token, prev_content
     SAME guarded UPDATE, so the snapshot and the new content can never diverge
     (one-level undo, overwritten on each edit).
     """
+    if not user_id:
+        return False
     res = (
-        supabase.table(TABLE)
-        .update({CONTENT_COL: new_content, PREV_CONTENT_COL: prev_content})
-        .eq(ID_COL, item_id)
-        .eq(VERSION_COL, version_token)
+        _scoped(
+            supabase.table(TABLE)
+            .update({CONTENT_COL: new_content, PREV_CONTENT_COL: prev_content})
+            .eq(ID_COL, item_id)
+            .eq(VERSION_COL, version_token),
+            user_id=user_id,
+            conversation_id=conversation_id,
+            allowed_kinds=allowed_kinds,
+        )
         .execute()
     )
     return bool(res.data)
@@ -328,7 +381,10 @@ def register_edit_supabase_md(agent: Agent) -> None:
     """Register the ``edit_supabase_md`` tool on a Pydantic AI agent.
 
     The agent's deps must structurally satisfy :class:`HasSupabase` (i.e. expose
-    a ``.supabase`` attribute holding a ``supabase.Client``).
+    a ``.supabase`` attribute holding a ``supabase.Client``) AND carry the
+    vetted target: ``.item_id`` (the only row the tool will touch) and
+    ``.user_id`` (owner scope), optionally ``.conversation_id`` and
+    ``.allowed_kinds``. Without ``item_id``/``user_id`` the tool refuses.
     """
 
     @agent.tool
@@ -373,6 +429,27 @@ def register_edit_supabase_md(agent: Agent) -> None:
         """
         supabase = ctx.deps.supabase
 
+        # Bind the tool to the item the caller vetted (``deps.item_id``). The
+        # ``item_id`` argument is model-controlled — the prompt carries the
+        # user's raw message and the document text verbatim, so it can be
+        # steered — and must never redirect the write to another row. Fail
+        # closed when the deps carry no bound item or no owner.
+        bound_item_id = str(getattr(ctx.deps, "item_id", "") or "")
+        owner_id = str(getattr(ctx.deps, "user_id", "") or "")
+        if not bound_item_id or not owner_id:
+            return "Refused: no bound artifact for this editor — nothing was changed."
+        if (item_id or "").strip().lower() != bound_item_id.lower():
+            return (
+                f"Refused: this editor may only edit artifact {bound_item_id}. "
+                "Nothing was changed. Do not edit any other item."
+            )
+        item_id = bound_item_id
+        scope = {
+            "user_id": owner_id,
+            "conversation_id": getattr(ctx.deps, "conversation_id", None) or None,
+            "allowed_kinds": getattr(ctx.deps, "allowed_kinds", None) or None,
+        }
+
         # Skip no-op pairs; if everything is a no-op there is nothing to do.
         pairs = [p for p in edits if p.old_text != p.new_text]
         if edits and not pairs:
@@ -391,7 +468,7 @@ def register_edit_supabase_md(agent: Agent) -> None:
         _codec = active_codec()
 
         try:
-            content, version = _fetch(supabase, item_id)
+            content, version = _fetch(supabase, item_id, **scope)
             enc_content = _codec.encode(content) if _codec is not None else content
             new_enc_content, matches = apply_edits(enc_content, pairs)
         except MatchError as exc:
@@ -414,7 +491,7 @@ def register_edit_supabase_md(agent: Agent) -> None:
             if _codec is not None
             else new_enc_content
         )
-        if not _write(supabase, item_id, new_content, version, prev_content=content):
+        if not _write(supabase, item_id, new_content, version, prev_content=content, **scope):
             raise ModelRetry(
                 f"Artifact {item_id} changed since you read it (concurrent edit). "
                 f"Re-read its current content and reissue the edit."
