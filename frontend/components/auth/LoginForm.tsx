@@ -68,8 +68,10 @@ export function LoginForm() {
   const [registrationSuccess, setRegistrationSuccess] = useState(false);
   // Option B consent: registration is blocked until this is checked.
   const [agreedToTerms, setAgreedToTerms] = useState(false);
-  // Marketing consent: optional, default ON — never blocks registration.
-  const [marketingOptIn, setMarketingOptIn] = useState(true);
+  // Marketing consent: optional, default OFF — never blocks registration.
+  // PDPL Art. 25 wants prior, specific consent; a pre-ticked box is neither
+  // (migration 167). Google OAuth sends no key at all, which now means no.
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
 
   // Read every query parameter this form understands, once, on mount.
   //
@@ -473,7 +475,7 @@ export function LoginForm() {
               <p className="text-xs text-destructive">{errors.terms}</p>
             )}
 
-            {/* Marketing consent — optional, default checked, never blocks. */}
+            {/* Marketing consent — optional, default unchecked, never blocks. */}
             <div className="flex items-start gap-2 text-sm text-foreground">
               <input
                 id="marketing_opt_in"

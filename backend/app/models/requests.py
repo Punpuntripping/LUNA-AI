@@ -228,6 +228,11 @@ class UpdatePreferencesRequest(BaseModel):
     preferences: dict
 
 
+class UpdateMarketingEmailRequest(BaseModel):
+    """PATCH /api/v1/preferences/marketing-email"""
+    marketing_opt_in: bool
+
+
 # ── Templates (قوالبي — per-user markdown templates) ────
 
 class CreateTemplateRequest(BaseModel):

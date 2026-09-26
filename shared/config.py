@@ -198,6 +198,16 @@ class Settings(BaseSettings):
     INTERNAL_WEBHOOK_SECRET: Optional[str] = None
 
     # ========================================
+    # MARKETING EMAIL — unsubscribe / opt-in links
+    # ========================================
+    # HMAC key for the tokens in /api/v1/public/email/* links. The marketing
+    # repo mints the same tokens (marketing/scripts/email_unsub.py), so the two
+    # values must match. Fail-closed: unset => every token is invalid and no
+    # link can change anything. Rotating it kills every link already sent —
+    # links never expire by design, so do not rotate casually.
+    EMAIL_LINK_SECRET: Optional[str] = None
+
+    # ========================================
     # EDITORIAL / BLOG-POST GENERATION API
     # ========================================
     # Internal blog-post-jobs API (marketing content generation). Fail-closed on

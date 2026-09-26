@@ -772,6 +772,17 @@ def create_app() -> FastAPI:
         tags=["analytics"],
     )
 
+    # Marketing-email unsubscribe / opt-in links (marketing plans/email/00 T6).
+    # Anonymous by design — the HMAC token in the link is the credential; GET
+    # only renders, POST writes. Declares prefix="/api/v1" itself, so no extra
+    # prefix. ⚠ Requires migration 167 FIRST (the consent_* columns).
+    from backend.app.api.email_prefs import router as email_prefs_router
+
+    application.include_router(
+        email_prefs_router,
+        tags=["email-prefs"],
+    )
+
     # Preferences + Templates router
     from backend.app.api.preferences import router as preferences_router
 

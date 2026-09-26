@@ -1051,6 +1051,15 @@ export const preferencesApi = {
 
   update: (preferences: UserPreferencesData) =>
     api.patch<UserPreferences>("/preferences", { preferences }),
+
+  // Marketing-email consent — users.marketing_opt_in, not the JSONB blob.
+  getMarketingEmail: () =>
+    api.get<{ marketing_opt_in: boolean }>("/preferences/marketing-email"),
+
+  setMarketingEmail: (marketing_opt_in: boolean) =>
+    api.patch<{ marketing_opt_in: boolean }>("/preferences/marketing-email", {
+      marketing_opt_in,
+    }),
 };
 
 // -----------------------------------------------

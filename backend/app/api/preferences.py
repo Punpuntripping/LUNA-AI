@@ -1,6 +1,6 @@
 """
 Preferences API routes — /api/v1/
-2 endpoints: get/update preferences.
+4 endpoints: get/update preferences, get/update marketing-email consent.
 """
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ from fastapi import APIRouter, Depends
 from supabase import Client as SupabaseClient
 
 from backend.app.deps import get_current_user, get_supabase
-from backend.app.models.requests import UpdatePreferencesRequest
-from backend.app.models.responses import PreferencesResponse
+from backend.app.models.requests import (
+    UpdateMarketingEmailRequest,
+    UpdatePreferencesRequest,
+)
+from backend.app.models.responses import MarketingEmailResponse, PreferencesResponse
 from backend.app.services import preferences_service
 from shared.auth.jwt import AuthUser
 from shared.db.run import run_db
@@ -35,6 +38,33 @@ async def get_preferences(
         user_id=data["user_id"],
         preferences=data.get("preferences", {}),
     )
+
+
+@router.get("/preferences/marketing-email", response_model=MarketingEmailResponse)
+async def get_marketing_email(
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """The user's marketing-email consent (users.marketing_opt_in)."""
+    opt_in = await run_db(
+        preferences_service.get_marketing_opt_in,
+        supabase, current_user.auth_id,
+    )
+    return MarketingEmailResponse(marketing_opt_in=opt_in)
+
+
+@router.patch("/preferences/marketing-email", response_model=MarketingEmailResponse)
+async def update_marketing_email(
+    body: UpdateMarketingEmailRequest,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """Settings toggle — stamps marketing_consent_src='settings_toggle'."""
+    opt_in = await run_db(
+        preferences_service.set_marketing_opt_in,
+        supabase, current_user.auth_id, body.marketing_opt_in,
+    )
+    return MarketingEmailResponse(marketing_opt_in=opt_in)
 
 
 @router.patch("/preferences", response_model=PreferencesResponse)
