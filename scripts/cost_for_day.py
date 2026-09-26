@@ -8,7 +8,9 @@ Two costing methods, side by side:
               tokens (e.g. legacy deep_search rollup rows that stamp one model on
               a turn that actually fanned out across several).
   * corrected — recompute PER CALL with the project's own cost_usd() formula
-              (reasoning billed at output rate, cached subset at cached rate);
+              (reasoning is a subset of output — billed once; cached subset at
+              cached rate. Rows written before 2026-09-26 stored a cost that
+              double-counted reasoning, so corrected < stored for them);
               for rows whose `model` is NOT a real priced id (slot labels like
               `artifact_summarizer:tier_2`, or the bare `deep_search` rollup),
               fall back to the stored cost_usd, which was computed at write time

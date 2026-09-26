@@ -450,21 +450,32 @@ def cost_usd(
 ) -> float:
     """USD cost of a single LLM call billed at ``model_name`` rates.
 
-    Reasoning tokens bill at the output rate — providers count them as
-    completion tokens, and pydantic_ai's ``output_tokens`` does NOT include
-    them (they live in ``usage.details['reasoning_tokens']``). ``cached_tokens``
-    is a subset of ``input_tokens``; when prompt caching is active the cached
-    portion bills at the model's ``cached_input_price_per_1m`` (or input × 0.1
-    when that column is NULL — see shared.pricing.cached_input_rate).
+    ``reasoning_tokens`` is a SUBSET of ``output_tokens`` and is NOT billed
+    on top. pydantic_ai maps the OpenAI-compatible ``completion_tokens``
+    verbatim to ``output_tokens`` and copies
+    ``completion_tokens_details.reasoning_tokens`` into
+    ``usage.details['reasoning_tokens']`` (pydantic_ai/models/openai.py
+    ``_map_usage``); every provider we route to (Alibaba DashScope qwen +
+    deepseek, OpenRouter) reports completion_tokens INCLUDING reasoning —
+    verified live: 0 of ~6.5k llm_calls rows have reasoning > output. The
+    argument is kept for call-site compatibility / the informational
+    ``tokens_reasoning`` column only. (Before 2026-09-26 this added reasoning
+    to billable output — a ~1.7-1.85x output over-charge.)
+
+    ``cached_tokens`` is a subset of ``input_tokens``; when prompt caching is
+    active the cached portion bills at the model's ``cached_input_price_per_1m``
+    (or input × 0.1 when that column is NULL — see
+    shared.pricing.cached_input_rate).
 
     Returns 0.0 when the model is unknown to the pricing registry.
     """
+    del reasoning_tokens  # informational only — already inside output_tokens
     price = pricing.get_price(model_name) if model_name else None
     if price is None:
         return 0.0
     cached = max(int(cached_tokens or 0), 0)
     billable_in = max(int(input_tokens or 0) - cached, 0)
-    billable_out = int(output_tokens or 0) + int(reasoning_tokens or 0)
+    billable_out = int(output_tokens or 0)
     cached_rate = pricing.cached_input_rate(price)
     return (
         billable_in * price.input_per_1m

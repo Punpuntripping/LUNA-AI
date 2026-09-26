@@ -339,9 +339,10 @@ def cmd_reconcile(args) -> None:
     # in/out tokens are the authoritative dropped-call signal. Reasoning is
     # reported by the provider WITHIN output_tokens but tracked in its own ledger
     # column, so a reasoning-only delta is an accounting nuance, not a dropped
-    # call — and `cost_usd` adds reasoning to billable_out, so a provider recompute
-    # that inherits the provider's (higher) reasoning count would look like the
-    # ledger "under-bills" when in/out actually match. Key the wording off in/out.
+    # call. (`cost_usd` bills output_tokens only — reasoning is a subset of it —
+    # so rows written before the 2026-09-26 fix carry a stored cost that
+    # double-counted reasoning and will read HIGHER than this recompute.)
+    # Key the wording off in/out.
     in_out_clean = (_clean(tot_prov["in"] - tot_led["in"], tot_prov["in"])
                     and _clean(tot_prov["out"] - tot_led["out"], tot_prov["out"]))
     L("\n## Cost\n")

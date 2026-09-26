@@ -5,7 +5,7 @@ calls, input / output / reasoning / cached tokens, total tokens, and cost.
 
 Cost is the CORRECTED per-call figure (the cost_for_day.py method): recompute
 each call from the model_pricing table via the project's own cost_usd() formula
-(reasoning billed at output rate, cached subset at cached rate), but fall back to
+(reasoning is a subset of output — billed once; cached subset at cached rate), but fall back to
 the stored cost_usd for rows whose `model` is not a real priced id (memory slot
 labels like `artifact_summarizer:tier_2`) or the legacy bare `deep_search` rollup
 (one model stamped on a multi-model turn). See project_llm_calls_reprice_traps.

@@ -823,7 +823,8 @@ def cmd_compare(args: argparse.Namespace) -> None:
         k = 0
         for r in rows:
             if m in r and r[m]["ok"]:
-                tot += (r[m]["in"] * pin + (r[m]["out"] + r[m]["reasoning"]) * pout) / 1e6
+                # reasoning is a subset of output_tokens — bill it once.
+                tot += (r[m]["in"] * pin + r[m]["out"] * pout) / 1e6
                 k += 1
         costs.append(tot / k if k else 0.0)
     print(f"{'avg cost / call (USD)':<34}" + "".join(f"{c:>19.6f}" for c in costs))
