@@ -32,12 +32,27 @@ Delivery bookkeeping per subscription:
     any other error  → failure_count += 1; delete the row once it reaches 5
 
 No-op (with one debug log) when VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY are unset.
+
+ABUSE BOUNDS (the endpoint URL is caller-supplied, and every send is a blocking
+outbound HTTPS POST):
+    * host allowlist  — ``is_allowed_push_endpoint``: only the real browser push
+                        services. Enforced at subscribe AND again at send time,
+                        so a row stored before the allowlist is never contacted
+                        (no SSRF, no attacker-controlled tarpit endpoints).
+    * per-user cap    — ``MAX_SUBS_PER_USER`` rows, trimmed on every subscribe
+                        and LIMITed on every send.
+    * own thread pool — sends run on ``_PUSH_EXECUTOR`` (4 threads), never the
+                        default executor that every ``run_db`` call shares, so
+                        slow push services cannot starve the DB layer.
 """
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit
@@ -61,6 +76,27 @@ MAX_FAILURES = 5            # delete the subscription at this many consecutive f
 _TITLE_MAX_CHARS = 40       # only relevant for the opt-in include_title path
 _PUSH_TTL_S = 6 * 3600      # push service keeps an undelivered message this long
 _PUSH_HTTP_TIMEOUT_S = 10   # per-endpoint POST timeout inside pywebpush/requests
+MAX_SUBS_PER_USER = 5       # devices per account; least-recently-active trimmed on subscribe
+
+# Web Push service hosts of the browsers we support: exact hosts, plus suffix
+# rules for services that shard across numbered subdomains.
+#   Chrome / Android / Samsung Internet / Opera / Brave → fcm.googleapis.com
+#     (jmt17.google.com: alternate Google push front reported on some Chrome
+#      desktop installs — Google-owned, so allowing it is not an SSRF surface)
+#   Firefox                                               → updates.push.services.mozilla.com
+#   Safari macOS / iOS 16.4+ home-screen web apps         → web.push.apple.com
+#   Edge (Windows)                                        → wns2-*.notify.windows.com
+_PUSH_HOSTS_EXACT = frozenset({
+    "fcm.googleapis.com",
+    "jmt17.google.com",
+    "updates.push.services.mozilla.com",
+})
+_PUSH_HOST_SUFFIXES = (".push.apple.com", ".notify.windows.com")
+
+# Dedicated, small pool for the blocking pywebpush POSTs. NOT the default
+# executor: main.py sizes that to 40 "luna-db" threads shared by every run_db
+# call, and slow push services must never be able to occupy them.
+_PUSH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="luna-push")
 
 # Strong references to in-flight fire-and-forget sends (asyncio only keeps weak
 # refs to tasks — an unreferenced task can be GC'd mid-flight).
@@ -86,9 +122,40 @@ def _vapid_config() -> Optional[tuple[str, str]]:
     return s.VAPID_PRIVATE_KEY, (s.VAPID_SUBJECT or DEFAULT_VAPID_SUBJECT)
 
 
+def is_allowed_push_endpoint(endpoint: str) -> bool:
+    """True iff ``endpoint`` is an https URL on a known browser push service.
+
+    Also rejects userinfo (``https://fcm.googleapis.com@evil.example/``) and
+    non-default ports. ``hostname`` is lower-cased by urlsplit.
+    """
+    try:
+        parts = urlsplit((endpoint or "").strip())
+        if parts.scheme != "https" or not parts.hostname:
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if parts.port not in (None, 443):
+            return False
+    except ValueError:  # malformed netloc / non-numeric port
+        return False
+    host = parts.hostname.rstrip(".")
+    return host in _PUSH_HOSTS_EXACT or host.endswith(_PUSH_HOST_SUFFIXES)
+
+
 # ============================================
 # Subscription store (sync — call via run_db)
 # ============================================
+
+def _parse_ts(v: Any) -> datetime:
+    """PostgREST timestamptz string → aware datetime; None/unparseable sorts oldest."""
+    if isinstance(v, str) and v:
+        try:
+            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return datetime.min.replace(tzinfo=timezone.utc)
+
 
 def upsert_subscription(
     supabase: SupabaseClient,
@@ -105,6 +172,11 @@ def upsert_subscription(
     re-subscribes under another account must stop notifying the previous one.
     Keys are refreshed and the failure counter reset (a fresh subscribe proves
     the endpoint is live).
+
+    Then enforces ``MAX_SUBS_PER_USER``: the user's rows are ranked by
+    ``last_success_at or created_at`` (newest first) and everything past the
+    cap is deleted. The endpoint just subscribed always ranks first — it is the
+    one device we KNOW is live right now.
     """
     supabase.table(TABLE).upsert(
         {
@@ -117,6 +189,33 @@ def upsert_subscription(
         },
         on_conflict="endpoint",
     ).execute()
+    _trim_user_subscriptions(supabase, user_id, keep_endpoint=endpoint)
+
+
+def _trim_user_subscriptions(
+    supabase: SupabaseClient, user_id: str, *, keep_endpoint: Optional[str] = None,
+) -> int:
+    """Delete the user's rows beyond ``MAX_SUBS_PER_USER``. Returns rows deleted."""
+    res = (
+        supabase.table(TABLE)
+        .select("id, endpoint, created_at, last_success_at")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    rows = list(res.data or [])
+    if len(rows) <= MAX_SUBS_PER_USER:
+        return 0
+    rows.sort(
+        key=lambda r: (
+            r.get("endpoint") == keep_endpoint,
+            _parse_ts(r.get("last_success_at") or r.get("created_at")),
+        ),
+        reverse=True,
+    )
+    excess = [r["id"] for r in rows[MAX_SUBS_PER_USER:]]
+    supabase.table(TABLE).delete().eq("user_id", user_id).in_("id", excess).execute()
+    logger.info("push: trimmed %d subscription(s) over the per-user cap", len(excess))
+    return len(excess)
 
 
 def delete_subscription(supabase: SupabaseClient, *, user_id: str, endpoint: str) -> int:
@@ -136,10 +235,16 @@ def delete_subscription(supabase: SupabaseClient, *, user_id: str, endpoint: str
 
 
 def _list_user_subscriptions(supabase: SupabaseClient, user_id: str) -> list[dict]:
+    # Most recently active first, hard LIMIT: even if concurrent subscribes race
+    # past the trim in upsert_subscription, one turn never fans out to more than
+    # MAX_SUBS_PER_USER endpoints.
     res = (
         supabase.table(TABLE)
         .select("id, endpoint, p256dh, auth, failure_count")
         .eq("user_id", user_id)
+        .order("last_success_at", desc=True, nullsfirst=False)
+        .order("created_at", desc=True)
+        .limit(MAX_SUBS_PER_USER)
         .execute()
     )
     return list(res.data or [])
@@ -228,7 +333,13 @@ async def _deliver(
 ) -> None:
     host = _endpoint_host(sub.get("endpoint", ""))
     try:
-        await asyncio.to_thread(_send_one, sub, data, private_key, subject)
+        # Own pool, NOT asyncio.to_thread (default executor = the luna-db pool).
+        # copy_context keeps the Logfire trace context, as to_thread would.
+        ctx = contextvars.copy_context()
+        await asyncio.get_running_loop().run_in_executor(
+            _PUSH_EXECUTOR,
+            functools.partial(ctx.run, _send_one, sub, data, private_key, subject),
+        )
     except Exception as exc:  # noqa: BLE001 — every failure is bookkeeping, never a raise
         status = _status_of(exc)
         if status in (404, 410):
@@ -284,7 +395,18 @@ async def notify_turn_ready(
             from shared.db.client import get_supabase_client
             supabase = get_supabase_client()
 
-        subs = await run_db(_list_user_subscriptions, supabase, user_id)
+        rows = await run_db(_list_user_subscriptions, supabase, user_id)
+        # Defence in depth: rows stored before the subscribe-time allowlist (or
+        # written by any other path) are never contacted.
+        subs = []
+        for s in rows:
+            if is_allowed_push_endpoint(s.get("endpoint", "")):
+                subs.append(s)
+            else:
+                _logfire.warning(
+                    "push.skipped_disallowed_host", conversation_id=conversation_id,
+                    push_host=_endpoint_host(s.get("endpoint", "")),
+                )
         if not subs:
             return
 

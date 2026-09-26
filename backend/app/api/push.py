@@ -2,6 +2,8 @@
 
     GET    /api/v1/push/vapid-public-key   → {"public_key": "..."}   (503 if unconfigured)
     POST   /api/v1/push/subscribe          body {endpoint, keys: {p256dh, auth}}  → 204
+                                           (422 unless endpoint is a known push-service host;
+                                            max push_service.MAX_SUBS_PER_USER devices per user)
     DELETE /api/v1/push/subscribe          body {endpoint}                        → 204
 
 All three are AUTHED. The frontend fetches the public key from this route, so no
@@ -39,9 +41,22 @@ MSG_PUSH_UNSUBSCRIBE_FAILED = "تعذّر إيقاف الإشعارات، حاو
 
 
 def _validate_endpoint(v: str) -> str:
+    """Subscribe: https AND a known browser push-service host.
+
+    The sender POSTs to this URL after every turn, so an arbitrary host is both
+    SSRF and a thread-pool tarpit. The allowlist lives in push_service (it is
+    re-checked at send time). Failure → pydantic ValidationError → 422.
+    """
     v = v.strip()
-    # Push services are always https; rejecting anything else also stops the
-    # sender from being pointed at an internal http:// URL (SSRF).
+    if not push_service.is_allowed_push_endpoint(v):
+        raise ValueError("endpoint must be an https URL on a known push service")
+    return v
+
+
+def _validate_unsubscribe_endpoint(v: str) -> str:
+    # Lenient on purpose: only https, so a user can still delete a row stored
+    # before the host allowlist. Delete never contacts the URL.
+    v = v.strip()
     if not v.startswith("https://"):
         raise ValueError("endpoint must be an https URL")
     return v
@@ -62,7 +77,7 @@ class PushSubscribeRequest(BaseModel):
 class PushUnsubscribeRequest(BaseModel):
     endpoint: str = Field(..., min_length=10, max_length=2048)
 
-    _check_endpoint = field_validator("endpoint")(_validate_endpoint)
+    _check_endpoint = field_validator("endpoint")(_validate_unsubscribe_endpoint)
 
 
 @router.get("/push/vapid-public-key")
