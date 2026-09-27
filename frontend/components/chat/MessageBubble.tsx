@@ -1,8 +1,6 @@
 "use client";
 
 import {
-  Copy,
-  Check,
   BookOpen,
   BookText,
   FileText,
@@ -33,6 +31,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { CopyMenu } from "@/components/common/CopyMenu";
 import { cn } from "@/lib/utils";
 import { getRelativeTimeAr } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -125,7 +124,6 @@ export const MessageBubble = memo(function MessageBubble({
   onJumpToReferencedItem,
   templateOffer,
 }: MessageBubbleProps) {
-  const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>("none");
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
@@ -193,19 +191,6 @@ export const MessageBubble = memo(function MessageBubble({
     }
   }, [isEditing]);
 
-  const handleCopy = useCallback(async () => {
-    const textToCopy = isCurrentlyStreaming
-      ? (streamingContent ?? "")
-      : message.content;
-    try {
-      await navigator.clipboard.writeText(textToCopy);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard API may not be available
-    }
-  }, [isCurrentlyStreaming, streamingContent, message.content]);
-
   const handleRegenerate = useCallback(() => {
     onRegenerate?.(message.message_id);
   }, [onRegenerate, message.message_id]);
@@ -262,6 +247,9 @@ export const MessageBubble = memo(function MessageBubble({
   );
 
   const displayContent = isCurrentlyStreaming ? streamingContent : message.content;
+  // What both «نسخ» menus copy: the live stream while it is still arriving,
+  // the settled content after. CopyMenu derives the «النسخ لناجز» plain text.
+  const copyText = isCurrentlyStreaming ? (streamingContent ?? "") : message.content;
 
   // ==========================================================================
   // USER MESSAGE — compact tinted bubble at the inline-end. The shrink-wrapped
@@ -355,29 +343,15 @@ export const MessageBubble = memo(function MessageBubble({
                   className={cn(
                     "flex items-center gap-0.5",
                     "opacity-0 group-hover/bubble:opacity-100 group-focus-within/bubble:opacity-100 transition-opacity duration-200",
+                    // The «نسخ» menu portals out of the bubble, taking hover
+                    // and focus with it — hold the row visible while it is
+                    // open. `aria-expanded`, not `data-state`: the tooltip's
+                    // data-state overwrites the menu's on the shared trigger.
+                    "has-[[aria-expanded=true]]:opacity-100",
                     "max-sm:opacity-100"
                   )}
                 >
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
-                        onClick={handleCopy}
-                        aria-label="نسخ"
-                      >
-                        {copied ? (
-                          <Check className="h-3.5 w-3.5 text-success-fg" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
-                    </TooltipContent>
-                  </Tooltip>
+                  <CopyMenu variant="icon" text={copyText} />
 
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -598,29 +572,15 @@ export const MessageBubble = memo(function MessageBubble({
                 // spill out of the 32px slot the desktop bar reserves.
                 "flex h-8 max-md:h-11 items-center gap-0.5 mt-1.5",
                 "opacity-0 group-hover/bubble:opacity-100 group-focus-within/bubble:opacity-100 transition-opacity duration-200",
+                // The «نسخ» menu portals out of the bubble, taking hover
+                // and focus with it — hold the row visible while it is
+                // open. `aria-expanded`, not `data-state`: the tooltip's
+                // data-state overwrites the menu's on the shared trigger.
+                "has-[[aria-expanded=true]]:opacity-100",
                 "max-sm:opacity-100"
               )}
             >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 max-md:h-9 max-md:w-9 text-muted-foreground hover:text-foreground"
-                    onClick={handleCopy}
-                    aria-label="نسخ"
-                  >
-                    {copied ? (
-                      <Check className="h-3.5 w-3.5 text-success-fg" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  <p className="text-xs">{copied ? "تم النسخ" : "نسخ"}</p>
-                </TooltipContent>
-              </Tooltip>
+              <CopyMenu variant="icon" text={copyText} />
 
               <Tooltip>
                 <TooltipTrigger asChild>

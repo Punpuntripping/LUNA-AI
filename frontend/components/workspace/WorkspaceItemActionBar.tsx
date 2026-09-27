@@ -11,13 +11,12 @@ import {
   Pencil,
   Share2,
   BookmarkPlus,
-  Copy,
-  Check,
   ThumbsUp,
   ThumbsDown,
   GripVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CopyMenu } from "@/components/common/CopyMenu";
 import {
   Tooltip,
   TooltipContent,
@@ -29,7 +28,10 @@ import { cn } from "@/lib/utils";
 import type { WorkspaceFeedback } from "@/types";
 
 interface WorkspaceItemActionBarProps {
-  /** Text the نسخ button writes to the clipboard. */
+  /**
+   * Markdown the نسخ menu copies — verbatim for «نسخ», converted to plain
+   * text for «النسخ لناجز» (see ``CopyMenu``).
+   */
   copyText: string;
   /**
    * Current view mode. Pass together with ``onModeChange`` to render the
@@ -104,7 +106,6 @@ export function WorkspaceItemActionBar({
   floating = false,
   className,
 }: WorkspaceItemActionBarProps) {
-  const [copied, setCopied] = useState(false);
   // Below `md` the pane IS the viewport (the workspace overlay), so a floating
   // draggable pill is the wrong object: the 20×28px grip competes with page
   // scroll under a thumb, and wherever it is parked it covers the end of the
@@ -126,19 +127,7 @@ export function WorkspaceItemActionBar({
 
   const showToggle = mode !== undefined && onModeChange !== undefined;
   const showFeedback = onFeedback !== undefined;
-  const canCopy = copyText.trim().length > 0;
   const publishDisabled = !!publishDisabledHint;
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(copyText);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard can fail on insecure contexts / denied permission — the user
-      // can still select & copy by hand. Fail silently (same as ArtifactPreview).
-    }
-  };
 
   const handleThumb = (thumb: "up" | "down") => {
     if (!onFeedback) return;
@@ -295,27 +284,10 @@ export function WorkspaceItemActionBar({
           </DisabledHint>
         )}
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-7 max-md:h-9 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground"
-          onClick={handleCopy}
-          disabled={!canCopy}
-          aria-label={copied ? "تم النسخ" : "نسخ"}
-        >
-          {copied ? (
-            <>
-              <Check className="h-3.5 w-3.5 text-success-fg" />
-              تم النسخ
-            </>
-          ) : (
-            <>
-              <Copy className="h-3.5 w-3.5" />
-              نسخ
-            </>
-          )}
-        </Button>
+        {/* «نسخ» is a two-item menu: markdown as-is, or «النسخ لناجز» (plain
+            text for Najiz fields that take no formatting). A blank
+            ``copyText`` disables the trigger inside CopyMenu. */}
+        <CopyMenu variant="bar" text={copyText} />
 
         {showFeedback && (
           <>

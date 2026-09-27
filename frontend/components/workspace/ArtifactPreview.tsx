@@ -5,6 +5,7 @@ import { Check, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
+import { CopyMenu } from "@/components/common/CopyMenu";
 import { cn } from "@/lib/utils";
 
 interface ArtifactPreviewProps {
@@ -34,6 +35,13 @@ interface ArtifactPreviewProps {
   /** Override the copy button label / aria-label. Default: "نسخ". */
   copyLabel?: string;
   /**
+   * When true (default) the toolbar «نسخ» is a ``CopyMenu`` offering «نسخ»
+   * (markdown) and «النسخ لناجز» (plain text). ``false`` keeps the single
+   * markdown-only button — public blog / answer pages opt out (plan
+   * najiz_plain_copy, decision 7).
+   */
+  plainCopy?: boolean;
+  /**
    * When provided, ``[n]`` markers inside ``content`` become clickable
    * ``CitationMarker`` buttons. AgentSearchViewer wires this to scroll its
    * sibling ``ReferencePanel`` to the matching card. Other viewers (notes,
@@ -50,10 +58,10 @@ interface ArtifactPreviewProps {
  *
  * Renders ``content`` through the chat ``MarkdownRenderer`` — so ``#``,
  * ``##``, lists, bold, tables all render properly instead of leaking raw
- * markers — and exposes a "نسخ" button in the upper start corner that copies
- * the raw markdown string. The button does NOT copy rendered HTML or
- * rewritten citations, so the user always gets back what was authored /
- * stored.
+ * markers — and exposes a "نسخ" menu in the upper start corner: «نسخ» copies
+ * the raw markdown string, «النسخ لناجز» a plain-text rendering of it. Neither
+ * copies rendered HTML or rewritten citations, so the user always gets back
+ * what was authored / stored.
  *
  * Layout: floating toolbar pinned to the top-start of the viewport (RTL
  * adjusted), markdown body in a scrollable padded column underneath, optional
@@ -67,9 +75,12 @@ export function ArtifactPreview({
   hideToolbar = false,
   className,
   copyLabel = "نسخ",
+  plainCopy = true,
   onCitationClick,
   "data-testid": testId,
 }: ArtifactPreviewProps) {
+  // Single-button path only (``plainCopy={false}``) — CopyMenu owns its own
+  // copied state.
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -105,30 +116,38 @@ export function ArtifactPreview({
               {headerActions}
             </div>
           ) : null}
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={handleCopy}
-            disabled={!hasCopyText}
-            aria-label={copied ? "تم النسخ" : copyLabel}
-            className={cn(
-              "pointer-events-auto h-7 gap-1.5 px-2 text-xs shadow-sm",
-              "bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60",
-            )}
-          >
-            {copied ? (
-              <>
-                <Check className="h-3 w-3" />
-                <span>تم النسخ</span>
-              </>
-            ) : (
-              <>
-                <Copy className="h-3 w-3" />
-                <span>{copyLabel}</span>
-              </>
-            )}
-          </Button>
+          {plainCopy ? (
+            <CopyMenu
+              variant="toolbar"
+              text={copyContent ?? content ?? ""}
+              label={copyLabel}
+            />
+          ) : (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={handleCopy}
+              disabled={!hasCopyText}
+              aria-label={copied ? "تم النسخ" : copyLabel}
+              className={cn(
+                "pointer-events-auto h-7 gap-1.5 px-2 text-xs shadow-sm",
+                "bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+              )}
+            >
+              {copied ? (
+                <>
+                  <Check className="h-3 w-3" />
+                  <span>تم النسخ</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="h-3 w-3" />
+                  <span>{copyLabel}</span>
+                </>
+              )}
+            </Button>
+          )}
         </div>
       )}
 

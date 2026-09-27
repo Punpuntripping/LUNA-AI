@@ -181,6 +181,9 @@ export function PublicAnswerView({ post, blogToken }: PublicAnswerViewProps) {
           <ArtifactPreview
             content={body}
             copyContent={copyContent}
+            // Public pages keep the single markdown «نسخ» — «النسخ لناجز» is
+            // an in-app affordance (najiz_plain_copy, decision 7).
+            plainCopy={false}
             onCitationClick={handleBodyCitationClick}
             // References then the notice — the exact footer order
             // `AgentSearchViewer` renders in-app, so the public copy of an

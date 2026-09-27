@@ -311,6 +311,8 @@ export function NoteEditor({ item }: NoteEditorProps) {
         onFeedback={isAgentOutput ? handleFeedback : undefined}
         feedbackPending={setFeedback.isPending}
         onBodyCitationClick={isAgentOutput ? handleBodyCitationClick : undefined}
+        // agent_writing only: نسخ appends «المراجع» (notes have none).
+        copyReferences={isShareable ? references : undefined}
       />
       {isShareable && (
         <ShareArtifactDialog

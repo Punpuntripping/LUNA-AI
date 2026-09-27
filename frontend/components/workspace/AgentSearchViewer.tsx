@@ -2,7 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { ArtifactPreview } from "./ArtifactPreview";
-import { ReferencePanel, referenceCopyLabel } from "./ReferencePanel";
+import { ReferencePanel, appendReferencesForCopy } from "./ReferencePanel";
 import { ShareArtifactDialog } from "./ShareArtifactDialog";
 import { SaveAsBlogDialog } from "./SaveAsBlogDialog";
 import { AgentOutputDisclaimer } from "./AgentOutputDisclaimer";
@@ -97,24 +97,13 @@ export function AgentSearchViewer({
 
   // The copy button copies the synthesis body PLUS the reference list. The
   // refs render in a sibling panel (footer), not in ``content_md``, so without
-  // this the user would copy [n] markers with no titles to resolve them. Each
-  // reference is appended as one ``{n}-{label}`` line under a «المراجع»
-  // heading — no snippets, domains or links.
-  //
-  // ``referenceCopyLabel``, NOT ``referenceLabel``: the pasted list has no panel
-  // around it, so each wing adds what LOCATES its document («434939 — 1443 —
-  // وزارة العدل» rather than the ruling's subject sentence). See that function.
-  const copyContent = useMemo(() => {
-    const body = item.content_md ?? "";
-    if (references.length === 0) return body;
-    const refLines = [...references]
-      .sort((a, b) => a.n - b.n)
-      .map((ref) => `${ref.n}-${referenceCopyLabel(ref)}`)
-      .join("\n");
-    return body.trim().length > 0
-      ? `${body}\n\nالمراجع\n${refLines}`
-      : `المراجع\n${refLines}`;
-  }, [item.content_md, references]);
+  // this the user would copy [n] markers with no titles to resolve them.
+  // ``appendReferencesForCopy`` (ReferencePanel) builds the «المراجع» block —
+  // one ``{n}-{referenceCopyLabel}`` line each; the writer editor shares it.
+  const copyContent = useMemo(
+    () => appendReferencesForCopy(item.content_md ?? "", references),
+    [item.content_md, references],
+  );
 
   return (
     <div

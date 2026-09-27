@@ -11,9 +11,10 @@ import {
 import { Save, Loader2 } from "lucide-react";
 import { ArtifactPreview } from "@/components/workspace/ArtifactPreview";
 import { WorkspaceItemActionBar } from "@/components/workspace/WorkspaceItemActionBar";
+import { appendReferencesForCopy } from "@/components/workspace/ReferencePanel";
 import { cn } from "@/lib/utils";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
-import type { WorkspaceFeedback } from "@/types";
+import type { Reference, WorkspaceFeedback } from "@/types";
 
 interface MarkdownDocEditorProps {
   /** Stable identity of the document being edited. Hosts should ALSO pass
@@ -68,6 +69,13 @@ interface MarkdownDocEditorProps {
    * ReferencePanel). Omit for notes/templates — markers stay plain text.
    */
   onBodyCitationClick?: (n: number) => void;
+  /**
+   * References appended to the نسخ payload as a «المراجع» block (see
+   * ``appendReferencesForCopy``). agent_writing passes its list so a copied
+   * analysis keeps the titles its ``[n]`` markers point at; notes/templates
+   * omit it and copy the body alone.
+   */
+  copyReferences?: Reference[];
   /**
    * Invoked when ``onSave`` rejects. Lets the host show its own banner
    * (e.g. a 409 conflict). The error is passed through untouched.
@@ -125,6 +133,7 @@ export function MarkdownDocEditor({
   onFeedback,
   feedbackPending,
   onBodyCitationClick,
+  copyReferences,
   onSaveError,
 }: MarkdownDocEditorProps) {
   const [title, setTitle] = useState(initialTitle);
@@ -336,7 +345,8 @@ export function MarkdownDocEditor({
   const actionBar = (
     <WorkspaceItemActionBar
       floating
-      copyText={content}
+      // LIVE ``content`` (not the last saved body), so an edit copies at once.
+      copyText={appendReferencesForCopy(content, copyReferences ?? [])}
       mode={mode}
       onModeChange={setMode}
       editDisabled={readOnly}
