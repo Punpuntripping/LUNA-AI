@@ -1,9 +1,9 @@
-"""Marketing-email links — unsubscribe (RFC 8058) and opt-in, no login.
+"""Marketing-email unsubscribe link (RFC 8058), no login.
 
-Phase 0 T6 of ``marketing/plans/email/00_email_program.md``. Mounted under
-``/api/v1`` (the router declares the prefix itself, like ``public_ask.py``) and
-anonymous by OMITTING ``Depends(get_current_user)`` — the link in the email is
-the credential. Four endpoints:
+Phase 0 T6 of ``marketing/plans/marketing_dashboard/email_program.md``. Mounted
+under ``/api/v1`` (the router declares the prefix itself, like ``public_ask.py``)
+and anonymous by OMITTING ``Depends(get_current_user)`` — the link in the email
+is the credential. Two endpoints:
 
     GET  /api/v1/public/email/unsubscribe?u=&t=  — the footer link: a page that
                                                    ASKS, with one button.
@@ -11,18 +11,19 @@ the credential. Four endpoints:
                                                    one-click target Gmail/Apple
                                                    POST ``List-Unsubscribe=One-Click``
                                                    to (the body is ignored).
-    GET  /api/v1/public/email/subscribe?u=&t=    — the re-permission link: asks.
-    POST /api/v1/public/email/subscribe?u=&t=    — opts in, stamped
-                                                   ``repermission_email``.
+
+⚠ UNSUBSCRIBE ONLY — NO OPT-IN BY LINK (2026-09-28). An opt-in link (and the
+"re-subscribe" button that used to sit on the "stopped" page) let anyone holding
+a forwarded email record consent the recipient never gave — consent evidence
+under PDPL must be the user's own act. Opting back in happens only in the
+signed-in Settings switch (``preferences.py``). Don't add a subscribe route here.
 
 ⚠ GET NEVER WRITES. Corporate mail gateways and link scanners prefetch every
-URL in a message; a GET that unsubscribed would silently opt out whole firms
-(and a GET that subscribed would manufacture consent). Only POST changes a row.
+URL in a message; a GET that unsubscribed would silently opt out whole firms.
+Only POST changes a row.
 
-⚠ THE TOKEN IS PURPOSE-BOUND. ``t`` is an HMAC over ``<purpose>:<user_id>``, so
-an unsubscribe link cannot be replayed as an opt-in. The re-subscribe button on
-the "stopped" page carries a subscribe token minted here, after the unsubscribe
-token verified.
+⚠ THE TOKEN IS PURPOSE-BOUND. ``t`` is an HMAC over ``unsubscribe:<user_id>``;
+the purpose prefix stays so every link already sent keeps verifying.
 
 ⚠ TOKENS NEVER EXPIRE (plan D8) — a year-old email's link must still work.
 
@@ -32,7 +33,8 @@ endpoint is not an oracle for which user ids are real. (GET says "invalid
 link" on a bad token — that reveals nothing, the HMAC does not depend on the
 row existing.)
 
-The marketing repo mints identical tokens in ``marketing/scripts/email_unsub.py``;
+The marketing repo mints identical tokens in
+``marketing/marketing_dashboard/tools/emails/email_unsub.py``;
 the two must stay byte-for-byte in step. Secret: ``EMAIL_LINK_SECRET``
 (fail-closed — unset, every token is invalid).
 """
@@ -60,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["email-prefs"])
 
-Purpose = Literal["unsubscribe", "subscribe"]
+Purpose = Literal["unsubscribe"]
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -127,7 +129,6 @@ h1{{color:#2E382B;font-size:20px;margin:0 0 12px}}
 p{{font-size:15px;line-height:1.8;margin:0 0 20px}}
 button{{background:#4C5B49;color:#fff;border:0;border-radius:10px;padding:12px 22px;
 font:inherit;font-size:15px;cursor:pointer}}
-button.quiet{{background:none;color:#4C5B49;text-decoration:underline;padding:4px}}
 small{{display:block;margin-top:22px;color:#8A857A;font-size:12px}}
 a{{color:#4C5B49}}
 </style></head><body><main class="card">
@@ -136,12 +137,11 @@ a{{color:#4C5B49}}
 </main></body></html>"""
 
 
-def _form(path: str, user_id: str, token: str, label: str, quiet: bool = False) -> str:
+def _form(path: str, user_id: str, token: str, label: str) -> str:
     action = html.escape(f"{path}?{urlencode({'u': user_id, 't': token})}")
-    cls = ' class="quiet"' if quiet else ""
     return (
         f'<form method="post" action="{action}">'
-        f"<button{cls} type=\"submit\">{html.escape(label)}</button></form>"
+        f'<button type="submit">{html.escape(label)}</button></form>'
     )
 
 
@@ -159,7 +159,6 @@ def _page(title: str, body: str, form: str = "", status: int = 200) -> HTMLRespo
 
 
 UNSUB_PATH = "/api/v1/public/email/unsubscribe"
-SUB_PATH = "/api/v1/public/email/subscribe"
 
 _INVALID = ("الرابط غير صالح", "تعذّر التحقق من هذا الرابط. للمساعدة راسلنا على البريد أدناه.")
 _FAILED = ("تعذّر حفظ طلبك", "حدث خطأ مؤقت. أعد المحاولة بعد قليل.")
@@ -188,46 +187,13 @@ async def unsubscribe(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """One-click + form target. Same 200 page for valid and invalid tokens."""
-    resubscribe = ""
     if verify_token("unsubscribe", u, t):
         try:
             await run_db(_set_opt_in, supabase, u, False, "unsubscribe")
         except Exception:
             logger.exception("email unsubscribe write failed")
             return _page(*_FAILED, form=_form(UNSUB_PATH, u, t, "أعد المحاولة"), status=503)
-        secret = get_settings().EMAIL_LINK_SECRET or ""
-        resubscribe = _form(
-            SUB_PATH, u, make_token(secret, "subscribe", u), "تراجعت؟ أعد الاشتراك", quiet=True
-        )
     return _page(
         "تم إيقاف الرسائل التسويقية",
         "لن نرسل لك بعد الآن رسائل ترويجية. ويمكنك تغيير ذلك في أي وقت من إعدادات حسابك.",
-        resubscribe,
     )
-
-
-@router.get("/public/email/subscribe", response_class=HTMLResponse)
-async def subscribe_page(u: str = Query(""), t: str = Query("")):
-    if not verify_token("subscribe", u, t):
-        return _page(*_INVALID)
-    return _page(
-        "رسائل ريحان عبر البريد",
-        "نرسل مقالات قانونية مختارة وأخبار ريحان، بحدّ أقصى رسالتين في الشهر، ويمكنك الإيقاف بنقرة واحدة في أي وقت.",
-        _form(SUB_PATH, u, t, "نعم، أرسلوها لي"),
-    )
-
-
-@router.post("/public/email/subscribe", response_class=HTMLResponse)
-async def subscribe(
-    u: str = Query(""),
-    t: str = Query(""),
-    supabase: SupabaseClient = Depends(get_supabase),
-):
-    if not verify_token("subscribe", u, t):
-        return _page(*_INVALID)
-    try:
-        await run_db(_set_opt_in, supabase, u, True, "repermission_email")
-    except Exception:
-        logger.exception("email subscribe write failed")
-        return _page(*_FAILED, form=_form(SUB_PATH, u, t, "أعد المحاولة"), status=503)
-    return _page("تم الاشتراك", "شكراً لك. ستصلك رسائلنا بحدّ أقصى مرتين في الشهر.")

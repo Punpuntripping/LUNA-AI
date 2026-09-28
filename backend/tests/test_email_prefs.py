@@ -1,10 +1,12 @@
-"""Marketing-email links + settings toggle (marketing plans/email/00 T6/T7).
+"""Marketing-email unsubscribe link + settings toggle (email program T6/T7).
 
 The traps these guard:
 
 * **GET never writes.** Link scanners prefetch every URL in a message; a GET
-  that changed a row would unsubscribe whole firms, or manufacture consent.
-* **Tokens are purpose-bound.** An unsubscribe link must not work as an opt-in.
+  that changed a row would unsubscribe whole firms.
+* **No opt-in by link** (2026-09-28). A forwarded email must never let a third
+  party record consent: no subscribe route, no re-subscribe button.
+* **Tokens are purpose-bound.** A token minted for another purpose is refused.
 * **POST is not an oracle.** A bad token gets the same 200 page as a good one.
 * **Evidence is stamped.** Every write carries consent_at + consent_src.
 * **The toggle shows the flag as stored** — a pre-167 default TRUE reads ON,
@@ -140,8 +142,8 @@ def test_one_click_post_unsubscribes_with_evidence(
     assert payload["marketing_opt_in"] is False
     assert payload["marketing_consent_src"] == "unsubscribe"
     assert payload["marketing_consent_at"]
-    # The re-subscribe button carries a SUBSCRIBE token, not the one we got.
-    assert email_prefs.make_token(SECRET, "subscribe", USER_ID) in r.text
+    # The "stopped" page offers no way back in — that is the Settings switch's job.
+    assert "<form" not in r.text
 
 
 def test_bad_token_post_looks_like_success(client: TestClient, fake: FakeSupabase) -> None:
@@ -155,7 +157,7 @@ def test_bad_token_post_looks_like_success(client: TestClient, fake: FakeSupabas
     assert fake.updates == []
 
 
-def test_subscribe_token_cannot_unsubscribe(client: TestClient, fake: FakeSupabase) -> None:
+def test_other_purpose_token_cannot_unsubscribe(client: TestClient, fake: FakeSupabase) -> None:
     client.post("/api/v1/public/email/unsubscribe", params=_q("subscribe"))
     assert fake.updates == []
 
@@ -168,25 +170,16 @@ def test_db_failure_is_not_reported_as_done(client: TestClient, fake: FakeSupaba
 
 
 # ---------------------------------------------------------------------------
-# Subscribe (re-permission)
+# No opt-in by link
 # ---------------------------------------------------------------------------
 
 
-def test_subscribe_get_never_writes(client: TestClient, fake: FakeSupabase) -> None:
-    r = client.get("/api/v1/public/email/subscribe", params=_q("subscribe"))
-    assert r.status_code == 200 and fake.updates == []
-
-
-def test_subscribe_post_opts_in_as_repermission(client: TestClient, fake: FakeSupabase) -> None:
-    client.post("/api/v1/public/email/subscribe", params=_q("subscribe"))
-    (_, _, payload), = fake.updates
-    assert payload["marketing_opt_in"] is True
-    assert payload["marketing_consent_src"] == "repermission_email"
-
-
-def test_unsubscribe_token_cannot_opt_in(client: TestClient, fake: FakeSupabase) -> None:
-    r = client.post("/api/v1/public/email/subscribe", params=_q("unsubscribe"))
-    assert "الرابط غير صالح" in r.text
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_there_is_no_subscribe_route(
+    client: TestClient, fake: FakeSupabase, method: str
+) -> None:
+    r = getattr(client, method)("/api/v1/public/email/subscribe", params=_q("subscribe"))
+    assert r.status_code == 404
     assert fake.updates == []
 
 

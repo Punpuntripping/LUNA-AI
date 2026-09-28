@@ -772,7 +772,8 @@ def create_app() -> FastAPI:
         tags=["analytics"],
     )
 
-    # Marketing-email unsubscribe / opt-in links (marketing plans/email/00 T6).
+    # Marketing-email unsubscribe link (email program T6). Unsubscribe only —
+    # opting back in is the signed-in Settings switch, never a link.
     # Anonymous by design — the HMAC token in the link is the credential; GET
     # only renders, POST writes. Declares prefix="/api/v1" itself, so no extra
     # prefix. ⚠ Requires migration 167 FIRST (the consent_* columns).

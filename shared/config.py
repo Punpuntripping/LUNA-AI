@@ -219,7 +219,7 @@ class Settings(BaseSettings):
         )
 
     # ========================================
-    # MARKETING EMAIL — unsubscribe / opt-in links
+    # MARKETING EMAIL — unsubscribe links
     # ========================================
     # HMAC key for the tokens in /api/v1/public/email/* links. The marketing
     # repo mints the same tokens (marketing/scripts/email_unsub.py), so the two
