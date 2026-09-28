@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Mail, MessageCircle } from "lucide-react";
 import { LEGAL_ROUTES } from "@/lib/legal";
@@ -41,6 +42,8 @@ const LEGAL_LINKS = [
   { href: LEGAL_ROUTES.privacy, label: "سياسة الخصوصية" },
   { href: "/learn/usage-limits", label: "سياسة حد الاستخدام" },
 ] as const;
+
+const COMMERCIAL_REGISTER = "7054539916";
 
 export function SiteFooter() {
   return (
@@ -129,11 +132,26 @@ export function SiteFooter() {
         </div>
       </div>
 
-      {/* Copyright bar */}
+      {/* Copyright bar + commercial registration */}
       <div className="border-t border-border/60">
-        <p className="mx-auto max-w-6xl px-4 py-4 text-center text-xs text-muted-foreground">
-          © 2026 شركة ريحان تك — جميع الحقوق محفوظة.
-        </p>
+        <div className="mx-auto flex max-w-6xl flex-col items-center gap-3 px-4 py-4 text-xs text-muted-foreground sm:flex-row sm:justify-between">
+          <p className="text-center">
+            © 2026 شركة ريحان تك — جميع الحقوق محفوظة.
+          </p>
+          <div className="flex items-center gap-2">
+            <Image
+              src="/brand/commercial-register.avif"
+              alt="شعار السجل التجاري"
+              width={70}
+              height={70}
+              unoptimized
+              className="h-8 w-8"
+            />
+            <span>
+              السجل التجاري: <span dir="ltr">{COMMERCIAL_REGISTER}</span>
+            </span>
+          </div>
+        </div>
       </div>
     </footer>
   );
