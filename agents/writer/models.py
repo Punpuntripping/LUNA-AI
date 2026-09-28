@@ -49,6 +49,30 @@ class CitationRef(BaseModel):
     n: int = Field(ge=1, description="The [n] reference number inside that WI.")
 
 
+class ExhibitRef(BaseModel):
+    """One court exhibit («مرفق رقم n») the document cites.
+
+    The document body never names a workspace item by its ``WI-{seq}`` alias —
+    that handle is conversation-scoped, gappy and duplicated (one document
+    uploaded twice gets two aliases). Exhibits are numbered 1..K in order of
+    first mention; the chat reply maps each ``n`` back to its card.
+    See ``.claude/plans/writer_exhibit_numbering.md``.
+    """
+
+    n: int = Field(ge=1, description="Exhibit number as cited in body_md: «(مرفق رقم n)».")
+    wi: str = Field(description="WI-{seq} alias of the attachment this exhibit is, e.g. 'WI-13'.")
+    label_ar: str = Field(
+        description=(
+            "Court-facing Arabic description of the document, e.g. «صورة من عقد "
+            "تأسيس الشركة». Written fresh — do not copy the item title verbatim."
+        ),
+    )
+    also_wi: list[str] = Field(
+        default_factory=list,
+        description="Other WI-{seq} aliases that are uploads of the SAME document.",
+    )
+
+
 class WriterSection(BaseModel):
     """One section of the drafted document."""
 
@@ -80,6 +104,14 @@ class WriterLLMOutput(BaseModel):
             "remove ambiguity when the same n overlaps across more than one source."
         ),
     )
+    exhibits: list[ExhibitRef] = Field(
+        default_factory=list,
+        description=(
+            "Every user document (kind=\"attachment\") cited in body_md as "
+            "«(مرفق رقم n)», numbered 1..K in order of first mention. One entry "
+            "per distinct document; duplicate uploads go in also_wi."
+        ),
+    )
     confidence: Literal["high", "medium", "low"] = Field(
         description="The writer's estimate of the draft's quality"
     )
@@ -109,6 +141,7 @@ class WriterLLMOutput(BaseModel):
             "title_chars": len(self.title_ar or ""),
             "sections": len(self.sections),
             "citations": len(self.citations_used),
+            "exhibits": len(self.exhibits),
             "confidence": self.confidence,
             "notes": len(self.notes_ar),
             "key_findings": len(self.key_findings),
@@ -159,6 +192,10 @@ class WriterInput:
     # Stylistic prefs (from user_preferences).
     detail_level: Literal["low", "medium", "high"] = "medium"
     tone: Literal["formal", "neutral", "concise"] = "formal"
+    # Every WI alias the writer was shown, as {wi_seq, kind, title, item_id}
+    # dicts — ALL package roles, templates included (research_items drops
+    # them). The publisher's WI-alias guard resolves leaked aliases by kind.
+    alias_items: list[dict] = field(default_factory=list)
 
 
 class WriterOutput(BaseModel):
@@ -450,6 +487,16 @@ def _from_package(
         for ai in package.analyzed_items
         if ai.role in ("source", "reference", "prior_draft")
     ]
+    alias_items = [
+        {
+            "item_id": ai.item_id,
+            "wi_seq": ai.wi_seq,
+            "title": ai.title,
+            "kind": ai.kind,
+        }
+        for ai in package.analyzed_items
+        if ai.wi_seq is not None
+    ]
     return cls(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -464,6 +511,7 @@ def _from_package(
         ),
         detail_level=package.style.detail_level,
         tone=package.style.tone,
+        alias_items=alias_items,
     )
 
 
@@ -478,6 +526,7 @@ __all__ = [
     "WriterOutput",
     "WorkspaceContextBlock",
     "CitationRef",
+    "ExhibitRef",
     # New WriterPackage family (writer_planner integration)
     "AnalyzedItem",
     "TemplateRef",

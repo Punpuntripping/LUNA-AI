@@ -31,6 +31,14 @@ from backend.app.services.workspace_service import create_workspace_item
 from shared.observability import get_logfire
 
 from .deps import WriterDeps
+from .exhibits import (
+    annotate_chat_aliases,
+    build_alias_map,
+    exhibits_metadata,
+    format_exhibit_guide_ar,
+    renumber_chat_refs,
+    sanitize_document,
+)
 from .lock import write_lock_column
 from .models import WriterInput, WriterLLMOutput, WriterOutput
 
@@ -329,6 +337,19 @@ def _persist_writer_references(
     return len(new_ref_rows)
 
 
+def _chat_summary_with_guide(chat_summary: str, exhibits: list[dict]) -> str:
+    """Append the «ما تُرفقه» block so the lawyer knows which card is which مرفق.
+
+    Built in code from ``exhibits`` — not by the LLM — so the numbers can never
+    drift from the document body.
+    """
+    summary = annotate_chat_aliases(chat_summary, exhibits)
+    guide = format_exhibit_guide_ar(exhibits)
+    if not guide:
+        return summary
+    return f"{summary.rstrip()}\n\n{guide}" if summary.strip() else guide
+
+
 async def publish_writer_result(
     llm_output: WriterLLMOutput,
     input: WriterInput,
@@ -376,7 +397,54 @@ async def publish_writer_result(
                 conversation_id=input.conversation_id,
             )
 
-        # 2. Build the markdown body.
+        # 2a. «مرفق رقم n», never WI-{seq}: rewrite any alias the writer leaked
+        # into the document and settle the exhibits list. Never refuses — an
+        # alias it cannot map is stripped. See
+        # .claude/plans/writer_exhibit_numbering.md.
+        aliases = build_alias_map(
+            [*(input.alias_items or []), *(input.research_items or [])]
+        )
+        sanitized = sanitize_document(
+            title=llm_output.title_ar,
+            sections=list(llm_output.sections),
+            exhibits=list(llm_output.exhibits or []),
+            aliases=aliases,
+            subtype=input.subtype,
+        )
+        llm_output = llm_output.model_copy(update={
+            "title_ar": sanitized.title,
+            "sections": sanitized.sections,
+            "exhibits": sanitized.exhibits,
+            # The LLM wrote its chat text with its own exhibit numbers — keep
+            # it in step with the (possibly reordered) document.
+            "chat_summary": renumber_chat_refs(
+                llm_output.chat_summary or "", sanitized.renumber
+            ),
+            "key_findings": [
+                renumber_chat_refs(k, sanitized.renumber)
+                for k in (llm_output.key_findings or [])
+            ],
+        })
+        leak_stats = sanitized.stats
+        _pub_span.set(
+            exhibits=len(sanitized.exhibits),
+            wi_leaks_attachment=leak_stats.leaks_attachment,
+            wi_leaks_stripped=leak_stats.leaks_stripped,
+            wi_leaks_unknown=leak_stats.leaks_unknown,
+            exhibits_added=leak_stats.exhibits_added,
+            exhibits_dropped=leak_stats.exhibits_dropped,
+            exhibits_renumbered=leak_stats.renumbered,
+        )
+        if leak_stats.total_leaks or leak_stats.exhibits_dropped:
+            logger.warning(
+                "agent_writer: WI alias guard rewrote document "
+                "(attachment=%d stripped=%d unknown=%d added=%d dropped=%d)",
+                leak_stats.leaks_attachment, leak_stats.leaks_stripped,
+                leak_stats.leaks_unknown, leak_stats.exhibits_added,
+                leak_stats.exhibits_dropped,
+            )
+
+        # 2b. Build the markdown body.
         content_md = _assemble_content(llm_output)
         # Exit decode (وضع السرية): the writer output is pipeline text = encoded.
         # Restore real identifiers before the workspace_items write so the stored
@@ -416,6 +484,14 @@ async def publish_writer_result(
             "tone": input.tone,
             "revised_from": input.revising_item_id,
         }
+        exhibits_meta = exhibits_metadata(llm_output.exhibits, aliases)
+        if exhibits_meta:
+            # Chat copy keeps the pipeline (encoded) labels — the chat relay
+            # decodes them; the stored row holds reals (store-real invariant).
+            metadata["exhibits"] = [
+                {**e, "label_ar": decode_for_persist(e["label_ar"])}
+                for e in exhibits_meta
+            ]
 
         # Title preference: router-emitted task_label (content-derived Arabic
         # phrase) wins over the LLM's title_ar when set. Falls back to title_ar.
@@ -502,8 +578,13 @@ async def publish_writer_result(
             metadata=metadata,
             sse_events=list(deps._events),
             locked_until=None,
-            chat_summary=llm_output.chat_summary or "",
-            key_findings=list(llm_output.key_findings or []),
+            chat_summary=_chat_summary_with_guide(
+                llm_output.chat_summary or "", exhibits_meta
+            ),
+            key_findings=[
+                annotate_chat_aliases(k, exhibits_meta)
+                for k in (llm_output.key_findings or [])
+            ],
         )
 
 

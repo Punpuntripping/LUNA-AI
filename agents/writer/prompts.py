@@ -63,6 +63,29 @@ language or a bilingual document — in that case follow the user's request.
   sees. In the structured `citations_used` field, however, write for each citation
   a pair `{wi: "WI-N", n: K}` linking the number to its source (because the same
   `n` may appear in more than one `<source>`).
+
+## Citing the user's documents — «مرفق رقم n», never WI-N
+
+`WI-N` is an internal handle for this conversation. The court never sees it, so
+it must NEVER appear in `title_ar`, `heading_ar`, or `body_md`.
+
+- A user document (a `<source>` with `kind="attachment"`) is cited in the body
+  ONLY as «(مرفق رقم n)». Number the documents 1, 2, 3 … in the order you first
+  mention them, and list every one in `exhibits` as
+  `{n, wi: "WI-N", label_ar, also_wi}`.
+- `label_ar` is a clean court-facing description you write yourself (e.g.
+  «صورة من عقد تأسيس الشركة»). Do not copy the item title — titles can carry
+  OCR typos.
+- If the same document was uploaded more than once (two attachments with the
+  same content), give it ONE number and put the extra aliases in `also_wi`.
+- Research items (`kind="agent_search"`), prior drafts, and notes are NOT
+  exhibits and are never cited by alias. Support a legal rule with `(n)` from
+  `<refs>`; state a fact from notes without citing its source.
+- For a memo, legal opinion, defense brief, or letter that cites exhibits, the
+  LAST section is `## المرفقات`: a numbered list `n. label_ar` matching
+  `exhibits` one-for-one.
+- `WI-N` is fine in `notes_ar`, `chat_summary`, and `key_findings` — those are
+  shown in chat, where the user finds cards by that label.
 """
 
 
@@ -135,6 +158,10 @@ Standard Arabic — only the JSON field identifiers are English:
     {"wi": "WI-2", "n": 5},
     {"wi": "WI-1", "n": 17}
   ],
+  "exhibits": [
+    {"n": 1, "wi": "WI-4", "label_ar": "صورة من عقد العمل", "also_wi": []},
+    {"n": 2, "wi": "WI-6", "label_ar": "صورة من المخالصة النهائية", "also_wi": ["WI-3"]}
+  ],
   "confidence": "high | medium | low",
   "notes_ar": ["نقطة تحتاج مراجعة المستخدم", "..."],
   "chat_summary": "جملة أو جملتان تصفان المستند المُسوَّد — 500 حرف كحد أقصى.",
@@ -149,6 +176,7 @@ Standard Arabic — only the JSON field identifiers are English:
 - `sections` are ordered as they will appear in the final document.
 - Do not repeat the full title in `sections[0]` -- it is added from `title_ar`.
 - `citations_used` includes every actual citation that appeared in body_md as `(n)` — each entry is a `(wi, n)` pair that pinpoints the source precisely (e.g. `{wi: "WI-2", n: 5}`). The number `n` is the same one shown in `(n)` inside the body; the `wi` field identifies the source item (from `<source wi="WI-N">` in the writing package) to remove ambiguity when sources overlap.
+- `exhibits` lists every user document cited in body_md as «(مرفق رقم n)» — one entry per distinct document, `n` matching the body exactly. Empty when the document cites no attachment.
 - `chat_summary`: a brief description of the document in **500 characters maximum, strict**. Do not re-draft the whole document.
 - `key_findings`: **3 to 5 items maximum, strict**. Each item is a point that needs the user's attention or review. Do not exceed 5 items under any circumstances.
 """
