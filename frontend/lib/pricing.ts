@@ -11,8 +11,8 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * `/payments/checkout` charges; the strings below are display only, and the two
  * drift silently if edited apart. They were repriced together to 49.90 / 89.90 /
  * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit, and `max` was raised to
- * 289.90 by migration 147 (2026-08-29) — a price migration and this file must
- * always move as one.
+ * 289.90 by migration 147 (2026-08-29), and `pro` to 94.90 by migration 168
+ * (2026-09-29) — a price migration and this file must always move as one.
  *
  * Billing model (owner, 2026-08-10 — see .claude/plans/subscription_auto_renewal.md):
  *   - basic — a ONE-TIME 7-day purchase that ends without any further charge.
@@ -142,7 +142,7 @@ export const PRICING_PLANS: PricingPlan[] = [
     id: "pro",
     nameAr: "الاحترافية",
     tagline: "الأنسب للممارسة اليومية",
-    price: "89.90",
+    price: "94.90",
     promoPrice: "49.90",
     period: "شهرياً",
     billingNote: "فترة الاشتراك 30 يوماً",
@@ -225,7 +225,7 @@ export function cheapestPricingPlan(campaignOpen = false): PricingPlan {
  * `campaignOpen` switches the comparison to EFFECTIVE prices so the ladder is
  * ranked the way the cards are priced. It does NOT widen or narrow the ladder:
  * promo pricing preserves the catalog's rank (39.90 < 49.90 < 99.90, exactly as
- * 49.90 < 89.90 < 289.90), so the same plans are offered either way and nothing
+ * 49.90 < 94.90 < 289.90), so the same plans are offered either way and nothing
  * the server's downgrade guard would refuse can appear. Assert that whenever a
  * promo amount changes — a promo that inverted the order would let this function
  * offer a downgrade.
