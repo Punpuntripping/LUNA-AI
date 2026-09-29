@@ -841,16 +841,16 @@ async def test_an_IN_APP_pause_still_pauses(
 
 
 @pytest.mark.asyncio
-async def test_editorial_voice_reaches_the_aggregator_prompt_key(
+async def test_an_editorial_job_runs_the_ordinary_aggregator_prompt(
     patch_planner_model, planner_deps, a_response
 ) -> None:
-    """⚠ Step 7's three ``prompt_editorial_*`` keys were INERT until this wire.
+    """The three ``prompt_editorial_*`` keys are GONE — article shaping moved to
+    the marketing side, which holds the answer and its references.
 
-    ``runner.py`` built its RetrievalConfig with ``build_retrieval_config(decision)``
-    and no flag, so an "editorial" job would have been written in the in-app
-    answering voice with nothing in any response to say so.
+    What the flag still buys is the line below it: a headless job has nobody to
+    ask, so a phase-1 pause becomes a decision instead of a wait. The prompt it
+    then runs is the in-app one for its mode.
     """
-    from agents.deep_search_v4.planner.apply import EDITORIAL_PROMPT_KEYS
     from agents.deep_search_v4.planner.models import PinnedPlan
     from agents.deep_search_v4.planner.runner import handle_planner_turn
 
@@ -865,8 +865,7 @@ async def test_editorial_voice_reaches_the_aggregator_prompt_key(
 
     _q, config, _deps = spy.calls[0]
     assert config.editorial is True
-    assert config.aggregator_prompt_key == EDITORIAL_PROMPT_KEYS["prompt_mode_case"]
-    assert config.aggregator_prompt_key == "prompt_editorial_case"
+    assert config.aggregator_prompt_key == "prompt_mode_case"
 
 
 @pytest.mark.asyncio
@@ -1748,3 +1747,316 @@ def test_the_internal_public_blogs_prefix_skips_the_global_rate_limiter() -> Non
     assert skip is not None, "the prefix skip block is gone"
     assert "/internal/public-blogs" in skip.group(1)
     assert "/internal/blog-post-jobs" in skip.group(1)
+
+
+# ===========================================================================
+# 9. The editorial query cap (expander_query_cap.md §6)
+#
+# ``cap`` is tri-state in spirit exactly like ``support``: a number, or "not
+# pinned". There is no ``0`` here and there is no default. The failure it guards
+# against is the quiet one — ⚠ an absent cap coerced to a number would cap every
+# editorial job that never asked to be capped, with nothing in any response or
+# log to say so.
+#
+# The semantics under test: a CEILING on how many sub-queries each executor's
+# expander may produce, applied per expander CALL, the same value handed to
+# every executor in the run (D3/D4/D7). Fewer than the cap is a valid outcome;
+# nothing is ever padded up to it.
+# ===========================================================================
+
+
+def test_the_request_model_declares_cap_as_an_unpinned_optional() -> None:
+    fields = BlogPostJobRequest.model_fields
+    assert "cap" in fields
+    assert fields["cap"].default is None
+
+
+def test_an_absent_cap_survives_as_none_not_a_default() -> None:
+    """⚠ Never a number. ``null`` means "each expander decides"."""
+    assert _req().cap is None
+
+
+@pytest.mark.parametrize("cap", [2, 3, 5, 10, 50])
+def test_a_supplied_cap_reaches_the_job_row(cap: int) -> None:
+    cfg = service.editorial_config(_req(cap=cap))
+    assert cfg["cap"] == cap
+
+
+def test_cap_round_trips_through_the_job_row() -> None:
+    """The metadata blob has no schema; the read-back is where a default would
+    sneak in unnoticed."""
+    for cap in (2, 3, 9, 50):
+        cfg = service.editorial_config(_req(cap=cap))
+        read = service.read_editorial_config(
+            {"metadata": {service.EDITORIAL_META_KEY: cfg}}
+        )
+        assert read["cap"] == cap
+
+
+def test_a_null_cap_round_trips_as_null() -> None:
+    cfg = service.editorial_config(_req(mode="case_led"))
+    read = service.read_editorial_config({"metadata": {service.EDITORIAL_META_KEY: cfg}})
+    assert read["cap"] is None
+
+
+def test_a_job_row_with_no_editorial_block_reads_cap_back_as_none() -> None:
+    assert service.read_editorial_config({"metadata": {}})["cap"] is None
+
+
+@pytest.mark.parametrize("stored", ["banana", 1, 0, -1, "", [], {"n": 2}, True])
+def test_an_unusable_cap_on_an_old_row_reads_back_as_none(stored: Any) -> None:
+    """§7.2 — an unusable stored value reads back as ``None``, and the run STILL
+    RUNS.
+
+    The 400 is earned at the API boundary. By dispatch time the only safe
+    reading of a number the floor no longer admits — or of a value that is not a
+    number at all, on a row hand-edited or written before the floor existed — is
+    "not pinned": raising here would strand a job over a field that is advisory
+    by design.
+
+    ``True`` is in this list on purpose: ``bool`` is a subclass of ``int``, so a
+    naive ``isinstance(value, int)`` would read it back as a cap of 1.
+    """
+    read = service.read_editorial_config(
+        {"metadata": {service.EDITORIAL_META_KEY: {"cap": stored}}}
+    )
+    assert read["cap"] is None
+
+
+def test_an_unusable_cap_is_logged_rather_than_swallowed(caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=service.__name__):
+        service.read_editorial_config(
+            {"metadata": {service.EDITORIAL_META_KEY: {"cap": 1}}}
+        )
+    assert any("unusable cap" in r.getMessage() for r in caplog.records)
+
+
+def test_a_numeric_string_cap_is_tolerated_on_the_read_back() -> None:
+    """``blog_post_jobs.metadata`` is a schemaless JSON blob, so a round-trip
+    through a dashboard or a hand-written curl is entitled to hand the number
+    back as text. A number is a number — only genuinely unusable values degrade
+    to ``None``."""
+    read = service.read_editorial_config(
+        {"metadata": {service.EDITORIAL_META_KEY: {"cap": " 3 "}}}
+    )
+    assert read["cap"] == 3
+
+
+def test_an_absent_cap_is_not_warned_about(caplog) -> None:
+    """⚠ The unpinned path is the COMMON one — it must stay silent.
+
+    A warning on every uncapped job would bury the one job that actually carries
+    a value nobody can honour, which is the only thing this warning is for.
+    """
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger=service.__name__):
+        service.read_editorial_config({"metadata": {service.EDITORIAL_META_KEY: {}}})
+    assert not [r for r in caplog.records if "cap" in r.getMessage()]
+
+
+# -- validation -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cap", [2, 3, 4, 10])
+def test_a_cap_at_or_above_the_floor_passes_validation(cap: int) -> None:
+    _validate_request(_req(cap=cap))
+
+
+def test_a_null_cap_passes_validation() -> None:
+    """⚠ ``null`` is VALID — it means "each expander decides". Supplied-only,
+    exactly the discipline ``mode`` lives under."""
+    _validate_request(_req(cap=None))
+
+
+def test_a_cap_of_fifty_is_accepted() -> None:
+    """D6 — there is NO upper bound.
+
+    Both expander prompts top out at 10, so a cap of 50 simply never binds.
+    Validation that cannot change an outcome is noise, and a ceiling here would
+    only be a second number to keep in sync with two prompts.
+    """
+    _validate_request(_req(cap=50))
+    assert service.editorial_config(_req(cap=50))["cap"] == 50
+
+
+@pytest.mark.parametrize("bad", [1, 0, -1, -100])
+def test_a_cap_below_two_is_an_arabic_400(bad: int) -> None:
+    """D5 — the floor is 2, and it is structural rather than stylistic.
+
+    At a ceiling of 1 the sectioned case path cannot satisfy its ≥2-channel rule
+    and ``clamp_queries``' channel rescue no-ops, so the run would quietly search
+    one angle of the question. Flooring at 2 closes that hole by construction.
+    """
+    with pytest.raises(LunaHTTPException) as e:
+        _validate_request(_req(cap=bad))
+    assert e.value.status_code == 400
+    assert "cap" in _detail(e)
+    # Rule #5 — every error message is Arabic.
+    assert any("؀" <= ch <= "ۿ" for ch in _detail(e))
+
+
+def test_a_true_cap_is_a_400_not_a_cap_of_one() -> None:
+    """``bool`` is a subclass of ``int`` and Pydantic coerces ``True`` to ``1``,
+    which the floor then refuses. Asserted so the refusal stays intentional."""
+    with pytest.raises(LunaHTTPException) as e:
+        _validate_request(_req(cap=True))
+    assert e.value.status_code == 400
+
+
+def test_a_non_numeric_cap_never_reaches_the_arabic_400() -> None:
+    """⚠ ``"abc"`` is refused by the MODEL, not by ``_validate_request``.
+
+    The type is declared on ``BlogPostJobRequest`` (``Optional[int]``), so
+    FastAPI answers a non-numeric cap with its own 422 before the Arabic-400
+    layer is ever reached. That layer exists for values of the RIGHT type and
+    the WRONG number — it cannot and must not be asked to re-check the type.
+    A numeric string still coerces, which is why ``"3"`` is a valid cap.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _req(cap="abc")
+
+    assert _req(cap="3").cap == 3
+    _validate_request(_req(cap="3"))
+
+
+# -- the pin object + the signature chain -----------------------------------
+
+
+def test_the_pinned_plan_carries_cap_without_pinning_phase_1() -> None:
+    """The orthogonality invariant, restated at the API's own layer.
+
+    ``cap`` says nothing about mode or support, so a job pinning only the cap
+    must still run phase 1 in full (§6).
+    """
+    pin = _pin(cap=2)
+    assert pin.cap == 2
+    assert pin.is_fully_pinned is False
+    assert pin.decision() is None
+
+
+def test_generate_answer_headless_accepts_an_unpinned_cap() -> None:
+    """One missing keyword here un-pins every seeded job silently."""
+    import inspect
+
+    from backend.app.api.deepsearch_api.generate import generate_answer_headless
+
+    params = inspect.signature(generate_answer_headless).parameters
+    assert "cap" in params
+    # ⚠ Default None, not a number — see the section note.
+    assert params["cap"].default is None
+
+
+def test_generate_answer_headless_puts_the_cap_on_the_pinned_plan(monkeypatch) -> None:
+    """The last hop inside the API: kwarg → ``PinnedPlan.cap``.
+
+    The pipeline itself is stubbed out — what is under test is the plan object
+    the orchestrator is handed, since that is the only thing that carries the
+    cap any further.
+    """
+    import backend.app.api.deepsearch_api.generate as gen_mod
+
+    seen: dict[str, Any] = {}
+
+    async def _fake_handle_message(**kwargs):
+        seen["pinned_plan"] = kwargs["pinned_plan"]
+        raise RuntimeError("stop here — the plan is all this test needs")
+        yield {}          # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(
+        gen_mod, "run_db", AsyncMock(return_value="conv-1"), raising=False
+    )
+    monkeypatch.setattr(
+        gen_mod, "run_db_retry", AsyncMock(return_value=None), raising=False
+    )
+    import agents.orchestrator as orch_mod
+
+    monkeypatch.setattr(orch_mod, "handle_message", _fake_handle_message)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            gen_mod.generate_answer_headless(
+                MagicMock(),
+                bot_user_id="bot-1",
+                question="سؤال",
+                mode="reg_compliance_led",
+                support=True,
+                cap=2,
+            )
+        )
+
+    pin = seen["pinned_plan"]
+    assert pin.cap == 2
+    assert pin.mode == "reg_compliance_led"
+    assert pin.support is True
+
+
+def test_process_job_hands_the_stored_cap_to_the_generator(
+    monkeypatch, _settings
+) -> None:
+    """The service hop — ``cfg["cap"]`` actually reaches the generator.
+
+    The generator raises immediately, so the job takes the timeout branch and
+    nothing is published; the kwargs it was called with are the assertion.
+    """
+    db = FakeDB()
+    cfg = service.editorial_config(
+        _req(mode="reg_compliance_led", support=True, cap=2)
+    )
+    job = {
+        "job_id": "job-1",
+        "question": "سؤال",
+        "metadata": {service.EDITORIAL_META_KEY: cfg},
+        "publish_policy": "auto",
+        "min_confidence": "medium",
+    }
+    seen: dict[str, Any] = {}
+
+    async def _gen(_supabase, **kwargs):
+        seen.update(kwargs)
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(service, "get_supabase_client", lambda: db)
+    monkeypatch.setattr(service, "_mark_processing", lambda _sb, _jid: job)
+    monkeypatch.setattr(service, "generate_answer_headless", _gen)
+    # FakeDB models the public-blog tables, not the job row's read path.
+    monkeypatch.setattr(service, "_fail_job", AsyncMock())
+
+    asyncio.run(service.process_job("job-1"))
+
+    assert seen["cap"] == 2
+    # D7 — one value, both executors: the «واقعة معينة» shape runs a lead AND a
+    # support executor, and the SAME cap goes to both. It is never split.
+    assert seen["mode"] == "reg_compliance_led"
+    assert seen["support"] is True
+
+
+def test_process_job_passes_none_for_an_unpinned_job(monkeypatch, _settings) -> None:
+    """D8 — a job submitted before the field existed reaches the pipeline with
+    ``cap=None``, not a number."""
+    db = FakeDB()
+    cfg = service.editorial_config(_req())
+    job = {
+        "job_id": "job-1",
+        "question": "سؤال",
+        "metadata": {service.EDITORIAL_META_KEY: cfg},
+        "publish_policy": "auto",
+        "min_confidence": "medium",
+    }
+    seen: dict[str, Any] = {}
+
+    async def _gen(_supabase, **kwargs):
+        seen.update(kwargs)
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(service, "get_supabase_client", lambda: db)
+    monkeypatch.setattr(service, "_mark_processing", lambda _sb, _jid: job)
+    monkeypatch.setattr(service, "generate_answer_headless", _gen)
+    monkeypatch.setattr(service, "_fail_job", AsyncMock())
+
+    asyncio.run(service.process_job("job-1"))
+    assert seen["cap"] is None

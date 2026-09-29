@@ -218,14 +218,35 @@ def save_expander_md(
     output: ExpanderOutput,
     usage: RunUsage,
     messages_json: bytes | None = None,
+    cap: int | None = None,
+    emitted_count: int | None = None,
 ) -> None:
-    """Save expander round markdown."""
+    """Save expander round markdown.
+
+    ``cap`` / ``emitted_count`` record the editorial query cap
+    (.claude/plans/expander_query_cap.md §7.5): the ceiling the expander was
+    held to and how many queries it actually produced *before* the clamp.
+
+    ⚠ ``emitted_count`` is not redundant with ``output``. ``output`` is the
+    POST-clamp object, so without it the log would show the truncated list
+    with no trace that anything was dropped — the one fact a reader of a
+    capped run needs. Both default to ``None``; an unpinned run's header is
+    unchanged.
+    """
     run_dir = LOGS_DIR / log_id
     path = run_dir / f"expander_{prompt_key}" / f"round_{round_num}.md"
 
     lines: list[str] = []
     lines.append(f"# Expander — Round {round_num}")
     lines.append(f"**Prompt key:** `{prompt_key}`")
+    if cap is not None:
+        _kept = len(output.queries)
+        _emitted = _kept if emitted_count is None else emitted_count
+        lines.append(
+            f"**Query cap (editorial):** `{cap}` — "
+            f"emitted {_emitted}, kept {_kept}"
+            + (f" (clamped, {_emitted - _kept} dropped)" if _emitted > _kept else "")
+        )
     lines.append("")
 
     # Usage

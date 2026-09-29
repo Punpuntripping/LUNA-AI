@@ -128,6 +128,25 @@ def _validate_request(req: BlogPostJobRequest) -> None:
             detail="قيمة mode غير صالحة",
         )
 
+    # ⚠ Supplied-only, exactly like ``mode``: ``None`` means "not pinned — each
+    # expander decides", and is NEVER coerced to a number. Defaulting an absent
+    # cap would cap every editorial job that never asked to be capped, with
+    # nothing in any response or log to say so (expander_query_cap.md §11).
+    #
+    # ⚠ Floor of 2, and NO ceiling (expander_query_cap.md D5 + D6):
+    #   - below 2 the sectioned case path cannot satisfy its ≥2-channel rule and
+    #     ``clamp_queries``' channel rescue no-ops, so flooring at 2 closes that
+    #     hole by construction;
+    #   - above, nothing is refused — both expander prompts top out at 10, so a
+    #     cap of 50 simply never binds. Validation that cannot change an outcome
+    #     is noise.
+    if req.cap is not None and req.cap < 2:
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail="قيمة cap غير صالحة",
+        )
+
 
 async def _validate_against_db(
     supabase: SupabaseClient, req: BlogPostJobRequest

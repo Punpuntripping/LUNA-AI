@@ -40,6 +40,7 @@ from __future__ import annotations
 import html
 
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.deep_search_v4.shared.query_cap import render_cap_block
 
 
 def _esc(value: object) -> str:
@@ -537,11 +538,32 @@ def build_expander_user_message(
     focus_instruction: str,
     user_context: str,
     context_blocks: list[ContextBlock] | None = None,
+    cap: int | None = None,
 ) -> str:
     """Build the user message for the expander agent.
 
     When ``context_blocks`` is non-empty, a ``<context_blocks>`` XML block is
     appended after the user context carrying the planner-curated bundle (§5.1).
+
+    ``cap`` is the editorial query cap (expander_query_cap.md): the raw integer
+    an editor put on a Blog-Post API job, carried here unchanged — there is no
+    level, no band and no lookup table between the wire and this block. It is a
+    ceiling only: the block asks for *at most* ``cap`` queries and an expander
+    that answers with fewer has answered correctly. Its block is appended AFTER
+    ``<context_blocks>`` — last in the message — because it overrides the
+    prompt's own "Number of queries" guidance for this run, and an instruction
+    that overrides another has to be read after it.
+
+    ⚠ The block belongs in the USER message and nowhere else. In the system
+    prompt it would move the DashScope prefix-cache key on every expander call
+    in the product, in-app runs included, to serve a field only editorial jobs
+    set. ``cap=None`` (every in-app run) leaves this function's output
+    byte-identical to what it was before the cap existed — a test asserts it.
+
+    The sectioned prompt's «at least two channels» rule still holds under a
+    cap: the wire floors ``cap`` at 2, two queries can cover two channels, and
+    the clamp (``shared/query_cap.py``) protects the invariant when it
+    truncates.
 
     SUPERSEDED 2026-07-24 (plan §7 / decision D6): the reranker is no longer a
     zero-context surface. It receives the ``planner_brief`` block ONLY (never
@@ -564,6 +586,11 @@ def build_expander_user_message(
             parts.append(f"    {_esc(block.body)}")
             parts.append("  </block>")
         parts.append("</context_blocks>")
+    # ⚠ LAST in the message, after <context_blocks> — it overrides the prompt's
+    # own "Number of queries" guidance, so it has to be read after it.
+    if cap is not None:
+        parts.append("")
+        parts.append(render_cap_block(cap))
     return "\n".join(parts)
 
 

@@ -223,11 +223,12 @@ async def handle_planner_turn(
     redesign — renamed from positional ``briefing`` in Phase C).
 
     ``pinned`` (:class:`~.models.PinnedPlan`) is the headless editorial pin —
-    ``.claude/plans/blog_subjects.md`` §5. It does three things and nothing
+    ``.claude/plans/blog_subjects.md`` §5. It does two things and nothing
     else: overlays a partially-pinned ``mode``/``support`` onto phase 1's
-    output, selects the editorial aggregator prompt twin, and converts an
-    unanswerable phase-1 pause to the safe default. ``None`` (every in-app
-    turn) leaves this function behaviourally unchanged.
+    output, and converts an unanswerable phase-1 pause to the safe default —
+    a headless job has nobody to ask. (It once also selected an editorial
+    aggregator prompt; those prompts are gone.) ``None`` (every in-app turn)
+    leaves this function behaviourally unchanged.
     """
     with track_stage(
         "deep_search.planner",
@@ -249,6 +250,11 @@ async def handle_planner_turn(
                 pinned_mode=pinned.mode or "",
                 # "" reads as "not pinned"; False would read as "pinned off".
                 pinned_support="" if pinned.support is None else pinned.support,
+                # Same "not pinned" convention, in the field's own type: 0
+                # reads as "not pinned" — there is no cap of 0 (the API
+                # floors at 2), so the sentinel can never collide with a
+                # real value.
+                pinned_cap=pinned.cap or 0,
             )
         return result
 
@@ -489,14 +495,23 @@ async def _run_planner_turn(
     deps._decision = decision
 
     # ── PHASE 2 — retrieve ─────────────────────────────────────────────────
-    # `editorial=True` swaps ONLY the aggregator prompt key for its editorial
-    # twin (blog_subjects.md §6 / apply.EDITORIAL_PROMPT_KEYS) — retrieval,
-    # budgets and executor selection stay byte-identical to the in-app path.
-    # ⚠ Until this argument existed the three `prompt_editorial_*` keys built in
-    # step 7 were unreachable: this call is the only place a RetrievalConfig is
-    # built for a fresh dispatch.
+    # `editorial=True` no longer changes the aggregator prompt — the editorial
+    # twins were deleted and a headless blog job now runs the same mode prompt
+    # an in-app turn runs. It is still carried so the flag reaches the config;
+    # what it governs lives upstream (the pause conversion, EDITORIAL_PAUSE_REASON).
+    # `cap` is the editorial operator's own number (expander_query_cap.md §6).
+    # It is read ONLY here and becomes `config.expander_query_cap`, the most
+    # sub-queries every included executor's expander may produce. It is
+    # orthogonal to the pin table above — a job may pin the cap and nothing
+    # else, in which case phase 1 ran normally and only the sub-query ceiling
+    # is fixed.
+    # ⚠ None (every in-app turn) stays None and leaves this call unchanged —
+    # never defaulted to a number, or every job that never asked to be capped
+    # would be capped silently.
     config = build_retrieval_config(
-        decision, editorial=bool(pinned is not None and pinned.editorial)
+        decision,
+        editorial=bool(pinned is not None and pinned.editorial),
+        cap=pinned.cap if pinned is not None else None,
     )
     # The planner's faithful, zero-bias restatement (when produced) is the
     # canonical retrieval query — it resolves colloquial / rambling phrasing

@@ -36,7 +36,6 @@ from .models import (
     SuggestedAction,
 )
 from .apply import (
-    EDITORIAL_PROMPT_KEYS,
     FULL_PROFILE,
     MIN_EXPANDER_DIVISOR,
     MODE_PROFILES,
@@ -79,7 +78,6 @@ __all__ = [
     "PlannerResponse",
     # apply / caps
     "MODE_PROFILES",
-    "EDITORIAL_PROMPT_KEYS",
     "ROLE_PROFILES",
     "FULL_PROFILE",
     "MIN_EXPANDER_DIVISOR",

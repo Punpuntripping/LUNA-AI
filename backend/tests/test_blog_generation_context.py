@@ -225,7 +225,7 @@ def publish(monkeypatch, _settings):
             "subtype": "legal_synthesis",
             "confidence": "high",
             "detail_level": "medium",
-            "prompt_key": "prompt_editorial_case",
+            "prompt_key": "prompt_mode_case",
             "model_used": "qwen3.6-plus",
             "ref_count": 3,
             "cited_count": 2,
@@ -497,7 +497,7 @@ def test_v1_carries_the_first_draft_and_the_aggregator_input(publish) -> None:
 
     draft = ctx["first_draft"]
     assert draft["confidence"] == "high"
-    assert draft["prompt_key"] == "prompt_editorial_case"
+    assert draft["prompt_key"] == "prompt_mode_case"
     assert draft["model_used"] == "qwen3.6-plus"
     assert draft["used_refs"] == [
         {"n": 1, "ref_id": "reg:00000000-0000-0000-0000-000000000000"}

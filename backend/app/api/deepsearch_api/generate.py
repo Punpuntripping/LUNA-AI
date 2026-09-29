@@ -92,6 +92,7 @@ async def generate_answer_headless(
     metadata: Optional[dict[str, Any]] = None,
     mode: Optional[str] = None,
     support: Optional[bool] = None,
+    cap: Optional[int] = None,
     editorial_voice: bool = True,
     task_label: Optional[str] = None,
 ) -> HeadlessResult:
@@ -104,7 +105,23 @@ async def generate_answer_headless(
 
     ``mode`` / ``support`` / ``editorial_voice`` are the editorial pin
     (``.claude/plans/blog_subjects.md`` §5), threaded to the planner through
-    ``handle_message(pinned_plan=…)``.
+    ``handle_message(pinned_plan=…)``. ⚠ ``editorial_voice`` no longer selects
+    a prompt — the editorial aggregator twins were deleted and every job now
+    returns the ordinary in-app answer. It still marks the run HEADLESS, which
+    is what turns an unanswerable clarifying question into a decision.
+
+    ``cap`` (an ``int`` ≥ 2, or ``None``) is the operator's ceiling on how wide
+    the question is searched and rides the same ``PinnedPlan``. It is a CEILING
+    applied **per expander call**, with the same value handed to every executor
+    in the run — fewer queries than the cap is a valid outcome and nothing is
+    ever padded up to it. It is ORTHOGONAL to ``mode`` / ``support``: it never
+    affects which executors run or whether phase 1 is skipped, only how many
+    sub-queries each executor's expander is asked for and clamped to
+    (``expander_query_cap.md`` §6 / ``MODE_PROFILES.md`` §7). ``None`` means
+    "not pinned — each expander decides" — there is no ``0`` here either, and
+    ⚠ **never a default**: coercing an absent cap to a number would cap every
+    editorial job that never asked to be capped, with nothing in any response or
+    log to say so.
 
     ⚠ **``support`` is ``Optional[bool]`` all the way down and must stay that
     way.** ``None`` means "the planner decides"; ``False`` means "pinned off".
@@ -125,6 +142,7 @@ async def generate_answer_headless(
     pinned_plan = PinnedPlan(
         mode=mode,                       # type: ignore[arg-type]  (validated upstream)
         support=support,
+        cap=cap,                         # validated upstream (>= 2, or None)
         editorial=bool(editorial_voice),
         headless=True,
         agent_family="deep_search",
@@ -173,6 +191,11 @@ async def generate_answer_headless(
         # a different request — see the support note above.
         pinned_mode=pinned_plan.mode or "",
         pinned_support="" if pinned_plan.support is None else pinned_plan.support,
+        # Same convention, in the type the attribute actually is: ``0`` reads as
+        # "not pinned", and there is no cap of 0 (the floor is 2), so it cannot
+        # be mistaken for a real pin. An int keeps the attribute numerically
+        # queryable in Logfire — `pinned_cap > 0` finds every capped run.
+        pinned_cap=pinned_plan.cap or 0,
         fully_pinned=pinned_plan.is_fully_pinned,
         editorial_voice=pinned_plan.editorial,
     ) as _span:

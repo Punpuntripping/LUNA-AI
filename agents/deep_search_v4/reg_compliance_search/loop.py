@@ -22,6 +22,7 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.deep_search_v4.shared.query_cap import clamp_queries
 from agents.utils.tracking import track_stage
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
@@ -136,11 +137,14 @@ class ExpanderNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
         # Always build dynamic instructions — weak-axes guidance when in
         # round 2+. Sectors are applied at search time directly from
         # state.sectors_override (the LLM is no longer told about them). The
-        # sub-query count is no longer capped — the expander decides it.
+        # PLANNER never caps the sub-query count — the expander decides it.
+        # The one exception is the editorial ``cap``, which only the headless
+        # Blog-Post API can mint; in-app it is ``None`` and no block renders.
         weak_axes = state.weak_axes if state.round_count > 1 else []
         dynamic_instructions = build_expander_dynamic_instructions(
             weak_axes,
             state.round_count,
+            cap=state.expander_query_cap,
         )
         if dynamic_instructions:
             user_message = f"{user_message}\n\n{dynamic_instructions}"
@@ -151,6 +155,34 @@ class ExpanderNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                 usage_limits=EXPANDER_LIMITS,
             )
             output: ExpanderOutput = result.output
+
+            # ── Editorial query cap — the ceiling
+            # (.claude/plans/expander_query_cap.md §7.5)
+            # The block asked for at most ``cap`` and told the model that
+            # emitted order is priority order; this is where the ask becomes a
+            # guarantee. In the ordinary case the block already did the work
+            # and nothing is dropped — the clamp is what makes the number a
+            # cap rather than a request.
+            # ⚠ Ceiling only. An expander that comes in UNDER the cap is left
+            # alone: there is no floor, and padding would spend a real search
+            # on a query the expander did not think the question called for.
+            # ⚠ Mutated on the INSTANCE, never on the schema:
+            # ``ExpanderOutput`` stays uncapped, so the fallback below
+            # («expander failed → one query») is untouched and an unpinned run
+            # costs nothing.
+            emitted_count = len(output.queries)
+            if state.expander_query_cap is not None:
+                kept, dropped = clamp_queries(
+                    output.queries,
+                    state.expander_query_cap,
+                    executor="reg_compliance",
+                )
+                if dropped:
+                    output.queries = kept
+                    # ``rationales`` is positional — aligned 1:1 with queries
+                    # by index. Trim it in step or every log line downstream
+                    # attributes the wrong reason to the wrong query.
+                    output.rationales = list(output.rationales[:len(kept)])
 
             # Capture usage
             eu = result.usage()
@@ -197,6 +229,8 @@ class ExpanderNode(BaseNode[LoopState, RegComplianceSearchDeps, RegSearchResult]
                     output=output,
                     usage=result.usage(),
                     messages_json=result.all_messages_json(),
+                    cap=state.expander_query_cap,
+                    emitted_count=emitted_count,
                 )
 
         except Exception as e:

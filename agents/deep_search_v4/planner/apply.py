@@ -5,6 +5,13 @@ Every concrete number — result budgets, aggregator prompt key — is derived
 **here**, in code, from these tables. The LLM never sees a number, and the
 planner no longer caps the expander's sub-query count.
 
+The ONE exception is the editorial ``cap`` pin (``planning/MODE_PROFILES.md`` §7):
+an **operator** number carried on a headless editorial job — the most sub-queries
+each executor's expander may produce on this run — passed straight through to
+``expander_query_cap``. ⚠ It is **not a planner cap**: the planner still never
+caps the expander on its own, never sees the number, and it is ``None`` on every
+in-app run.
+
 The result-budget model (full spec: ``planning/MODE_PROFILES.md``):
 
 - Each executor carries a ``result_budget`` (target total results) — **not** a
@@ -76,24 +83,16 @@ MODE_PROFILES: dict[Mode, dict] = {
 # Editorial twins — in-app aggregator prompt key -> public-blog article key.
 # ---------------------------------------------------------------------------
 #
-# The editorial path (public blog wing — .claude/plans/blog_subjects.md §6)
-# runs the SAME retrieval as the in-app path and differs only in the
-# aggregator's rhetoric: the in-app prompt answers a lawyer who asked and is
-# waiting, the editorial twin writes an article for a stranger who arrived
-# from a search engine. Same mode body, same citation rules, so one twin per
-# mode rather than one editorial prompt for all three — otherwise pinning the
-# mode would select mode-specific guidance that the prompt then discards.
-#
-# Every value here is asserted to exist in ``AGGREGATOR_PROMPTS`` by
-# ``aggregator/tests/test_prompts_mode_body_identity.py``. The check lives
-# there, not here: this module stays import-pure (no aggregator import) so the
-# apply tier runs without the agent runtime.
-
-EDITORIAL_PROMPT_KEYS: dict[str, str] = {
-    "prompt_mode_case": "prompt_editorial_case",
-    "prompt_mode_reg_compliance": "prompt_editorial_reg_compliance",
-    "prompt_mode_full": "prompt_editorial_full",
-}
+# ⚠ The editorial path no longer has aggregator prompts of its own. It once
+# swapped each mode prompt for an "editorial twin" that wrote a published
+# ARTICLE — headline, lede, ordinal sections, de-identified framing — and
+# those three prompts have been deleted: article shaping now happens on the
+# marketing side, which holds the answer and its references. ``editorial``
+# survives as a flag because it still means something here that has nothing
+# to do with rhetoric: a headless job has no user, so the planner converts a
+# clarifying pause into a default decision instead of waiting for an answer
+# nobody can give (``runner.EDITORIAL_PAUSE_REASON``). The aggregator prompt
+# a blog job runs is now exactly the one an in-app turn would run.
 
 
 @dataclass
@@ -131,12 +130,21 @@ class RetrievalConfig:
     # Phase C — planner-emitted context label list (placeholder; consumed in
     # Phase D when run_retrieval builds ContextBlock objects from it).
     context_labels: list[str] = field(default_factory=list)
+    # Editorial query cap — the most sub-queries EVERY included executor's
+    # expander may produce in this run (expander_query_cap.md §6 /
+    # MODE_PROFILES.md §7). ``None`` = not pinned: no block is rendered into any
+    # expander user message and no clamp runs.
+    # Applies per expander CALL, not per run: under `reg_compliance_led` +
+    # support both executors get the same cap — one number for the whole job,
+    # not a number split between them.
+    expander_query_cap: int | None = None
 
 
 def build_retrieval_config(
     decision: PlannerDecision,
     *,
     editorial: bool = False,
+    cap: int | None = None,
 ) -> RetrievalConfig:
     """Expand a :class:`PlannerDecision` into a concrete :class:`RetrievalConfig`.
 
@@ -149,10 +157,30 @@ def build_retrieval_config(
       (structural — 'full' has no support role). Budgets come from
       ``FULL_PROFILE`` per executor.
 
-    ``editorial`` (keyword-only) swaps **only** the aggregator prompt key for
-    its :data:`EDITORIAL_PROMPT_KEYS` twin — retrieval, budgets, and executor
-    selection are byte-identical to the in-app path. Default ``False`` leaves
-    every existing caller unchanged.
+    ``editorial`` (keyword-only) marks a headless job and is carried through
+    to :class:`RetrievalConfig` for the pause conversion upstream. It no
+    longer changes the aggregator prompt — the editorial twins were deleted —
+    so an editorial run and an in-app run of the same mode are now identical
+    here in every field.
+
+    ``cap`` (keyword-only) is the editorial operator's own number: the most
+    sub-queries every included executor's expander may produce on this run. It
+    lands on ``expander_query_cap`` as a **straight pass-through** — no lookup
+    table, no band, no validation. It changes nothing else: not the mode, not
+    the executor set, not a budget. ``None`` (the default, and every in-app
+    call) leaves the field ``None`` and the run byte-identical to before.
+
+    ⚠ ``cap`` is **not a planner cap**. This function still never caps the
+    expander on its own; it only carries a number the operator already chose.
+
+    ⚠ ``None`` is never coerced to a number. An absent cap is a real answer —
+    "each expander decides from its own prompt guidance" — and defaulting it
+    would cap every editorial job that never asked to be capped.
+
+    Nothing is validated here. The API router earns the 400 for an out-of-range
+    value (min 2); by the time a run is dispatched, a nonsense value on a stale
+    job row has already been degraded to ``None`` by the service layer, because
+    a job that cannot be capped should still run.
     """
     profile = MODE_PROFILES[decision.mode]
     result_budget: dict[str, int] = {}
@@ -167,19 +195,8 @@ def build_retrieval_config(
             support = profile["support"]
             result_budget[support] = ROLE_PROFILES["support"]["result_budget"]
 
+    # One key per mode, editorial or not: the twins are gone.
     aggregator_prompt_key = profile["aggregator_prompt_key"]
-    if editorial:
-        # Fail LOUD on a mode with no twin. Falling back to the in-app key
-        # would silently publish a chat-shaped answer as an article — the
-        # failure mode that looks exactly like success.
-        try:
-            aggregator_prompt_key = EDITORIAL_PROMPT_KEYS[aggregator_prompt_key]
-        except KeyError:
-            raise KeyError(
-                f"No editorial aggregator prompt for mode {decision.mode!r} "
-                f"(key {aggregator_prompt_key!r}). "
-                f"Known twins: {sorted(EDITORIAL_PROMPT_KEYS)}"
-            ) from None
 
     included = set(result_budget)
     return RetrievalConfig(
@@ -194,6 +211,9 @@ def build_retrieval_config(
         # Phase C — pass through the planner's label selection. Phase D will
         # consume these via ContextBlock objects in run_retrieval.
         context_labels=list(getattr(decision, "context_labels", []) or []),
+        # Straight pass-through — the operator's number, unmodified. ⚠ Do NOT
+        # default an absent cap: ``None`` means "each expander decides".
+        expander_query_cap=cap,
     )
 
 
@@ -202,7 +222,6 @@ __all__ = [
     "ROLE_PROFILES",
     "FULL_PROFILE",
     "MODE_PROFILES",
-    "EDITORIAL_PROMPT_KEYS",
     "RetrievalConfig",
     "build_retrieval_config",
 ]

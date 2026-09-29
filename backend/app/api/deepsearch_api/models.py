@@ -43,9 +43,13 @@ class BlogPostJobRequest(BaseModel):
     title: Optional[str] = Field(
         default=None,
         description=(
-            "Optional title. When null the aggregator's first-line H1 headline is "
-            "lifted out of the body (public_blog_service.extract_headline). A "
-            "supplied title WINS and the H1 line is stripped either way."
+            "⚠ SEND IT. The engine no longer writes an H1 headline — the "
+            "editorial prompts that did were deleted — so the middle rung of "
+            "the publisher's title ladder (request title → body H1 → workspace "
+            "item title) is now always empty, and an omitted title falls "
+            "through to the workspace item's own label. That label also mints "
+            "the slug, i.e. the article's permanent URL. A supplied title WINS "
+            "and any H1 is stripped from the body either way."
         ),
     )
     display_mode: str = Field(
@@ -107,9 +111,16 @@ class BlogPostJobRequest(BaseModel):
     editorial_voice: bool = Field(
         default=True,
         description=(
-            "Select the editorial aggregator prompt twin (blog_subjects §6) — the "
-            "article voice for a stranger arriving from a search engine, rather "
-            "than the in-app answer to a lawyer who asked and is waiting."
+            "⚠ INERT for the article's voice. It once selected an editorial "
+            "aggregator prompt that wrote a published ARTICLE — headline, lede, "
+            "ordinal sections, de-identified framing. Those prompts are gone: "
+            "article shaping now happens on the marketing side, which holds the "
+            "answer and its references. Either value returns the ordinary "
+            "in-app answer, so the field is accepted and kept only so existing "
+            "callers do not break. What it still governs is invisible here and "
+            "must not be switched off casually: it marks the job HEADLESS, and "
+            "a headless job converts a planner clarifying-question into a "
+            "decision instead of waiting for an answer nobody can give."
         ),
     )
 
@@ -133,6 +144,21 @@ class BlogPostJobRequest(BaseModel):
             "deliberate support=false, and every partially-pinned job would "
             "silently lose its support executor — no error, no log line, just a "
             "thinner article (blog_subjects §5 + §11)."
+        ),
+    )
+    cap: Optional[int] = Field(
+        default=None,
+        description=(
+            "An integer ≥ 2, or null. Pins the MAXIMUM number of sub-queries "
+            "each executor's expander may produce — applied per expander call, "
+            "the same value to every executor in the run (§11.1). A ceiling "
+            "only: fewer than the cap is a valid outcome, nothing is ever "
+            "padded up to it. No upper bound — both expander prompts top out "
+            "at 10, so a cap above that simply never binds. "
+            "⚠ null is VALID and means 'not pinned — each expander decides "
+            "from its own prompt guidance'; it must NEVER be coerced to a "
+            "number, which would cap every editorial job that never asked to "
+            "be capped, with nothing in any response or log to say so."
         ),
     )
     subtype: str = Field(

@@ -348,6 +348,15 @@ class PinnedPlan:
     ``build_retrieval_config(decision, editorial=True)``; retrieval, budgets and
     executor selection stay byte-identical to the in-app path.
 
+    ``cap`` is a FIFTH, orthogonal knob and does not appear in the table
+    above: it never affects mode or support, so pinning it alone still runs
+    phase 1 in full. It is the operator's own number — the most sub-queries
+    each executor's expander may produce on this run — handed straight through
+    to ``build_retrieval_config(cap=…)`` with no table in between.
+    ``None`` = not pinned, and is never coerced to a number: an absent cap is a
+    real answer ("each expander decides from its own prompt guidance"), so
+    defaulting it would silently cap every job that never asked to be capped.
+
     Frozen + pure: this module imports only ``pydantic``, so the apply/models
     tier stays usable without the agent runtime installed.
     """
@@ -356,6 +365,17 @@ class PinnedPlan:
     support: bool | None = None
     editorial: bool = False
     headless: bool = True
+    # Editorial query cap (expander_query_cap.md §6) — ORTHOGONAL to phase 1.
+    # ⚠ Deliberately NOT part of ``is_fully_pinned`` / :meth:`decision` /
+    # :meth:`overlay`: it says nothing about mode or support, so a job that pins
+    # only the cap must still run phase 1. It is read once, in ``runner.py``,
+    # and handed to ``build_retrieval_config(cap=…)``, which passes it through
+    # to every included executor's expander unchanged.
+    # ⚠ Never default an absent cap. ``None`` ≠ a number: coercing it would cap
+    # every editorial job that never asked to be capped, with nothing in any
+    # response or log to say so. No validation here either — the API router
+    # earns the 400 (min 2), and a stale job row must still run.
+    cap: int | None = None
     # Consumed by the ORCHESTRATOR (it forces the dispatch), not by the planner.
     agent_family: str = "deep_search"
     # Stands in for the router-emitted label, since the router never runs on a

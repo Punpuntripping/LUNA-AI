@@ -129,6 +129,13 @@ class FullLoopDeps:
     # left ``None`` by CLI / monitor paths that construct ``FullLoopDeps``
     # directly without the planner-driven picker.
     sectors_future: "asyncio.Future[list[str] | None] | None" = None
+    # Editorial query cap — the operator's ``cap`` off the Blog-Post API,
+    # carried here by ``build_retrieval_config`` (expander_query_cap.md §6).
+    # Copied verbatim onto BOTH executors: the same ceiling is appended to every
+    # expander user message in this run and is what each loop clamps to.
+    # ``None`` — every in-app turn and every CLI / monitor path that builds
+    # FullLoopDeps by hand — renders no block and installs no clamp.
+    expander_query_cap: int | None = None
     case_score_threshold: float | None = None
     # Phase 6 clarification hook — superseded by the deferred-tool path in
     # cut-2 (Task 13.7).  ask_user is now a @agent.tool_plain on the planner
@@ -362,6 +369,9 @@ async def _run_reg_compliance_phase(
         unfold_mode=deps.unfold_mode,
         concurrency=deps.concurrency,
         reg_max_keep=deps.reg_max_keep,
+        # ``0`` reads as "not pinned" — there is no cap of 0 (the wire floors
+        # it at 2), so 0 is the only honest absent value for an int attribute.
+        expander_query_cap=deps.expander_query_cap or 0,
     ) as _phase_span:
         reg_deps = RegComplianceSearchDeps(
             supabase=deps.supabase,
@@ -392,6 +402,8 @@ async def _run_reg_compliance_phase(
             ),
             sectors_future=deps.sectors_future,
             context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
+            # Editorial query cap — the same ceiling the case phase gets.
+            expander_query_cap=deps.expander_query_cap,
         )
 
         t0 = _time.perf_counter()
@@ -612,6 +624,12 @@ async def _run_case_phase(
             sectors_override=deps.sectors_override,
             score_threshold=deps.case_score_threshold,
             context_blocks=list(deps.context_blocks) if deps.context_blocks else None,
+            # Editorial query cap — the same ceiling the reg phase gets.
+            # Under واقعة معينة (reg_compliance_led + support) both executors run
+            # and both are asked for the same cap; that is the point of D7.
+            # ⚠ Not "the cap split between them" — a job's width is a property
+            # of the question, not of the executor.
+            expander_query_cap=deps.expander_query_cap,
         )
     except Exception as exc:
         logger.error("case_search phase failed: %s", exc, exc_info=True)
@@ -669,6 +687,11 @@ async def _run_case_phase(
         total_tokens_out=total_out,
         rqr_count=len(rqrs),
         case_max_keep=deps.case_max_keep,
+        # ``0`` reads as "not pinned". This phase has no track_stage span (see
+        # the note above), so the attribute rides the log record instead — same
+        # key as the reg phase's span attribute so the two stay queryable
+        # together.
+        expander_query_cap=deps.expander_query_cap or 0,
         outcome="degraded" if _failed_q else "ok",
         failed_queries=_failed_q,
         total_queries=int(_retrieval.get("total_queries", 0) or 0),
@@ -1158,6 +1181,9 @@ async def run_retrieval(
         include_cases=config.include_cases,
         detail_level=deps.detail_level,
         result_budget=dict(config.result_budget),
+        # Editorial query cap (expander_query_cap.md §6). ``None`` on every
+        # in-app dispatch; when set, BOTH phases below get the same ceiling.
+        expander_query_cap=config.expander_query_cap,
         # Wave A: ``sectors_override`` retained for non-picker callers (CLI,
         # monitor, smoke tests that build FullLoopDeps directly). When the
         # picker is wired (any planner-driven dispatch), ``sectors_future``

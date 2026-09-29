@@ -16,6 +16,7 @@ from __future__ import annotations
 import html
 
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.deep_search_v4.shared.query_cap import render_cap_block
 
 from .models import WeakAxis
 
@@ -225,12 +226,27 @@ def get_expander_prompt(key: str) -> str:
 def build_expander_dynamic_instructions(
     weak_axes: list[WeakAxis],
     round_count: int,
+    cap: int | None = None,
 ) -> str:
     """Build dynamic instructions for the expander run.
 
-    Renders weak-axes retry guidance (round 2+) only. The planner no longer
-    caps the sub-query count — the expander decides how many sub-queries the
-    question needs, bounded only by its own prompt guidance.
+    Renders weak-axes retry guidance (round 2+) and, LAST, the editorial
+    query-cap block when one is pinned. The planner still never caps the
+    sub-query count — the expander decides how many sub-queries the question
+    needs, bounded only by its own prompt guidance. ``cap`` is the one
+    exception and it is an *operator* decision, not a planner one: the raw
+    integer off a Blog-Post API request, passed straight through with no
+    lookup (.claude/plans/expander_query_cap.md §4, D1).
+
+    ⚠ ``cap`` is a ceiling and nothing else — the block says *at most*. There
+    is no floor to pad up to, because inventing a query to reach a number
+    spends a real search on an angle the expander did not think worth asking.
+
+    ⚠ The cap block goes LAST on purpose: it overrides the "Number of
+    queries" guidance for this run, and an instruction that overrides another
+    has to be read after it. With ``cap=None`` — every in-app run — this
+    function's output is byte-identical to what it was before the cap
+    existed, which is what keeps the expander user message unchanged.
 
     Sectors are not negotiated with the LLM — the planner is the sole source
     and the search node applies ``state.sectors_override`` directly.
@@ -253,6 +269,11 @@ def build_expander_dynamic_instructions(
             f"Direct your new queries to cover these weak axes only.\n"
             f"Do not repeat queries that already produced strong results."
         )
+
+    # LAST — this block overrides the prompt's own "Number of queries"
+    # guidance for one run, so it has to be the last thing the model reads.
+    if cap is not None:
+        parts.append(render_cap_block(cap))
 
     return "\n\n".join(parts)
 

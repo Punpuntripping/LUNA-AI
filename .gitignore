@@ -43,6 +43,38 @@ backend/tests/*
 agents/deep_search_v4/aggregator/tests/*
 !agents/deep_search_v4/aggregator/tests/test_prompts_mode_body_identity.py
 !agents/deep_search_v4/aggregator/tests/test_postvalidator_editorial.py
+# the editorial query-cap suite is durable: `shared/query_cap.py` is the ONLY
+# thing turning the operator's `cap` from a request the model may ignore into a
+# guarantee, and it pins a PROMPT byte-for-byte plus the rule that truncation
+# follows the model's own importance ordering. Untracked, a clean clone ships
+# the clamp with nothing testing it, and a reworded block would change model
+# behaviour on every editorial job with nothing to catch it.
+!agents/deep_search_v4/shared/tests/
+agents/deep_search_v4/shared/tests/*
+!agents/deep_search_v4/shared/tests/test_query_cap.py
+# the two expander byte-identity tests are the boundary between the editorial
+# cap and the product: they assert that with no cap pinned each expander's USER
+# message is byte-for-byte what it was before the feature existed. That is the
+# whole guarantee in-app search is untouched — and it is exactly the kind of
+# thing a later refactor breaks silently, by rendering the block unconditionally
+# or moving it into the system prompt (which would also cost the DashScope
+# prefix cache on every expander call in the product). Untracked, a clean clone
+# ships that boundary with nothing holding it.
+!agents/deep_search_v4/reg_compliance_search/tests/
+agents/deep_search_v4/reg_compliance_search/tests/*
+!agents/deep_search_v4/reg_compliance_search/tests/test_expander_prompts.py
+!agents/deep_search_v4/case_search/tests/
+agents/deep_search_v4/case_search/tests/*
+!agents/deep_search_v4/case_search/tests/test_expander.py
+# test_loop.py exercises the clamp THROUGH the node, which is a different
+# failure from what the shared unit suite covers: drop `channel_of` from the
+# sectioned call site and every unit test still passes while the «at least two
+# channels» rule silently dies on every truncated editorial run. This is the
+# only place that wiring is held.
+!agents/deep_search_v4/case_search/tests/test_loop.py
+# test_loop.py's fixtures (`case_search_deps` et al.) live here — without it a
+# clean clone cannot run the one test that holds the clamp wiring.
+!agents/deep_search_v4/case_search/tests/conftest.py
 # access-tiers / library-gating suites are durable — they pin revenue and
 # entitlement invariants (unlock idempotency, the frozen-library predicate, the
 # شرح exclusion, the ISR cache-leak guard). Losing them loses the contract.

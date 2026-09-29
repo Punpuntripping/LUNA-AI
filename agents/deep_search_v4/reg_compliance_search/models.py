@@ -453,6 +453,15 @@ class LoopState:
     # Still filtered to that ONE label — ``case_brief`` and
     # ``prior_search_lessons`` never reach a reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
+    # Editorial query cap — the MOST sub-queries this run's expander may
+    # produce. Appended to its USER message as an "at most N" block and
+    # enforced as a ceiling after it answers
+    # (.claude/plans/expander_query_cap.md §7.5 / MODE_PROFILES.md §7).
+    # ⚠ A ceiling, not a target: there is no floor and nothing pads. An
+    # expander that settles the question in fewer queries answered correctly.
+    # ``None`` (in-app, CLI, monitor) renders no block and clamps nothing: the
+    # expander user message stays byte-identical to what it was before.
+    expander_query_cap: int | None = None
     step_timings: dict = field(default_factory=dict)  # {expander: float, search: float, reranker: float, aggregator: float}
 
 

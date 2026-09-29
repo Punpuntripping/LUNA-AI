@@ -505,6 +505,18 @@ class LoopState:
     # Still filtered to that ONE label — ``case_brief`` and
     # ``prior_search_lessons`` never reach a reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
+    # Editorial query cap — the MOST sub-queries this run's expander may
+    # produce, appended to its USER message and enforced as a ceiling after it
+    # answers (expander_query_cap.md §7.5 / MODE_PROFILES.md §7). A ceiling
+    # only: coming in under it is a legitimate answer and nothing pads it.
+    # The SAME value the reg executor gets — a job's width is a property of
+    # the question, not of the executor (D7). ``None`` (in-app, CLI, monitor)
+    # renders no block and clamps nothing — the user message stays
+    # byte-identical to what it was before.
+    #
+    # On the sectioned path the clamp is channel-aware: the prompt's «at least
+    # two channels» rule survives a truncation (see ``clamp_queries``).
+    expander_query_cap: int | None = None
 
 
 @dataclass

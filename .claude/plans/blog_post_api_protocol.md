@@ -18,7 +18,7 @@ Generation takes **~1–4 minutes** (hard cap 7 min), so the API is **asynchrono
 
 1. **Posts are not private.** They land in the public wing: listed in the `/blog` gallery, on their subject page, and in the sitemap — indexable by Google. `publish_public` defaults to **`true`**.
 2. **There is no token.** v1 identified a post by an unguessable 32‑hex `token` and called that "the privacy boundary." This wing has no token; the address is a readable **Arabic slug**. `result.token` is now always `null`.
-3. **The article is written differently.** A dedicated editorial prompt masks the questioner's identity and produces an *article* — a headline, a lede, `##` sections, a خلاصة — not a question‑and‑answer. On a vague question it states its assumption in the lede rather than hedging. See §11.
+3. ~~**The article is written differently.**~~ **No longer true — see §11.2.** A dedicated editorial prompt used to mask the questioner's identity and produce an *article* (headline, lede, `##` sections, a خلاصة). **Those prompts have been deleted.** What comes back now is the ordinary in‑app answer, and shaping it into an article is the caller's job.
 
 ---
 
@@ -137,15 +137,16 @@ Address it by **`root_id`** (the logical blog), not `post_id`. Not owner‑scope
 | Field | Type | Req? | Default | Meaning |
 |---|---|---|---|---|
 | `idempotency_key` | string | **yes** | — | Stable dedup key. Same key ⇒ same job ⇒ **same blog**. |
-| `question` | string | **yes** | — | Anonymized, self‑contained Arabic question. **No client PII** — the editorial prompt de‑identifies the *framing*, not your facts. |
-| `title` | string | no | `null` | Article headline. When null, the engine's own H1 is lifted out of the body and used. |
+| `question` | string | **yes** | — | Anonymized, self‑contained Arabic question. **No client PII.** ⚠ Nothing de‑identifies the framing any more (§11.2) — the answer may address the asker in the second person and echo the question's own wording. |
+| `title` | string | no | `null` | Article headline. ⚠ **Send it** (§11.2). The engine no longer writes an H1, so the null path now falls through to the workspace item's own label — which also mints the permanent slug. |
 | `type` | string | no | `null` | `laws_explanation` \| `judicial_research` \| `compliance`. **Send it** — it drives the badge and the filter. |
 | `subjects` | string[] | no | `[]` | Subject slugs, e.g. `["work-law"]`. Unknown slug ⇒ 400. Empty is allowed today (the vocabulary is young) but leaves the article unfiled in the browse tree. |
 | `slug` | string | no | `null` | Arabic URL segment. Minted from the title when null. **Permanent once published** (§12). |
 | `publish_public` | bool | no | **`true`** | Land the article in the public gallery + sitemap. `false` ⇒ unlisted‑but‑reachable. |
 | `mode` | string | no | `null` | `case_led` \| `reg_compliance_led` \| `full` \| `null`. Pins retrieval; `null` ⇒ the planner decides (§11). |
 | `support` | bool | no | `null` | Pins the support executor. **`null` ≠ `false`** — see §11. |
-| `editorial_voice` | bool | no | `true` | Use the editorial prompt (article form, masked identity). `false` gives the in‑app answer shape. |
+| `cap` | int | no | `null` | Max sub‑queries **each** executor expander may produce (§11.1). Minimum `2`; no maximum. `null` ⇒ each expander decides. |
+| `editorial_voice` | bool | no | `true` | ⚠ **Inert for the voice** (§11.2) — both values now return the in‑app answer shape. Accepted, and still worth leaving `true`: it marks the job headless, which is what turns an unanswerable clarifying question into a decision. |
 | `publish_policy` | string | no | `"auto"` | `auto` \| `always` \| `never` (§10). |
 | `min_confidence` | string | no | `"medium"` | `high` \| `medium` \| `low` — the `auto` threshold. |
 | `subtype` | string | no | `"marketing_telegram"` | Free tag for filtering your own posts. |
@@ -290,6 +291,49 @@ With defaults (`auto`, `medium`, `publish_public: true`): a `high` or `medium` a
 
 ---
 
+### 11.1 `cap` → sub-query ceiling
+
+`cap` is a **separate, optional** pin and it answers a different question from `mode`/`support`. Those say *where* to look; this says *how wide to look there*. It is your call on how much the question is worth searching, and therefore what the article costs.
+
+`cap: 2` ⇒ each executor's expander is told to produce **at most 2** queries, and anything past 2 is dropped.
+
+- **It is a ceiling, not a target.** The expander is told *at most* `cap`, and to order its queries by importance because only the first `cap` are used. An expander that answers a settled question in one query has answered correctly — there is no floor, and nothing is ever invented to reach a number.
+- **It applies per expander call, to every executor in the run.** `reg_compliance_led` + `support: true` runs two executors, so `cap: 2` gets you at most 2 regulatory queries **and** at most 2 case queries — not 2 shared between them.
+- **Per *call*, not per job.** The regulatory executor may run up to 3 retry rounds when round 1 comes back thin, and the cap applies to each. A `cap: 2` job can therefore spend up to 6 regulatory searches in the worst case. The case executor is single‑round, so it is exactly `cap`.
+- **Minimum `2`.** `cap: 1`, `0` and negatives are a `400` (`قيمة cap غير صالحة`). One query cannot satisfy the case expander's «at least two channels» rule, so a cap of 1 would silently degrade that search.
+- **No maximum.** `cap: 50` is accepted and simply never binds — both expanders top out around 10 on their own.
+- **It is orthogonal to `mode` / `support`.** Pinning only `cap` still lets the planner decide the mode; pinning only the mode still lets each expander decide its own count.
+- ⚠ **`null` is not a number.** An absent `cap` is never coerced to a default — the run is byte‑identical to one submitted before this field existed. Send `null` (or omit it) when you have no opinion.
+
+**Rough guide**, if you want one: `2` for one settled point (a procedure, a definition, a deadline); `4`–`6` for the ordinary article — a rule plus its conditions and exceptions; `8`–`10` for several interacting regimes. These are suggestions, not a vocabulary — any integer ≥ 2 is valid.
+
+---
+
+### 11.2 ⚠ The editorial voice is gone — you shape the article now
+
+The three editorial aggregator prompts have been **deleted**. They were what turned a legal answer into a publishable article, and article shaping now belongs on the marketing side, which holds the answer and its references and can do the job better.
+
+**What a job returns now** is the ordinary in‑app answer — the same body a lawyer sees in the product:
+
+| | Before | Now |
+|---|---|---|
+| Opening | `# ` headline on the first line | no H1; the answer's own first heading (commonly `## الخلاصة`) |
+| Structure | two‑paragraph lede, then ordinal `##` sections (أولاً، ثانياً…) | the answer's own headings, which may be few or none on a short question |
+| Framing | de‑identified — never «سؤالك», always the class of people in the situation | may address the asker in the second person and echo the question's wording |
+| Vague question | assumption stated in the lede | ordinary answer, with the uncovered parts in `gaps` |
+
+Everything about the **evidence** is unchanged: the same retrieval, the same reranking, the same `[n]` citations against the same `references` list, the same `confidence`. Only the rhetoric moved.
+
+**What you must change:**
+
+- **Always send an Arabic `title`.** The publisher's ladder is request title → body H1 → workspace‑item title, and the middle rung is now always empty. Without a title the slug — the article's permanent URL — gets minted from an internal label.
+- **Keep `[n]` intact when you rewrite.** Those numbers are assigned in code and are the only link between a sentence and its source; renumbering them silently breaks every citation.
+- **`editorial_voice` is inert for the voice.** Leave it `true`. It no longer selects a prompt, but it still marks the job **headless**, which is what converts an unanswerable clarifying question into a decision instead of a stall.
+
+**⚠ Open, and not solved by this document:** there is no edit endpoint (§6 lists all three routes), so a body you rewrite on your side cannot be pushed back into a published blog. Either the API keeps publishing the raw answer, or you submit with `publish_policy: "never"`, keep `content_md`, and publish through a path that does not exist yet. Decide this before the next batch.
+
+---
+
 ## 12. Slugs & URLs
 
 - The article's address is an **Arabic** slug: `https://rayhanai.com/blog/وقف-تنفيذ-حكم-العامل-…`. Percent‑encode it when building links programmatically.
@@ -398,6 +442,7 @@ if res["status"] == "completed":
 ## 17. Versioning & stability
 
 - **v2.** Request/result field names are load‑bearing and stable; new fields may be *added* — be tolerant of unknown fields.
+- **v2.1: `cap` added** (§7.1, §11.1) — purely additive and ignore‑if‑unknown. A client that never sends it behaves exactly as it did on v2; a server that predates it ignores the field. No existing field changed meaning.
 - v1 fields are retained for compatibility. `token` is now always `null` and `display_mode` is ignored by this wing; neither has been removed.
 - Error **codes** are stable; Arabic **messages** may be reworded — never parse messages.
 - Routes live under `/internal`. If this API is opened to a third party, a versioned prefix may be introduced with the current path kept working or a deprecation window announced.

@@ -203,6 +203,58 @@ def _opt_bool(value: Any) -> Optional[bool]:
     return bool(value)
 
 
+# The floor the router enforces at the boundary (expander_query_cap.md D5).
+# Repeated here rather than imported because the two checks answer different
+# questions: the router's is "is this request valid?" (a 400), this one is
+# "can this stored value still be honoured?" (a warning). Importing one into the
+# other would couple a dispatch-time read-back to an HTTP-layer module.
+_MIN_CAP = 2
+
+
+def _opt_cap(value: Any) -> Optional[int]:
+    """Read back the editorial query cap. Never raises.
+
+    ``None`` stays ``None`` — the tri-state discipline ``support`` already
+    lives under: there is no ``0`` here and no default, only "pinned to a
+    number" or "not pinned". ⚠ **Never default an absent cap to a number** — it
+    would cap every editorial job that never asked to be capped, with nothing in
+    any response or log to say so.
+
+    A value that cannot be honoured (a non-integer, or an int below
+    ``_MIN_CAP``, on an old or hand-edited job row) degrades to ``None`` + a
+    WARNING rather than raising: **a job that cannot be capped should still
+    run.** The 400 is earned at the API boundary, not at dispatch — by the time
+    a row is being processed, refusing it strands a real question over a field
+    that is advisory by design.
+
+    A numeric string (``"2"``) is accepted the way the old level reader accepted
+    ``" Simple "``: ``blog_post_jobs.metadata`` is a schemaless JSON blob, and a
+    round-trip through a dashboard or a hand-written curl is entitled to hand
+    the number back as text.
+    """
+    if value is None:
+        return None
+    # ⚠ ``bool`` is a subclass of ``int`` — ``True`` must not read back as a cap
+    # of 1 (which is itself below the floor, but for the wrong reason).
+    if isinstance(value, bool):
+        number = None
+    elif isinstance(value, int):
+        number = value
+    else:
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            number = None
+    if number is not None and number >= _MIN_CAP:
+        return number
+    logger.warning(
+        "editorial job carries an unusable cap %r — reading it back as "
+        "unpinned (expected an integer >= %d)",
+        value, _MIN_CAP,
+    )
+    return None
+
+
 def editorial_config(req: BlogPostJobRequest) -> dict[str, Any]:
     """The public_blogs half of a submit body, as stored on the job row."""
     return {
@@ -213,6 +265,9 @@ def editorial_config(req: BlogPostJobRequest) -> dict[str, Any]:
         "editorial_voice": bool(req.editorial_voice),
         "mode": req.mode,
         "support": req.support,      # ⚠ tri-state — see _opt_bool
+        # ⚠ tri-state too — never default it to a number. Stored raw; the
+        # router already refused anything below the floor.
+        "cap": req.cap,
     }
 
 
@@ -243,6 +298,7 @@ def read_editorial_config(job: dict) -> dict[str, Any]:
         "editorial_voice": bool(raw.get("editorial_voice", True)),
         "mode": raw.get("mode") or None,
         "support": _opt_bool(raw.get("support")),
+        "cap": _opt_cap(raw.get("cap")),
     }
 
 
@@ -615,6 +671,9 @@ async def process_job(job_id: str) -> None:
                     # that is the unpinned row of the table, not a default.
                     mode=cfg["mode"],
                     support=cfg["support"],
+                    # The query cap (expander_query_cap.md §6) — orthogonal to
+                    # mode/support and None on every job that did not ask.
+                    cap=cfg["cap"],
                     editorial_voice=cfg["editorial_voice"],
                     task_label=(job.get("title") or "").strip() or None,
                 )

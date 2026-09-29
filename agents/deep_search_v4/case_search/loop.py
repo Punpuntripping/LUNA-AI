@@ -24,6 +24,7 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
 from agents.deep_search_v4.shared.context import ContextBlock
+from agents.deep_search_v4.shared.query_cap import clamp_queries
 from agents.utils.tracking import track_stage
 
 # Divisor floor for the dynamic result-budget model (MODE_PROFILES.md §1).
@@ -245,11 +246,32 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
             state.focus_instruction,
             state.user_context,
             context_blocks=state.context_blocks,
+            cap=state.expander_query_cap,
         )
 
         try:
             result = await expander.run(user_message, usage_limits=EXPANDER_LIMITS)
             output: ExpanderOutput = result.output
+
+            # ── Editorial query cap — the ceiling (expander_query_cap.md §7.5)
+            # Mutated on the INSTANCE, never on the schema, so the fallback
+            # below («expander failed → one query») stays untouched.
+            # ``channel_of`` is deliberately absent here: this is the flat
+            # legacy path, its queries carry no channel.
+            # A ceiling only — there is no floor and nothing pads a short
+            # answer; an expander that judged the question settled in fewer
+            # queries is left alone (D3).
+            emitted_count = len(output.queries)
+            if state.expander_query_cap is not None:
+                kept, dropped = clamp_queries(
+                    output.queries,
+                    state.expander_query_cap,
+                    executor="case_search",
+                )
+                if dropped:
+                    output.queries = kept
+                    # ``rationales`` is positional — trim it in step.
+                    output.rationales = list(output.rationales[:len(kept)])
 
             eu = result.usage()
             usage_entry = {
@@ -290,6 +312,8 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
                         output=output,
                         usage=result.usage(),
                         messages_json=result.all_messages_json(),
+                        cap=state.expander_query_cap,
+                        emitted_count=emitted_count,
                     )
                 except Exception as e:
                     logger.warning("Failed to save expander MD: %s", e)
@@ -571,11 +595,35 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             state.focus_instruction,
             state.user_context,
             context_blocks=state.context_blocks,
+            cap=state.expander_query_cap,
         )
 
         try:
             result = await expander.run(user_message, usage_limits=EXPANDER_LIMITS)
             output: ExpanderOutputV2 = result.output
+
+            # ── Editorial query cap — the ceiling (expander_query_cap.md §7.5)
+            # ``channel_of`` is what makes this path different: a flat
+            # ``queries[:cap]`` can land entirely inside one channel, and this
+            # prompt requires at least two. The clamp swaps the least important
+            # kept query for the first dropped one carrying a new channel, so
+            # the invariant survives the truncation at no cost in count.
+            # ⚠ That rescue needs ≥2 kept slots to mean anything, which is
+            # exactly why the wire floors ``cap`` at 2 (D5) — at a cap of 1 the
+            # «at least two channels» rule is unreachable by construction.
+            # Mutated on the INSTANCE — the fallback below is untouched.
+            emitted_count = len(output.queries)
+            if state.expander_query_cap is not None:
+                kept, dropped = clamp_queries(
+                    output.queries,
+                    state.expander_query_cap,
+                    channel_of=lambda q: q.channel,
+                    executor="case_search (sectioned)",
+                )
+                if dropped:
+                    # TypedQuery carries its own rationale, so there is no
+                    # parallel list to trim here.
+                    output.queries = kept
 
             eu = result.usage()
             usage_entry = {
@@ -630,6 +678,8 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
                         output=flat,
                         usage=result.usage(),
                         messages_json=result.all_messages_json(),
+                        cap=state.expander_query_cap,
+                        emitted_count=emitted_count,
                     )
                 except Exception as e:
                     logger.warning("Failed to save sectioned expander MD: %s", e)
@@ -1383,6 +1433,7 @@ async def run_case_search(
     sectors_override: list[str] | None = None,
     score_threshold: float | None = None,
     context_blocks: list[ContextBlock] | None = None,
+    expander_query_cap: int | None = None,
 ) -> CaseSearchResult:
     """Run the case_search loop for a focus instruction.
 
@@ -1403,6 +1454,12 @@ async def run_case_search(
             ``sectors_future`` parameter anymore — the case path stopped
             consuming ``sector_picker`` (decision D3 / plan §9), so nothing
             populates this on the production path.
+        expander_query_cap: editorial query cap — the MOST sub-queries the
+            expander may produce, asked for in its user message and enforced
+            as a ceiling afterwards (expander_query_cap.md). The orchestrator
+            passes the SAME integer it gives the reg executor (D7). ``None`` —
+            every in-app run and every CLI call — renders no block and clamps
+            nothing.
 
     Returns:
         CaseSearchResult with reranker_results for the shared aggregator.
@@ -1436,6 +1493,7 @@ async def run_case_search(
         concurrency=concurrency,
         sectors_override=list(sectors_override) if sectors_override else None,
         context_blocks=list(context_blocks) if context_blocks else [],
+        expander_query_cap=expander_query_cap,
     )
 
     t0 = time.perf_counter()
