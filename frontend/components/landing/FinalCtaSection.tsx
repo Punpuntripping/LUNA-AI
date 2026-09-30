@@ -15,7 +15,12 @@ import {
  * access is currently granted via an activation code (see /pricing), so the
  * secondary path points at the support inbox for early access.
  */
-export function FinalCtaSection() {
+export function FinalCtaSection({
+  headline = "كن من أوائل المحامين",
+}: {
+  /** The landing speaks to lawyers; /audiences passes a neutral headline. */
+  headline?: string;
+}) {
   return (
     <section className="mx-auto max-w-4xl px-4 pb-20 pt-4">
       <div className="relative overflow-hidden rounded-3xl bg-primary px-6 py-14 text-center text-primary-foreground sm:px-12">
@@ -25,7 +30,7 @@ export function FinalCtaSection() {
         />
         <div className="relative">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            كن من أوائل المستخدمين
+            {headline}
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-primary-foreground/85">
             ريحان في مرحلة الإطلاق التجريبي. انضمّ الآن واحصل على وصول مبكر

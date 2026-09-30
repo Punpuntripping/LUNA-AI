@@ -3,20 +3,20 @@ import { LandingPageBody } from "@/components/landing/LandingPageBody";
 import { SitePageShell } from "@/components/site/SitePageShell";
 import { ogImageUrl } from "@/lib/seo/og";
 
-const OG_TITLE = "ريحان — المساعد القانوني الذكي في الأنظمة السعودية";
-const OG_IMAGE = ogImageUrl("المساعد القانوني الذكي في الأنظمة السعودية");
+const OG_TITLE = "ريحان — مساعد المحامي السعودي في البحث والصياغة";
+const OG_IMAGE = ogImageUrl("مساعد المحامي السعودي في البحث والصياغة");
 
 export const metadata: Metadata = {
   title: OG_TITLE,
   description:
-    "ريحان يبحث في الأنظمة السعودية والأحكام القضائية ويعطيك تقريراً قانونياً كاملاً، كل استشهاد فيه مربوط بمصدره الرسمي ورابطه المباشر.",
+    "ريحان يبحث للمحامي في الأنظمة السعودية وأكثر من 30,000 حكم قضائي، ويصوغ المذكرات واللوائح بمراجع مرقّمة — كل استشهاد مربوط بمصدره الرسمي ورابطه المباشر.",
   alternates: {
     canonical: "/",
   },
   openGraph: {
     title: OG_TITLE,
     description:
-      "من سؤالك إلى تقرير قانوني كامل، موثّق بمصادره الرسمية. بحث في الأنظمة والأحكام القضائية السعودية.",
+      "من البحث القانوني إلى المذكرة الجاهزة، موثّقة بالأنظمة والأحكام السعودية ومصادرها الرسمية.",
     type: "website",
     url: "/",
     siteName: "ريحان",

@@ -1,15 +1,15 @@
 import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SHOWCASE, SOURCE_TYPES, SourceType } from "./content";
+import { LAWYER_SHOWCASE, SHOWCASE, SOURCE_TYPES, SourceType } from "./content";
 import { ShowcaseReportCard } from "./ShowcaseReportCard";
 
 /**
  * The landing centerpiece — a faithful, static rendering of a real Rayhan
- * search result (blog share c6f6b05f…). It mirrors the in-app
+ * search result from a lawyer's account (`LAWYER_SHOWCASE`). It mirrors the in-app
  * ``ReferencePanel`` card anatomy ([n] badge, domain icon + label, relevance
  * dot, snippet, «عرض المصدر» / «فتح المصدر الرسمي») so prospects see the actual
  * product surface: a complete answer where every citation links back to its
- * official source — here across both regulations and government services.
+ * official source — here a regulation plus two commercial-court judgments.
  */
 export function SearchShowcase() {
   return (
@@ -30,7 +30,7 @@ export function SearchShowcase() {
 
         {/* The mock report card (shared with the اكتشف ريحان lessons) */}
         <div className="mx-auto mt-10 max-w-3xl">
-          <ShowcaseReportCard />
+          <ShowcaseReportCard data={LAWYER_SHOWCASE} />
         </div>
 
         {/* The source types every report can cite. The sentence must not name a

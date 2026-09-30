@@ -1,9 +1,5 @@
 import { Quote } from "lucide-react";
-import {
-  SHOWCASE,
-  SHOWCASE_CITATIONS,
-  SHOWCASE_TOTAL_REFS,
-} from "./content";
+import { DEFAULT_SHOWCASE, type ShowcaseData } from "./content";
 import { ShowcaseReferences } from "./ShowcaseReferences";
 
 /**
@@ -11,10 +7,14 @@ import { ShowcaseReferences } from "./ShowcaseReferences";
  * result (window chrome → question → answer with an inline [n] marker → the
  * «المراجع» panel with a live «عرض المصدر» dialog). Extracted from
  * `SearchShowcase` so the landing/about_us centerpiece and the اكتشف ريحان
- * lessons all render the SAME illustration from the same `content.ts` data —
- * one showcase, no forks.
+ * lessons render the same card from `content.ts` data. The lessons use the
+ * default example; the lawyer landing passes `LAWYER_SHOWCASE`.
  */
-export function ShowcaseReportCard() {
+export function ShowcaseReportCard({
+  data = DEFAULT_SHOWCASE,
+}: {
+  data?: ShowcaseData;
+}) {
   return (
     <div className="overflow-hidden rounded-2xl border border-border bg-card shadow-xl shadow-primary/5 ring-1 ring-black/[0.03]">
       {/* Window chrome + example tag */}
@@ -25,7 +25,7 @@ export function ShowcaseReportCard() {
           <span className="h-2.5 w-2.5 rounded-full bg-border" />
         </div>
         <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary">
-          {SHOWCASE.exampleTag}
+          {data.exampleTag}
         </span>
       </div>
 
@@ -34,25 +34,30 @@ export function ShowcaseReportCard() {
         <div className="flex gap-2.5">
           <Quote className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <p className="text-sm leading-relaxed text-muted-foreground">
-            {SHOWCASE.question}
+            {data.question}
           </p>
         </div>
 
         {/* Answer */}
         <div className="rounded-xl border border-border/70 bg-background p-4 sm:p-5">
           <p className="text-[15px] font-semibold leading-relaxed text-foreground">
-            {SHOWCASE.answerLead}
+            {data.answerLead}
+            {data.answerLeadCites.map((n) => (
+              <CitationMarker key={n} n={n} />
+            ))}
           </p>
           <p className="mt-3 text-sm leading-loose text-foreground/90">
-            {SHOWCASE.answerBody}
-            <CitationMarker n={SHOWCASE.citationN} />
+            {data.answerBody}
+            {data.answerBodyCites.map((n) => (
+              <CitationMarker key={n} n={n} />
+            ))}
           </p>
         </div>
 
         {/* References panel — mirrors ReferencePanel; «عرض المصدر» is live */}
         <ShowcaseReferences
-          citations={SHOWCASE_CITATIONS}
-          totalRefs={SHOWCASE_TOTAL_REFS}
+          citations={data.citations}
+          totalRefs={data.totalRefs}
         />
       </div>
     </div>

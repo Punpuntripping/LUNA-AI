@@ -41,7 +41,7 @@ export default function AudiencesPage() {
         </section>
 
         <SectorBand />
-        <FinalCtaSection />
+        <FinalCtaSection headline="كن من أوائل المستخدمين" />
       </main>
     </SitePageShell>
   );

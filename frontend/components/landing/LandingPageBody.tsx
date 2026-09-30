@@ -1,12 +1,12 @@
 import { LandingHero } from "@/components/landing/LandingHero";
-import { ProblemSection } from "@/components/landing/ProblemSection";
-import { AboutSection } from "@/components/landing/AboutSection";
-import { AudiencesTeaser } from "@/components/audiences/AudiencesTeaser";
 import { SearchShowcase } from "@/components/landing/SearchShowcase";
-import { CapabilitiesSection } from "@/components/landing/CapabilitiesSection";
+import { DraftShowcase } from "@/components/landing/DraftShowcase";
+import { WorkflowSection } from "@/components/landing/WorkflowSection";
 import { ComparisonSection } from "@/components/landing/ComparisonSection";
+import { ConfidentialitySection } from "@/components/landing/ConfidentialitySection";
 import { StatsBand } from "@/components/landing/StatsBand";
-import { TrustSection } from "@/components/landing/TrustSection";
+import { AboutSection } from "@/components/landing/AboutSection";
+import { LawyerFaqSection } from "@/components/landing/LawyerFaqSection";
 import { PricingSection } from "@/components/landing/PricingSection";
 import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
 
@@ -15,19 +15,22 @@ import { FinalCtaSection } from "@/components/landing/FinalCtaSection";
  * front door (`/`) and the always-viewable `/about_us` route (the same content
  * signed-in users can reach, since `/` bounces them to /chat). Server
  * component — keep it presentation-only so both routes stay prerenderable.
+ *
+ * Audience: Saudi lawyers only. The breadth story (المختصون / رواد الأعمال /
+ * الأفراد) lives on /audiences and is deliberately NOT teased here.
  */
 export function LandingPageBody() {
   return (
     <main>
       <LandingHero />
-      <ProblemSection />
-      <AboutSection />
-      <AudiencesTeaser />
       <SearchShowcase />
-      <CapabilitiesSection />
+      <DraftShowcase />
+      <WorkflowSection />
       <ComparisonSection />
+      <ConfidentialitySection />
       <StatsBand />
-      <TrustSection />
+      <AboutSection />
+      <LawyerFaqSection />
       <PricingSection />
       <FinalCtaSection />
     </main>
