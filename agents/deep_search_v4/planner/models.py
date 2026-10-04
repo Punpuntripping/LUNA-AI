@@ -18,7 +18,7 @@ The planner is a **two-phase** agent:
   which the decider's flat 38-name list never did — diagnosed in conv
   ``faa3b71e``.
 - **Phase 3 — respond.** ``planner_responder`` emits a :class:`PlannerResponse`:
-  the user-facing Arabic chat summary, a plain-text next-step suggestion, AND
+  the user-facing Arabic chat summary, 0–3 clickable ``next_steps`` chips, AND
   the Phase E publish gate fields (``build_artifact`` + ``referenced_item_id``)
   the orchestrator branches on to decide whether to publish a new
   ``workspace_item`` or point at a prior one.
@@ -45,7 +45,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
+
+from agents.models import MAX_NEXT_STEPS, NextStep
 
 
 # The three retrieval modes. ``reg_compliance_led`` is the default for ordinary questions.
@@ -239,11 +241,14 @@ class PlannerResponse(BaseModel):
             "to the artifact, not the chat bubble."
         ),
     )
-    suggestion_md: str = Field(
-        default="",
+    next_steps: list[NextStep] = Field(
+        default_factory=list,
         description=(
-            "A short plain-text next-step suggestion for the user, or empty "
-            "string when there is nothing useful to suggest."
+            f"0–{MAX_NEXT_STEPS} clickable next-step chips, each a different "
+            "kind (narrow_search / draft / apply — never open). Clicking pastes "
+            "``prompt`` into the composer. Empty list when nothing would add "
+            "value. Replaces the old free-text suggestion_md "
+            "(plan: next_step_suggestions.md §3.2)."
         ),
     )
     build_artifact: bool = Field(
@@ -279,6 +284,10 @@ class PlannerResponse(BaseModel):
             "directly; use referenced_wi with a WI-{n} alias instead."
         ),
     )
+
+    # Set by the responder's output validator when invalid chips were
+    # salvaged instead of retried — telemetry only (``next_steps.salvaged``).
+    _next_steps_salvaged: bool = PrivateAttr(default=False)
 
     # ------------------------------------------------------------------
     # Validators — referenced_item_id / referenced_wi normalisation

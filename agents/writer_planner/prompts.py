@@ -412,7 +412,14 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
     lines = []
     for m in reversed(messages):
         role = getattr(m, "role", "") or ""
-        content = _truncate(getattr(m, "content", "") or "", max_chars=500)
+        raw = getattr(m, "content", "") or ""
+        # The next-steps note is appended AFTER the body — truncating from the
+        # start would cut it off on any long reply, so set it aside first.
+        head, sep, last = raw.rpartition("\n")
+        if sep and last.startswith("〔[نظام] اقتُرح"):
+            content = f"{_truncate(head, max_chars=500)}\n{last}"
+        else:
+            content = _truncate(raw, max_chars=500)
         if content:
             lines.append(f"  [{role}] {content}")
     body = "\n".join(lines)
@@ -421,7 +428,10 @@ def _render_recent_messages(messages: list[ChatMessageSnapshot]) -> str:
             "  (Note: a tag like 〔[نظام] … (agent_family=writing) … WI-N〕 at the "
             "start of an assistant reply means a specialist produced that reply and "
             "created item WI-N — use it to know which prior output the user is "
-            "referring to when asking for an edit or a follow-up.)"
+            "referring to when asking for an edit or a follow-up. A trailing "
+            "〔[نظام] اقتُرح على المستخدم: … · …〕 lists next-step suggestions "
+            "offered as clickable chips; if the user's reply accepts one "
+            "(«نعم»، «الأولى»), treat that label as the request.)"
         )
         body = legend + "\n" + body
     return body

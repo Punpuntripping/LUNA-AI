@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from agents.models import salvage_next_steps
 from agents.utils.tracking import track_stage
 from shared.observability import get_logfire
 
@@ -44,7 +45,11 @@ from .logger import (
     emit,
 )
 from .models import PinnedPlan, PlannerDecision, PlannerResponse
-from .prompts import build_decider_user_message, build_responder_user_message
+from .prompts import (
+    build_decider_user_message,
+    build_responder_user_message,
+    render_responder_context,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pydantic_ai import DeferredToolRequests
@@ -160,7 +165,6 @@ def _response_from_artifact(agg_output: "AggregatorOutput") -> PlannerResponse:
     head = synthesis[:_DEGRADED_SYNTHESIS_DIGEST_CHARS]
     return PlannerResponse(
         chat_summary_md=head or "اكتمل البحث؛ التفاصيل والمراجع في بطاقة البحث.",
-        suggestion_md="",
     )
 
 
@@ -176,7 +180,6 @@ def _minimal_response(reason: str) -> PlannerResponse:
             "تعذّر إكمال البحث القانوني في هذه المحاولة. يُرجى إعادة المحاولة، "
             "وإذا تكرر الأمر جرّب إعادة صياغة السؤال."
         ),
-        suggestion_md="",
         build_artifact=False,
     )
 
@@ -569,6 +572,13 @@ async def _run_planner_turn(
             usage_limits=PLANNER_RESPONDER_LIMITS,
         )
         response: PlannerResponse = result.output
+        # Belt-and-braces: the output validator already retries/salvages bad
+        # chips; re-salvaging is idempotent and guarantees a malformed chip can
+        # never reach the orchestrator (chips must never fail the turn).
+        _salvaged = salvage_next_steps(response.next_steps, allow_open=False)
+        if _salvaged != response.next_steps:
+            response.next_steps = _salvaged
+            response._next_steps_salvaged = True
         # One combined planner ledger row: decider (this call's fresh phase 1)
         # + responder. On resume, _decider_result is None (the resume decider
         # ran in the orchestrator and is billed there) → responder only.
@@ -594,7 +604,12 @@ async def _run_planner_turn(
                     "planner.build_artifact": response.build_artifact,
                     "planner.referenced_item_id": response.referenced_item_id,
                     "planner.chat_summary_chars": len(response.chat_summary_md or ""),
-                    "planner.suggestion_chars": len(response.suggestion_md or ""),
+                    "planner.responder_context_chars": len(
+                        render_responder_context(deps)
+                    ),
+                    "next_steps.count": len(response.next_steps),
+                    "next_steps.kinds": [s.kind for s in response.next_steps],
+                    "next_steps.salvaged": response._next_steps_salvaged,
                 })
         except Exception:
             pass

@@ -65,7 +65,7 @@ except Exception:  # pragma: no cover - telemetry is best-effort
 if TYPE_CHECKING:
     # PlannerTurnResult fields used below (planner/runner.py):
     #   kind: Literal["completed", "paused"]
-    #   response: PlannerResponse | None  — chat_summary_md / suggestion_md / suggested_action
+    #   response: PlannerResponse | None  — chat_summary_md / next_steps / build_artifact
     #   decision: PlannerDecision | None  — mode / support / sectors / rationale
     #   agg_output: AggregatorOutput | None  — synthesis_md / references / confidence /
     #                                          gaps / model_used / prompt_key / validation
@@ -308,12 +308,13 @@ def _format_pretty(
     lines.append((getattr(response, "chat_summary_md", "") or "").strip()
                   or "(no chat summary)")
 
-    suggestion = (getattr(response, "suggestion_md", "") or "").strip()
-    if suggestion:
+    next_steps = getattr(response, "next_steps", None) or []
+    if next_steps:
         lines.append("")
-        lines.append("SUGGESTION (planner next-step):")
-        lines.append(suggestion)
-        lines.append(f"  → suggested_action: {getattr(response, 'suggested_action', 'none')}")
+        lines.append(f"NEXT STEPS ({len(next_steps)} chip(s)):")
+        for step in next_steps:
+            lines.append(f"  [{step.kind}] {step.label}")
+            lines.append(f"      → {step.prompt}")
 
     if agg is not None:
         lines.append("")
@@ -386,7 +387,7 @@ def _build_json_payload(
     present): query, query_id, duration_s, confidence, answer, references,
     gaps, model_used, prompt_key, events, error.
 
-    New planner-loop keys: mode, support, kind, suggestion, suggested_action.
+    New planner-loop keys: mode, support, kind, next_steps, suggested_action.
     """
     decision = getattr(turn, "decision", None) if turn else None
     agg = getattr(turn, "agg_output", None) if turn else None
@@ -432,7 +433,10 @@ def _build_json_payload(
         "mode": decision.mode if decision else None,
         "support": decision.support if decision else None,
         "kind": kind,
-        "suggestion": (getattr(response, "suggestion_md", None) if response else None),
+        "next_steps": (
+            [s.model_dump() for s in (getattr(response, "next_steps", None) or [])]
+            if response else []
+        ),
         "suggested_action": (
             getattr(response, "suggested_action", None) if response else None
         ),

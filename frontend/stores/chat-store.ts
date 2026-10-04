@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type {
   DeepSearchStage,
   LibraryItemRef,
+  NextStep,
+  NextStepKind,
   PendingBlog,
   PendingFile,
   PendingLibraryItem,
@@ -201,6 +203,14 @@ interface ChatState {
   // text into the textarea and clears the slot. ``nonce`` bumps on every
   // injection so picking the same question twice still re-triggers.
   composerInjection: { text: string; nonce: number } | null;
+  /**
+   * next_step_suggestions plan §3.8: the next-step chip whose prompt was last
+   * pasted into the composer, so the NEXT send can report `next_step_sent
+   * {kind, edited}` (edited = the sent text differs from the pasted text).
+   * Set by ``pasteNextStep``, consumed (and cleared) by ChatInput's send;
+   * cleared on conversation switch.
+   */
+  pastedNextStep: { kind: NextStepKind; text: string } | null;
   pendingMessage: string | null;
   // Blog share-links pasted into the composer, shown as chips next to file
   // attachments (blog_import plan §D4). ``pendingBlogs`` are the live chips;
@@ -254,6 +264,15 @@ interface ChatState {
     string,
     { itemId: string; titleHint: string }
   >;
+  /**
+   * next_step_suggestions plan §3.7: next-step chips received live via the
+   * ``next_steps`` SSE event, keyed by ``assistant_message_id``. The ``done``
+   * handler also writes them into the cached message's ``metadata``; this map
+   * is the fallback that survives a post-stream refetch landing before the
+   * server row carries ``metadata.next_steps``. After a reload the persisted
+   * metadata is the only source.
+   */
+  nextStepsByMessage: Record<string, NextStep[]>;
   // Global layout preference (persisted to localStorage) — NOT per-conversation.
   splitRatio: number;
   isAgentRunning: boolean;
@@ -325,6 +344,15 @@ interface ChatState {
   /** Put ``text`` into the live composer textarea (does NOT send). */
   injectComposerText: (text: string) => void;
   clearComposerInjection: () => void;
+  /**
+   * Next-step chip click (D4): paste ``step.prompt`` into the live composer —
+   * REPLACING its text, never sending — and remember the chip for the
+   * ``next_step_sent`` analytics event.
+   */
+  pasteNextStep: (step: NextStep) => void;
+  /** Return the remembered pasted chip (if any) and clear it. */
+  consumePastedNextStep: () => { kind: NextStepKind; text: string } | null;
+  clearPastedNextStep: () => void;
   addPendingBlog: (blog: PendingBlog) => void;
   removePendingBlog: (id: string) => void;
   clearPendingBlogs: () => void;
@@ -374,6 +402,8 @@ interface ChatState {
     itemId: string,
     titleHint: string,
   ) => void;
+  /** Record the ``next_steps`` SSE items for assistant message ``messageId``. */
+  recordNextSteps: (messageId: string, items: NextStep[]) => void;
   /**
    * Phase E (§9 O5): open the workspace pane to ``itemId`` AND briefly
    * highlight the matching ``WorkspaceCard`` so the user sees which prior
@@ -448,6 +478,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingAttachFiles: [],
   pendingComposerDraft: null,
   composerInjection: null,
+  pastedNextStep: null,
   pendingMessage: null,
   pendingBlogs: [],
   pendingBlogTokens: [],
@@ -459,6 +490,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   workspaceByConversation: {},
   referencedItemsByMessage: {},
   templateOffersByMessage: {},
+  nextStepsByMessage: {},
   splitRatio: loadInitialSplitRatio(),
   isAgentRunning: false,
   runningAgentFamily: null,
@@ -599,6 +631,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   clearComposerInjection: () => set({ composerInjection: null }),
 
+  pasteNextStep: (step) => {
+    set({ pastedNextStep: { kind: step.kind, text: step.prompt } });
+    get().injectComposerText(step.prompt);
+  },
+
+  consumePastedNextStep: () => {
+    const pasted = get().pastedNextStep;
+    if (pasted) set({ pastedNextStep: null });
+    return pasted;
+  },
+
+  clearPastedNextStep: () => set({ pastedNextStep: null }),
+
   addPendingBlog: (blog) =>
     set((state) => ({ pendingBlogs: [...state.pendingBlogs, blog] })),
 
@@ -710,6 +755,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       templateOffersByMessage: {
         ...state.templateOffersByMessage,
         [messageId]: { itemId, titleHint },
+      },
+    })),
+
+  recordNextSteps: (messageId, items) =>
+    set((state) => ({
+      nextStepsByMessage: {
+        ...state.nextStepsByMessage,
+        [messageId]: items,
       },
     })),
 
@@ -955,6 +1008,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingAttachFiles: [],
       pendingComposerDraft: null,
       composerInjection: null,
+      pastedNextStep: null,
       pendingMessage: null,
       pendingBlogs: [],
       pendingBlogTokens: [],
@@ -966,6 +1020,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       workspaceByConversation: {},
       referencedItemsByMessage: {},
       templateOffersByMessage: {},
+      nextStepsByMessage: {},
       isAgentRunning: false,
       runningAgentFamily: null,
       runningAgentSubtype: null,

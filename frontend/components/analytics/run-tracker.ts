@@ -581,3 +581,44 @@ export function trackConversationOpened(conversationId: string): void {
     has_unseen_answer: hasUnseenAnswer,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Next-step chips (.claude/plans/next_step_suggestions.md §3.8)
+// ---------------------------------------------------------------------------
+
+/**
+ * `next_step_clicked` — a chip under the latest answer was clicked, which
+ * PASTES its prompt into the composer (D4: never sends). Click → send → edit
+ * rates per `kind` are what tell whether the responder's ladder is any good.
+ * `family` is the agent family that produced the answer when the message row
+ * carries it, else `null`.
+ */
+export function trackNextStepClicked(params: {
+  kind: string;
+  family: string | null;
+  conversationId: string;
+  messageId: string;
+}): void {
+  safeTrack("next_step_clicked", {
+    kind: params.kind,
+    family: params.family,
+    conversation_id: params.conversationId,
+    message_id: params.messageId,
+  });
+}
+
+/**
+ * `next_step_sent` — the first send after a chip paste. `edited` is true when
+ * the sent text differs (trimmed) from the pasted prompt.
+ */
+export function trackNextStepSent(params: {
+  kind: string;
+  edited: boolean;
+  conversationId: string | null;
+}): void {
+  safeTrack("next_step_sent", {
+    kind: params.kind,
+    edited: params.edited,
+    conversation_id: params.conversationId,
+  });
+}

@@ -113,6 +113,40 @@ def build_provenance_tag(
     return f"〔[نظام] أنتج هذا الردّ متخصصٌ{fam_part} وأنشأ العنصر {rendered}〕"
 
 
+def build_next_steps_note(next_steps: list[dict] | None) -> str | None:
+    """One-line note naming the next-step chips offered under an assistant turn.
+
+    Chips live in ``messages.metadata.next_steps``, not in the bubble text — so
+    without this note a typed «نعم» / «الأولى» after an offer is meaningless to
+    any agent reading history. Appended AFTER the assistant content by both the
+    router's ``messages_to_history`` and the orchestrator's
+    ``_load_recent_messages``. Returns ``None`` when nothing usable is present.
+    """
+    labels: list[str] = []
+    for step in next_steps or []:
+        label = (step.get("label") or "").strip() if isinstance(step, dict) else ""
+        if label:
+            labels.append(label)
+    if not labels:
+        return None
+    return f"〔[نظام] اقتُرح على المستخدم: {' · '.join(labels)}〕"
+
+
+def _row_next_steps(row: dict) -> list[dict] | None:
+    """``metadata.next_steps`` of a message row, tolerating a missing/odd metadata."""
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    steps = metadata.get("next_steps")
+    return steps if isinstance(steps, list) else None
+
+
+def append_next_steps_note(content: str, row: dict) -> str:
+    """Return ``content`` with :func:`build_next_steps_note` appended, if any."""
+    note = build_next_steps_note(_row_next_steps(row))
+    return f"{content}\n{note}" if note else content
+
+
 def messages_to_history(
     rows: list[dict],
     wi_provenance: dict[str, tuple[int | None, str, str]] | None = None,
@@ -139,6 +173,11 @@ def messages_to_history(
     the caller). With ``wi_provenance`` present those turns get the
     :func:`build_user_attachment_tag` marker prepended, so agents can tell
     which uploaded file / attached blog belongs to which user message.
+
+    Assistant rows carrying ``metadata.next_steps`` get the
+    :func:`build_next_steps_note` line appended (the chips offered under that
+    reply), so a typed «نعم» after an offer stays resolvable. Callers must
+    select ``metadata`` for this to fire.
 
     Identifier masking (وضع السرية): the router's prior-turn history comes
     through here (via ``load_router_context``), NOT through the orchestrator's
@@ -187,6 +226,9 @@ def messages_to_history(
                     tag = build_provenance_tag(list(artifact_ids), wi_provenance)
                     if tag:
                         text = f"{tag}\n{content}"
+            # Chips offered under this turn (metadata.next_steps) — independent
+            # of wi_provenance; encoded with the rest of the surface below.
+            text = append_next_steps_note(text, row)
             history.append(ModelResponse(parts=[TextPart(content=_enc(text))]))
         elif role == "system":
             # System-injected messages (e.g. task summaries) appear as assistant context

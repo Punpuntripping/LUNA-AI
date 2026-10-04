@@ -13,6 +13,8 @@ import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
 import { useConversationWorkspace } from "@/hooks/use-workspace";
+import { useIsDemoConversation } from "@/hooks/use-demo-conversation";
+import { parseNextSteps } from "@/lib/next-steps";
 import { useChatStore } from "@/stores/chat-store";
 import {
   MessageBubble,
@@ -129,6 +131,14 @@ export function MessageList({
   // the live progress slice is deliberately NOT read here (that would
   // re-render the list on every progress event).
   const deepSearchSummaries = useChatStore((s) => s.deepSearchSummaries);
+  // next_step_suggestions §3.7: chips from the live `next_steps` SSE event,
+  // keyed by message_id — the fallback for the window where the post-stream
+  // refetch has replaced the cached row before the server persisted
+  // `metadata.next_steps`. Written once per run, so the extra render is free.
+  const nextStepsByMessage = useChatStore((s) => s.nextStepsByMessage);
+  // The shared demo conversation replaces its composer with a CTA, so a chip
+  // there would paste into nothing — suppress them.
+  const isDemo = useIsDemoConversation(conversationId);
 
   const handleOpenArtifact = useCallback(
     (itemId: string) => {
@@ -193,6 +203,28 @@ export function MessageList({
     }
     return all;
   }, [data?.pages]);
+
+  // next_step_suggestions D3: chips belong to the LATEST assistant reply only,
+  // i.e. the last row of the thread. Once the user sends, their (optimistic)
+  // message becomes the last row and the chips disappear on their own.
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const latestAssistantId =
+    lastMessage && lastMessage.role === "assistant" ? lastMessage.message_id : null;
+  const latestAssistantMetadataSteps =
+    lastMessage && lastMessage.role === "assistant"
+      ? lastMessage.metadata?.next_steps
+      : undefined;
+  // Memoised so the array identity is stable across renders and
+  // memo(MessageBubble) stays a cache hit while another row streams.
+  const latestNextSteps = useMemo(() => {
+    if (!latestAssistantId || isDemo) return undefined;
+    // Persisted metadata wins (survives reload); the live SSE copy covers the
+    // gap before the server row carries it.
+    const persisted = parseNextSteps(latestAssistantMetadataSteps);
+    if (persisted.length > 0) return persisted;
+    const live = nextStepsByMessage[latestAssistantId];
+    return live && live.length > 0 ? live : undefined;
+  }, [latestAssistantId, latestAssistantMetadataSteps, nextStepsByMessage, isDemo]);
 
   // -----------------------------------------------
   // Scroll position tracking (throttled via rAF)
@@ -504,6 +536,12 @@ export function MessageList({
                 referencedItemIds={referencedIds}
                 onJumpToReferencedItem={handleJumpToReferencedItem}
                 templateOffer={templateOffersByMessage[msg.message_id]}
+                isLatestAssistant={msg.message_id === latestAssistantId}
+                nextSteps={
+                  msg.message_id === latestAssistantId
+                    ? latestNextSteps
+                    : undefined
+                }
               />
             </Fragment>
           );

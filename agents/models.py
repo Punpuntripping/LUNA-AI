@@ -228,6 +228,90 @@ class MajorAgentInput(BaseModel):
     case_id: str | None = None
 
 
+# ── Next-step suggestion chips (plan: next_step_suggestions.md) ───────────
+
+# "open" (open a document the turn considered but did not open) is
+# simple_search only — deep_search references are already visible in the card.
+NextStepKind = Literal["narrow_search", "draft", "apply", "open"]
+
+MAX_NEXT_STEPS = 3
+NEXT_STEP_LABEL_MAX = 40
+NEXT_STEP_PROMPT_MAX = 200
+
+
+class NextStep(BaseModel):
+    """One clickable next-step chip. Clicking pastes ``prompt`` into the composer."""
+    kind: NextStepKind = Field(
+        description=(
+            "narrow_search = a narrower search for a gap inside Rayhan's scope; "
+            "draft = draft a legal document from the findings; "
+            "apply = apply the finding to the user's own facts; "
+            "open = open a document considered but not opened (simple_search only)."
+        ),
+    )
+    label: str = Field(
+        description=f"Arabic chip text, ≤ {NEXT_STEP_LABEL_MAX} chars, no trailing punctuation.",
+    )
+    prompt: str = Field(
+        description=(
+            f"Arabic message pasted into the composer, ≤ {NEXT_STEP_PROMPT_MAX} chars, "
+            "written as the USER speaking («ابحث لي عن…», «اكتب لي…»)."
+        ),
+    )
+
+
+def next_step_errors(
+    steps: list[NextStep], *, allow_open: bool
+) -> list[str]:
+    """Validation problems for a responder's ``next_steps`` (empty = valid).
+
+    Used by the responders' output validators to raise ``ModelRetry`` once;
+    :func:`salvage_next_steps` is the never-fail fallback after that.
+    """
+    errors: list[str] = []
+    if len(steps) > MAX_NEXT_STEPS:
+        errors.append(f"at most {MAX_NEXT_STEPS} next_steps (got {len(steps)})")
+    kinds = [s.kind for s in steps]
+    if len(set(kinds)) != len(kinds):
+        errors.append("each next_step must have a different kind")
+    for s in steps:
+        if s.kind == "open" and not allow_open:
+            errors.append("kind 'open' is not allowed here — references are already visible")
+        if not s.label.strip() or len(s.label) > NEXT_STEP_LABEL_MAX:
+            errors.append(f"label must be 1–{NEXT_STEP_LABEL_MAX} chars: {s.label!r}")
+        if not s.prompt.strip() or len(s.prompt) > NEXT_STEP_PROMPT_MAX:
+            errors.append(f"prompt must be 1–{NEXT_STEP_PROMPT_MAX} chars")
+    return errors
+
+
+def salvage_next_steps(
+    steps: list[NextStep], *, allow_open: bool
+) -> list[NextStep]:
+    """Drop invalid / duplicate-kind chips and cap the count. Never raises.
+
+    Chips are optional decoration — a bad chip must never fail the turn.
+    """
+    kept: list[NextStep] = []
+    seen: set[str] = set()
+    for s in steps or []:
+        label, prompt = s.label.strip(), s.prompt.strip()
+        if s.kind in seen or (s.kind == "open" and not allow_open):
+            continue
+        if not label or not prompt:
+            continue
+        kept.append(
+            NextStep(
+                kind=s.kind,
+                label=label[:NEXT_STEP_LABEL_MAX],
+                prompt=prompt[:NEXT_STEP_PROMPT_MAX],
+            )
+        )
+        seen.add(s.kind)
+        if len(kept) == MAX_NEXT_STEPS:
+            break
+    return kept
+
+
 # ── Tier-2 output contract ────────────────────────────────────────────────
 
 class SpecialistResult(BaseModel):
@@ -250,3 +334,7 @@ class SpecialistResult(BaseModel):
     tokens_in: int | None = None
     tokens_out: int | None = None
     per_phase_stats: dict = Field(default_factory=dict)
+    # Clickable next-step chips — emitted as a ``next_steps`` SSE event after
+    # the last token and persisted to messages.metadata.next_steps. Never
+    # concatenated into chat_summary.
+    next_steps: list[NextStep] = Field(default_factory=list)

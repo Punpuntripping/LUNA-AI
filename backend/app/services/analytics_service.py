@@ -80,6 +80,8 @@ CHAT_EVENT_NAMES = frozenset(
         "wi_opened",            # WorkspaceCard onClick
         "wi_dwell",             # viewer closed
         "conversation_opened",  # a conversation is loaded
+        "next_step_clicked",    # next-step chip pasted into the composer
+        "next_step_sent",       # first send after a paste; props.edited
     }
 )
 

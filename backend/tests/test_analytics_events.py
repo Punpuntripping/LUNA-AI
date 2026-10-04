@@ -223,7 +223,7 @@ def test_the_whole_taxonomy_is_accepted() -> None:
         | svc.PWA_EVENT_NAMES
         | svc.AUTH_EVENT_NAMES
     )
-    assert len(svc.PUBLIC_EVENT_NAMES | svc.CHAT_EVENT_NAMES) == 22
+    assert len(svc.PUBLIC_EVENT_NAMES | svc.CHAT_EVENT_NAMES) == 24
     for chunk_start in range(0, len(names), svc.MAX_BATCH_EVENTS):
         chunk = names[chunk_start : chunk_start + svc.MAX_BATCH_EVENTS]
         assert _post(_client(fake), [_event(n) for n in chunk]).status_code == 204

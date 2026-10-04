@@ -89,7 +89,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agents.deep_search_v4.aggregator.models import Reference
-from agents.models import WorkspaceItemSnapshot
+from agents.models import NextStep, WorkspaceItemSnapshot, salvage_next_steps
 from agents.paused_runs import PauseRecord, find_open_pause, record_pause
 from agents.simple_search.models import (
     LEVEL_SOURCE_TYPE,
@@ -311,6 +311,11 @@ class SimpleSearchRunResult:
     #: would be indistinguishable here from an already-unlocked one; refusals
     #: are surfaced as their own Arabic chat message instead (§13l.5).
     unlock_notes: list[dict] = field(default_factory=list)  # {"case_id": str, "charged": bool}
+    #: Next-step chips (plan ``next_step_suggestions.md`` §3.4). Already
+    #: salvaged (≤ 3, distinct kinds, ``open`` allowed) and already EMPTY on the
+    #: pause leg — the orchestrator relays it as-is. Never part of
+    #: ``chat_messages``: the suggestion no longer rides in the bubble (D2).
+    next_steps: list[NextStep] = field(default_factory=list)
 
 
 def _empty(**over: Any) -> SimpleSearchRunResult:
@@ -1559,8 +1564,11 @@ async def _finalise(
 
         [responder.chat_summary_md]
         [verbatim synthesis_md of every UNCARDED answer, dispatch order]  ← code
-        [responder.suggestion_md]              ← omitted when suppressed (§8)
         [unlock_acknowledgement(...)]          ← code, unchanged (D5)
+
+    The responder's ``next_steps`` chips are NOT part of the bubble: they ride
+    on :attr:`SimpleSearchRunResult.next_steps` (salvaged, and forced empty when
+    suppressed — §8).
 
     A carded answer contributes **nothing** to the bubble — its body lives on
     its card, which is the §1.1 fix: before this, the same ``synthesis_md`` was
@@ -1634,7 +1642,7 @@ async def _finalise(
             قبل قليل») instead of re-announcing a document the user is looking
             at.
         suppress_suggestion: the pause leg (§8). Told to the prompt AND enforced
-            here on the way into the bubble.
+            here: ``next_steps`` is forced empty on the way out.
     """
     created_item_ids: list[str] = []
     sse_events: list[dict] = []
@@ -1684,7 +1692,7 @@ async def _finalise(
     # ── 4. The call. Everything above is input; nothing below runs first. ───
     responder: ResponderOutput | None = None
     summary = ""
-    suggestion = ""
+    next_steps: list[NextStep] = []
     if live:
         try:
             # Built HERE, per turn — never a module-level singleton. The house
@@ -1734,7 +1742,9 @@ async def _finalise(
                 # the opening, and D7 says the safe direction is text without
                 # cards, never cards without text.
                 raise ValueError("responder returned an empty chat_summary_md")
-            suggestion = output.suggestion_md.strip()
+            # The validator already retried once; this is the never-fail floor —
+            # a bad chip must never cost the turn its answer.
+            next_steps = salvage_next_steps(output.next_steps, allow_open=True)
             responder = output
         except Exception as exc:  # noqa: BLE001 — D7: degrade, never raise
             logger.warning(
@@ -1753,7 +1763,7 @@ async def _finalise(
             # literal Arabic text, so code can open with it exactly as the model
             # was going to.
             summary = welcome_opening
-            suggestion = ""
+            next_steps = []
 
     # ── 5/6. Vetoes, then the gated publish. ────────────────────────────────
     # ``zip`` stops at ``live``: the delivered digests that trail ``docs`` have
@@ -1810,11 +1820,12 @@ async def _finalise(
     if summary:
         chat_messages.append(summary)
     chat_messages.extend(bodies)
-    # Suppressed twice on purpose: the prompt is told to leave it empty (a model
-    # instruction), and a suggestion that arrives anyway is dropped here (the
-    # guarantee). The searcher's question is about to follow this message.
-    if suggestion and not suppress_suggestion:
-        chat_messages.append(suggestion)
+    # Suppressed twice on purpose: the prompt is told to leave `next_steps`
+    # empty (a model instruction), and chips that arrive anyway are dropped
+    # here (the guarantee). The searcher's question is about to follow this
+    # message, and chips beside it read as competing questions.
+    if suppress_suggestion:
+        next_steps = []
 
     if not chat_messages and degraded_fallback:
         # Every round rejected, or every synthesizer failed — so the responder
@@ -1837,6 +1848,7 @@ async def _finalise(
         created_item_ids=created_item_ids,
         sse_events=sse_events,
         unlock_notes=unlock_notes,
+        next_steps=next_steps,
     )
 
 

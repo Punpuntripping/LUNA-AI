@@ -16,7 +16,8 @@ Two LLM phases, two prompts:
   reflect its understanding back for confirmation on a long, multi-aspect
   question where misreading the situation is a real risk.
 - :data:`PLANNER_RESPONDER_SYSTEM_PROMPT` — phase 3. The responder writes the
-  user-facing :class:`~.models.PlannerResponse` (chat summary + suggestion).
+  user-facing :class:`~.models.PlannerResponse` (chat summary + next_steps
+  chips). Its static prefix embeds :data:`RAYHAN_CAPABILITIES_MD`.
 
 Both phases get a **dynamic instruction**:
 
@@ -27,13 +28,16 @@ Both phases get a **dynamic instruction**:
   attachments or prior searches are present — appends the detailed
   ``planner_brief`` editing rules (kept out of the static prompt so the common
   no-attachment turn pays no tokens for guidance it won't use).
-- :func:`build_responder_instructions` — phase 3. Injects a trimmed digest of
-  the retrieval artifact plus the mode-specific chat-summary framing. Never
-  injects the full ``synthesis_md``.
+- :func:`build_responder_instructions` — phase 3. Renders the decider's
+  conversation-context blocks (minus ``<attached_items>``), then a trimmed
+  digest of the retrieval artifact plus the mode-specific chat-summary
+  framing. Never injects the full ``synthesis_md``.
 """
 from __future__ import annotations
 
 import html
+
+from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
 
 from .models import Mode
 
@@ -212,6 +216,9 @@ Decision: call `ask_user` for review. The question is long and bundles distinct 
 # Phase 3 — the responder system prompt
 # ===========================================================================
 
+# The static capability manifest is concatenated at MODULE level (never
+# interpolated per turn) so the system prompt stays byte-identical across turns
+# — it is part of the cached prefix.
 PLANNER_RESPONDER_SYSTEM_PROMPT = """\
 You are the deep legal-search planner on the Luna platform. The search is complete, and its outcome has reached you summarized in the instructions below.
 
@@ -220,7 +227,7 @@ Your task now: write the message the user reads in the chat bubble. This is not 
 You emit four fields:
 
 1. `chat_summary_md` — an Arabic summary of the outcome, addressed directly to the user.
-2. `suggestion_md` — a next-step suggestion, or empty text if there is nothing new to suggest.
+2. `next_steps` — a list of 0–3 clickable next-step chips (`kind`, `label`, `prompt`). An empty list is allowed and often right.
 3. `build_artifact` — a boolean (`true`/`false`) deciding whether a new card is created in the workspace.
 4. `referenced_wi` — the alias of a prior card (e.g. «WI-3») when `build_artifact=false`; `null` otherwise. Do not write a UUID — use WI-N aliases from `<prior_searches>` only.
 
@@ -236,10 +243,32 @@ You emit four fields:
 - Do not fabricate: do not mention an article, ruling, service, or number that did not appear in the outcome.
 - Rephrase the outcome in your own conversational style — do not copy the artifact text verbatim.
 
-## `suggestion_md` rules
+## `next_steps` rules
 
-- Only one suggestion — the most useful next step — in an offering tone, not a command («إذا تحب…», «أقدر…»), in a register that suits the user.
-- Do not suggest a follow-up that the current answer already fully covered. If there is no useful suggestion, make `suggestion_md` empty text.
+Each chip is shown under your reply; clicking it pastes `prompt` into the user's message box (the user may edit it before sending). Do NOT write any next-step offer inside `chat_summary_md` («إذا تحب…», «أقدر أساعدك…») — the chips replace it.
+
+Each item has:
+- `kind` — one of `narrow_search`, `draft`, `apply`. **Never `open`** (the references are already visible in the search card).
+- `label` — the chip text: short Arabic, at most 40 characters, no trailing punctuation («إجراءات توثيق الوقف»).
+- `prompt` — the full message, at most 200 characters, written as **the user speaking** to Rayhan in the first person («ابحث لي عن…»، «اكتب لي…»، «طبّق…») — never as Rayhan offering («أقدر…»، «إذا تحب…»).
+
+Walk this ladder and emit **at most one chip per rung** (so every chip has a different `kind`):
+
+1. `narrow_search` — a reported gap, or an aspect of the question the outcome left unanswered, that falls **inside** the "Can" list below. A gap **outside** that list is stated honestly in `chat_summary_md` and never offered as a chip.
+2. `draft` — only when the context signals the user is building a document or a case: `<recent_messages>`, `<case_brief>` or the question itself («موكلي»، «أبغى أرفع دعوى»، a prior writing card). Otherwise skip this rung.
+3. `apply` — applying the finding to the user's own facts. The `prompt` must name the concrete facts it applies to, taken from the question or context («طبّق الحكم على وقف والدي لكامل أملاكه»), never a generic «طبّق على وضعي».
+4. **Empty list** — when the answer is complete and nothing above would add real value, or when `build_artifact=false` because a prior card already covers the question. Three weak chips are worse than one good one; zero is better than a weak one.
+
+Hard rules:
+- Never offer what `chat_summary_md` already answered.
+- Never name a specific article, service, ruling or body (court, ministry) that does not appear in the search outcome. When unsure of the venue, leave it out.
+- Never offer anything on the "Cannot" list below (no fiqh comparisons, no search by a party's name, no action inside ناجز, …).
+
+Worked example — question: «أبي أوقف أملاكه كلها وقفاً ذرياً على أولاده وهو بصحته، هل الوقف صحيح؟ وهل يتحدد بالثلث؟». The outcome answers validity and the one-third question, and reports a gap on the registration procedure.
+- ✓ `{"kind": "narrow_search", "label": "إجراءات توثيق الوقف", "prompt": "ابحث لي عن إجراءات توثيق الوقف الذري ومتطلباته"}` — a service-guide search inside the "Can" list, no invented venue.
+- ✓ `{"kind": "apply", "label": "تطبيق على وقف والدي", "prompt": "طبّق ما وجدته على وقف والدي لكامل أملاكه على أولاده وهو بصحته"}` — names the user's facts.
+- ✗ «ابحث لي عن آراء فقهية مقارنة في تحديد الوقف بالثلث» — fiqh is on the "Cannot" list.
+- ✗ «ابحث عن إجراءات تسجيل الوقف لدى المحكمة المختصة» — invents a venue the outcome never named.
 
 ## `build_artifact` rules — the publish gate (Phase E)
 
@@ -253,7 +282,9 @@ In both cases: **do not describe the card as if it exists** and do not close wit
 
 In the normal case (`build_artifact=true`), leave `referenced_wi=null`.
 
-The instructions that follow carry the search outcome and the mode framing you must write according to.\
+""" + RAYHAN_CAPABILITIES_MD + """
+
+The instructions that follow carry the conversation context (when any), the search outcome, and the mode framing you must write according to.\
 """
 
 
@@ -400,7 +431,10 @@ def _render_recent_messages(messages) -> str | None:
         parts.append(
             "<!-- A tag like 〔[نظام] … (agent_family=…) … WI-N〕 at the start of "
             "an assistant reply means a specialist produced that reply and "
-            "created item WI-N (context only). -->"
+            "created item WI-N (context only). A reply may also END with "
+            "〔[نظام] اقتُرح على المستخدم: … · …〕 — the next-step suggestions "
+            "offered under it as clickable chips; if the user's reply accepts "
+            "one («نعم»، «الأولى»), treat that chip's label as the request. -->"
         )
     return "\n".join(parts)
 
@@ -552,6 +586,41 @@ def _render_planner_brief_block(decision) -> str:
     )
 
 
+_RESPONDER_CONTEXT_HEADER = (
+    "## Conversation context for this turn\n\n"
+    "The blocks below (if present) are for framing the chat summary and "
+    "choosing `next_steps` — e.g. a drafting signal, or the user's concrete "
+    "facts for an `apply` chip. They are NOT for re-answering: the answer comes "
+    "from the search outcome further down."
+)
+
+
+def render_responder_context(deps) -> str:
+    """Render the responder's conversation-context section, or ``""``.
+
+    Reuses the decider's renderers for ``<case_brief>`` /
+    ``<conversation_summary>`` / ``<recent_messages>`` / ``<prior_searches>``
+    (plan: next_step_suggestions.md §3.5, D6). ``<attached_items>`` is
+    deliberately NOT rendered — full attachment bodies are too heavy here, and
+    the decider's ``planner_brief`` already carries the attachment facts.
+
+    وضع السرية: the deps values are already codec-encoded by the orchestrator
+    (see ``deps.py``) — never re-encode here.
+    """
+    blocks = [
+        b for b in (
+            _render_case_brief(getattr(deps, "case_brief", None)),
+            _render_compaction_summary(getattr(deps, "compaction_summary_md", None)),
+            _render_recent_messages(getattr(deps, "recent_messages", None)),
+            _render_prior_searches(getattr(deps, "prior_searches", None)),
+        )
+        if b is not None
+    ]
+    if not blocks:
+        return ""
+    return f"{_RESPONDER_CONTEXT_HEADER}\n\n" + "\n\n".join(blocks) + "\n\n"
+
+
 def build_responder_instructions(deps) -> str:
     """Dynamic phase-3 instruction — artifact digest + planner_brief + mode framing.
 
@@ -564,6 +633,10 @@ def build_responder_instructions(deps) -> str:
     Phase E (§3.5): also renders a ``<planner_brief>`` block sourced from
     ``deps._decision.planner_brief`` (when non-empty) so the chat summary stays
     aligned with the framing the executors + aggregator already used.
+
+    Order: welcome block → conversation context
+    (:func:`render_responder_context`, omitted when empty) → mode framing →
+    planner_brief → digest. Same on the degraded path.
 
     Registered as an ``@agent.instructions`` callback on ``planner_responder``.
     """
@@ -581,11 +654,13 @@ def build_responder_instructions(deps) -> str:
     welcome_block = getattr(deps, "welcome_instruction", None) or ""
     if welcome_block:
         welcome_block = f"{welcome_block}\n"
+    context_block = render_responder_context(deps)
 
     if agg is None:
         # Degraded path — phase 2 produced nothing. Keep the responder honest.
         return (
             f"{welcome_block}"
+            f"{context_block}"
             f"{framing}\n\n"
             f"{planner_brief_block}"
             "## Search outcome\n"
@@ -612,7 +687,7 @@ def build_responder_instructions(deps) -> str:
     )
 
     return f"""\
-{welcome_block}{framing}
+{welcome_block}{context_block}{framing}
 
 {planner_brief_block}## Search outcome (a digest for reference — do not copy it verbatim)
 
@@ -625,7 +700,7 @@ def build_responder_instructions(deps) -> str:
 ### An excerpt from the detailed synthesis
 {synthesis_slice}{truncated}
 
-Now write `chat_summary_md`, `suggestion_md`, `build_artifact`, and `referenced_wi` (all user-facing text in Arabic) according to the mode framing and the system rules above. \
+Now write `chat_summary_md`, `next_steps`, `build_artifact`, and `referenced_wi` (all user-facing text in Arabic) according to the mode framing and the system rules above. \
 Respect the confidence level and the gaps: if confidence is low or there is a material gap, state it explicitly.\
 """
 
@@ -637,4 +712,5 @@ __all__ = [
     "build_responder_user_message",
     "build_decider_instructions",
     "build_responder_instructions",
+    "render_responder_context",
 ]

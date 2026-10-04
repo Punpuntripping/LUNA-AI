@@ -33,6 +33,7 @@ import { ComposerPlusMenu } from "@/components/chat/ComposerPlusMenu";
 import {
   trackChatSend,
   trackConversationOpened,
+  trackNextStepSent,
 } from "@/components/analytics/run-tracker";
 import { api, workspaceApi, ApiClientError } from "@/lib/api";
 import { workspaceKeys } from "@/hooks/use-workspace";
@@ -209,6 +210,9 @@ export function ChatInput({
     clearPendingBlogs();
     clearPendingLibraryItems();
     setPendingTemplate(null);
+    // A next-step chip pasted in another conversation must not attribute
+    // this conversation's next send to it.
+    useChatStore.getState().clearPastedNextStep();
   }, [
     conversationId,
     clearPendingFiles,
@@ -270,16 +274,32 @@ export function ChatInput({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live composer injection (onboarding starter questions): fires while the
-  // composer is already mounted — the mount-time pendingComposerDraft read
-  // above can't cover that. Applies the text, focuses the box, clears the
-  // slot (the clear re-runs the effect with null; the guard makes it a no-op).
+  // Live composer injection (onboarding starter questions, next-step chips):
+  // fires while the composer is already mounted — the mount-time
+  // pendingComposerDraft read above can't cover that. REPLACES the text,
+  // focuses the box, clears the slot (the clear re-runs the effect with null;
+  // the guard makes it a no-op). Never sends. TextareaAutosize re-measures on
+  // the value change, so the box grows to fit the pasted prompt.
   const composerInjection = useChatStore((s) => s.composerInjection);
   useEffect(() => {
     if (!composerInjection) return;
-    setContent(composerInjection.text);
+    const text = composerInjection.text;
+    setContent(text);
     useChatStore.getState().clearComposerInjection();
-    textareaRef.current?.focus();
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    // Caret at the end, after React has committed the new value — so the user
+    // can keep typing straight onto the pasted prompt. No cleanup on purpose:
+    // the clear above re-runs this effect (with null) before the frame fires,
+    // and cancelling there would drop the caret move.
+    requestAnimationFrame(() => {
+      const box = textareaRef.current;
+      if (!box) return;
+      const end = box.value.length;
+      box.setSelectionRange(end, end);
+      box.scrollTop = box.scrollHeight;
+    });
   }, [composerInjection]);
 
   const handleChange = useCallback(
@@ -338,6 +358,18 @@ export function ChatInput({
           (i) => i.status === "ready" && !!i.itemId,
         ),
     });
+
+    // `next_step_sent` (next_step_suggestions §3.8): the first send after a
+    // chip paste reports whether the user edited the pasted prompt. Consumed
+    // here so only that one send is attributed to the chip.
+    const pastedStep = store.consumePastedNextStep();
+    if (pastedStep) {
+      trackNextStepSent({
+        kind: pastedStep.kind,
+        edited: trimmed !== pastedStep.text.trim(),
+        conversationId: conversationId ?? null,
+      });
+    }
 
     onSend(outgoing);
     setContent("");

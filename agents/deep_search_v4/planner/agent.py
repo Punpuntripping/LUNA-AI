@@ -27,6 +27,7 @@ import re
 from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.usage import UsageLimits
 
+from agents.models import next_step_errors, salvage_next_steps
 from agents.tool_repository.fetch_article import register_fetch_article
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
@@ -205,7 +206,7 @@ def create_planner_responder(
 ) -> Agent[PlannerDeps, PlannerResponse]:
     """Build the phase-3 responder agent.
 
-    Emits a :class:`PlannerResponse` (chat summary + suggestion). A dynamic
+    Emits a :class:`PlannerResponse` (chat summary + next_steps chips). A dynamic
     ``@instructions`` callback reads ``ctx.deps._agg_output`` + ``_decision`` and
     injects the trimmed artifact digest + mode-specific chat-summary framing.
 
@@ -257,6 +258,35 @@ def create_planner_responder(
             # No alias emitted -- ensure the UUID field is also cleared so
             # downstream code never sees a stale value.
             value.referenced_item_id = None
+        return value
+
+    @agent.output_validator
+    def _validate_next_steps(
+        ctx: RunContext[PlannerDeps], value: PlannerResponse,
+    ) -> PlannerResponse:
+        """Police ``next_steps`` (plan: next_step_suggestions.md §3.2).
+
+        ≤ 3 chips, one per kind, no ``open`` (deep_search references are
+        already visible in the card), label/prompt within their caps. The FIRST
+        attempt gets one ``ModelRetry`` with the concrete errors; any later
+        attempt is salvaged in place (:func:`salvage_next_steps`) — chips are
+        decoration and must never cost the turn its answer.
+        """
+        errors = next_step_errors(value.next_steps, allow_open=False)
+        if not errors:
+            return value
+        if ctx.retry == 0:
+            raise ModelRetry(
+                "Fix `next_steps`: " + "; ".join(errors)
+                + ". Emit at most 3 chips, each a different kind "
+                "(narrow_search / draft / apply), or an empty list."
+            )
+        logger.warning(
+            "planner_responder: salvaging next_steps after retry (%s)",
+            "; ".join(errors),
+        )
+        value.next_steps = salvage_next_steps(value.next_steps, allow_open=False)
+        value._next_steps_salvaged = True
         return value
 
     return agent

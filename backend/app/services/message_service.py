@@ -556,6 +556,30 @@ def _update_message_content(
     supabase.table("messages").update(update_data).eq("message_id", message_id).execute()
 
 
+def _merged_message_metadata(
+    supabase: SupabaseClient,
+    message_id: str,
+    patch: dict,
+) -> dict:
+    """Return the row's current ``metadata`` with ``patch`` merged on top.
+
+    ``messages.metadata`` is jsonb NOT NULL default ``'{}'`` and the assistant
+    placeholder is inserted without it, so today it is almost always ``{}`` —
+    but the update REPLACES the whole column, so read-merge rather than assume:
+    a key another writer set mid-turn must survive. Raises on a failed read; the
+    caller then skips the metadata write instead of clobbering unseen keys.
+    """
+    resp = (
+        supabase.table("messages")
+        .select("metadata")
+        .eq("message_id", message_id)
+        .maybe_single()
+        .execute()
+    )
+    existing = (getattr(resp, "data", None) or {}).get("metadata") if resp else None
+    return {**(existing if isinstance(existing, dict) else {}), **patch}
+
+
 def _update_conversation_meta(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -895,6 +919,10 @@ async def send_message_stream(
     # stay dark for every assistant message.
     captured_artifact_ids: list[str] = []
     captured_referenced_ids: list[str] = []
+    # Next-step chips (plan next_step_suggestions.md §3.6) — DECODED items from
+    # the turn's `next_steps` event, persisted to messages.metadata.next_steps at
+    # `done`. Key is `next_steps`, never `suggestions` (= agent_question chips).
+    captured_next_steps: list[dict] = []
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
@@ -1052,6 +1080,30 @@ async def send_message_stream(
                             "suggestions": event.get("suggestions", []),
                         }))
 
+                    elif event_type == "next_steps":
+                        # وضع السرية: chips were generated from ENCODED input and
+                        # can carry fakes in label/prompt — decode before the SSE
+                        # AND before persist (store-real), same as agent_question.
+                        items: list[dict] = []
+                        for raw in event.get("items") or []:
+                            if not isinstance(raw, dict):
+                                continue
+                            items.append({
+                                "kind": raw.get("kind", ""),
+                                "label": decode_text(codec, raw.get("label", ""), emit=True),
+                                "prompt": decode_text(codec, raw.get("prompt", ""), emit=True),
+                            })
+                        if items:
+                            captured_next_steps[:] = items
+                            # The orchestrator emits chips after the LAST token,
+                            # so flush any decode-buffer tail now — otherwise it
+                            # would surface as a token AFTER the chips (finalize
+                            # is idempotent; `done` below flushes "" then).
+                            tail = stream_decoder.finalize()
+                            if tail:
+                                await queue.put(_sse_event("token", {"text": tail}))
+                            await queue.put(_sse_event("next_steps", {"items": items}))
+
                     elif event_type == "agent_resumed":
                         await queue.put(_sse_event("agent_resumed", {
                             "run_id": event.get("run_id", ""),
@@ -1110,6 +1162,22 @@ async def send_message_stream(
                                     update_data["artifact_ids"] = captured_artifact_ids
                                 if captured_referenced_ids:
                                     update_data["referenced_item_ids"] = captured_referenced_ids
+                                # Next-step chips → metadata.next_steps, merged
+                                # over the row's existing metadata (the update
+                                # replaces the column). A failed read skips the
+                                # chips rather than clobbering unseen keys.
+                                if captured_next_steps:
+                                    try:
+                                        update_data["metadata"] = await run_db(
+                                            _merged_message_metadata,
+                                            supabase, assistant_msg_id,
+                                            {"next_steps": captured_next_steps},
+                                        )
+                                    except Exception:
+                                        logger.warning(
+                                            "next_steps: metadata read failed — "
+                                            "chips not persisted", exc_info=True,
+                                        )
 
                                 await run_db(
                                     _update_message_content,

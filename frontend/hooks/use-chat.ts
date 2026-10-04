@@ -8,6 +8,7 @@ import { messageKeys } from "@/hooks/use-messages";
 import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { isMobileViewport } from "@/hooks/use-media-query";
+import { parseNextSteps } from "@/lib/next-steps";
 // Chat-depth analytics (product_analytics §3b). Every call below is
 // fire-and-forget and individually guarded inside the tracker — a tracking
 // failure must never touch the stream (T9).
@@ -28,6 +29,7 @@ import type {
   Attachment,
   Message,
   MessageListResponse,
+  NextStep,
   SSEMessageStart,
   SSEToken,
   SSEDone,
@@ -45,6 +47,7 @@ import type {
   SSEWorkspaceItemUnlocked,
   SSEReferencedExistingItem,
   SSETemplateSaveOffer,
+  SSENextSteps,
   WorkspaceItem,
   WorkspaceItemListResponse,
 } from "@/types";
@@ -268,6 +271,11 @@ export function useSendMessage(): UseSendMessageReturn {
       // reserved). After that, a dropped stream must NOT re-POST — the run
       // finishes in the background, so we recover it with a read-only poll.
       let messageStartSeen = false;
+      // next_step_suggestions §3.7: chips from the `next_steps` SSE event
+      // (arrives after the last token, before `done`). Held here so `done`
+      // can fold them into the cached row's metadata in the same write that
+      // inserts the final content — the chips appear without a refetch.
+      let liveNextSteps: NextStep[] = [];
 
       const sendOptions = {
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
@@ -635,6 +643,10 @@ export function useSendMessage(): UseSendMessageReturn {
                                   artifact_ids: payload.artifact_ids ?? null,
                                   referenced_item_ids:
                                     payload.referenced_item_ids ?? null,
+                                  metadata: withNextSteps(
+                                    m.metadata,
+                                    liveNextSteps,
+                                  ),
                                 }
                               : m,
                           ),
@@ -659,6 +671,7 @@ export function useSendMessage(): UseSendMessageReturn {
                           // null when the turn produced nothing.
                           artifact_ids: payload.artifact_ids ?? null,
                           referenced_item_ids: payload.referenced_item_ids ?? null,
+                          metadata: withNextSteps(undefined, liveNextSteps),
                         },
                         ...newPages[0].messages,
                       ],
@@ -814,6 +827,25 @@ export function useSendMessage(): UseSendMessageReturn {
               }
               break;
             }
+            case "next_steps": {
+              // next_step_suggestions §3.6/§3.7: 0–3 clickable follow-ups for
+              // the answer just streamed. Folded into the cached row's
+              // metadata at `done` (see `liveNextSteps`), AND stashed on the
+              // store keyed by message id — the fallback MessageList reads if
+              // the post-stream refetch lands before the server row carries
+              // `metadata.next_steps`. Never rendered mid-stream: the bubble
+              // only shows chips once it is settled and the latest reply.
+              const payload = data as SSENextSteps;
+              const items = parseNextSteps(payload.items);
+              if (items.length === 0) break;
+              liveNextSteps = items;
+              if (assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .recordNextSteps(assistantMessageId, items);
+              }
+              break;
+            }
             case "heartbeat":
               // Keep-alive ping from server — ignore silently
               break;
@@ -937,6 +969,23 @@ export function useSendMessage(): UseSendMessageReturn {
   );
 
   return { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage };
+}
+
+// -----------------------------------------------
+// Helper: fold live next-step chips into a message's metadata
+// -----------------------------------------------
+
+/**
+ * Merge `next_steps` into `metadata` without touching its other keys. Returns
+ * the metadata unchanged when there are no chips, so a turn without them keeps
+ * its exact shape (and `undefined` stays `undefined`).
+ */
+function withNextSteps(
+  metadata: Message["metadata"],
+  nextSteps: NextStep[],
+): Message["metadata"] {
+  if (nextSteps.length === 0) return metadata;
+  return { ...(metadata ?? {}), next_steps: nextSteps };
 }
 
 // -----------------------------------------------

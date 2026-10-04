@@ -200,7 +200,27 @@ export interface MessageMetadata {
   agent_family?: AgentFamily;
   /** Optional suggested replies surfaced with an agent_question. */
   suggestions?: string[];
+  /**
+   * Clickable next-step chips (next_step_suggestions plan §3.6/§3.7) offered
+   * under a finished deep_search / simple_search answer. NOT the same thing
+   * as ``suggestions`` above (read-only agent_question replies).
+   */
+  next_steps?: NextStep[];
   [key: string]: unknown;
+}
+
+/**
+ * What a next-step chip offers (next_step_suggestions plan §3.2).
+ * ``open`` is simple_search only (an unselected candidate / rest of a doc).
+ */
+export type NextStepKind = "narrow_search" | "draft" | "apply" | "open";
+
+export interface NextStep {
+  kind: NextStepKind;
+  /** Chip text — short Arabic label, no trailing punctuation. */
+  label: string;
+  /** Full first-person message pasted into the composer on click. */
+  prompt: string;
 }
 
 export interface Message {
@@ -1650,6 +1670,16 @@ export interface SSETemplateSaveOffer {
   item_id: string;
   /** The attached document's title, used as the chip's context hint. */
   title_hint: string;
+}
+
+/**
+ * next_step_suggestions plan §3.6: ``event: next_steps`` — 0–3 clickable
+ * follow-ups for the answer just streamed. Emitted once, after the last
+ * ``token`` and before ``done``, and only when non-empty. The same items are
+ * persisted on the assistant row as ``metadata.next_steps``.
+ */
+export interface SSENextSteps {
+  items: NextStep[];
 }
 
 // ==========================================

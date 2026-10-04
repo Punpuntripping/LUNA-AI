@@ -68,6 +68,11 @@ export type AnalyticsEventName =
   | "wi_dwell"
   /** A conversation was loaded. Props: `conversation_id`, `has_unseen_answer`. */
   | "conversation_opened"
+  // ---- next_step_suggestions.md §3.8 — next-step chips ------------------
+  /** Next-step chip clicked (pasted, never sent). Props: `kind`, `family`. */
+  | "next_step_clicked"
+  /** First send after a chip paste. Props: `kind`, `edited`. */
+  | "next_step_sent"
   // ---- install surfaces (install_app_nudge.md, pwa_step1 §1E) -----------
   /** Chat nudge card appeared. Props: `platform`. */
   | "install_nudge_shown"

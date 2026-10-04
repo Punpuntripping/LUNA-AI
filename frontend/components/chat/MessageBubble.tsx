@@ -38,10 +38,11 @@ import { useAuthStore } from "@/stores/auth-store";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
+import { NextStepChips } from "@/components/chat/NextStepChips";
 import { WiBadge } from "@/components/workspace/WiBadge";
 import { getDoneAt } from "@/components/analytics/run-tracker";
 import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
-import type { Attachment, Message, WorkspaceItemKind } from "@/types";
+import type { Attachment, Message, NextStep, WorkspaceItemKind } from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
@@ -107,6 +108,18 @@ interface MessageBubbleProps {
    * streaming / non-writing bubbles.
    */
   templateOffer?: { itemId: string; titleHint: string };
+  /**
+   * next_step_suggestions plan §3.7: true only for the LAST message of the
+   * thread when it is an assistant reply. Chips render only there, so they
+   * vanish the moment the user sends a new message.
+   */
+  isLatestAssistant?: boolean;
+  /**
+   * Validated next-step chips for this message (persisted
+   * ``metadata.next_steps`` or the live ``next_steps`` SSE fallback). Only
+   * passed for the latest assistant message.
+   */
+  nextSteps?: NextStep[];
 }
 
 export const MessageBubble = memo(function MessageBubble({
@@ -123,6 +136,8 @@ export const MessageBubble = memo(function MessageBubble({
   referencedItemIds,
   onJumpToReferencedItem,
   templateOffer,
+  isLatestAssistant,
+  nextSteps,
 }: MessageBubbleProps) {
   const [feedback, setFeedback] = useState<FeedbackState>("none");
   const [isEditing, setIsEditing] = useState(false);
@@ -164,6 +179,18 @@ export const MessageBubble = memo(function MessageBubble({
     !isAgentQuestion &&
     templateOffer !== undefined &&
     !!templateOffer.itemId;
+
+  // Next-step chips (next_step_suggestions D3): latest settled answer only —
+  // never mid-stream, never on an optimistic/failed row, never on the
+  // agent_question callout (its own read-only ``suggestions`` render below).
+  const hasNextSteps =
+    !isUser &&
+    !isAgentQuestion &&
+    isLatestAssistant === true &&
+    isCompleted &&
+    !message.isFailed &&
+    Array.isArray(nextSteps) &&
+    nextSteps.length > 0;
 
   // `answer_seen` (product_analytics §3b / T15) — "rendered" is not "seen",
   // and here that distinction IS the metric: the honest denominator for
@@ -535,6 +562,22 @@ export const MessageBubble = memo(function MessageBubble({
                 </span>
               ))}
             </div>
+          )}
+
+          {/* Next-step chips — click pastes the prompt into the composer
+              (never sends). Latest settled answer only; see hasNextSteps. */}
+          {hasNextSteps && (
+            <NextStepChips
+              steps={nextSteps!}
+              conversationId={message.conversation_id}
+              messageId={message.message_id}
+              family={
+                typeof message.metadata?.agent_family === "string"
+                  ? message.metadata.agent_family
+                  : null
+              }
+              className="mt-3"
+            />
           )}
 
           {/* Failed indicator + retry */}

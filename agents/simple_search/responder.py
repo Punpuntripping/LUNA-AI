@@ -55,6 +55,14 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ModelRetry, RunContext, TextOutput
 from pydantic_ai.usage import UsageLimits
 
+from agents.models import (
+    MAX_NEXT_STEPS,
+    NEXT_STEP_LABEL_MAX,
+    NEXT_STEP_PROMPT_MAX,
+    NextStep,
+    next_step_errors,
+    salvage_next_steps,
+)
 from agents.simple_search.prompts import (
     RESPONDER_EXCERPT_HARD_CAP,
     SIMPLE_SEARCH_RESPONDER_PROMPT,
@@ -165,7 +173,7 @@ class ResponderOutput(BaseModel):
     """What the responder returns for the whole turn — one object, not one per doc.
 
     Deliberately close to ``PlannerResponse`` (``planner/models.py:246-278``)
-    where the shape is load bearing — ``chat_summary_md`` + ``suggestion_md`` —
+    where the shape is load bearing — ``chat_summary_md`` + ``next_steps`` —
     and deliberately different where deep_search's fields carry single-artifact
     semantics a fan-out has no concept of: ``build_artifact`` is one boolean for
     one aggregated artifact, and ``referenced_wi`` points at one prior card.
@@ -180,11 +188,13 @@ class ResponderOutput(BaseModel):
             "documents themselves, and never any [n] citation marker."
         ),
     )
-    suggestion_md: str = Field(
-        default="",
+    next_steps: list[NextStep] = Field(
+        default_factory=list,
         description=(
-            "ONE next step in Arabic, offering tone, grounded in the objects "
-            "this turn considered and did not open. Empty is valid and frequent."
+            f"0-{MAX_NEXT_STEPS} clickable next-step chips, each a DIFFERENT kind "
+            "(open / narrow_search / apply / draft). `label` is the short Arabic "
+            "chip text; `prompt` is the Arabic message written as the USER "
+            "speaking. Empty only when a next step would be noise."
         ),
     )
     cards: list[CardVerdict] = Field(
@@ -223,11 +233,12 @@ class ResponderOutput(BaseModel):
 # reads and omit the ones that gate the publish).
 _RESPONDER_RETRY_MSG = (
     "Return the output as a single valid JSON object conforming to the schema "
-    "(chat_summary_md, suggestion_md, cards) only — with no text and no "
+    "(chat_summary_md, next_steps, cards) only — with no text and no "
     "<thinking> tag outside the JSON. Each entry of `cards` is "
     '{"doc": "D1", "card": true, "title": "..."}, where `doc` is one of the '
-    "labels shown in <documents>. `chat_summary_md`, `suggestion_md` and every "
-    "`title` must be in Arabic."
+    "labels shown in <documents>. Each entry of `next_steps` is "
+    '{"kind": "open|narrow_search|apply|draft", "label": "...", "prompt": "..."}. '
+    "`chat_summary_md`, every `title`, `label` and `prompt` must be in Arabic."
 )
 
 
@@ -344,6 +355,36 @@ def create_responder_agent(
             verdict.title = verdict.title.strip() if verdict.card else ""
             kept.append(verdict)
         value.cards = kept
+        return value
+
+    @agent.output_validator
+    def _validate_next_steps(
+        ctx: RunContext[ResponderDeps], value: ResponderOutput,
+    ) -> ResponderOutput:
+        """Police ``next_steps`` (plan ``next_step_suggestions.md`` §3.2).
+
+        ONE ``ModelRetry`` on the first bad output — over 3 chips, a repeated
+        kind, an over-long label/prompt — then salvage on any later attempt.
+        Chips are decoration: the output retries this agent holds are budgeted
+        for the card labels that gate the publish (``_validate_cards``), and a
+        chip must never be the reason a turn loses its cards under D7. The
+        runner salvages again on the way out as the last floor.
+        """
+        errors = next_step_errors(value.next_steps, allow_open=True)
+        if not errors:
+            return value
+        if ctx.retry < 1:
+            raise ModelRetry(
+                "قائمة next_steps غير صالحة: " + "؛ ".join(errors)
+                + f". أعد الإخراج بحد أقصى {MAX_NEXT_STEPS} اقتراحات، كل واحد من "
+                f"نوع مختلف، والنص القصير (label) لا يتجاوز {NEXT_STEP_LABEL_MAX} حرفاً، "
+                f"والرسالة (prompt) لا تتجاوز {NEXT_STEP_PROMPT_MAX} حرف."
+            )
+        logger.warning(
+            "simple_search responder: next_steps still invalid after a retry — "
+            "salvaging (%s)", "; ".join(errors),
+        )
+        value.next_steps = salvage_next_steps(value.next_steps, allow_open=True)
         return value
 
     return agent

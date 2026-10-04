@@ -73,6 +73,7 @@ from agents.models import (
     DispatchAgent,
     MajorAgentInput,
     ChatMessageSnapshot,
+    NextStep,
     WorkspaceItemSnapshot,
     SpecialistResult,
 )
@@ -107,6 +108,35 @@ _RECENT_MESSAGES_BUFFER = 5
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _coerce_next_steps(raw: Any) -> list[NextStep]:
+    """Normalise a family's next-step chips into ``NextStep`` models. Never raises.
+
+    Families hand back ``NextStep`` instances (or dicts after a salvage); anything
+    that does not validate is dropped — a chip is never worth failing a turn.
+    """
+    out: list[NextStep] = []
+    for item in raw or []:
+        try:
+            out.append(item if isinstance(item, NextStep) else NextStep.model_validate(item))
+        except Exception:  # noqa: BLE001 — chips are best-effort
+            logger.warning("dropping malformed next_step: %r", item)
+    return out
+
+
+def _next_steps_event(steps: list[NextStep] | None) -> dict | None:
+    """The ``next_steps`` SSE event for a completed delivery, or ``None`` if empty.
+
+    Emitted once per turn AFTER the last ``token`` and BEFORE ``done`` (plan
+    next_step_suggestions.md §3.6). Never on a paused delivery — a question
+    follows there, and chips would compete with it. Labels/prompts are still
+    ENCODED here under وضع السرية; message_service decodes them on relay, same
+    as agent_question.
+    """
+    if not steps:
+        return None
+    return {"type": "next_steps", "items": [s.model_dump() for s in steps]}
 
 
 def _zero_usage(model: str) -> dict:
@@ -320,7 +350,9 @@ def _load_recent_messages(
     This lets the planners follow multi-step exchanges and recognise a
     refinement of a prior output instead of re-planning from scratch.
     User turns get the twin marker: which workspace items (uploaded files /
-    attached blogs) the user attached to that specific message.
+    attached blogs) the user attached to that specific message. Assistant turns
+    that offered next-step chips (``metadata.next_steps``) get the
+    ``build_next_steps_note`` line appended, so a typed «نعم» stays resolvable.
 
     Empty-content rows are dropped BEFORE taking the last ``n`` — the assistant
     placeholder that ``message_service`` inserts before the agent runs is
@@ -334,6 +366,7 @@ def _load_recent_messages(
     created here are persisted before the LLM consumes them (needs ``user_id``).
     """
     from agents.utils.history import (  # pure utils — no import cycle
+        append_next_steps_note,
         build_provenance_tag,
         build_user_attachment_tag,
     )
@@ -344,7 +377,7 @@ def _load_recent_messages(
     try:
         result = (
             supabase.table("messages")
-            .select("message_id, role, content, artifact_ids, created_at")
+            .select("message_id, role, content, artifact_ids, metadata, created_at")
             .eq("conversation_id", conversation_id)
             .order("created_at", desc=True)
             .limit(n + _RECENT_MESSAGES_BUFFER)
@@ -396,6 +429,11 @@ def _load_recent_messages(
                 tag = build_provenance_tag(list(artifact_ids), wi_provenance)
                 if tag:
                     content = f"{tag}\n{content}"
+        if role == "assistant":
+            # Chips offered under this reply (metadata.next_steps) — the SAME
+            # note the router sees via messages_to_history. Encoded below with
+            # the rest of the surface.
+            content = append_next_steps_note(content, row)
         elif role == "user" and wi_provenance:
             attached_ids = attachments_by_message.get(str(row.get("message_id") or ""))
             if attached_ids:
@@ -1381,6 +1419,11 @@ async def _resume_major_agent_inner(
             bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
             yield {"type": "token", "text": bullets}
 
+        # Chips after the last token, before done — the resume leg is where
+        # deliveries got dropped before ([responder-resume]); mirror _dispatch.
+        if (ns_ev := _next_steps_event(run_result.next_steps)) is not None:
+            yield ns_ev
+
         yield {
             "type": "done",
             "usage": {
@@ -1577,6 +1620,8 @@ async def _resume_simple_search_leg(
             if ds_result.key_findings:
                 bullets = "\n\n" + "\n".join(f"• {k}" for k in ds_result.key_findings)
                 yield {"type": "token", "text": bullets}
+            if (ns_ev := _next_steps_event(ds_result.next_steps)) is not None:
+                yield ns_ev
             yield {
                 "type": "done",
                 "usage": {
@@ -1661,6 +1706,14 @@ async def _resume_simple_search_leg(
 
         if answer_text:
             yield {"type": "token", "text": answer_text}
+        # Chips only on a clean delivery: a paused run that fell through to here
+        # just delivered its question as text, and chips would compete with it.
+        if not ss_outcome.paused and (
+            ns_ev := _next_steps_event(
+                _coerce_next_steps(getattr(ss_outcome, "next_steps", None))
+            )
+        ) is not None:
+            yield ns_ev
         yield {
             "type": "done",
             "usage": _zero_usage("simple_search"),
@@ -2949,6 +3002,15 @@ async def _dispatch(
                     chat_summary="\n\n".join(
                         m for m in ss_outcome.chat_messages if m and m.strip()
                     ),
+                    # A pause that fell through here (no row of ours) delivers
+                    # its question as the last message — no chips beside it.
+                    next_steps=(
+                        []
+                        if ss_outcome.paused
+                        else _coerce_next_steps(
+                            getattr(ss_outcome, "next_steps", None)
+                        )
+                    ),
                     sse_events=list(ss_outcome.sse_events),
                     model_used="simple_search",
                 )
@@ -2992,6 +3054,11 @@ async def _dispatch(
             if run_result.key_findings:
                 bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
                 yield {"type": "token", "text": bullets}
+
+            # Next-step chips (deep_search / simple_search; empty elsewhere) —
+            # after the last token, before done. Paused branches never get here.
+            if (ns_ev := _next_steps_event(run_result.next_steps)) is not None:
+                yield ns_ev
 
             yield {
                 "type": "done",
@@ -3131,7 +3198,8 @@ async def _run_deep_search(
         is set (prior-artifact-covers branch), appends a
         ``referenced_existing_item`` SSE event so the frontend can highlight or
         chip the existing card. The user-facing chat summary still flows from
-        the responder's ``chat_summary_md`` + ``suggestion_md``.
+        the responder's ``chat_summary_md`` (its ``next_steps`` ride
+        separately on ``SpecialistResult.next_steps``).
     Returns ``kind="completed"`` with a ``SpecialistResult`` in either branch.
 
     ``decision``: supplied on the resume path (phase 1 already resolved by
@@ -3153,9 +3221,9 @@ async def _run_deep_search(
     monitor) → the hook stays dead and everything batches as before.
 
     The user-facing chat summary is written by the **planner** (phase 3):
-    ``SpecialistResult.chat_summary`` = the planner's ``chat_summary_md`` +
-    ``suggestion_md``. ``key_findings`` was historically copied from the
-    aggregator artifact; since Wave 10 the aggregator no longer emits it
+    ``SpecialistResult.chat_summary`` = the planner's ``chat_summary_md``; its
+    ``next_steps`` chips go to ``SpecialistResult.next_steps``. ``key_findings``
+    was historically copied from the aggregator artifact; since Wave 10 the aggregator no longer emits it
     (the per-artifact agent-facing summary is written asynchronously by the
     Supabase-trigger-driven ``artifact_summarizer`` to ``workspace_items.summary``).
     """
@@ -3398,12 +3466,14 @@ async def _run_deep_search(
         if isinstance(v, dict)
     )
 
-    # chat_summary = planner's phase-3 prose + the next-step suggestion.
+    # chat_summary = planner's phase-3 prose ONLY. Next-step offers travel as
+    # structured chips (SpecialistResult.next_steps → `next_steps` SSE event),
+    # never as text in the bubble (plan next_step_suggestions.md §3.6).
     # `response` already captured above for the build_artifact branch.
     chat_summary = (getattr(response, "chat_summary_md", "") or "") if response else ""
-    suggestion = (getattr(response, "suggestion_md", "") or "").strip() if response else ""
-    if suggestion:
-        chat_summary = f"{chat_summary}\n\n{suggestion}" if chat_summary else suggestion
+    next_steps = (
+        _coerce_next_steps(getattr(response, "next_steps", None)) if response else []
+    )
     # key_findings: aggregator no longer emits these (Wave 10 — moved to the
     # async artifact_summarizer). Kept as a default-empty list so the SSE
     # bullet block simply yields nothing for deep_search turns.
@@ -3420,6 +3490,7 @@ async def _run_deep_search(
             output_item_id=output_item_id,
             chat_summary=chat_summary,
             key_findings=key_findings,
+            next_steps=next_steps,
             sse_events=sse_events,
             model_used=model_used,
             tokens_in=tokens_in,
