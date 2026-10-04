@@ -137,6 +137,10 @@ class _FakeTable:
 
     def execute(self):
         key = self._name
+        if key == "messages":
+            return SimpleNamespace(
+                data=[{"message_id": str(i)} for i in range(self._rows["user_messages"])]
+            )
         if key == "conversations":
             key = "conversations_count" if self._single else "conversations_activity"
         return SimpleNamespace(data=self._rows.get(key))
@@ -152,7 +156,7 @@ class _FakeSupabase:
 
 def _client(
     *,
-    message_count: int = 0,
+    user_messages: int = 1,
     welcomed_at: str | None = None,
     profession: str | None = "legal",
     last_activity_days_ago: float | None = None,
@@ -162,7 +166,7 @@ def _client(
         when = datetime.now(timezone.utc) - timedelta(days=last_activity_days_ago)
         activity = [{"updated_at": when.isoformat()}]
     return _FakeSupabase(
-        conversations_count={"message_count": message_count},
+        user_messages=user_messages,
         conversations_activity=activity,
         users={
             "preferred_name": "أسعد",
@@ -186,7 +190,24 @@ def test_a_brand_new_user_gets_the_first_ever_welcome() -> None:
 
 def test_no_welcome_once_the_conversation_has_turns() -> None:
     """The greeting belongs to the opening turn, never mid-conversation."""
-    assert resolve_welcome(_client(message_count=4), "u1", "c1") is None
+    assert resolve_welcome(_client(user_messages=2), "u1", "c1") is None
+
+
+def test_the_opening_turn_is_welcomed_with_its_own_rows_already_saved() -> None:
+    """Prod regression: the turn's user row + assistant placeholder are saved
+    (and ``message_count`` trigger-bumped to 2) BEFORE ``_route`` runs. The gate
+    must count only user rows, or the first-ever greeting never fires."""
+    assert resolve_welcome(_client(user_messages=1), "u1", "c1") is not None
+    assert resolve_welcome(_client(user_messages=0), "u1", "c1") is not None
+
+
+def test_first_contact_guidance_rides_only_on_the_first_ever_welcome() -> None:
+    first = render_welcome_instruction(WelcomeState("user_first", "أسعد", "legal"))
+    back = render_welcome_instruction(WelcomeState("return_gap", "أسعد", "legal"))
+
+    assert "never used ريحان before" in first
+    assert "never answer a greeting or a salam they did not send" in first
+    assert "never used ريحان before" not in back
 
 
 def test_a_welcomed_user_inside_the_window_gets_nothing() -> None:

@@ -112,6 +112,39 @@ def compose_opening(state: WelcomeState) -> str:
     return f"{address}، {_BODY_WITH_ADDRESS[state.variant]}"
 
 
+def _render_first_contact_guidance(state: WelcomeState) -> str:
+    """How to talk to someone who has never used ريحان — ``user_first`` only.
+
+    A first-time user does not know what the product can do, so a reply framed
+    around what is MISSING («لا يوجد في مساحة العمل أي مستند…») reads as a
+    dead end. Prod 2026-10-04: «هل تقيم لي مذكرة الدعوى وتعدلها» got exactly
+    that, plus a «وعليكم السلام» to a salam the user never sent. The fix is
+    tone: assure, then show the path. A returner (``return_gap``) already knows
+    the product and gets none of this.
+    """
+    if state.variant != "user_first":
+        return ""
+    return (
+        "\n## This user has never used ريحان before\n\n"
+        "Assume they do not know what ريحان can do. Talk like a colleague who "
+        "is glad to take the work on:\n"
+        "- Never frame the reply around what is missing. Do not tell them the "
+        "workspace is empty or that you found no prior document; they have no "
+        "idea what a workspace is yet.\n"
+        "- When the request needs something from them first (a file, the case "
+        "facts), open with assurance («أكيد»، «أبشر»), name what you need, and "
+        "show the concrete path in one or two sentences, "
+        "in their own words. Example for «هل تقيم لي مذكرة الدعوى وتعدلها»: "
+        "«أكيد، أرسل لي المذكرة (ملف أو صورة) وأستخرج نصها، ثم أبحث في "
+        "الأنظمة والأحكام المتعلقة بها عشان نشوف نقاط قوتها وضعفها، وبعدها "
+        "أعدّلها لك. إيش رأيك؟»\n"
+        "- End with one short question that invites them to start — not a "
+        "menu of options and not a list of features.\n"
+        "- Mirror only what they actually wrote: never answer a greeting or a "
+        "salam they did not send.\n"
+    )
+
+
 def render_welcome_instruction(state: WelcomeState | None) -> str:
     """The prompt block injected into whichever agent answers this turn.
 
@@ -140,7 +173,8 @@ def render_welcome_instruction(state: WelcomeState | None) -> str:
     # the writer_planner (chat_summary). One wording, three agents, no variants
     # to drift apart.
     return (
-        f"\n## The opening line of this turn's chat message (mandatory)\n\n"
+        _render_first_contact_guidance(state)
+        + f"\n## The opening line of this turn's chat message (mandatory)\n\n"
         f"{lead} Begin the chat message you write this turn — the text the user "
         f"reads in the chat bubble — with EXACTLY this line, verbatim:\n\n"
         f"{opening}\n\n"
@@ -159,24 +193,27 @@ def render_welcome_instruction(state: WelcomeState | None) -> str:
 # ── Resolution ────────────────────────────────────────────────────────────────
 
 
-def _load_conversation_message_count(
-    supabase: SupabaseClient, conversation_id: str
-) -> int | None:
-    """``message_count`` for the conversation, or None if unreadable.
+def _is_opening_turn(supabase: SupabaseClient, conversation_id: str) -> bool:
+    """True when this turn's user message is the conversation's only one.
 
-    Read BEFORE the turn ends, so the first turn of a conversation still reads
-    0 — ``message_service`` only bumps the counter in its final step.
+    Counts ``messages`` rows directly. ``conversations.message_count`` is NOT
+    usable here: the ``trg_message_inserted`` trigger bumps it on every insert,
+    and the turn's user row plus the assistant placeholder are inserted before
+    the router runs — so a brand-new conversation already reads 2. Gating on
+    ``count > 0`` meant the welcome never fired once in production (2026-10-04:
+    zero users had ``welcomed_at``). The user row is saved BEFORE the AI call,
+    so the opening turn reads exactly one; ``<= 1`` also tolerates a caller
+    that runs before that save.
     """
-    row = (
-        supabase.table("conversations")
-        .select("message_count")
+    rows = (
+        supabase.table("messages")
+        .select("message_id")
         .eq("conversation_id", conversation_id)
-        .maybe_single()
+        .eq("role", "user")
+        .limit(2)
         .execute()
     )
-    if row and getattr(row, "data", None):
-        return int(row.data.get("message_count") or 0)
-    return None
+    return len(getattr(rows, "data", None) or []) <= 1
 
 
 def _load_user_row(supabase: SupabaseClient, user_id: str) -> dict | None:
@@ -248,8 +285,7 @@ def resolve_welcome(
     """Decide whether this turn opens with a welcome, and which one."""
     try:
         # Only ever the opening turn of a conversation.
-        count = _load_conversation_message_count(supabase, conversation_id)
-        if count is None or count > 0:
+        if not _is_opening_turn(supabase, conversation_id):
             return None
 
         user_row = _load_user_row(supabase, user_id) or {}
