@@ -1,7 +1,15 @@
 "use client";
 
 import { memo, useCallback } from "react";
-import { BookOpen, PenLine, Scale, Search, type LucideIcon } from "lucide-react";
+import {
+  ArrowUpLeft,
+  BookOpen,
+  PenLine,
+  Scale,
+  Search,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
@@ -35,7 +43,12 @@ interface NextStepChipsProps {
  *
  * Visual language matches the bubble's other outline pills
  * (``ReferencedItemChip``): rounded-full, h-7, muted text that lifts on hover.
+ * A muted «اقتراحات للمتابعة» label marks them as offers, and the trailing ↖
+ * (pointing up at the composer in RTL) + tooltip say a click fills the input
+ * rather than sending.
  */
+
+const PASTE_HINT = "تُضاف إلى مربع الكتابة لتعدّلها قبل الإرسال";
 export const NextStepChips = memo(function NextStepChips({
   steps,
   conversationId,
@@ -61,36 +74,42 @@ export const NextStepChips = memo(function NextStepChips({
   if (steps.length === 0) return null;
 
   return (
-    <div
-      dir="rtl"
-      role="group"
-      aria-label="خطوات مقترحة"
-      className={cn("flex flex-wrap items-center gap-1.5", className)}
-    >
-      {steps.map((step) => {
-        const Icon = KIND_ICON[step.kind];
-        return (
-          <Button
-            key={step.kind}
-            type="button"
-            variant="outline"
-            size="sm"
-            className={cn(
-              "h-7 max-w-full gap-1.5 px-3 text-xs",
-              // Touch target below `md`, same as the bubble's action bar.
-              "max-md:h-9",
-              "rounded-full border-border/70 text-muted-foreground hover:text-foreground",
-              "hover:bg-accent/40 transition-colors",
-            )}
-            onClick={() => handleClick(step)}
-            aria-label={step.prompt}
-            title={step.prompt}
-          >
-            <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span className="truncate">{step.label}</span>
-          </Button>
-        );
-      })}
+    <div dir="rtl" className={cn("flex flex-col gap-1.5", className)}>
+      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+        <Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />
+        <span id={`next-steps-${messageId}`}>اقتراحات للمتابعة</span>
+      </div>
+      <div
+        role="group"
+        aria-labelledby={`next-steps-${messageId}`}
+        className="flex flex-wrap items-center gap-1.5"
+      >
+        {steps.map((step) => {
+          const Icon = KIND_ICON[step.kind];
+          return (
+            <Button
+              key={step.kind}
+              type="button"
+              variant="outline"
+              size="sm"
+              className={cn(
+                "h-7 max-w-full gap-1.5 px-3 text-xs",
+                // Touch target below `md`, same as the bubble's action bar.
+                "max-md:h-9",
+                "rounded-full border-border/70 text-muted-foreground hover:text-foreground",
+                "hover:bg-accent/40 transition-colors",
+              )}
+              onClick={() => handleClick(step)}
+              aria-label={`${step.label} — ${PASTE_HINT}`}
+              title={PASTE_HINT}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{step.label}</span>
+              <ArrowUpLeft className="h-3 w-3 shrink-0 opacity-50" aria-hidden="true" />
+            </Button>
+          );
+        })}
+      </div>
     </div>
   );
 });
