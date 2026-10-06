@@ -106,9 +106,13 @@ class _ActiveRun:
     early-return handlers and can leak an unbound reservation. ``reserved_at``
     lets the dedup guard reclaim such a leaked slot after
     ``_RESERVATION_STALE_S`` instead of locking the conversation forever.
+
+    ``user_id`` is the sender, so the per-user parallel cap (migration 171) can
+    count a user's live runs across conversations — see _user_inflight_runs.
     """
 
     assistant_msg_id: str
+    user_id: str
     task: asyncio.Task | None = None
     reserved_at: float = dataclasses.field(default_factory=time.monotonic)
 
@@ -128,6 +132,74 @@ _RESERVATION_STALE_S = 180.0
 # parallel. This is distinct from `_inflight_pipelines` (a GC-keepalive set for
 # detached tasks); both can hold the same task.
 _active_runs: dict[str, _ActiveRun] = {}
+
+
+def _run_is_live(run: _ActiveRun, now: float | None = None) -> bool:
+    """Same liveness rule as the dedup guard: an unbound reservation counts
+    until it goes stale; a bound one until its task is done. A paused run
+    (agent_question / ask_user) has no entry at all, so it never counts."""
+    if run.task is None:
+        return (now if now is not None else time.monotonic()) - run.reserved_at <= _RESERVATION_STALE_S
+    return not run.task.done()
+
+
+def _user_inflight_runs(user_id: str, exclude_conversation_id: str) -> list[str]:
+    """Conversation ids of the user's OTHER live runs — including runs detached
+    to the background by a disconnect/Stop (they are still running and still
+    billing, so they still hold a slot).
+
+    In-process only. That is authoritative because main.py refuses
+    WEB_CONCURRENCY > 1: every tab and device of a user lands on this worker.
+    Synchronous, no awaits — called right after the slot is reserved, so two
+    sends arriving in the same tick each see the other (at worst both refused,
+    never both admitted past the cap).
+    """
+    now = time.monotonic()
+    return [
+        cid
+        for cid, run in list(_active_runs.items())
+        if cid != exclude_conversation_id
+        and run.user_id == user_id
+        and _run_is_live(run, now)
+    ]
+
+
+def _user_inflight_count(user_id: str, exclude_conversation_id: str) -> int:
+    return len(_user_inflight_runs(user_id, exclude_conversation_id))
+
+
+# Parallel-limit copy (Latin digits only). The upgrade pitch names «القصوى»,
+# the only purchasable plan with more than one concurrent run.
+_PARALLEL_UPGRADE_PLAN = "max"
+_PARALLEL_UPGRADE_CAP = 5
+
+
+class _ParallelLimitReached(Exception):
+    """Raised inside the gate block when k + 1 > the plan's max_parallel_runs."""
+
+    def __init__(self, cap: int, plan_id: str | None, running: list[str]) -> None:
+        super().__init__(f"parallel_limit: {len(running)}/{cap}")
+        self.cap = cap
+        self.plan_id = plan_id
+        self.running = running
+
+    def to_event_payload(self) -> dict:
+        if self.cap <= 1:
+            detail = (
+                "يمكنك تشغيل محادثة واحدة في الوقت نفسه. "
+                "تتيح باقة «القصوى» حتى 5 محادثات متزامنة."
+            )
+        else:
+            detail = f"وصلت إلى الحدّ الأقصى ({self.cap} محادثات جارية). انتظر اكتمال إحداها."
+        return {
+            "detail": detail,
+            "limit": self.cap,
+            "running": len(self.running),
+            "running_conversation_ids": list(self.running),
+            "upgrade_plan": (
+                _PARALLEL_UPGRADE_PLAN if self.cap < _PARALLEL_UPGRADE_CAP else None
+            ),
+        }
 
 
 def _is_valid_uuid(value: str) -> bool:
@@ -668,7 +740,12 @@ async def send_message_stream(
     # placeholder insert) it will see task=None and block. Every early-return
     # path between here and the task-spawn must explicitly clear the slot.
     _SLOT_PLACEHOLDER = "__reserving__"
-    _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=_SLOT_PLACEHOLDER)
+    _active_runs[conversation_id] = _ActiveRun(
+        assistant_msg_id=_SLOT_PLACEHOLDER, user_id=user_id,
+    )
+    # The user's OTHER live runs, counted in the same synchronous stretch as the
+    # reservation (see _user_inflight_runs for why that ordering matters).
+    _inflight_others = _user_inflight_runs(user_id, conversation_id)
 
     # 0c. Quota gate — fires once per message, BEFORE anything is persisted.
     #
@@ -695,6 +772,14 @@ async def send_message_stream(
     # (meter, period) is over limit, emit `quota_exceeded` and end the stream
     # without spawning the pipeline.
     #
+    # Parallel conversations (migration 171) ride the same gate, ahead of the
+    # meters: when the user already has k >= 1 other runs live, k + 1 must fit
+    # plans.max_parallel_runs for their EFFECTIVE plan (max/dev = 5, else 1),
+    # or the send is refused with `parallel_limit` — same "writes nothing the
+    # thread can see" rule, captured into unsent_messages. k is then passed to
+    # quota.check so each limited window must also hold the points reserve.
+    # k == 0 skips the cap read entirely: a lone send is exactly as before.
+    #
     # Project OCR pages from each attachment's stored page count (client-reported
     # at upload; real ocr_pages on a re-sent file) so the gate counts multi-page
     # documents accurately before OCR runs — not 1 page per file. Falls back to a
@@ -709,6 +794,12 @@ async def send_message_stream(
         except Exception:  # noqa: BLE001
             est_ocr_pages = len(attachment_ids)
     try:
+        if _inflight_others:
+            # Fails closed exactly like the gate (QuotaUnavailable / PlanInactive
+            # are handled below), so an unreadable cap never admits a run.
+            _cap, _cap_plan = await quota.parallel_cap(supabase, user_id)
+            if len(_inflight_others) + 1 > _cap:
+                raise _ParallelLimitReached(_cap, _cap_plan, _inflight_others)
         await quota.check(
             getattr(request.app.state, "redis", None),
             supabase,
@@ -717,7 +808,31 @@ async def send_message_stream(
             est_ocr_pages=est_ocr_pages,
             needs_ord=True,
             needs_web=False,  # future skill
+            inflight_runs=len(_inflight_others),
         )
+    except _ParallelLimitReached as pl:
+        _logfire.info(
+            "message.parallel_limit",
+            conversation_id=conversation_id,
+            running=len(pl.running),
+            limit=pl.cap,
+            plan_id=pl.plan_id,
+        )
+        _active_runs.pop(conversation_id, None)  # release slot — task never created
+        await _record_unsent(
+            supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            reason="parallel_limit",
+            attachment_ids=attachment_ids,
+            plan_id=pl.plan_id,
+            # Counts, not points: runs already live / the plan's cap.
+            used=float(len(pl.running)),
+            limit=float(pl.cap),
+        )
+        yield _sse_event("parallel_limit", pl.to_event_payload())
+        return
     except quota.PlanInactive as pi:
         # No plan assigned (users.plan_id IS NULL) — account locked until the
         # operator activates it in Supabase. Same SSE event as quota_exceeded
@@ -745,6 +860,7 @@ async def send_message_stream(
             used=float(qe.used),
             limit=float(qe.limit),
             plan_id=qe.plan_id,
+            reason=qe.reason,  # "parallel_reserve" = points left, not enough for k+1
         )
         _active_runs.pop(conversation_id, None)  # release slot — task never created
         await _record_unsent(
@@ -821,7 +937,9 @@ async def send_message_stream(
     # 1b. Bind the reserved slot to the real assistant_msg_id now that the rows
     # exist. No await between here and the insert above, so the slot is coherent
     # before any concurrent path can re-inspect it.
-    _active_runs[conversation_id] = _ActiveRun(assistant_msg_id=assistant_msg_id)
+    _active_runs[conversation_id] = _ActiveRun(
+        assistant_msg_id=assistant_msg_id, user_id=user_id,
+    )
 
     # 1c. Audit is a side-effect, not part of the turn. Unguarded, a failure here
     # escaped the generator with both rows already committed — leaving an empty

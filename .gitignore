@@ -319,3 +319,5 @@ supabase/.temp/
 # it just stops meaning anything. It also pins that the marketing-card images
 # are stripped before the body is handed to a model as grounding.
 !backend/tests/test_blog_related_topics.py
+# parallel conversations (171) — per-user cap + points reserve
+!backend/tests/test_parallel_runs.py

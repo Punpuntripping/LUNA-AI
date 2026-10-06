@@ -47,11 +47,15 @@ resets_at for a window = oldest-call/anchor + window-length (the soonest the
 used figure drops), not a calendar boundary.
 
 Public API:
-    check(redis, supabase, user_id, *, needs_ocr=..., est_ocr_pages=..., ...)
+    check(redis, supabase, user_id, *, needs_ocr=..., est_ocr_pages=...,
+          inflight_runs=..., ...)
         Raises PlanInactive (no plan assigned) or QuotaExceeded on a failing
         (meter, period). When more than one ord window is blown it reports the
         one that binds LONGEST, and every block carries the upgrade ladder that
-        would clear that specific window.
+        would clear that specific window. ``inflight_runs`` > 0 (parallel
+        conversations) switches the ord windows to the points-reserve rule.
+    parallel_cap(supabase, user_id) -> (cap, effective_plan_id)
+        plans.max_parallel_runs for the user's EFFECTIVE plan (migration 171).
     current_usage_report(redis, supabase, user_id) -> dict
         Read-only snapshot: plan block + every meter+period the UI renders.
     settle_ord / settle_ocr / settle_web (async + _sync variants)
@@ -63,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -85,6 +90,22 @@ POINTS_PER_USD = 100.0
 SESSION_WINDOW_S = 5 * 3_600      # fixed 5h session block (anchor + 5h)
 WEEK_WINDOW_S = 86_400 * 7        # rolling last 7 days
 MONTH_WINDOW_S = 86_400 * 30      # rolling last 30 days (ocr meter)
+
+# Parallel conversations (migration 171, .claude/plans/parallel_conversations.md).
+# The ord meter settles AFTER a run, so N sends fired together would all pass a
+# near-empty window and overshoot it N-fold. Owner rule 2026-10-04: assume one
+# message costs at most 5 points (ledger p95 4.63, p99 6.02) and, while k other
+# runs of the same user are in flight, require 5 × (k + 1) points left in every
+# limited window. k = 0 keeps the plain `used >= limit` rule untouched.
+PARALLEL_RESERVE_POINTS = 5
+# A plan missing from the catalog gets the column's DEFAULT — one run at a
+# time, the behaviour every plan had before 171.
+DEFAULT_MAX_PARALLEL_RUNS = 1
+_PARALLEL_CAPS_TTL_S = 60.0
+
+PARALLEL_RESERVE_AR = (
+    "لا يكفي رصيدك لتشغيل محادثة إضافية بالتوازي — انتظر انتهاء إحدى المحادثات الجارية"
+)
 
 
 # ── exceptions ──────────────────────────────────────────────────────────────
@@ -110,11 +131,16 @@ class QuotaExceeded(Exception):
     # renders the banner with no upgrade button. Never a mutable default: a
     # shared list on the class would leak one block's ladder into the next.
     upgrade_options: list[str] = field(default_factory=list)
+    # "limit" — the window is genuinely spent (used >= limit).
+    # "parallel_reserve" — the window still has points, just not the
+    # PARALLEL_RESERVE_POINTS × (k + 1) a send next to k in-flight runs needs.
+    # The user is NOT out of points, so the client must not say they are.
+    reason: str = "limit"
 
     def __post_init__(self) -> None:
         super().__init__(
             f"quota_exceeded: {self.meter} {self.period} "
-            f"({self.used:.4f}/{self.limit:.4f})"
+            f"({self.used:.4f}/{self.limit:.4f}) reason={self.reason}"
         )
 
     def to_event_payload(self) -> dict:
@@ -124,9 +150,13 @@ class QuotaExceeded(Exception):
             "used": round(float(self.used), 6),
             "limit": round(float(self.limit), 6),
             "resets_at": self.resets_at.isoformat(),
-            "message_ar": _arabic_message(self.meter, self.period, self.limit),
+            "message_ar": (
+                PARALLEL_RESERVE_AR if self.reason == "parallel_reserve"
+                else _arabic_message(self.meter, self.period, self.limit)
+            ),
             "plan_id": self.plan_id,
             "upgrade_options": list(self.upgrade_options or []),
+            "reason": self.reason,
         }
 
 
@@ -474,6 +504,7 @@ async def _quota_block(
     used: float,
     limit: float,
     resets_at: datetime,
+    reason: str = "limit",
 ) -> QuotaExceeded:
     """Build the QuotaExceeded for a confirmed block, ladder included.
 
@@ -489,7 +520,89 @@ async def _quota_block(
             "offered): %s", plan, meter, period, exc,
         )
         options = []
-    return QuotaExceeded(meter, period, used, limit, resets_at, plan, options)
+    return QuotaExceeded(meter, period, used, limit, resets_at, plan, options, reason)
+
+
+# ── the parallel-run cap (migration 171) ────────────────────────────────────
+#
+# plans.max_parallel_runs is deliberately NOT a get_user_quota_state column:
+# widening that RETURNS TABLE forces a DROP + rebuild of user_subscriptions_live
+# (137 keeps the signature byte-identical for exactly that reason). So the cap
+# is a separate read of the tiny plans catalog, keyed by the EFFECTIVE plan the
+# RPC resolves, and cached in-process — plan rows change by migration only.
+
+_parallel_caps_cache: dict[str, int] | None = None
+_parallel_caps_at: float = 0.0
+
+
+def _load_parallel_caps(supabase: SupabaseClient) -> dict[str, int]:
+    res = supabase.table("plans").select("plan_id, max_parallel_runs").execute()
+    caps: dict[str, int] = {}
+    for row in getattr(res, "data", None) or []:
+        pid = row.get("plan_id")
+        raw = row.get("max_parallel_runs")
+        if not pid or raw is None:
+            continue
+        try:
+            caps[str(pid)] = max(1, int(raw))
+        except (TypeError, ValueError):
+            continue
+    return caps
+
+
+async def _parallel_caps(supabase: SupabaseClient) -> dict[str, int]:
+    """plan_id → max_parallel_runs, cached ~60s. On a failed read a stale
+    cache is served (logged); with nothing cached the error propagates and the
+    caller decides (gate: fail closed; usage report: the default)."""
+    global _parallel_caps_cache, _parallel_caps_at
+    now = time.monotonic()
+    if _parallel_caps_cache is not None and now - _parallel_caps_at < _PARALLEL_CAPS_TTL_S:
+        return _parallel_caps_cache
+    try:
+        caps = await asyncio.to_thread(_load_parallel_caps, supabase)
+    except Exception as exc:  # noqa: BLE001
+        if _parallel_caps_cache is not None:
+            logger.warning("plans.max_parallel_runs read failed, serving stale cache: %s", exc)
+            return _parallel_caps_cache
+        raise
+    _parallel_caps_cache, _parallel_caps_at = caps, now
+    return caps
+
+
+def _reset_parallel_caps_cache() -> None:
+    """Test hook — drop the in-process cap cache."""
+    global _parallel_caps_cache, _parallel_caps_at
+    _parallel_caps_cache, _parallel_caps_at = None, 0.0
+
+
+def _row_plan(st: dict[str, Any]) -> str | None:
+    """The plan actually being enforced — post expiry fallback (RPC-resolved)."""
+    return st.get("effective_plan_id") or st.get("plan_id")
+
+
+async def parallel_cap(supabase: SupabaseClient, user_id: str) -> tuple[int, str | None]:
+    """(max_parallel_runs, effective_plan_id) for the user.
+
+    Reads the SAME get_user_quota_state row the gate does, so the expired→free
+    fallback is the RPC's, never re-derived here. Fails closed like ``check``:
+    an unreadable state or catalog raises ``QuotaUnavailable``; a locked
+    account raises ``PlanInactive``. Called only when the user already has a
+    run in flight — a lone send never pays for this read.
+    """
+    try:
+        st = await _quota_state(supabase, user_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("quota state RPC failed in parallel cap (fail closed): %s", e)
+        raise QuotaUnavailable("ord", "weekly")
+    if st is None or st.get("locked"):
+        raise PlanInactive()
+    plan = _row_plan(st)
+    try:
+        caps = await _parallel_caps(supabase)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("plans.max_parallel_runs read failed (fail closed): %s", e)
+        raise QuotaUnavailable("ord", "weekly")
+    return caps.get(str(plan), DEFAULT_MAX_PARALLEL_RUNS), plan
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -504,6 +617,7 @@ async def check(
     needs_ord: bool = True,
     needs_web: bool = False,
     est_web_calls: int = 0,
+    inflight_runs: int = 0,
 ) -> None:
     """Raises ``PlanInactive`` (no plan assigned), ``QuotaExceeded`` on a failing
     (meter, period), or ``QuotaUnavailable`` when the quota-state RPC is
@@ -529,6 +643,15 @@ async def check(
     window (see ``_upgrade_options``). ``redis``/``est_web_calls`` are kept for
     call-site compatibility but unused: the gate and the dialog read the SAME RPC
     row, so a block is always what's shown.
+
+    ``inflight_runs`` = how many OTHER runs of this user are in flight right now
+    (parallel conversations). With k > 0 each limited ord window must still hold
+    ``PARALLEL_RESERVE_POINTS × (k + 1)`` points — cost settles after a run, so
+    without the reserve k + 1 sends would all pass a near-empty window. ``used``
+    already includes the partial spend of those runs, so this double-counts a
+    little; conservative, accepted. A window that is genuinely spent still
+    reports ``reason="limit"``; only a reserve-only shortfall reports
+    ``reason="parallel_reserve"`` (the user is not out of points).
     """
     try:
         st = await _quota_state(supabase, user_id)
@@ -550,24 +673,36 @@ async def check(
         # must be told about is the one they are stuck behind longest — not
         # whichever happens to be shortest. (period, used, limit, resets_at):
         breaches: list[tuple[Period, float, float, datetime]] = []
+        # Windows that still have points but not the parallel reserve. Only
+        # reported when NO window is genuinely spent — a hard block is the
+        # truth the user needs; the reserve copy would undersell it.
+        reserve_breaches: list[tuple[Period, float, float, datetime]] = []
+        k = max(0, int(inflight_runs or 0))
+        reserve = float(PARALLEL_RESERVE_POINTS * (k + 1))
+
+        def _eval(period: Period, used: float, limit: float, resets: datetime) -> None:
+            if used >= limit:
+                breaches.append((period, used, limit, resets))
+            elif k > 0 and limit - used < reserve:
+                reserve_breaches.append((period, used, limit, resets))
 
         # Session — fixed 5h block anchored at the first message (migration 083).
         if st.get("points_session") is not None:
-            used = float(st.get("session_cost") or 0.0) * POINTS_PER_USD
-            if used >= float(st["points_session"]):
-                breaches.append((
-                    "session", used, float(st["points_session"]),
-                    _rolling_reset(st.get("session_oldest"), SESSION_WINDOW_S),
-                ))
+            _eval(
+                "session",
+                float(st.get("session_cost") or 0.0) * POINTS_PER_USD,
+                float(st["points_session"]),
+                _rolling_reset(st.get("session_oldest"), SESSION_WINDOW_S),
+            )
 
         # Weekly — rolling last 7 days.
         if st.get("points_weekly") is not None:
-            used = float(st.get("weekly_cost") or 0.0) * POINTS_PER_USD
-            if used >= float(st["points_weekly"]):
-                breaches.append((
-                    "weekly", used, float(st["points_weekly"]),
-                    _rolling_reset(st.get("weekly_oldest"), WEEK_WINDOW_S),
-                ))
+            _eval(
+                "weekly",
+                float(st.get("weekly_cost") or 0.0) * POINTS_PER_USD,
+                float(st["points_weekly"]),
+                _rolling_reset(st.get("weekly_oldest"), WEEK_WINDOW_S),
+            )
 
         # Monthly — rolling last 30 days (migration 129).
         #
@@ -579,12 +714,12 @@ async def check(
         # Paid plans carry points_monthly = NULL and are unaffected — the
         # window stays retired for them. See migration 129.
         if st.get("points_monthly") is not None:
-            used = float(st.get("monthly_cost") or 0.0) * POINTS_PER_USD
-            if used >= float(st["points_monthly"]):
-                breaches.append((
-                    "monthly", used, float(st["points_monthly"]),
-                    _rolling_reset(st.get("monthly_oldest"), MONTH_WINDOW_S),
-                ))
+            _eval(
+                "monthly",
+                float(st.get("monthly_cost") or 0.0) * POINTS_PER_USD,
+                float(st["points_monthly"]),
+                _rolling_reset(st.get("monthly_oldest"), MONTH_WINDOW_S),
+            )
 
         if breaches:
             # max() keeps the FIRST maximal element, so equal reset instants fall
@@ -593,6 +728,14 @@ async def check(
             period, used, limit, resets = max(breaches, key=lambda b: b[3])
             raise await _quota_block(
                 supabase, plan, "ord", period, used, limit, resets
+            )
+        if reserve_breaches:
+            # Same binding-window rule. The ladder still applies: a higher limit
+            # on this window does make room for the extra run.
+            period, used, limit, resets = max(reserve_breaches, key=lambda b: b[3])
+            raise await _quota_block(
+                supabase, plan, "ord", period, used, limit, resets,
+                reason="parallel_reserve",
             )
 
     if needs_ocr and st.get("ocr_pages_monthly") is not None:
@@ -656,7 +799,8 @@ async def current_usage_report(
           },
           "ocr": {"monthly": {...}},       # pages
           "web": {"monthly": null},        # retired feature — kept null for contract
-          "library": {"period": {...}}     # فتح المصادر — unlocks, weighted cost
+          "library": {"period": {...}},    # فتح المصادر — unlocks, weighted cost
+          "max_parallel_runs": int         # concurrent runs allowed (171)
         }
 
     ``limit: null`` = unlimited; ``limit: 0`` = feature not in the plan.
@@ -674,6 +818,7 @@ async def current_usage_report(
             "ocr": {"monthly": None},
             "web": {"monthly": None},
             "library": {"period": None},
+            "max_parallel_runs": DEFAULT_MAX_PARALLEL_RUNS,
         }
 
     def _points_bar(used_cost: Any, limit: int | None, oldest: Any, window_s: int) -> dict:
@@ -715,6 +860,16 @@ async def current_usage_report(
         "approximate": False,
     }
 
+    # The frontend pre-gates its composer on this. Best-effort: a failed catalog
+    # read must not 500 the usage dialog — the gate still enforces the real cap
+    # on send, so falling back to the default only makes the UI more cautious.
+    try:
+        caps = await _parallel_caps(supabase)
+        max_parallel_runs = caps.get(str(_row_plan(st)), DEFAULT_MAX_PARALLEL_RUNS)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("usage report: plans.max_parallel_runs read failed: %s", exc)
+        max_parallel_runs = DEFAULT_MAX_PARALLEL_RUNS
+
     return {
         "locked": False,
         "plan": {
@@ -748,6 +903,7 @@ async def current_usage_report(
         )},
         "web": {"monthly": None},   # retired feature — kept null for the frontend contract
         "library": {"period": library_bar},
+        "max_parallel_runs": max_parallel_runs,
     }
 
 
@@ -783,6 +939,10 @@ def settle_web_sync(user_id: str, calls: int = 1) -> None:  # noqa: ARG001
 
 __all__ = [
     "POINTS_PER_USD",
+    "PARALLEL_RESERVE_POINTS",
+    "PARALLEL_RESERVE_AR",
+    "DEFAULT_MAX_PARALLEL_RUNS",
+    "parallel_cap",
     "QuotaExceeded",
     "QuotaUnavailable",
     "PlanInactive",
