@@ -22,7 +22,11 @@ interface ChatContainerProps {
 
 export function ChatContainer({ conversationId, className }: ChatContainerProps) {
   const { sendMessage, stopStreaming, regenerateMessage, editAndResend, retryMessage } = useSendMessage();
-  const error = useChatStore((s) => s.error);
+  // Per-conversation: an error from a stream running in another conversation
+  // must not surface here.
+  const error = useChatStore(
+    (s) => s.errorByConversation[conversationId] ?? null,
+  );
   const setError = useChatStore((s) => s.setError);
   const isWorkspaceOpen = useChatStore(
     (s) => s.workspaceByConversation[conversationId]?.isOpen ?? false,
@@ -51,8 +55,12 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
   );
 
   const handleDismissError = useCallback(() => {
-    setError(null);
-  }, [setError]);
+    setError(conversationId, null);
+  }, [setError, conversationId]);
+
+  const handleStop = useCallback(() => {
+    stopStreaming(conversationId);
+  }, [stopStreaming, conversationId]);
 
   const handleRegenerate = useCallback(
     (messageId: string) => {
@@ -75,12 +83,11 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
     [retryMessage, conversationId, caseId]
   );
 
-  // The store's error is global, not per-conversation, so a «المحادثة غير
-  // موجودة» left over from a send that 404'd would otherwise follow the user
-  // into the next conversation they open. The panel below says it better.
+  // A «المحادثة غير موجودة» left over from a send that 404'd is redundant
+  // with the panel below, which says it better.
   useEffect(() => {
-    if (isNotFound) setError(null);
-  }, [isNotFound, setError]);
+    if (isNotFound) setError(conversationId, null);
+  }, [isNotFound, setError, conversationId]);
 
   // Before the composer, deliberately: nothing typed here can ever be sent, and
   // MessageList / ChatInput are not mounted at all — so no message fetch, no
@@ -122,7 +129,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
         </Button>
       </div>
 
-      <QuotaBanner />
+      <QuotaBanner conversationId={conversationId} />
 
       {error && (
         <div
@@ -153,7 +160,7 @@ export function ChatContainer({ conversationId, className }: ChatContainerProps)
 
       <ChatInput
         onSend={handleSend}
-        onStop={stopStreaming}
+        onStop={handleStop}
         caseId={caseId}
         conversationId={conversationId}
       />

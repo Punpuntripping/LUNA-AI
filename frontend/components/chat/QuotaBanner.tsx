@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
 import { formatReset } from "@/lib/quota-reset";
@@ -45,9 +47,34 @@ function shouldAutoOpen(info: SSEQuotaExceeded | null): boolean {
   return shouldOfferUpgrade(info) && info?.plan_id === "free";
 }
 
-export function QuotaBanner() {
-  const quotaInfo = useChatStore((s) => s.quotaInfo);
-  const setQuotaInfo = useChatStore((s) => s.setQuotaInfo);
+interface QuotaBannerProps {
+  /** The banner shows only refusals of sends made in THIS conversation. */
+  conversationId: string;
+}
+
+/**
+ * Refusal banner for the conversation's last blocked send. Three shapes
+ * (parallel_conversations plan §2):
+ *
+ * - `quota_exceeded` (limit) — the user ran a window down: reset countdown +
+ *   the upgrade ladder, exactly as before.
+ * - `quota_exceeded` with `reason: "parallel_reserve"` — the user is NOT out
+ *   of points; the balance just cannot cover another run alongside the ones in
+ *   flight. `detail` only — no countdown, no upgrade pitch.
+ * - `parallel_limit` — the plan's cap on conversations answering at once. Its
+ *   `detail`, plus a link to the pricing page when «القصوى» would lift the cap.
+ */
+export function QuotaBanner({ conversationId }: QuotaBannerProps) {
+  const notice = useChatStore(
+    (s) => s.noticeByConversation[conversationId] ?? null,
+  );
+  const setNotice = useChatStore((s) => s.setNotice);
+  // The "you've hit your limit" refusal — the only shape with a countdown and
+  // an upgrade ladder. Null for the parallel shapes.
+  const quotaInfo =
+    notice?.kind === "quota" && notice.info.reason !== "parallel_reserve"
+      ? notice.info
+      : null;
   const [now, setNow] = useState<number>(() => Date.now());
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -80,12 +107,25 @@ export function QuotaBanner() {
     [quotaInfo, now],
   );
 
-  const handleDismiss = useCallback(() => setQuotaInfo(null), [setQuotaInfo]);
+  const handleDismiss = useCallback(
+    () => setNotice(conversationId, null),
+    [setNotice, conversationId],
+  );
   const handleReopen = useCallback(() => setDialogOpen(true), []);
 
-  if (!quotaInfo) return null;
+  if (!notice) return null;
 
-  const offersUpgrade = shouldOfferUpgrade(quotaInfo);
+  const offersUpgrade = quotaInfo !== null && shouldOfferUpgrade(quotaInfo);
+  const message =
+    notice.kind === "parallel_limit"
+      ? notice.info.detail
+      : quotaInfo
+        ? quotaInfo.message_ar
+        : (notice.info.detail ?? notice.info.message_ar);
+  // Stop does NOT free a slot (the run keeps going in the background), so the
+  // only route past the cap besides waiting is a plan with a higher one.
+  const offersMaxLink =
+    notice.kind === "parallel_limit" && notice.info.upgrade_plan === "max";
 
   return (
     <>
@@ -96,7 +136,7 @@ export function QuotaBanner() {
         className="flex items-center justify-between gap-2 border-b border-warning-fg/25 bg-warning px-4 py-2"
       >
         <div className="flex flex-col gap-0.5">
-          <p className="text-sm text-warning-fg">{quotaInfo.message_ar}</p>
+          <p className="text-sm text-warning-fg">{message}</p>
           {resetText && (
             <p className="text-xs text-warning-fg/80">
               يُعاد الاحتساب {resetText}.
@@ -108,7 +148,19 @@ export function QuotaBanner() {
               is closed — without it, dismissing strands them with no route to
               buy. For a paying user it is the ONLY route, by design: the offer
               is available on request and never pushed. */}
-          {offersUpgrade && (
+          {offersMaxLink && (
+            <Link
+              href="/pricing"
+              data-testid="parallel-limit-upgrade"
+              className={cn(
+                buttonVariants({ variant: "outline", size: "sm" }),
+                "h-7 border-warning-fg/30 bg-transparent text-xs text-warning-fg hover:bg-warning-fg/10 hover:text-warning-fg",
+              )}
+            >
+              عرض باقة «القصوى»
+            </Link>
+          )}
+          {offersUpgrade && quotaInfo && (
             <Button
               variant="outline"
               size="sm"
@@ -131,7 +183,7 @@ export function QuotaBanner() {
         </div>
       </div>
 
-      {offersUpgrade && (
+      {offersUpgrade && quotaInfo && (
         <QuotaUpgradeDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}

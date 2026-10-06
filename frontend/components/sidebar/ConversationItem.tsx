@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
+import { useIsConversationRunning } from "@/stores/chat-store";
 import {
   useDeleteConversation,
   useRenameConversation,
@@ -87,6 +88,9 @@ export function ConversationItem({
   // reason it is excluded from /chats: this is furniture, not the user's
   // content.
   const isDemo = isDemoConversation(conversation);
+  // Live dot (parallel conversations): this conversation has an answer in
+  // flight in this tab, so the user can see every run they have going.
+  const isRunning = useIsConversationRunning(conversation.conversation_id);
 
   useEffect(() => {
     if (isRenaming && inputRef.current) {
@@ -216,6 +220,17 @@ export function ConversationItem({
                     title
                   )}
                 </p>
+                {isRunning && (
+                  <span
+                    className="relative flex h-2 w-2 shrink-0"
+                    title="جارٍ الإجابة…"
+                    data-testid="conversation-running-dot"
+                  >
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-brand opacity-60" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-accent-brand" />
+                    <span className="sr-only">جارٍ…</span>
+                  </span>
+                )}
                 {/* «تجريبية» — names the row as furniture, not the user's own
                     content, before they click into a read-only conversation. */}
                 {isDemo && (

@@ -9,6 +9,7 @@ import type {
   PendingLibraryItem,
   PendingTemplate,
   SSEAgentProgress,
+  SSEParallelLimit,
   SSEQuotaExceeded,
 } from "@/types";
 
@@ -36,17 +37,21 @@ function persistSplitRatio(ratio: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming reveal buffer — module-level on purpose.
+// Streaming reveal buffers — module-level on purpose.
 //
 // Raw SSE tokens land here instead of directly in state; ``revealFrame``
-// publishes to ``streamingContent`` at most once per animation frame, at a
+// publishes to ``streams[cid].content`` at most once per animation frame, at a
 // velocity proportional to the backlog. That coalesces a burst of token
 // events into one React render AND smooths the network's stop-and-go rhythm
 // into a steady typewriter reveal. Mutating these must never re-render, which
 // is why they are not store state.
+//
+// parallel_conversations plan §3: one buffer PER CONVERSATION (several
+// conversations can stream at once), drained by a single shared rAF loop that
+// publishes every conversation's piece in one store write.
 // ---------------------------------------------------------------------------
 
-let tokenBuffer = "";
+const tokenBuffers = new Map<string, string>();
 let revealRafId: number | null = null;
 
 /** Floor so a near-empty backlog still visibly advances every frame. */
@@ -58,36 +63,68 @@ const REVEAL_MIN_CHARS = 3;
  */
 const REVEAL_BACKLOG_DIVISOR = 6;
 
-function cancelReveal(): void {
+function stopRevealLoop(): void {
   if (typeof window !== "undefined" && revealRafId !== null) {
     window.cancelAnimationFrame(revealRafId);
   }
   revealRafId = null;
-  tokenBuffer = "";
+}
+
+/** Drop ONE conversation's unrevealed backlog; stop the loop if nothing is left. */
+function cancelReveal(conversationId: string): void {
+  tokenBuffers.delete(conversationId);
+  if (tokenBuffers.size === 0) stopRevealLoop();
+}
+
+/** Drop every conversation's backlog (user switch). */
+function cancelAllReveals(): void {
+  tokenBuffers.clear();
+  stopRevealLoop();
+}
+
+function scheduleReveal(): void {
+  if (revealRafId === null && typeof window !== "undefined") {
+    revealRafId = window.requestAnimationFrame(revealFrame);
+  }
 }
 
 function revealFrame(): void {
   revealRafId = null;
-  if (!useChatStore.getState().isStreaming) {
-    tokenBuffer = "";
-    return;
+  if (tokenBuffers.size === 0) return;
+  const streams = useChatStore.getState().streams;
+  const pieces: Record<string, string> = {};
+  let any = false;
+  tokenBuffers.forEach((buf, cid) => {
+    // The buffer only feeds a LIVE stream of its own conversation; a stream
+    // that ended (or was superseded) since the token arrived drops its tail.
+    if (!streams[cid]?.isStreaming || buf.length === 0) {
+      tokenBuffers.delete(cid);
+      return;
+    }
+    let n = Math.min(
+      buf.length,
+      Math.max(REVEAL_MIN_CHARS, Math.ceil(buf.length / REVEAL_BACKLOG_DIVISOR)),
+    );
+    // Never split a surrogate pair (emoji etc.) across frames.
+    const cut = buf.charCodeAt(n - 1);
+    if (n < buf.length && cut >= 0xd800 && cut <= 0xdbff) n += 1;
+    pieces[cid] = buf.slice(0, n);
+    const rest = buf.slice(n);
+    if (rest.length > 0) tokenBuffers.set(cid, rest);
+    else tokenBuffers.delete(cid);
+    any = true;
+  });
+  if (any) {
+    useChatStore.setState((state) => {
+      const next = { ...state.streams };
+      for (const [cid, piece] of Object.entries(pieces)) {
+        const cur = next[cid];
+        if (cur) next[cid] = { ...cur, content: cur.content + piece };
+      }
+      return { streams: next };
+    });
   }
-  if (tokenBuffer.length === 0) return;
-  let n = Math.min(
-    tokenBuffer.length,
-    Math.max(REVEAL_MIN_CHARS, Math.ceil(tokenBuffer.length / REVEAL_BACKLOG_DIVISOR)),
-  );
-  // Never split a surrogate pair (emoji etc.) across frames.
-  const cut = tokenBuffer.charCodeAt(n - 1);
-  if (n < tokenBuffer.length && cut >= 0xd800 && cut <= 0xdbff) n += 1;
-  const piece = tokenBuffer.slice(0, n);
-  tokenBuffer = tokenBuffer.slice(n);
-  useChatStore.setState((state) => ({
-    streamingContent: state.streamingContent + piece,
-  }));
-  if (tokenBuffer.length > 0) {
-    revealRafId = window.requestAnimationFrame(revealFrame);
-  }
+  if (tokenBuffers.size > 0) scheduleReveal();
 }
 
 // ---------------------------------------------------------------------------
@@ -179,16 +216,67 @@ interface WorkspaceUiState {
   highlightedItemId: string | null;
 }
 
-interface ChatState {
+/**
+ * Live state of ONE conversation's in-flight send (parallel_conversations plan
+ * §3). An entry exists in ``streams`` from the moment ``beginSend`` claims the
+ * conversation until the send reaches a terminal state, so its mere presence
+ * means "this conversation has a run in flight in this tab".
+ */
+export interface StreamState {
+  /**
+   * Identity of the send that owns this entry. A re-send in the SAME
+   * conversation (regenerate / edit / retry) replaces the entry with a new
+   * ``sendId``; the superseded send checks it and stops touching state.
+   */
+  sendId: number;
+  /** True once ``message_start`` confirmed the run (the live bubble renders). */
   isStreaming: boolean;
-  streamingMessageId: string | null;
-  // Conversation the active stream belongs to. The streaming buffer is a
-  // single global value; consumers MUST check this against their own
-  // conversation id before rendering, or one conversation's stream leaks
-  // into another.
-  streamingConversationId: string | null;
-  streamingContent: string;
+  /** Assistant message id — known from ``message_start``. */
+  messageId: string | null;
+  /** Revealed assistant text so far (fed by the paced reveal buffer). */
+  content: string;
   abortController: AbortController | null;
+  reconnectAttempts: number;
+  isReconnecting: boolean;
+  /**
+   * Live progress of this conversation's deep_search run (``null`` otherwise).
+   * The ONLY subscriber is ``DeepSearchProgress`` — keep it that way, or every
+   * progress event re-renders the message list and regresses the fluid-
+   * streaming render isolation.
+   */
+  deepSearchProgress: DeepSearchProgressState | null;
+  /**
+   * Carry slot between ``finishAgentRun`` and the SSE ``done`` handler.
+   *
+   * ``agent_run_finished`` arrives BEFORE ``done``, and the tracker must
+   * disappear the moment the run ends — but ``done`` is where the assistant
+   * message id is final and the summary gets sealed. So ``finishAgentRun``
+   * parks the run here instead of dropping it. Dropped with the entry by
+   * ``finishStreaming`` / ``stopStreaming``, which is also what kills the chip
+   * on the pause path (``agent_question`` calls ``finishAgentRun`` then
+   * ``finishStreaming`` → nothing left to seal).
+   */
+  deepSearchSealable: DeepSearchProgressState | null;
+  isAgentRunning: boolean;
+  runningAgentFamily: string | null;
+  runningAgentSubtype: string | null;
+}
+
+/**
+ * Per-conversation refusal banner (``QuotaBanner``): either the quota gate
+ * (``quota_exceeded``) or the per-plan parallel-runs cap (``parallel_limit``).
+ */
+export type ChatNotice =
+  | { kind: "quota"; info: SSEQuotaExceeded }
+  | { kind: "parallel_limit"; info: SSEParallelLimit };
+
+interface ChatState {
+  /**
+   * In-flight sends keyed by conversation id. EVERY read of live stream state
+   * must go through the reader's own conversation id — that keying is what
+   * keeps one conversation's tokens out of another.
+   */
+  streams: Record<string, StreamState>;
   pendingFiles: PendingFile[];
   // New-chat handoff: files picked before a conversation exists are stashed
   // here (raw File objects, not persisted) and the optional composer draft text
@@ -202,7 +290,14 @@ interface ChatState {
   // observed by an effect on the already-mounted ChatInput, which copies the
   // text into the textarea and clears the slot. ``nonce`` bumps on every
   // injection so picking the same question twice still re-triggers.
-  composerInjection: { text: string; nonce: number } | null;
+  // ``conversationId`` (optional) targets ONE conversation's composer: a
+  // refused send hands its text back to its own conversation even if the user
+  // has since switched to another (the slot waits until that composer mounts).
+  composerInjection: {
+    text: string;
+    nonce: number;
+    conversationId?: string;
+  } | null;
   /**
    * next_step_suggestions plan §3.8: the next-step chip whose prompt was last
    * pasted into the composer, so the NEXT send can report `next_step_sent
@@ -234,7 +329,8 @@ interface ChatState {
   // on the empty page survives the create-on-attach navigation.
   pendingTemplate: PendingTemplate | null;
   pendingTemplateCarry: PendingTemplate | null;
-  error: string | null;
+  /** Stream error banner text, keyed by conversation id. */
+  errorByConversation: Record<string, string>;
   // Per-conversation workspace pane state, keyed by conversation_id, so the
   // pane follows conversation navigation instead of leaking across them.
   workspaceByConversation: Record<string, WorkspaceUiState>;
@@ -275,38 +371,16 @@ interface ChatState {
   nextStepsByMessage: Record<string, NextStep[]>;
   // Global layout preference (persisted to localStorage) — NOT per-conversation.
   splitRatio: number;
-  isAgentRunning: boolean;
-  runningAgentFamily: string | null;
-  runningAgentSubtype: string | null;
-  reconnectAttempts: number;
+  /** Per-send SSE reconnect budget (each send counts its own attempts). */
   maxReconnectAttempts: number;
-  isReconnecting: boolean;
   /**
-   * Set when the backend rejects a send via the per-user quota gate (SSE
-   * ``quota_exceeded`` event). The chat layout renders ``QuotaBanner`` while
-   * this is non-null. Cleared by the banner's dismiss button OR by the next
-   * successful send (``startStreaming`` clears it).
+   * Refusal banner per conversation — set when the backend rejects a send via
+   * the quota gate (``quota_exceeded``) or the parallel-runs cap
+   * (``parallel_limit``). ``QuotaBanner`` renders it for its own conversation.
+   * Cleared by the banner's dismiss button OR by the next confirmed send in
+   * that conversation (``startStreaming`` clears it).
    */
-  quotaInfo: SSEQuotaExceeded | null;
-  /**
-   * Live progress of the in-flight deep_search run (``null`` otherwise). The
-   * ONLY subscriber is ``DeepSearchProgress`` — keep it that way, or every
-   * progress event re-renders the message list and regresses the fluid-
-   * streaming render isolation.
-   */
-  deepSearchProgress: DeepSearchProgressState | null;
-  /**
-   * Carry slot between ``finishAgentRun`` and the SSE ``done`` handler.
-   *
-   * ``agent_run_finished`` arrives BEFORE ``done``, and the tracker must
-   * disappear the moment the run ends — but ``done`` is where the assistant
-   * message id is final and the summary gets sealed. So ``finishAgentRun``
-   * parks the run here instead of dropping it. Cleared by
-   * ``finishStreaming`` / ``stopStreaming`` / ``startStreaming``, which is
-   * also what kills the chip on the pause path (``agent_question`` calls
-   * ``finishAgentRun`` then ``finishStreaming`` → nothing left to seal).
-   */
-  deepSearchSealable: DeepSearchProgressState | null;
+  noticeByConversation: Record<string, ChatNotice>;
   /**
    * Sealed deep_search summaries keyed by assistant ``message_id``. Drives
    * ``DeepSearchSummaryChip`` above the assistant bubble. Session-only — no
@@ -314,17 +388,32 @@ interface ChatState {
    */
   deepSearchSummaries: Record<string, DeepSearchSummary>;
 
-  startStreaming: (messageId: string, conversationId: string) => void;
-  appendToken: (text: string) => void;
   /**
-   * Synchronously publish any text still waiting in the paced-reveal buffer.
-   * MUST be called before reading ``streamingContent`` as the final answer
-   * (the SSE ``done`` handler) — otherwise the buffered tail is lost.
+   * Claim ``conversationId`` for a new send and return its ``sendId``. A send
+   * still in flight in the SAME conversation is aborted and replaced (the
+   * regenerate / edit / retry paths); other conversations are untouched.
    */
-  flushStreamBuffer: () => void;
-  stopStreaming: () => void;
-  finishStreaming: () => void;
-  setError: (error: string | null) => void;
+  beginSend: (conversationId: string) => number;
+  /**
+   * Drop the conversation's entry iff ``sendId`` still owns it. Every send
+   * calls this on its way out, so no terminal path can leave a stale entry
+   * counting toward the parallel cap.
+   */
+  endSend: (conversationId: string, sendId: number) => void;
+  startStreaming: (conversationId: string, messageId: string) => void;
+  appendToken: (conversationId: string, text: string) => void;
+  /**
+   * Synchronously publish any text still waiting in the conversation's
+   * paced-reveal buffer. MUST be called before reading ``content`` as the
+   * final answer (the SSE ``done`` handler) — otherwise the buffered tail is
+   * lost.
+   */
+  flushStreamBuffer: (conversationId: string) => void;
+  /** Abort + drop the conversation's stream (composer Stop button). */
+  stopStreaming: (conversationId: string) => void;
+  /** Drop the conversation's stream WITHOUT aborting (natural completion). */
+  finishStreaming: (conversationId: string) => void;
+  setError: (conversationId: string, error: string | null) => void;
   addPendingFile: (file: PendingFile) => void;
   removePendingFile: (id: string) => void;
   clearPendingFiles: () => void;
@@ -335,14 +424,17 @@ interface ChatState {
    * No-op when the file id is no longer in the list (race vs. user removal).
    */
   updatePendingFile: (id: string, partial: Partial<PendingFile>) => void;
-  setAbortController: (controller: AbortController | null) => void;
+  setAbortController: (
+    conversationId: string,
+    controller: AbortController | null,
+  ) => void;
   setPendingMessage: (message: string | null) => void;
   clearPendingMessage: () => void;
   setPendingAttachFiles: (files: File[]) => void;
   clearPendingAttachFiles: () => void;
   setPendingComposerDraft: (text: string | null) => void;
   /** Put ``text`` into the live composer textarea (does NOT send). */
-  injectComposerText: (text: string) => void;
+  injectComposerText: (text: string, conversationId?: string) => void;
   clearComposerInjection: () => void;
   /**
    * Next-step chip click (D4): paste ``step.prompt`` into the live composer —
@@ -422,18 +514,23 @@ interface ChatState {
   closeWorkspace: (conversationId: string) => void;
   toggleWorkspace: (conversationId: string) => void;
   setSplitRatio: (ratio: number) => void;
-  startAgentRun: (agentFamily: string, subtype?: string | null) => void;
-  finishAgentRun: () => void;
-  startReconnect: () => void;
-  resetReconnect: () => void;
-  setQuotaInfo: (info: SSEQuotaExceeded | null) => void;
+  startAgentRun: (
+    conversationId: string,
+    agentFamily: string,
+    subtype?: string | null,
+  ) => void;
+  finishAgentRun: (conversationId: string) => void;
+  /** Mirror a reconnect attempt (``attempts`` = this send's count so far). */
+  startReconnect: (conversationId: string, attempts: number) => void;
+  resetReconnect: (conversationId: string) => void;
+  setNotice: (conversationId: string, notice: ChatNotice | null) => void;
   /**
    * Fold an ``agent_progress`` SSE event into the live slice. Creates the
    * slice (stamping ``startedAt``) on the first event of a run. Counts are
    * merged monotonically — an event that omits ``sources``/``queries`` leaves
    * them untouched rather than zeroing them.
    */
-  setDeepSearchProgress: (event: SSEAgentProgress) => void;
+  setDeepSearchProgress: (conversationId: string, event: SSEAgentProgress) => void;
   /**
    * Append a free-text ``status`` line to the live log. No-op when no
    * deep_search run is in flight (status events fire for every family) and on
@@ -444,13 +541,13 @@ interface ChatState {
    * and bumps ``topicsSeen``, so the user watches the sub-queries scroll by in
    * real time instead of seeing them only in the terminal batch.
    */
-  appendDeepSearchLog: (text: string) => void;
+  appendDeepSearchLog: (conversationId: string, text: string) => void;
   /**
-   * Freeze the current (or just-finished) run into
+   * Freeze the conversation's current (or just-finished) run into
    * ``deepSearchSummaries[messageId]``. No-op when there is nothing to seal —
    * which is exactly what makes the pause path chip-free.
    */
-  sealDeepSearchSummary: (messageId: string) => void;
+  sealDeepSearchSummary: (conversationId: string, messageId: string) => void;
   reset: () => void;
 }
 
@@ -468,12 +565,52 @@ const DEFAULT_WORKSPACE: WorkspaceUiState = {
 // rough budget as the existing ref-flash animation.
 const HIGHLIGHT_ITEM_MS = 2500;
 
+/** Monotonic ``sendId`` source — module-level, never reset (ids stay unique). */
+let sendIdSeq = 0;
+
+function newStreamState(sendId: number): StreamState {
+  return {
+    sendId,
+    isStreaming: false,
+    messageId: null,
+    content: "",
+    abortController: null,
+    reconnectAttempts: 0,
+    isReconnecting: false,
+    deepSearchProgress: null,
+    deepSearchSealable: null,
+    isAgentRunning: false,
+    runningAgentFamily: null,
+    runningAgentSubtype: null,
+  };
+}
+
+/**
+ * Immutable patch of ONE conversation's stream. Returns ``null`` when the
+ * conversation has no entry, so callers can no-op instead of resurrecting a
+ * stream that already ended.
+ */
+function patchStream(
+  streams: Record<string, StreamState>,
+  conversationId: string,
+  patch: (cur: StreamState) => Partial<StreamState>,
+): { streams: Record<string, StreamState> } | null {
+  const cur = streams[conversationId];
+  if (!cur) return null;
+  return {
+    streams: { ...streams, [conversationId]: { ...cur, ...patch(cur) } },
+  };
+}
+
+function withoutKey<V>(map: Record<string, V>, key: string): Record<string, V> {
+  if (!(key in map)) return map;
+  const next = { ...map };
+  delete next[key];
+  return next;
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
-  isStreaming: false,
-  streamingMessageId: null,
-  streamingConversationId: null,
-  streamingContent: "",
-  abortController: null,
+  streams: {},
   pendingFiles: [],
   pendingAttachFiles: [],
   pendingComposerDraft: null,
@@ -486,105 +623,143 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingLibraryRefs: [],
   pendingTemplate: null,
   pendingTemplateCarry: null,
-  error: null,
+  errorByConversation: {},
   workspaceByConversation: {},
   referencedItemsByMessage: {},
   templateOffersByMessage: {},
   nextStepsByMessage: {},
   splitRatio: loadInitialSplitRatio(),
-  isAgentRunning: false,
-  runningAgentFamily: null,
-  runningAgentSubtype: null,
-  reconnectAttempts: 0,
   maxReconnectAttempts: 5,
-  isReconnecting: false,
-  quotaInfo: null,
-  deepSearchProgress: null,
-  deepSearchSealable: null,
+  noticeByConversation: {},
   deepSearchSummaries: {},
 
-  startStreaming: (messageId, conversationId) => {
+  beginSend: (conversationId) => {
+    // Supersede ONLY this conversation's previous send. Other conversations'
+    // streams keep running — that is the whole point of per-conversation state.
+    const prev = get().streams[conversationId];
+    if (prev?.abortController) prev.abortController.abort();
+    cancelReveal(conversationId);
+    sendIdSeq += 1;
+    const sendId = sendIdSeq;
+    set((state) => ({
+      streams: { ...state.streams, [conversationId]: newStreamState(sendId) },
+    }));
+    return sendId;
+  },
+
+  endSend: (conversationId, sendId) => {
+    if (get().streams[conversationId]?.sendId !== sendId) return;
+    cancelReveal(conversationId);
+    set((state) => ({ streams: withoutKey(state.streams, conversationId) }));
+  },
+
+  startStreaming: (conversationId, messageId) => {
     // Drop any reveal backlog a superseded stream left behind.
-    cancelReveal();
-    set({
-      isStreaming: true,
-      streamingMessageId: messageId,
-      streamingConversationId: conversationId,
-      streamingContent: "",
-      error: null,
-      // A new stream means the gate let this send through — drop any stale
-      // banner from a previous rejection.
-      quotaInfo: null,
-      // A new run owns the tracker: drop any progress/carry a superseded run
-      // left behind (sealed summaries are keyed by message id and survive).
-      deepSearchProgress: null,
-      deepSearchSealable: null,
+    cancelReveal(conversationId);
+    set((state) => {
+      const patched = patchStream(state.streams, conversationId, () => ({
+        isStreaming: true,
+        messageId,
+        content: "",
+        // A new run owns the tracker: drop any progress/carry left behind
+        // (sealed summaries are keyed by message id and survive).
+        deepSearchProgress: null,
+        deepSearchSealable: null,
+      }));
+      // No entry → the send was stopped before the server confirmed it.
+      // Never resurrect it.
+      if (!patched) return state;
+      return {
+        ...patched,
+        errorByConversation: withoutKey(state.errorByConversation, conversationId),
+        // A new stream means the gate let this send through — drop any stale
+        // banner from a previous rejection in this conversation.
+        noticeByConversation: withoutKey(
+          state.noticeByConversation,
+          conversationId,
+        ),
+      };
     });
   },
 
-  appendToken: (text) => {
+  appendToken: (conversationId, text) => {
+    if (!get().streams[conversationId]?.isStreaming) return;
     if (typeof window === "undefined") {
-      set((state) => ({ streamingContent: state.streamingContent + text }));
+      set(
+        (state) =>
+          patchStream(state.streams, conversationId, (cur) => ({
+            content: cur.content + text,
+          })) ?? state,
+      );
       return;
     }
-    tokenBuffer += text;
-    if (revealRafId === null) {
-      revealRafId = window.requestAnimationFrame(revealFrame);
-    }
+    tokenBuffers.set(
+      conversationId,
+      (tokenBuffers.get(conversationId) ?? "") + text,
+    );
+    scheduleReveal();
   },
 
-  flushStreamBuffer: () => {
-    if (typeof window !== "undefined" && revealRafId !== null) {
-      window.cancelAnimationFrame(revealRafId);
-    }
-    revealRafId = null;
-    if (tokenBuffer.length === 0) return;
-    const rest = tokenBuffer;
-    tokenBuffer = "";
-    set((state) => ({ streamingContent: state.streamingContent + rest }));
+  flushStreamBuffer: (conversationId) => {
+    const rest = tokenBuffers.get(conversationId) ?? "";
+    cancelReveal(conversationId);
+    // Other conversations' backlogs keep revealing.
+    if (tokenBuffers.size > 0) scheduleReveal();
+    if (rest.length === 0) return;
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, (cur) => ({
+          content: cur.content + rest,
+        })) ?? state,
+    );
   },
 
-  stopStreaming: () => {
-    cancelReveal();
-    const { abortController } = get();
-    if (abortController) abortController.abort();
-    set({
-      isStreaming: false,
-      streamingMessageId: null,
-      streamingConversationId: null,
-      streamingContent: "",
-      abortController: null,
-      // Cancelled (composer Stop button) → the tracker goes away and nothing
-      // is sealed: an aborted run gets no summary chip.
-      deepSearchProgress: null,
-      deepSearchSealable: null,
-    });
+  stopStreaming: (conversationId) => {
+    cancelReveal(conversationId);
+    const cur = get().streams[conversationId];
+    if (!cur) return;
+    if (cur.abortController) cur.abortController.abort();
+    // Cancelled (composer Stop button) → the tracker goes away and nothing
+    // is sealed: an aborted run gets no summary chip.
+    set((state) => ({ streams: withoutKey(state.streams, conversationId) }));
   },
 
-  finishStreaming: () => {
+  finishStreaming: (conversationId) => {
     // Called when stream completes naturally (done event).
-    // Does NOT abort — just clears streaming state.
-    // Also resets reconnect counters because the stream completed successfully.
+    // Does NOT abort — just drops the conversation's stream entry (which also
+    // resets its reconnect counters).
     // Any unrevealed buffer is intentionally discarded: the done handler
     // flushes before reading, and the agent_question path discards by design.
-    cancelReveal();
-    set({
-      isStreaming: false,
-      streamingMessageId: null,
-      streamingConversationId: null,
-      streamingContent: "",
-      abortController: null,
-      reconnectAttempts: 0,
-      isReconnecting: false,
-      // The `done` handler seals the summary BEFORE calling this, so dropping
-      // both slots here is safe — and it is what clears the tracker on the
-      // ``agent_question`` pause path (which seals nothing).
-      deepSearchProgress: null,
-      deepSearchSealable: null,
-    });
+    // The `done` handler seals the summary BEFORE calling this, so dropping
+    // the progress slots with the entry is safe — and it is what clears the
+    // tracker on the ``agent_question`` pause path (which seals nothing).
+    cancelReveal(conversationId);
+    set((state) => ({ streams: withoutKey(state.streams, conversationId) }));
   },
 
-  setError: (error) => set({ error, isStreaming: false }),
+  setError: (conversationId, error) =>
+    set((state) => {
+      if (error === null) {
+        return {
+          errorByConversation: withoutKey(
+            state.errorByConversation,
+            conversationId,
+          ),
+        };
+      }
+      // The run is over for display purposes: the live bubble goes away. The
+      // entry itself stays until the send exits (``endSend``).
+      const patched = patchStream(state.streams, conversationId, () => ({
+        isStreaming: false,
+      }));
+      return {
+        ...(patched ?? {}),
+        errorByConversation: {
+          ...state.errorByConversation,
+          [conversationId]: error,
+        },
+      };
+    }),
 
   addPendingFile: (file) =>
     set((state) => ({ pendingFiles: [...state.pendingFiles, file] })),
@@ -609,7 +784,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     })),
 
-  setAbortController: (controller) => set({ abortController: controller }),
+  setAbortController: (conversationId, controller) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, () => ({
+          abortController: controller,
+        })) ?? state,
+    ),
 
   setPendingMessage: (message) => set({ pendingMessage: message }),
 
@@ -621,10 +802,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setPendingComposerDraft: (text) => set({ pendingComposerDraft: text }),
 
-  injectComposerText: (text) =>
+  injectComposerText: (text, conversationId) =>
     set((state) => ({
       composerInjection: {
         text,
+        conversationId,
         nonce: (state.composerInjection?.nonce ?? 0) + 1,
       },
     })),
@@ -854,39 +1036,62 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ splitRatio: clamped });
   },
 
-  startAgentRun: (agentFamily, subtype) =>
-    set({
-      isAgentRunning: true,
-      runningAgentFamily: agentFamily,
-      runningAgentSubtype: subtype ?? null,
-    }),
+  startAgentRun: (conversationId, agentFamily, subtype) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, () => ({
+          isAgentRunning: true,
+          runningAgentFamily: agentFamily,
+          runningAgentSubtype: subtype ?? null,
+        })) ?? state,
+    ),
 
-  finishAgentRun: () =>
+  finishAgentRun: (conversationId) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, (cur) => ({
+          isAgentRunning: false,
+          runningAgentFamily: null,
+          runningAgentSubtype: null,
+          // The run is over → the tracker must stop showing "searching". The
+          // totals are parked (not dropped) so the `done` handler can still
+          // seal the chip; see ``deepSearchSealable``.
+          deepSearchProgress: null,
+          deepSearchSealable: cur.deepSearchProgress ?? cur.deepSearchSealable,
+        })) ?? state,
+    ),
+
+  startReconnect: (conversationId, attempts) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, () => ({
+          isReconnecting: true,
+          reconnectAttempts: attempts,
+        })) ?? state,
+    ),
+
+  resetReconnect: (conversationId) =>
+    set(
+      (state) =>
+        patchStream(state.streams, conversationId, () => ({
+          reconnectAttempts: 0,
+          isReconnecting: false,
+        })) ?? state,
+    ),
+
+  setNotice: (conversationId, notice) =>
     set((state) => ({
-      isAgentRunning: false,
-      runningAgentFamily: null,
-      runningAgentSubtype: null,
-      // The run is over → the tracker must stop showing "searching". The
-      // totals are parked (not dropped) so the `done` handler can still seal
-      // the chip; see ``deepSearchSealable``.
-      deepSearchProgress: null,
-      deepSearchSealable: state.deepSearchProgress ?? state.deepSearchSealable,
+      noticeByConversation:
+        notice === null
+          ? withoutKey(state.noticeByConversation, conversationId)
+          : { ...state.noticeByConversation, [conversationId]: notice },
     })),
 
-  startReconnect: () =>
-    set((state) => ({
-      isReconnecting: true,
-      reconnectAttempts: state.reconnectAttempts + 1,
-    })),
-
-  resetReconnect: () =>
-    set({ reconnectAttempts: 0, isReconnecting: false }),
-
-  setQuotaInfo: (info) => set({ quotaInfo: info }),
-
-  setDeepSearchProgress: (event) =>
+  setDeepSearchProgress: (conversationId, event) =>
     set((state) => {
-      const prev = state.deepSearchProgress;
+      const stream = state.streams[conversationId];
+      if (!stream) return state;
+      const prev = stream.deepSearchProgress;
       const detail = (event.text ?? "").trim() || null;
       const base: DeepSearchProgressState = prev ?? {
         stage: event.stage,
@@ -934,21 +1139,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ? [...base.log, detail].slice(-MAX_DEEP_SEARCH_LOG)
           : base.log;
 
-      return {
-        deepSearchProgress: {
-          ...base,
-          stage: nextStage,
-          text: nextText,
-          sources: nextSources,
-          queries: nextQueries,
-          log,
-        },
-      };
+      return (
+        patchStream(state.streams, conversationId, () => ({
+          deepSearchProgress: {
+            ...base,
+            stage: nextStage,
+            text: nextText,
+            sources: nextSources,
+            queries: nextQueries,
+            log,
+          },
+        })) ?? state
+      );
     }),
 
-  appendDeepSearchLog: (text) =>
+  appendDeepSearchLog: (conversationId, text) =>
     set((state) => {
-      const prev = state.deepSearchProgress;
+      const prev = state.streams[conversationId]?.deepSearchProgress ?? null;
       const line = text.trim();
       // No live run → this status line belongs to another family (writer,
       // memory, …) which has no tracker. Drop it.
@@ -964,24 +1171,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // the tracker can show live query progress before the phase-end counts
       // arrive.
       if (line.startsWith(DEEP_SEARCH_TOPIC_PREFIX)) {
-        return {
-          deepSearchProgress: {
-            ...prev,
-            text: line,
-            topicsSeen: prev.topicsSeen + 1,
-            log,
-          },
-        };
+        return (
+          patchStream(state.streams, conversationId, () => ({
+            deepSearchProgress: {
+              ...prev,
+              text: line,
+              topicsSeen: prev.topicsSeen + 1,
+              log,
+            },
+          })) ?? state
+        );
       }
 
-      return {
-        deepSearchProgress: { ...prev, log },
-      };
+      return (
+        patchStream(state.streams, conversationId, () => ({
+          deepSearchProgress: { ...prev, log },
+        })) ?? state
+      );
     }),
 
-  sealDeepSearchSummary: (messageId) =>
+  sealDeepSearchSummary: (conversationId, messageId) =>
     set((state) => {
-      const run = state.deepSearchProgress ?? state.deepSearchSealable;
+      const stream = state.streams[conversationId];
+      const run = stream
+        ? (stream.deepSearchProgress ?? stream.deepSearchSealable)
+        : null;
       if (!run || !messageId) return state;
       return {
         deepSearchSummaries: {
@@ -996,14 +1210,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   reset: () => {
-    cancelReveal();
+    cancelAllReveals();
+    // A user switch ends EVERY in-flight send in this tab.
+    for (const stream of Object.values(get().streams)) {
+      stream.abortController?.abort();
+    }
     // splitRatio is intentionally preserved — it is a global layout preference.
     set({
-      isStreaming: false,
-      streamingMessageId: null,
-      streamingConversationId: null,
-      streamingContent: "",
-      abortController: null,
+      streams: {},
       pendingFiles: [],
       pendingAttachFiles: [],
       pendingComposerDraft: null,
@@ -1016,21 +1230,66 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingLibraryRefs: [],
       pendingTemplate: null,
       pendingTemplateCarry: null,
-      error: null,
+      errorByConversation: {},
       workspaceByConversation: {},
       referencedItemsByMessage: {},
       templateOffersByMessage: {},
       nextStepsByMessage: {},
-      isAgentRunning: false,
-      runningAgentFamily: null,
-      runningAgentSubtype: null,
-      reconnectAttempts: 0,
       maxReconnectAttempts: 5,
-      isReconnecting: false,
-      quotaInfo: null,
-      deepSearchProgress: null,
-      deepSearchSealable: null,
+      noticeByConversation: {},
       deepSearchSummaries: {},
     });
   },
 }));
+
+// ---------------------------------------------------------------------------
+// Per-conversation selectors (parallel_conversations plan §3)
+//
+// Each returns a primitive (or the conversation's own entry), so a component
+// re-renders only when ITS conversation changes — never on another
+// conversation's reveal frames.
+// ---------------------------------------------------------------------------
+
+/** Number of sends in flight in this tab, across every conversation. */
+export function selectRunningCount(state: ChatState): number {
+  return Object.keys(state.streams).length;
+}
+
+/** True when any conversation is actively streaming an answer. */
+export function selectIsAnyStreaming(state: ChatState): boolean {
+  return Object.values(state.streams).some((s) => s.isStreaming);
+}
+
+/** The conversation's live stream entry (re-renders on every reveal frame). */
+export function useStreamState(
+  conversationId: string | null | undefined,
+): StreamState | undefined {
+  return useChatStore((s) =>
+    conversationId ? s.streams[conversationId] : undefined,
+  );
+}
+
+/** True once the conversation's run is confirmed and its answer is streaming. */
+export function useIsStreaming(conversationId: string | null | undefined): boolean {
+  return useChatStore((s) =>
+    conversationId ? (s.streams[conversationId]?.isStreaming ?? false) : false,
+  );
+}
+
+/**
+ * True while the conversation has a send in flight in this tab — from the POST
+ * until a terminal event (wider than ``useIsStreaming``, which only flips at
+ * ``message_start``). Drives the composer lock and the sidebar live dot.
+ */
+export function useIsConversationRunning(
+  conversationId: string | null | undefined,
+): boolean {
+  return useChatStore((s) =>
+    conversationId ? conversationId in s.streams : false,
+  );
+}
+
+/** Number of sends in flight in this tab, across every conversation. */
+export function useRunningCount(): number {
+  return useChatStore(selectRunningCount);
+}

@@ -38,11 +38,18 @@ function getPhrases(family: string | null): string[] {
 }
 
 interface TypingIndicatorProps {
+  /** Conversation whose running agent family picks the phrase set. */
+  conversationId: string;
   className?: string;
 }
 
-export function TypingIndicator({ className }: TypingIndicatorProps) {
-  const runningAgentFamily = useChatStore((s) => s.runningAgentFamily);
+export function TypingIndicator({
+  conversationId,
+  className,
+}: TypingIndicatorProps) {
+  const runningAgentFamily = useChatStore(
+    (s) => s.streams[conversationId]?.runningAgentFamily ?? null,
+  );
   const phrases = getPhrases(runningAgentFamily);
 
   const [index, setIndex] = useState(0);

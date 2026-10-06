@@ -537,6 +537,33 @@ export interface SSEQuotaExceeded {
    * banner-only (a missed upsell, never a pitch that cannot help).
    */
   upgrade_options?: string[];
+  /**
+   * parallel_conversations plan §2: why the gate refused. `"parallel_reserve"`
+   * = the user is NOT out of points — the balance just cannot cover another
+   * run alongside the ones already in flight, so the client shows `detail`
+   * without the "you've hit your limit" upgrade framing. Absent on older
+   * backends (= `"limit"`).
+   */
+  reason?: "limit" | "parallel_reserve";
+  /** Arabic explanation for `reason: "parallel_reserve"` (falls back to `message_ar`). */
+  detail?: string;
+}
+
+/**
+ * SSE `parallel_limit` — the per-plan cap on conversations answering at the
+ * same time refused this send (parallel_conversations plan §2). Like
+ * `quota_exceeded`, the server persisted nothing.
+ */
+export interface SSEParallelLimit {
+  /** Arabic banner text. */
+  detail: string;
+  /** The plan's `max_parallel_runs`. */
+  limit: number;
+  /** Runs of this user already in flight server-side. */
+  running: number;
+  running_conversation_ids: string[];
+  /** `"max"` when upgrading to «القصوى» would raise the cap; else `null`. */
+  upgrade_plan: "max" | null;
 }
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.
@@ -588,6 +615,13 @@ export interface UsageReport {
    * hides the bar.
    */
   library?: { period: UsageBar | null };
+  /**
+   * How many conversations may answer at the same time on the effective plan
+   * (parallel_conversations plan; 5 for max/dev, 1 otherwise). Optional so a
+   * backend that predates the field still type-checks — read it through
+   * `maxParallelRuns()` (hooks/use-usage.ts), which defaults to 1.
+   */
+  max_parallel_runs?: number;
 }
 
 /**

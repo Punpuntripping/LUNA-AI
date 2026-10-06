@@ -9,13 +9,19 @@ import {
   type KeyboardEvent,
 } from "react";
 import TextareaAutosize from "react-textarea-autosize";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Send, Sparkles, Plus } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AR_NUM_LOCALE } from "@/lib/format/numerals";
-import { useChatStore } from "@/stores/chat-store";
+import {
+  useChatStore,
+  useIsConversationRunning,
+  useRunningCount,
+} from "@/stores/chat-store";
+import { useMaxParallelRuns } from "@/hooks/use-usage";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import {
   DEMO_COMPOSER_CTA,
@@ -129,7 +135,19 @@ export function ChatInput({
   // the conversion affordance instead of letting the user type into a wall.
   const isDemo = useIsDemoConversation(conversationId);
 
-  const isStreaming = useChatStore((s) => s.isStreaming);
+  // parallel_conversations plan §3: lock (and offer Stop) only while THIS
+  // conversation has a send in flight — a stream in another conversation no
+  // longer freezes every composer.
+  const isStreaming = useIsConversationRunning(conversationId);
+  // Pre-gate on the plan's parallel cap. The server stays authoritative (an
+  // over-cap send is refused with `parallel_limit`); this only spares the user
+  // a round-trip. `/usage` is fetched only once another conversation is
+  // actually running, and an unknown cap (`null`) never gates.
+  const runningCount = useRunningCount();
+  const othersRunning = runningCount - (isStreaming ? 1 : 0);
+  const parallelCap = useMaxParallelRuns(othersRunning > 0);
+  const atParallelCap =
+    !isStreaming && parallelCap !== null && othersRunning >= parallelCap;
   const pendingFiles = useChatStore((s) => s.pendingFiles);
   const addPendingFile = useChatStore((s) => s.addPendingFile);
   const removePendingFile = useChatStore((s) => s.removePendingFile);
@@ -192,6 +210,7 @@ export function ChatInput({
       sendableLibraryCount > 0 ||
       pendingTemplate !== null) &&
     !isStreaming &&
+    !atParallelCap &&
     !disabled &&
     !hasInFlightUpload;
 
@@ -283,6 +302,14 @@ export function ChatInput({
   const composerInjection = useChatStore((s) => s.composerInjection);
   useEffect(() => {
     if (!composerInjection) return;
+    // Targeted at another conversation's composer (a refused send handing its
+    // text back) — leave the slot for that composer to pick up.
+    if (
+      composerInjection.conversationId !== undefined &&
+      composerInjection.conversationId !== conversationId
+    ) {
+      return;
+    }
     const text = composerInjection.text;
     setContent(text);
     useChatStore.getState().clearComposerInjection();
@@ -300,7 +327,7 @@ export function ChatInput({
       box.setSelectionRange(end, end);
       box.scrollTop = box.scrollHeight;
     });
-  }, [composerInjection]);
+  }, [composerInjection, conversationId]);
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -998,6 +1025,28 @@ export function ChatInput({
         <p className="text-xs text-destructive mb-2">{validationError}</p>
       )}
 
+      {atParallelCap && (
+        <p
+          className="text-xs text-muted-foreground mb-2"
+          data-testid="parallel-cap-note"
+        >
+          {parallelCap === 1 ? (
+            <>
+              محادثة أخرى قيد الإجابة — تتيح باقة «القصوى» حتى 5 محادثات
+              متزامنة.{" "}
+              <Link
+                href="/pricing"
+                className="font-medium text-primary underline-offset-4 hover:underline"
+              >
+                عرض الباقات
+              </Link>
+            </>
+          ) : (
+            "وصلت إلى الحدّ الأقصى للمحادثات المتزامنة — انتظر اكتمال إحداها."
+          )}
+        </p>
+      )}
+
       <div className="relative flex items-end gap-2">
         <input
           ref={fileInputRef}
@@ -1066,7 +1115,13 @@ export function ChatInput({
             className="h-10 w-10 shrink-0"
             onClick={handleSend}
             disabled={!canSend}
-            aria-label={hasInFlightUpload ? "جارٍ رفع المرفقات" : "إرسال"}
+            aria-label={
+              hasInFlightUpload
+                ? "جارٍ رفع المرفقات"
+                : atParallelCap
+                  ? "وصلت إلى الحدّ الأقصى للمحادثات المتزامنة"
+                  : "إرسال"
+            }
           >
             <Send className="h-4 w-4" />
           </Button>

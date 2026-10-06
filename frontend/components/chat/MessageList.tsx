@@ -15,7 +15,7 @@ import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
 import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useIsDemoConversation } from "@/hooks/use-demo-conversation";
 import { parseNextSteps } from "@/lib/next-steps";
-import { useChatStore } from "@/stores/chat-store";
+import { useChatStore, useIsStreaming } from "@/stores/chat-store";
 import {
   MessageBubble,
   type ArtifactLookup,
@@ -71,18 +71,19 @@ export function MessageList({
     fetchNextPage,
   } = useMessages(conversationId);
 
-  const streamingMessageId = useChatStore((s) => s.streamingMessageId);
+  // Every stream read is keyed by THIS conversation's id (parallel
+  // conversations: several can stream at once, each in its own slot).
+  const streamingMessageId = useChatStore(
+    (s) => s.streams[conversationId]?.messageId ?? null,
+  );
   // Deliberately NOT the content string: the list must not re-render per
   // reveal frame. StreamingMessageRow (bottom of file) is the only content
   // subscriber; the list only needs the empty→non-empty flip to swap the
   // typing indicator for the live bubble.
-  const hasStreamContent = useChatStore((s) => s.streamingContent.length > 0);
-  // The streaming buffer is global; only treat it as "streaming here" when the
-  // active stream actually belongs to this conversation. Without this guard one
-  // conversation's stream renders inside every other conversation.
-  const isStreaming = useChatStore(
-    (s) => s.isStreaming && s.streamingConversationId === conversationId,
+  const hasStreamContent = useChatStore(
+    (s) => (s.streams[conversationId]?.content.length ?? 0) > 0,
   );
+  const isStreaming = useIsStreaming(conversationId);
 
   // Window C: artifact lookup keyed by workspace_item.item_id → {kind, title}.
   // Re-uses the workspace list query the WorkspacePane already loads so this
@@ -310,12 +311,17 @@ export function MessageList({
   useEffect(() => {
     if (!isStreaming) return;
     return useChatStore.subscribe((state, prev) => {
-      if (state.streamingContent === prev.streamingContent) return;
+      if (
+        state.streams[conversationId]?.content ===
+        prev.streams[conversationId]?.content
+      ) {
+        return;
+      }
       if (!isNearBottomRef.current) return;
       const container = scrollContainerRef.current;
       if (container) container.scrollTop = container.scrollHeight;
     });
-  }, [isStreaming]);
+  }, [isStreaming, conversationId]);
 
   // iOS keyboard resilience (mobile_compatibility §3.7). Opening the keyboard
   // shrinks the VISUAL viewport without reflowing the layout viewport — Safari
@@ -493,7 +499,7 @@ export function MessageList({
               // Inline-start (right in RTL) — same edge the answer text will
               // occupy, so the indicator morphs into the response in place.
               <div key={msg.message_id} className="flex justify-start mb-10">
-                <ThinkingRow />
+                <ThinkingRow conversationId={conversationId} />
               </div>
             );
           }
@@ -501,7 +507,13 @@ export function MessageList({
           // to the streaming buffer itself, so each reveal frame re-renders
           // it alone while every settled bubble above stays untouched.
           if (isStreamingThis) {
-            return <StreamingMessageRow key={msg.message_id} message={msg} />;
+            return (
+              <StreamingMessageRow
+                key={msg.message_id}
+                message={msg}
+                conversationId={conversationId}
+              />
+            );
           }
           const ids = msg.artifact_ids;
           // Window B Tasks 5–7: prefer the persisted row value over the
@@ -551,7 +563,7 @@ export function MessageList({
             empty placeholder row is already showing its own (Layer 1). */}
         {isStreaming && !hasStreamContent && !hasIncompletePlaceholder && (
           <div className="flex justify-start mb-10">
-            <ThinkingRow />
+            <ThinkingRow conversationId={conversationId} />
           </div>
         )}
 
@@ -561,6 +573,7 @@ export function MessageList({
           hasStreamContent &&
           !messages.some((m) => m.message_id === streamingMessageId) && (
             <StreamingMessageRow
+              conversationId={conversationId}
               message={{
                 message_id: streamingMessageId,
                 conversation_id: conversationId,
@@ -602,11 +615,19 @@ export function MessageList({
  * HERE rather than in MessageList so the agent_run_started/finished flips
  * re-render this 1-line component instead of the whole list.
  */
-const ThinkingRow = memo(function ThinkingRow() {
+const ThinkingRow = memo(function ThinkingRow({
+  conversationId,
+}: {
+  conversationId: string;
+}) {
   const isDeepSearch = useChatStore(
-    (s) => s.runningAgentFamily === "deep_search",
+    (s) => s.streams[conversationId]?.runningAgentFamily === "deep_search",
   );
-  return isDeepSearch ? <DeepSearchProgress /> : <TypingIndicator />;
+  return isDeepSearch ? (
+    <DeepSearchProgress conversationId={conversationId} />
+  ) : (
+    <TypingIndicator conversationId={conversationId} />
+  );
 });
 
 /**
@@ -616,10 +637,14 @@ const ThinkingRow = memo(function ThinkingRow() {
  */
 const StreamingMessageRow = memo(function StreamingMessageRow({
   message,
+  conversationId,
 }: {
   message: Message;
+  conversationId: string;
 }) {
-  const streamingContent = useChatStore((s) => s.streamingContent);
+  const streamingContent = useChatStore(
+    (s) => s.streams[conversationId]?.content ?? "",
+  );
   const streamingMessage = useMemo(
     () => (message.isStreaming ? message : { ...message, isStreaming: true }),
     [message],

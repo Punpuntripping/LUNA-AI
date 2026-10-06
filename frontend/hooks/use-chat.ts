@@ -35,6 +35,7 @@ import type {
   SSEDone,
   SSEDuplicate,
   SSEQuotaExceeded,
+  SSEParallelLimit,
   SSEAgentProgress,
   SSEStatus,
   SSEAgentRunStarted,
@@ -79,7 +80,8 @@ interface RetryParams {
 
 interface UseSendMessageReturn {
   sendMessage: (params: SendMessageParams) => Promise<void>;
-  stopStreaming: () => void;
+  /** Stop THIS conversation's stream (other conversations keep streaming). */
+  stopStreaming: (conversationId: string) => void;
   /** Re-sends the user message that preceded the given assistant message */
   regenerateMessage: (params: RegenerateParams) => Promise<void>;
   /** Sends edited content as a new message in the conversation */
@@ -100,22 +102,29 @@ export function useSendMessage(): UseSendMessageReturn {
   // are module-level and reference-counted, so the two call sites of
   // useSendMessage still install one set.
   useRunVisibility();
-  const {
-    startStreaming,
-    appendToken,
-    stopStreaming: storeStopStreaming,
-    setError,
-    setAbortController,
-  } = useChatStore.getState();
+  const { setError, setAbortController } = useChatStore.getState();
 
-  const sendMessage = useCallback(
-    async ({ conversationId, content }: SendMessageParams) => {
-      // A new send supersedes any stream still in flight. The store tracks a
-      // single global stream buffer, so abort + clear the previous stream
-      // first — otherwise two conversations' tokens interleave into the same
-      // buffer. regenerate/retry/editAndResend all funnel through here, so
-      // this one guard covers every send path.
-      storeStopStreaming();
+  const runSend = useCallback(
+    async (
+      { conversationId, content }: SendMessageParams,
+      sendId: number,
+      initialRunToken: number | null,
+    ) => {
+      // parallel_conversations plan §3: this send owns
+      // `streams[conversationId]` while `sendId` matches. A re-send in the
+      // SAME conversation replaces the entry; from then on this send must not
+      // touch it. Other conversations are never affected.
+      const ownsStream = () =>
+        useChatStore.getState().streams[conversationId]?.sendId === sendId;
+      // Weaker check for SSE events: the entry may already be gone (e.g.
+      // `agent_question` → finishStreaming, then `done`) and the event must
+      // still run — it only has to not belong to a superseded send.
+      const isSuperseded = () => {
+        const cur = useChatStore.getState().streams[conversationId];
+        return cur !== undefined && cur.sendId !== sendId;
+      };
+      // This send's own reconnect budget — never shared with other sends.
+      let reconnectAttempts = 0;
 
       // 0. Collect already-uploaded attachment ids.
       //
@@ -126,14 +135,8 @@ export function useSendMessage(): UseSendMessageReturn {
       // any upload is in flight). Failed / cancelled files contribute
       // no attachment_ids — we silently drop them so the message still
       // sends with whatever made it through.
-      const {
-        pendingFiles,
-        clearPendingFiles,
-        pendingBlogs,
-        clearPendingBlogs,
-        pendingLibraryItems,
-        clearPendingLibraryItems,
-      } = useChatStore.getState();
+      const { pendingFiles, pendingBlogs, pendingLibraryItems } =
+        useChatStore.getState();
       const attachmentIds: string[] = pendingFiles
         .filter((pf) => pf.uploadStatus === "completed" && pf.itemId)
         .map((pf) => pf.itemId as string);
@@ -209,10 +212,25 @@ export function useSendMessage(): UseSendMessageReturn {
       // making the user re-pick their PDFs after subscribing is the worst
       // possible moment to lose them. `message_start` lands within a round-trip
       // of the POST, so the chips never visibly linger on the happy path.
+      //
+      // Releases exactly the chips THIS send carried, by id: with several
+      // conversations in flight, `message_start` can land after the user has
+      // moved to another conversation and attached new files there — a
+      // blanket clear would eat those.
+      const sentFileIds = new Set(pendingFiles.map((pf) => pf.id));
+      const sentBlogIds = new Set(pendingBlogs.map((pb) => pb.id));
+      const sentLibraryIds = new Set(pendingLibraryItems.map((li) => li.id));
       const releaseComposerAttachments = () => {
-        if (pendingFiles.length > 0) clearPendingFiles();
-        if (pendingBlogs.length > 0) clearPendingBlogs();
-        if (pendingLibraryItems.length > 0) clearPendingLibraryItems();
+        const s = useChatStore.getState();
+        for (const pf of s.pendingFiles) {
+          if (sentFileIds.has(pf.id)) s.removePendingFile(pf.id);
+        }
+        for (const pb of s.pendingBlogs) {
+          if (sentBlogIds.has(pb.id)) s.removePendingBlog(pb.id);
+        }
+        for (const li of s.pendingLibraryItems) {
+          if (sentLibraryIds.has(li.id)) s.removePendingLibraryItem(li.id);
+        }
       };
 
       // If no text but files are pending, use a default (backend requires min_length=1)
@@ -263,7 +281,7 @@ export function useSendMessage(): UseSendMessageReturn {
       // composer (regenerate / retry / edit-and-resend). Every terminal exit
       // below hands the token back so a superseded run's late abort can never
       // rewrite the state of the run that replaced it.
-      let analyticsRunToken = getRunToken();
+      let analyticsRunToken = initialRunToken;
 
       let assistantMessageId: string | null = null;
       // Layer 2: flips true once the backend confirms the run is committed
@@ -287,10 +305,16 @@ export function useSendMessage(): UseSendMessageReturn {
       let attemptSucceeded = false;
 
       while (!attemptSucceeded) {
+        // Stopped (or superseded by a same-conversation re-send) while
+        // backing off between attempts — there is no stream to re-establish.
+        if (!ownsStream()) {
+          noteRunAborted(analyticsRunToken);
+          return;
+        }
         // Create a fresh AbortController for each attempt so a previous abort signal
         // (from stopStreaming) does not immediately cancel a retry attempt.
         const attemptController = new AbortController();
-        setAbortController(attemptController);
+        setAbortController(conversationId, attemptController);
 
         try {
           const response = await messagesApi.send(
@@ -319,8 +343,8 @@ export function useSendMessage(): UseSendMessageReturn {
               // Use default Arabic error
             }
             markOptimisticFailed(qc, conversationId, optimisticId);
-            setError(errorDetail);
-            useChatStore.getState().resetReconnect();
+            setError(conversationId, errorDetail);
+            useChatStore.getState().resetReconnect(conversationId);
             // Nothing is running — stop reporting this send as in_flight.
             noteRunAborted(analyticsRunToken);
             return;
@@ -328,8 +352,8 @@ export function useSendMessage(): UseSendMessageReturn {
 
           if (!response.body) {
             markOptimisticFailed(qc, conversationId, optimisticId);
-            setError("لم يتم استلام استجابة من الخادم");
-            useChatStore.getState().resetReconnect();
+            setError(conversationId, "لم يتم استلام استجابة من الخادم");
+            useChatStore.getState().resetReconnect(conversationId);
             noteRunAborted(analyticsRunToken);
             return;
           }
@@ -379,7 +403,7 @@ export function useSendMessage(): UseSendMessageReturn {
             // AbortError is expected when the user presses stop — do not retry
             if (streamErr instanceof DOMException && streamErr.name === "AbortError") {
               void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
-              useChatStore.getState().resetReconnect();
+              useChatStore.getState().resetReconnect(conversationId);
               // Cancelled (Stop button, or superseded by a newer send) — this
               // run is over. Token-scoped, so it can only ever end ITS OWN run.
               noteRunAborted(analyticsRunToken);
@@ -398,7 +422,7 @@ export function useSendMessage(): UseSendMessageReturn {
           // User intentionally aborted — never retry
           if (err instanceof DOMException && err.name === "AbortError") {
             void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
-            useChatStore.getState().resetReconnect();
+            useChatStore.getState().resetReconnect(conversationId);
             noteRunAborted(analyticsRunToken);
             return;
           }
@@ -412,7 +436,7 @@ export function useSendMessage(): UseSendMessageReturn {
           // the background run fills it. The running pipeline is never touched.
           if (messageStartSeen) {
             void qc.invalidateQueries({ queryKey: messageKeys.list(conversationId) });
-            useChatStore.getState().finishStreaming();
+            useChatStore.getState().finishStreaming(conversationId);
             return;
           }
 
@@ -428,26 +452,30 @@ export function useSendMessage(): UseSendMessageReturn {
             (err as { status: number }).status >= 500;
           const isRetryable = isNetworkError || isServerError;
 
-          const { reconnectAttempts, maxReconnectAttempts, startReconnect, resetReconnect } =
+          const { maxReconnectAttempts, startReconnect, resetReconnect } =
             useChatStore.getState();
 
           if (isRetryable && reconnectAttempts < maxReconnectAttempts) {
             // Exponential backoff: 1 s, 2 s, 4 s, 8 s, 16 s — capped at 30 s
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            startReconnect();
+            reconnectAttempts += 1;
+            startReconnect(conversationId, reconnectAttempts);
             await new Promise<void>((resolve) => setTimeout(resolve, delay));
             // Loop continues — re-establishes the SSE stream without touching the
             // optimistic user message or re-submitting to the DB
           } else {
             // Non-retryable error or max retries exceeded
-            resetReconnect();
+            resetReconnect(conversationId);
             // The retry budget is spent and no run survives it.
             noteRunAborted(analyticsRunToken);
             markOptimisticFailed(qc, conversationId, optimisticId);
             if (reconnectAttempts >= maxReconnectAttempts) {
-              setError("فشل الاتصال بعد عدة محاولات. يرجى المحاولة مرة أخرى.");
+              setError(
+                conversationId,
+                "فشل الاتصال بعد عدة محاولات. يرجى المحاولة مرة أخرى.",
+              );
             } else {
-              setError("حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.");
+              setError(conversationId, "حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.");
             }
             return;
           }
@@ -455,6 +483,9 @@ export function useSendMessage(): UseSendMessageReturn {
       }
 
       function handleSSEEvent(eventType: string, jsonStr: string): void {
+        // A same-conversation re-send replaced this send: every later event
+        // belongs to a dead stream and must not touch the new one's state.
+        if (isSuperseded()) return;
         try {
           const data = JSON.parse(jsonStr);
 
@@ -469,6 +500,7 @@ export function useSendMessage(): UseSendMessageReturn {
               analyticsRunToken = trackMessageStart({
                 conversationId,
                 messageId: payload.assistant_message_id,
+                token: analyticsRunToken,
               });
               // The send is committed server-side — only now do the composer
               // chips go away. See `releaseComposerAttachments`.
@@ -486,11 +518,11 @@ export function useSendMessage(): UseSendMessageReturn {
                 messageContent,
                 optimisticAttachments,
               );
-              // Start streaming the assistant message, tagged with the
-              // conversation so other conversations don't render this stream.
+              // Start streaming the assistant message into THIS
+              // conversation's slot — other conversations never see it.
               useChatStore
                 .getState()
-                .startStreaming(payload.assistant_message_id, conversationId);
+                .startStreaming(conversationId, payload.assistant_message_id);
               break;
             }
             case "duplicate": {
@@ -501,8 +533,8 @@ export function useSendMessage(): UseSendMessageReturn {
               // message failed or retry; this is expected, not an error.
               const payload = data as SSEDuplicate;
               removeOptimisticMessage(qc, conversationId, optimisticId);
-              useChatStore.getState().finishStreaming();
-              useChatStore.getState().resetReconnect();
+              useChatStore.getState().finishStreaming(conversationId);
+              useChatStore.getState().resetReconnect(conversationId);
               void qc.invalidateQueries({
                 queryKey: messageKeys.list(conversationId),
               });
@@ -510,7 +542,7 @@ export function useSendMessage(): UseSendMessageReturn {
               // resend was absorbed rather than silently dropped. The in-flight
               // run fills the card via useMessages.refetchInterval (Layer 2) —
               // we never re-POST, so the running pipeline is untouched.
-              useChatStore.getState().setError(payload.detail);
+              useChatStore.getState().setError(conversationId, payload.detail);
               break;
             }
             case "quota_exceeded": {
@@ -537,18 +569,49 @@ export function useSendMessage(): UseSendMessageReturn {
               // public funnel's `quota_blocked`, not a chat-depth event.
               noteRunAborted(analyticsRunToken);
               removeOptimisticMessage(qc, conversationId, optimisticId);
-              if (content) useChatStore.getState().injectComposerText(content);
-              useChatStore.getState().finishStreaming();
-              useChatStore.getState().resetReconnect();
-              useChatStore.getState().setQuotaInfo(payload);
+              if (content) {
+                useChatStore
+                  .getState()
+                  .injectComposerText(content, conversationId);
+              }
+              useChatStore.getState().finishStreaming(conversationId);
+              useChatStore.getState().resetReconnect(conversationId);
+              // `reason: "parallel_reserve"` rides the same event: the user is
+              // NOT out of points, so QuotaBanner shows `detail` without the
+              // upgrade pitch — it reads `reason` itself.
+              useChatStore
+                .getState()
+                .setNotice(conversationId, { kind: "quota", info: payload });
+              break;
+            }
+            case "parallel_limit": {
+              // The per-plan cap on conversations answering at the same time
+              // (parallel_conversations plan §2) refused this send. Same
+              // contract as `quota_exceeded`: checked before any write, so the
+              // server persisted nothing — put the user back exactly where
+              // they were (composer text back, chips never released, no
+              // optimistic bubble) and explain why.
+              const payload = data as SSEParallelLimit;
+              noteRunAborted(analyticsRunToken);
+              removeOptimisticMessage(qc, conversationId, optimisticId);
+              if (content) {
+                useChatStore
+                  .getState()
+                  .injectComposerText(content, conversationId);
+              }
+              useChatStore.getState().finishStreaming(conversationId);
+              useChatStore.getState().setNotice(conversationId, {
+                kind: "parallel_limit",
+                info: payload,
+              });
               break;
             }
             case "token": {
               const payload = data as SSEToken;
-              useChatStore.getState().appendToken(payload.text);
+              useChatStore.getState().appendToken(conversationId, payload.text);
               // FIRST token only — the tracker drops every subsequent call.
               // A long run emits thousands of these (T16).
-              trackFirstToken();
+              trackFirstToken(analyticsRunToken);
               break;
             }
             case "agent_progress": {
@@ -557,11 +620,13 @@ export function useSendMessage(): UseSendMessageReturn {
               // progress slice, so a progress event never re-renders the
               // message list.
               const payload = data as SSEAgentProgress;
-              useChatStore.getState().setDeepSearchProgress(payload);
+              useChatStore
+                .getState()
+                .setDeepSearchProgress(conversationId, payload);
               // Analytics: record the stage, emit NOTHING (T16). Its whole
               // value is answering "which stage were they looking at when
               // they gave up" — `tab_hidden` reads it back off the run.
-              noteRunStage(payload.stage);
+              noteRunStage(analyticsRunToken, payload.stage);
               // The terminal event carries the run totals. Seal here as well
               // as on `done`: this way the chip survives regardless of the
               // order the backend emits agent_progress(done) /
@@ -569,7 +634,7 @@ export function useSendMessage(): UseSendMessageReturn {
               if (payload.stage === "done" && assistantMessageId) {
                 useChatStore
                   .getState()
-                  .sealDeepSearchSummary(assistantMessageId);
+                  .sealDeepSearchSummary(conversationId, assistantMessageId);
               }
               break;
             }
@@ -580,7 +645,9 @@ export function useSendMessage(): UseSendMessageReturn {
               // of the deep_search summary chip. No-op when no deep_search run
               // is in flight, so other families are unaffected.
               const payload = data as SSEStatus;
-              useChatStore.getState().appendDeepSearchLog(payload.text ?? "");
+              useChatStore
+                .getState()
+                .appendDeepSearchLog(conversationId, payload.text ?? "");
               break;
             }
             case "done": {
@@ -590,11 +657,14 @@ export function useSendMessage(): UseSendMessageReturn {
               // the metric), and the `done` stamp has to exist before the
               // cache write below re-renders the bubble — that is what arms
               // `answer_seen` for this message.
-              trackRunDone(assistantMessageId ?? payload.message_id ?? null);
+              trackRunDone(
+                analyticsRunToken,
+                assistantMessageId ?? payload.message_id ?? null,
+              );
               // The paced reveal may still hold tail text in its buffer —
-              // publish it so streamingContent is the complete answer before
-              // it is persisted into the cache.
-              useChatStore.getState().flushStreamBuffer();
+              // publish it so the stream's content is the complete answer
+              // before it is persisted into the cache.
+              useChatStore.getState().flushStreamBuffer(conversationId);
               // Seal the deep_search summary against the assistant message id
               // BEFORE finishStreaming() drops the progress slice — that is
               // what turns the live tracker into the collapsed chip above the
@@ -603,11 +673,12 @@ export function useSendMessage(): UseSendMessageReturn {
               if (assistantMessageId) {
                 useChatStore
                   .getState()
-                  .sealDeepSearchSummary(assistantMessageId);
+                  .sealDeepSearchSummary(conversationId, assistantMessageId);
               }
               // Inject assistant message into cache BEFORE clearing streaming state
               // so there's no flash (streaming bubble disappears → same text reappears from server)
-              const finalContent = useChatStore.getState().streamingContent;
+              const finalContent =
+                useChatStore.getState().streams[conversationId]?.content ?? "";
               if (assistantMessageId && finalContent) {
                 qc.setQueryData<{ pages: MessageListResponse[]; pageParams: (string | undefined)[] }>(
                   messageKeys.list(conversationId),
@@ -681,7 +752,7 @@ export function useSendMessage(): UseSendMessageReturn {
                 );
               }
               // Clear streaming state without aborting the fetch
-              useChatStore.getState().finishStreaming();
+              useChatStore.getState().finishStreaming(conversationId);
               // «سلسلة تعلّم ريحان» — one completed turn. Counted HERE and not
               // at submit on purpose: a send that never produced an answer
               // (quota block, transport failure) is not a turn the user spent,
@@ -722,18 +793,20 @@ export function useSendMessage(): UseSendMessageReturn {
             }
             case "agent_run_started": {
               const payload = data as SSEAgentRunStarted;
-              useChatStore.getState().startAgentRun(payload.agent_family, payload.subtype ?? null);
+              useChatStore
+                .getState()
+                .startAgentRun(conversationId, payload.agent_family, payload.subtype ?? null);
               // Analytics: the router's choice, recorded on the run and
               // stamped onto every run/visibility event from here on. No event
               // of its own. A general_qa run and a five-minute deep_search run
               // have completely different abandonment profiles, so a blended
               // wait-tolerance number describes nobody.
-              noteRunFamily(payload.agent_family);
+              noteRunFamily(analyticsRunToken, payload.agent_family);
               break;
             }
             case "agent_run_finished": {
               const _payload = data as SSEAgentRunFinished;
-              useChatStore.getState().finishAgentRun();
+              useChatStore.getState().finishAgentRun(conversationId);
               break;
             }
             case "agent_question": {
@@ -747,27 +820,29 @@ export function useSendMessage(): UseSendMessageReturn {
               // The run is alive but waiting on the user. Its own state:
               // abandonment here (the agent asked, nobody answered) is a
               // distinct and expensive failure mode with its own number.
-              trackRunPaused();
-              useChatStore.getState().finishAgentRun();
+              trackRunPaused(analyticsRunToken);
+              useChatStore.getState().finishAgentRun(conversationId);
               // Also clear any in-progress streaming bubble — the assistant
               // message that arrives via refetch is the canonical question.
               // This pair also tears down the deep_search tracker: the run is
               // alive but paused, so it must stop showing "searching", and
               // nothing is sealed (no chip on a question bubble).
-              useChatStore.getState().finishStreaming();
+              useChatStore.getState().finishStreaming(conversationId);
               break;
             }
             case "agent_resumed": {
               // Server resumed a paused agent_run after the user replied.
               // Surface the spinner again so the UI shows the agent is working.
               const payload = data as SSEAgentResumed;
-              useChatStore.getState().startAgentRun(payload.agent_family, null);
+              useChatStore
+                .getState()
+                .startAgentRun(conversationId, payload.agent_family, null);
               // Same fact as `agent_run_started`, different SSE name: a run
               // resumed after `ask_user` never re-announces its start, so
               // without this the whole resumed leg — the one whose
               // abandonment `run_paused` exists to measure — would report a
               // null family.
-              noteRunFamily(payload.agent_family);
+              noteRunFamily(analyticsRunToken, payload.agent_family);
               break;
             }
             case "workspace_item_updated": {
@@ -860,9 +935,9 @@ export function useSendMessage(): UseSendMessageReturn {
               // Carries the stage the run died at; also drops the run out of
               // `in_flight` so a later page_leave isn't read as abandoning a
               // live run — nobody is waiting for an answer that isn't coming.
-              trackRunFailed();
+              trackRunFailed(analyticsRunToken);
               markOptimisticFailed(qc, conversationId, optimisticId);
-              useChatStore.getState().setError(errorMsg);
+              useChatStore.getState().setError(conversationId, errorMsg);
               break;
             }
           }
@@ -871,11 +946,32 @@ export function useSendMessage(): UseSendMessageReturn {
         }
       }
     },
-    [qc, startStreaming, appendToken, storeStopStreaming, setError, setAbortController]
+    [qc, setError, setAbortController]
   );
 
-  const stopStreaming = useCallback(() => {
-    useChatStore.getState().stopStreaming();
+  const sendMessage = useCallback(
+    async (params: SendMessageParams) => {
+      // Analytics identity of THIS send, read synchronously: `chat_send` was
+      // fired by ChatInput an instant ago, so the latest run token is ours.
+      // Reading it after an await could pick up another conversation's send.
+      const runToken = getRunToken();
+      // Claim the conversation. Supersedes ONLY a send still in flight in the
+      // SAME conversation (regenerate / edit / retry funnel through here);
+      // streams in other conversations keep running untouched.
+      const sendId = useChatStore.getState().beginSend(params.conversationId);
+      try {
+        await runSend(params, sendId, runToken);
+      } finally {
+        // Every exit — done, refusal, error, abort, retry budget spent —
+        // releases the slot, so nothing stale counts toward the parallel cap.
+        useChatStore.getState().endSend(params.conversationId, sendId);
+      }
+    },
+    [runSend],
+  );
+
+  const stopStreaming = useCallback((conversationId: string) => {
+    useChatStore.getState().stopStreaming(conversationId);
   }, []);
 
   /**

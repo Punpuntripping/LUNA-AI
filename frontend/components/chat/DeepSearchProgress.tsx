@@ -324,6 +324,8 @@ function DeepSearchNote({ running }: { running: boolean }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DeepSearchProgressProps {
+  /** The conversation whose run this tracker shows (each has its own slot). */
+  conversationId: string;
   className?: string;
 }
 
@@ -334,15 +336,18 @@ interface DeepSearchProgressProps {
  * Driven exclusively by real pipeline events — the bar's fill is `n of 4`
  * completed steps, never a synthetic percentage ramp.
  *
- * Render isolation: this is the ONLY subscriber of `chat-store.deepSearchProgress`.
+ * Render isolation: this is the ONLY subscriber of `chat-store.streams[cid].deepSearchProgress`.
  * Keep it that way — the message list must not re-render on progress events or
  * the fluid-streaming reveal gets choppy. The elapsed timer likewise ticks on
  * local state, never through the store.
  */
 export const DeepSearchProgress = memo(function DeepSearchProgress({
+  conversationId,
   className,
 }: DeepSearchProgressProps) {
-  const progress = useChatStore((s) => s.deepSearchProgress);
+  const progress = useChatStore(
+    (s) => s.streams[conversationId]?.deepSearchProgress ?? null,
+  );
   const startedAt = progress?.startedAt ?? null;
   const stage = progress?.stage ?? null;
 
@@ -423,7 +428,7 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
     return (
       <div className={cn("w-full space-y-2", className)}>
         <DeepSearchNote running />
-        <TypingIndicator />
+        <TypingIndicator conversationId={conversationId} />
       </div>
     );
   }

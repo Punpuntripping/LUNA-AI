@@ -6,7 +6,7 @@ import {
   readInstallState,
   writeInstallState,
 } from "@/components/install/install-device-state";
-import { useChatStore } from "@/stores/chat-store";
+import { selectIsAnyStreaming, useChatStore } from "@/stores/chat-store";
 import { useEduStore } from "@/stores/edu-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { usePromoStore } from "@/stores/promo-store";
@@ -49,7 +49,7 @@ function competingSurfaceOpen(): boolean {
   if (useOnboardingStore.getState().isOpen) return true;
   if (useTourStore.getState().isOpen) return true;
   if (usePromoStore.getState().isOpen) return true;
-  if (useChatStore.getState().isStreaming) return true;
+  if (selectIsAnyStreaming(useChatStore.getState())) return true;
   return aModalIsOpen();
 }
 

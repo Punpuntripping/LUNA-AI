@@ -8,7 +8,7 @@ import {
   detectInstallPlatform,
   useDeferredInstallPrompt,
 } from "@/lib/install-app";
-import { useChatStore } from "@/stores/chat-store";
+import { selectIsAnyStreaming, useChatStore } from "@/stores/chat-store";
 import { runInstallPrompt } from "@/components/install/install-device-state";
 import { useInstallNudgeStore } from "@/stores/install-nudge-store";
 
@@ -27,7 +27,8 @@ import { useInstallNudgeStore } from "@/stores/install-nudge-store";
  */
 export function InstallNudgeCard() {
   const isOpen = useInstallNudgeStore((s) => s.isOpen);
-  const isStreaming = useChatStore((s) => s.isStreaming);
+  // Any conversation streaming in this tab (parallel conversations).
+  const isStreaming = useChatStore(selectIsAnyStreaming);
   const [dialogOpen, setDialogOpen] = useState(false);
   const { canPrompt, install } = useDeferredInstallPrompt();
 

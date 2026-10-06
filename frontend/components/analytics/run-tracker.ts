@@ -85,8 +85,56 @@ interface ActiveRun {
   doneAt: number | null;
 }
 
-let activeRun: ActiveRun | null = null;
+/**
+ * Runs by token, oldest first (Map insertion order). Several can be in flight
+ * at once — up to the plan's `max_parallel_runs` conversations answer at the
+ * same time (parallel_conversations plan) — so every lifecycle call names its
+ * run by token and can only ever touch THAT run.
+ */
+const runs = new Map<number, ActiveRun>();
+let latestToken: number | null = null;
 let runTokenSeq = 0;
+const MAX_TRACKED_RUNS = 20;
+
+function addRun(run: ActiveRun): void {
+  runs.set(run.token, run);
+  latestToken = run.token;
+  if (runs.size > MAX_TRACKED_RUNS) {
+    const oldest = runs.keys().next();
+    if (!oldest.done) runs.delete(oldest.value);
+  }
+}
+
+function newRun(conversationId: string | null, messageId: string | null): ActiveRun {
+  runTokenSeq += 1;
+  return {
+    token: runTokenSeq,
+    conversationId,
+    messageId,
+    sentAt: Date.now(),
+    firstTokenSeen: false,
+    stage: null,
+    family: null,
+    state: "in_flight",
+    doneAt: null,
+  };
+}
+
+function runFor(token: number | null): ActiveRun | null {
+  return token === null ? null : (runs.get(token) ?? null);
+}
+
+/**
+ * The run a visibility event describes: the NEWEST run still in flight (the
+ * one the user most recently started waiting on), else the newest run of all.
+ */
+function focusRun(): ActiveRun | null {
+  let inFlight: ActiveRun | null = null;
+  for (const run of runs.values()) {
+    if (run.state === "in_flight") inFlight = run;
+  }
+  return inFlight ?? runFor(latestToken);
+}
 
 /** Hard cap on every per-message map so a long session can't grow unbounded. */
 const MAX_TRACKED_MESSAGES = 60;
@@ -130,24 +178,31 @@ function isVisible(): boolean {
  * failed / was aborted.
  */
 export function getRunState(): RunState {
-  if (activeRun?.state === "in_flight") return "in_flight";
+  const focus = focusRun();
+  if (focus?.state === "in_flight") return "in_flight";
   try {
-    const { isStreaming, isAgentRunning } = useChatStore.getState();
-    if (isStreaming || isAgentRunning) return "in_flight";
+    // Any conversation streaming (or running an agent) in this tab counts.
+    const { streams } = useChatStore.getState();
+    if (
+      Object.values(streams).some((s) => s.isStreaming || s.isAgentRunning)
+    ) {
+      return "in_flight";
+    }
   } catch {
     // Store unavailable — fall through to the tracker's own view.
   }
-  return activeRun?.state ?? "idle";
+  return focus?.state ?? "idle";
 }
 
 /** ms since the user pressed send, or `null` when no run exists in this tab. */
 export function getMsSinceSend(): number | null {
-  return activeRun ? Date.now() - activeRun.sentAt : null;
+  const focus = focusRun();
+  return focus ? Date.now() - focus.sentAt : null;
 }
 
 /** Current deep_search stage, or `null` for families that emit no progress. */
 export function getCurrentStage(): string | null {
-  return activeRun?.stage ?? null;
+  return focusRun()?.stage ?? null;
 }
 
 /**
@@ -158,7 +213,7 @@ export function getCurrentStage(): string | null {
  * describes nobody.
  */
 export function getCurrentFamily(): string | null {
-  return activeRun?.family ?? null;
+  return focusRun()?.family ?? null;
 }
 
 /** True once `done` has been recorded for this assistant message in this tab. */
@@ -189,18 +244,7 @@ export function trackChatSend(params: {
   conversationId: string | null;
   hasAttachment: boolean;
 }): void {
-  runTokenSeq += 1;
-  activeRun = {
-    token: runTokenSeq,
-    conversationId: params.conversationId,
-    messageId: null,
-    sentAt: Date.now(),
-    firstTokenSeen: false,
-    stage: null,
-    family: null,
-    state: "in_flight",
-    doneAt: null,
-  };
+  addRun(newRun(params.conversationId, null));
   // `message_id` and `family` are null HERE ON PURPOSE — please do not "fix"
   // them. The assistant message id is minted by the backend at
   // `message_start` and the family is chosen by the router (`agent_run_started`),
@@ -230,35 +274,34 @@ export function trackChatSend(params: {
 export function trackMessageStart(params: {
   conversationId: string;
   messageId: string;
+  /** The token the send captured at submit (`getRunToken()`), if any. */
+  token: number | null;
 }): number {
+  const run = runFor(params.token);
   if (
-    activeRun &&
-    activeRun.state === "in_flight" &&
-    (activeRun.conversationId === null ||
-      activeRun.conversationId === params.conversationId)
+    run &&
+    run.state === "in_flight" &&
+    // A run already bound to an assistant message is a PREVIOUS turn — with
+    // several conversations in flight the captured token can be one of them.
+    run.messageId === null &&
+    (run.conversationId === null ||
+      run.conversationId === params.conversationId)
   ) {
-    activeRun.conversationId = params.conversationId;
-    activeRun.messageId = params.messageId;
-    return activeRun.token;
+    run.conversationId = params.conversationId;
+    run.messageId = params.messageId;
+    return run.token;
   }
-  runTokenSeq += 1;
-  activeRun = {
-    token: runTokenSeq,
-    conversationId: params.conversationId,
-    messageId: params.messageId,
-    sentAt: Date.now(),
-    firstTokenSeen: false,
-    stage: null,
-    family: null,
-    state: "in_flight",
-    doneAt: null,
-  };
-  return activeRun.token;
+  const fresh = newRun(params.conversationId, params.messageId);
+  addRun(fresh);
+  return fresh.token;
 }
 
-/** Identity of the run currently being tracked — see `noteRunAborted`. */
+/**
+ * Identity of the most recently started run — read by a send at submit time
+ * (synchronously, right after `chat_send`) to learn which run it owns.
+ */
 export function getRunToken(): number | null {
-  return activeRun?.token ?? null;
+  return latestToken;
 }
 
 /**
@@ -279,8 +322,8 @@ export function getRunToken(): number | null {
  * tick later, by which time the new run already owns the tracker.
  */
 export function noteRunAborted(token: number | null): void {
-  if (token === null || !activeRun || activeRun.token !== token) return;
-  if (activeRun.state === "in_flight") activeRun.state = "idle";
+  const run = runFor(token);
+  if (run?.state === "in_flight") run.state = "idle";
 }
 
 /**
@@ -288,14 +331,15 @@ export function noteRunAborted(token: number | null): void {
  * (T16: a long run emits thousands; one event per token would be a firehose
  * into the beacon, the table and the reader's battery).
  */
-export function trackFirstToken(): void {
-  if (!activeRun || activeRun.firstTokenSeen) return;
-  activeRun.firstTokenSeen = true;
+export function trackFirstToken(token: number | null): void {
+  const run = runFor(token);
+  if (!run || run.firstTokenSeen) return;
+  run.firstTokenSeen = true;
   safeTrack("run_first_token", {
-    conversation_id: activeRun.conversationId,
-    message_id: activeRun.messageId,
-    ms_since_send: Date.now() - activeRun.sentAt,
-    family: activeRun.family,
+    conversation_id: run.conversationId,
+    message_id: run.messageId,
+    ms_since_send: Date.now() - run.sentAt,
+    family: run.family,
   });
 }
 
@@ -304,8 +348,9 @@ export function trackFirstToken(): void {
  * only as the answer to "which stage was on screen when they gave up", which
  * `tab_hidden` and `run_failed` read back off the run.
  */
-export function noteRunStage(stage: string): void {
-  if (activeRun) activeRun.stage = stage;
+export function noteRunStage(token: number | null, stage: string): void {
+  const run = runFor(token);
+  if (run) run.stage = stage;
 }
 
 /**
@@ -314,33 +359,38 @@ export function noteRunStage(stage: string): void {
  * Emits NOTHING: it is a property of the run, stamped onto the events that
  * already exist rather than an event of its own.
  */
-export function noteRunFamily(family: string): void {
-  if (activeRun) activeRun.family = family;
+export function noteRunFamily(token: number | null, family: string): void {
+  const run = runFor(token);
+  if (run) run.family = family;
 }
 
 /**
  * `run_done` — `was_visible` is read AT THIS MOMENT, not later: an answer that
  * landed in a backgrounded tab is the whole reason this metric exists.
  */
-export function trackRunDone(messageId: string | null): void {
+export function trackRunDone(
+  token: number | null,
+  messageId: string | null,
+): void {
+  const run = runFor(token);
   // The pause path emits `done` immediately after `agent_question` — that is
   // the SSE stream closing, not an answer arriving. Treating it as completion
   // would erase the `paused` state the pause metric is built on, and would
   // arm `answer_seen` on a question bubble.
-  if (activeRun?.state === "paused") return;
+  if (run?.state === "paused") return;
   const now = Date.now();
-  const id = messageId ?? activeRun?.messageId ?? null;
+  const id = messageId ?? run?.messageId ?? null;
   if (id) remember(doneAtByMessage, id, now, MAX_TRACKED_MESSAGES);
-  if (!activeRun) return;
-  if (id) activeRun.messageId = id;
-  activeRun.state = "completed";
-  activeRun.doneAt = now;
+  if (!run) return;
+  if (id) run.messageId = id;
+  run.state = "completed";
+  run.doneAt = now;
   safeTrack("run_done", {
-    conversation_id: activeRun.conversationId,
+    conversation_id: run.conversationId,
     message_id: id,
-    ms_since_send: now - activeRun.sentAt,
+    ms_since_send: now - run.sentAt,
     was_visible: isVisible(),
-    family: activeRun.family,
+    family: run.family,
   });
 }
 
@@ -349,17 +399,18 @@ export function trackRunDone(messageId: string | null): void {
  * waiting for an answer that is not coming, so a later `page_leave` must not
  * be counted as abandoning a live run.
  */
-export function trackRunFailed(): void {
-  if (!activeRun) return;
-  const stage = activeRun.stage;
-  const msSinceSend = Date.now() - activeRun.sentAt;
-  activeRun.state = "idle";
+export function trackRunFailed(token: number | null): void {
+  const run = runFor(token);
+  if (!run) return;
+  const stage = run.stage;
+  const msSinceSend = Date.now() - run.sentAt;
+  run.state = "idle";
   safeTrack("run_failed", {
-    conversation_id: activeRun.conversationId,
-    message_id: activeRun.messageId,
+    conversation_id: run.conversationId,
+    message_id: run.messageId,
     ms_since_send: msSinceSend,
     stage,
-    family: activeRun.family,
+    family: run.family,
   });
 }
 
@@ -368,14 +419,15 @@ export function trackRunFailed(): void {
  * is waiting on the user. Its own state because abandonment here is a distinct
  * and expensive failure mode: the run burned its retrieval and then stalled.
  */
-export function trackRunPaused(): void {
-  if (!activeRun) return;
-  activeRun.state = "paused";
+export function trackRunPaused(token: number | null): void {
+  const run = runFor(token);
+  if (!run) return;
+  run.state = "paused";
   safeTrack("run_paused", {
-    conversation_id: activeRun.conversationId,
-    message_id: activeRun.messageId,
-    ms_since_send: Date.now() - activeRun.sentAt,
-    family: activeRun.family,
+    conversation_id: run.conversationId,
+    message_id: run.messageId,
+    ms_since_send: Date.now() - run.sentAt,
+    family: run.family,
   });
 }
 
@@ -569,12 +621,17 @@ export function trackConversationOpened(conversationId: string): void {
   if (last !== undefined && now - last < CONVERSATION_OPEN_DEDUP_MS) return;
   remember(conversationOpenedAt, conversationId, now, MAX_TRACKED_ITEMS);
 
-  const hasUnseenAnswer =
-    activeRun !== null &&
-    activeRun.conversationId === conversationId &&
-    activeRun.state === "completed" &&
-    activeRun.messageId !== null &&
-    !answerSeenMessages.has(activeRun.messageId);
+  let hasUnseenAnswer = false;
+  for (const run of runs.values()) {
+    if (
+      run.conversationId === conversationId &&
+      run.state === "completed" &&
+      run.messageId !== null &&
+      !answerSeenMessages.has(run.messageId)
+    ) {
+      hasUnseenAnswer = true;
+    }
+  }
 
   safeTrack("conversation_opened", {
     conversation_id: conversationId,
