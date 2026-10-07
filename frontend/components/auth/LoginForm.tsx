@@ -21,6 +21,7 @@ import {
 import { GoogleIcon } from "@/components/auth/GoogleQuickSignup";
 import { PasswordInput } from "@/components/ui/password-input";
 import { EmailOtpLogin } from "@/components/auth/EmailOtpLogin";
+import { flushAnalytics, track } from "@/lib/analytics/client";
 import {
   applyEmailOtpFlagFromUrl,
   isEmailOtpEnabled,
@@ -121,10 +122,15 @@ export function LoginForm() {
     // message.
     if (params.get("notice") === "verify_elsewhere") {
       setNotice("تم تأكيد بريدك. سجّل الدخول للمتابعة.");
+      // Also the shape of a GOOGLE round trip whose PKCE verifier was lost —
+      // e.g. started in X's in-app browser and finished in Safari. The callback
+      // cannot tell the two apart, so neither can this event.
+      track("login_failed", { method: "callback", reason: "verify_elsewhere" });
     }
 
     // Surface OAuth failures redirected back from /auth/callback?error=oauth.
     if (params.get("error") === "oauth") {
+      track("login_failed", { method: "google", reason: "oauth_callback" });
       setServerError("تعذّر تسجيل الدخول عبر Google. حاول مرة أخرى.");
       // Drop the error from the address bar but keep `next` — and the `u` that
       // scopes it, or a reload would silently un-scope the return-to and hand
@@ -187,7 +193,8 @@ export function LoginForm() {
     setMarketingOptIn(true);
   };
 
-  const validate = (): boolean => {
+  /** Names of the fields that failed; empty = valid. */
+  const validate = (): string[] => {
     const schema = mode === "login" ? loginSchema : registerSchema;
     const data =
       mode === "login"
@@ -209,30 +216,42 @@ export function LoginForm() {
         fieldErrors.terms = "يجب الموافقة على الشروط وسياسة الخصوصية";
       }
       setErrors(fieldErrors);
-      return false;
+      return Object.keys(fieldErrors);
     }
 
     // Schema passed — still block registration without consent.
     if (mode === "register" && !agreedToTerms) {
       setErrors({ terms: "يجب الموافقة على الشروط وسياسة الخصوصية" });
-      return false;
+      return ["terms"];
     }
 
     setErrors({});
-    return true;
+    return [];
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setServerError(null);
 
-    if (!validate()) return;
+    track("login_submitted", { method: "password", mode });
+    const invalid = validate();
+    if (invalid.length > 0) {
+      // Field NAMES only — never a value.
+      track("login_failed", {
+        method: "password",
+        mode,
+        reason: "validation",
+        fields: invalid.join(","),
+      });
+      return;
+    }
 
     setIsSubmitting(true);
 
     try {
       if (mode === "login") {
         await login(email, password);
+        track("login_succeeded", { method: "password", mode });
         router.push(await resolveLanding());
       } else {
         const { needsVerification } = await register(
@@ -249,6 +268,11 @@ export function LoginForm() {
           // exists for.
           identityParam ? undefined : returnTo,
         );
+        track("login_succeeded", {
+          method: "password",
+          mode,
+          needs_verification: needsVerification,
+        });
         if (needsVerification) {
           setRegistrationSuccess(true);
         } else {
@@ -256,6 +280,13 @@ export function LoginForm() {
         }
       }
     } catch (err) {
+      track("login_failed", {
+        method: "password",
+        mode,
+        ...(err instanceof ApiClientError
+          ? { reason: "server", status: err.status, code: err.code }
+          : { reason: "unexpected" }),
+      });
       if (err instanceof ApiClientError) {
         setServerError(err.message);
       } else {
@@ -268,15 +299,25 @@ export function LoginForm() {
 
   const handleGoogleSignIn = async () => {
     setServerError(null);
+    track("login_submitted", { method: "google", mode });
 
     // In register mode the checkbox gates Google too (Google auto-creates the
     // account on first sign-in). The always-visible fine print under the button
     // covers the login-mode / first-time-Google path by action.
     if (mode === "register" && !agreedToTerms) {
       setErrors({ terms: "يجب الموافقة على الشروط وسياسة الخصوصية" });
+      track("login_failed", {
+        method: "google",
+        mode,
+        reason: "validation",
+        fields: "terms",
+      });
       return;
     }
 
+    // The page is about to navigate to Google; send now rather than trust the
+    // departure flush inside an in-app webview.
+    flushAnalytics();
     setIsGoogleLoading(true);
 
     const { error } = await supabase.auth.signInWithOAuth({
@@ -305,6 +346,7 @@ export function LoginForm() {
     // On success the browser navigates away to Google — this only runs on
     // failure (e.g. provider misconfigured), so re-enable the button.
     if (error) {
+      track("login_failed", { method: "google", mode, reason: "oauth_init" });
       setServerError("تعذّر تسجيل الدخول عبر Google. حاول مرة أخرى.");
       setIsGoogleLoading(false);
     }

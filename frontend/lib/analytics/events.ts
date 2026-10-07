@@ -101,7 +101,14 @@ export type AnalyticsEventName =
   /** Code accepted and the session is live. */
   | "otp_verified"
   /** Request or verify refused. Props: `reason` (invalid | rate_limited | error). */
-  | "otp_failed";
+  | "otp_failed"
+  // ---- login card (LoginForm) — did they tap, and what refused them? -----
+  /** Submit / Google tapped. Props: `method` (password | google), `mode`. */
+  | "login_submitted"
+  /** Password sign-in or signup accepted. Props: `method`, `mode`. */
+  | "login_succeeded"
+  /** Refused. Props: `method`, `mode`, `reason`, `status?`. */
+  | "login_failed";
 
 /**
  * The real conversion surfaces, so the funnel can tell them apart (§3). The

@@ -109,6 +109,12 @@ AUTH_EVENT_NAMES = frozenset(
         "otp_requested",  # «أرسل الرمز» accepted (always 200 — not proof of delivery)
         "otp_verified",   # code accepted, session issued
         "otp_failed",     # props.reason: invalid | rate_limited | network | ...
+        # Login card — "did they tap anything, and what refused them?"
+        # (an X → iOS Safari session reaching /login and leaving with zero auth
+        # calls was otherwise indistinguishable from a broken button).
+        "login_submitted",  # props.method: password | google, props.mode: login | register
+        "login_succeeded",  # password path only — Google's success lands authed elsewhere
+        "login_failed",     # props.method, props.reason, props.status
     }
 )
 
@@ -165,14 +171,21 @@ class ClientBuckets:
     """
 
     device_type: Optional[str]  # mobile | tablet | desktop
-    browser: Optional[str]      # chrome | safari | firefox | edge | samsung | other
+    # chrome | safari | firefox | edge | samsung | other — or an in-app webview
+    # (x_app | facebook_app | instagram_app | snapchat_app | tiktok_app |
+    # linkedin_app), which wins over the engine it is built on.
+    browser: Optional[str]
     os: Optional[str]           # ios | android | windows | macos | linux | other
 
 
 # Tablets FIRST: an Android tablet's UA contains "android" but not "mobile"
 # (Google's own rule), and an iPad is "ipad", not "iphone". Getting this order
 # wrong files every tablet under mobile.
-_TABLET_RE = re.compile(r"ipad|tablet|playbook|silk|kindle|android(?!.*mobile)")
+# `(?<![a-z])` keeps an app suffix like "TwitterAndroid" (which comes AFTER the
+# "Mobile" token) from reading as a tablet.
+_TABLET_RE = re.compile(
+    r"ipad|tablet|playbook|silk|kindle|(?<![a-z])android(?!.*mobile)"
+)
 _MOBILE_RE = re.compile(
     r"mobi|iphone|ipod|android|blackberry|iemobile|opera mini|windows phone"
 )
@@ -185,6 +198,20 @@ _BROWSER_PATTERNS = (
     ("firefox", re.compile(r"firefox|fxios")),
     ("chrome", re.compile(r"chrome|crios|chromium|crmo")),
     ("safari", re.compile(r"safari")),
+)
+
+# In-app browsers, checked BEFORE the client hints and the engine patterns: X on
+# Android is a Chromium WebView (brand hints say "chromium"), X on iOS a WKWebView
+# that may or may not say "safari". Sign-in behaves differently inside them
+# (Google refuses OAuth in embedded webviews), so they must not hide inside
+# chrome/safari/other. Each app appends its own token to the UA.
+_IN_APP_PATTERNS = (
+    ("x_app", re.compile(r"twitter|twitterandroid|\bx for iphone|\bx for ipad")),
+    ("instagram_app", re.compile(r"instagram")),
+    ("facebook_app", re.compile(r"fban/|fbav/|fb_iab|fbios")),
+    ("snapchat_app", re.compile(r"snapchat")),
+    ("tiktok_app", re.compile(r"bytedancewebview|musical_ly|tiktok")),
+    ("linkedin_app", re.compile(r"linkedinapp")),
 )
 
 # iOS before macOS ("iPad; CPU OS 13_2 like Mac OS X"), Android before Linux
@@ -264,7 +291,8 @@ def classify_client(
       (that is the whole reason plan §5.5 names it: one reliable boolean). The
       UA still supplies the *tablet* refinement, because a tablet reports
       ``?0`` and would otherwise be indistinguishable from a laptop.
-    * ``browser`` — ``Sec-CH-UA`` brands, else UA regex.
+    * ``browser`` — an in-app UA token first, then ``Sec-CH-UA`` brands, else
+      UA regex.
     * ``os`` — ``Sec-CH-UA-Platform``, else UA regex.
 
     Never raises: this runs on an anonymous beacon that must always answer 204.
@@ -283,8 +311,10 @@ def classify_client(
     else:
         device = ua_device
 
-    browser: Optional[str] = None
-    for name, needle in _BRAND_HINTS:
+    browser: Optional[str] = next(
+        (name for name, pattern in _IN_APP_PATTERNS if pattern.search(ua)), None
+    )
+    for name, needle in _BRAND_HINTS if browser is None else ():
         if needle in brands:
             browser = name
             break

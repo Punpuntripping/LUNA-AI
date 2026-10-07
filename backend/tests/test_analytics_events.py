@@ -678,11 +678,41 @@ def test_non_finite_numbers_are_dropped() -> None:
             "Firefox/121.0",
             ("desktop", "firefox", "linux"),
         ),
+        # In-app webviews win over the engine they run on.
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/"
+            "605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.48",
+            ("mobile", "x_app", "ios"),
+        ),
+        (
+            "Mozilla/5.0 (Linux; Android 14; SM-S911B; wv) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Version/4.0 Chrome/126.0.0.0 Mobile Safari/537.36 "
+            "TwitterAndroid",
+            ("mobile", "x_app", "android"),
+        ),
+        (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/"
+            "605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 330.0.0.0",
+            ("mobile", "instagram_app", "ios"),
+        ),
     ],
 )
 def test_classify_client_buckets(ua: str, expected: tuple) -> None:
     buckets = svc.classify_client(user_agent=ua)
     assert (buckets.device_type, buckets.browser, buckets.os) == expected
+
+
+def test_x_android_webview_beats_the_chromium_brand_hint() -> None:
+    """Android WebView sends Sec-CH-UA with "Chromium" — the in-app token must
+    still win, or every X-on-Android visit files under chrome."""
+    buckets = svc.classify_client(
+        user_agent="Mozilla/5.0 (Linux; Android 14; wv) Chrome/126.0.0.0 "
+        "Mobile Safari/537.36 TwitterAndroid",
+        ch_ua='"Chromium";v="126", "Android WebView";v="126"',
+        ch_ua_mobile="?1",
+        ch_ua_platform='"Android"',
+    )
+    assert buckets.browser == "x_app"
 
 
 def test_an_unclassifiable_caller_gets_nulls_not_desktop() -> None:

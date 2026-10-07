@@ -11,6 +11,7 @@ import { DEFAULT_NEXT, safeNext } from "@/lib/safe-next";
 import { googleGateCopy } from "@/lib/library/gate-copy";
 import { trackGateCtaClick } from "@/components/analytics/useGateImpression";
 import type { GateKind } from "@/lib/analytics/events";
+import { flushAnalytics, track } from "@/lib/analytics/client";
 
 // Google "G" mark — multicolor official logo. Owned here (not LoginForm) so
 // every conversion surface renders the same mark.
@@ -85,6 +86,8 @@ export function GoogleQuickSignup({
     setError(null);
     // Tracked before navigation, never awaited — same rule as every gate CTA.
     trackGateCtaClick(gateKind, returnTo, "google");
+    // About to navigate to Google — send now, not on the departure flush.
+    flushAnalytics();
     setIsLoading(true);
 
     const next = safeNext(returnTo);
@@ -106,6 +109,11 @@ export function GoogleQuickSignup({
     });
 
     if (oauthError) {
+      track("login_failed", {
+        method: "google",
+        reason: "oauth_init",
+        gate_kind: gateKind,
+      });
       setError(googleGateCopy.error);
       setIsLoading(false);
     }
