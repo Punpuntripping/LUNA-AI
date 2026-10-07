@@ -334,6 +334,26 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # 6d. APScheduler — daily X Conversions API retry (migration 172, X7).
+    #     Re-sends SignUp / first-Purchase rows whose *_sent_at is still NULL
+    #     with the original event time; X dedupes on conversion_id. A no-op
+    #     while X_CONVERSIONS_ENABLED is false.
+    async def _run_x_conversions_retry() -> None:
+        try:
+            from backend.app.services.x_conversions_service import retry_pending
+
+            stats = await retry_pending(app.state.supabase)
+            logger.info("X conversions retry complete: %s", stats)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("X conversions retry failed: %s", e)
+
+    scheduler.add_job(
+        _run_x_conversions_retry,
+        trigger=CronTrigger(hour=4, minute=15),  # daily at 04:15 UTC
+        id="x_conversions_retry",
+        replace_existing=True,
+    )
+
     # 7. APScheduler — one-shot startup catch-up for the upload reconciler. The
     #    03:15 cron silently skips a day whenever the process restarts across
     #    it; the reconciler is idempotent and cheap, so run it once shortly
@@ -395,7 +415,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler = scheduler
     logger.info(
         "Scheduler started — PDF cleanup 03:00, upload reconciler 03:15, "
-        "summary sweep 03:30, account purge 03:45, analytics purge 04:00 UTC%s, + one-shot "
+        "summary sweep 03:30, account purge 03:45, analytics purge 04:00, X conversions retry 04:15 UTC%s, + one-shot "
         "upload-reconciler, blog-job & account-purge catch-up on boot",
         ", subscription renewals 03:30" if settings.SUBSCRIPTION_AUTO_RENEWAL_ENABLED else "",
     )
@@ -783,6 +803,17 @@ def create_app() -> FastAPI:
         email_prefs_router,
         tags=["email-prefs"],
     )
+
+    # Signup attribution + X Conversions API (migration 172). The public route
+    # is JWT-authed and always answers 200; the internal one runs the retry by
+    # hand (X-Webhook-Secret). Both routers declare their own prefixes.
+    from backend.app.api.attribution import (
+        internal_router as attribution_internal_router,
+        router as attribution_router,
+    )
+
+    application.include_router(attribution_router)
+    application.include_router(attribution_internal_router)
 
     # Preferences + Templates router
     from backend.app.api.preferences import router as preferences_router

@@ -51,6 +51,8 @@
 import { useEffect, useRef } from "react";
 import { track } from "@/lib/analytics/client";
 import { readGateAttribution } from "@/components/analytics/signup-attribution";
+import { readLandingAttribution } from "@/components/analytics/landing-attribution";
+import { api } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
 
 /** How new an account may be and still count as "just created". */
@@ -90,6 +92,17 @@ export function SignupCompletedTracker(): null {
     }
 
     settledRef.current = true;
+
+    // Signup source → backend (X3). Outside the per-tab latch on purpose: the
+    // server is write-once and re-checks freshness/confirmation itself, and it
+    // falls back to the signUp metadata when this tab has no stash (email
+    // confirmed in another browser). Fire-and-forget — never visible.
+    try {
+      const source = readLandingAttribution();
+      void api.post("/attribution/signup", source).catch(() => {});
+    } catch {
+      // T9.
+    }
 
     try {
       if (window.sessionStorage.getItem(FIRED_STORAGE_KEY)) return;

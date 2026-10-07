@@ -132,7 +132,11 @@ import httpx
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException, MSG_SERVICE_UNAVAILABLE
-from backend.app.services import payment_method_service, subscription_service
+from backend.app.services import (
+    payment_method_service,
+    subscription_service,
+    x_conversions_service,
+)
 from backend.app.services.audit_service import write_audit_log
 from shared.config import get_settings
 from shared.db.run import run_db
@@ -2146,6 +2150,11 @@ async def _mark_paid_and_grant(supabase: SupabaseClient, row: dict, fetched: dic
     # the rules). Self-claiming (at-most-once across verify/webhook races) and
     # never raises — a lost email must not fail a payment.
     await send_payment_receipt(supabase, updated)
+
+    # X Conversions API — Purchase for an X-ad signup (migration 172, X6).
+    # FIRST purchase only (claim_x_first_purchase), renewals never; the send is
+    # a background task and nothing here waits on X. Never raises.
+    await x_conversions_service.on_payment_paid(supabase, state)
 
     return {
         "status": "paid",

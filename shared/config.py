@@ -269,6 +269,25 @@ class Settings(BaseSettings):
     # Pay and /payments/applepay/session refuses, even on capable Safari.
     MOYASAR_APPLEPAY_ENABLED: bool = False
 
+    # ── X (Twitter) Conversions API — SignUp + first Purchase, twclid ONLY ──
+    # marketing/marketing_content/X/ads/request_to_luna_x_conversions.md. The
+    # only thing about a user ever sent to X is its own click id (twclid): no
+    # email/phone/IP/UA, no price. OFF by default; while off, attribution is
+    # still RECORDED (migration 172) and the daily retry delivers it once on.
+    # Env var name == field name (no validation_alias).
+    X_CONVERSIONS_ENABLED: bool = False
+    X_ADS_API_VERSION: str = "12"
+    X_ADS_CONSUMER_KEY: Optional[str] = None
+    X_ADS_CONSUMER_SECRET: Optional[str] = None
+    X_ADS_ACCESS_TOKEN: Optional[str] = None
+    X_ADS_ACCESS_SECRET: Optional[str] = None
+    X_PIXEL_ID: Optional[str] = None
+    X_EVENT_ID_SIGNUP: Optional[str] = None
+    X_EVENT_ID_PURCHASE: Optional[str] = None
+    # X8 engaged visit (landing visible ≥3 s). Unset → visits are never sent;
+    # signup/purchase are unaffected.
+    X_EVENT_ID_VISIT: Optional[str] = None
+
     # ── Auto-renewal (التجديد التلقائي) — pro/max, MASTER KILL-SWITCH ───────
     # `.claude/plans/subscription_auto_renewal.md`. OFF by default and it must
     # STAY off until Moyasar confirms, in writing, all four items in that plan's

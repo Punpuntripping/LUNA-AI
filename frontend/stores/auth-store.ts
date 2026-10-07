@@ -3,6 +3,7 @@ import type { User } from "@/types";
 import { setTokens, clearTokens, getAccessToken, authApi, ApiClientError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { usePreferencesStore } from "@/stores/preferences-store";
+import { landingAttributionSignupData } from "@/components/analytics/landing-attribution";
 
 // Proactive refresh: refresh 5 minutes before token expiry
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -245,7 +246,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       email,
       password,
       options: {
-        data: { full_name_ar, terms_version, marketing_opt_in },
+        // Landing source (utm + X's `twclid`) rides along too, so a
+        // confirmation link opened later or in another browser still knows it
+        // (request_to_luna_x_conversions.md X2; read back by the backend in
+        // POST /attribution/signup). Only `twclid` is ever sent on to X.
+        data: {
+          full_name_ar,
+          terms_version,
+          marketing_opt_in,
+          ...landingAttributionSignupData(),
+        },
         emailRedirectTo: `${window.location.origin}/auth/callback${
           returnTo ? `?next=${encodeURIComponent(returnTo)}` : ""
         }`,

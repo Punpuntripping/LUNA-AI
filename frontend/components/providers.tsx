@@ -9,6 +9,7 @@ import { AuthGuard } from "@/components/auth/AuthGuard";
 import { AuthSync } from "@/components/auth/AuthSync";
 import { AnalyticsTracker } from "@/components/analytics/AnalyticsTracker";
 import { SignupCompletedTracker } from "@/components/analytics/SignupCompletedTracker";
+import { XVisitTracker } from "@/components/analytics/XVisitTracker";
 import { ApiClientError } from "@/lib/api";
 import { ApiEnvBadge } from "@/components/dev/ApiEnvBadge";
 
@@ -56,6 +57,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
               same reason the tracker does: a gate CTA lands the new account
               back on the PUBLIC page it came from (`?next=`), which AuthGuard
               never wraps. Renders nothing. */}
+          {/* Landing source capture (utm + X's `twclid`) and the X8 engaged-
+              visit timer (3 s visible). Before SignupCompletedTracker so the
+              stash exists by the time a signup reads it. Renders nothing. */}
+          <XVisitTracker />
           <SignupCompletedTracker />
           <AuthGuard>{children}</AuthGuard>
           <ReactQueryDevtools initialIsOpen={false} />
