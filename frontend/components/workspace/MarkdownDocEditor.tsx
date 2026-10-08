@@ -83,6 +83,12 @@ interface MarkdownDocEditorProps {
    */
   copyReferences?: Reference[];
   /**
+   * When true the action bar renders the «PDF» export menu (PDF / Word),
+   * exporting the live title + the same payload نسخ copies. agent_writing
+   * only — notes/templates leave it off (plan: document_export_pdf_word.md).
+   */
+  exportable?: boolean;
+  /**
    * Invoked when ``onSave`` rejects. Lets the host show its own banner
    * (e.g. a 409 conflict). The error is passed through untouched.
    */
@@ -141,6 +147,7 @@ export function MarkdownDocEditor({
   feedbackPending,
   onBodyCitationClick,
   copyReferences,
+  exportable = false,
   onSaveError,
 }: MarkdownDocEditorProps) {
   const [title, setTitle] = useState(initialTitle);
@@ -354,6 +361,7 @@ export function MarkdownDocEditor({
       floating
       // LIVE ``content`` (not the last saved body), so an edit copies at once.
       copyText={appendReferencesForCopy(content, copyReferences ?? [])}
+      exportTitle={exportable ? title : undefined}
       mode={mode}
       onModeChange={setMode}
       editDisabled={readOnly}

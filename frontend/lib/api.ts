@@ -1490,3 +1490,71 @@ export const myLibraryApi = {
     return api.delete<void>(`/library/mine/save?${qs.toString()}`);
   },
 };
+
+// -----------------------------------------------
+// Document export (PDF / Word) — plan: document_export_pdf_word.md
+// -----------------------------------------------
+
+export type ExportFormat = "pdf" | "docx";
+
+const EXPORT_FALLBACK_ERROR = "تعذّر تنزيل الملف";
+
+/**
+ * `POST /export` → the rendered file as a Blob. AUTHED (bearer + one 401
+ * refresh-and-retry, same as `apiFetch`) but NOT through `apiFetch`, which
+ * parses JSON — the success body is binary.
+ *
+ * Errors throw `ApiClientError` whose message is the server's Arabic `detail`
+ * when it is a string (422/413/503/429), else «تعذّر تنزيل الملف». FastAPI's
+ * own 422 carries `detail` as a list of validation objects — never surfaced.
+ */
+export async function exportDocument(
+  format: ExportFormat,
+  title: string,
+  markdown: string,
+): Promise<Blob> {
+  const url = `${API_BASE}${API_PREFIX}/export`;
+  const body = JSON.stringify({ format, title, markdown });
+  const doFetch = () => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+    return fetch(url, { method: "POST", headers, body });
+  };
+
+  let res = await doFetch();
+  if (res.status === 401 && accessToken) {
+    try {
+      await refreshAccessToken();
+    } catch {
+      clearTokens();
+      ejectToLogin();
+      throw new ApiClientError(401, "unauthorized", "Session expired");
+    }
+    res = await doFetch();
+  }
+
+  if (!res.ok) {
+    let message = EXPORT_FALLBACK_ERROR;
+    let code = "unknown";
+    try {
+      const errorBody = (await res.json()) as {
+        detail?: unknown;
+        code?: unknown;
+        error?: { message?: unknown; code?: unknown };
+      };
+      const candidate = errorBody.error?.message ?? errorBody.detail;
+      if (typeof candidate === "string" && candidate.trim()) {
+        message = candidate;
+      }
+      const rawCode = errorBody.error?.code ?? errorBody.code;
+      if (typeof rawCode === "string") code = rawCode;
+    } catch {
+      // Non-JSON error body — keep the Arabic fallback.
+    }
+    throw new ApiClientError(res.status, code, message);
+  }
+
+  return res.blob();
+}

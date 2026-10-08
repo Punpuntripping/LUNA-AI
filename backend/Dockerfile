@@ -20,6 +20,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH"
 WORKDIR /app
+# Document export (document_export_pdf_word.md): WeasyPrint renders the PDF and
+# loads pango/harfbuzz through cffi at import time — runtime libs only, no -dev
+# packages. fonts-dejavu-core is the Latin/monospace fallback; the Arabic face
+# (IBM Plex Sans Arabic) ships with the app under backend/app/assets/fonts/.
+# Word export needs nothing here: pypandoc_binary bundles pandoc in the venv.
+# Without these libs the app still boots — export alone answers 503.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fonts-dejavu-core && \
+    rm -rf /var/lib/apt/lists/*
+# appuser is a --system user with no writable home, so fontconfig would log
+# "No writable cache directories" on every PDF render. Give it a cache in /tmp.
+ENV XDG_CACHE_HOME=/tmp/.cache
 COPY --from=builder /opt/venv /opt/venv
 COPY shared/ /app/shared/
 COPY agents/ /app/agents/

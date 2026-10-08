@@ -138,6 +138,8 @@ export function AgentSearchViewer({
       <WorkspaceItemActionBar
         floating
         copyText={copyContent}
+        // «PDF» export (PDF / Word) of the same payload نسخ copies.
+        exportTitle={item.title}
         onShare={() => setShareOpen(true)}
         onSaveBlog={() => setSaveBlogOpen(true)}
         publishDisabledHint={isDemo ? DEMO_DISABLED_HINT : undefined}

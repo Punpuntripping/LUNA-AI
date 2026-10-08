@@ -313,6 +313,8 @@ export function NoteEditor({ item }: NoteEditorProps) {
         onBodyCitationClick={isAgentOutput ? handleBodyCitationClick : undefined}
         // agent_writing only: نسخ appends «المراجع» (notes have none).
         copyReferences={isShareable ? references : undefined}
+        // agent_writing only: «PDF» export (PDF / Word) of the same payload.
+        exportable={isAgentOutput}
       />
       {isShareable && (
         <ShareArtifactDialog

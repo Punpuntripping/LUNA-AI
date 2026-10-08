@@ -875,6 +875,17 @@ def create_app() -> FastAPI:
         tags=["templates"],
     )
 
+    # Document export (PDF / Word) — document_export_pdf_word.md. The renderers
+    # (WeasyPrint, pandoc) are imported lazily inside the service, so a missing
+    # native lib breaks export only (503), never this import.
+    from backend.app.api.export import router as export_router
+
+    application.include_router(
+        export_router,
+        prefix="/api/v1",
+        tags=["export"],
+    )
+
     # Internal webhooks — invoked by Supabase database triggers, NOT end users.
     # Auth via X-Webhook-Secret header. Lives under /internal/ to keep it
     # visually separate from /api/v1/.

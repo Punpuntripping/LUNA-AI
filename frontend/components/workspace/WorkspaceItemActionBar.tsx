@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CopyMenu } from "@/components/common/CopyMenu";
+import { ExportMenu } from "@/components/common/ExportMenu";
 import {
   Tooltip,
   TooltipContent,
@@ -33,6 +34,13 @@ interface WorkspaceItemActionBarProps {
    * text for «النسخ لناجز» (see ``CopyMenu``).
    */
   copyText: string;
+  /**
+   * When set, renders the «PDF» export menu (PDF / Word) next to نسخ, exporting
+   * the SAME ``copyText``. This string is the document title / file name.
+   * Pass only for agent_search and agent_writing (plan:
+   * document_export_pdf_word.md) — never notes, templates or references.
+   */
+  exportTitle?: string;
   /**
    * Current view mode. Pass together with ``onModeChange`` to render the
    * معاينة/تحرير toggle (editable kinds only — agent_writing / note /
@@ -83,8 +91,8 @@ interface WorkspaceItemActionBarProps {
 /**
  * Unified action bar for the chat-pane workspace viewers. One standard:
  *
- * - **agent_writing** (تحليل قانوني): معاينة/تحرير · مشاركة · نسخ · 👍 · 👎
- * - **agent_search**  (بحث قانوني): مشاركة · نسخ · 👍 · 👎  (no toggle — read-only)
+ * - **agent_writing** (تحليل قانوني): معاينة/تحرير · مشاركة · نسخ · PDF · 👍 · 👎
+ * - **agent_search**  (بحث قانوني): مشاركة · نسخ · PDF · 👍 · 👎  (no toggle — read-only)
  * - **note / templates**: معاينة/تحرير · نسخ
  * - **convo_context / references**: نسخ only
  *
@@ -94,6 +102,7 @@ interface WorkspaceItemActionBarProps {
  */
 export function WorkspaceItemActionBar({
   copyText,
+  exportTitle,
   mode,
   onModeChange,
   editDisabled = false,
@@ -288,6 +297,11 @@ export function WorkspaceItemActionBar({
             text for Najiz fields that take no formatting). A blank
             ``copyText`` disables the trigger inside CopyMenu. */}
         <CopyMenu variant="bar" text={copyText} />
+
+        {/* «PDF» → PDF / Word download of the same payload (opt-in). */}
+        {exportTitle !== undefined && (
+          <ExportMenu text={copyText} title={exportTitle} />
+        )}
 
         {showFeedback && (
           <>

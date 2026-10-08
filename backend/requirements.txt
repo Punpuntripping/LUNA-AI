@@ -77,3 +77,14 @@ mistralai>=1.5.0,<2.0.0
 # pushes from backend/app/services/push_service.py. Pulls http-ece + py-vapid;
 # cryptography>=47 is already satisfied by the lock (49.0.0).
 pywebpush==2.5.0
+
+# Document export — PDF / Word download (document_export_pdf_word.md).
+#   - markdown-it-py: the ONE markdown→HTML converter for both formats. Already in
+#     the lock transitively (rich); declared here because export imports it directly.
+#   - weasyprint: HTML→PDF. Needs pango/harfbuzz at RUNTIME (apt, backend/Dockerfile);
+#     imported lazily, so a box without them still boots and export answers 503.
+#   - pypandoc_binary: bundles the pandoc binary (HTML→docx) — no apt package needed.
+#     Also used by backend/scripts/build_export_reference_docx.py.
+markdown-it-py>=4.0,<5.0
+weasyprint==70.0
+pypandoc_binary==1.17
