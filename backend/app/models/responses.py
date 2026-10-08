@@ -253,6 +253,11 @@ class MessageListResponse(BaseModel):
     """GET /api/v1/conversations/{conversation_id}/messages"""
     messages: list[MessageResponse]
     has_more: bool
+    # True while this conversation has a live run in this process (snapshotted
+    # BEFORE the messages read). An empty assistant placeholder with
+    # run_active=False has nothing left to fill it — the run died (restart /
+    # deploy) — so the client fails it instead of showing «ريحان يفكّر».
+    run_active: bool = False
 
 
 # ── Documents ─────────────────────────────────────────
@@ -356,15 +361,20 @@ class MarketingEmailResponse(BaseModel):
 # ── Templates (قوالبي — per-user markdown templates) ────
 
 class TemplateResponse(BaseModel):
-    """Single per-user markdown template (user_templates row)."""
+    """One template: a قالب خاص (user_templates row, ``scope='user'``) or a
+    قالب عام (repo file, ``scope='system'`` — read-only, no user_id/timestamps)."""
     template_id: str
-    user_id: str
+    user_id: Optional[str] = None
     title: str
     content_md: str = ""
     created_by: str = "user"
     metadata: dict = {}
-    created_at: datetime
-    updated_at: datetime
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    scope: Literal["user", "system"] = "user"
+    subtype: Optional[str] = None
+    court: Optional[str] = None
+    sources: list[str] = []
 
 
 class TemplateListResponse(BaseModel):

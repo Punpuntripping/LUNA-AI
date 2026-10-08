@@ -42,9 +42,10 @@ from agents.writer.models import (
     WriterStyle,
     WriterSubtype,
 )
+from agents.writer.system_templates import get_system_template
 from backend.app.services.preferences_service import get_detail_level
 from backend.app.services.writer_planner_context import (
-    load_user_template_titles,
+    load_template_catalog,
     load_writer_planner_context,
 )
 
@@ -231,13 +232,14 @@ async def _build_writer_planner_deps_from_input(
         conversation_id=major_input.conversation_id,
     )
 
-    # قوالبي titles — passive context the planner may draft FROM (titles only;
-    # the runner fetches the chosen body later). Never raises (returns []).
-    user_templates = await load_user_template_titles(
+    # Template catalog — the user's own قوالب (خاص) + our general ones (عام) the
+    # user has not hidden. Passive context (titles + labels only; the runner
+    # fetches the chosen body later). Never raises (returns []).
+    user_templates = await load_template_catalog(
         supabase=supabase,
         user_id=major_input.user_id,
     )
-    # وضع السرية: the planner reads these titles in its <my_templates> block —
+    # وضع السرية: the planner reads these titles in its <templates_catalog> block —
     # encode identifiers/emails in each so the planner LLM never sees raw PII.
     # The TPL-{n} alias / template_id the planner selects by is untouched, so
     # resolution is unaffected; the body is fetched + masked later at the writer
@@ -266,16 +268,37 @@ async def _build_writer_planner_deps_from_input(
     )
 
 
+def _sole_system_template_for(deps: WriterPlannerDeps, subtype: str) -> str | None:
+    """The id of the ONLY visible system template for ``subtype``, else None."""
+    ids = [
+        t.template_id for t in deps.user_templates
+        if getattr(t, "scope", "user") == "system" and getattr(t, "subtype", None) == subtype
+    ]
+    return ids[0] if len(ids) == 1 else None
+
+
 async def _fetch_chosen_template(
     deps: WriterPlannerDeps,
     template_id: str,
 ) -> "TemplateRef | None":
-    """Fetch a قوالبي row's body + title → TemplateRef (scoped to deps.user_id).
+    """Fetch a template's body + labels → TemplateRef.
 
-    Returns None on any miss / error — the executor's prompt covers the
-    no-template path, so a failed fetch degrades to "draft without a template"
-    rather than failing the turn.
+    A قالب عام (system template id) comes from the repo file; anything else is a
+    قالب خاص row scoped to deps.user_id. Returns None on any miss / error — the
+    executor's prompt covers the no-template path, so a failed fetch degrades to
+    "draft without a template" rather than failing the turn.
     """
+    system = get_system_template(template_id)
+    if system is not None:
+        return TemplateRef(
+            template_id=system.template_id,
+            template_type=system.subtype,
+            title=system.title,
+            body_md=system.body_md,
+            scope="system",
+            court=system.court,
+            sources=list(system.sources),
+        )
     try:
         res = (
             deps.supabase
@@ -579,7 +602,7 @@ async def handle_writer_planner_turn(
             len(selected_uuids), len(decision.selected_wis),
         )
 
-        # --- 5b. Resolve chosen قوالبي template (A2: attached template wins) --
+        # --- 5b. Resolve the chosen template (A2: attached template wins) -----
         # When the user attached a role='template' item THIS turn it rides in
         # analyzed_items and takes precedence — ignore any chosen_template.
         chosen_template_ref: TemplateRef | None = None
@@ -607,6 +630,17 @@ async def handle_writer_planner_turn(
                         "returned nothing — drafting without a library template",
                         decision.chosen_template, tpl_id,
                     )
+        elif decision.edit_mode == "fresh":
+            # Safety net: the planner named no template, but exactly ONE visible
+            # قالب عام exists for this subtype (e.g. memo/default) — use it. When
+            # several fit (one per court) only the planner can choose.
+            only = _sole_system_template_for(deps, decision.subtype)
+            if only is not None:
+                chosen_template_ref = await _fetch_chosen_template(deps, only)
+                logger.info(
+                    "writer_planner: no chosen_template — defaulting to the sole "
+                    "system template for subtype=%s", decision.subtype,
+                )
 
         # --- 6. Build WriterPackage from decision ------------------------
         package = await _build_package_from_decision(
@@ -680,7 +714,7 @@ async def handle_writer_planner_turn(
             # The draft completed but persistence failed. Surface a status event
             # + a chat note instead of raising (which would lose the work behind
             # a generic error token). The early return cleanly skips the
-            # template_save_offer block below (it reads writer_output).
+            # templates_used event below (it reads writer_output).
             logger.error("writer publish failed", exc_info=True)
             _logfire.error(
                 "writer.publish_failed",
@@ -713,44 +747,16 @@ async def handle_writer_planner_turn(
             duration,
         )
 
-        # Non-blocking save-as-template offer (Wave E): after a SUCCESSFUL
-        # publish, surface an «احفظ كقالب؟» chip in chat. Decided by the planner
-        # (offer_save + offer_item_id WI-alias); emitted here as an SSE event the
-        # frontend renders on the assistant message and POSTs to /templates/ingest.
+        # «القوالب المستخدمة في الكتابة» — the templates the draft was built on,
+        # as recorded on the WI (metadata.templates_used). Always emitted on a
+        # fresh draft so the chat can say «لم يُستخدم قالب» when the list is empty.
         sse_events = list(writer_output.sse_events or [])
-        if decision.offer_save and decision.offer_item_id:
-            offer_uuid = deps.resolve_wi_alias(decision.offer_item_id)
-            if offer_uuid:
-                # title_hint: prefer this-turn attachments, fall back to
-                # prior_artifacts (the attachment survives a pause/resume there,
-                # since the resume turn carries no fresh attached_items).
-                title_hint = ""
-                for snap in deps.attached_items:
-                    if getattr(snap, "item_id", "") == offer_uuid:
-                        title_hint = getattr(snap, "title", "") or ""
-                        break
-                if not title_hint:
-                    for art in deps.prior_artifacts:
-                        if getattr(art, "item_id", "") == offer_uuid:
-                            title_hint = getattr(art, "title", "") or ""
-                            break
-                sse_events.append(
-                    {
-                        "type": "template_save_offer",
-                        "item_id": offer_uuid,
-                        "title_hint": title_hint,
-                    }
-                )
-                logger.info(
-                    "writer_planner: emitted template_save_offer for item=%s",
-                    offer_uuid,
-                )
-            else:
-                logger.warning(
-                    "writer_planner: offer_save set but offer_item_id %r "
-                    "unresolvable — skipping chip",
-                    decision.offer_item_id,
-                )
+        if decision.edit_mode == "fresh":
+            sse_events.append({
+                "type": "templates_used",
+                "item_id": writer_output.item_id,
+                "items": list(writer_output.metadata.get("templates_used") or []),
+            })
 
         return WriterPlannerTurnResult(
             kind="completed",

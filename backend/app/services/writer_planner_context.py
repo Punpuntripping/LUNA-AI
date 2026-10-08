@@ -154,6 +154,12 @@ class UserTemplateTitle:
 
     template_id: str
     title: str
+    # 'user' = قالب خاص (user_templates row); 'system' = قالب عام (repo file,
+    # agents/writer/system_templates.py). subtype/court come from a system
+    # template's front-matter; user rows carry neither.
+    scope: str = "user"
+    subtype: str | None = None
+    court: str | None = None
 
 
 async def load_user_template_titles(
@@ -178,6 +184,7 @@ async def load_user_template_titles(
             .select("template_id, title")
             .eq("user_id", user_id)
             .is_("deleted_at", None)
+            .neq("content_md", "")  # blank قوالب are noise to the planner
             .order("updated_at", desc=True)
             .limit(max(int(limit), 1))
             .execute()
@@ -204,9 +211,36 @@ async def load_user_template_titles(
     return out
 
 
+async def load_template_catalog(
+    supabase: Any,
+    user_id: str,
+) -> list[UserTemplateTitle]:
+    """Everything the writer planner may draft FROM: the user's own قوالب first,
+    then the system templates this user has not hidden. Never raises."""
+    from agents.writer.system_templates import visible_system_templates
+
+    own = await load_user_template_titles(supabase, user_id)
+    try:
+        system = visible_system_templates(supabase, user_id)
+    except Exception as exc:  # noqa: BLE001 — a broken file must not kill the turn
+        logger.warning("writer_planner_context: system templates load failed (%s)", exc)
+        system = []
+    return own + [
+        UserTemplateTitle(
+            template_id=t.template_id,
+            title=t.title,
+            scope="system",
+            subtype=t.subtype,
+            court=t.court,
+        )
+        for t in system
+    ]
+
+
 __all__ = [
     "ArtifactSummaryView",
     "load_writer_planner_context",
     "UserTemplateTitle",
     "load_user_template_titles",
+    "load_template_catalog",
 ]

@@ -21,12 +21,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from supabase import Client as SupabaseClient
 
 from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.services.case_service import get_user_id
+
+if TYPE_CHECKING:  # pragma: no cover
+    from agents.writer.system_templates import SystemTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +397,83 @@ def delete_template(
         )
 
 
+# ============================================
+# SYSTEM TEMPLATES (قالب عام) — repo files, read-only, hideable per user
+# ============================================
+
+SYSTEM_READ_ONLY_AR = "هذا قالب عام للقراءة فقط — انسخه إلى قوالبي لتعديله"
+
+
+def system_template_row(t: "SystemTemplate") -> dict:
+    """A system template shaped like a user_templates row (+ scope fields)."""
+    return {
+        "template_id": t.template_id,
+        "user_id": None,
+        "title": t.title,
+        "content_md": t.body_md,
+        "created_by": "system",
+        "metadata": {},
+        "created_at": None,
+        "updated_at": None,
+        "scope": "system",
+        "subtype": t.subtype,
+        "court": t.court,
+        "sources": list(t.sources),
+    }
+
+
+def list_system_templates(
+    supabase: SupabaseClient,
+    auth_id: str,
+    query: Optional[str] = None,
+) -> list[dict]:
+    """System templates this user has not hidden; ``query`` = plain substring
+    match on title + body (they're not in the BM25 index — a handful of files)."""
+    from agents.writer.system_templates import visible_system_templates
+
+    user_id = get_user_id(supabase, auth_id)
+    rows = visible_system_templates(supabase, user_id)
+    if query:
+        q = query.strip()
+        rows = [t for t in rows if q in t.title or q in t.body_md]
+    return [system_template_row(t) for t in rows]
+
+
+def get_system_template_row(template_id: str) -> Optional[dict]:
+    """The system template with this id (hidden or not — old drafts link to it)."""
+    from agents.writer.system_templates import get_system_template
+
+    t = get_system_template(template_id)
+    return system_template_row(t) if t else None
+
+
+def hide_system_template(
+    supabase: SupabaseClient,
+    auth_id: str,
+    template_id: str,
+) -> None:
+    """"Delete" a قالب عام for this user = add it to their hide list (idempotent)."""
+    user_id = get_user_id(supabase, auth_id)
+    try:
+        supabase.table("user_hidden_templates").upsert(
+            {"user_id": user_id, "template_id": template_id},
+            on_conflict="user_id,template_id",
+        ).execute()
+    except Exception as e:
+        logger.exception("Error hiding system template: %s", e)
+        raise LunaHTTPException(
+            status_code=500,
+            code=ErrorCode.TEMPLATE_FAILED,
+            detail="حدث خطأ أثناء حذف القالب",
+        )
+
+
 __all__ = [
+    "SYSTEM_READ_ONLY_AR",
+    "get_system_template_row",
+    "hide_system_template",
+    "list_system_templates",
+    "system_template_row",
     "list_templates",
     "get_template",
     "create_template",

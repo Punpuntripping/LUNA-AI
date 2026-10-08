@@ -30,6 +30,7 @@ WriterSubtype = Literal[
     "defense_brief",    # مذكّرة دفاع
     "letter",           # خطاب رسمي
     "summary",          # ملخّص (e.g. summarizing an attachment)
+    "statement_of_claim",  # صحيفة دعوى
 ]
 
 
@@ -196,6 +197,9 @@ class WriterInput:
     # dicts — ALL package roles, templates included (research_items drops
     # them). The publisher's WI-alias guard resolves leaked aliases by kind.
     alias_items: list[dict] = field(default_factory=list)
+    # TemplateRef.used_entry() of every template the draft was built on —
+    # stored on the WI as metadata.templates_used ([] = none used).
+    templates_used: list[dict] = field(default_factory=list)
 
 
 class WriterOutput(BaseModel):
@@ -345,6 +349,28 @@ class TemplateRef(BaseModel):
         default=None,
         description="Optional similarity score (telemetry only); None for قوالبي picks.",
     )
+    scope: Literal["user", "system"] = Field(
+        default="user",
+        description="'user' = قالب خاص (user_templates row); 'system' = قالب عام (repo file).",
+    )
+    court: str | None = Field(
+        default=None, description="System template front-matter `court`, if any."
+    )
+    sources: list[str] = Field(
+        default_factory=list,
+        description="System template front-matter `sources` (blog URLs it draws on).",
+    )
+
+    def used_entry(self) -> dict:
+        """The ``templates_used`` record stored on the draft WI + assistant message."""
+        return {
+            "template_id": self.template_id,
+            "title": self.title,
+            "scope": self.scope,
+            "subtype": self.template_type,
+            "court": self.court,
+            "sources": list(self.sources),
+        }
 
 
 class WriterStyle(BaseModel):
@@ -512,6 +538,7 @@ def _from_package(
         detail_level=package.style.detail_level,
         tone=package.style.tone,
         alias_items=alias_items,
+        templates_used=[t.used_entry() for t in package.templates],
     )
 
 

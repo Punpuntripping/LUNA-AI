@@ -112,11 +112,12 @@ class PlannerDecision(BaseModel):
     chosen_template: str | None = Field(
         default=None,
         description=(
-            "A قوالبي template to draft FROM, as a ``TPL-{n}`` alias (e.g. "
-            '"TPL-2") drawn from the <my_templates> block — never a raw UUID. '
-            "None when no library template applies (the user attached their own "
-            "role='template' item, or no قوالب fit). The runner resolves the "
-            "alias → template_id and fetches the body into the WriterPackage."
+            "The template to draft FROM, as a ``TPL-{n}`` alias (e.g. "
+            '"TPL-2") drawn from the <templates_catalog> block — either a قالب '
+            "خاص (the user's own) or a قالب عام (ours). Never a raw UUID. None "
+            "when no template fits or the user attached their own role='template' "
+            "item. The runner resolves the alias and fetches the body; it also "
+            "records the template on the draft so the user sees which was used."
         ),
     )
     aborted: bool = Field(
@@ -130,24 +131,6 @@ class PlannerDecision(BaseModel):
             "the deep_search planner's aborted path. On a fresh dispatch (no "
             "router to hand back to) it surfaces the rationale to chat instead. "
             "Either way the executor is never invoked."
-        ),
-    )
-    offer_save: bool = Field(
-        default=False,
-        description=(
-            "Set True to offer the user (non-blocking) to save an attached "
-            "document as a reusable قوالبي template. Surfaces an «احفظ كقالب؟» "
-            "chip in chat AFTER the draft publishes — it NEVER pauses. Only set "
-            "when a document attached THIS turn looks reusable AND the user "
-            "did not already ask to save it."
-        ),
-    )
-    offer_item_id: str | None = Field(
-        default=None,
-        description=(
-            "The ``WI-{seq}`` alias of the attached item to offer for saving "
-            "(required when offer_save=True). The runner resolves it to the "
-            "workspace_item UUID it puts in the template_save_offer SSE event."
         ),
     )
     rationale: str = Field(
@@ -165,7 +148,6 @@ class PlannerDecision(BaseModel):
             "selected_wis": list(self.selected_wis),
             "chosen_template": self.chosen_template,
             "aborted": self.aborted,
-            "offer_save": self.offer_save,
             "intent_ar_chars": len(self.intent_ar or ""),
             "parties_count": len(self.parties),
         }

@@ -53,6 +53,14 @@ language or a bilingual document — in that case follow the user's request.
 - If the user asked for a memo, follow the IRAC or CRAC pattern according to the
   nature of the request.
 - Do not include the legal disclaimer inside the document -- it is appended programmatically.
+- If `<templates>` holds a template, it is the document's **skeleton**: keep its
+  headings, order and fixed wording, and fill its `[…]` placeholders from the
+  package. A placeholder nobody gave a value for stays as-is (`[رقم الهوية]`) —
+  never invent the value.
+- Templates carry drafting guidance for YOU — `<!-- … -->` comments and any
+  «إرشادات الصياغة» section. Follow it; never copy it into the document.
+- When a template offers alternative blocks (e.g. one per court, or per claim
+  type), keep only the block that matches this case and drop the others.
 - If a `<parties>` block exists in `<package>`, use the names and roles stated
   in it **verbatim** throughout the document. Do not write `[اسم الطرف]` or
   `[اسم المدعي]` when the real name is available in `<parties>`.
@@ -129,6 +137,17 @@ supported by a reference.
 - ترويسة (sender, recipient, subject, date).
 - جسم الخطاب (organized paragraphs, a respectful tone).
 - The الخاتمة and the signature.
+""",
+    "statement_of_claim": """\
+## Subtype: statement of claim (صحيفة دعوى)
+
+- Address the competent court and circuit, then «الموضوع» and the total claim
+  value (in figures and words) when the claim is monetary.
+- بيانات الأطراف (plaintiff, defendant, representatives, capacities, addresses).
+- الوقائع in chronological order, then الأسانيد (the legal grounds, citing only
+  the package's references), then الطلبات as a numbered, specific list.
+- قائمة المرفقات using «مرفق رقم n».
+- When a template is supplied, its structure wins over this outline.
 """,
     "summary": """\
 ## Subtype: summary
@@ -486,9 +505,13 @@ def render_package_for_system_prompt(package: "WriterPackage") -> str:
                 if lib_tmpl.template_type
                 else ""
             )
+            court_attr = (
+                f' court="{_esc(lib_tmpl.court)}"' if lib_tmpl.court else ""
+            )
             lines.append(
-                f'    <template source="library" template_id="{_esc(lib_tmpl.template_id)}"'
-                f'{type_attr} title="{_esc(lib_tmpl.title)}">'
+                f'    <template source="library" scope="{_esc(lib_tmpl.scope)}"'
+                f' template_id="{_esc(lib_tmpl.template_id)}"'
+                f'{type_attr}{court_attr} title="{_esc(lib_tmpl.title)}">'
             )
             if lib_tmpl.body_md.strip():
                 lines.append(_esc(lib_tmpl.body_md.strip()))

@@ -15,6 +15,7 @@ import { useMessages, PLACEHOLDER_MAX_AGE_MS } from "@/hooks/use-messages";
 import { useConversationWorkspace } from "@/hooks/use-workspace";
 import { useIsDemoConversation } from "@/hooks/use-demo-conversation";
 import { parseNextSteps } from "@/lib/next-steps";
+import { parseTemplatesUsed } from "@/lib/templates-used";
 import { useChatStore, useIsStreaming } from "@/stores/chat-store";
 import {
   MessageBubble,
@@ -25,7 +26,7 @@ import { DeepSearchProgress } from "@/components/chat/DeepSearchProgress";
 import { DeepSearchSummaryChip } from "@/components/chat/DeepSearchSummaryChip";
 import { FailedResponseBubble } from "@/components/chat/FailedResponseBubble";
 import { ScrollToBottom } from "@/components/chat/ScrollToBottom";
-import type { Message } from "@/types";
+import type { Message, TemplateUsed } from "@/types";
 
 /**
  * Layer 1: an assistant row with no content yet is an in-flight placeholder —
@@ -118,14 +119,6 @@ export function MessageList({
   const referencedItemsByMessage = useChatStore(
     (s) => s.referencedItemsByMessage,
   );
-  // Wave E (writer_planner_user_templates §D6): the "save attachment as
-  // template" offer for each assistant message in this conversation, keyed by
-  // message_id. Same rationale as ``referencedItemsByMessage`` — store-keyed
-  // so the chip survives the post-stream messages-cache invalidate. Ephemeral
-  // (live session only), so it's read solely from the store.
-  const templateOffersByMessage = useChatStore(
-    (s) => s.templateOffersByMessage,
-  );
   // deep_search_progress_bar plan: sealed receipts of finished deep_search
   // runs, keyed by assistant message_id. Written ONCE per run (at `done`), so
   // subscribing to the whole record costs the list a single extra render —
@@ -137,6 +130,10 @@ export function MessageList({
   // refetch has replaced the cached row before the server persisted
   // `metadata.next_steps`. Written once per run, so the extra render is free.
   const nextStepsByMessage = useChatStore((s) => s.nextStepsByMessage);
+  // «القوالب المستخدمة في الكتابة»: live `templates_used` SSE items keyed by
+  // message_id — fallback until the refetched row carries
+  // `metadata.templates_used`.
+  const templatesUsedByMessage = useChatStore((s) => s.templatesUsedByMessage);
   // The shared demo conversation replaces its composer with a CTA, so a chip
   // there would paste into nothing — suppress them.
   const isDemo = useIsDemoConversation(conversationId);
@@ -226,6 +223,22 @@ export function MessageList({
     const live = nextStepsByMessage[latestAssistantId];
     return live && live.length > 0 ? live : undefined;
   }, [latestAssistantId, latestAssistantMetadataSteps, nextStepsByMessage, isDemo]);
+
+  // «القوالب المستخدمة في الكتابة» — shown under EVERY assistant answer that
+  // drafted something (not only the latest). Persisted metadata wins; the live
+  // SSE copy covers the gap. Memoised into one map so each row's array keeps
+  // its identity across renders (memo(MessageBubble) stays a cache hit).
+  // Absent key = the turn drafted nothing; `[]` = drafted without a template.
+  const templatesUsedById = useMemo(() => {
+    const out: Record<string, TemplateUsed[]> = {};
+    for (const m of messages) {
+      if (m.role !== "assistant") continue;
+      const persisted = parseTemplatesUsed(m.metadata?.templates_used);
+      const value = persisted ?? templatesUsedByMessage[m.message_id];
+      if (value !== undefined) out[m.message_id] = value;
+    }
+    return out;
+  }, [messages, templatesUsedByMessage]);
 
   // -----------------------------------------------
   // Scroll position tracking (throttled via rAF)
@@ -547,7 +560,7 @@ export function MessageList({
                 onCitationNavigate={handleCitationNavigate}
                 referencedItemIds={referencedIds}
                 onJumpToReferencedItem={handleJumpToReferencedItem}
-                templateOffer={templateOffersByMessage[msg.message_id]}
+                templatesUsed={templatesUsedById[msg.message_id]}
                 isLatestAssistant={msg.message_id === latestAssistantId}
                 nextSteps={
                   msg.message_id === latestAssistantId

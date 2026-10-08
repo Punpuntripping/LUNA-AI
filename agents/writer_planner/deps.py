@@ -103,8 +103,9 @@ class WriterPlannerDeps:
     # absent from the map — they are unreachable from the planner anyway.
     wi_alias_map: dict[int, str] = field(default_factory=dict)
 
-    # قوالبي (user_templates) titles the planner may draft FROM — injected as a
-    # passive <my_templates> context block (titles only, no body). The planner
+    # Template catalog the planner may draft FROM — the user's own قوالب (خاص)
+    # + our system templates (عام) they haven't hidden — injected as a passive
+    # <templates_catalog> block (titles + labels only, no body). The planner
     # picks one by its TPL-{n} alias on the final PlannerDecision; the runner
     # resolves the alias → template_id and fetches the body at package-build time.
     user_templates: list[UserTemplateTitle] = field(default_factory=list)

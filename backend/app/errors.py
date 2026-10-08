@@ -66,6 +66,7 @@ class ErrorCode(str, Enum):
     # Templates
     TEMPLATE_NOT_FOUND = "TEMPLATE_NOT_FOUND"
     TEMPLATE_FAILED = "TEMPLATE_FAILED"
+    TEMPLATE_READ_ONLY = "TEMPLATE_READ_ONLY"    # قالب عام — copy it to edit
 
     # User
     USER_NOT_FOUND = "USER_NOT_FOUND"

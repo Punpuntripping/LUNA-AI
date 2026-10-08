@@ -1041,10 +1041,15 @@ async def send_message_stream(
     # the turn's `next_steps` event, persisted to messages.metadata.next_steps at
     # `done`. Key is `next_steps`, never `suggestions` (= agent_question chips).
     captured_next_steps: list[dict] = []
+    # «القوالب المستخدمة في الكتابة» — the writer's `templates_used` event,
+    # persisted to messages.metadata.templates_used at `done`. None = the turn
+    # drafted nothing; [] = a draft built without a template (still persisted,
+    # so the chat line can say «لم يُستخدم قالب» after a reload).
+    captured_templates_used: list[dict] | None = None
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
-        nonlocal full_content, paused
+        nonlocal full_content, paused, captured_templates_used
         # وضع السرية: buffered stream-decode of assistant text deltas. A fake can
         # split across SSE chunks, so the decoder holds back digit-run tails and
         # flushes on the first non-run char or at finalize(). full_content keeps
@@ -1222,6 +1227,16 @@ async def send_message_stream(
                                 await queue.put(_sse_event("token", {"text": tail}))
                             await queue.put(_sse_event("next_steps", {"items": items}))
 
+                    elif event_type == "templates_used":
+                        # Titles come from template rows / repo files (store-real),
+                        # never from LLM text — no decode needed.
+                        used = [
+                            u for u in (event.get("items") or [])
+                            if isinstance(u, dict) and u.get("template_id")
+                        ]
+                        captured_templates_used = used
+                        await queue.put(_sse_event("templates_used", {"items": used}))
+
                     elif event_type == "agent_resumed":
                         await queue.put(_sse_event("agent_resumed", {
                             "run_id": event.get("run_id", ""),
@@ -1284,17 +1299,25 @@ async def send_message_stream(
                                 # over the row's existing metadata (the update
                                 # replaces the column). A failed read skips the
                                 # chips rather than clobbering unseen keys.
+                                # ONE merged patch — two separate merges would
+                                # overwrite each other in update_data.
+                                meta_patch: dict = {}
                                 if captured_next_steps:
+                                    meta_patch["next_steps"] = captured_next_steps
+                                if captured_templates_used is not None:
+                                    meta_patch["templates_used"] = captured_templates_used
+                                if meta_patch:
                                     try:
                                         update_data["metadata"] = await run_db(
                                             _merged_message_metadata,
                                             supabase, assistant_msg_id,
-                                            {"next_steps": captured_next_steps},
+                                            meta_patch,
                                         )
                                     except Exception:
                                         logger.warning(
-                                            "next_steps: metadata read failed — "
-                                            "chips not persisted", exc_info=True,
+                                            "message metadata read failed — "
+                                            "%s not persisted", sorted(meta_patch),
+                                            exc_info=True,
                                         )
 
                                 await run_db(

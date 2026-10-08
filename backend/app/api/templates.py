@@ -1,8 +1,11 @@
 """
 Templates API routes — /api/v1/  ("قوالبي" — per-user markdown templates).
 
-DISTINCT from the global ``system_templates`` feature. Every row is scoped to
-the authenticated user via the internal ``user_id`` resolved from ``auth_id``.
+Two scopes share these endpoints:
+  * ``scope='user'``   — قالب خاص, a user_templates row owned by the caller.
+  * ``scope='system'`` — قالب عام, a repo file (agents/writer/system_templates.py)
+    every user sees read-only. PATCH → 403; DELETE → hides it for this user
+    (user_hidden_templates, migration 173).
 
 Endpoints:
     GET    /templates                → list (newest-updated first, or ?q= ranked)
@@ -20,6 +23,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from redis.asyncio import Redis as AsyncRedis
 from supabase import Client as SupabaseClient
 
+from backend.app.errors import ErrorCode, LunaHTTPException
 from backend.app.deps import get_current_user, get_redis, get_supabase, validate_uuid
 from backend.app.models.requests import (
     CreateTemplateRequest,
@@ -47,17 +51,30 @@ router = APIRouter()
 
 
 def _to_response(data: dict) -> TemplateResponse:
-    """Translate a user_templates row into the response model."""
+    """Translate a user_templates row (or a system_template_row) into the response model."""
     return TemplateResponse(
         template_id=data["template_id"],
-        user_id=data["user_id"],
+        user_id=data.get("user_id"),
         title=data.get("title", ""),
         content_md=data.get("content_md") or "",
         created_by=data.get("created_by", "user"),
         metadata=data.get("metadata") or {},
-        created_at=data["created_at"],
-        updated_at=data["updated_at"],
+        created_at=data.get("created_at"),
+        updated_at=data.get("updated_at"),
+        scope=data.get("scope", "user"),
+        subtype=data.get("subtype"),
+        court=data.get("court"),
+        sources=data.get("sources") or [],
     )
+
+
+def _reject_system_edit(template_id: str) -> None:
+    if templates_service.get_system_template_row(template_id) is not None:
+        raise LunaHTTPException(
+            status_code=403,
+            code=ErrorCode.TEMPLATE_READ_ONLY,
+            detail=templates_service.SYSTEM_READ_ONLY_AR,
+        )
 
 
 # ============================================
@@ -87,6 +104,14 @@ async def list_templates(
     """
     query = search_service.normalize_query(q)
 
+    # قوالب عامة (minus the ones this user hid) follow the user's own.
+    system_rows = await run_db(
+        templates_service.list_system_templates,
+        supabase,
+        current_user.auth_id,
+        query,
+    )
+
     template_ids: Optional[list[str]] = None
     if query:
         user_id = await run_db(get_user_id, supabase, current_user.auth_id)
@@ -98,7 +123,7 @@ async def list_templates(
             owner_user_id=user_id,
         )
         if not template_ids:
-            return TemplateListResponse(templates=[])
+            return TemplateListResponse(templates=[_to_response(r) for r in system_rows])
 
     rows = await run_db(
         templates_service.list_templates,
@@ -106,7 +131,9 @@ async def list_templates(
         current_user.auth_id,
         template_ids=template_ids,
     )
-    return TemplateListResponse(templates=[_to_response(r) for r in rows])
+    return TemplateListResponse(
+        templates=[_to_response(r) for r in rows + system_rows]
+    )
 
 
 @router.post("/templates", response_model=TemplateResponse, status_code=201)
@@ -156,8 +183,12 @@ async def get_template(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Get a single template by id."""
+    """Get a single template by id (a قالب عام resolves even if hidden — old
+    drafts link to it)."""
     validate_uuid(template_id, "معرف القالب")
+    system_row = templates_service.get_system_template_row(template_id)
+    if system_row is not None:
+        return _to_response(system_row)
     row = await run_db(
         templates_service.get_template,
         supabase, current_user.auth_id, template_id,
@@ -172,8 +203,9 @@ async def update_template(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Update a template's title and/or content."""
+    """Update a template's title and/or content (قالب عام → 403, copy it first)."""
     validate_uuid(template_id, "معرف القالب")
+    _reject_system_edit(template_id)
     row = await run_db(
         templates_service.update_template,
         supabase,
@@ -191,8 +223,14 @@ async def delete_template(
     current_user: AuthUser = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase),
 ):
-    """Soft-delete a template."""
+    """Soft-delete a قالب خاص, or hide a قالب عام for this user."""
     validate_uuid(template_id, "معرف القالب")
+    if templates_service.get_system_template_row(template_id) is not None:
+        await run_db(
+            templates_service.hide_system_template,
+            supabase, current_user.auth_id, template_id,
+        )
+        return Response(status_code=204)
     await run_db(
         templates_service.delete_template,
         supabase, current_user.auth_id, template_id,

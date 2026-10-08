@@ -8,7 +8,7 @@ The 2 tools:
 
 | Tool                          | Deferred? | Purpose |
 |-------------------------------|-----------|---------|
-| ``ask_user``                  | YES       | Pauses with ``pause_reason='clarify'``. Use only when something critical is missing. |
+| ``ask_user``                  | YES       | Pauses with ``pause_reason='clarify'``. Only when the document type itself is unknowable. |
 | ``present_plan_for_approval`` | YES       | Pauses with ``pause_reason='approve_plan'``. Tracks ``present_count`` for the 3-cap. |
 
 Plus the shared, cross-agent ``unfold_workspace_item`` (registered in
@@ -19,8 +19,8 @@ the old item_analyzer triage path entirely. Selected items are inlined into
 the WriterPackage by the runner (full content), so there is no LLM triage
 step on the writer_planner anymore.
 
-The user's قوالبي templates are NOT fetched via a tool — their titles are
-injected into the planner's context as a ``<my_templates>`` block (see
+Templates are NOT fetched via a tool — the catalog (user's own + ours) is
+injected into the planner's context as a ``<templates_catalog>`` block (see
 ``prompts.py``), so the planner reads them passively and picks one by its
 ``TPL-{n}`` alias on the final ``PlannerDecision``.
 
@@ -70,25 +70,17 @@ def register_tools(
     async def ask_user(question: str) -> str:  # noqa: RUF029
         """Ask the user ONE clarifying question; pauses the run until they reply.
 
-        Use this ONLY when a critical fact for drafting is missing AND cannot
-        be inferred from <attached_items>, <prior_artifacts>, or the user
-        message itself. Examples of valid use:
-          - User said «اكتب العقد» but no party names appear anywhere.
-          - User asked for a memo on «القضية» but no case identifier appears.
-
-        Do NOT use ask_user for anything you can plan around or where the
-        examine-before-asking protocol shows the answer is already on screen.
-        The Saudi-lawyer contract example («اكتب لي العقد بالأرقام: 40K،
-        20+20، تاريخ 1447/1/18» + PDF template + 2 image sources) requires
-        ZERO clarification questions. Get the bar that high.
+        Rare. Use it ONLY when you cannot tell what kind of document is wanted
+        at all. Missing names, trade names, ID numbers, amounts, dates or court
+        details are NOT a reason: they go in the plan (as placeholders under
+        «ما سيُترك فارغاً لتعبئته») via ``present_plan_for_approval``.
 
         When raised, the run terminates with a DeferredToolRequests output.
         The orchestrator persists the agent_runs row with
         pause_reason='clarify' and surfaces the question_text in chat.
 
         Args:
-            question: A single concise Arabic question. Single question per
-                pause — don't ask compound questions.
+            question: A single concise question in the user's language.
 
         Returns:
             The user's reply text (delivered on resume via DeferredToolResults).
@@ -104,21 +96,18 @@ def register_tools(
         ctx: RunContext[WriterPlannerDeps],
         plan_md: str,
     ) -> str:
-        """Present a plan_md to the user for approval; pauses until they reply.
+        """Present THE plan of a new document; pauses until the user replies.
 
-        Use when strategy is genuinely unclear AFTER examining
-        <attached_items>, <prior_artifacts>, and the user's message. Do NOT
-        use for clean turns (subtype + template + parameters all present);
-        emit a final PlannerDecision directly instead.
-
-        The plan_md should be short Arabic markdown:
-          1. ## النوع: what kind of document you'll draft.
-          2. ## المرجع: which item plays which role (template, source, ...).
-             If you will draft from one of the user's قوالبي templates, NAME it
-             here («القالب: <العنوان>») — and when two titles plausibly fit,
-             list both and ask the user to choose one.
-          3. ## المعطيات: parties, dates, amounts you'll fill in.
-          4. ## الإخراج: a 2-3 line summary of what the output will look like.
+        This is the single pause of a drafting request. plan_md is short
+        markdown in the user's language, in this order (drop empty sections):
+          1. ## النماذج المقترحة — the template(s) from <templates_catalog>,
+             title verbatim + «(قالب عام)» / «(قالب خاص)»; two numbered options
+             only when two genuinely fit; «لم يُستخدم قالب» when none does.
+          2. ## الأطراف — each party with its role (placeholder if unnamed).
+          3. ## ما سيتضمنه المستند — claims / sections / requests, short.
+          4. ## ما سيُترك فارغاً لتعبئته — details nobody gave.
+          5. ## مستندات أشرت إليها ولم تُرفق — when applicable.
+          End with «هل أبدأ الكتابة؟».
 
         Hard cap: 3 present cycles per turn (``MAX_PRESENT_CYCLES``). The 4th
         call auto-approves with this plan_md and returns 'موافق' without

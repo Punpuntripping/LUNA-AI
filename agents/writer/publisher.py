@@ -41,6 +41,7 @@ from .exhibits import (
 )
 from .lock import write_lock_column
 from .models import WriterInput, WriterLLMOutput, WriterOutput
+from .system_templates import strip_drafting_comments
 
 if TYPE_CHECKING:
     pass
@@ -450,6 +451,11 @@ async def publish_writer_result(
         # Restore real identifiers before the workspace_items write so the stored
         # document holds reals (store-real invariant). Decode is always-on.
         content_md = decode_for_persist(content_md)
+        # Template drafting guidance («<!-- … -->») is for the writer, never the
+        # document — strip any that survived into the draft.
+        if "<!--" in content_md:
+            logger.warning("agent_writer: stripped template drafting comments from draft")
+            content_md = strip_drafting_comments(content_md)
 
         # 3. Build metadata BEFORE the insert so the same dict ships into the row
         # AND drives the SSE event payloads. The subtype is preserved verbatim --
@@ -483,6 +489,9 @@ async def publish_writer_result(
             "detail_level": input.detail_level,
             "tone": input.tone,
             "revised_from": input.revising_item_id,
+            # Which templates the draft was built on — the chat line under the
+            # reply («القوالب المستخدمة في الكتابة») is fed from the same list.
+            "templates_used": list(input.templates_used),
         }
         exhibits_meta = exhibits_metadata(llm_output.exhibits, aliases)
         if exhibits_meta:

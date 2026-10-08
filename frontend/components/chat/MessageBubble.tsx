@@ -37,12 +37,18 @@ import { getRelativeTimeAr } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 import { StreamingText } from "@/components/chat/StreamingText";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
-import { TemplateSaveOfferChip } from "@/components/chat/TemplateSaveOfferChip";
 import { NextStepChips } from "@/components/chat/NextStepChips";
+import { TemplatesUsedLine } from "@/components/chat/TemplatesUsedLine";
 import { WiBadge } from "@/components/workspace/WiBadge";
 import { getDoneAt } from "@/components/analytics/run-tracker";
 import { useAnswerSeen } from "@/components/analytics/useAnswerSeen";
-import type { Attachment, Message, NextStep, WorkspaceItemKind } from "@/types";
+import type {
+  Attachment,
+  Message,
+  NextStep,
+  TemplateUsed,
+  WorkspaceItemKind,
+} from "@/types";
 
 type FeedbackState = "none" | "up" | "down";
 
@@ -100,14 +106,12 @@ interface MessageBubbleProps {
   /** Open + highlight a referenced workspace_item (chip click). */
   onJumpToReferencedItem?: (itemId: string) => void;
   /**
-   * Wave E (writer_planner_user_templates §D6): the "save attachment as
-   * template" offer the writer pipeline emitted at the end of this assistant
-   * turn. When present an inline «احفظ المرفق كقالب؟ [نعم]» chip renders below
-   * the bubble body. Sourced from ``chat-store.templateOffersByMessage`` so it
-   * survives the post-stream messages-cache invalidate. Undefined for user /
-   * streaming / non-writing bubbles.
+   * «القوالب المستخدمة في الكتابة»: the templates this answer's draft was built
+   * on (persisted ``metadata.templates_used`` or the live SSE fallback).
+   * ``undefined`` = the turn drafted nothing; ``[]`` = drafted without a
+   * template. Passed for EVERY assistant message, not only the latest.
    */
-  templateOffer?: { itemId: string; titleHint: string };
+  templatesUsed?: TemplateUsed[];
   /**
    * next_step_suggestions plan §3.7: true only for the LAST message of the
    * thread when it is an assistant reply. Chips render only there, so they
@@ -135,7 +139,7 @@ export const MessageBubble = memo(function MessageBubble({
   onCitationNavigate,
   referencedItemIds,
   onJumpToReferencedItem,
-  templateOffer,
+  templatesUsed,
   isLatestAssistant,
   nextSteps,
 }: MessageBubbleProps) {
@@ -172,13 +176,15 @@ export const MessageBubble = memo(function MessageBubble({
     !isAgentQuestion &&
     Array.isArray(referencedItemIds) &&
     referencedItemIds.length > 0;
-  // Wave E: writer pipeline offered to save an attached doc as a قوالبي
-  // template. Assistant bubbles only, and never on the agent-question bubble.
-  const hasTemplateOffer =
+  // «القوالب المستخدمة في الكتابة»: any settled assistant answer whose turn
+  // drafted something — never mid-stream, never on a failed row or the
+  // agent_question callout.
+  const hasTemplatesUsed =
     !isUser &&
     !isAgentQuestion &&
-    templateOffer !== undefined &&
-    !!templateOffer.itemId;
+    isCompleted &&
+    !message.isFailed &&
+    Array.isArray(templatesUsed);
 
   // Next-step chips (next_step_suggestions D3): latest settled answer only —
   // never mid-stream, never on an optimistic/failed row, never on the
@@ -515,13 +521,13 @@ export const MessageBubble = memo(function MessageBubble({
             />
           )}
 
-          {/* Sources + referenced prior cards + template offer — one always-
-              visible row: for a legal answer, source presence is content, not
-              chrome, so it never hides behind hover. All three stay hidden
+          {/* Sources + referenced prior cards — one always-visible row: for a
+              legal answer, source presence is content, not chrome, so it
+              never hides behind hover. Both stay hidden
               during streaming — their SSE events attach to the assistant
               message_id and the bubble re-renders with them once settled. */}
           {!isCurrentlyStreaming &&
-            (hasArtifacts || hasReferencedItems || hasTemplateOffer) && (
+            (hasArtifacts || hasReferencedItems) && (
               <div className="flex flex-wrap items-center gap-1.5 mt-3">
                 {hasArtifacts && (
                   <ArtifactChip
@@ -540,14 +546,17 @@ export const MessageBubble = memo(function MessageBubble({
                       onJump={onJumpToReferencedItem}
                     />
                   ))}
-                {hasTemplateOffer && (
-                  <TemplateSaveOfferChip
-                    itemId={templateOffer!.itemId}
-                    titleHint={templateOffer!.titleHint}
-                  />
-                )}
               </div>
             )}
+
+          {/* Templates the draft was built on — every settled writing turn. */}
+          {hasTemplatesUsed && (
+            <TemplatesUsedLine
+              templates={templatesUsed!}
+              messageId={message.message_id}
+              className="mt-2.5"
+            />
+          )}
 
           {/* Agent question suggestions (read-only chips — the user types their reply
               into the normal chat input; clicking a chip is a future enhancement) */}

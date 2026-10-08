@@ -31,8 +31,14 @@ interface MarkdownDocEditorProps {
    * resolve the savedAt indicator updates and the dirty baseline advances.
    */
   onSave: (patch: SavePatch) => Promise<unknown>;
-  /** ISO timestamp shown in the footer ("آخر تحديث"). */
-  updatedAt: string;
+  /** ISO timestamp shown in the footer ("آخر تحديث"); ``null`` hides it. */
+  updatedAt: string | null;
+  /**
+   * When true the footer's autosave status is not shown — for documents that
+   * can never be saved here (e.g. a read-only system template), where
+   * «التغييرات تُحفظ تلقائياً» would be false.
+   */
+  hideSaveStatus?: boolean;
   /** When true the body textarea is read-only and autosave is suspended. */
   readOnly?: boolean;
   /** When true the title input is read-only (independent of ``readOnly``). */
@@ -120,6 +126,7 @@ export function MarkdownDocEditor({
   initialContent,
   onSave,
   updatedAt,
+  hideSaveStatus = false,
   readOnly = false,
   titleReadOnly = false,
   titleRequired = false,
@@ -441,7 +448,7 @@ export function MarkdownDocEditor({
 
       <div className="flex items-center justify-between border-t px-4 py-2 text-xs text-muted-foreground">
         <span>
-          {isSaving ? (
+          {hideSaveStatus ? null : isSaving ? (
             <span className="inline-flex items-center gap-1.5">
               <Loader2 className="h-3 w-3 animate-spin" />
               جارٍ الحفظ
@@ -455,13 +462,15 @@ export function MarkdownDocEditor({
             <span>التغييرات تُحفظ تلقائياً</span>
           )}
         </span>
-        <span>
-          آخر تحديث:{" "}
-          {new Intl.DateTimeFormat(AR_DATE_LOCALE, {
-            dateStyle: "medium",
-            timeStyle: "short",
-          }).format(new Date(updatedAt))}
-        </span>
+        {updatedAt && (
+          <span>
+            آخر تحديث:{" "}
+            {new Intl.DateTimeFormat(AR_DATE_LOCALE, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(new Date(updatedAt))}
+          </span>
+        )}
       </div>
 
       {/* Floating, draggable action bar overlaying the viewer. */}

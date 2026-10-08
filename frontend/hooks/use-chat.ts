@@ -9,6 +9,7 @@ import { conversationKeys } from "@/hooks/use-conversations";
 import { workspaceKeys } from "@/hooks/use-workspace";
 import { isMobileViewport } from "@/hooks/use-media-query";
 import { parseNextSteps } from "@/lib/next-steps";
+import { parseTemplatesUsed } from "@/lib/templates-used";
 // Chat-depth analytics (product_analytics §3b). Every call below is
 // fire-and-forget and individually guarded inside the tracker — a tracking
 // failure must never touch the stream (T9).
@@ -47,8 +48,9 @@ import type {
   SSEWorkspaceItemLocked,
   SSEWorkspaceItemUnlocked,
   SSEReferencedExistingItem,
-  SSETemplateSaveOffer,
   SSENextSteps,
+  SSETemplatesUsed,
+  TemplateUsed,
   WorkspaceItem,
   WorkspaceItemListResponse,
 } from "@/types";
@@ -294,6 +296,11 @@ export function useSendMessage(): UseSendMessageReturn {
       // can fold them into the cached row's metadata in the same write that
       // inserts the final content — the chips appear without a refetch.
       let liveNextSteps: NextStep[] = [];
+      // «القوالب المستخدمة في الكتابة»: the `templates_used` event (arrives
+      // before the chat tokens on a writing turn). `undefined` = this turn
+      // drafted nothing; `[]` = drafted without a template. Folded into the
+      // cached row's metadata at `done`, like `liveNextSteps`.
+      let liveTemplatesUsed: TemplateUsed[] | undefined;
 
       const sendOptions = {
         attachment_ids: attachmentIds.length ? attachmentIds : undefined,
@@ -714,9 +721,9 @@ export function useSendMessage(): UseSendMessageReturn {
                                   artifact_ids: payload.artifact_ids ?? null,
                                   referenced_item_ids:
                                     payload.referenced_item_ids ?? null,
-                                  metadata: withNextSteps(
-                                    m.metadata,
-                                    liveNextSteps,
+                                  metadata: withTemplatesUsed(
+                                    withNextSteps(m.metadata, liveNextSteps),
+                                    liveTemplatesUsed,
                                   ),
                                 }
                               : m,
@@ -742,7 +749,10 @@ export function useSendMessage(): UseSendMessageReturn {
                           // null when the turn produced nothing.
                           artifact_ids: payload.artifact_ids ?? null,
                           referenced_item_ids: payload.referenced_item_ids ?? null,
-                          metadata: withNextSteps(undefined, liveNextSteps),
+                          metadata: withTemplatesUsed(
+                            withNextSteps(undefined, liveNextSteps),
+                            liveTemplatesUsed,
+                          ),
                         },
                         ...newPages[0].messages,
                       ],
@@ -881,27 +891,6 @@ export function useSendMessage(): UseSendMessageReturn {
               }
               break;
             }
-            case "template_save_offer": {
-              // Wave E (writer_planner_user_templates §D6): the writer
-              // pipeline judged an attached doc template-worthy and offered to
-              // save it (non-blocking, emitted after publish). Stash the offer
-              // against the in-flight assistant message so MessageBubble can
-              // render the «احفظ المرفق كقالب؟ [نعم]» chip. Like
-              // ``referenced_existing_item`` this lives on the store (keyed by
-              // message_id) so it survives the post-stream messages-cache
-              // invalidate. Ephemeral — not persisted across reload.
-              const payload = data as SSETemplateSaveOffer;
-              if (assistantMessageId) {
-                useChatStore
-                  .getState()
-                  .recordTemplateOffer(
-                    assistantMessageId,
-                    payload.item_id,
-                    payload.title_hint,
-                  );
-              }
-              break;
-            }
             case "next_steps": {
               // next_step_suggestions §3.6/§3.7: 0–3 clickable follow-ups for
               // the answer just streamed. Folded into the cached row's
@@ -918,6 +907,24 @@ export function useSendMessage(): UseSendMessageReturn {
                 useChatStore
                   .getState()
                   .recordNextSteps(assistantMessageId, items);
+              }
+              break;
+            }
+            case "templates_used": {
+              // Which templates the writer's draft was built on. Same dual
+              // path as `next_steps`: folded into the cached row's metadata at
+              // `done`, AND stashed on the store keyed by message id for the
+              // window before the refetched server row carries
+              // `metadata.templates_used`. An empty list is meaningful (the
+              // draft was built without a template) and IS recorded.
+              const payload = data as SSETemplatesUsed;
+              const items = parseTemplatesUsed(payload.items);
+              if (items === undefined) break;
+              liveTemplatesUsed = items;
+              if (assistantMessageId) {
+                useChatStore
+                  .getState()
+                  .recordTemplatesUsed(assistantMessageId, items);
               }
               break;
             }
@@ -1082,6 +1089,19 @@ function withNextSteps(
 ): Message["metadata"] {
   if (nextSteps.length === 0) return metadata;
   return { ...(metadata ?? {}), next_steps: nextSteps };
+}
+
+/**
+ * Merge `templates_used` into `metadata`. Only sets the key when the live
+ * value is defined — an empty list is kept (it means "drafted without a
+ * template"), while `undefined` leaves the metadata untouched.
+ */
+function withTemplatesUsed(
+  metadata: Message["metadata"],
+  templatesUsed: TemplateUsed[] | undefined,
+): Message["metadata"] {
+  if (templatesUsed === undefined) return metadata;
+  return { ...(metadata ?? {}), templates_used: templatesUsed };
 }
 
 // -----------------------------------------------

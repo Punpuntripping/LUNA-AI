@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { FileText, Loader2, Plus } from "lucide-react";
+import { FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import { getRelativeTimeAr } from "@/lib/utils";
-import { useTemplates } from "@/hooks/use-templates";
+import { useDeleteTemplate, useTemplates } from "@/hooks/use-templates";
 import { useSearchQuery } from "@/hooks/use-search";
 import { useSidebarStore } from "@/stores/sidebar-store";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,18 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { SearchBar } from "@/components/search/SearchBar";
 import { SearchEmptyState } from "@/components/search/SearchEmptyState";
 import { SEARCH_PRIVATE_COPY } from "@/lib/search/copy";
+import { TemplateScopeBadge } from "@/components/templates/TemplateScopeBadge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import type { UserTemplate } from "@/types";
 
 /**
  * «قوالبي» as a full-pane card grid — the قوالب twin of `MyBlogsGrid`, behind
@@ -19,8 +31,14 @@ import { SEARCH_PRIVATE_COPY } from "@/lib/search/copy";
  * three per-user collections read as one component family.
  *
  * Deliberately NOT a second editor: a card is a way *into* `/templates/{id}`,
- * where TemplateEditor stays the single place a قالب is written. Destructive
- * actions (حذف) likewise stay in the sidebar row's menu — one home each.
+ * where TemplateEditor stays the single place a قالب is written.
+ *
+ * ── SCOPES ──────────────────────────────────────────────────────────────────
+ * The list carries two scopes in API order (the user's own first, then the
+ * shared ones): «قالب خاص» (``scope: "user"``) and «قالب عام» (``"system"``,
+ * read-only). Each card has a corner delete control; the backend decides what
+ * DELETE means — a user template is deleted, a system template is HIDDEN for
+ * this user (ريحان stops drafting from it). The confirm copy says which.
  *
  * ── SEARCH (bm25_navigation_search.md Wave D) ───────────────────────────────
  * `/templates` and `/templates/mine` both render this component and therefore
@@ -59,6 +77,15 @@ export function MyTemplatesGrid() {
     (s) => s.setCreateTemplateDialogOpen,
   );
   const templates = data?.templates ?? [];
+  const deleteTemplate = useDeleteTemplate();
+  const [pendingDelete, setPendingDelete] = useState<UserTemplate | null>(null);
+  const pendingIsSystem = pendingDelete?.scope === "system";
+
+  const handleConfirmDelete = () => {
+    if (!pendingDelete) return;
+    deleteTemplate.mutate(pendingDelete.template_id);
+    setPendingDelete(null);
+  };
 
   /**
    * Same monotonic latch as مدوناتي, for the same reason — see `MyBlogsGrid`.
@@ -139,42 +166,98 @@ export function MyTemplatesGrid() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {templates.map((template) => {
               const preview = contentPreview(template.content_md ?? "");
+              const isSystem = template.scope === "system";
+              const title = template.title?.trim() || "قالب بدون عنوان";
               return (
-                <Link
-                  key={template.template_id}
-                  href={`/templates/${template.template_id}`}
-                  className="flex flex-col rounded-xl border bg-card p-4 shadow-sm transition hover:border-primary/30 hover:shadow-md"
-                >
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
-                      قالب
-                    </span>
-                    {template.created_by === "agent" && (
-                      <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground">
-                        من ريحان
+                <div key={template.template_id} className="relative">
+                  <Link
+                    href={`/templates/${template.template_id}`}
+                    className="flex h-full flex-col rounded-xl border bg-card p-4 pe-11 shadow-sm transition hover:border-primary/30 hover:shadow-md"
+                  >
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        قالب
+                      </span>
+                      <TemplateScopeBadge scope={template.scope} />
+                      {template.created_by === "agent" && (
+                        <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground">
+                          من ريحان
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="line-clamp-2 text-sm font-bold text-foreground">
+                      {title}
+                    </h3>
+
+                    {preview && (
+                      <p className="mt-1.5 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
+                        {preview}
+                      </p>
+                    )}
+
+                    {template.updated_at && (
+                      <span className="mt-3 text-[11px] text-muted-foreground/80">
+                        {getRelativeTimeAr(template.updated_at)}
                       </span>
                     )}
-                  </div>
-
-                  <h3 className="line-clamp-2 text-sm font-bold text-foreground">
-                    {template.title?.trim() || "قالب بدون عنوان"}
-                  </h3>
-
-                  {preview && (
-                    <p className="mt-1.5 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
-                      {preview}
-                    </p>
-                  )}
-
-                  <span className="mt-3 text-[11px] text-muted-foreground/80">
-                    {getRelativeTimeAr(template.updated_at)}
-                  </span>
-                </Link>
+                  </Link>
+                  {/* Sibling of the Link (not nested in it) so the click never
+                      navigates; stop/prevent kept as a belt-and-braces guard. */}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute end-2 top-2 h-7 w-7 text-muted-foreground hover:text-destructive"
+                    aria-label={
+                      isSystem
+                        ? `إزالة القالب العام «${title}» من قوالبك`
+                        : `حذف القالب «${title}»`
+                    }
+                    title={isSystem ? "إزالة من قوالبي" : "حذف القالب"}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setPendingDelete(template);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               );
             })}
           </div>
         )}
       </div>
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingIsSystem ? "إزالة القالب العام من قوالبك؟" : "حذف القالب؟"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingIsSystem
+                ? "لن يستخدمه ريحان في كتاباتك بعد الآن."
+                : "سيُحذف القالب نهائياً ولا يمكن التراجع عن هذا الإجراء."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>إلغاء</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleConfirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {pendingIsSystem ? "إزالة" : "حذف"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ScrollArea>
   );
 }

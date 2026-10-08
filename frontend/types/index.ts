@@ -206,7 +206,27 @@ export interface MessageMetadata {
    * as ``suggestions`` above (read-only agent_question replies).
    */
   next_steps?: NextStep[];
+  /**
+   * Templates a writer draft was built on. An EMPTY list means a draft was
+   * produced without a template; the key is ABSENT on turns that drafted
+   * nothing. Validate with ``parseTemplatesUsed`` (lib/templates-used.ts).
+   */
+  templates_used?: TemplateUsed[];
   [key: string]: unknown;
+}
+
+/** Scope of a قالب: ``system`` = قالب عام (read-only), ``user`` = قالب خاص. */
+export type TemplateScope = "user" | "system";
+
+/** One template a writer draft was built on (``metadata.templates_used``). */
+export interface TemplateUsed {
+  template_id: string;
+  title: string;
+  scope: TemplateScope;
+  subtype: string | null;
+  court: string | null;
+  /** Absolute http(s) URLs (e.g. our blog posts). */
+  sources: string[];
 }
 
 /**
@@ -1513,13 +1533,20 @@ export interface UpdatePreferencesRequest {
 
 export interface UserTemplate {
   template_id: string;
-  user_id: string;
+  /** ``null`` for system templates (قالب عام). */
+  user_id: string | null;
   title: string;
   content_md: string;
-  created_by: WorkspaceCreator;
+  /** ``"system"`` for system templates. */
+  created_by: WorkspaceCreator | "system";
   metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
+  scope: TemplateScope;
+  subtype: string | null;
+  court: string | null;
+  /** Absolute http(s) URLs the template was derived from. */
+  sources: string[];
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 export interface CreateTemplateRequest {
@@ -1688,25 +1715,6 @@ export interface SSEReferencedExistingItem {
 }
 
 /**
- * writer_planner_user_templates plan, Wave E (D6):
- *
- * Emitted by the writer pipeline at the END of a writing turn (after the
- * draft is published) when the planner judged an attached document to be
- * template-worthy and the user didn't already ask to save it. Non-blocking
- * — no pause. The frontend surfaces an inline "احفظ المرفق كقالب؟" chip on
- * the assistant bubble; clicking it POSTs ``item_id`` to
- * ``/templates/ingest`` which runs the template_ingester agent directly
- * (no router/planner) and inserts a قوالبي row.
- */
-export interface SSETemplateSaveOffer {
-  type: "template_save_offer";
-  /** The attached workspace_item to ingest as a template. */
-  item_id: string;
-  /** The attached document's title, used as the chip's context hint. */
-  title_hint: string;
-}
-
-/**
  * next_step_suggestions plan §3.6: ``event: next_steps`` — 0–3 clickable
  * follow-ups for the answer just streamed. Emitted once, after the last
  * ``token`` and before ``done``, and only when non-empty. The same items are
@@ -1714,6 +1722,15 @@ export interface SSETemplateSaveOffer {
  */
 export interface SSENextSteps {
   items: NextStep[];
+}
+
+/**
+ * ``event: templates_used`` — the templates a writing turn's draft was built
+ * on, emitted before the chat text tokens. Empty list = drafted without a
+ * template. Persisted on the assistant row as ``metadata.templates_used``.
+ */
+export interface SSETemplatesUsed {
+  items: TemplateUsed[];
 }
 
 // ==========================================
