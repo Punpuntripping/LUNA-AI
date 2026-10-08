@@ -24,7 +24,7 @@ import {
 /** Where the primary "ابدأ الآن" CTA sends prospects. Signup lives on /login. */
 export const PRIMARY_CTA_HREF = "/login";
 
-/** Support inbox used for early-access / activation-code requests. */
+/** Support inbox used for activation-code requests. */
 export const SUPPORT_EMAIL = "support@rayhanai.com";
 
 /**

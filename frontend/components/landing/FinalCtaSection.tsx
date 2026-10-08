@@ -11,12 +11,10 @@ import {
 } from "./content";
 
 /**
- * Closing call to action — early-adopter framing. Rayhan is in trial launch;
- * access is currently granted via an activation code (see /pricing), so the
- * secondary path points at the support inbox for early access.
+ * Closing call to action: join, or reach support on WhatsApp / email.
  */
 export function FinalCtaSection({
-  headline = "كن من أوائل المحامين",
+  headline = "ابدأ مع ريحان اليوم، واستغلّ العرض",
 }: {
   /** The landing speaks to lawyers; /audiences passes a neutral headline. */
   headline?: string;
@@ -32,10 +30,6 @@ export function FinalCtaSection({
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
             {headline}
           </h2>
-          <p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-primary-foreground/85">
-            ريحان في مرحلة الإطلاق التجريبي. انضمّ الآن واحصل على وصول مبكر
-            للمنصة.
-          </p>
 
           {/* flex-wrap: three pills no longer fit on one line at the sm break. */}
           <div className="mt-8 flex flex-col flex-wrap items-center justify-center gap-3 sm:flex-row">
