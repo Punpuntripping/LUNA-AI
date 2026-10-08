@@ -11,8 +11,9 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * `/payments/checkout` charges; the strings below are display only, and the two
  * drift silently if edited apart. They were repriced together to 49.90 / 89.90 /
  * 189.90 (VAT-inclusive) in the Moyasar Wave 1 commit, and `max` was raised to
- * 289.90 by migration 147 (2026-08-29), and `pro` to 94.90 by migration 168
- * (2026-09-29) — a price migration and this file must always move as one.
+ * 289.90 by migration 147 (2026-08-29), `pro` to 94.90 by migration 168
+ * (2026-09-29), and `basic` to a flat 29.90 with no promo by migration 174
+ * (2026-10-08) — a price migration and this file must always move as one.
  *
  * Billing model (owner, 2026-08-10 — see .claude/plans/subscription_auto_renewal.md):
  *   - basic — a ONE-TIME 7-day purchase that ends without any further charge.
@@ -70,8 +71,8 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
  * ⚠ THE PROMO CHANGES THE PRICE, NOT THE BILLING MODEL. `promoBillingNote`
  * exists so pro/max can state the step-up honestly, and it still says NOTHING
  * about renewal for the reasons in the block above. `basic` deliberately has no
- * `promoBillingNote`: «بدون تجديد تلقائي · فترة الاشتراك 7 أيام فقط» is true
- * during the campaign and after it, and must never be copied onto pro/max.
+ * `promoBillingNote` (and, since 174, no promo at all): «ادفع مرة واحدة — بدون
+ * تجديد تلقائي» is always true for it, and must never be copied onto pro/max.
  */
 export interface PricingPlan {
   /** Matches plans.plan_id in the DB. */
@@ -127,10 +128,11 @@ export const PRICING_PLANS: PricingPlan[] = [
     id: "basic",
     nameAr: "الأساسية",
     tagline: "للبدء والاستخدام الخفيف",
-    price: "49.90",
-    promoPrice: "39.90",
+    // Flat 29.90, no promo (migration 174, 2026-10-08): nothing is struck
+    // through and no «المقاعد محدودة» on this card.
+    price: "29.90",
     period: "أسبوعياً",
-    billingNote: "بدون تجديد تلقائي · فترة الاشتراك 7 أيام فقط",
+    billingNote: "ادفع مرة واحدة — بدون تجديد تلقائي",
     features: [
       "50 نقطة استخدام طوال الاشتراك (7 أيام)",
       "10 نقاط لكل جلسة (5 ساعات)",
