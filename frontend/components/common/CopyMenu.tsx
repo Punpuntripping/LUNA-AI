@@ -16,6 +16,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { markdownToPlainText } from "@/lib/markdown/plain-text";
+import { markdownToClipboardHtml } from "@/lib/markdown/rich-html";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,7 +33,7 @@ export type CopyMenuVariant = "bar" | "toolbar" | "icon";
 interface CopyMenuProps {
   /**
    * Markdown to copy (body + any «المراجع» block the host appends). «نسخ»
-   * writes it verbatim; «النسخ لناجز» writes ``markdownToPlainText(text)``.
+   * writes it as HTML + markdown; «النسخ لناجز» writes ``markdownToPlainText(text)``.
    */
   text: string;
   variant: CopyMenuVariant;
@@ -50,7 +51,8 @@ const COPIED_RESET_MS = 1500;
 /**
  * «نسخ» as a two-item dropdown (plan: najiz_plain_copy.md).
  *
- * - «نسخ» — the raw markdown, headings and formatting intact.
+ * - «نسخ» — rendered RTL HTML (Word / Google Docs paste real headings, bold,
+ *   tables) with the raw markdown as the ``text/plain`` flavor.
  * - «النسخ لناجز» — plain text with every markdown marker stripped, for Najiz
  *   fields that accept no formatting at all. ``[n]`` markers and the
  *   «المراجع» lines survive (see ``lib/markdown/plain-text.ts``).
@@ -85,9 +87,12 @@ export function CopyMenu({
   const writeClipboard = async (mode: "markdown" | "plain") => {
     // Converted at click time, not per render — chat bubbles re-render on
     // every streamed token and the plain pass is never needed until now.
-    const payload = mode === "plain" ? markdownToPlainText(text) : text;
     try {
-      await navigator.clipboard.writeText(payload);
+      if (mode === "plain") {
+        await navigator.clipboard.writeText(markdownToPlainText(text));
+      } else {
+        await writeRichClipboard(text);
+      }
       setCopied(true);
       if (resetTimer.current !== null) clearTimeout(resetTimer.current);
       resetTimer.current = setTimeout(() => setCopied(false), COPIED_RESET_MS);
@@ -203,6 +208,30 @@ export function CopyMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/**
+ * «نسخ»: ``text/html`` (rendered, RTL) for Word / Google Docs, plus the raw
+ * markdown as ``text/plain`` for targets that only take text. Falls back to
+ * markdown-only where ``ClipboardItem`` is missing or the rich write is refused.
+ */
+async function writeRichClipboard(markdown: string): Promise<void> {
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([markdownToClipboardHtml(markdown)], {
+            type: "text/html",
+          }),
+          "text/plain": new Blob([markdown], { type: "text/plain" }),
+        }),
+      ]);
+      return;
+    } catch {
+      // Fall through to the text-only write.
+    }
+  }
+  await navigator.clipboard.writeText(markdown);
 }
 
 function CopyMenuItem({
