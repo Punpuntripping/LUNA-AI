@@ -48,8 +48,30 @@ from supabase import Client as SupabaseClient
 
 from shared.config import get_settings
 from shared.db.run import run_db
+from shared.observability import get_logfire
 
 logger = logging.getLogger(__name__)
+_logfire = get_logfire()
+
+
+def _emit(level: str, msg: str, *args: Any, exc_info: bool = False) -> None:
+    """stdlib logger AND Logfire. App loggers have no handler in prod, so only
+    Logfire's console output reaches Railway logs — the `delivered` / `rejected`
+    lines the X test plan reads must go through it. Never raises."""
+    getattr(logger, level)(msg, *args, exc_info=exc_info)
+    try:
+        text = msg % args if args else msg
+        getattr(_logfire, level)("{text}", text=text, _exc_info=exc_info)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _info(msg: str, *args: Any) -> None:
+    _emit("info", msg, *args)
+
+
+def _warn(msg: str, *args: Any, exc_info: bool = False) -> None:
+    _emit("warning", msg, *args, exc_info=exc_info)
 
 Kind = Literal["signup", "purchase", "visit"]
 
@@ -107,7 +129,7 @@ def _config() -> Optional[dict[str, str]]:
     }
     missing = [k for k, v in cfg.items() if not (v or "").strip()]
     if missing:
-        logger.warning("x_conversions: enabled but config missing %s — not sending", missing)
+        _warn("x_conversions: enabled but config missing %s — not sending", missing)
         return None
     cfg = {k: v.strip() for k, v in cfg.items()}  # type: ignore[union-attr]
     for kind, value in (("signup", s.X_EVENT_ID_SIGNUP), ("purchase", s.X_EVENT_ID_PURCHASE),
@@ -181,7 +203,7 @@ async def _send(kind: Kind, *, conversion_id: str, conversion_time: Any, twclid:
     try:
         event_id = cfg[f"event_{kind}"]
         if not event_id:
-            logger.warning("x_conversions: X_EVENT_ID_%s unset — %s not sent", kind.upper(), kind)
+            _warn("x_conversions: X_EVENT_ID_%s unset — %s not sent", kind.upper(), kind)
             return False
         payload = build_payload(event_id, _iso_utc(conversion_time), conversion_id, twclid)
         headers = {
@@ -191,17 +213,17 @@ async def _send(kind: Kind, *, conversion_id: str, conversion_time: Any, twclid:
         async with httpx.AsyncClient(timeout=_SEND_TIMEOUT_S) as client:
             resp = await client.post(cfg["url"], json=payload, headers=headers)
         if 200 <= resp.status_code < 300:
-            logger.info(
+            _info(
                 "x_conversions: %s delivered conversion_id=%s body=%s",
                 kind, conversion_id, payload,
             )
             return True
-        logger.warning(
+        _warn(
             "x_conversions: %s rejected conversion_id=%s status=%s body=%s",
             kind, conversion_id, resp.status_code, resp.text[:500],
         )
     except Exception:  # noqa: BLE001
-        logger.warning("x_conversions: %s send failed conversion_id=%s", kind, conversion_id, exc_info=True)
+        _warn("x_conversions: %s send failed conversion_id=%s", kind, conversion_id, exc_info=True)
     return False
 
 
@@ -241,7 +263,7 @@ async def _deliver(supabase: SupabaseClient, kind: Kind, *, user_id: str,
             await run_db(_stamp_sent, supabase, user_id, kind)
         except Exception:  # noqa: BLE001
             # Delivered but unstamped → the retry re-sends; X dedupes it.
-            logger.warning("x_conversions: stamp failed user=%s kind=%s", user_id, kind, exc_info=True)
+            _warn("x_conversions: stamp failed user=%s kind=%s", user_id, kind, exc_info=True)
     return ok
 
 
@@ -252,7 +274,7 @@ def _schedule(coro) -> None:
         task.add_done_callback(_background_tasks.discard)
     except Exception:  # noqa: BLE001
         coro.close()
-        logger.warning("x_conversions: could not schedule send", exc_info=True)
+        _warn("x_conversions: could not schedule send", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +372,7 @@ async def record_signup(
     try:
         job = await run_db(_record_signup_sync, supabase, auth_id, twclid, utm_source, utm_campaign)
     except Exception:  # noqa: BLE001
-        logger.warning("x_conversions: record_signup failed auth=%s", auth_id, exc_info=True)
+        _warn("x_conversions: record_signup failed auth=%s", auth_id, exc_info=True)
         return
     if job and _config() is not None:
         _schedule(_deliver(
@@ -397,7 +419,7 @@ async def on_payment_paid(supabase: SupabaseClient, row: dict) -> None:
             twclid=claimed["x_twclid"],
         ))
     except Exception:  # noqa: BLE001
-        logger.warning("x_conversions: on_payment_paid failed payment=%s", row.get("payment_id"), exc_info=True)
+        _warn("x_conversions: on_payment_paid failed payment=%s", row.get("payment_id"), exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +436,13 @@ def schedule_visit(twclid: Any) -> None:
     """Fire-and-forget visit event. Never raises, never blocks."""
     try:
         clean = clean_twclid(twclid)
-        if not clean or not visit_enabled():
+        if not clean:
+            return
+        cfg = _config()
+        if cfg is None:
+            return
+        if not cfg["event_visit"]:
+            _warn("x_conversions: X_EVENT_ID_VISIT unset — visit not sent")
             return
         _schedule(_send(
             "visit",
@@ -423,7 +451,7 @@ def schedule_visit(twclid: Any) -> None:
             twclid=clean,
         ))
     except Exception:  # noqa: BLE001
-        logger.warning("x_conversions: schedule_visit failed", exc_info=True)
+        _warn("x_conversions: schedule_visit failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -472,4 +500,5 @@ async def retry_pending(supabase: SupabaseClient) -> dict:
                             conversion_id=str(r["x_purchase_payment_id"]),
                             conversion_time=r.get("x_purchase_at"), twclid=r["x_twclid"])
         stats["purchase_sent" if ok else "purchase_failed"] += 1
+    _info("x_conversions: retry complete %s", stats)
     return stats
