@@ -362,14 +362,17 @@ class TemplateRef(BaseModel):
     )
 
     def used_entry(self) -> dict:
-        """The ``templates_used`` record stored on the draft WI + assistant message."""
+        """The ``templates_used`` record stored on the draft WI + assistant message.
+
+        No ``sources``: a template's المصادر belong to its own page
+        (``/templates/{id}``), not to the chat line or the draft it produced.
+        """
         return {
             "template_id": self.template_id,
             "title": self.title,
             "scope": self.scope,
             "subtype": self.template_type,
             "court": self.court,
-            "sources": list(self.sources),
         }
 
 

@@ -17,8 +17,8 @@ interface TemplatesUsedLineProps {
 /**
  * «القوالب المستخدمة في الكتابة» — a compact, muted provenance row under an
  * assistant answer whose turn produced a draft: which قالب(s) the writer built
- * on, each linking to ``/templates/{id}``, with its scope and the sources the
- * template was derived from.
+ * on, each linking to ``/templates/{id}``, with its scope. A template's
+ * المصادر live on its own page (``/templates/{id}``) only — never repeated here.
  *
  * Deliberately NOT chip-styled: ``NextStepChips`` are rounded outline buttons
  * that act; this is a plain text line that informs.
@@ -64,24 +64,6 @@ export const TemplatesUsedLine = memo(function TemplatesUsedLine({
               {t.title}
             </Link>
             <TemplateScopeBadge scope={t.scope} short />
-            {t.sources.length > 0 && (
-              <span className="inline-flex items-center gap-1">
-                <span>المصادر:</span>
-                {t.sources.map((url, i) => (
-                  <a
-                    key={`${i}-${url}`}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={url}
-                    aria-label={`المصدر ${i + 1} (يفتح في نافذة جديدة)`}
-                    className="tabular-nums text-foreground/70 underline-offset-4 hover:text-foreground hover:underline"
-                  >
-                    [{i + 1}]
-                  </a>
-                ))}
-              </span>
-            )}
           </span>
         ))
       )}
