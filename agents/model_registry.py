@@ -747,8 +747,10 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         output_price=3.48,
         cached_input_price=0.0036,
     ),
+    # Alibaba retires the bare "deepseek-v4-flash" id on 2026-10-10 (notice
+    # id=2009); "-0731" is its named replacement. Key kept so slots/ledger match.
     "deepseek-v4-flash": ModelConfig(
-        model_id="deepseek-v4-flash",
+        model_id="deepseek-v4-flash-0731",
         provider="alibaba",
         display_name="DeepSeek V4 Flash (Alibaba)",
         supports_vision=False,
