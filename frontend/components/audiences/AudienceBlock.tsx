@@ -11,7 +11,11 @@ import type { Audience } from "./content";
 export function AudienceBlock({ audience }: { audience: Audience }) {
   const Icon = audience.icon;
   return (
-    <div className="flex flex-col rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-7">
+    // id = deep-link target for the homepage «من يستفيد من ريحان؟» cards.
+    <div
+      id={audience.id}
+      className="flex scroll-mt-24 flex-col rounded-2xl border border-border bg-card p-6 shadow-sm sm:p-7"
+    >
       {/* Header */}
       <div className="flex items-center gap-3">
         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">

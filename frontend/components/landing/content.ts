@@ -18,6 +18,10 @@ import {
   FileUp,
   Search,
   ClipboardCopy,
+  Droplets,
+  Ship,
+  Dumbbell,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -526,3 +530,110 @@ export const LAWYER_FAQ: FaqItem[] = [
     a: "كل استشهاد في التقرير أو المذكرة مرقّم ومربوط بمصدره: «عرض المصدر» يفتح النص الحرفي للمادة أو الحكم، و«فتح المصدر الرسمي» ينقلك إلى صفحته لدى الجهة المختصة.",
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Sector breadth — «ما الذي يميّزنا عن منافسينا في السوق؟»
+//
+// The differentiator: the library spans every regulator, not only the Ministry
+// of Justice. Each card is a REAL document that is PUBLISHED in /regulations
+// (has an seo_item_meta slug — never feature one that isn't), and each sample
+// question is answered by a clause actually in that document (checked against
+// chunks_v2 on 2026-10-11).
+// ---------------------------------------------------------------------------
+
+export const SECTORS_HEADER = {
+  eyebrow: "ما الذي يميّزنا عن منافسينا في السوق؟",
+  title: "أنظمة كل القطاعات، لا وزارة العدل وحدها",
+  subtitle:
+    "نفخر في ريحان بأننا أولينا الأهمية لجميع الأنظمة واللوائح والأحكام في كل القطاعات، لا لما يصدر عن وزارة العدل فقط. في مكتبتنا ستجد مثلاً:",
+} as const;
+
+export interface SectorExample {
+  icon: LucideIcon;
+  sector: string;
+  title: string;
+  /** /regulations/{slug} — raw Arabic, encoded at render. */
+  slug: string;
+  /** A question this document answers, in the user's voice. */
+  q: string;
+}
+
+export const SECTOR_EXAMPLES: SectorExample[] = [
+  {
+    icon: Droplets,
+    sector: "المياه",
+    title: "دليل تقديم خدمات المياه والصرف الصحي",
+    slug: "دليل-تقديم-خدمات-المياه-والصرف-الصحي",
+    q: "سدّدت فاتورة المياه المتأخرة — خلال كم ساعة يجب أن تعود الخدمة؟",
+  },
+  {
+    icon: Ship,
+    sector: "النقل البحري",
+    title: "اللائحة التنفيذية لإدارة السلامة وتشغيل السفن",
+    slug: "اللائحة-التنفيذية-لإدارة-السلامة-وتشغيل-السفن",
+    q: "ما متطلبات إدارة السلامة التي يجب أن تستوفيها شركتي لتشغيل سفنها؟",
+  },
+  {
+    icon: Dumbbell,
+    sector: "حماية المستهلك",
+    title: "وثيقة حماية المستهلك الخاصة بالصالات والمراكز الرياضية",
+    slug: "وثيقة-حماية-المستهلك-الخاصة-بالصالات-والمراكز-الرياضية",
+    q: "هل يحق لي تعليق اشتراكي في النادي الرياضي؟ وكم مرة؟",
+  },
+  {
+    icon: Zap,
+    sector: "الكهرباء",
+    title: "اتفاقية استهلاك الخدمة الكهربائية",
+    slug: "اتفاقية-استهلاك-الخدمة-الكهربائية",
+    q: "تضرّرت أجهزتي بسبب خطأ من شركة الكهرباء — هل لي تعويض؟",
+  },
+];
+
+export const SECTORS_CLOSING = {
+  lead: "مكتبتنا هي الأغنى، لكنها بلا فائدة ما لم يكن ريحان مصمَّماً خصيصاً ليجيب عن سؤالك بدقة.",
+  body: "ولن نستطيع إقناعك بجودته بالكلام، فالتجربة خير برهان.",
+  cta: "سجّل وجرّبه مجاناً",
+} as const;
+
+// ---------------------------------------------------------------------------
+// Testimonials — «تجارب المستخدمين»
+//
+// REAL feedback sent by two lawyers on 2026-10-05 (WhatsApp), merged into one
+// review each; wording kept, only spelling fixed. Do not embellish.
+// ---------------------------------------------------------------------------
+
+export const TESTIMONIALS_HEADER = {
+  title: "تجارب المستخدمين",
+  subtitle: "بكلماتهم — كما وصلتنا من محامين يعملون بريحان.",
+} as const;
+
+export const TESTIMONIALS: { name: string; quote: string }[] = [
+  {
+    name: "المحامية أنوار",
+    quote:
+      "ساعدني ريحان في تحليل القضايا بناءً على السوابق القضائية والأنظمة، واختيار التصنيف الأنسب للقضية، ومعرفة الاختصاص والوسيلة المثلى لرفع الدعوى والدفع فيها، ثم صياغة التحرير والمذكرات بناءً على ذلك. وساعدني في كتابة الاعتراضات بتحليل الحكم وتسبيبه وأوجه الضعف فيه، واختيار أفضل سُبل الطعن والنقض استناداً إلى الأنظمة والأحكام — وساعدني على الحصول على أحكام نقض بفضل الله.",
+  },
+  {
+    name: "المحامي عبدالعزيز",
+    quote:
+      "ساعدني ريحان في تحليل العقود القانونية ومعرفة أوجه النقص فيها واستقراء مشكلاتها، ثم صياغة عقود أقوى وأفضل تستند إلى الأنظمة وآلية تطبيقها بصورة ممتازة. كما ساعدني في إعداد الدراسات القانونية وخطة العمل للعميل بصورة واضحة ودقيقة.",
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Who benefits — «من يستفيد من ريحان؟»
+//
+// Lawyer-first (~80/20): the lawyer card is featured, the other personas sit
+// beneath it. Persona copy is reused from the /audiences content (SSoT); each
+// card deep-links to its block there.
+// ---------------------------------------------------------------------------
+
+export const WHO_BENEFITS_HEADER = {
+  title: "من يستفيد من ريحان؟",
+  subtitle:
+    "صُمّم ريحان أولاً للمحامي — ولأن مكتبته تغطّي كل القطاعات، يستفيد منه كل من يتعامل مع نظام سعودي.",
+  lawyerBadge: "صُمّم للمحامي أولاً",
+  more: "اعرف المزيد",
+  allCta: "اكتشف من يستفيد من ريحان",
+  href: "/audiences",
+} as const;
