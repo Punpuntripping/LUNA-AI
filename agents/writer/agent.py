@@ -49,8 +49,14 @@ _WRITER_RETRY_MSG = (
 )
 
 
+# response_tokens_limit counts REASONING tokens too, and is only checked once
+# the whole response has arrived. At 30k, deepseek-v4-flash-0731 on
+# reasoning=max routinely finished a ~20k-char memo at ~40k total tokens after
+# 6–7 minutes — then the finished draft was discarded (prod 2026-10-10: 6/12
+# writer runs; two turns hit the 900s pipeline timeout). 100k matches the
+# aggregator, the other _FLASH_MAX slot.
 WRITER_LIMITS = UsageLimits(
-    response_tokens_limit=30_000,    # higher than aggregator -- generation
+    response_tokens_limit=100_000,
     request_limit=2,
 )
 

@@ -40,6 +40,8 @@ import logging
 import time
 from typing import Any, overload
 
+from pydantic_ai.exceptions import UsageLimitExceeded
+
 from agents.utils.tracking import track_stage
 
 from .agent import WRITER_LIMITS, create_writer_agent
@@ -299,6 +301,14 @@ async def _run_writer(
             )
             _t.set(primary_failed=True, primary_error=str(exc))
             try:
+                # The "fallback" is the SAME agent_writer model on the SAME
+                # input (model_name is only a label), so re-running it after a
+                # usage-limit overrun just burns another 6+ minutes to fail
+                # the same way — which is what pushed turns past the 900s
+                # pipeline timeout (2026-10-10/11). Retry only failures a
+                # second attempt can plausibly fix.
+                if isinstance(exc, UsageLimitExceeded):
+                    raise exc
                 agent = create_writer_agent(deps, subtype=subtype, model_name=fallback_model)
                 result = await agent.run(user_message, deps=deps, usage_limits=WRITER_LIMITS)
                 _t.record_run(result, slot="agent_writer")
