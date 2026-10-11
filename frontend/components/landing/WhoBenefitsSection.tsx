@@ -1,7 +1,5 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { buttonVariants } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { AUDIENCES } from "@/components/audiences/content";
 import { WHO_BENEFITS_HEADER } from "./content";
 
@@ -16,7 +14,7 @@ export function WhoBenefitsSection() {
   const hrefFor = (id: string) => `${WHO_BENEFITS_HEADER.href}#${id}`;
 
   return (
-    <section className="mx-auto max-w-5xl px-4 py-16 sm:py-20">
+    <section className="mx-auto max-w-5xl px-4 py-14 sm:py-16">
       <div className="mx-auto max-w-2xl text-center">
         <h2 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
           {WHO_BENEFITS_HEADER.title}
@@ -29,7 +27,7 @@ export function WhoBenefitsSection() {
       {/* Featured: the lawyer. */}
       <Link
         href={hrefFor(lawyer.id)}
-        className="group mt-10 flex flex-col gap-5 rounded-3xl border border-primary/30 bg-primary/[0.05] p-6 shadow-sm transition-shadow hover:shadow-md sm:flex-row sm:items-center sm:p-8"
+        className="group mt-8 flex flex-col gap-5 rounded-3xl border border-primary/30 bg-primary/[0.05] p-6 shadow-sm transition-shadow hover:shadow-md sm:flex-row sm:items-center sm:p-8"
       >
         <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
           <LawyerIcon className="h-8 w-8" />
@@ -48,45 +46,24 @@ export function WhoBenefitsSection() {
         <ArrowLeft className="hidden h-5 w-5 shrink-0 text-primary transition-transform group-hover:-translate-x-1 sm:block" />
       </Link>
 
-      {/* Secondary personas. */}
-      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+      {/* Secondary personas — compact rows, detail lives on /audiences. */}
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
         {others.map((a) => {
           const Icon = a.icon;
           return (
             <Link
               key={a.id}
               href={hrefFor(a.id)}
-              className="group flex flex-col rounded-2xl border border-border bg-card p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+              className="group flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-3.5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
             >
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                  <Icon className="h-4 w-4" />
-                </span>
-                <h3 className="text-base font-bold text-foreground">{a.title}</h3>
-              </div>
-              <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
-                {a.tagline}
-              </p>
-              <span className="mt-auto inline-flex items-center gap-1 pt-3 text-sm font-medium text-primary">
-                {WHO_BENEFITS_HEADER.more}
-                <ArrowLeft className="h-3.5 w-3.5" />
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Icon className="h-4 w-4" />
               </span>
+              <h3 className="flex-1 text-sm font-bold text-foreground">{a.title}</h3>
+              <ArrowLeft className="h-4 w-4 shrink-0 text-primary/60 transition-transform group-hover:-translate-x-0.5" />
             </Link>
           );
         })}
-      </div>
-
-      <div className="mt-8 flex justify-center">
-        <Link
-          href={WHO_BENEFITS_HEADER.href}
-          className={cn(
-            buttonVariants({ variant: "outline", size: "lg" }),
-            "gap-2 bg-card/60 text-base transition-colors hover:bg-card",
-          )}
-        >
-          {WHO_BENEFITS_HEADER.allCta}
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
       </div>
     </section>
   );

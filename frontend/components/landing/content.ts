@@ -127,28 +127,6 @@ export const COMPARISON: ComparisonRow[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Data-moat stats band
-// ---------------------------------------------------------------------------
-
-export interface Stat {
-  value: string;
-  label: string;
-  /** Optional secondary line — e.g. the entities a source class comes from. */
-  hint?: string;
-}
-
-export const STATS: Stat[] = [
-  { value: "+3,500", label: "نظام ولائحة ودليل" },
-  {
-    value: "+1,800",
-    label: "تعميم رسمي",
-    hint: "وزارة العدل · هيئة الغذاء والدواء · البنك المركزي",
-  },
-  { value: "+30,000", label: "قضية وحكم قضائي" },
-  { value: "+200", label: "كيان حكومي", hint: "مصادر مجمّعة" },
-];
-
-// ---------------------------------------------------------------------------
 // Search-WI showcase — a REAL Rayhan output (blog share c6f6b05f…).
 // The conclusion excerpt + citations are taken verbatim from a real answer so
 // the showcase reflects the actual product, not a mock. This example cites 16
@@ -532,7 +510,7 @@ export const LAWYER_FAQ: FaqItem[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Sector breadth — «ما الذي يميّزنا عن منافسينا في السوق؟»
+// Sector breadth — the evidence half of «ما الذي يميّزنا عن منافسينا في السوق؟»
 //
 // The differentiator: the library spans every regulator, not only the Ministry
 // of Justice. Each card is a REAL document that is PUBLISHED in /regulations
@@ -541,11 +519,18 @@ export const LAWYER_FAQ: FaqItem[] = [
 // chunks_v2 on 2026-10-11).
 // ---------------------------------------------------------------------------
 
-export const SECTORS_HEADER = {
-  eyebrow: "ما الذي يميّزنا عن منافسينا في السوق؟",
-  title: "أنظمة كل القطاعات، لا وزارة العدل وحدها",
+/** Header for the landing's merged differentiator block — ComparisonSection
+ *  (vs. general tools) with the sector evidence beneath it. /vs-chatgpt keeps
+ *  the default COMPARISON_HEADER. */
+export const DIFFERENTIATOR_HEADER = {
+  title: "ما الذي يميّزنا عن منافسينا في السوق؟",
   subtitle:
-    "نفخر في ريحان بأننا أولينا الأهمية لجميع الأنظمة واللوائح والأحكام في كل القطاعات، لا لما يصدر عن وزارة العدل فقط. في مكتبتنا ستجد مثلاً:",
+    "الأدوات العامة مفيدة للأسئلة اليومية، لكنها لم تُصمَّم للعمل القانوني السعودي. وريحان لا يكتفي بما يصدر عن وزارة العدل: مكتبته تجمع أنظمة ولوائح أكثر من 200 جهة حكومية في كل القطاعات.",
+} as const;
+
+export const SECTORS_HEADER = {
+  title: "أنظمة كل القطاعات، لا وزارة العدل وحدها",
+  subtitle: "في مكتبتنا ستجد مثلاً:",
 } as const;
 
 export interface SectorExample {
@@ -633,7 +618,5 @@ export const WHO_BENEFITS_HEADER = {
   subtitle:
     "صُمّم ريحان أولاً للمحامي — ولأن مكتبته تغطّي كل القطاعات، يستفيد منه كل من يتعامل مع نظام سعودي.",
   lawyerBadge: "صُمّم للمحامي أولاً",
-  more: "اعرف المزيد",
-  allCta: "اكتشف من يستفيد من ريحان",
   href: "/audiences",
 } as const;

@@ -1,4 +1,5 @@
 import { Check, X } from "lucide-react";
+import type { ReactNode } from "react";
 import { COMPARISON, COMPARISON_HEADER } from "./content";
 
 /**
@@ -9,16 +10,25 @@ import { COMPARISON, COMPARISON_HEADER } from "./content";
  * each row into a stacked card, with inline column labels so the ✓/✗ still make
  * sense without the header row. Shares the same grid template across header and
  * body rows so the columns stay aligned in RTL.
+ *
+ * The landing passes its own `header` and renders the sector evidence as
+ * `children` beneath the table; /vs-chatgpt uses the defaults.
  */
-export function ComparisonSection() {
+export function ComparisonSection({
+  header = COMPARISON_HEADER,
+  children,
+}: {
+  header?: { title: string; subtitle: string };
+  children?: ReactNode;
+}) {
   return (
     <section className="mx-auto max-w-5xl px-4 py-16 sm:py-20">
       <div className="mx-auto max-w-2xl text-center">
-        <h2 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-          {COMPARISON_HEADER.title}
+        <h2 className="text-balance text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+          {header.title}
         </h2>
-        <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-          {COMPARISON_HEADER.subtitle}
+        <p className="mt-3 text-pretty text-base leading-relaxed text-muted-foreground">
+          {header.subtitle}
         </p>
       </div>
 
@@ -93,6 +103,8 @@ export function ComparisonSection() {
           })}
         </div>
       </div>
+
+      {children}
     </section>
   );
 }
