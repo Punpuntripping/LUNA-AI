@@ -29,10 +29,13 @@ from agents.utils.welcome import (
 # ---------------------------------------------------------------------------
 
 
-def test_legal_group_gets_the_lawyer_honorific() -> None:
+def test_legal_group_is_never_called_a_lawyer() -> None:
+    """`legal` lumps lawyers with law students and researchers, and stores no
+    label — nothing proves the user practises, so no «المحامي» (2026-10-11)."""
     line = compose_opening(WelcomeState("user_first", "أسعد", "legal"))
 
-    assert line.startswith("أهلين بالمحامي أسعد،")
+    assert line.startswith("أهلين أسعد،")
+    assert "المحامي" not in line
     assert "شكرًا لتجربتك ريحان" in line
 
 
@@ -42,9 +45,9 @@ def test_entrepreneur_group_gets_its_own_honorific() -> None:
     assert line.startswith("أهلين برائد الأعمال خالد،")
 
 
-@pytest.mark.parametrize("group", ["specialist", "individual", "declined", None])
+@pytest.mark.parametrize("group", ["legal", "specialist", "individual", "declined", None])
 def test_every_other_group_is_greeted_by_name_alone(group: str | None) -> None:
-    """Only the two groups the product asked for carry an honorific."""
+    """Only the entrepreneur group carries an honorific."""
     line = compose_opening(WelcomeState("user_first", "نورة", group))
 
     assert line.startswith("أهلين نورة،")
@@ -63,7 +66,7 @@ def test_a_nameless_user_gets_the_standalone_sentence() -> None:
 def test_return_gap_copy_is_the_short_one() -> None:
     line = compose_opening(WelcomeState("return_gap", "أسعد", "legal"))
 
-    assert line == "أهلين بالمحامي أسعد، حياك الله من جديد. بالنسبة لسؤالك…"
+    assert line == "أهلين أسعد، حياك الله من جديد. بالنسبة لسؤالك…"
 
 
 @pytest.mark.parametrize("variant", ["user_first", "return_gap"])
@@ -88,7 +91,7 @@ def test_no_state_renders_nothing() -> None:
 def test_block_carries_the_line_and_overrides_the_no_preamble_rule() -> None:
     text = render_welcome_instruction(WelcomeState("user_first", "أسعد", "legal"))
 
-    assert "أهلين بالمحامي أسعد، شكرًا لتجربتك ريحان" in text
+    assert "أهلين أسعد، شكرًا لتجربتك ريحان" in text
     # The responder's system prompt says "start with the essence, no preambles"
     # — without this the two instructions fight and the system prompt wins.
     assert "overrides" in text
@@ -271,7 +274,7 @@ def _router_instructions(welcome: WelcomeState | None) -> str:
 
 def test_router_carries_the_block_only_when_the_turn_earns_one() -> None:
     assert _router_instructions(None) == ""
-    assert "أهلين بالمحامي" in _router_instructions(
+    assert "أهلين أسعد" in _router_instructions(
         WelcomeState("user_first", "أسعد", "legal")
     )
 
@@ -314,7 +317,7 @@ def test_responder_puts_the_welcome_ahead_of_the_mode_framing() -> None:
     # user's first reply, so the greeting rides it too.
     text = build_responder_instructions(deps)
 
-    assert text.index("أهلين بالمحامي أسعد") < text.index("Mode framing")
+    assert text.index("أهلين أسعد") < text.index("Mode framing")
 
 
 def test_router_prompt_no_longer_licenses_a_welcome() -> None:
@@ -335,3 +338,36 @@ def test_writer_summary_cap_makes_room_for_the_greeting() -> None:
 
     assert limit == 500 + WELCOME_CHAR_ALLOWANCE
     assert build_writer_deps().welcome_instruction is None
+
+
+# ---------------------------------------------------------------------------
+# Stamping welcomed_at
+# ---------------------------------------------------------------------------
+
+
+def test_mark_welcomed_merges_with_the_internal_user_id() -> None:
+    """Regression: it used to route through update_preferences, which expects
+    an auth_id — the lookup failed silently and welcomed_at was never written,
+    so EVERY conversation re-sent the first-ever greeting."""
+    from unittest.mock import MagicMock
+
+    from agents.utils.welcome import WELCOMED_AT_KEY, mark_welcomed
+
+    sb = MagicMock()
+    mark_welcomed(sb, "internal-uid", WelcomeState("user_first", "أسعد", "legal"))
+
+    name, params = sb.rpc.call_args.args
+    assert name == "merge_preferences"
+    assert params["p_user_id"] == "internal-uid"
+    assert WELCOMED_AT_KEY in params["p_patch"]
+    sb.table.assert_not_called()  # no auth_id → user_id lookup
+
+
+def test_mark_welcomed_leaves_a_returner_alone() -> None:
+    from unittest.mock import MagicMock
+
+    from agents.utils.welcome import mark_welcomed
+
+    sb = MagicMock()
+    mark_welcomed(sb, "u1", WelcomeState("return_gap", "أسعد", "legal"))
+    sb.rpc.assert_not_called()

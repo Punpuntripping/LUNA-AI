@@ -73,15 +73,18 @@ class WelcomeState:
 # the product's own voice, deliberately warmer than the MSA the rest of the
 # prompts use.
 #
-# The honorifics carry their own «بـ» so the address renders as «أهلين بالمحامي
-# أسعد» rather than «أهلين بـالمحامي أسعد». They are MASCULINE and we store no
-# gender: a woman in either group sees the masculine form, and `legal` covers
-# «محامٍ · طالب قانون · باحث قانوني» so a law student is addressed as «المحامي».
-# Raised with the product owner and accepted on 2026-08-14 — do not quietly
-# "fix" this into a neutral form.
+# The honorifics carry their own «بـ» so the address renders as «أهلين برائد
+# الأعمال خالد» rather than «أهلين بـرائد الأعمال خالد». MASCULINE, and we
+# store no gender — raised with the product owner and accepted on 2026-08-14.
+#
+# There is deliberately NO «بالمحامي» for the `legal` group. That onboarding
+# answer is one tap covering «محامٍ · طالب قانون · باحث قانوني» and stores no
+# label, so nothing in `users` proves the person is a practising lawyer —
+# and calling a law student «المحامي» is worse than using no title. Product
+# owner, 2026-10-11: only address someone as a lawyer when they truly are one.
+# Re-add it only behind a field that actually records that.
 
 _HONORIFICS: dict[str, str] = {
-    "legal": "بالمحامي",
     "entrepreneur": "برائد الأعمال",
 }
 
@@ -318,13 +321,19 @@ def mark_welcomed(supabase: SupabaseClient, user_id: str, state: WelcomeState | 
     if state is None or state.variant != "user_first":
         return
     try:
-        from backend.app.services.preferences_service import update_preferences
-
-        update_preferences(
-            supabase,
-            user_id,
-            {WELCOMED_AT_KEY: datetime.now(timezone.utc).isoformat()},
-        )
+        # Straight to the merge RPC with the INTERNAL user_id. Not via
+        # ``preferences_service.update_preferences``: that takes an auth_id and
+        # resolves it through get_user_id, so handing it a users.user_id raised
+        # inside this try, the warning was swallowed, and welcomed_at was never
+        # written — every conversation's opening turn re-sent the first-ever
+        # greeting (prod 2026-10-11: zero users stamped).
+        supabase.rpc(
+            "merge_preferences",
+            {
+                "p_user_id": user_id,
+                "p_patch": {WELCOMED_AT_KEY: datetime.now(timezone.utc).isoformat()},
+            },
+        ).execute()
     except Exception as e:
         logger.warning("mark_welcomed failed for user %s: %s", user_id, e)
 
