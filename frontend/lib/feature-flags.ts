@@ -12,8 +12,20 @@
 const EMAIL_OTP_KEY = "rayhan.ff.email_otp";
 const EMAIL_OTP_PARAM = "otp";
 
-/** Is «الدخول برمز عبر البريد» shown on this device? SSR-safe (false). */
+/**
+ * THE switch for retiring the device flag (email_otp_login.md rollout step 7,
+ * once the backend runs `EMAIL_OTP_MODE=open`): set to `false` and the link
+ * «الدخول برمز عبر البريد» renders for everyone in login mode. Nothing else
+ * has to change — `?otp=1|0` then only edits a key nobody reads. The full
+ * cleanup (deleting this file and LoginForm's `otpEnabled` state, plan §B2)
+ * can follow at leisure.
+ */
+const EMAIL_OTP_DEVICE_GATED = true;
+
+/** Is «الدخول برمز عبر البريد» shown on this device? SSR-safe (false while
+ *  gated). */
 export function isEmailOtpEnabled(): boolean {
+  if (!EMAIL_OTP_DEVICE_GATED) return true;
   try {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(EMAIL_OTP_KEY) === "1";

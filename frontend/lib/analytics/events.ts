@@ -100,7 +100,9 @@ export type AnalyticsEventName =
   | "otp_requested"
   /** Code accepted and the session is live. */
   | "otp_verified"
-  /** Request or verify refused. Props: `reason` (invalid | rate_limited | error). */
+  /** Request or verify refused. Props: `reason` (invalid | rate_limited |
+   *  unavailable | error), `stage`. `unavailable` = `fallback: "password"` or
+   *  a 503 — the UI switched to the password form. */
   | "otp_failed"
   // ---- login card (LoginForm) — did they tap, and what refused them? -----
   /** Submit / Google tapped. Props: `method` (password | google), `mode`. */

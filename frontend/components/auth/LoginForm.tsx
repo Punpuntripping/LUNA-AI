@@ -362,10 +362,20 @@ export function LoginForm() {
         onSuccess={async () => {
           router.push(await resolveLanding());
         }}
-        onBack={() => {
+        onBack={(otpEmail) => {
+          if (otpEmail) setEmail(otpEmail);
           setShowOtp(false);
           setServerError(null);
           setNotice(null);
+        }}
+        // Codes cannot be emailed right now (owner answer 2, 2026-10-12):
+        // say so and land on the password card with the email filled in —
+        // never a silent wait for a code that will not come.
+        onPasswordFallback={(otpEmail) => {
+          if (otpEmail) setEmail(otpEmail);
+          setShowOtp(false);
+          setServerError(null);
+          setNotice("تعذّر إرسال رمز الدخول حالياً — سجّل الدخول بكلمة المرور");
         }}
       />
     );

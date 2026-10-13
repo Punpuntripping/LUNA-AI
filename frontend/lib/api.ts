@@ -58,6 +58,7 @@ import type {
   EarlyAdopterCampaign,
 } from "@/types";
 import type {
+  OtpRequestResponse,
   PasswordForgotResponse,
   PasswordResetRequest,
 } from "@/lib/contracts";
@@ -529,9 +530,13 @@ export const authApi = {
   // «الدخول برمز عبر البريد» (.claude/plans/email_otp_login.md). Unauthenticated
   // like /login — no token is in memory on the login page, so none is sent.
   /** Always `{sent: true}` on 200, whether or not the email is allowed or
-   *  exists — the UI must never read membership into it. 429 when throttled. */
+   *  exists — the UI must never read membership into it. 429 when throttled.
+   *  `fallback: "password"` (global, never per-email) = codes cannot be
+   *  emailed right now (daily cap / mail provider down / feature off); an
+   *  older backend says the same with a 503. Either way the UI switches to
+   *  the password form instead of waiting for a code that will not arrive. */
   otpRequest: (email: string) =>
-    api.post<{ sent: boolean }>("/auth/otp/request", { email }),
+    api.post<OtpRequestResponse>("/auth/otp/request", { email }),
 
   /** Same response shape as `login` — the store treats it as a normal login.
    *  401 = wrong/expired code, 429 = too many attempts (Arabic `detail`). */

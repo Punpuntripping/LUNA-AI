@@ -29,15 +29,23 @@ const emailSchema = z
   .min(1, "البريد الإلكتروني مطلوب")
   .email("صيغة البريد الإلكتروني غير صحيحة");
 
-type FailReason = "invalid" | "rate_limited" | "error";
+type FailReason = "invalid" | "rate_limited" | "unavailable" | "error";
 
 function failReason(err: unknown): FailReason {
   if (err instanceof ApiClientError) {
     if (err.status === 429) return "rate_limited";
     if (err.status === 401) return "invalid";
+    // Code login switched off server-side (`EMAIL_OTP_MODE=off` on a backend
+    // that predates the `fallback` field) — same outcome as `fallback`.
+    if (err.status === 503) return "unavailable";
   }
   return "error";
 }
+
+/** Outcome of POST /auth/otp/request. `fallback` = no code will arrive for
+ *  ANYONE right now (owner answer 2, 2026-10-12): never advance to the code
+ *  step, hand over to the password form instead. */
+type RequestOutcome = "sent" | "fallback" | "failed";
 
 /** The server's Arabic `detail` when there is one; a generic line otherwise. */
 function errorMessage(err: unknown): string {
@@ -50,14 +58,20 @@ interface EmailOtpLoginProps {
   initialEmail?: string;
   /** Runs after the session is live — LoginForm's own landing logic. */
   onSuccess: () => Promise<void>;
-  /** «الدخول بكلمة المرور» — back to the password card. */
-  onBack: () => void;
+  /** «الدخول بكلمة المرور» — back to the password card, carrying whatever
+   *  email was typed here so it is not retyped. */
+  onBack: (email: string) => void;
+  /** Codes cannot be emailed right now (`fallback: "password"` or a 503).
+   *  The parent shows the password card with `email` pre-filled and the
+   *  notice «تعذّر إرسال رمز الدخول حالياً — سجّل الدخول بكلمة المرور». */
+  onPasswordFallback: (email: string) => void;
 }
 
 export function EmailOtpLogin({
   initialEmail = "",
   onSuccess,
   onBack,
+  onPasswordFallback,
 }: EmailOtpLoginProps) {
   const loginWithOtp = useAuthStore((s) => s.loginWithOtp);
 
@@ -85,20 +99,28 @@ export function EmailOtpLogin({
     if (step === "code") codeInputRef.current?.focus();
   }, [step]);
 
-  /** POST /auth/otp/request. A 200 says nothing about the email — always
-   *  advance, never hint at whether the address is registered. */
-  const requestCode = async (target: string): Promise<boolean> => {
+  /** POST /auth/otp/request. A plain 200 says nothing about the email —
+   *  always advance, never hint at whether the address is registered. The
+   *  `fallback` flag is global (cap / provider / mode), so acting on it leaks
+   *  nothing per-email. */
+  const requestCode = async (target: string): Promise<RequestOutcome> => {
     setServerError(null);
     setIsSending(true);
     try {
-      await authApi.otpRequest(target);
+      const res = await authApi.otpRequest(target);
+      if (res.fallback === "password") {
+        track("otp_failed", { reason: "unavailable", stage: "request" });
+        return "fallback";
+      }
       track("otp_requested");
       setCooldown(RESEND_COOLDOWN_S);
-      return true;
+      return "sent";
     } catch (err) {
-      track("otp_failed", { reason: failReason(err), stage: "request" });
+      const reason = failReason(err);
+      track("otp_failed", { reason, stage: "request" });
+      if (reason === "unavailable") return "fallback";
       setServerError(errorMessage(err));
-      return false;
+      return "failed";
     } finally {
       setIsSending(false);
     }
@@ -114,7 +136,10 @@ export function EmailOtpLogin({
     setEmailError(null);
     const normalised = parsed.data.toLowerCase();
     setEmail(normalised);
-    if (await requestCode(normalised)) {
+    const outcome = await requestCode(normalised);
+    if (outcome === "fallback") {
+      onPasswordFallback(normalised);
+    } else if (outcome === "sent") {
       setCode("");
       setStep("code");
     }
@@ -132,6 +157,12 @@ export function EmailOtpLogin({
     } catch (err) {
       const reason = failReason(err);
       track("otp_failed", { reason, stage: "verify" });
+      // Switched off between the request and the verify — no code entered
+      // here can succeed now, so stop asking for one.
+      if (reason === "unavailable") {
+        onPasswordFallback(email);
+        return;
+      }
       setServerError(errorMessage(err));
       // A wrong code is retyped from scratch; clear it so auto-submit re-arms.
       if (reason === "invalid") setCode("");
@@ -158,7 +189,10 @@ export function EmailOtpLogin({
   const handleResend = async () => {
     if (cooldown > 0 || isSending) return;
     setCode("");
-    await requestCode(email);
+    if ((await requestCode(email)) === "fallback") {
+      onPasswordFallback(email);
+      return;
+    }
     codeInputRef.current?.focus();
   };
 
@@ -292,7 +326,7 @@ export function EmailOtpLogin({
       <div className="text-center text-sm">
         <button
           type="button"
-          onClick={onBack}
+          onClick={() => onBack(email.trim())}
           disabled={isVerifying}
           className="min-h-11 px-2 font-medium text-primary hover:text-primary/80 disabled:opacity-50 transition-colors"
           data-testid="password-login-link"
