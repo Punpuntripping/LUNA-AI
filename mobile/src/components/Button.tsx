@@ -39,7 +39,14 @@ export function Button({ label, onPress, variant = "primary", loading = false, d
     >
       {/* While loading the label stays laid out but invisible (keeps the
           button's size) and the spinner sits alone on top of it. */}
-      <AppText variant="base" weight={600} style={{ color: fg, opacity: loading ? 0 : 1 }}>
+      {/* stretch + centre: Android re-uses a stale measured width for a
+          shrink-wrapped custom-font label after navigating back (QA F1,
+          «تغيير كلمة المرور» clipped to «تغيير كلمة»). Full width avoids it. */}
+      <AppText
+        variant="base"
+        weight={600}
+        style={{ color: fg, opacity: loading ? 0 : 1, alignSelf: "stretch", textAlign: "center" }}
+      >
         {label}
       </AppText>
       {loading ? (
