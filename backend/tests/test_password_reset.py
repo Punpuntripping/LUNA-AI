@@ -224,6 +224,27 @@ def test_forgot_fails_open_without_redis(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_reset_signs_out_other_sessions(monkeypatch) -> None:
+    # Owner 2026-10-13: a code-based password change kills every OTHER session.
+    h = Harness(monkeypatch)
+    calls: list = []
+    h.supabase.auth = SimpleNamespace(
+        admin=SimpleNamespace(sign_out=lambda jwt, scope: calls.append(scope))
+    )
+    assert h.reset().status_code == 200
+    assert calls == ["others"]
+
+
+def test_reset_sign_out_failure_does_not_fail_request(monkeypatch) -> None:
+    h = Harness(monkeypatch)
+
+    def _boom(jwt, scope):
+        raise RuntimeError("gotrue down")
+
+    h.supabase.auth = SimpleNamespace(admin=SimpleNamespace(sign_out=_boom))
+    assert h.reset().status_code == 200
+
+
 def test_reset_happy_path_matches_login_shape(monkeypatch) -> None:
     h = Harness(monkeypatch, shared_auth=SimpleNamespace(auth=LoginGoTrue()))
     res = h.reset(" 123 456 ")

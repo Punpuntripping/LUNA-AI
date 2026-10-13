@@ -1412,6 +1412,19 @@ async def password_reset(
     user = getattr(updated, "user", None) or user
 
     logger.info("auth.password.reset.done email_hash=%s", ekey)
+
+    # Owner 2026-10-13: a password set/change signs out every OTHER session
+    # (web + app), same as /set-password. scope="others" keeps the recovery
+    # session we are returning. Password is already changed → never fail on it.
+    try:
+        await run_db(supabase.auth.admin.sign_out, session.access_token, "others")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "Could not revoke other sessions after password reset (email_hash=%s): %s",
+            ekey,
+            e,
+        )
+
     try:
         await run_db(_audit_account_event, supabase, user.id, "update", "password_reset")
     except Exception as e:  # noqa: BLE001
