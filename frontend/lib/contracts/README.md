@@ -26,4 +26,16 @@ cd frontend && npx tsc --noEmit
 cd mobile && npx tsc --noEmit
 ```
 
-Nothing has been moved here yet; what moves is an owner decision.
+## What lives here
+
+| File | Contents | Web keeps importing from |
+|---|---|---|
+| `auth.ts` | `User`, `AuthTokens`, `AuthResponse` (moved) + native auth bodies (`SignupRequest`, `SignupResponse`, `OtpRequestResponse`, …) | `@/types` (re-export) |
+| `app-config.ts` | `AppConfig` (`GET /app/config`), `AppPlatform`, `APP_HEADERS` | — (native only) |
+| `errors.ts` | `ErrorCode` union (mirror of `backend/app/errors.py`), `ApiErrorEnvelope` | — |
+| `legal.ts` | `LEGAL_VERSION`, `LEGAL_ROUTES` (moved) | `@/lib/legal` (re-export) |
+| `numerals.ts` | `AR_NUM_LOCALE`, `AR_DATE_LOCALE`, `toLatinDigits` (moved) | `@/lib/format/numerals` (re-export) |
+
+Moved files are re-exported from their old web paths so no web consumer changed.
+Messages / conversations / SSE types move in mobile Phase 2. A new backend
+`ErrorCode` member must be added to `errors.ts` in the same change.
