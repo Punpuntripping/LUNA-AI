@@ -426,6 +426,22 @@ All of these are additive and backward-compatible. The web is unaffected.
 9. After `eas init`: **U4** EAS Update channels + first preview build → **S4** native Sentry → exit criterion 9 and the RTL/font sign-off on the build.
 
 
+## Status 2026-10-13 — DEPLOYED + live-tested (commits 4820d24 a4424d2 3338755 4ac6dd3 af134a1 9929d23)
+- ✅ Backend B1/B2/B3/B6/B7/B8 + password/forgot|reset live; prod smoke: 426 gate, 422s, web untouched.
+- ✅ Exit criteria tested on the Android emulator (Expo Go) against prod: 1 (Arabic/RTL via
+  `direction`, font, colours, dark), 2 (signup → users row: terms_version, marketing false,
+  `signup_checkbox`, `android_app`), 4 (persisted session), 5, 6, password reset → login.
+- ✅ Owner decision: password set/change = **email code ONLY** on web + app (no links, no
+  current-password form); reset/change signs out all OTHER sessions. Web `/forgot-password`
+  + settings rebuilt; `/reset-password` + old links → `/forgot-password?link=expired`.
+  Owner tested web OK.
+- ✅ Supabase: Email OTP length **6**, expiry 600 s; templates live: Confirm signup (link +
+  code), Magic Link (code), Reset Password (**code only**), Password changed notification ON.
+  Lesson: a link in the email gets opened (user or mail scanner) and BURNS the code.
+- Main test account: `enterprise@rayhanai.com` (owner pastes codes).
+- ⏳ Left: exit 3 (code login for all → OTP Phase B), 7 (min-version on device), 8 Sentry
+  (no account), 9 EAS Update + first dev build (RTL/font sign-off on a real build), iOS.
+
 ## Addendum 2026-10-13 — «نسيت كلمة المرور» added to Phase 1 (owner)
 - Why it is essential: most users are **Google-only with no password** (33/51 in Aug) and the
   app has no Google sign-in in v1 → their way in = reset (creates a first password) or OTP
