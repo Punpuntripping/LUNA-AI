@@ -33,9 +33,20 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#F7F2EC",
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 76
+          "imageWidth": 76,
+          "dark": {
+            "backgroundColor": "#1A1917"
+          }
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-localization",
+        {
+          "supportsRTL": true,
+          "forcesRTL": true
         }
       ]
     ],
@@ -48,6 +59,7 @@
       "eas": {
         "projectId": "c7100d6f-ab0a-44be-ba3e-a328e4388642"
       }
-    }
+    },
+    "backgroundColor": "#F7F2EC"
   }
 }

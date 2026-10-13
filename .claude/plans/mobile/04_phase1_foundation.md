@@ -315,6 +315,10 @@ When it's done, the owner can do all of this on an Android emulator and on an iP
     `http.host eq "api.rayhanai.com"` (a JSON API, where a challenge can never be solved). Do **not** skip on the spoofable
     `X-App-Platform` header.
   - Repeat the probe from the emulator and the iPhone using the real app.
+  - ✅ **Result 2026-10-13 (curl, no Authorization):** UAs `okhttp/4.12.0`, `Rayhan/1 CFNetwork…`,
+    `Expo/… CFNetwork…` and an EMPTY UA → `/auth/login` 401 JSON, `/auth/refresh` 401 JSON,
+    `/auth/otp/request` 200/429 JSON, `/health` 200 — no `cf-mitigated`, no HTML. No WAF change
+    needed. Re-probe `/app/config` + `/auth/signup*` after the B-deploy, and from real devices.
 - **N2 Origin/CSRF:** no `Origin` or `Referer` check exists in the backend. CORS only answers browsers. Origin lock = a
   Cloudflare-injected secret, which is fine because the app goes through `api.rayhanai.com`. No cookies, no CSRF. Nothing
   to change.
@@ -421,6 +425,18 @@ All of these are additive and backward-compatible. The web is unaffected.
 8. **S1–S3** Sentry (JS in Expo Go) → exit criterion 8.
 9. After `eas init`: **U4** EAS Update channels + first preview build → **S4** native Sentry → exit criterion 9 and the RTL/font sign-off on the build.
 
+
+## Addendum 2026-10-13 — «نسيت كلمة المرور» added to Phase 1 (owner)
+- Why it is essential: most users are **Google-only with no password** (33/51 in Aug) and the
+  app has no Google sign-in in v1 → their way in = reset (creates a first password) or OTP
+  code login (Phase B).
+- Backend: `POST /auth/password/forgot {email}` → `{sent:true}` (5xx → 503, never swallowed);
+  `POST /auth/password/reset {email, code, new_password}` → verify_otp `recovery` + set
+  password in one call → LoginResponse (no session if the password update fails).
+- App: login link «نسيت كلمة المرور؟» → `forgot-password` → `reset-password` (code + new
+  password + confirm) → logged in.
+- Supabase **Reset Password** template → `supabase/email_templates/reset_password_ar.html`
+  (link for web + `{{ .Token }}` for the app). Owner pastes it with the Confirm-signup one.
 
 ## Addendum 2026-10-12 — code entry UX
 - Code inputs (login OTP, signup verify) use `textContentType="oneTimeCode"` (iOS
