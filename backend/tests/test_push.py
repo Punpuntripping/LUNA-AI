@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -46,6 +47,9 @@ class _Query:
         self.payload: Any = None
         self.on_conflict: Optional[str] = None
         self.filters: list[tuple[str, Any]] = []
+        self.in_filters: list[tuple[str, set]] = []
+        self.orders: list[tuple[str, bool, Optional[bool]]] = []
+        self.limit_n: Optional[int] = None
         self.single = False
 
     def select(self, *_cols: str) -> "_Query":
@@ -68,17 +72,43 @@ class _Query:
         self.filters.append((col, val))
         return self
 
+    def in_(self, col: str, vals: Any) -> "_Query":
+        self.in_filters.append((col, set(vals)))
+        return self
+
+    def order(self, col: str, *, desc: bool = False, nullsfirst: Optional[bool] = None) -> "_Query":
+        self.orders.append((col, desc, nullsfirst))
+        return self
+
+    def limit(self, n: int) -> "_Query":
+        self.limit_n = n
+        return self
+
     def maybe_single(self) -> "_Query":
         self.single = True
         return self
 
     def _match(self, row: dict) -> bool:
-        return all(row.get(c) == v for c, v in self.filters)
+        return (all(row.get(c) == v for c, v in self.filters)
+                and all(row.get(c) in vs for c, vs in self.in_filters))
+
+    def _sorted(self, hits: list[dict]) -> list[dict]:
+        # PostgREST semantics: first .order() is the primary key. Apply keys
+        # last-to-first with a stable sort. Postgres default: NULLS FIRST on DESC.
+        for col, desc, nullsfirst in reversed(self.orders):
+            nulls = [r for r in hits if r.get(col) is None]
+            vals = sorted((r for r in hits if r.get(col) is not None),
+                          key=lambda r: r[col], reverse=desc)
+            nf = desc if nullsfirst is None else nullsfirst
+            hits = nulls + vals if nf else vals + nulls
+        return hits
 
     def execute(self) -> Optional[_Result]:
         rows = self.db.tables.setdefault(self.table, [])
         if self.op == "select":
-            hits = [dict(r) for r in rows if self._match(r)]
+            hits = self._sorted([dict(r) for r in rows if self._match(r)])
+            if self.limit_n is not None:
+                hits = hits[: self.limit_n]
             if self.single:
                 return _Result(hits[0]) if hits else None
             return _Result(hits)
@@ -88,7 +118,9 @@ class _Query:
                 if r.get(key) == self.payload[key]:
                     r.update(self.payload)
                     return _Result([dict(r)])
-            row = {"id": f"sub-{len(rows) + 1}-{self.payload['endpoint'][-4:]}",
+            self.db.seq += 1
+            row = {"id": f"sub-{self.db.seq}-{self.payload['endpoint'][-4:]}",
+                   "created_at": f"2026-09-25T12:00:{self.db.seq:02d}+00:00",
                    "last_success_at": None, **self.payload}
             rows.append(row)
             return _Result([dict(row)])
@@ -106,6 +138,7 @@ class _Query:
 
 class FakeSupabase:
     def __init__(self) -> None:
+        self.seq = 0
         self.tables: dict[str, list[dict]] = {
             "users": [
                 {"user_id": USER_A, "auth_id": AUTH_A, "deletion_requested_at": None},
@@ -126,7 +159,14 @@ def _user(auth_id: str) -> AuthUser:
     return AuthUser(auth_id=auth_id, email="x@example.com", role="authenticated")
 
 
-def _sub(endpoint: str, user_id: str = USER_A, failure_count: int = 0) -> dict:
+def _sub(
+    endpoint: str,
+    user_id: str = USER_A,
+    failure_count: int = 0,
+    *,
+    created_at: str = "2026-01-01T00:00:00+00:00",
+    last_success_at: Optional[str] = None,
+) -> dict:
     return {
         "id": f"id-{endpoint[-6:]}",
         "user_id": user_id,
@@ -134,7 +174,8 @@ def _sub(endpoint: str, user_id: str = USER_A, failure_count: int = 0) -> dict:
         "p256dh": "BPkey",
         "auth": "authsecret",
         "user_agent": None,
-        "last_success_at": None,
+        "created_at": created_at,
+        "last_success_at": last_success_at,
         "failure_count": failure_count,
     }
 
@@ -182,7 +223,8 @@ def fake_webpush(monkeypatch: pytest.MonkeyPatch):
     def webpush(*, subscription_info, data, vapid_private_key, vapid_claims, **kw):
         state.calls.append({
             "subscription_info": subscription_info, "data": data,
-            "vapid_private_key": vapid_private_key, "vapid_claims": dict(vapid_claims), **kw,
+            "vapid_private_key": vapid_private_key, "vapid_claims": dict(vapid_claims),
+            "thread": threading.current_thread().name, **kw,
         })
         status = state.status_by_endpoint.get(subscription_info["endpoint"])
         if status == "boom":
@@ -251,6 +293,90 @@ def test_subscribe_rejects_non_https_endpoint() -> None:
         )
 
 
+@pytest.mark.parametrize("endpoint", [
+    "https://attacker.example/slow-tarpit-endpoint",
+    "https://fcm.googleapis.com.evil.example/fcm/send/x",   # suffix spoof
+    "https://fcm.googleapis.com@evil.example/fcm/send/x",   # userinfo trick
+    "https://evilpush.apple.com/abc123",                    # not a .push.apple.com subdomain
+    "https://notify.windows.com.evil.example/w/?token=x",
+    "https://fcm.googleapis.com:8443/fcm/send/abc",         # non-default port
+    "https://10.0.0.5/internal-service",
+    "https://redis.railway.internal/x",
+    "http://fcm.googleapis.com/fcm/send/abc",               # not https
+])
+def test_subscribe_rejects_non_allowlisted_host(endpoint: str) -> None:
+    with pytest.raises(ValidationError):
+        push_api.PushSubscribeRequest(endpoint=endpoint, keys={"p256dh": "k", "auth": "a"})
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://fcm.googleapis.com/fcm/send/dXk1abc:APA91bH",                 # Chrome / Android
+    "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABk",        # Firefox
+    "https://web.push.apple.com/QGuQyavXutnMH0",                           # Safari / iOS
+    "https://wns2-par02p.notify.windows.com/w/?token=BQYAAAB",             # Edge
+    "https://FCM.GoogleAPIs.com/fcm/send/upper-case-host",
+    "https://fcm.googleapis.com:443/fcm/send/explicit-port",
+])
+def test_subscribe_accepts_real_push_hosts(endpoint: str) -> None:
+    body = push_api.PushSubscribeRequest(endpoint=endpoint, keys={"p256dh": "k", "auth": "a"})
+    assert body.endpoint == endpoint
+
+
+def test_unsubscribe_stays_lenient_for_legacy_rows() -> None:
+    # A row stored before the allowlist must still be deletable by its owner.
+    db = FakeSupabase()
+    legacy = "https://attacker.example/legacy-row"
+    db.subs.append(_sub(legacy, USER_A))
+    body = push_api.PushUnsubscribeRequest(endpoint=legacy)
+    _run(push_api.unsubscribe(body=body, current_user=_user(AUTH_A), supabase=db))
+    assert db.subs == []
+    with pytest.raises(ValidationError):
+        push_api.PushUnsubscribeRequest(endpoint="http://169.254.169.254/latest")
+
+
+def test_subscribe_trims_to_cap_keeping_most_recently_active() -> None:
+    db = FakeSupabase()
+    fcm = "https://fcm.googleapis.com/fcm/send/"
+    # rank key = last_success_at or created_at
+    db.subs.extend([
+        _sub(fcm + "old-never-ok", created_at="2026-01-01T00:00:00+00:00"),          # stalest → trimmed
+        _sub(fcm + "old-but-used", created_at="2026-01-02T00:00:00+00:00",
+             last_success_at="2026-09-20T00:00:00.123456+00:00"),                    # kept (recent success)
+        _sub(fcm + "mid-00000003", created_at="2026-05-01T00:00:00+00:00"),
+        _sub(fcm + "mid-00000004", created_at="2026-06-01T00:00:00+00:00"),
+        _sub(fcm + "mid-00000005", created_at="2026-07-01T00:00:00+00:00"),
+        _sub(fcm + "user-b-dev01", USER_B, created_at="2025-01-01T00:00:00+00:00"),   # other user untouched
+    ])
+    new_ep = fcm + "brand-new-dev"
+    body = push_api.PushSubscribeRequest(endpoint=new_ep, keys={"p256dh": "k", "auth": "a"})
+    _run(push_api.subscribe(request=_req(), body=body, current_user=_user(AUTH_A), supabase=db))
+
+    a_eps = {r["endpoint"] for r in db.subs if r["user_id"] == USER_A}
+    assert len(a_eps) == push_service.MAX_SUBS_PER_USER == 5
+    assert fcm + "old-never-ok" not in a_eps
+    assert {new_ep, fcm + "old-but-used"} <= a_eps
+    assert any(r["user_id"] == USER_B for r in db.subs)
+
+
+def test_resubscribing_a_stale_endpoint_keeps_it_over_the_cap() -> None:
+    # 6 rows already (e.g. a subscribe race) and the user re-subscribes the
+    # stalest one: it just proved it is live, so something else goes.
+    db = FakeSupabase()
+    fcm = "https://fcm.googleapis.com/fcm/send/"
+    stale = fcm + "stalest-0001"
+    db.subs.append(_sub(stale, created_at="2026-01-01T00:00:00+00:00"))
+    for i in range(2, 7):
+        db.subs.append(_sub(fcm + f"dev-{i:08d}", created_at=f"2026-0{i}-01T00:00:00+00:00"))
+
+    body = push_api.PushSubscribeRequest(endpoint=stale, keys={"p256dh": "k", "auth": "a"})
+    _run(push_api.subscribe(request=_req(), body=body, current_user=_user(AUTH_A), supabase=db))
+
+    eps = {r["endpoint"] for r in db.subs}
+    assert len(eps) == 5
+    assert stale in eps
+    assert fcm + "dev-00000002" not in eps  # the next-stalest was trimmed instead
+
+
 def test_unsubscribe_deletes_only_own_rows() -> None:
     db = FakeSupabase()
     mine = "https://web.push.apple.com/mine-0001"
@@ -298,6 +424,49 @@ def test_success_sends_content_free_payload_and_stamps_row(vapid_on, fake_webpus
         assert call["vapid_claims"] == {"sub": "mailto:support@rayhanai.com"}
     a_rows = [r for r in db.subs if r["user_id"] == USER_A]
     assert all(r["last_success_at"] and r["failure_count"] == 0 for r in a_rows)
+
+
+def test_send_never_exceeds_cap_and_prefers_most_recently_active(vapid_on, fake_webpush) -> None:
+    # 8 rows (bypassing the subscribe trim, as a race could): only the 5 most
+    # recently active are contacted — last_success_at DESC NULLS LAST, then created_at.
+    db = FakeSupabase()
+    fcm = "https://fcm.googleapis.com/fcm/send/"
+    for i in range(1, 4):
+        db.subs.append(_sub(fcm + f"used-{i:07d}", created_at="2026-01-01T00:00:00+00:00",
+                            last_success_at=f"2026-09-0{i}T00:00:00+00:00"))
+    for i in range(1, 6):
+        db.subs.append(_sub(fcm + f"never-{i:06d}", created_at=f"2026-0{i}-01T00:00:00+00:00"))
+
+    _run(push_service.notify_turn_ready(USER_A, CONV, supabase=db))
+
+    sent = {c["subscription_info"]["endpoint"] for c in fake_webpush.calls}
+    assert len(sent) == push_service.MAX_SUBS_PER_USER
+    assert sent == {fcm + "used-0000001", fcm + "used-0000002", fcm + "used-0000003",
+                    fcm + "never-000005", fcm + "never-000004"}
+
+
+def test_send_skips_stored_non_allowlisted_endpoints(vapid_on, fake_webpush) -> None:
+    # Rows written before the allowlist existed are never contacted.
+    db = FakeSupabase()
+    good = "https://web.push.apple.com/good-device"
+    db.subs.extend([
+        _sub("https://attacker.example/tarpit-1"),
+        _sub("http://169.254.169.254/latest/meta"),
+        _sub(good),
+    ])
+    _run(push_service.notify_turn_ready(USER_A, CONV, supabase=db))
+    assert [c["subscription_info"]["endpoint"] for c in fake_webpush.calls] == [good]
+
+
+def test_sends_run_on_dedicated_push_pool_not_default_executor(vapid_on, fake_webpush) -> None:
+    db = FakeSupabase()
+    db.subs.extend([_sub("https://fcm.googleapis.com/fcm/send/dev-01"),
+                    _sub("https://web.push.apple.com/dev-02")])
+    _run(push_service.notify_turn_ready(USER_A, CONV, supabase=db))
+    assert len(fake_webpush.calls) == 2
+    assert all(c["thread"].startswith("luna-push") for c in fake_webpush.calls)
+    assert all(c["timeout"] == 10 for c in fake_webpush.calls)
+    assert push_service._PUSH_EXECUTOR._max_workers == 4
 
 
 def test_title_only_with_explicit_opt_in_and_truncated() -> None:
