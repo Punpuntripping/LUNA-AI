@@ -417,8 +417,14 @@ def is_verified_crawler(request: Request) -> bool:
 
 
 # ============================================
-# THE SECTION GATE — a sector/court slice is a PAID surface
+# THE SECTION GATE — a sector slice is a PAID surface
 # (2026-08-11, user request)
+#
+# ⚠ COURTS WERE UN-GATED ON 2026-10-03 (owner). ``/judgments/courts/{slug}`` now
+# follows the ordinary hub depth caps (anon 1 · free 3 · paid unbounded), so the
+# judgments handler passes only the SECTOR axis into ``section_scoped``. The
+# court half of the reasoning below is kept as history; a court + sector request
+# is still walled through its sector.
 #
 # ⚠ THE SECTION AXIS MULTIPLIES THE DEPTH CAP, WHICH IS WHY DEPTH ALONE DID NOT
 # HOLD. A free reader gets 3 pages = 27 items of ``/regulations``. Add the
@@ -3302,10 +3308,13 @@ async def list_judgments(
     if not _hub_page_visible(
         request, response, page=page, tier=tier, current_user=current_user,
         search_dropped=search_dropped,
-        # BOTH section axes. `domain` is the resolved sector NAME (this wing's
-        # spelling of it) and `court_variants` the court bucket — either one
-        # alone makes this a pre-cut slice. See the section-gate block comment.
-        section_scoped=bool(domain or court_variants),
+        # The SECTOR axis only. `domain` is the resolved sector NAME (this
+        # wing's spelling of it). ⚠ `court_variants` is deliberately ABSENT
+        # since 2026-10-03 (owner): a court page follows the ordinary hub
+        # depth caps — anon 1 · free 3 · paid unbounded — like `/judgments`
+        # itself, rather than the paid-only section wall. A court COMBINED
+        # with a sector is still walled, through `domain`.
+        section_scoped=bool(domain),
     ):
         total_pages = await _wall_total_pages(
             tier,

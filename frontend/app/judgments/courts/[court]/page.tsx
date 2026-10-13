@@ -44,7 +44,12 @@ import { ogImageUrl } from "@/lib/seo/og";
 // reach would be cloaking. So the directive is back and the sitemap section is
 // gone (`lib/seo/sitemap.ts`).
 //
-// TO RESTORE: un-gate the court axis, drop the `robots` keys below, and re-add
+// ⚠ 2026-10-03: the court axis IS un-gated now (owner) — a court page follows
+// the ordinary hub depth caps (anon page 1 · free 3 · paid unbounded), so the
+// anonymous body is real cards again. The noindex below was deliberately LEFT
+// ON in that change: re-indexing is a separate SEO/PDPL decision.
+//
+// TO RESTORE: drop the `robots` keys below, and re-add
 // "courts" to SITEMAP_SECTIONS + its route case, in ONE commit. Everything this
 // page links to — the judgment documents, deep pagination — stays `noindex,
 // nofollow` regardless until the anonymization audit passes; see the flip
@@ -96,7 +101,8 @@ export async function generateMetadata({
     description,
     // Canonical stays the bare section: the درجة المحكمة chips slice the SAME
     // collection, they are never separate documents. `robots` is back on since
-    // the section went paid-only — see the header note.
+    // the section went paid-only and stayed on when it was un-gated — see the
+    // header note.
     alternates: { canonical },
     robots: NOINDEX_PDPL,
     openGraph: {

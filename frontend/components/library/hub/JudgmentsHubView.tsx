@@ -110,17 +110,14 @@ export async function JudgmentsHubView({
   const anonMaxPage = data?.max_page ?? data?.max_anon_page ?? 1;
   const hasFilters = Boolean(filters.court_level || filters.domain);
 
-  // Which SECTION axis (if any) narrowed this list — the two the backend refuses
-  // below `paid` since 2026-08-11 (`section_scope_allowed`). Court wins the
-  // wording when both are present: it is the one that owns the URL path, so it
-  // is what the reader thinks they asked for. `court_level` is deliberately
-  // absent — it is a FILTER over the wing, not a pre-cut slice, and it is not
-  // gated. See `sectionWallCopy` and the block comment in `public_library.py`.
-  const sectionScope: SectionScope | undefined = court
-    ? "court"
-    : filters.domain || filters.sector_slug
-      ? "sector"
-      : undefined;
+  // Which SECTION axis (if any) narrowed this list into the paid-only wall
+  // (`section_scope_allowed`). Only the SECTOR axis does: courts were un-gated
+  // on 2026-10-03 and follow the ordinary depth caps (anon 1 · free 3), so a
+  // court page shows the normal signup / upgrade wall. A court + sector request
+  // is still refused by the backend, and gets the sector wording. `court_level`
+  // is a FILTER, never a section. See the block comment in `public_library.py`.
+  const sectionScope: SectionScope | undefined =
+    filters.domain || filters.sector_slug ? "sector" : undefined;
 
   const courts = courtNavItems(courtRows);
   const activeCount = courtRows.find((row) => row.slug === court)?.count ?? null;
