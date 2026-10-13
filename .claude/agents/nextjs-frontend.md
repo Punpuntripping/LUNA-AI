@@ -1,6 +1,6 @@
 ---
 name: nextjs-frontend
-description: Next.js 14 App Router + TypeScript + Tailwind + shadcn/ui specialist for Luna Legal AI. Arabic RTL, IBM Plex Sans Arabic font, Zustand stores, TanStack Query hooks. Use for all frontend UI work including pages, components, stores, hooks, and styling.
+description: Next.js 14 App Router + TypeScript + Tailwind + shadcn/ui specialist for Luna Legal AI. Arabic RTL, Noto Naskh Arabic font, Zustand stores, TanStack Query hooks. Use for all frontend UI work including pages, components, stores, hooks, and styling.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
 color: green
@@ -25,7 +25,7 @@ Working directory: C:\Programming\LUNA_AI\frontend
 These are non-negotiable for every file you create or modify:
 
 - `<html lang="ar" dir="rtl">` on root layout
-- IBM Plex Sans Arabic font loaded via `next/font/google`
+- Noto Naskh Arabic font loaded via `next/font/google` (see `app/layout.tsx` — NOT IBM Plex)
 - Sidebar renders on the RIGHT side of the screen
 - All UI text must be in Arabic — labels, buttons, placeholders, toasts, errors
 - Arabic date formatting conventions:

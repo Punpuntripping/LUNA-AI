@@ -154,7 +154,7 @@ C2. [criterion]
 ...
 
 ## CONSTRAINTS
-- Arabic RTL, IBM Plex Sans Arabic font
+- Arabic RTL, Noto Naskh Arabic font
 - All UI text in Arabic
 - Named exports only, no 'any' types
 - shadcn/ui components from components/ui/
@@ -187,7 +187,7 @@ C4. [criterion] — FAIL: [evidence from evaluator]
 ## CONSTRAINTS
 - Only modify files related to failing criteria
 - Do not break passing criteria
-- Arabic RTL, IBM Plex Sans Arabic font
+- Arabic RTL, Noto Naskh Arabic font
 """)
 ```
 

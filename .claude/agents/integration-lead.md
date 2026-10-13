@@ -1,6 +1,6 @@
 ---
 name: integration-lead
-description: Cross-layer integration coordinator for Luna Legal AI. Verifies frontend TypeScript types match backend Pydantic models, API endpoint URLs align, SSE event contracts match between frontend hooks and backend streaming. Use between build waves to catch mismatches early.
+description: Cross-layer integration coordinator for Luna Legal AI. Verifies web (frontend/) and mobile (mobile/ + @contracts) TypeScript types match backend Pydantic models, API endpoint URLs align, SSE event contracts match, and backend changes stay backward-compatible with shipped app builds. Use between build waves and before any backend change the app depends on.
 tools: Read, Grep, Glob
 model: opus
 color: purple
@@ -196,9 +196,36 @@ For each enum, verify:
 - Python uses `class CaseType(str, Enum)` pattern
 - PostgreSQL uses `CREATE TYPE case_type_enum AS ENUM ('general', 'labor', ...)`
 
+### 6. Mobile Client (`mobile/` + `frontend/lib/contracts/`)
+
+The Expo app (`mobile/`) is a second client of the same backend. Shared pure-TS
+types live in `frontend/lib/contracts/` (imported as `@contracts` by both apps —
+rules in its README). Plans: `.claude/plans/mobile/` (04 = Phase 1).
+
+NOTE: the endpoint/event/enum lists in Areas 1–5 above are historical (Wave 1–4).
+The live route decorators, `frontend/types/index.ts` and the SSE emitters are the
+source of truth — never report a mismatch only because it differs from those lists.
+
+Verify:
+- Every type the app uses comes from `@contracts` (never a hand-copied duplicate
+  in `mobile/`), and `@contracts` matches the backend Pydantic model.
+- `frontend/lib/contracts/` stays pure TS: no React, no `window`/`document`/RN
+  globals, no third-party imports, relative imports only.
+- App API calls (`mobile/` API client) hit routes that exist, with matching
+  method, path, body and query params; app headers `X-App-Platform`,
+  `X-App-Version`, `X-App-Build` are sent.
+- SSE event names/shapes the app parses match the backend emitters (same as web).
+- **Backward compatibility (BLOCKING):** shipped app builds keep calling the API
+  for months. Flag ANY backend change that renames/removes a field, changes a
+  type, makes an optional response field required, or makes an optional request
+  field required. Only additive changes are safe. If `CONTRACTS_VERSION` in
+  `frontend/lib/contracts/index.ts` should have been bumped, say so.
+- Errors the app shows come from the backend Arabic `detail` (or an Arabic
+  fallback), never English.
+
 ## Process
 
-1. Use Glob to locate all relevant files across frontend/, backend/, and shared/
+1. Use Glob to locate all relevant files across frontend/, mobile/, backend/, and shared/
 2. Use Read to load each file's contents
 3. Use Grep to find specific patterns (field names, route decorators, event names, error strings, enum values)
 4. Compare systematically across layers
@@ -231,6 +258,7 @@ Area 2 (API URLs):           X mismatches
 Area 3 (SSE Contract):       X mismatches
 Area 4 (Error Responses):    X mismatches
 Area 5 (Enum Alignment):     X mismatches
+Area 6 (Mobile/contracts):   X mismatches (Y backward-compat breaks)
 -----------------------------------------
 TOTAL:                        X mismatches
 

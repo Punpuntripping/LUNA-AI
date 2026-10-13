@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "843983853467",
+    "project_id": "rayhan-a92c5",
+    "storage_bucket": "rayhan-a92c5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:843983853467:android:e3b956aff68793bee6733e",
+        "android_client_info": {
+          "package_name": "com.rayhanai.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBSKLehOGdcMaElcHmg3-iQIjYcvNoXsqE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
