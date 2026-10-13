@@ -57,6 +57,10 @@ import type {
   CancelSubscriptionReason,
   EarlyAdopterCampaign,
 } from "@/types";
+import type {
+  PasswordForgotResponse,
+  PasswordResetRequest,
+} from "@/lib/contracts";
 import { supabase } from "@/lib/supabase";
 import { loginHref } from "@/lib/safe-next";
 import { getLastAuthIdentity } from "@/lib/auth-identity";
@@ -570,19 +574,37 @@ export const authApi = {
       { preferred_name },
     ),
 
-  /** Rejected with 400 VALIDATION_ERROR for Google-only accounts (no password
-   *  identity); 401 AUTH_INVALID when `current_password` is wrong. */
-  changePassword: (current_password: string, new_password: string) =>
-    api.post<{ success: boolean }>("/auth/change-password", {
-      current_password,
-      new_password,
-    }),
+  // «كلمة المرور» — set / change / forgot, ALL through the emailed code
+  // (owner decision 2026-10-13: email code only — no link, no current-password
+  // form; same method as the mobile app). /auth/change-password and
+  // /auth/set-password still exist server-side but the web no longer calls
+  // them. Unauthenticated like /login: works logged-in, logged-out and for
+  // Google-only accounts (creates their first password).
 
-  /** First password for an account that has none (Google-OAuth signups). No
-   *  current password is sent because there is none; the server refuses with
-   *  409 if the account already has one, so this can never overwrite. */
-  setPassword: (new_password: string) =>
-    api.post<{ success: boolean }>("/auth/set-password", { new_password }),
+  /** POST /auth/password/forgot — emails a 6-digit reset code. `{sent: true}`
+   *  says nothing about membership. 429 = 60 s cooldown / hourly cap, 503 =
+   *  the email could not be sent (Arabic `detail` on both). */
+  //
+  // ⚠ `retry = false` on both: when the caller is logged in (إعدادات الحساب)
+  // a token is in memory, and the default 401 path would refresh and RE-POST
+  // the same wrong code — counting every typo twice toward the server's
+  // wrong-code lockout. A 401 here means "wrong code", never "session expired".
+  passwordForgot: (email: string) =>
+    apiFetch<PasswordForgotResponse>(
+      "/auth/password/forgot",
+      { method: "POST", body: JSON.stringify({ email }) },
+      false,
+    ),
+
+  /** POST /auth/password/reset — same `AuthResponse` as /auth/login.
+   *  401 = wrong/expired code · 429 = too many wrong codes · 400 = password
+   *  rejected (weak / same as current) — the code is SPENT on a 400. */
+  passwordReset: (body: PasswordResetRequest) =>
+    apiFetch<AuthResponse>(
+      "/auth/password/reset",
+      { method: "POST", body: JSON.stringify(body) },
+      false,
+    ),
 
   /** Revokes ALL refresh tokens — including this device's. 503 on failure. */
   logoutAll: () => api.post<{ success: boolean }>("/auth/logout-all"),

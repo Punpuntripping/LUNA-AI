@@ -127,6 +127,15 @@ interface AuthState {
   /** «الدخول برمز عبر البريد» — verify the emailed code, then the exact same
    *  post-login path as `login()`. Errors propagate (401 / 429, Arabic). */
   loginWithOtp: (email: string, code: string) => Promise<void>;
+  /** Set / change / reset the password with the emailed code
+   *  (POST /auth/password/reset), then the exact same session path as
+   *  `login()`. Used by /forgot-password (logged out) AND إعدادات الحساب
+   *  (logged in). Errors propagate (401 / 429 / 400, Arabic `message`). */
+  resetPasswordWithCode: (
+    email: string,
+    code: string,
+    newPassword: string,
+  ) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -208,6 +217,34 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const response = await authApi.otpVerify(email, code);
     await establishSession(response);
     set({ user: response.user, isAuthenticated: true });
+  },
+
+  resetPasswordWithCode: async (email, code, newPassword) => {
+    set({ error: null });
+    const response = await authApi.passwordReset({
+      email,
+      code,
+      new_password: newPassword,
+    });
+    // Same tail as login(): seed the supabase cookie, tokens in memory,
+    // proactive refresh. From the settings dialog this REPLACES the current
+    // session with the fresh one the reset minted.
+    await establishSession(response);
+    // The /login-shaped payload carries a literal `plan_id: null` (see
+    // `ensureSubscriptionLoaded`). Logged out that is harmless — the probe has
+    // not run yet. From إعدادات الحساب it would overwrite a known plan AFTER
+    // the probe already settled, so read /auth/me once; fall back to the
+    // response and re-arm the probe if that read fails.
+    try {
+      const fresh = await authApi.me();
+      set({ user: fresh, isAuthenticated: true });
+    } catch {
+      set({
+        user: { ...response.user, has_password: true },
+        isAuthenticated: true,
+        subscriptionProbed: false,
+      });
+    }
   },
 
   register: async (

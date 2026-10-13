@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { z } from "zod";
 import { CheckCircle2, CreditCard, Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -27,8 +26,8 @@ import { Switch } from "@/components/ui/switch";
 import { useMarketingEmail, useUpdateMarketingEmail } from "@/hooks/use-preferences";
 import { cn } from "@/lib/utils";
 import { AR_DATE_LOCALE } from "@/lib/format/numerals";
-import { PasswordInput } from "@/components/ui/password-input";
-import { ApiClientError, authApi, paymentsApi } from "@/lib/api";
+import { PasswordCodeReset } from "@/components/auth/PasswordCodeReset";
+import { ApiClientError, paymentsApi } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
@@ -37,69 +36,6 @@ import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
 import { usePaymentMethod, useRemovePaymentMethod } from "@/hooks/use-payments";
 import type { CancelSubscriptionReason, SubscriptionState } from "@/types";
 import { PromoTermsLink } from "@/components/pricing/PromoTermsLink";
-
-// Same rule as signup (LoginForm) — keep the messages identical.
-const changePasswordSchema = z
-  .object({
-    current_password: z.string().min(1, "كلمة المرور الحالية مطلوبة"),
-    new_password: z
-      .string()
-      .min(8, "كلمة المرور يجب أن تحتوي على 8 أحرف على الأقل"),
-    confirm_password: z.string().min(1, "تأكيد كلمة المرور مطلوب"),
-  })
-  .refine((data) => data.new_password === data.confirm_password, {
-    message: "كلمتا المرور غير متطابقتين",
-    path: ["confirm_password"],
-  });
-
-// Setting a FIRST password (Google-OAuth accounts): same rules minus the
-// current-password field, because there is none to re-enter.
-const setPasswordSchema = z
-  .object({
-    new_password: z
-      .string()
-      .min(8, "كلمة المرور يجب أن تحتوي على 8 أحرف على الأقل"),
-    confirm_password: z.string().min(1, "تأكيد كلمة المرور مطلوب"),
-  })
-  .refine((data) => data.new_password === data.confirm_password, {
-    message: "كلمتا المرور غير متطابقتين",
-    path: ["confirm_password"],
-  });
-
-interface PasswordFieldProps {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  autoComplete: "current-password" | "new-password";
-  error?: string;
-  testId: string;
-}
-
-/** Thin alias over the shared `PasswordInput` so the existing call sites in
- *  this dialog keep their prop names. The markup — and the RTL/LTR toggle
- *  collision it used to carry — now lives in one place. */
-function PasswordField({
-  id,
-  label,
-  value,
-  onChange,
-  autoComplete,
-  error,
-  testId,
-}: PasswordFieldProps) {
-  return (
-    <PasswordInput
-      id={id}
-      label={label}
-      value={value}
-      onChange={onChange}
-      autoComplete={autoComplete}
-      error={error}
-      data-testid={testId}
-    />
-  );
-}
 
 // ── الاشتراك ─────────────────────────────────────────────────────────────────
 // `.claude/plans/subscription_cancellation.md` §4.
@@ -256,14 +192,16 @@ interface AccountSettingsDialogProps {
 /**
  * إعدادات الحساب — change password · log out of all devices · delete account.
  *
- * Accounts with no password (Google-OAuth signups — most of the user base) get
- * «تعيين كلمة مرور» instead of «تغيير كلمة المرور». Which one is shown comes
- * from the server-resolved `user.has_password` (migration 141), NOT from the
- * Supabase session's `app_metadata.providers` as it once did: setting a password
- * on a Google account does not add an `email` identity, so that read stays
- * ["google"] forever and would keep hiding the form from someone who has a
- * password. Display-only either way — the backend re-checks on every one of
- * these endpoints and 409s a set-password against an account that has one.
+ * Password: set AND change both go through the emailed code (owner decision
+ * 2026-10-13 — email code only, no current-password form, same as the mobile
+ * app): «إرسال رمز إلى بريدك» → code + new password → POST
+ * /auth/password/reset → the returned session replaces the current one. The
+ * web no longer calls /auth/change-password or /auth/set-password.
+ *
+ * `user.has_password` (migration 141, server-resolved — NOT the Supabase
+ * session's `app_metadata.providers`, which stays ["google"] forever after a
+ * Google account gains a password) now only picks the heading and copy:
+ * «تعيين كلمة مرور» vs «تغيير كلمة المرور». The flow is identical either way.
  */
 export function AccountSettingsDialog({
   open,
@@ -274,7 +212,6 @@ export function AccountSettingsDialog({
   const updateMarketingEmail = useUpdateMarketingEmail();
   const logoutAll = useAuthStore((s) => s.logoutAll);
   const savePreferredName = useAuthStore((s) => s.savePreferredName);
-  const loadUser = useAuthStore((s) => s.loadUser);
   // `call_name` is the resolved answer (override → derived first name), which
   // is exactly what the field should show whether or not one was ever typed.
   const callName = useAuthStore((s) => s.user?.call_name);
@@ -285,17 +222,18 @@ export function AccountSettingsDialog({
   const [isSavingName, setIsSavingName] = useState(false);
 
   // Server-resolved (/auth/me). Undefined on a degraded read → treated as
-  // "no password", which only ever OFFERS to set one; the server refuses if
-  // there already is one.
+  // "no password" — copy only; the code flow is the same either way.
   const hasPassword = useAuthStore((s) => s.user?.has_password ?? false);
+  // The code goes to the signed-in account's OWN address — never editable.
+  const accountEmail = useAuthStore((s) => s.user?.email ?? "");
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [passwordSuccess, setPasswordSuccess] = useState(false);
-  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  // Bumped to remount <PasswordCodeReset> back at step 1 (dialog closed, or a
+  // password just saved) — the form holds its own step / code / fields.
+  const [passwordFormKey, setPasswordFormKey] = useState(0);
+  // Which success line to show: "changed" vs "set" (first password).
+  const [passwordSaved, setPasswordSaved] = useState<"changed" | "set" | null>(
+    null,
+  );
 
   const [confirmLogoutAll, setConfirmLogoutAll] = useState(false);
   const [logoutAllError, setLogoutAllError] = useState<string | null>(null);
@@ -364,12 +302,8 @@ export function AccountSettingsDialog({
   }, [open]);
 
   const resetPasswordForm = () => {
-    setCurrentPassword("");
-    setNewPassword("");
-    setConfirmPassword("");
-    setFieldErrors({});
-    setPasswordError(null);
-    setPasswordSuccess(false);
+    setPasswordFormKey((k) => k + 1);
+    setPasswordSaved(null);
   };
 
   const resetCancelForm = () => {
@@ -415,102 +349,16 @@ export function AccountSettingsDialog({
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPasswordError(null);
-    setPasswordSuccess(false);
-
-    const result = changePasswordSchema.safeParse({
-      current_password: currentPassword,
-      new_password: newPassword,
-      confirm_password: confirmPassword,
-    });
-
-    if (!result.success) {
-      const errors: Record<string, string> = {};
-      for (const issue of result.error.issues) {
-        const field = issue.path[0] as string;
-        if (!errors[field]) errors[field] = issue.message;
-      }
-      setFieldErrors(errors);
-      return;
-    }
-
-    setFieldErrors({});
-    setIsChangingPassword(true);
-    try {
-      await authApi.changePassword(currentPassword, newPassword);
-      setCurrentPassword("");
-      setNewPassword("");
-      setConfirmPassword("");
-      setPasswordSuccess(true);
-    } catch (err) {
-      if (err instanceof ApiClientError) {
-        if (err.status === 401) {
-          setPasswordError("كلمة المرور الحالية غير صحيحة");
-        } else if (err.status === 429) {
-          setPasswordError("تم تجاوز الحد المسموح من المحاولات. حاول بعد قليل.");
-        } else {
-          setPasswordError(err.message || "تعذّر تغيير كلمة المرور. حاول مجددًا.");
-        }
-      } else {
-        setPasswordError("تعذّر تغيير كلمة المرور. حاول مجددًا.");
-      }
-    } finally {
-      setIsChangingPassword(false);
-    }
-  };
-
-  const handleSetPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPasswordError(null);
-    setPasswordSuccess(false);
-
-    const result = setPasswordSchema.safeParse({
-      new_password: newPassword,
-      confirm_password: confirmPassword,
-    });
-
-    if (!result.success) {
-      const errors: Record<string, string> = {};
-      for (const issue of result.error.issues) {
-        const field = issue.path[0] as string;
-        if (!errors[field]) errors[field] = issue.message;
-      }
-      setFieldErrors(errors);
-      return;
-    }
-
-    setFieldErrors({});
-    setIsChangingPassword(true);
-    try {
-      await authApi.setPassword(newPassword);
-      setNewPassword("");
-      setConfirmPassword("");
-      setPasswordSuccess(true);
-      // Re-read /auth/me so `has_password` flips and this section becomes the
-      // CHANGE form. Without it the user could submit «تعيين» twice and get a
-      // confusing 409 from the server for what looks like the same action.
-      await loadUser();
-    } catch (err) {
-      if (err instanceof ApiClientError) {
-        if (err.status === 409) {
-          // Raced another tab, or /me had degraded to has_password=false.
-          setPasswordError(
-            "هذا الحساب يملك كلمة مرور بالفعل. أعد فتح الإعدادات لتغييرها.",
-          );
-          void loadUser();
-        } else if (err.status === 429) {
-          setPasswordError("تم تجاوز الحد المسموح من المحاولات. حاول بعد قليل.");
-        } else {
-          setPasswordError(err.message || "تعذّر تعيين كلمة المرور. حاول مجددًا.");
-        }
-      } else {
-        setPasswordError("تعذّر تعيين كلمة المرور. حاول مجددًا.");
-      }
-    } finally {
-      setIsChangingPassword(false);
-    }
+  /** The session was already replaced by `resetPasswordWithCode` (and the user
+   *  re-read from /auth/me, so `has_password` is now true). Reset the form to
+   *  step 1 and say so inline — the app has no toast system.
+   *
+   *  `hasPassword` here is the value from the render that started the submit
+   *  (the form calls the `onSuccess` it captured then), i.e. BEFORE the reset —
+   *  exactly what decides «تعيين» vs «تغيير» for the line we show. */
+  const handlePasswordSaved = () => {
+    setPasswordSaved(hasPassword ? "changed" : "set");
+    setPasswordFormKey((k) => k + 1);
   };
 
   const handleCancelSubscription = async () => {
@@ -737,143 +585,44 @@ export function AccountSettingsDialog({
 
             <Separator />
 
-            {hasPassword ? (
+            {accountEmail && (
               <>
-                <form
-                  onSubmit={handleChangePassword}
+                <div
                   className="flex flex-col gap-3"
-                  noValidate
+                  data-testid="password-section"
                 >
                   <h3 className="text-sm font-semibold text-foreground">
-                    تغيير كلمة المرور
+                    {hasPassword ? "تغيير كلمة المرور" : "تعيين كلمة مرور"}
                   </h3>
-
-                  <PasswordField
-                    id="change-password-current"
-                    label="كلمة المرور الحالية"
-                    value={currentPassword}
-                    onChange={setCurrentPassword}
-                    autoComplete="current-password"
-                    error={fieldErrors.current_password}
-                    testId="change-password-current"
-                  />
-                  <PasswordField
-                    id="change-password-new"
-                    label="كلمة المرور الجديدة"
-                    value={newPassword}
-                    onChange={setNewPassword}
-                    autoComplete="new-password"
-                    error={fieldErrors.new_password}
-                    testId="change-password-new"
-                  />
-                  <PasswordField
-                    id="change-password-confirm"
-                    label="تأكيد كلمة المرور الجديدة"
-                    value={confirmPassword}
-                    onChange={setConfirmPassword}
-                    autoComplete="new-password"
-                    error={fieldErrors.confirm_password}
-                    testId="change-password-confirm"
-                  />
-
-                  {passwordError && (
-                    <p
-                      className="text-sm text-destructive"
-                      data-testid="change-password-error"
-                    >
-                      {passwordError}
+                  {!hasPassword && (
+                    <p className="text-sm text-muted-foreground">
+                      سجّلت الدخول عبر Google، فلا توجد كلمة مرور لحسابك. عيّن
+                      كلمة مرور لتتمكّن من الدخول بالبريد الإلكتروني أيضًا.
                     </p>
                   )}
 
-                  {passwordSuccess && (
+                  {passwordSaved && (
                     <p
                       className="flex items-start gap-2 text-sm text-success-fg"
+                      role="status"
                       data-testid="change-password-success"
                     >
                       <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                      تم تغيير كلمة المرور. تم تسجيل الخروج من الأجهزة الأخرى.
+                      {passwordSaved === "set"
+                        ? "تم تعيين كلمة المرور"
+                        : "تم تغيير كلمة المرور"}
                     </p>
                   )}
 
-                  <Button
-                    type="submit"
-                    disabled={isChangingPassword}
-                    className="w-full"
-                    data-testid="change-password-submit"
-                  >
-                    {isChangingPassword && (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
-                    {isChangingPassword ? "جارٍ الحفظ…" : "تغيير كلمة المرور"}
-                  </Button>
-                </form>
-
-                <Separator />
-              </>
-            ) : (
-              <>
-                <form
-                  onSubmit={handleSetPassword}
-                  className="flex flex-col gap-3"
-                  noValidate
-                >
-                  <h3 className="text-sm font-semibold text-foreground">
-                    تعيين كلمة مرور
-                  </h3>
-                  <p className="text-sm text-muted-foreground">
-                    سجّلت الدخول عبر Google، فلا توجد كلمة مرور لحسابك. عيّن
-                    كلمة مرور لتتمكّن من الدخول بالبريد الإلكتروني أيضًا.
-                  </p>
-
-                  <PasswordField
-                    id="set-password-new"
-                    label="كلمة المرور الجديدة"
-                    value={newPassword}
-                    onChange={setNewPassword}
-                    autoComplete="new-password"
-                    error={fieldErrors.new_password}
-                    testId="set-password-new"
+                  <PasswordCodeReset
+                    key={passwordFormKey}
+                    idPrefix="change-password"
+                    fixedEmail={accountEmail}
+                    sendLabel="إرسال رمز إلى بريدك"
+                    submitLabel="حفظ كلمة المرور"
+                    onSuccess={handlePasswordSaved}
                   />
-                  <PasswordField
-                    id="set-password-confirm"
-                    label="تأكيد كلمة المرور الجديدة"
-                    value={confirmPassword}
-                    onChange={setConfirmPassword}
-                    autoComplete="new-password"
-                    error={fieldErrors.confirm_password}
-                    testId="set-password-confirm"
-                  />
-
-                  {passwordError && (
-                    <p
-                      className="text-sm text-destructive"
-                      data-testid="set-password-error"
-                    >
-                      {passwordError}
-                    </p>
-                  )}
-                  {passwordSuccess && (
-                    <p
-                      className="text-sm text-emerald-600 dark:text-emerald-500"
-                      data-testid="set-password-success"
-                    >
-                      تم تعيين كلمة المرور
-                    </p>
-                  )}
-
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    disabled={isChangingPassword}
-                    className="w-full"
-                    data-testid="set-password-submit"
-                  >
-                    {isChangingPassword && (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
-                    {isChangingPassword ? "جارٍ الحفظ…" : "تعيين كلمة المرور"}
-                  </Button>
-                </form>
+                </div>
 
                 <Separator />
               </>

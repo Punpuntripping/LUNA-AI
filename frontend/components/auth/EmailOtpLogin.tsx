@@ -5,8 +5,13 @@ import { z } from "zod";
 import { Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/auth-store";
 import { ApiClientError, authApi } from "@/lib/api";
-import { toLatinDigits } from "@/lib/format/numerals";
 import { track } from "@/lib/analytics/client";
+import {
+  OTP_CODE_MIN as CODE_MIN,
+  OTP_RESEND_COOLDOWN_S as RESEND_COOLDOWN_S,
+  OtpCodeInput,
+  normaliseOtpCode as normaliseCode,
+} from "@/components/auth/OtpCodeInput";
 
 // «الدخول برمز عبر البريد» (.claude/plans/email_otp_login.md Phase A).
 //
@@ -24,17 +29,7 @@ const emailSchema = z
   .min(1, "البريد الإلكتروني مطلوب")
   .email("صيغة البريد الإلكتروني غير صحيحة");
 
-/** GoTrue's configured OTP length is 6; accept up to 10 in case it is raised. */
-const CODE_MIN = 6;
-const CODE_MAX = 10;
-const RESEND_COOLDOWN_S = 60;
-
 type FailReason = "invalid" | "rate_limited" | "error";
-
-/** Arabic-Indic → Latin, then digits only, capped. Paste-safe ("123 456"). */
-function normaliseCode(raw: string): string {
-  return toLatinDigits(raw).replace(/\D/g, "").slice(0, CODE_MAX);
-}
 
 function failReason(err: unknown): FailReason {
   if (err instanceof ApiClientError) {
@@ -246,24 +241,14 @@ export function EmailOtpLogin({
               >
                 رمز الدخول
               </label>
-              {/* ONE input, not N boxes: iOS offers the code from Mail above
-                  the keyboard only to a single one-time-code field. */}
-              <input
+              <OtpCodeInput
                 ref={codeInputRef}
                 id="otp_code"
-                type="text"
                 value={code}
-                onChange={(e) => handleCodeChange(e.target.value)}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="[0-9]*"
-                maxLength={CODE_MAX}
-                dir="ltr"
+                onChange={handleCodeChange}
                 disabled={isVerifying}
-                placeholder="------"
-                aria-describedby="otp_code_hint"
+                describedBy="otp_code_hint"
                 data-testid="otp-code-input"
-                className="w-full min-h-14 rounded-md border border-input bg-background px-3 py-2 text-center font-mono text-2xl font-semibold tracking-[0.5em] text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent disabled:opacity-60 transition-colors"
               />
               <p id="otp_code_hint" className="text-xs text-muted-foreground">
                 أدخل الرمز المكوّن من 6 أرقام كما وصلك في البريد.

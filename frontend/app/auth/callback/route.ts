@@ -64,6 +64,18 @@ export async function GET(request: Request) {
       ? origin
       : `${forwardedProto}://${forwardedHost}`;
 
+  // Retired password-reset LINKS (owner decision 2026-10-13: the web sets
+  // passwords with an emailed code only). Every reset email ever sent carried
+  // `next=/reset-password`; those links are routed to the code page WITHOUT
+  // exchanging their `?code=`, so a leftover link can no longer sign anyone in.
+  // Nothing from the incoming URL is forwarded — only the non-sensitive notice
+  // flag. Checked before the OAuth / codeless branches because a backend-sent
+  // reset link arrives with no PKCE `code` at all and would otherwise land on
+  // /login?notice=verify_elsewhere, which explains nothing.
+  if (next === "/reset-password") {
+    return NextResponse.redirect(`${base}/forgot-password?link=expired`);
+  }
+
   // Google's own failure (consent denied, provider error) DOES arrive as a
   // query parameter, so this branch is real — and it is the only one that may
   // show the Google-specific message.

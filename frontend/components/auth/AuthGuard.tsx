@@ -88,10 +88,10 @@ const PUBLIC_PREFIXES = [
   // `/about_us/app` — already public via "/about_us"; old `/app` links 308
   // there (next.config.mjs). See .claude/plans/pwa_step1.md.
   "/offline",
-  // «نسيت كلمة المرور» — reachable only by someone who cannot log in, so it has
-  // to render logged-out. Its sibling /reset-password is deliberately NOT here:
-  // that one is entered through /auth/callback, which establishes a session
-  // first, and a visitor arriving without one has no code to redeem.
+  // «نسيت كلمة المرور» — the emailed-code reset. Reachable by someone who cannot
+  // log in, so it has to render logged-out. /reset-password is NOT here and
+  // needs no entry: it is a server-side redirect to this page (retired link
+  // landing) and never renders.
   "/forgot-password",
 ] as const;
 
