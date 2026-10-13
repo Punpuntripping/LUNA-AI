@@ -1,10 +1,12 @@
 """
 Auth API routes — /api/v1/auth/
-13 endpoints: login, otp/request, otp/verify, refresh, logout, me, profession,
-preferred-name, delete-account, restore-account, change-password, set-password,
-logout-all
+18 endpoints: login, otp/request, otp/verify, signup, signup/verify,
+signup/resend, password/forgot, password/reset, refresh, logout, me,
+profession, preferred-name, delete-account, restore-account, change-password,
+set-password, logout-all
 
-(Signup runs client-side via supabase.auth.signUp() — see the note above /refresh.)
+(WEB signup and WEB password reset run client-side via supabase-js; /signup*
+and /password/* serve the native app only — see the notes above each.)
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Optional
+from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -432,6 +434,9 @@ class OtpVerifyBody(BaseModel):
 
 class OtpRequestResponse(BaseModel):
     sent: bool = True
+    # Set to "password" when codes can't be emailed (daily cap / SMTP down) —
+    # clients switch to password login. Emitted by OTP Phase B; None until then.
+    fallback: Optional[Literal["password"]] = None
 
 
 def _normalize_email(email: str) -> str:
@@ -454,11 +459,20 @@ def _otp_allowed(email: str) -> bool:
     return email in get_settings().email_otp_allowlist
 
 
-async def _otp_request_limited(redis: Optional[AsyncRedis], ekey: str) -> bool:
+async def _otp_request_limited(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    cooldown_key: str = _OTP_REQ_COOLDOWN_KEY,
+    hourly_key_tpl: str = _OTP_REQ_HOURLY_KEY,
+) -> bool:
     """True when this email has asked too recently / too often. Fails OPEN.
 
     A Redis outage must not lock testers out of login; GoTrue's own email rate
     limit and the per-IP middleware still bound abuse.
+
+    The key templates default to the login-OTP family; native signup passes its
+    own (``signup:*``) so the two flows never share a budget.
     """
     if redis is None:
         logger.warning("auth.otp.request: Redis unavailable — per-email limit skipped (fail-open)")
@@ -466,11 +480,11 @@ async def _otp_request_limited(redis: Optional[AsyncRedis], ekey: str) -> bool:
     try:
         # 1 / 60s: SET NX is the whole cooldown — present key == too soon.
         first = await redis.set(
-            _OTP_REQ_COOLDOWN_KEY.format(ekey), "1", nx=True, ex=OTP_REQUEST_COOLDOWN_S
+            cooldown_key.format(ekey), "1", nx=True, ex=OTP_REQUEST_COOLDOWN_S
         )
         if not first:
             return True
-        hourly_key = _OTP_REQ_HOURLY_KEY.format(ekey)
+        hourly_key = hourly_key_tpl.format(ekey)
         n = await redis.incr(hourly_key)
         if n == 1:
             await redis.expire(hourly_key, OTP_REQUEST_HOURLY_WINDOW_S)
@@ -480,7 +494,12 @@ async def _otp_request_limited(redis: Optional[AsyncRedis], ekey: str) -> bool:
         return False
 
 
-async def _otp_verify_locked(redis: Optional[AsyncRedis], ekey: str) -> bool:
+async def _otp_verify_locked(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    fail_key: str = _OTP_VERIFY_FAIL_KEY,
+) -> bool:
     """True once OTP_VERIFY_FAIL_MAX wrong codes landed inside the window.
 
     Fails open on a Redis outage: GoTrue's own verify limit and the per-IP
@@ -490,18 +509,23 @@ async def _otp_verify_locked(redis: Optional[AsyncRedis], ekey: str) -> bool:
         logger.warning("auth.otp.verify: Redis unavailable — fail counter skipped (fail-open)")
         return False
     try:
-        val = await redis.get(_OTP_VERIFY_FAIL_KEY.format(ekey))
+        val = await redis.get(fail_key.format(ekey))
         return val is not None and int(val) >= OTP_VERIFY_FAIL_MAX
     except Exception as e:  # noqa: BLE001
         logger.warning("auth.otp.verify: Redis lock check failed — fail-open: %s", e)
         return False
 
 
-async def _otp_verify_record_fail(redis: Optional[AsyncRedis], ekey: str) -> None:
+async def _otp_verify_record_fail(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    fail_key: str = _OTP_VERIFY_FAIL_KEY,
+) -> None:
     if redis is None:
         return
     try:
-        key = _OTP_VERIFY_FAIL_KEY.format(ekey)
+        key = fail_key.format(ekey)
         n = await redis.incr(key)
         if n == 1:  # first fail in this window — start the 15-min clock
             await redis.expire(key, OTP_VERIFY_FAIL_WINDOW_S)
@@ -509,11 +533,16 @@ async def _otp_verify_record_fail(redis: Optional[AsyncRedis], ekey: str) -> Non
         logger.warning("auth.otp.verify: fail counter incr failed: %s", e)
 
 
-async def _otp_verify_clear_fails(redis: Optional[AsyncRedis], ekey: str) -> None:
+async def _otp_verify_clear_fails(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    fail_key: str = _OTP_VERIFY_FAIL_KEY,
+) -> None:
     if redis is None:
         return
     try:
-        await redis.delete(_OTP_VERIFY_FAIL_KEY.format(ekey))
+        await redis.delete(fail_key.format(ekey))
     except Exception as e:  # noqa: BLE001
         logger.warning("auth.otp.verify: fail counter clear failed: %s", e)
 
@@ -569,7 +598,7 @@ async def _close_client(client: SupabaseClient) -> None:
         logger.warning("Could not close OTP auth client: %s", e)
 
 
-@router.post("/otp/request", response_model=OtpRequestResponse)
+@router.post("/otp/request", response_model=OtpRequestResponse, response_model_exclude_none=True)
 async def otp_request(
     body: OtpRequestBody,
     supabase: SupabaseClient = Depends(get_supabase),
@@ -732,10 +761,667 @@ async def otp_verify(
     )
 
 
-# Signup is performed in the browser via supabase.auth.signUp() (see
-# frontend/stores/auth-store.ts). Doing it client-side keeps the PKCE
-# code_verifier in the same browser that opens the email-confirmation link,
-# which is required for /auth/callback's exchangeCodeForSession() to succeed.
+# ============================================
+# POST /signup · /signup/verify · /signup/resend — native app signup
+# ============================================
+#
+# .claude/plans/mobile/04_phase1_foundation.md §A0/B3. The WEB still signs up in
+# the browser via supabase.auth.signUp() (frontend/stores/auth-store.ts) — doing
+# it client-side keeps the PKCE code_verifier in the same browser that opens the
+# email-confirmation link, which /auth/callback's exchangeCodeForSession()
+# needs. A native app is not that browser, so the Expo app signs up HERE and
+# confirms with the 6-digit code from the «Confirm signup» email instead of the
+# link. Nothing below is reachable from, or changes, the web flow.
+#
+# All three GoTrue calls run on a THROWAWAY anon client (same trap as the OTP
+# routes above: sign_up / verify_otp call _remove_session() and park the new
+# session in the client). Per-email limits reuse the OTP helpers with their own
+# ``signup:*`` keys; per-IP limiting is the middleware's 10/min on /auth/*.
+#
+# The handle_new_user() trigger (migration 167) stamps full_name_ar,
+# terms_version and marketing_opt_in from raw_user_meta_data onto the users
+# row; signup_source just stays in metadata.
+
+_SIGNUP_REQ_COOLDOWN_KEY = "signup:req:cd:{}"
+_SIGNUP_REQ_HOURLY_KEY = "signup:req:hr:{}"
+_SIGNUP_VERIFY_FAIL_KEY = "signup:verify:fails:{}"
+
+MSG_EMAIL_TAKEN = "البريد الإلكتروني مسجل مسبقاً"
+MSG_SIGNUP_FAILED = "فشل إنشاء الحساب"
+MSG_WEAK_PASSWORD = "كلمة المرور ضعيفة — اختر كلمة مرور أقوى"
+MSG_GOTRUE_RATE_LIMITED = "تم تجاوز الحد المسموح من الطلبات"
+
+# X-App-Platform → users metadata ``signup_source``. Anything else → "app".
+_SIGNUP_SOURCES = {"ios": "ios_app", "android": "android_app"}
+
+# GoTrue error codes meaning "this email already has an account" (raised when
+# email confirmation is OFF; with it ON GoTrue answers 200 with an obfuscated
+# user whose identities list is empty — handled after the call).
+_EMAIL_TAKEN_CODES = frozenset({"user_already_exists", "email_exists"})
+
+
+class SignupBody(BaseModel):
+    """POST /api/v1/auth/signup — same fields/rules as the web form."""
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    full_name: str = Field(..., min_length=1, max_length=200)
+    terms_version: str = Field(..., min_length=1, max_length=64)
+    marketing_opt_in: bool = False
+
+    @field_validator("full_name", "terms_version", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+class SignupVerifyBody(BaseModel):
+    """POST /api/v1/auth/signup/verify"""
+    email: EmailStr
+    code: str = Field(..., pattern=r"^[0-9]{6,8}$")
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _strip_code(cls, v):
+        return "".join(v.split()) if isinstance(v, str) else v
+
+
+class SignupResendBody(BaseModel):
+    """POST /api/v1/auth/signup/resend"""
+    email: EmailStr
+
+
+class SignupPendingResponse(BaseModel):
+    status: str = "verification_required"
+    email: str
+
+
+def _signup_source(request: Request) -> str:
+    platform = (request.headers.get("x-app-platform") or "").strip().lower()
+    return _SIGNUP_SOURCES.get(platform, "app")
+
+
+def _signup_redirect_to() -> str:
+    """Where the confirmation LINK lands if an app user taps it instead of
+    typing the code: the web callback, which (no PKCE verifier in that browser)
+    sends them to /login?notice=verify_elsewhere. The account is confirmed
+    either way; they then log in inside the app."""
+    return f"{get_settings().PUBLIC_WEB_URL}/auth/callback"
+
+
+async def _release_signup_cooldown(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    cooldown_key: str = _SIGNUP_REQ_COOLDOWN_KEY,
+) -> None:
+    """Give the 60s cooldown back when no email went out (validation reject /
+    outage), so fixing a weak password does not cost the user a minute.
+
+    ``cooldown_key`` defaults to the signup family; /password/forgot passes its
+    own ``pwreset:*`` key."""
+    if redis is None:
+        return
+    try:
+        await redis.delete(cooldown_key.format(ekey))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auth.signup: cooldown release failed: %s", e)
+
+
+def _signup_rate_limited() -> LunaHTTPException:
+    return LunaHTTPException(
+        status_code=429,
+        code=ErrorCode.RATE_LIMITED,
+        detail=MSG_OTP_REQUEST_RATE_LIMITED,
+        headers={"Retry-After": str(OTP_REQUEST_COOLDOWN_S)},
+    )
+
+
+@router.post("/signup", response_model=Union[LoginResponse, SignupPendingResponse])
+async def signup(
+    body: SignupBody,
+    request: Request,
+    supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """Create an account from the native app.
+
+    200 ``{"status": "verification_required", "email"}`` — a code was emailed;
+    finish with /signup/verify. If GoTrue issues a session straight away
+    (email confirmation off) the response is the SAME LoginResponse as /login.
+    409 duplicate email · 429 too soon / GoTrue email limit · 400 rejected
+    (e.g. weak password) · 503 GoTrue unavailable.
+    """
+    email = _normalize_email(body.email)
+    ekey = _email_key(email)
+
+    if await _otp_request_limited(
+        redis,
+        ekey,
+        cooldown_key=_SIGNUP_REQ_COOLDOWN_KEY,
+        hourly_key_tpl=_SIGNUP_REQ_HOURLY_KEY,
+    ):
+        raise _signup_rate_limited()
+
+    source = _signup_source(request)
+    metadata = {
+        "full_name_ar": body.full_name,
+        "terms_version": body.terms_version,
+        "marketing_opt_in": body.marketing_opt_in,
+        "signup_source": source,
+    }
+
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        response = await _gotrue_call(
+            client.auth.sign_up,
+            {
+                "email": email,
+                "password": body.password,
+                "options": {
+                    "data": metadata,
+                    "email_redirect_to": _signup_redirect_to(),
+                },
+            },
+        )
+    except (AuthRetryableError, TimeoutError) as e:
+        logger.error("GoTrue unavailable during signup: %s", e)
+        await _release_signup_cooldown(redis, ekey)
+        raise _gotrue_unavailable()
+    except AuthApiError as e:
+        code = e.code.lower() if isinstance(e.code, str) else ""
+        message = (getattr(e, "message", "") or str(e)).lower()
+        logger.info(
+            "auth.signup.gotrue_rejected email_hash=%s status=%s code=%s",
+            ekey,
+            e.status,
+            e.code,
+        )
+        if code in _EMAIL_TAKEN_CODES or "already" in message or "registered" in message:
+            raise LunaHTTPException(
+                status_code=409, code=ErrorCode.VALIDATION_ERROR, detail=MSG_EMAIL_TAKEN
+            )
+        if e.status == 429 or code == "over_email_send_rate_limit" or "rate limit" in message:
+            raise LunaHTTPException(
+                status_code=429,
+                code=ErrorCode.RATE_LIMITED,
+                detail=MSG_GOTRUE_RATE_LIMITED,
+                headers={"Retry-After": str(OTP_REQUEST_COOLDOWN_S)},
+            )
+        await _release_signup_cooldown(redis, ekey)
+        if e.status is not None and e.status >= 500:
+            raise _gotrue_unavailable()
+        raise LunaHTTPException(
+            status_code=400,
+            code=ErrorCode.VALIDATION_ERROR,
+            detail=MSG_WEAK_PASSWORD if code == "weak_password" else MSG_SIGNUP_FAILED,
+        )
+    except Exception as e:
+        logger.exception("Unexpected signup error: %s", e)
+        await _release_signup_cooldown(redis, ekey)
+        raise _gotrue_unavailable()
+    finally:
+        await _close_client(client)
+
+    user = response.user
+    session = response.session
+
+    # Supabase quirk (confirmation ON + address already registered): a
+    # synthetic user with an EMPTY identities list and no email sent. Same 409
+    # the web surfaces (auth-store.ts). ``None`` is not "empty".
+    identities = getattr(user, "identities", None) if user is not None else None
+    if user is not None and isinstance(identities, list) and len(identities) == 0:
+        logger.info("auth.signup.duplicate email_hash=%s", ekey)
+        raise LunaHTTPException(
+            status_code=409, code=ErrorCode.VALIDATION_ERROR, detail=MSG_EMAIL_TAKEN
+        )
+
+    if session is not None and user is not None:
+        # Confirmation is off — the account is live and has a password.
+        logger.info("auth.signup.session_issued email_hash=%s source=%s", ekey, source)
+        return await _build_login_response(
+            session, user, supabase=supabase, redis=redis, has_password=True
+        )
+
+    logger.info("auth.signup.verification_sent email_hash=%s source=%s", ekey, source)
+    return SignupPendingResponse(email=email)
+
+
+@router.post("/signup/verify", response_model=LoginResponse)
+async def signup_verify(
+    body: SignupVerifyBody,
+    supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """Confirm the signup with the emailed code → the SAME LoginResponse as /login.
+
+    ``type: "signup"`` (not ``"email"``): GoTrue's ``"email"`` type also
+    accepts recovery/magic-link codes, which would turn this route into an
+    un-gated code login. ``"signup"`` matches only the confirmation token.
+    401 wrong/expired code; 429 after OTP_VERIFY_FAIL_MAX wrong codes / 15 min.
+    """
+    email = _normalize_email(body.email)
+    ekey = _email_key(email)
+
+    if await _otp_verify_locked(redis, ekey, fail_key=_SIGNUP_VERIFY_FAIL_KEY):
+        raise LunaHTTPException(
+            status_code=429,
+            code=ErrorCode.RATE_LIMITED,
+            detail=MSG_OTP_VERIFY_LOCKED,
+            headers={"Retry-After": str(OTP_VERIFY_FAIL_WINDOW_S)},
+        )
+
+    async def _reject(reason: str) -> LunaHTTPException:
+        await _otp_verify_record_fail(redis, ekey, fail_key=_SIGNUP_VERIFY_FAIL_KEY)
+        logger.info("auth.signup.verify_failed email_hash=%s reason=%s", ekey, reason)
+        return LunaHTTPException(
+            status_code=401,
+            code=ErrorCode.AUTH_INVALID,
+            detail=MSG_OTP_INVALID,
+        )
+
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        response = await _gotrue_call(
+            client.auth.verify_otp,
+            {"email": email, "token": body.code, "type": "signup"},
+        )
+    except (AuthRetryableError, TimeoutError) as e:
+        logger.error("GoTrue unavailable during signup verify: %s", e)
+        raise _gotrue_unavailable()
+    except AuthApiError as e:
+        if e.status in (400, 401, 403, 404, 422):
+            raise await _reject(f"gotrue_{e.status}")
+        if e.status == 429:
+            raise LunaHTTPException(
+                status_code=429,
+                code=ErrorCode.RATE_LIMITED,
+                detail=MSG_OTP_VERIFY_LOCKED,
+                headers={"Retry-After": str(OTP_VERIFY_FAIL_WINDOW_S)},
+            )
+        logger.error(
+            "GoTrue API error during signup verify (status=%s code=%s)", e.status, e.code
+        )
+        raise _gotrue_unavailable()
+    except Exception as e:
+        logger.exception("Unexpected signup verify error: %s", e)
+        raise _gotrue_unavailable()
+    finally:
+        await _close_client(client)
+
+    session = response.session
+    user = response.user
+    if session is None or user is None:
+        raise await _reject("no_session")
+
+    await _otp_verify_clear_fails(redis, ekey, fail_key=_SIGNUP_VERIFY_FAIL_KEY)
+
+    logger.info("auth.signup.verified email_hash=%s", ekey)
+    try:
+        await run_db(_audit_account_event, supabase, user.id, "login", "auth.signup.verified")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Audit write failed for signup_verified: %s", e)
+
+    # A signup confirmation code only exists for an account created WITH a
+    # password (POST /signup), so the grant proves one — same as /login.
+    return await _build_login_response(
+        session, user, supabase=supabase, redis=redis, has_password=True
+    )
+
+
+@router.post("/signup/resend", response_model=OtpRequestResponse, response_model_exclude_none=True)
+async def signup_resend(
+    body: SignupResendBody,
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """Re-send the signup confirmation code.
+
+    Always ``{"sent": true}`` for well-formed input — unknown, already
+    confirmed or real pending address alike (GoTrue 4xx are swallowed). 429
+    only from the per-email cooldown/hourly cap (shared with /signup, applies
+    to every address alike); 503 when GoTrue itself is unavailable.
+    """
+    email = _normalize_email(body.email)
+    ekey = _email_key(email)
+
+    if await _otp_request_limited(
+        redis,
+        ekey,
+        cooldown_key=_SIGNUP_REQ_COOLDOWN_KEY,
+        hourly_key_tpl=_SIGNUP_REQ_HOURLY_KEY,
+    ):
+        raise _signup_rate_limited()
+
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        await _gotrue_call(
+            client.auth.resend,
+            {
+                "type": "signup",
+                "email": email,
+                "options": {"email_redirect_to": _signup_redirect_to()},
+            },
+        )
+    except (AuthRetryableError, TimeoutError) as e:
+        logger.error("GoTrue unavailable during signup resend: %s", e)
+        raise _gotrue_unavailable()
+    except AuthApiError as e:
+        if e.status is not None and e.status >= 500:
+            logger.error(
+                "GoTrue API error during signup resend (status=%s code=%s)",
+                e.status,
+                e.code,
+            )
+            raise _gotrue_unavailable()
+        logger.info(
+            "auth.signup.resend.gotrue_rejected email_hash=%s status=%s code=%s",
+            ekey,
+            e.status,
+            e.code,
+        )
+        return OtpRequestResponse(sent=True)
+    except Exception as e:
+        logger.exception("Unexpected signup resend error: %s", e)
+        raise _gotrue_unavailable()
+    finally:
+        await _close_client(client)
+
+    logger.info("auth.signup.resent email_hash=%s", ekey)
+    return OtpRequestResponse(sent=True)
+
+
+# ============================================
+# POST /password/forgot · /password/reset — native app password reset
+# ============================================
+#
+# The WEB resets in the browser (frontend/app/forgot-password →
+# resetPasswordForEmail → link → /auth/callback?next=/reset-password →
+# updateUser), for the same PKCE reason as signup. The native app instead types
+# the 6-digit {{ .Token }} from the same «Reset password» email
+# (supabase/email_templates/reset_password_ar.html carries both the link and the
+# code). Nothing below is reachable from, or changes, the web flow.
+#
+# Google-only accounts (no password): GoTrue /recover + verify(type=recovery)
+# work for them exactly as for password accounts, and update_user writes their
+# FIRST password — the same "ghost password" /set-password creates (no new
+# ``email`` identity; has_password / migration 141 reads the credential). That
+# is the same thing the web reset page does today via updateUser(). Unlike
+# /set-password there is no has_password gate: there the JWT is the ONLY proof,
+# here possession of the mailbox (the emailed code) is the proof, so
+# overwriting an existing password is the point.
+#
+# Every GoTrue call runs on a THROWAWAY anon client (verify_otp parks the
+# recovery session in the client; update_user acts on whatever is parked).
+# Per-email limits reuse the OTP helpers with their own ``pwreset:*`` keys;
+# per-IP limiting is the middleware's AUTH_RATE_LIMIT on /auth/*.
+#
+# Unlike /otp/request and /signup/resend, /password/forgot does NOT swallow
+# GoTrue failures into a 200: GoTrue's /recover already answers 200 for an
+# unknown address, so any non-200 is a mail-system / GoTrue failure that is
+# true whether or not the account exists — surfacing it leaks nothing and is the
+# only way the user learns to retry (the bug fixed on the web forgot page).
+
+_PWRESET_REQ_COOLDOWN_KEY = "pwreset:req:cd:{}"
+_PWRESET_REQ_HOURLY_KEY = "pwreset:req:hr:{}"
+_PWRESET_VERIFY_FAIL_KEY = "pwreset:verify:fails:{}"
+
+MSG_RESET_SEND_FAILED = "تعذّر إرسال البريد حالياً، حاول لاحقاً"
+MSG_SAME_PASSWORD = "كلمة المرور الجديدة يجب أن تختلف عن الحالية"
+MSG_RESET_UPDATE_FAILED = "تعذّر تعيين كلمة المرور — اطلب رمزاً جديداً وحاول مجدداً"
+
+
+class PasswordForgotBody(BaseModel):
+    """POST /api/v1/auth/password/forgot"""
+    email: EmailStr
+
+
+class PasswordResetBody(BaseModel):
+    """POST /api/v1/auth/password/reset
+
+    Code accepted as 6–10 digits (whatever GoTrue's OTP length is set to);
+    spaces from iOS autofill / paste are stripped. ``new_password`` uses the
+    same min-8 rule as signup and the web reset form.
+    """
+    email: EmailStr
+    code: str = Field(..., pattern=r"^[0-9]{6,10}$")
+    new_password: str = Field(..., min_length=8)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def _strip_code(cls, v):
+        return "".join(v.split()) if isinstance(v, str) else v
+
+
+def _password_reset_redirect_to() -> str:
+    """Byte-for-byte the web's redirectTo (frontend/app/forgot-password:
+    ``${origin}/auth/callback?next=${encodeURIComponent("/reset-password")}``),
+    so the LINK in the email points at an already-allowlisted redirect URL.
+
+    A backend-initiated /recover carries no PKCE challenge, so if an app user
+    taps the link instead of typing the code, /auth/callback sees no ``?code=``
+    and sends them to /login?notice=verify_elsewhere — the same behaviour as
+    the native signup link. Tapping the link also SPENDS the token, so the code
+    then fails with 401 and the user must request a new one.
+    """
+    return f"{get_settings().PUBLIC_WEB_URL}/auth/callback?next=%2Freset-password"
+
+
+async def _revoke_parked_session(client: SupabaseClient) -> None:
+    """Best-effort: kill the recovery session we will NOT hand out (password
+    update failed). ``scope=local`` revokes only this session's refresh token."""
+    try:
+        await _gotrue_call(client.auth.sign_out, {"scope": "local"})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("auth.password.reset: could not revoke recovery session: %s", e)
+
+
+@router.post(
+    "/password/forgot",
+    response_model=OtpRequestResponse,
+    response_model_exclude_none=True,
+)
+async def password_forgot(
+    body: PasswordForgotBody,
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """Email a password-reset code (and link) — native app.
+
+    200 ``{"sent": true}`` for every well-formed address GoTrue accepted —
+    including addresses with no account (GoTrue's own enumeration safety).
+    429 per-email cooldown (60 s) / hourly cap (5) or GoTrue's own email limit;
+    503 when GoTrue / SMTP failed to send.
+    """
+    email = _normalize_email(body.email)
+    ekey = _email_key(email)
+
+    if await _otp_request_limited(
+        redis,
+        ekey,
+        cooldown_key=_PWRESET_REQ_COOLDOWN_KEY,
+        hourly_key_tpl=_PWRESET_REQ_HOURLY_KEY,
+    ):
+        raise _signup_rate_limited()
+
+    async def _send_failed() -> LunaHTTPException:
+        # No email went out — give the cooldown back so "retry" is not a 429.
+        await _release_signup_cooldown(redis, ekey, cooldown_key=_PWRESET_REQ_COOLDOWN_KEY)
+        return LunaHTTPException(
+            status_code=503,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            detail=MSG_RESET_SEND_FAILED,
+        )
+
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        await _gotrue_call(
+            client.auth.reset_password_for_email,
+            email,
+            {"redirect_to": _password_reset_redirect_to()},
+        )
+    except (AuthRetryableError, TimeoutError) as e:
+        logger.error("GoTrue unavailable during password forgot: %s", e)
+        raise await _send_failed()
+    except AuthApiError as e:
+        code = e.code.lower() if isinstance(e.code, str) else ""
+        if e.status == 429 or code == "over_email_send_rate_limit":
+            logger.info(
+                "auth.password.forgot.gotrue_rate_limited email_hash=%s code=%s",
+                ekey,
+                e.code,
+            )
+            raise LunaHTTPException(
+                status_code=429,
+                code=ErrorCode.RATE_LIMITED,
+                detail=MSG_GOTRUE_RATE_LIMITED,
+                headers={"Retry-After": str(OTP_REQUEST_COOLDOWN_S)},
+            )
+        # 5xx (SMTP "Error sending recovery email") or any other rejection:
+        # the mail did not go out. Never a silent 200.
+        logger.error(
+            "GoTrue API error during password forgot (status=%s code=%s) email_hash=%s",
+            e.status,
+            e.code,
+            ekey,
+        )
+        raise await _send_failed()
+    except Exception as e:
+        logger.exception("Unexpected password forgot error: %s", e)
+        raise await _send_failed()
+    finally:
+        await _close_client(client)
+
+    logger.info("auth.password.forgot.sent email_hash=%s", ekey)
+    return OtpRequestResponse(sent=True)
+
+
+@router.post("/password/reset", response_model=LoginResponse)
+async def password_reset(
+    body: PasswordResetBody,
+    supabase: SupabaseClient = Depends(get_supabase),
+    redis: Optional[AsyncRedis] = Depends(get_redis),
+):
+    """Redeem the emailed recovery code + set the new password → the SAME
+    LoginResponse as /login (``has_password: true``).
+
+    401 wrong/expired code · 429 after OTP_VERIFY_FAIL_MAX wrong codes / 15 min
+    (or GoTrue's own verify limit) · 400 password rejected by GoTrue · 503 GoTrue
+    unavailable. If the code verifies but the password update fails, NO session
+    is returned (the recovery session is revoked best-effort) — the user is
+    never logged in without the new password in place. The code is spent by
+    then, so the client must request a new one.
+    """
+    email = _normalize_email(body.email)
+    ekey = _email_key(email)
+
+    if await _otp_verify_locked(redis, ekey, fail_key=_PWRESET_VERIFY_FAIL_KEY):
+        raise LunaHTTPException(
+            status_code=429,
+            code=ErrorCode.RATE_LIMITED,
+            detail=MSG_OTP_VERIFY_LOCKED,
+            headers={"Retry-After": str(OTP_VERIFY_FAIL_WINDOW_S)},
+        )
+
+    async def _reject(reason: str) -> LunaHTTPException:
+        await _otp_verify_record_fail(redis, ekey, fail_key=_PWRESET_VERIFY_FAIL_KEY)
+        logger.info("auth.password.reset.verify_failed email_hash=%s reason=%s", ekey, reason)
+        return LunaHTTPException(
+            status_code=401,
+            code=ErrorCode.AUTH_INVALID,
+            detail=MSG_OTP_INVALID,
+        )
+
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        # --- 1. redeem the recovery code -----------------------------------
+        try:
+            response = await _gotrue_call(
+                client.auth.verify_otp,
+                # "recovery", not "email": only the reset token matches, so a
+                # login/magic-link code can never be replayed here.
+                {"email": email, "token": body.code, "type": "recovery"},
+            )
+        except (AuthRetryableError, TimeoutError) as e:
+            logger.error("GoTrue unavailable during password reset verify: %s", e)
+            raise _gotrue_unavailable()
+        except AuthApiError as e:
+            if e.status in (400, 401, 403, 404, 422):
+                raise await _reject(f"gotrue_{e.status}")
+            if e.status == 429:
+                raise LunaHTTPException(
+                    status_code=429,
+                    code=ErrorCode.RATE_LIMITED,
+                    detail=MSG_OTP_VERIFY_LOCKED,
+                    headers={"Retry-After": str(OTP_VERIFY_FAIL_WINDOW_S)},
+                )
+            logger.error(
+                "GoTrue API error during password reset verify (status=%s code=%s)",
+                e.status,
+                e.code,
+            )
+            raise _gotrue_unavailable()
+        except Exception as e:
+            logger.exception("Unexpected password reset verify error: %s", e)
+            raise _gotrue_unavailable()
+
+        session = response.session
+        user = response.user
+        if session is None or user is None:
+            raise await _reject("no_session")
+
+        # The code was right — whatever happens to the update, it was not a
+        # guess, so it must not count toward the lockout.
+        await _otp_verify_clear_fails(redis, ekey, fail_key=_PWRESET_VERIFY_FAIL_KEY)
+
+        # --- 2. set the new password on the recovery session ---------------
+        try:
+            updated = await _gotrue_call(
+                client.auth.update_user, {"password": body.new_password}
+            )
+        except AuthApiError as e:
+            await _revoke_parked_session(client)
+            code = e.code.lower() if isinstance(e.code, str) else ""
+            logger.info(
+                "auth.password.reset.update_rejected email_hash=%s status=%s code=%s",
+                ekey,
+                e.status,
+                e.code,
+            )
+            if e.status is not None and e.status >= 500:
+                raise _gotrue_unavailable()
+            if code == "weak_password":
+                detail = MSG_WEAK_PASSWORD
+            elif code == "same_password":
+                detail = MSG_SAME_PASSWORD
+            else:
+                detail = MSG_RESET_UPDATE_FAILED
+            raise LunaHTTPException(
+                status_code=400, code=ErrorCode.VALIDATION_ERROR, detail=detail
+            )
+        except (AuthRetryableError, TimeoutError) as e:
+            logger.error("GoTrue unavailable during password reset update: %s", e)
+            await _revoke_parked_session(client)
+            raise _gotrue_unavailable()
+        except Exception as e:
+            # Incl. AuthSessionMissingError — no parked session to act on.
+            logger.exception("Unexpected password reset update error: %s", e)
+            await _revoke_parked_session(client)
+            raise _gotrue_unavailable()
+    finally:
+        await _close_client(client)
+
+    # update_user does not rotate tokens — the recovery session IS the login.
+    user = getattr(updated, "user", None) or user
+
+    logger.info("auth.password.reset.done email_hash=%s", ekey)
+    try:
+        await run_db(_audit_account_event, supabase, user.id, "update", "password_reset")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Audit write failed after password reset: %s", e)
+
+    # The update just succeeded, so the account demonstrably has a password
+    # now — Google-only accounts included (ghost password, migration 141).
+    return await _build_login_response(
+        session, user, supabase=supabase, redis=redis, has_password=True
+    )
 
 
 # ============================================
@@ -743,16 +1429,28 @@ async def otp_verify(
 # ============================================
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(
-    body: RefreshRequest,
-    supabase_auth: SupabaseClient = Depends(get_supabase_auth),
-):
+async def refresh(body: RefreshRequest):
     """
     Exchange a refresh token for a new access + refresh token pair.
+
+    Runs on a per-request THROWAWAY anon client (mobile/04 §N4, B8), never the
+    shared ``app.state.supabase_auth`` singleton: ``refresh_session`` saves the
+    new session into the client's in-memory store, so on the shared client two
+    concurrent refreshes (two app users cold-starting at once) would park their
+    sessions in one place — the 1h-logout class of bug (shared/db/client.py
+    ``_client_options``). Same pattern as the OTP routes.
     """
+    client = await asyncio.to_thread(create_isolated_anon_client)
+    try:
+        return await _refresh_on(client, body.refresh_token)
+    finally:
+        await _close_client(client)
+
+
+async def _refresh_on(client: SupabaseClient, refresh_token: str) -> TokenResponse:
     try:
         response = await _gotrue_call(
-            supabase_auth.auth.refresh_session, body.refresh_token
+            client.auth.refresh_session, refresh_token
         )
         session = response.session
         if session is None:

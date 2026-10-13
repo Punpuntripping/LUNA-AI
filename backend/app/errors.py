@@ -106,6 +106,10 @@ class ErrorCode(str, Enum):
     # Service availability (dependency failure ≠ user error)
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
+    # Native app (iOS/Android) below the minimum supported version — 426.
+    # Only ever returned to requests carrying X-App-Platform: ios|android.
+    APP_UPDATE_REQUIRED = "APP_UPDATE_REQUIRED"
+
     # Generic
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -113,6 +117,9 @@ class ErrorCode(str, Enum):
 # Canonical Arabic outage string — used by auth, deps, the DbDeadlineExceeded
 # handler, and storage 503s. Defined module-level so every 503 path reuses it.
 MSG_SERVICE_UNAVAILABLE = "الخدمة غير متاحة مؤقتاً، حاول مجدداً"
+
+# 426 APP_UPDATE_REQUIRED (backend/app/middleware/app_version.py).
+MSG_APP_UPDATE_REQUIRED = "يلزم تحديث التطبيق إلى أحدث إصدار للمتابعة"
 
 
 class LunaHTTPException(HTTPException):

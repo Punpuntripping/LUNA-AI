@@ -487,9 +487,16 @@ def create_app() -> FastAPI:
     # `@app.middleware("http")` decorators below are added first, so they end
     # up innermost. Effective request order (outer → inner) is:
     #   CORS → origin lock → Logfire/OTEL spans → rate limit → security headers
-    #   → request-id
+    #   → request-id → app-version gate
     # CORS is added LAST on purpose — see the note at its add_middleware call.
     # ------------------------------------------
+
+    # 0. Native-app minimum-version gate (mobile/04 §U2) — added FIRST so it is
+    #    the INNERMOST layer: its 426 still carries X-Request-ID + the security
+    #    headers, and the rate limiter has already metered the call. Requests
+    #    without X-App-Platform (the whole web) pass through untouched.
+    from backend.app.middleware.app_version import AppVersionGateMiddleware
+    application.add_middleware(AppVersionGateMiddleware)
 
     # 1. Request-ID middleware (custom, added as raw ASGI middleware)
     @application.middleware("http")
@@ -636,6 +643,16 @@ def create_app() -> FastAPI:
         auth_router,
         prefix="/api/v1/auth",
         tags=["auth"],
+    )
+
+    # Native app config (mobile/04 §U1) — PUBLIC, no auth, cacheable 5 min.
+    # Exempt from the 426 gate so an outdated app can still read the store link.
+    from backend.app.api.app_config import router as app_config_router
+
+    application.include_router(
+        app_config_router,
+        prefix="/api/v1",
+        tags=["app"],
     )
 
     # Cases router

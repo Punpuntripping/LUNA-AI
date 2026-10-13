@@ -335,6 +335,22 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: Optional[str] = None   # backend only, never leaves the server
     VAPID_SUBJECT: Optional[str] = None       # "mailto:support@rayhanai.com" — push services contact this on abuse; defaulted in push_service if unset
 
+    # ── Native app (Expo iOS/Android) version gate — mobile/04 §U1/U2 ───────
+    # Served by GET /api/v1/app/config and enforced by
+    # backend/app/middleware/app_version.py (426 APP_UPDATE_REQUIRED, ONLY for
+    # requests carrying X-App-Platform: ios|android — the web never sends it).
+    # Semver strings compared numerically against the NATIVE version
+    # (nativeApplicationVersion), not the OTA update id. Env var name == field
+    # name (case_sensitive, no validation_alias): set exactly these names on
+    # Railway. Settings is lru_cache'd, so a change needs the redeploy Railway
+    # does on every variable edit anyway.
+    APP_MIN_VERSION_IOS: str = "1.0.0"
+    APP_MIN_VERSION_ANDROID: str = "1.0.0"
+    APP_LATEST_VERSION_IOS: str = "1.0.0"
+    APP_LATEST_VERSION_ANDROID: str = "1.0.0"
+    APP_STORE_URL_IOS: str = ""
+    APP_STORE_URL_ANDROID: str = ""
+
     # ========================================
     # ENVIRONMENT
     # ========================================

@@ -33,6 +33,7 @@ on ``TRUST_CF_HEADERS_ENV`` below.
 """
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
@@ -378,6 +379,42 @@ def client_ip_for_rate_limit(request: Request) -> str:
     return resolve_client_ip(request) or "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Per-user key for GET /auth/me (mobile/04 §N3, B6 — owner OK 2026-10-12)
+# ---------------------------------------------------------------------------
+# Every /api/v1/auth/* path is metered AUTH_RATE_LIMIT/min per IP. KSA mobile
+# carriers put many subscribers behind one CGNAT address, and every native-app
+# cold start costs two auth calls (refresh + me), so a busy CGNAT IP would 429
+# real users on /me. /me with a VERIFIED bearer is a read of the caller's own
+# row — it is not a credential-guessing surface — so it is keyed per user.
+# Same limit/window; only the key changes. Everything else under /auth/*
+# (login, otp, refresh, signup …) stays per IP exactly as before.
+USER_KEYED_AUTH_PATHS = frozenset({"/api/v1/auth/me"})
+
+
+def is_user_keyed_auth_path(request: Request) -> bool:
+    return request.method == "GET" and request.url.path in USER_KEYED_AUTH_PATHS
+
+
+async def _verified_sub(token: str) -> Optional[str]:
+    """``sub`` of a fully verified JWT, else None (never raises).
+
+    decode_token is sync and may touch the (cached, pre-warmed) JWKS, so it
+    runs off the event loop.
+    """
+    token = token.strip()
+    if not token:
+        return None
+    try:
+        from shared.auth.jwt import decode_token
+
+        payload = await asyncio.to_thread(decode_token, token)
+    except Exception:  # noqa: BLE001 — expired/forged/JWKS down → per-IP key
+        return None
+    sub = payload.get("sub") if isinstance(payload, dict) else None
+    return str(sub) if sub else None
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Sliding-window rate limiter backed by Redis sorted sets.
@@ -462,7 +499,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         rate_key_id = client_ip  # default: IP-based
 
         auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer ") and not request.url.path.startswith("/api/v1/auth/"):
+        if is_user_keyed_auth_path(request) and auth_header.startswith("Bearer "):
+            # GET /auth/me — see is_user_keyed_auth_path. Unlike the branch
+            # below, the token is VERIFIED here (signature/exp/aud): this path
+            # sits in the strict auth bucket, so a forged `sub` must not mint
+            # fresh buckets. Anything unverifiable keeps the per-IP key.
+            verified_sub = await _verified_sub(auth_header[7:])
+            if verified_sub:
+                rate_key_id = f"user:{verified_sub}"
+        elif auth_header.startswith("Bearer ") and not request.url.path.startswith("/api/v1/auth/"):
             try:
                 # Decode WITHOUT verification — just extract 'sub' for rate limiting.
                 # Full verification happens in deps.get_current_user().

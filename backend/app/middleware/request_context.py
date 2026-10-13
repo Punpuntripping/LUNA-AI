@@ -1,5 +1,6 @@
 """
-Ambient per-request caller context (client IP + User-Agent).
+Ambient per-request caller context (client IP + User-Agent + native-app
+X-App-* headers).
 
 ``audit_logs`` has carried ``ip_address`` and ``user_agent`` columns since the
 original schema, but nothing ever populated them: :func:`write_audit_log` took
@@ -37,6 +38,22 @@ _USER_AGENT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "audit_user_agent", default=None
 )
 
+# Native app identity (mobile/04 §S3, B7). The Expo app sends these four on
+# every request; the web sends none of them, so for the web this stays empty.
+# Header → attribute key. Values are client-supplied and therefore spoofable:
+# they are observability labels, never an authorization input.
+APP_HEADER_ATTRIBUTES: dict[str, str] = {
+    "x-app-platform": "app.platform",
+    "x-app-version": "app.version",
+    "x-app-build": "app.build",
+    "x-app-update-id": "app.update_id",
+}
+_MAX_APP_HEADER = 64
+
+_APP_CLIENT: contextvars.ContextVar[Optional[dict[str, str]]] = contextvars.ContextVar(
+    "app_client", default=None
+)
+
 
 def capture_request_context(request: Request) -> None:
     """Publish the caller's IP + User-Agent for the rest of this request.
@@ -59,6 +76,42 @@ def capture_request_context(request: Request) -> None:
     except Exception:  # noqa: BLE001
         _USER_AGENT.set(None)
 
+    try:
+        attrs = _app_client_attributes(request)
+        _APP_CLIENT.set(attrs or None)
+        if attrs:
+            _set_span_attributes(attrs)
+    except Exception:  # noqa: BLE001
+        _APP_CLIENT.set(None)
+
+
+def _app_client_attributes(request: Request) -> dict[str, str]:
+    """X-App-* headers present on this request → {attribute key: value}."""
+    attrs: dict[str, str] = {}
+    for header, key in APP_HEADER_ATTRIBUTES.items():
+        value = request.headers.get(header)
+        if value:
+            value = value.strip()[:_MAX_APP_HEADER]
+            if value:
+                attrs[key] = value
+    return attrs
+
+
+def _set_span_attributes(attrs: dict[str, str]) -> None:
+    """Stamp the attributes on the current (Logfire/OTEL request) span.
+
+    The request-id middleware runs inside the Logfire FastAPI instrumentation,
+    so the current span here is the request's server span. No-op when OTEL is
+    absent or the span is not recording.
+    """
+    try:
+        from opentelemetry import trace
+    except Exception:  # noqa: BLE001
+        return
+    span = trace.get_current_span()
+    if span is not None and span.is_recording():
+        span.set_attributes(attrs)
+
 
 def get_client_ip() -> Optional[str]:
     """Caller IP for the request in flight, or None outside a request."""
@@ -68,3 +121,12 @@ def get_client_ip() -> Optional[str]:
 def get_user_agent() -> Optional[str]:
     """Caller User-Agent for the request in flight, or None outside a request."""
     return _USER_AGENT.get()
+
+
+def get_app_client() -> Optional[dict[str, str]]:
+    """Native-app attributes (``app.platform`` …) for the request in flight.
+
+    None for the web, and outside a request.
+    """
+    attrs = _APP_CLIENT.get()
+    return dict(attrs) if attrs else None
