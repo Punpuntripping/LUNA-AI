@@ -296,6 +296,13 @@ export interface Attachment {
 export interface MessageListResponse {
   messages: Message[];
   has_more: boolean;
+  /**
+   * Server truth: this conversation has a live run right now (snapshotted
+   * before the read). An empty assistant placeholder with `run_active: false`
+   * has nothing left to fill it — the run died with a restart/deploy — so it
+   * renders as failed instead of «ريحان يفكّر». Absent on older backends.
+   */
+  run_active?: boolean;
 }
 
 // ==========================================

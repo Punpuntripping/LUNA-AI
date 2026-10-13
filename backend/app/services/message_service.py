@@ -164,6 +164,15 @@ def _user_inflight_runs(user_id: str, exclude_conversation_id: str) -> list[str]
     ]
 
 
+def conversation_run_active(conversation_id: str) -> bool:
+    """Whether this conversation has a live run in this process — the truth the
+    messages list hands the client so a placeholder whose run died with a
+    restart stops showing «ريحان يفكّر». Authoritative for the same reason
+    as _user_inflight_runs (single worker)."""
+    run = _active_runs.get(conversation_id)
+    return run is not None and _run_is_live(run)
+
+
 def _user_inflight_count(user_id: str, exclude_conversation_id: str) -> int:
     return len(_user_inflight_runs(user_id, exclude_conversation_id))
 

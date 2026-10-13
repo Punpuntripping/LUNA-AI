@@ -16,6 +16,9 @@ const MESSAGE_PAGE_SIZE = 30;
  */
 export const PLACEHOLDER_MAX_AGE_MS = 7 * 60 * 1000;
 
+/** Poll ceiling for a placeholder whose run the server reports as live. */
+const PLACEHOLDER_LIVE_CAP_MS = 30 * 60 * 1000;
+
 export const messageKeys = {
   all: ["messages"] as const,
   list: (conversationId: string) => [...messageKeys.all, "list", conversationId] as const,
@@ -48,6 +51,14 @@ export function useMessages(conversationId: string | undefined) {
       if (!newest || newest.role !== "assistant") return false;
       if ((newest.content ?? "").trim() !== "") return false;
       const ageMs = Date.now() - new Date(newest.created_at).getTime();
+      const runActive = query.state.data?.pages?.[0]?.run_active;
+      // Live run on the server: keep polling past the age window — a slow run
+      // is not a dead one. Capped so a stuck slot can't poll forever.
+      if (runActive === true) return ageMs < PLACEHOLDER_LIVE_CAP_MS ? 4000 : false;
+      // Server says nothing is running: the bubble already shows as failed,
+      // but keep a slow poll through the window — during a deploy overlap the
+      // OLD instance can still finish the run and fill the row.
+      if (runActive === false) return ageMs < PLACEHOLDER_MAX_AGE_MS ? 10000 : false;
       return ageMs < PLACEHOLDER_MAX_AGE_MS ? 4000 : false;
     },
     // Messages are ordered newest-first from the API; we reverse in the UI

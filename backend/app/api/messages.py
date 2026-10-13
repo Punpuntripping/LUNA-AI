@@ -34,7 +34,10 @@ async def list_messages(
     supabase: SupabaseClient = Depends(get_supabase),
 ):
     """List messages for a conversation (newest first, cursor-based pagination)."""
-    return await run_db(
+    # Snapshot BEFORE the read: a run writes its content and only then frees
+    # its slot, so "not active here" + "still empty in the read" = dead run.
+    run_active = message_service.conversation_run_active(conversation_id)
+    result = await run_db(
         message_service.list_messages,
         supabase,
         user.auth_id,
@@ -42,6 +45,7 @@ async def list_messages(
         limit=limit,
         before=before,
     )
+    return {**result, "run_active": run_active}
 
 
 @router.post("/conversations/{conversation_id}/messages")

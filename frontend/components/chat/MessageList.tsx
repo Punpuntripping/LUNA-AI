@@ -486,9 +486,20 @@ export function MessageList({
             // spinner into a failed bubble with a retry so it never spins
             // forever. An actively-streaming run (isStreamingThis) is never
             // failed, no matter how long it's been silent.
+            //
+            // When the server reports `run_active` it is the truth for the
+            // newest row: false = nothing is running (the run died with a
+            // restart) → fail now instead of spinning for the whole window;
+            // true = still running → keep thinking however long it takes.
+            // Older rows, and older backends without the field, use the age.
             const ageMs = Date.now() - new Date(msg.created_at).getTime();
+            const runActive = data?.pages?.[0]?.run_active;
+            const isNewest = idx === messages.length - 1;
             const isDead =
-              !isStreamingThis && ageMs >= PLACEHOLDER_MAX_AGE_MS;
+              !isStreamingThis &&
+              (runActive === false ||
+                ((!isNewest || runActive === undefined) &&
+                  ageMs >= PLACEHOLDER_MAX_AGE_MS));
             if (isDead) {
               // A dead placeholder superseded by a newer turn (e.g. after a
               // retry) is just noise — drop it so only a still-relevant
