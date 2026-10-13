@@ -11,9 +11,11 @@ and /password/* serve the native app only — see the notes above each.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -32,6 +34,7 @@ from backend.app.errors import (
     MSG_SERVICE_UNAVAILABLE,
 )
 from backend.app.deps import get_current_user, get_supabase, get_supabase_auth, get_redis
+from backend.app.middleware.rate_limit import client_ip_for_rate_limit
 from backend.app.models.requests import (
     ChangePasswordRequest,
     DeleteAccountRequest,
@@ -57,6 +60,7 @@ from backend.app.services.account_service import (
     has_password,
     schedule_account_deletion,
 )
+from backend.app.services import otp_limits
 from backend.app.services.audit_service import write_audit_log
 from backend.app.services.subscription_service import resolve_paid_activated_at
 from shared.auth.jwt import AuthUser
@@ -376,19 +380,43 @@ async def _build_login_response(
 # POST /otp/request + POST /otp/verify — «الدخول برمز عبر البريد»
 # ============================================
 #
-# .claude/plans/email_otp_login.md, Phase A (dev-gated). An emailed code typed
-# INTO the app — no redirect, so it survives the installed-PWA → Safari bounce
-# that breaks Google OAuth there.
+# .claude/plans/email_otp_login.md, Phase B. An emailed code typed INTO the app
+# — no redirect, so it survives the installed-PWA → Safari bounce that breaks
+# Google OAuth there, and it is the only non-password login of the native app.
 #
-# Gate: ``EMAIL_OTP_ALLOWED_EMAILS`` (Settings.email_otp_allowlist). Empty/unset
-# => feature off. Not on the list => /otp/request answers exactly like a real
-# send and GoTrue is never called; /otp/verify answers exactly like a wrong
-# code. Membership must never be observable from the response, which is also
-# why the per-email limiters run BEFORE the allowlist check — otherwise only
-# listed emails could ever earn a 429.
+# GATE — ``EMAIL_OTP_MODE`` (Settings.email_otp_mode; unset/garbage = allowlist):
+#   off       → /otp/request: 200 {"sent":true,"fallback":"password"} to every
+#               caller, nothing counted, no email. /otp/verify: 503. (The plan
+#               said 503 on request too; owner 2026-10-12 prefers the fallback
+#               flag so old AND new clients switch to the password form — the
+#               web client already treats both a 503 and `fallback` that way.)
+#   allowlist → Phase A: only EMAIL_OTP_ALLOWED_EMAILS get a code; everyone else
+#               gets the identical silent {"sent":true} and GoTrue is never
+#               called. Verify for an unlisted email == a wrong code (401).
+#   open      → any address; GoTrue decides whether the account exists.
+# ``should_create_user`` is False in EVERY mode — a code never creates an account.
 #
-# Per-IP limiting is not repeated here: RateLimitMiddleware already meters every
-# /api/v1/auth/* path per resolved client IP (AUTH_RATE_LIMIT per minute).
+# ENUMERATION — /otp/request answers {"sent":true} for well-formed input whether
+# or not the account exists, is listed, or was capped per email. The only other
+# answers are keyed on the CALLER (per-email cooldown on the address it typed,
+# per-IP 429) or are GLOBAL and identical for everyone (`fallback`), so none of
+# them says anything about an account. The GoTrue call runs in a BACKGROUND
+# task, so an unknown address (fast GoTrue 4xx) and a real send (waits on SMTP)
+# take the same time to answer.
+#
+# ORDER on /otp/request (everything before the send is synchronous):
+#   mode off → per-IP hourly (429) → per-email cooldown/hourly (429)
+#   → [captcha hook, not built] → global state: daily send cap reached or mail
+#   path failing (fallback) → per-email daily (silent) → gate (silent)
+#   → count the send globally (fallback if that tipped it over) → background send.
+# The per-email limiters run BEFORE the gate — otherwise only listed/existing
+# emails could ever earn a 429 (membership oracle).
+#
+# FAIL-STRICT — every OTP/signup/pwreset limiter degrades to a per-process
+# window (stricter numbers) when Redis is missing or erroring; never to "pass".
+# See services/otp_limits.py. RateLimitMiddleware's 10/min per IP per path on
+# /api/v1/auth/* still runs first and still fails open; the limits here are the
+# strict ones. Client IP only via client_ip_for_rate_limit (one trust boundary).
 #
 # Both GoTrue calls run on a THROWAWAY anon client, never the shared
 # ``app.state.supabase_auth``: sign_in_with_otp and verify_otp both call
@@ -402,18 +430,39 @@ OTP_REQUEST_HOURLY_WINDOW_S = 3600
 OTP_VERIFY_FAIL_MAX = 5              # 5 failed verifies / 15 min per email → 429
 OTP_VERIFY_FAIL_WINDOW_S = 900
 
+# Degraded (no Redis) — stricter, because every worker/replica counts alone.
+OTP_FALLBACK_COOLDOWN_S = 120        # 1 / 120s per email
+OTP_FALLBACK_HOURLY_MAX = 3          # 3 / hour per email
+OTP_FALLBACK_VERIFY_FAIL_MAX = 3     # 3 fails / 15 min per email
+
+OTP_EMAIL_DAILY_WINDOW_S = 86400
+OTP_IP_WINDOW_S = 3600
+OTP_SENT_DAY_TTL_S = 2 * 86400       # the UTC-day key outlives its day, then goes
+OTP_SEND_DEGRADED_S = 120            # GoTrue/SMTP failure → fallback for everyone this long
+
 MSG_OTP_REQUEST_RATE_LIMITED = "انتظر قليلاً قبل طلب رمز جديد"
+MSG_OTP_IP_RATE_LIMITED = "محاولات كثيرة من هذه الشبكة — حاول لاحقاً"
 MSG_OTP_INVALID = "الرمز غير صحيح أو منتهي الصلاحية"
 MSG_OTP_VERIFY_LOCKED = "محاولات كثيرة غير صحيحة — انتظر قليلاً ثم حاول مجدداً"
+MSG_OTP_OFF = "الدخول بالرمز غير متاح حالياً — استخدم كلمة المرور"
 
 _OTP_REQ_COOLDOWN_KEY = "otp:req:cd:{}"
 _OTP_REQ_HOURLY_KEY = "otp:req:hr:{}"
+_OTP_REQ_DAILY_KEY = "otp:req:day:{}"
 _OTP_VERIFY_FAIL_KEY = "otp:verify:fails:{}"
+_OTP_IP_REQ_KEY = "otp:ip:req:{}"
+_OTP_IP_VERIFY_FAIL_KEY = "otp:ip:verify:fails:{}"
+_OTP_SENT_DAY_KEY = "otp:sent:day:{}"         # {UTC date}
+_OTP_SENT_LOCAL_KEY = "otp:sent:local"        # process fallback: rolling 24h
+
+OtpGate = Literal["send", "silent", "off"]
 
 
 class OtpRequestBody(BaseModel):
     """POST /api/v1/auth/otp/request"""
     email: EmailStr
+    # B3.3 captcha hook: a future ``turnstile_token: Optional[str]`` (max 4000)
+    # lands here. NOT built — owner has not decided on captcha (2026-10-12).
 
 
 class OtpVerifyBody(BaseModel):
@@ -434,8 +483,10 @@ class OtpVerifyBody(BaseModel):
 
 class OtpRequestResponse(BaseModel):
     sent: bool = True
-    # Set to "password" when codes can't be emailed (daily cap / SMTP down) —
-    # clients switch to password login. Emitted by OTP Phase B; None until then.
+    # "password" when codes can't be emailed right now — the daily send cap is
+    # reached, the mail path (GoTrue/SMTP) is failing, or EMAIL_OTP_MODE=off.
+    # Always a GLOBAL state, never per-email, so it reveals nothing about any
+    # account. Omitted otherwise (routes use response_model_exclude_none).
     fallback: Optional[Literal["password"]] = None
 
 
@@ -451,12 +502,91 @@ def _email_key(email: str) -> str:
     return hashlib.sha256(email.encode("utf-8")).hexdigest()[:24]
 
 
+def _ip_key(request: Request) -> str:
+    """Hashed client IP for Redis keys — resolved ONLY via the middleware's
+    trust boundary (client_ip_for_rate_limit), never raw headers."""
+    ip = client_ip_for_rate_limit(request)
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()[:24]
+
+
 def _email_domain(email: str) -> str:
     return email.rpartition("@")[2]
 
 
-def _otp_allowed(email: str) -> bool:
-    return email in get_settings().email_otp_allowlist
+def _otp_gate(email: str) -> OtpGate:
+    """send = GoTrue may be called · silent = answer as if sent · off = kill switch."""
+    settings = get_settings()
+    mode = settings.email_otp_mode
+    if mode == "off":
+        return "off"
+    if mode == "open":
+        return "send"
+    return "send" if email in settings.email_otp_allowlist else "silent"
+
+
+# --- telemetry (B3.5) -------------------------------------------------------
+# otp.outcome / otp.limiter_backend / otp.client on the request span. NEVER the
+# email or its hash — the hash lives in Redis keys and log lines only.
+
+
+def _otp_client(request: Request) -> str:
+    """web | app — analytics label only, never a policy input (spoofable)."""
+    xc = (request.headers.get("x-client") or "").strip().lower()
+    if xc.startswith("rayhan-app") or request.headers.get("x-app-platform"):
+        return "app"
+    return "web"
+
+
+def _otp_span(attrs: dict) -> None:
+    try:
+        from opentelemetry import trace
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        span = trace.get_current_span()
+        if span is not None and span.is_recording():
+            span.set_attributes(attrs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _otp_mark(request: Request, outcome: str, backends: Optional[set] = None) -> None:
+    attrs = {"otp.outcome": outcome, "otp.client": _otp_client(request)}
+    if backends:
+        attrs["otp.limiter_backend"] = (
+            otp_limits.PROCESS if otp_limits.PROCESS in backends else otp_limits.REDIS
+        )
+    _otp_span(attrs)
+
+
+# --- per-email limiters (shared with /signup* and /password/*) ---------------
+
+
+async def _otp_request_check(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    cooldown_key: str = _OTP_REQ_COOLDOWN_KEY,
+    hourly_key_tpl: str = _OTP_REQ_HOURLY_KEY,
+) -> tuple[bool, str]:
+    """(limited, backend) for the per-email cooldown + hourly cap. Fail-STRICT:
+    without Redis the process-local window applies 1/120s and 3/h."""
+    blocked, b1 = await otp_limits.cooldown_blocked(
+        redis,
+        cooldown_key.format(ekey),
+        OTP_REQUEST_COOLDOWN_S,
+        local_seconds=OTP_FALLBACK_COOLDOWN_S,
+    )
+    if blocked:
+        return True, b1
+    over, b2 = await otp_limits.hit_over(
+        redis,
+        hourly_key_tpl.format(ekey),
+        OTP_REQUEST_HOURLY_MAX,
+        OTP_REQUEST_HOURLY_WINDOW_S,
+        local_limit=OTP_FALLBACK_HOURLY_MAX,
+    )
+    return over, (otp_limits.PROCESS if otp_limits.PROCESS in (b1, b2) else otp_limits.REDIS)
 
 
 async def _otp_request_limited(
@@ -466,32 +596,35 @@ async def _otp_request_limited(
     cooldown_key: str = _OTP_REQ_COOLDOWN_KEY,
     hourly_key_tpl: str = _OTP_REQ_HOURLY_KEY,
 ) -> bool:
-    """True when this email has asked too recently / too often. Fails OPEN.
+    """True when this email has asked too recently / too often.
 
-    A Redis outage must not lock testers out of login; GoTrue's own email rate
-    limit and the per-IP middleware still bound abuse.
-
-    The key templates default to the login-OTP family; native signup passes its
-    own (``signup:*``) so the two flows never share a budget.
+    The key templates default to the login-OTP family; native signup and
+    password reset pass their own (``signup:*`` / ``pwreset:*``) so the flows
+    never share a budget. Fail-STRICT (process-local fallback), never open.
     """
-    if redis is None:
-        logger.warning("auth.otp.request: Redis unavailable — per-email limit skipped (fail-open)")
-        return False
-    try:
-        # 1 / 60s: SET NX is the whole cooldown — present key == too soon.
-        first = await redis.set(
-            cooldown_key.format(ekey), "1", nx=True, ex=OTP_REQUEST_COOLDOWN_S
-        )
-        if not first:
-            return True
-        hourly_key = hourly_key_tpl.format(ekey)
-        n = await redis.incr(hourly_key)
-        if n == 1:
-            await redis.expire(hourly_key, OTP_REQUEST_HOURLY_WINDOW_S)
-        return n > OTP_REQUEST_HOURLY_MAX
-    except Exception as e:  # noqa: BLE001
-        logger.warning("auth.otp.request: Redis limiter error — fail-open: %s", e)
-        return False
+    limited, _ = await _otp_request_check(
+        redis, ekey, cooldown_key=cooldown_key, hourly_key_tpl=hourly_key_tpl
+    )
+    return limited
+
+
+def _cooldown_retry_after(backend: str) -> str:
+    return str(OTP_FALLBACK_COOLDOWN_S if backend == otp_limits.PROCESS else OTP_REQUEST_COOLDOWN_S)
+
+
+async def _otp_verify_check(
+    redis: Optional[AsyncRedis],
+    ekey: str,
+    *,
+    fail_key: str = _OTP_VERIFY_FAIL_KEY,
+) -> tuple[bool, str]:
+    return await otp_limits.reached(
+        redis,
+        fail_key.format(ekey),
+        OTP_VERIFY_FAIL_MAX,
+        OTP_VERIFY_FAIL_WINDOW_S,
+        local_limit=OTP_FALLBACK_VERIFY_FAIL_MAX,
+    )
 
 
 async def _otp_verify_locked(
@@ -502,18 +635,10 @@ async def _otp_verify_locked(
 ) -> bool:
     """True once OTP_VERIFY_FAIL_MAX wrong codes landed inside the window.
 
-    Fails open on a Redis outage: GoTrue's own verify limit and the per-IP
-    middleware remain, and a 6-digit code expires in 10 minutes.
+    Fail-STRICT: without Redis, 3 fails / 15 min in the process-local window.
     """
-    if redis is None:
-        logger.warning("auth.otp.verify: Redis unavailable — fail counter skipped (fail-open)")
-        return False
-    try:
-        val = await redis.get(fail_key.format(ekey))
-        return val is not None and int(val) >= OTP_VERIFY_FAIL_MAX
-    except Exception as e:  # noqa: BLE001
-        logger.warning("auth.otp.verify: Redis lock check failed — fail-open: %s", e)
-        return False
+    locked, _ = await _otp_verify_check(redis, ekey, fail_key=fail_key)
+    return locked
 
 
 async def _otp_verify_record_fail(
@@ -522,15 +647,12 @@ async def _otp_verify_record_fail(
     *,
     fail_key: str = _OTP_VERIFY_FAIL_KEY,
 ) -> None:
-    if redis is None:
-        return
-    try:
-        key = fail_key.format(ekey)
-        n = await redis.incr(key)
-        if n == 1:  # first fail in this window — start the 15-min clock
-            await redis.expire(key, OTP_VERIFY_FAIL_WINDOW_S)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("auth.otp.verify: fail counter incr failed: %s", e)
+    await otp_limits.record(
+        redis,
+        fail_key.format(ekey),
+        OTP_VERIFY_FAIL_WINDOW_S,
+        local_limit=OTP_FALLBACK_VERIFY_FAIL_MAX,
+    )
 
 
 async def _otp_verify_clear_fails(
@@ -539,12 +661,61 @@ async def _otp_verify_clear_fails(
     *,
     fail_key: str = _OTP_VERIFY_FAIL_KEY,
 ) -> None:
-    if redis is None:
-        return
-    try:
-        await redis.delete(fail_key.format(ekey))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("auth.otp.verify: fail counter clear failed: %s", e)
+    await otp_limits.clear(
+        redis,
+        fail_key.format(ekey),
+        OTP_VERIFY_FAIL_WINDOW_S,
+        local_limit=OTP_FALLBACK_VERIFY_FAIL_MAX,
+    )
+
+
+# --- global daily send cap (login codes only — never signup/reset) ----------
+
+
+def _otp_sent_day_key() -> str:
+    return _OTP_SENT_DAY_KEY.format(datetime.now(timezone.utc).date().isoformat())
+
+
+def _otp_local_daily_cap() -> int:
+    """Per-process cap when Redis is out: a quarter of the global one (≤2
+    replicas ⇒ about half the normal cap). Never "unlimited"."""
+    return max(get_settings().OTP_DAILY_SEND_MAX // 4, 0)
+
+
+async def _otp_global_cap_reached(redis: Optional[AsyncRedis]) -> tuple[bool, str]:
+    cap = get_settings().OTP_DAILY_SEND_MAX
+    local_cap = _otp_local_daily_cap()
+    if redis is not None:
+        try:
+            val = await redis.get(_otp_sent_day_key())
+            return (val is not None and int(val) >= cap) or cap <= 0, otp_limits.REDIS
+        except Exception as e:  # noqa: BLE001
+            logger.warning("auth.otp: global cap peek failed — process fallback: %s", e)
+    n = otp_limits.local_window("ctr", local_cap, OTP_EMAIL_DAILY_WINDOW_S).count(_OTP_SENT_LOCAL_KEY)
+    return n >= local_cap, otp_limits.PROCESS
+
+
+async def _otp_global_count_send(redis: Optional[AsyncRedis]) -> tuple[bool, Optional[str], str]:
+    """Count one real send. Returns (over_cap, redis_key_or_None, backend)."""
+    cap = get_settings().OTP_DAILY_SEND_MAX
+    if redis is not None:
+        key = _otp_sent_day_key()
+        try:
+            n = await redis.incr(key)
+            if n == 1:
+                await redis.expire(key, OTP_SENT_DAY_TTL_S)
+            if n > cap:
+                await otp_limits.unrecord(redis, key)
+                return True, None, otp_limits.REDIS
+            return False, key, otp_limits.REDIS
+        except Exception as e:  # noqa: BLE001
+            logger.warning("auth.otp: global cap incr failed — process fallback: %s", e)
+    local_cap = _otp_local_daily_cap()
+    n, _ = otp_limits.local_window("ctr", local_cap, OTP_EMAIL_DAILY_WINDOW_S).hit(_OTP_SENT_LOCAL_KEY)
+    return n > local_cap, None, otp_limits.PROCESS
+
+
+# --- audit -------------------------------------------------------------------
 
 
 def _audit_otp_by_email(supabase: SupabaseClient, email: str, event: str) -> None:
@@ -598,99 +769,260 @@ async def _close_client(client: SupabaseClient) -> None:
         logger.warning("Could not close OTP auth client: %s", e)
 
 
+# --- background send ---------------------------------------------------------
+
+# Strong refs so a fire-and-forget task is not garbage-collected mid-flight.
+_OTP_SEND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_otp_send(coro) -> None:
+    task = asyncio.create_task(coro)
+    _OTP_SEND_TASKS.add(task)
+    task.add_done_callback(_OTP_SEND_TASKS.discard)
+
+
+async def drain_otp_sends() -> None:
+    """Await every in-flight background send (tests / graceful shutdown)."""
+    while _OTP_SEND_TASKS:
+        await asyncio.gather(*list(_OTP_SEND_TASKS), return_exceptions=True)
+
+
+def _otp_send_span():
+    try:
+        from opentelemetry import trace
+
+        return trace.get_tracer("luna.auth.otp").start_as_current_span("auth.otp.send")
+    except Exception:  # noqa: BLE001
+        return contextlib.nullcontext()
+
+
+async def _otp_send(
+    email: str,
+    ekey: str,
+    supabase: SupabaseClient,
+    redis: Optional[AsyncRedis],
+    counted_key: Optional[str],
+    client_label: str,
+) -> None:
+    """The GoTrue call, OFF the request path. Never raises.
+
+    No email went out (GoTrue 4xx — unknown user / GoTrue's own limit — or a
+    5xx/timeout) ⇒ the global day counter is refunded. A 5xx/timeout/unexpected
+    error also raises the global "mail path failing" flag for
+    OTP_SEND_DEGRADED_S, so the next callers get ``fallback: "password"``
+    instead of waiting for a code that will not come. A GoTrue 429 does NOT
+    raise it: GoTrue uses the same code for its per-address throttle, so a
+    global reaction there would be a per-email signal.
+    """
+    with _otp_send_span():
+        outcome = "send_failed"
+        client = None
+        try:
+            client = await asyncio.to_thread(create_isolated_anon_client)
+            await _gotrue_call(
+                client.auth.sign_in_with_otp,
+                # No signups through this path, in ANY mode — an unknown email
+                # is a GoTrue 4xx and the caller already got the generic 200.
+                {"email": email, "options": {"should_create_user": False}},
+            )
+            outcome = "sent"
+        except (AuthRetryableError, TimeoutError) as e:
+            logger.error("GoTrue unavailable during otp send: %s", e)
+        except AuthApiError as e:
+            if e.status is not None and e.status >= 500:
+                logger.error(
+                    "GoTrue API error during otp send (status=%s code=%s)", e.status, e.code
+                )
+            else:
+                outcome = "gotrue_rejected"
+                logger.info(
+                    "auth.otp.request.gotrue_rejected email_hash=%s status=%s code=%s",
+                    ekey,
+                    e.status,
+                    e.code,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Unexpected otp send error: %s", e)
+        finally:
+            if client is not None:
+                await _close_client(client)
+
+        _otp_span({"otp.outcome": outcome, "otp.client": client_label})
+
+        if outcome != "sent":
+            if counted_key:
+                await otp_limits.unrecord(redis, counted_key)
+            if outcome == "send_failed":
+                await otp_limits.mark_send_degraded(redis, OTP_SEND_DEGRADED_S)
+            return
+
+        logger.info("auth.otp.requested email_hash=%s", ekey)
+        await _audit_otp(supabase, email, "auth.otp.requested")
+
+
 @router.post("/otp/request", response_model=OtpRequestResponse, response_model_exclude_none=True)
 async def otp_request(
     body: OtpRequestBody,
+    request: Request,
     supabase: SupabaseClient = Depends(get_supabase),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
-    """Email a login code to an EXISTING, allowlisted account.
+    """Email a login code to an EXISTING account (subject to EMAIL_OTP_MODE).
 
-    Always ``{"sent": true}`` for well-formed input — allowlisted or not,
-    existing account or not. 429 when this email asked too recently/often, 503
-    when GoTrue itself is unavailable (same mapping as /login).
+    200 ``{"sent": true}`` for well-formed input — existing, listed, capped
+    per-email or not. 200 ``{"sent": true, "fallback": "password"}`` when codes
+    cannot be emailed for ANYONE right now (mode off · daily send cap · mail
+    path failing). 429 per-email cooldown/hourly (keyed on the typed address)
+    or per-IP hourly. The GoTrue call itself runs in the background.
     """
     email = _normalize_email(body.email)
     ekey = _email_key(email)
+    settings = get_settings()
+    backends: set = set()
 
-    if await _otp_request_limited(redis, ekey):
+    if settings.email_otp_mode == "off":
+        _otp_mark(request, "off")
+        return OtpRequestResponse(sent=True, fallback="password")
+
+    ip_over, b = await otp_limits.hit_over(
+        redis,
+        _OTP_IP_REQ_KEY.format(_ip_key(request)),
+        settings.OTP_IP_HOURLY_MAX,
+        OTP_IP_WINDOW_S,
+        local_limit=settings.OTP_IP_HOURLY_MAX,
+    )
+    backends.add(b)
+    if ip_over:
+        _otp_mark(request, "ip_limited", backends)
+        raise LunaHTTPException(
+            status_code=429,
+            code=ErrorCode.RATE_LIMITED,
+            detail=MSG_OTP_IP_RATE_LIMITED,
+            headers={"Retry-After": str(OTP_IP_WINDOW_S)},
+        )
+
+    limited, b = await _otp_request_check(redis, ekey)
+    backends.add(b)
+    if limited:
+        _otp_mark(request, "cooldown", backends)
         raise LunaHTTPException(
             status_code=429,
             code=ErrorCode.RATE_LIMITED,
             detail=MSG_OTP_REQUEST_RATE_LIMITED,
-            headers={"Retry-After": str(OTP_REQUEST_COOLDOWN_S)},
+            headers={"Retry-After": _cooldown_retry_after(b)},
         )
 
-    if not _otp_allowed(email):
+    # ---- B3.3 CAPTCHA HOOK (NOT BUILT — owner undecided, 2026-10-12) --------
+    # Turnstile goes HERE: after the caller-keyed 429s, before anything counts
+    # a send. On failure: 400 CAPTCHA_FAILED (Arabic), otp.outcome=captcha_failed,
+    # and nothing below may run (the global counter must not move).
+    # -------------------------------------------------------------------------
+
+    # Global states — identical for every caller, so checked BEFORE the gate
+    # (an unlisted address must see exactly what a listed one sees).
+    capped, b = await _otp_global_cap_reached(redis)
+    backends.add(b)
+    if capped:
+        logger.warning("auth.otp.capped_global — daily send cap reached")
+        _otp_mark(request, "capped_global", backends)
+        return OtpRequestResponse(sent=True, fallback="password")
+    if await otp_limits.send_degraded(redis):
+        _otp_mark(request, "send_degraded", backends)
+        return OtpRequestResponse(sent=True, fallback="password")
+
+    # Per-email daily (inbox-bombing guard). Silent: a 429 here would say "this
+    # address got codes today".
+    day_over, b = await otp_limits.hit_over(
+        redis,
+        _OTP_REQ_DAILY_KEY.format(ekey),
+        settings.OTP_EMAIL_DAILY_MAX,
+        OTP_EMAIL_DAILY_WINDOW_S,
+        local_limit=settings.OTP_EMAIL_DAILY_MAX,
+    )
+    backends.add(b)
+    if day_over:
+        logger.info("auth.otp.capped_email_daily email_hash=%s", ekey)
+        _otp_mark(request, "capped_email_daily", backends)
+        return OtpRequestResponse(sent=True)
+
+    if _otp_gate(email) != "send":
         logger.info(
             "auth.otp.not_allowed email_hash=%s domain=%s", ekey, _email_domain(email)
         )
+        _otp_mark(request, "not_allowed", backends)
         return OtpRequestResponse(sent=True)
 
-    client = await asyncio.to_thread(create_isolated_anon_client)
-    try:
-        await _gotrue_call(
-            client.auth.sign_in_with_otp,
-            # No signups through this path — an unknown email is a GoTrue 4xx,
-            # which is swallowed into the same generic 200 below.
-            {"email": email, "options": {"should_create_user": False}},
-        )
-    except (AuthRetryableError, TimeoutError) as e:
-        logger.error("GoTrue unavailable during otp request: %s", e)
-        raise _gotrue_unavailable()
-    except AuthApiError as e:
-        if e.status is not None and e.status >= 500:
-            logger.error(
-                "GoTrue API error during otp request (status=%s code=%s)",
-                e.status,
-                e.code,
-            )
-            raise _gotrue_unavailable()
-        # User not found / signups disabled / GoTrue's own email limit — never
-        # reveal which: same 200 as a real send.
-        logger.info(
-            "auth.otp.request.gotrue_rejected email_hash=%s status=%s code=%s",
-            ekey,
-            e.status,
-            e.code,
-        )
-        return OtpRequestResponse(sent=True)
-    except Exception as e:
-        logger.exception("Unexpected otp request error: %s", e)
-        raise _gotrue_unavailable()
-    finally:
-        await _close_client(client)
+    # Count only real sends (gate passed), right before GoTrue.
+    over, counted_key, b = await _otp_global_count_send(redis)
+    backends.add(b)
+    if over:
+        logger.warning("auth.otp.capped_global — daily send cap reached")
+        _otp_mark(request, "capped_global", backends)
+        return OtpRequestResponse(sent=True, fallback="password")
 
-    logger.info("auth.otp.requested email_hash=%s", ekey)
-    await _audit_otp(supabase, email, "auth.otp.requested")
+    client_label = _otp_client(request)
+    _spawn_otp_send(_otp_send(email, ekey, supabase, redis, counted_key, client_label))
+    _otp_mark(request, "sent", backends)
     return OtpRequestResponse(sent=True)
 
 
 @router.post("/otp/verify", response_model=LoginResponse)
 async def otp_verify(
     body: OtpVerifyBody,
+    request: Request,
     supabase: SupabaseClient = Depends(get_supabase),
     redis: Optional[AsyncRedis] = Depends(get_redis),
 ):
     """Exchange an emailed code for a session — the SAME LoginResponse as /login.
 
-    401 on a wrong/expired code or a non-allowlisted email (indistinguishable);
-    429 once OTP_VERIFY_FAIL_MAX wrong codes land inside 15 minutes.
+    401 on a wrong/expired code or an address the gate refuses (indistinguishable);
+    429 once OTP_VERIFY_FAIL_MAX wrong codes land inside 15 minutes for this
+    email, or OTP_IP_VERIFY_FAIL_MAX wrong codes / hour from this IP across any
+    emails; 503 when EMAIL_OTP_MODE=off or GoTrue is unavailable.
     """
     email = _normalize_email(body.email)
     ekey = _email_key(email)
+    settings = get_settings()
+    backends: set = set()
 
-    if await _otp_verify_locked(redis, ekey):
+    if settings.email_otp_mode == "off":
+        _otp_mark(request, "off")
+        raise LunaHTTPException(
+            status_code=503, code=ErrorCode.SERVICE_UNAVAILABLE, detail=MSG_OTP_OFF
+        )
+
+    ip_fail_key = _OTP_IP_VERIFY_FAIL_KEY.format(_ip_key(request))
+    ip_locked, b = await otp_limits.reached(
+        redis,
+        ip_fail_key,
+        settings.OTP_IP_VERIFY_FAIL_MAX,
+        OTP_IP_WINDOW_S,
+        local_limit=settings.OTP_IP_VERIFY_FAIL_MAX,
+    )
+    backends.add(b)
+    email_locked, b = await _otp_verify_check(redis, ekey)
+    backends.add(b)
+    if ip_locked or email_locked:
+        _otp_mark(request, "locked", backends)
         raise LunaHTTPException(
             status_code=429,
             code=ErrorCode.RATE_LIMITED,
             detail=MSG_OTP_VERIFY_LOCKED,
-            headers={"Retry-After": str(OTP_VERIFY_FAIL_WINDOW_S)},
+            headers={
+                "Retry-After": str(OTP_IP_WINDOW_S if ip_locked else OTP_VERIFY_FAIL_WINDOW_S)
+            },
         )
 
     async def _reject(reason: str) -> LunaHTTPException:
         await _otp_verify_record_fail(redis, ekey)
+        await otp_limits.record(
+            redis,
+            ip_fail_key,
+            OTP_IP_WINDOW_S,
+            local_limit=settings.OTP_IP_VERIFY_FAIL_MAX,
+        )
         logger.info("auth.otp.failed email_hash=%s reason=%s", ekey, reason)
+        _otp_mark(request, "invalid", backends)
         if reason != "not_allowed":
             await _audit_otp(supabase, email, "auth.otp.failed")
         return LunaHTTPException(
@@ -699,9 +1031,9 @@ async def otp_verify(
             detail=MSG_OTP_INVALID,
         )
 
-    # Defence in depth: the request route already refuses to send to unlisted
-    # addresses, but a code must never be accepted for one either.
-    if not _otp_allowed(email):
+    # Defence in depth: the request route already refuses to send to addresses
+    # the gate refuses, but a code must never be accepted for one either.
+    if _otp_gate(email) != "send":
         raise await _reject("not_allowed")
 
     client = await asyncio.to_thread(create_isolated_anon_client)
@@ -718,6 +1050,7 @@ async def otp_verify(
             raise await _reject(f"gotrue_{e.status}")
         if e.status == 429:
             # GoTrue's own verify limit — surface it in Arabic, don't count it.
+            _otp_mark(request, "locked", backends)
             raise LunaHTTPException(
                 status_code=429,
                 code=ErrorCode.RATE_LIMITED,
@@ -739,6 +1072,8 @@ async def otp_verify(
     if session is None or user is None:
         raise await _reject("no_session")
 
+    # Only the per-email counter resets: the per-IP one is the spray guard and
+    # one right code from a shared CGNAT address must not wipe it.
     await _otp_verify_clear_fails(redis, ekey)
 
     # An OTP grant proves nothing about a password — resolve it like /me does
@@ -751,6 +1086,7 @@ async def otp_verify(
         password_set = False
 
     logger.info("auth.otp.verified email_hash=%s", ekey)
+    _otp_mark(request, "verified", backends)
     try:
         await run_db(_audit_account_event, supabase, user.id, "login", "auth.otp.verified")
     except Exception as e:  # noqa: BLE001
@@ -858,13 +1194,10 @@ async def _release_signup_cooldown(
     outage), so fixing a weak password does not cost the user a minute.
 
     ``cooldown_key`` defaults to the signup family; /password/forgot passes its
-    own ``pwreset:*`` key."""
-    if redis is None:
-        return
-    try:
-        await redis.delete(cooldown_key.format(ekey))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("auth.signup: cooldown release failed: %s", e)
+    own ``pwreset:*`` key. Releases the process-local fallback too."""
+    await otp_limits.cooldown_release(
+        redis, cooldown_key.format(ekey), local_seconds=OTP_FALLBACK_COOLDOWN_S
+    )
 
 
 def _signup_rate_limited() -> LunaHTTPException:

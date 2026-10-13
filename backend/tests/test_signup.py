@@ -24,6 +24,7 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 from backend.app.api import auth as auth_mod
 from backend.app.deps import get_redis, get_supabase, get_supabase_auth
 from backend.app.errors import LunaHTTPException, luna_exception_handler
+from backend.app.services import otp_limits
 from backend.tests.test_email_otp import AUTH_ID, FakeRedis, FakeSupabase
 from shared.config import Settings
 
@@ -45,6 +46,15 @@ def _session_and_user(identities: Any = ("email",)):
         identities=None if identities is None else [SimpleNamespace(provider=p) for p in identities],
     )
     return session, user
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_otp_process_state():
+    """The fail-strict fallback windows are process-global — isolate tests."""
+    otp_limits.reset_local_state()
+    yield
+    otp_limits.reset_local_state()
 
 
 class FakeGoTrue:
@@ -305,11 +315,32 @@ def test_signup_hourly_cap(monkeypatch) -> None:
     assert h.signup().status_code == 429
 
 
-def test_signup_fails_open_without_redis(monkeypatch) -> None:
+def test_signup_degrades_strict_without_redis(monkeypatch) -> None:
+    """No Redis ⇒ process-local fallback with stricter numbers, never a pass:
+    1 / 120 s and 3 / h per email (email_otp_login.md §B3.1)."""
     h = Harness(monkeypatch)
     h.app.dependency_overrides[get_redis] = lambda: None
     assert h.signup().status_code == 200
+    assert h.signup().status_code == 429  # 2nd inside 120 s
+    cd = otp_limits.local_window("cd", 1, auth_mod.OTP_FALLBACK_COOLDOWN_S)
+    cd_key = "signup:req:cd:" + auth_mod._email_key(EMAIL)
+    for _ in range(auth_mod.OTP_FALLBACK_HOURLY_MAX - 1):
+        cd.discard(cd_key)  # the 120 s cooldown "expires"
+        assert h.signup().status_code == 200
+    cd.discard(cd_key)
+    assert h.signup().status_code == 429  # 4th in the hour
+
+
+def test_signup_ignores_the_otp_global_send_cap(monkeypatch) -> None:
+    """The login-code daily cap must never starve signup emails."""
+    h = Harness(monkeypatch)
+    settings = Settings.model_construct(
+        PUBLIC_WEB_URL="https://rayhanai.com", OTP_DAILY_SEND_MAX=0, EMAIL_OTP_MODE="off"
+    )
+    monkeypatch.setattr(auth_mod, "get_settings", lambda: settings)
     assert h.signup().status_code == 200
+    h.clear_cooldown()
+    assert h.resend().status_code == 200
 
 
 def test_signup_with_session_returns_login_response(monkeypatch) -> None:

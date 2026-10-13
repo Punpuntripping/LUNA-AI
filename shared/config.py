@@ -218,6 +218,30 @@ class Settings(BaseSettings):
             if e.strip()
         )
 
+    # Phase B 3-state gate (email_otp_login.md §B1). Env var name == field name
+    # (no validation_alias). Unset / garbage => "allowlist" == Phase A exactly,
+    # so deploying this changes nothing until the env is flipped.
+    #   off       — kill switch: /otp/request answers {"sent":true,"fallback":"password"}
+    #               to everyone (no email); /otp/verify answers 503.
+    #   allowlist — only EMAIL_OTP_ALLOWED_EMAILS get codes (others: silent 200).
+    #   open      — any existing account (GoTrue decides; should_create_user=False).
+    EMAIL_OTP_MODE: Optional[str] = None
+
+    @property
+    def email_otp_mode(self) -> str:
+        raw = (self.EMAIL_OTP_MODE or "").strip().lower()
+        return raw if raw in ("off", "allowlist", "open") else "allowlist"
+
+    # Caps (§B3.2). All checked before GoTrue is called; all env-overridable.
+    OTP_EMAIL_DAILY_MAX: int = 10      # per email / 24h — over: silent {"sent":true}
+    OTP_IP_HOURLY_MAX: int = 30        # per client IP / h on /otp/request — over: 429
+    OTP_IP_VERIFY_FAIL_MAX: int = 30   # wrong codes per client IP / h, any email — over: 429
+    # Global login-code sends per UTC day. Owner 2026-10-12: 60 — below the
+    # Resend free tier (100/day) that signup + password-reset emails share.
+    # Over: {"sent":true,"fallback":"password"} to everyone. Without Redis the
+    # per-process cap is OTP_DAILY_SEND_MAX // 4.
+    OTP_DAILY_SEND_MAX: int = 60
+
     # ========================================
     # MARKETING EMAIL — unsubscribe links
     # ========================================

@@ -18,6 +18,7 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError, AuthSessionMi
 from backend.app.api import auth as auth_mod
 from backend.app.deps import get_redis, get_supabase, get_supabase_auth
 from backend.app.errors import LunaHTTPException, luna_exception_handler
+from backend.app.services import otp_limits
 from backend.tests.test_email_otp import AUTH_ID, FakeRedis, FakeSupabase
 from backend.tests.test_signup import FakeGoTrue as LoginGoTrue
 from shared.config import Settings
@@ -39,6 +40,15 @@ def _session_and_user():
         identities=[SimpleNamespace(provider="google")],  # Google-only account
     )
     return session, user
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_otp_process_state():
+    """The fail-strict fallback windows are process-global — isolate tests."""
+    otp_limits.reset_local_state()
+    yield
+    otp_limits.reset_local_state()
 
 
 class FakeRecoveryGoTrue:
@@ -212,11 +222,20 @@ def test_forgot_hourly_cap(monkeypatch) -> None:
     assert h.forgot().status_code == 429
 
 
-def test_forgot_fails_open_without_redis(monkeypatch) -> None:
+def test_forgot_degrades_strict_without_redis(monkeypatch) -> None:
+    """No Redis ⇒ process-local fallback with stricter numbers, never a pass:
+    1 / 120 s and 3 / h per email (email_otp_login.md §B3.1)."""
     h = Harness(monkeypatch)
     h.app.dependency_overrides[get_redis] = lambda: None
     assert h.forgot().status_code == 200
-    assert h.forgot().status_code == 200
+    assert h.forgot().status_code == 429  # 2nd inside 120 s
+    cd = otp_limits.local_window("cd", 1, auth_mod.OTP_FALLBACK_COOLDOWN_S)
+    cd_key = "pwreset:req:cd:" + auth_mod._email_key(EMAIL)
+    for _ in range(auth_mod.OTP_FALLBACK_HOURLY_MAX - 1):
+        cd.discard(cd_key)  # the 120 s cooldown "expires"
+        assert h.forgot().status_code == 200
+    cd.discard(cd_key)
+    assert h.forgot().status_code == 429  # 4th in the hour
 
 
 # ---------------------------------------------------------------------------

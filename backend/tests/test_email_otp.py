@@ -12,6 +12,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, Optional
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,7 +22,7 @@ from supabase_auth.errors import AuthApiError, AuthRetryableError
 from backend.app.api import auth as auth_mod
 from backend.app.deps import get_redis, get_supabase, get_supabase_auth
 from backend.app.errors import LunaHTTPException, luna_exception_handler
-from backend.app.services import analytics_service
+from backend.app.services import analytics_service, otp_limits
 from shared.config import Settings
 
 ALLOWED = "dev@rayhanai.com"
@@ -57,6 +59,10 @@ class FakeRedis:
         self.store[key] = int(self.store.get(key, 0)) + 1
         return self.store[key]
 
+    async def decr(self, key):
+        self.store[key] = int(self.store.get(key, 0)) - 1
+        return self.store[key]
+
     async def expire(self, key, seconds):
         self.ttls[key] = seconds
         return True
@@ -64,6 +70,16 @@ class FakeRedis:
     async def delete(self, key):
         self.ttls.pop(key, None)
         return 1 if self.store.pop(key, None) is not None else 0
+
+
+class BrokenRedis:
+    """Every command raises — a Redis that dies mid-call."""
+
+    def __getattr__(self, name):
+        async def _boom(*_a, **_k):
+            raise ConnectionError("redis down")
+
+        return _boom
 
 
 class _Query:
@@ -146,9 +162,12 @@ class FakeGoTrueAuth:
         self.verifies: list = []
         self.otp_error: Optional[Exception] = None
         self.verify_error: Optional[Exception] = None
+        self.otp_delay_s = 0.0
         self.closed = 0
 
     def sign_in_with_otp(self, credentials):
+        if self.otp_delay_s:
+            time.sleep(self.otp_delay_s)  # runs in a worker thread (to_thread)
         self.otp_requests.append(credentials)
         if self.otp_error:
             raise self.otp_error
@@ -169,8 +188,29 @@ class FakeGoTrueAuth:
         self.closed += 1
 
 
+_OPEN_CLIENTS: list = []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_otp_state():
+    """Process-local fallback windows + background sends are module-global."""
+    otp_limits.reset_local_state()
+    yield
+    while _OPEN_CLIENTS:
+        _OPEN_CLIENTS.pop().__exit__(None, None, None)
+    otp_limits.reset_local_state()
+
+
 class Harness:
-    def __init__(self, monkeypatch, *, allow: str = ALLOWED, has_password: Any = False):
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        allow: str = ALLOWED,
+        has_password: Any = False,
+        mode: Optional[str] = None,
+        **settings_overrides: Any,
+    ):
         self.gotrue = FakeGoTrueAuth()
         self.supabase = FakeSupabase(has_password=has_password)
         self.redis = FakeRedis()
@@ -181,8 +221,10 @@ class Harness:
             return SimpleNamespace(auth=self.gotrue)
 
         monkeypatch.setattr(auth_mod, "create_isolated_anon_client", _make_client)
-        settings = Settings.model_construct(EMAIL_OTP_ALLOWED_EMAILS=allow)
-        monkeypatch.setattr(auth_mod, "get_settings", lambda: settings)
+        self.settings = Settings.model_construct(
+            EMAIL_OTP_ALLOWED_EMAILS=allow, EMAIL_OTP_MODE=mode, **settings_overrides
+        )
+        monkeypatch.setattr(auth_mod, "get_settings", lambda: self.settings)
 
         app = FastAPI()
         app.add_exception_handler(LunaHTTPException, luna_exception_handler)
@@ -191,15 +233,37 @@ class Harness:
         # /login's shared anon client — the OTP routes must never touch it.
         app.dependency_overrides[get_supabase_auth] = lambda: SimpleNamespace(auth=self.gotrue)
         app.dependency_overrides[get_redis] = lambda: self.redis
+        # Entered: ONE event loop for the harness's lifetime, so the background
+        # GoTrue send outlives the request and drain() can await it.
         self.client = TestClient(app)
+        self.client.__enter__()
+        _OPEN_CLIENTS.append(self.client)
 
-    def request(self, email: str):
-        return self.client.post("/api/v1/auth/otp/request", json={"email": email})
+    def drain(self) -> None:
+        """Wait for every background OTP send to finish."""
+        self.client.portal.call(auth_mod.drain_otp_sends)
 
-    def verify(self, email: str, code: str = "123456"):
-        return self.client.post(
-            "/api/v1/auth/otp/verify", json={"email": email, "code": code}
+    def request(self, email: str, headers: Optional[dict] = None, *, drain: bool = True):
+        res = self.client.post(
+            "/api/v1/auth/otp/request", json={"email": email}, headers=headers or {}
         )
+        if drain:
+            self.drain()
+        return res
+
+    def verify(self, email: str, code: str = "123456", headers: Optional[dict] = None):
+        return self.client.post(
+            "/api/v1/auth/otp/verify", json={"email": email, "code": code}, headers=headers or {}
+        )
+
+    def clear_email_windows(self, email: str, *, hourly: bool = False) -> None:
+        """Simulate the per-email cooldown (and optionally the hour) expiring."""
+        drop = (":cd:", ":hr:") if hourly else (":cd:",)
+        ek = auth_mod._email_key(auth_mod._normalize_email(email))
+        self.redis.store = {
+            k: v for k, v in self.redis.store.items()
+            if not (ek in k and any(d in k for d in drop))
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +335,42 @@ def test_request_unknown_user_gotrue_error_still_200(monkeypatch) -> None:
     assert res.json() == {"sent": True}
 
 
-def test_request_gotrue_unavailable_is_503(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "err",
+    [
+        AuthRetryableError("upstream down", 503),
+        AuthApiError("Error sending magic link email", 500, "unexpected_failure"),
+        TimeoutError(),
+    ],
+)
+def test_request_send_failure_flips_global_fallback(monkeypatch, err) -> None:
+    """Background send => the failing request itself still answers {"sent":true};
+    the mail-path failure then raises a GLOBAL flag — every next caller, listed
+    or not, gets fallback=password — and the day counter is refunded."""
     h = Harness(monkeypatch)
-    h.gotrue.otp_error = AuthRetryableError("upstream down", 503)
-    assert h.request(ALLOWED).status_code == 503
+    h.gotrue.otp_error = err
+    first = h.request(ALLOWED)
+    assert first.status_code == 200 and first.json() == {"sent": True}
+    assert h.redis.store.get(auth_mod._otp_sent_day_key()) == 0  # refunded
+    h.clear_email_windows(ALLOWED)
+    for email in (ALLOWED, OUTSIDER):
+        res = h.request(email)
+        assert res.status_code == 200
+        assert res.json() == {"sent": True, "fallback": "password"}
+    assert len(h.gotrue.otp_requests) == 1
+
+
+def test_request_gotrue_4xx_does_not_flip_fallback(monkeypatch) -> None:
+    """GoTrue 4xx (unknown user / its own per-address throttle) is per-email —
+    reacting globally would turn it into a signal."""
+    h = Harness(monkeypatch, mode="open")
+    h.gotrue.otp_error = AuthApiError(
+        "over_email_send_rate_limit", 429, "over_email_send_rate_limit"
+    )
+    assert h.request(OUTSIDER).json() == {"sent": True}
+    h.gotrue.otp_error = None
+    assert h.request(ALLOWED).json() == {"sent": True}
+    assert len(h.gotrue.otp_requests) == 2
 
 
 def test_request_cooldown_429_arabic(monkeypatch) -> None:
@@ -311,11 +407,46 @@ def test_request_redis_keys_never_hold_the_raw_email(monkeypatch) -> None:
     assert h.redis.store and all(ALLOWED not in k for k in h.redis.store)
 
 
-def test_request_fails_open_without_redis(monkeypatch) -> None:
+def test_request_degrades_strict_without_redis(monkeypatch) -> None:
     h = Harness(monkeypatch)
     h.client.app.dependency_overrides[get_redis] = lambda: None
     assert h.request(ALLOWED).status_code == 200
+    res = h.request(ALLOWED)
+    assert res.status_code == 429  # 2nd inside 120 s
+    assert res.headers["retry-after"] == str(auth_mod.OTP_FALLBACK_COOLDOWN_S)
+    cd = otp_limits.local_window("cd", 1, auth_mod.OTP_FALLBACK_COOLDOWN_S)
+    cd_key = "otp:req:cd:" + auth_mod._email_key(ALLOWED)
+    for _ in range(auth_mod.OTP_FALLBACK_HOURLY_MAX - 1):
+        cd.discard(cd_key)
+        assert h.request(ALLOWED).status_code == 200
+    cd.discard(cd_key)
+    assert h.request(ALLOWED).status_code == 429  # 4th in the hour
+    assert len(h.gotrue.otp_requests) == auth_mod.OTP_FALLBACK_HOURLY_MAX
+
+
+def test_verify_degrades_strict_without_redis(monkeypatch) -> None:
+    h = Harness(monkeypatch)
+    h.client.app.dependency_overrides[get_redis] = lambda: None
+    h.gotrue.verify_error = AuthApiError("bad", 403, "otp_expired")
+    for _ in range(auth_mod.OTP_FALLBACK_VERIFY_FAIL_MAX):
+        assert h.verify(ALLOWED, "000000").status_code == 401
+    assert h.verify(ALLOWED, "000000").status_code == 429
+
+
+def test_redis_raising_mid_call_falls_back_not_open(monkeypatch) -> None:
+    h = Harness(monkeypatch)
+    h.client.app.dependency_overrides[get_redis] = lambda: BrokenRedis()
     assert h.request(ALLOWED).status_code == 200
+    assert h.request(ALLOWED).status_code == 429
+    assert len(h.gotrue.otp_requests) == 1
+
+
+def test_global_cap_without_redis_is_a_quarter(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="open", OTP_DAILY_SEND_MAX=8)
+    h.client.app.dependency_overrides[get_redis] = lambda: None
+    answers = [h.request(f"u{i}@example.com").json() for i in range(3)]
+    assert answers == [{"sent": True}, {"sent": True}, {"sent": True, "fallback": "password"}]
+    assert len(h.gotrue.otp_requests) == 2  # 8 // 4
 
 
 def test_request_malformed_email_422(monkeypatch) -> None:
@@ -433,3 +564,209 @@ def test_verify_writes_audit_row(monkeypatch) -> None:
     assert h.verify(ALLOWED).status_code == 200
     audits = [p for t, p in h.supabase.inserts if t == "audit_logs"]
     assert any(p["metadata"] == {"event": "auth.otp.verified"} for p in audits)
+
+
+# ---------------------------------------------------------------------------
+# Phase B — EMAIL_OTP_MODE, caps, telemetry (email_otp_login.md §B1/§B3)
+# ---------------------------------------------------------------------------
+
+MSG_OFF = "الدخول بالرمز غير متاح حالياً — استخدم كلمة المرور"
+FALLBACK = {"sent": True, "fallback": "password"}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "allowlist"),
+        ("", "allowlist"),
+        ("yes", "allowlist"),
+        ("enabled", "allowlist"),
+        ("allowlist", "allowlist"),
+        (" Open ", "open"),
+        ("OFF", "off"),
+    ],
+)
+def test_mode_parses_and_garbage_is_allowlist(raw, expected) -> None:
+    assert Settings.model_construct(EMAIL_OTP_MODE=raw).email_otp_mode == expected
+
+
+def test_defaults_match_owner_decisions() -> None:
+    s = Settings.model_construct()
+    assert s.email_otp_mode == "allowlist"  # unset == Phase A, no prod change on deploy
+    assert s.OTP_DAILY_SEND_MAX == 60
+    assert s.OTP_EMAIL_DAILY_MAX == 10
+    assert s.OTP_IP_HOURLY_MAX == 30
+    assert s.OTP_IP_VERIFY_FAIL_MAX == 30
+
+
+@pytest.mark.parametrize("mode", ["off", "allowlist", "open", None, "garbage"])
+def test_should_create_user_is_never_true(monkeypatch, mode) -> None:
+    h = Harness(monkeypatch, mode=mode)
+    h.request(ALLOWED)
+    h.request(OUTSIDER)
+    assert all(c["options"]["should_create_user"] is False for c in h.gotrue.otp_requests)
+    expected = {"off": [], "open": [ALLOWED, OUTSIDER]}.get(mode, [ALLOWED])
+    assert [c["email"] for c in h.gotrue.otp_requests] == expected
+
+
+def test_open_mode_does_not_wait_on_gotrue(monkeypatch) -> None:
+    """Timing side channel: unknown (fast GoTrue 4xx) and real (slow SMTP)
+    sends must answer alike — the GoTrue call is off the request path."""
+    h = Harness(monkeypatch, mode="open")
+    h.gotrue.otp_delay_s = 1.0
+    h.gotrue.otp_error = AuthApiError("User not found", 400, "otp_disabled")
+    t0 = time.perf_counter()
+    res = h.request(OUTSIDER, drain=False)
+    elapsed = time.perf_counter() - t0
+    assert res.status_code == 200 and res.json() == {"sent": True}
+    assert elapsed < 0.5, elapsed
+    h.drain()
+    assert [c["email"] for c in h.gotrue.otp_requests] == [OUTSIDER]
+    # Unknown user: nothing went out, so the global day counter is refunded.
+    assert h.redis.store.get(auth_mod._otp_sent_day_key()) == 0
+
+
+def test_off_mode_request_fallback_and_verify_503(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="off")
+    answers = [h.request(e) for e in (ALLOWED, OUTSIDER)]
+    assert [r.status_code for r in answers] == [200, 200]
+    assert [r.json() for r in answers] == [FALLBACK, FALLBACK]
+    verifies = [h.verify(e) for e in (ALLOWED, OUTSIDER)]
+    assert [r.status_code for r in verifies] == [503, 503]
+    assert verifies[0].json() == verifies[1].json()
+    assert verifies[0].json()["detail"] == MSG_OFF
+    assert h.gotrue.otp_requests == [] and h.gotrue.verifies == []
+    assert h.clients_created == 0
+    assert h.redis.store == {}  # nothing counted in off mode
+
+
+def test_per_email_daily_cap_is_silent(monkeypatch) -> None:
+    h = Harness(monkeypatch)
+    for i in range(h.settings.OTP_EMAIL_DAILY_MAX):
+        h.clear_email_windows(ALLOWED, hourly=True)
+        assert h.request(ALLOWED).json() == {"sent": True}, i
+    h.clear_email_windows(ALLOWED, hourly=True)
+    res = h.request(ALLOWED)
+    assert res.status_code == 200 and res.json() == {"sent": True}
+    assert len(h.gotrue.otp_requests) == h.settings.OTP_EMAIL_DAILY_MAX
+
+
+def test_global_cap_is_a_global_fallback(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="open", OTP_DAILY_SEND_MAX=2)
+    assert h.request("a@example.com").json() == {"sent": True}
+    assert h.request("b@example.com").json() == {"sent": True}
+    assert h.request("c@example.com").json() == FALLBACK
+    assert h.request(OUTSIDER).json() == FALLBACK
+    assert [c["email"] for c in h.gotrue.otp_requests] == ["a@example.com", "b@example.com"]
+
+
+def test_global_counter_counts_only_real_sends(monkeypatch) -> None:
+    h = Harness(monkeypatch, OTP_DAILY_SEND_MAX=5)  # allowlist mode
+    day_key = auth_mod._otp_sent_day_key()
+    h.request(OUTSIDER)                       # not allowed
+    assert h.request(OUTSIDER).status_code == 429  # cooldown
+    assert day_key not in h.redis.store
+    h.request(ALLOWED)                        # real send
+    assert h.redis.store[day_key] == 1
+    assert h.redis.ttls[day_key] == auth_mod.OTP_SENT_DAY_TTL_S
+    assert day_key.startswith("otp:sent:day:")
+
+
+def test_global_cap_never_starves_password_reset(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="off", OTP_DAILY_SEND_MAX=0)
+    h.gotrue.reset_password_for_email = lambda *a, **k: None
+    res = h.client.post("/api/v1/auth/password/forgot", json={"email": ALLOWED})
+    assert res.status_code == 200 and res.json() == {"sent": True}
+
+
+def test_per_ip_request_cap_429_and_cf_header_spoof_ignored(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="open", OTP_IP_HOURLY_MAX=3)
+    for i in range(3):
+        # CF-Connecting-IP is ignored while TRUST_CF_HEADERS is off, so these
+        # all land in the same caller bucket (client_ip_for_rate_limit).
+        hdr = {"CF-Connecting-IP": f"10.0.0.{i}"}
+        assert h.request(f"user{i}@example.com", hdr).status_code == 200
+    res = h.request("user9@example.com", {"CF-Connecting-IP": "10.9.9.9"})
+    assert res.status_code == 429
+    assert res.json()["detail"] == "محاولات كثيرة من هذه الشبكة — حاول لاحقاً"
+    assert len(h.gotrue.otp_requests) == 3
+    # The key is the hashed IP, never the raw one.
+    assert not any("testclient" in k or "10.0.0" in k for k in h.redis.store)
+
+
+def test_per_ip_cap_keys_off_client_ip_for_rate_limit(monkeypatch) -> None:
+    seen: list = []
+
+    def _ip(request):
+        seen.append(request.url.path)
+        return "203.0.113.7"
+
+    monkeypatch.setattr(auth_mod, "client_ip_for_rate_limit", _ip)
+    h = Harness(monkeypatch, mode="open")
+    h.request(OUTSIDER)
+    h.verify(OUTSIDER)
+    assert seen == ["/api/v1/auth/otp/request", "/api/v1/auth/otp/verify"]
+
+
+def test_per_ip_verify_fails_across_emails_429(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="open", OTP_IP_VERIFY_FAIL_MAX=3)
+    h.gotrue.verify_error = AuthApiError("bad", 403, "otp_expired")
+    for i in range(3):
+        assert h.verify(f"victim{i}@example.com", "000000").status_code == 401
+    calls = len(h.gotrue.verifies)
+    res = h.verify("victim9@example.com", "000000")
+    assert res.status_code == 429
+    assert res.json()["detail"] == "محاولات كثيرة غير صحيحة — انتظر قليلاً ثم حاول مجدداً"
+    assert len(h.gotrue.verifies) == calls  # refused before GoTrue
+
+
+def test_deletion_grace_account_can_log_in_with_a_code(monkeypatch) -> None:
+    h = Harness(monkeypatch, mode="open")
+    h.supabase.users_row["deletion_requested_at"] = "2026-10-01T00:00:00+00:00"
+    res = h.verify(ALLOWED)
+    assert res.status_code == 200
+    assert res.json()["user"]["deletion_pending"] is True
+
+
+@pytest.mark.parametrize(
+    ("setup", "outcome"),
+    [
+        ({"mode": "open"}, "sent"),
+        ({"mode": "open", "OTP_DAILY_SEND_MAX": 0}, "capped_global"),
+        ({"mode": "off"}, "off"),
+        ({}, "sent"),
+    ],
+)
+def test_span_outcome_and_no_email_in_attributes(monkeypatch, setup, outcome) -> None:
+    spans: list = []
+    monkeypatch.setattr(auth_mod, "_otp_span", lambda attrs: spans.append(dict(attrs)))
+    h = Harness(monkeypatch, **setup)
+    h.request(ALLOWED, {"X-App-Platform": "ios"})
+    request_span = spans[0]
+    assert request_span["otp.outcome"] == outcome
+    assert request_span["otp.client"] == "app"
+    if outcome != "off":
+        assert request_span["otp.limiter_backend"] == "redis"
+    ek = auth_mod._email_key(ALLOWED)
+    for attrs in spans:
+        for v in attrs.values():
+            assert ALLOWED not in str(v) and ek not in str(v)
+
+
+def test_span_limiter_backend_process_without_redis(monkeypatch) -> None:
+    spans: list = []
+    monkeypatch.setattr(auth_mod, "_otp_span", lambda attrs: spans.append(dict(attrs)))
+    h = Harness(monkeypatch)
+    h.client.app.dependency_overrides[get_redis] = lambda: None
+    h.request(ALLOWED)
+    assert spans[0]["otp.limiter_backend"] == "process"
+    assert spans[0]["otp.client"] == "web"
+
+
+def test_verify_span_outcomes(monkeypatch) -> None:
+    spans: list = []
+    monkeypatch.setattr(auth_mod, "_otp_span", lambda attrs: spans.append(dict(attrs)))
+    h = Harness(monkeypatch)
+    h.verify(ALLOWED)
+    h.verify(OUTSIDER)
+    assert [s["otp.outcome"] for s in spans] == ["verified", "invalid"]

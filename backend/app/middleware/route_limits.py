@@ -194,6 +194,21 @@ class _ProcessLocalWindow:
 
         return len(bucket), now
 
+    def count(self, identity_key: str) -> int:
+        """Entries still inside the window for ``identity_key`` — WITHOUT
+        recording one (lock checks: "has this caller already failed N times?")."""
+        bucket = self._buckets.get(identity_key)
+        if not bucket:
+            return 0
+        cutoff = time.time() - self._window
+        while bucket and bucket[0] <= cutoff:
+            bucket.popleft()
+        return len(bucket)
+
+    def discard(self, identity_key: str) -> None:
+        """Forget one identity (a counter reset after success / a released cooldown)."""
+        self._buckets.pop(identity_key, None)
+
     def _evict(self, cutoff: float) -> None:
         stale = [k for k, b in self._buckets.items() if not b or b[-1] <= cutoff]
         for k in stale:
@@ -204,6 +219,10 @@ class _ProcessLocalWindow:
     def reset(self) -> None:
         """Drop all state (tests)."""
         self._buckets.clear()
+
+
+# Public name for reuse outside this module (auth OTP fail-strict fallback).
+ProcessLocalWindow = _ProcessLocalWindow
 
 
 class RouteRateLimiter:
