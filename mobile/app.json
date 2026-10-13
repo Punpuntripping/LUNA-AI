@@ -11,7 +11,11 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.rayhanai.app",
-      "supportsTablet": false
+      "supportsTablet": false,
+      "infoPlist": {
+        "ExpoLocalization_supportsRTL": true,
+        "ExpoLocalization_forcesRTL": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -60,6 +64,12 @@
         "projectId": "c7100d6f-ab0a-44be-ba3e-a328e4388642"
       }
     },
-    "backgroundColor": "#F7F2EC"
+    "backgroundColor": "#F7F2EC",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/c7100d6f-ab0a-44be-ba3e-a328e4388642"
+    }
   }
 }
