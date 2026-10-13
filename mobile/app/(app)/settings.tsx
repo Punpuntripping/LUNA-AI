@@ -1,13 +1,16 @@
 import { AR_DATE_LOCALE, AR_NUM_LOCALE } from "@contracts";
-import { useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { useSession } from "@/auth/session-store";
 import { AppText } from "@/components/AppText";
 import { Button } from "@/components/Button";
+import { ErrorBanner } from "@/components/ErrorBanner";
 import { Screen } from "@/components/Screen";
 import { APP_BUILD, APP_UPDATE_ID, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
+import { useNotice } from "@/stores/notice";
 import { useThemePreference, type ThemePreference } from "@/stores/theme-preference";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -24,9 +27,17 @@ export default function SettingsScreen() {
   const email = useSession((s) => s.user?.email ?? "");
   const logout = useSession((s) => s.logout);
   const [leaving, setLeaving] = useState(false);
+  const notice = useNotice((s) => s.notice);
+  const clearNotice = useNotice((s) => s.clear);
+
+  // A notice handed over by a sub-screen (e.g. «تم تغيير كلمة المرور») shows
+  // until settings loses focus.
+  useFocusEffect(useCallback(() => clearNotice, [clearNotice]));
 
   return (
     <Screen>
+      <ErrorBanner message={notice} tone="info" />
+
       <View style={styles.section}>
         <AppText variant="sm" weight={600} tone="secondary">
           المظهر
@@ -63,6 +74,12 @@ export default function SettingsScreen() {
           الحساب
         </AppText>
         <AppText variant="base">{email}</AppText>
+        <Button
+          label="تغيير كلمة المرور"
+          variant="secondary"
+          onPress={() => router.push("/change-password")}
+          testID="settings-change-password"
+        />
       </View>
 
       <View style={styles.section}>

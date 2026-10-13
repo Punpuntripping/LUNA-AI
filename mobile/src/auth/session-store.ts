@@ -10,6 +10,7 @@ import {
   cancelProactiveRefresh,
   isAccessTokenStale,
   refreshAccessToken,
+  replaceTokens,
   scheduleProactiveRefresh,
   SessionExpiredError,
   setSessionExpiredHandler,
@@ -46,6 +47,9 @@ interface SessionState {
   verifySignup: (email: string, code: string) => Promise<void>;
   /** Emailed reset code + new password → signed in. */
   resetPassword: (email: string, code: string, newPassword: string) => Promise<void>;
+  /** Signed in: emailed code + new password → the backend's NEW session
+   *  replaces the current one (same /auth/password/reset route). */
+  changePassword: (code: string, newPassword: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   restoreAccount: () => Promise<void>;
   /** Called when the app returns to the foreground. */
@@ -65,6 +69,19 @@ export const useSession = create<SessionState>((set, get) => {
     set({ status: "signedIn", user: res.user, unavailableMessage: null });
     // The login payload omits plan/paid fields — fill them from /me.
     get().refreshUser().catch(() => undefined);
+  }
+
+  /** Signed-in counterpart of establishSession: new tokens, same status. The
+   *  login payload omits plan/paid fields, so keep the known ones until /me. */
+  async function replaceSession(res: AuthResponse): Promise<void> {
+    const previous = getAccessToken();
+    await replaceTokens(res);
+    set((s) => ({ user: s.user ? { ...s.user, ...res.user } : res.user }));
+    get().refreshUser().catch(() => undefined);
+    // Best-effort: revoke the session we just replaced (its refresh token is
+    // already overwritten here). Plain request with the OLD token — never a
+    // refresh, never a logout of the new session.
+    if (previous) authApi.logout(previous).catch(() => undefined);
   }
 
   function signedOut(): void {
@@ -131,6 +148,17 @@ export const useSession = create<SessionState>((set, get) => {
 
     resetPassword: async (email, code, newPassword) => {
       await establishSession(
+        await authApi.resetPassword({ email: normaliseEmail(email), code, new_password: newPassword }),
+      );
+    },
+
+    changePassword: async (code, newPassword) => {
+      const email = get().user?.email;
+      // Unreachable while signed in; errorMessage() maps it to MSG_UNKNOWN.
+      if (!email) throw new Error("no signed-in email");
+      // auth:false inside resetPassword — a wrong code (401) can never be
+      // mistaken for an expired session and log the user out.
+      await replaceSession(
         await authApi.resetPassword({ email: normaliseEmail(email), code, new_password: newPassword }),
       );
     },

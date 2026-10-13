@@ -30,6 +30,7 @@ export default function AppLayout() {
       <Stack.Protected guard={!deletionPending}>
         <Stack.Screen name="index" />
         <Stack.Screen name="settings" options={{ headerShown: true, title: "الإعدادات" }} />
+        <Stack.Screen name="change-password" options={{ headerShown: true, title: "تغيير كلمة المرور" }} />
       </Stack.Protected>
       <Stack.Protected guard={deletionPending}>
         <Stack.Screen name="account-restore" options={{ gestureEnabled: false }} />

@@ -70,6 +70,28 @@ export function refreshAccessToken(): Promise<string> {
   return inflight;
 }
 
+/**
+ * Swap in a NEW token pair while signed in (password change hands out a fresh
+ * session). Runs in the same single-flight slot as a refresh: waits for any
+ * in-flight rotation to settle first (so it can't land on top of the new pair
+ * with an old-family token), and any refresh asked for meanwhile gets the new
+ * access token. Same order as a refresh: refresh token persisted first.
+ */
+export async function replaceTokens(tokens: AuthTokens): Promise<void> {
+  while (inflight) await inflight.catch(() => undefined);
+  cancelProactiveRefresh();
+  const swap = (async () => {
+    await setRefreshToken(tokens.refresh_token);
+    setAccessToken(tokens.access_token);
+    scheduleProactiveRefresh(tokens.access_token);
+    return tokens.access_token;
+  })().finally(() => {
+    inflight = null;
+  });
+  inflight = swap;
+  await swap;
+}
+
 /** Wipe tokens and tell the session store to route to login. */
 export async function expireSession(): Promise<void> {
   cancelProactiveRefresh();
