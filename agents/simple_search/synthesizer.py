@@ -56,6 +56,7 @@ from pydantic_ai.usage import UsageLimits
 from agents.simple_search.models import SimpleSearchLevel
 from agents.simple_search.prompts import get_synthesizer_prompt
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
 logger = logging.getLogger(__name__)
@@ -165,11 +166,7 @@ def _synthesizer_text_output() -> TextOutput:
 
 
 SYNTHESIZER_LIMITS = UsageLimits(
-    # Bounded, unlike the aggregator's 100k: this agent answers about ONE
-    # document and its longest plausible output is a whole-نظام structural walk
-    # (~2-3k tokens). 24k is ~8x that, with room for the reasoning tokens that
-    # count against `output_tokens` on DashScope.
-    output_tokens_limit=24_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     # No tools — one call, plus headroom for output validation retries.
     request_limit=4,
 )

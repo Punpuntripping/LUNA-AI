@@ -14,6 +14,7 @@ from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .deps import SectorPickerDeps
 from .models import SectorPickerOutput
@@ -23,11 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 SECTOR_PICKER_LIMITS = UsageLimits(
-    # Reasoning tokens count against output on DashScope / OpenRouter — keep a
-    # generous ceiling so a thinking-on call cannot crash the run. Observed
-    # output excluding reasoning is tiny (<200 tokens — the schema is two
-    # fields). 20k is "thinking can never crash us" headroom.
-    output_tokens_limit=20_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     # No tools, one normal request + validation retries.
     request_limit=4,
 )

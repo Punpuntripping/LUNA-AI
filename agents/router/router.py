@@ -37,6 +37,7 @@ from agents.tool_repository.rayhan_docs import register_rayhan_docs
 from agents.tool_repository.save_memo import register_save_memo
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.tracking import track_stage
 from agents.utils.welcome import WelcomeState, render_welcome_instruction
 from shared.observability import get_logfire
@@ -185,7 +186,7 @@ class RouterRunResult:
 
 
 ROUTER_LIMITS = UsageLimits(
-    output_tokens_limit=6000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     # 15, not 5: an artifact-edit turn legitimately runs an edit → verify →
     # edit-again loop (unfold + N×edit_artifact + final ChatResponse). At 5 the
     # limit bit on the FINAL response request — after the edits had already been

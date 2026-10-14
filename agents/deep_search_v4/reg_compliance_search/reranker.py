@@ -37,6 +37,7 @@ from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model, primary_model_of_slot
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 from supabase import Client as SupabaseClient
 
@@ -65,12 +66,7 @@ _FLAT_CONTENT_SNIPPET = 1_000
 logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
-    # 25k accommodates: 15k thinking budget (capped via model_settings below) +
-    # ~10k for per-chunk decision text on ~15 chunks. Without a cap, one rogue
-    # worker in run 1779196337 emitted 9784 reasoning + 11910 text = 21694 tokens.
-    # With thinking budget capped, expected total stays around 12-18k.
-    # (`response_tokens_limit` was the deprecated alias — switched.)
-    output_tokens_limit=25_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     request_limit=3,
 )
 

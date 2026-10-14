@@ -31,6 +31,7 @@ from agents.models import next_step_errors, salvage_next_steps
 from agents.tool_repository.fetch_article import register_fetch_article
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .deps import PlannerDeps
 from .models import PlannerDecision, PlannerResponse
@@ -77,13 +78,7 @@ logger = logging.getLogger(__name__)
 
 
 PLANNER_DECIDER_LIMITS = UsageLimits(
-    # 40k is "thinking can never crash us" headroom. qwen3.6-plus on DashScope
-    # has thinking ON by default and `output_tokens` in the API response
-    # INCLUDES reasoning tokens — so a tight cap (the old 4000) blew up on
-    # complex queries (run 1779196337 — 4782 reasoning + 122 text = 4904, crash,
-    # 91.9s wasted on a recovered default decision). Observed real output
-    # excluding reasoning is ~200-1700 tokens.
-    output_tokens_limit=40_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     # request_limit counts CUMULATIVE requests across pause/resume — the
     # rehydrated message_history carries the prior request count forward. The
     # budget covers: 1 initial + 1 `ask_user` → pause → 1 resume + a few
@@ -94,9 +89,7 @@ PLANNER_DECIDER_LIMITS = UsageLimits(
 )
 
 PLANNER_RESPONDER_LIMITS = UsageLimits(
-    # 40k for the same reason as the decider — reasoning counts against output.
-    # Observed max single-turn output is ~3300; 40k = 12x margin.
-    output_tokens_limit=40_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     request_limit=4,
 )
 

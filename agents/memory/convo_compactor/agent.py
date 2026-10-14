@@ -23,6 +23,7 @@ from pydantic_ai import Agent, ModelRetry, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .models import CompactionLLMOutput
 from .prompts import SYSTEM_PROMPT_AR
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 # Generous output cap — the summary targets 200-500 words but reasoning_tokens
 # can spike over a long noisy span. request_limit=2 covers one retry.
 COMPACTOR_LIMITS = UsageLimits(
-    output_tokens_limit=20_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
 

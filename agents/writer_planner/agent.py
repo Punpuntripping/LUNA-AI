@@ -24,6 +24,7 @@ from pydantic_ai.usage import UsageLimits
 from agents.tool_repository.add_user_template import register_add_user_template
 from agents.tool_repository.unfold_workspace_item import register_unfold_workspace_item
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .deps import WriterPlannerDeps
 from .models import PlannerDecision
@@ -41,11 +42,10 @@ logger = logging.getLogger(__name__)
 #   + 1-2 output_retries
 # Total ≈ 12 requests. 16 gives a small safety margin without inviting runaway.
 #
-# output_tokens_limit=40k matches the deep_search planner — tier_1 qwen has
-# thinking ON by default and `output_tokens` INCLUDES reasoning tokens in the
-# API response, so a tight cap crashes on complex turns.
+# output_tokens_limit: the shared runaway cap (agents/utils/usage_limits.py) —
+# `output_tokens` INCLUDES reasoning tokens, so a tight cap crashes complex turns.
 WRITER_PLANNER_LIMITS = UsageLimits(
-    output_tokens_limit=40_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=16,
 )
 

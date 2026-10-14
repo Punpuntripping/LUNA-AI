@@ -13,6 +13,7 @@ from pydantic_ai import Agent, ModelRetry, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .models import ArtifactSummaryLLMOutput, AttachmentSummaryLLMOutput
 from .prompts import SYSTEM_PROMPT_AR, SYSTEM_PROMPT_ATTACHMENT_AR
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Generous output cap — the summary itself is short but reasoning_tokens
 # can spike for dense legal content. request_limit=2 covers one retry.
 SUMMARIZER_LIMITS = UsageLimits(
-    output_tokens_limit=20_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
 

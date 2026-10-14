@@ -90,6 +90,7 @@ from agents.simple_search.prompts import (
     build_searcher_instructions,
 )
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.usage_sink import record_search_fee
 
 logger = logging.getLogger(__name__)
@@ -249,10 +250,7 @@ class SearcherDecision(BaseModel):
 
 
 SEARCHER_LIMITS = UsageLimits(
-    # Resolution + tool orchestration, not legal reasoning. Output is a handful
-    # of ids; 16k is headroom for reasoning tokens (which count against
-    # `output_tokens` on DashScope), not an expected size.
-    output_tokens_limit=16_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     # Cumulative across pause/resume — the rehydrated message_history carries
     # the prior count forward. Covers: initial + a few resolver calls +
     # ask_user → pause → resume + output retries.

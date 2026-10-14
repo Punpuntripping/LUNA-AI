@@ -19,6 +19,7 @@ from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
 from .models import AggregatorLLMOutput
@@ -43,14 +44,7 @@ def _aggregator_text_output() -> TextOutput:
 
 
 AGGREGATOR_LIMITS = UsageLimits(
-    # 100k = far above any plausible aggregator output. Synthesis at
-    # detail_level=high is genuinely unpredictable and benefits from uncapped
-    # reasoning; observed output max ~5500 tokens with ~3500 reasoning. The
-    # explicit ceiling is documentation more than constraint — the provider's
-    # own `max_tokens` for qwen3.6-plus (~16-32k) bounds us first.
-    # (`response_tokens_limit` was the deprecated alias — switched to the
-    # current `output_tokens_limit` name.)
-    output_tokens_limit=100_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     request_limit=3,
 )
 

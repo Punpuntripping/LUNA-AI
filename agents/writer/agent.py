@@ -29,6 +29,7 @@ from pydantic_ai import Agent, RunContext, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 from agents.utils.welcome import WELCOME_CHAR_ALLOWANCE
 
@@ -49,14 +50,11 @@ _WRITER_RETRY_MSG = (
 )
 
 
-# response_tokens_limit counts REASONING tokens too, and is only checked once
-# the whole response has arrived. At 30k, deepseek-v4-flash-0731 on
-# reasoning=max routinely finished a ~20k-char memo at ~40k total tokens after
-# 6–7 minutes — then the finished draft was discarded (prod 2026-10-10: 6/12
-# writer runs; two turns hit the 900s pipeline timeout). 100k matches the
-# aggregator, the other _FLASH_MAX slot.
+# Shared runaway cap (agents/utils/usage_limits.py). It counts REASONING tokens
+# and is only checked once the whole response has arrived — the old 30k cap
+# discarded finished ~40k-token memos (prod 2026-10-10: 6/12 writer runs).
 WRITER_LIMITS = UsageLimits(
-    response_tokens_limit=100_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
 

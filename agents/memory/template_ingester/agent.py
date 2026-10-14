@@ -21,6 +21,7 @@ from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
 from .models import CleanedTemplate
@@ -41,7 +42,7 @@ _INGEST_RETRY_MSG = (
 # document; reasoning tokens can also spike. request_limit=2 covers the single
 # permitted retry.
 INGESTER_LIMITS = UsageLimits(
-    output_tokens_limit=32_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
 

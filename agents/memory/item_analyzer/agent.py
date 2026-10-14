@@ -26,6 +26,7 @@ from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 
 from .deps import CallerId
 from .models import _MetaAnalyzeOutputLLM, _RefsAnalyzeOutputLLM
@@ -35,11 +36,10 @@ logger = logging.getLogger(__name__)
 
 
 # Generous output cap — ``partial`` verdicts can carry long ``distilled``
-# slices when the source WI is a dense legal document. 32k is the tier_2
-# ceiling and matches the budget advertised in the writer-planner prompts.
+# slices when the source WI is a dense legal document.
 # request_limit=2 covers the single retry permitted by the agent.
 ANALYZER_LIMITS = UsageLimits(
-    output_tokens_limit=32_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,
     request_limit=2,
 )
 

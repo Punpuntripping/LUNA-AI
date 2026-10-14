@@ -23,6 +23,7 @@ from agents.deep_search_v4.shared.court_levels import (
     normalize_court_level,
 )
 from agents.utils.agent_models import get_agent_model, primary_model_of_slot
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
 from .models import (
@@ -39,11 +40,7 @@ from .prompts import (
 logger = logging.getLogger(__name__)
 
 RERANKER_LIMITS = UsageLimits(
-    # 25k = 15k thinking budget + ~10k per-chunk text output headroom.
-    # Same shape as reg_search reranker — uncapped thinking on the qwen flash
-    # head is otherwise the wall-clock tail risk.
-    # (`response_tokens_limit` was the deprecated alias — switched.)
-    output_tokens_limit=25_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     request_limit=3,
 )
 

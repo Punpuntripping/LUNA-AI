@@ -20,6 +20,7 @@ from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from agents.utils.agent_models import get_agent_model, AGENT_MODELS, resolve_chain
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.model_registry import MODEL_REGISTRY
 
 from .prompts import (
@@ -32,11 +33,7 @@ from .models import ExpanderOutput, ExpanderOutputV2
 logger = logging.getLogger(__name__)
 
 EXPANDER_LIMITS = UsageLimits(
-    # 15k absorbs uncapped thinking + sectioned query expansion output.
-    # The old 2000 cap crashed every case_led run we observed (2519, 3302 tokens
-    # generated against the cap — UsageLimitExceeded with degraded retrieval).
-    # (`response_tokens_limit` was the deprecated alias — switched.)
-    output_tokens_limit=15_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     request_limit=3,
 )
 

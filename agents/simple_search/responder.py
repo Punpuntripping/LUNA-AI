@@ -68,6 +68,7 @@ from agents.simple_search.prompts import (
     SIMPLE_SEARCH_RESPONDER_PROMPT,
 )
 from agents.utils.agent_models import ModelPolicy, get_agent_model
+from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
 logger = logging.getLogger(__name__)
@@ -248,12 +249,7 @@ def _responder_text_output() -> TextOutput:
 
 
 RESPONDER_LIMITS = UsageLimits(
-    # Far tighter than the synthesizer's 24k: this agent's entire output is two
-    # short Arabic strings plus N three-field verdicts (~200-500 tokens
-    # observed-equivalent on the deep_search responder). 16k is ~30x that, sized
-    # for the reasoning tokens that count against `output_tokens` on DashScope
-    # rather than for the text.
-    output_tokens_limit=16_000,
+    output_tokens_limit=OUTPUT_TOKENS_CAP,  # shared runaway net — see agents/utils/usage_limits.py
     # No tools — 1 initial request + the 3 `output_retries` below. An unknown
     # `doc` label costs one of those, so the budget must cover them all: a
     # request_limit that bites before output_retries are spent turns a
