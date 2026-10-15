@@ -2,6 +2,7 @@
 
 import { Info } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AGENT_OUTPUT_DISCLAIMER_AR } from "@/lib/contracts/legal";
 
 /**
  * Standard AI legal disclaimer shown beneath every agent output (agent_search
@@ -17,9 +18,8 @@ import { cn } from "@/lib/utils";
  * deliberate: it is the same legal statement, and one of the two places being
  * quietly smaller than the other is how a required notice becomes decorative.
  */
-export const AGENT_OUTPUT_DISCLAIMER_AR =
-  "هذه المعلومات مُولَّدة بالذكاء الاصطناعي لأغراض قانونية عامة ولا تُعدّ استشارة قانونية رسمية. " +
-  "يُرجى التحقق من المصادر ومراجعة محامٍ مرخّص للحصول على رأي مُلزم.";
+// The text itself lives in the shared contracts folder (web + mobile).
+export { AGENT_OUTPUT_DISCLAIMER_AR };
 
 export function AgentOutputDisclaimer({ className }: { className?: string }) {
   return (

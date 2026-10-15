@@ -22,3 +22,13 @@ export const LEGAL_ROUTES = {
    */
   promoTerms: "/promo-terms",
 } as const;
+
+/**
+ * Standard AI legal disclaimer shown beneath every agent output (بحث قانوني /
+ * تحليل قانوني) and every blog article. Moved from
+ * `components/workspace/AgentOutputDisclaimer.tsx` (which re-exports it) so the
+ * mobile app renders the exact same legal statement.
+ */
+export const AGENT_OUTPUT_DISCLAIMER_AR =
+  "هذه المعلومات مُولَّدة بالذكاء الاصطناعي لأغراض قانونية عامة ولا تُعدّ استشارة قانونية رسمية. " +
+  "يُرجى التحقق من المصادر ومراجعة محامٍ مرخّص للحصول على رأي مُلزم.";

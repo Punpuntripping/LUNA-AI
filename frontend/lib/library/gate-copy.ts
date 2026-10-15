@@ -13,21 +13,22 @@
 // period boundary is a UTC calendar/subscription instant, and a Hijri rendering
 // of it would read as a different date than the one the plan pages quote.
 
-import type { LibraryRefusalReason } from "@/lib/library/full-content";
+import { toLatinDigits } from "@/lib/format/numerals";
+// `arNumber`, `arResetDate` and the refusal card live in the shared contracts
+// folder (web + mobile); re-exported / wrapped here so imports stay unchanged.
+import { arNumber, arResetDate } from "@/lib/contracts/numerals";
 import {
-  AR_DATE_LOCALE,
-  AR_NUM_LOCALE,
-  toLatinDigits,
-} from "@/lib/format/numerals";
+  refusalCardCopy as sharedRefusalCardCopy,
+  type RefusalCardCopy,
+  type RefusalCopyInput,
+} from "@/lib/contracts/library-refusal";
+
+export { arNumber, arResetDate };
+export type { RefusalCardCopy, RefusalCopyInput };
 
 // ------------------------------------------------------------------
 // Formatters
 // ------------------------------------------------------------------
-
-/** Latin digits, no grouping surprises. */
-export function arNumber(value: number): string {
-  return Math.round(value).toLocaleString(AR_NUM_LOCALE);
-}
 
 /**
  * Latin digits for a value that is NOT a number — an article "number"
@@ -42,26 +43,6 @@ export function arNumber(value: number): string {
  */
 export function arDigits(value: string): string {
   return toLatinDigits(value);
-}
-
-/**
- * An ISO instant → «1 أغسطس 2026», or "" when absent/unparsable. Callers must
- * treat "" as "no date to show" and fall back to the date-free copy variant.
- */
-export function arResetDate(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const ms = Date.parse(iso);
-  if (Number.isNaN(ms)) return "";
-  try {
-    return new Intl.DateTimeFormat(AR_DATE_LOCALE, {
-      day: "numeric",
-      month: "long",
-      year: "numeric",
-      calendar: "gregory",
-    }).format(new Date(ms));
-  } catch {
-    return "";
-  }
 }
 
 /** «قسم إضافي واحد» / «قسمان إضافيان» / «5 أقسام إضافية» — gated-section count. */
@@ -200,80 +181,18 @@ export const balanceCopy = {
 // Refusal cards — one per `reason` on the D14 402 payload
 // ------------------------------------------------------------------
 
-export interface RefusalCardCopy {
-  title: string;
-  body: string;
-  /** Omitted when there is nothing useful to click. */
-  ctaLabel?: string;
-  ctaHref?: string;
-}
-
-export interface RefusalCopyInput {
-  reason: LibraryRefusalReason;
-  resetsAt: string | null;
-  /** Shelf size — only meaningful for `frozen_library` (§5B.4). */
-  storedCount: number | null;
-}
-
 const PRICING_CTA = { ctaLabel: "عرض الباقات", ctaHref: "/pricing" } as const;
 
 /**
- * The Arabic card for a refused reveal. Never blames the reader: an exhausted
- * period is a plan fact, an unresolvable item is our problem, and a frozen
- * shelf is framed as an asset the reader already owns (§5B.4 — the strongest
- * upgrade prompt in the product).
+ * The Arabic card for a refused reveal (the copy itself is shared with the
+ * mobile app — `lib/contracts/library-refusal.ts`), with the web's CTAs:
+ * upgrade → /pricing, anonymous → /login.
  */
-export function refusalCardCopy({
-  reason,
-  resetsAt,
-  storedCount,
-}: RefusalCopyInput): RefusalCardCopy {
-  const date = arResetDate(resetsAt);
-
-  switch (reason) {
-    case "quota_exhausted":
-      return {
-        title: "رصيد فتح المصادر لهذه الفترة انتهى",
-        body: date
-          ? `يتجدّد رصيدك في ${date}. يمكنك الترقية للوصول إلى عدد أكبر من المصادر الكاملة.`
-          : "يمكنك الترقية للوصول إلى عدد أكبر من المصادر الكاملة.",
-        ...PRICING_CTA,
-      };
-
-    case "frozen_library":
-      return {
-        title: "مصادر مكتبتك محفوظة",
-        body:
-          storedCount && storedCount > 0
-            ? `لديك ${arNumber(storedCount)} مصدراً محفوظاً في مكتبتك — رقِّ باقتك لفتحها من جديد.`
-            : "هذا المصدر محفوظ في مكتبتك — رقِّ باقتك لفتحه من جديد.",
-        ...PRICING_CTA,
-      };
-
-    case "anonymous":
-      return {
-        title: "سجّل مجاناً لعرض النص كاملاً",
-        body: "حساب ريحان المجاني يفتح لك عشرة مصادر كاملة كل شهر.",
-        ctaLabel: "إنشاء حساب مجاني",
-        ctaHref: "/login",
-      };
-
-    case "locked":
-      // Matches the UsageLimitsDialog activation notice, word for word.
-      return {
-        title: "حسابك غير مفعّل بعد",
-        body: "تواصل معنا لتفعيل اشتراكك والبدء في استخدام ريحان.",
-        ...PRICING_CTA,
-      };
-
-    case "unresolvable":
-    default:
-      // Never blame the reader, and never imply the item is missing.
-      return {
-        title: "تعذّر فتح هذا المصدر",
-        body: "حاول مرة أخرى بعد قليل، أو افتح المصدر الرسمي أدناه.",
-      };
-  }
+export function refusalCardCopy(input: RefusalCopyInput): RefusalCardCopy {
+  return sharedRefusalCardCopy(input, {
+    upgrade: PRICING_CTA,
+    signup: { ctaLabel: "إنشاء حساب مجاني", ctaHref: "/login" },
+  });
 }
 
 /** A transport failure (network / 5xx) — distinct from an entitlement refusal. */

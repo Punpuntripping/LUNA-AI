@@ -6,6 +6,18 @@
 // (`lib/contracts/auth.ts`, also used by the mobile app).
 export type { User, AuthTokens, AuthResponse } from "@/lib/contracts";
 
+// Conversations, messages, agents/workspace, references and SSE payloads also
+// live in the shared contracts folder (mobile Phase 2); each section below
+// re-exports its names in place. These are the ones this file uses itself.
+import type {
+  ConversationSummary,
+  Reference,
+  TemplateScope,
+  WorkspaceCreator,
+  WorkspaceFeedback,
+  WorkspaceItem,
+} from "@/lib/contracts";
+
 // ==========================================
 // CASES
 // ==========================================
@@ -70,180 +82,28 @@ export interface CaseDetailResponse {
 // CONVERSATIONS
 // ==========================================
 
-export interface ConversationSummary {
-  conversation_id: string;
-  case_id?: string | null;
-  title_ar?: string | null;
-  message_count: number;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  /** True when the conversation is starred (pinned to the top of lists). */
-  is_starred: boolean;
-  /** ISO timestamp the conversation was starred, or null when not starred. */
-  starred_at?: string | null;
-  /**
-   * Trimmed excerpt of the matching message content — set ONLY on search
-   * results where the match was in a message body (``match_type === 'message'``).
-   * Null for title matches and for non-search listings.
-   */
-  snippet?: string | null;
-  /**
-   * Where the search term matched: ``'title'`` (in title_ar), ``'message'``
-   * (in a message body, with ``snippet`` populated), or null for non-search
-   * listings.
-   */
-  match_type?: 'title' | 'message' | null;
-  /**
-   * DERIVED, server-side: this row is the ONE shared «محادثة تجريبية» every
-   * account sees (demo_conversation_product_tour §3.2). The id itself never
-   * reaches the client — components branch on this flag alone, so the fixture
-   * can be repointed backend-side without a frontend release.
-   *
-   * Read-only for everyone (D2): the composer becomes a hint bar, the WI's
-   * 👍/👎 are hidden (`workspace_items.feedback` is ONE shared column),
-   * مشاركة / حفظ كمدونة / «+» render disabled, and «حذف» becomes «إخفاء» —
-   * a per-user preference flag, never a shared soft-delete (D8).
-   *
-   * Absent on every ordinary conversation, hence optional.
-   */
-  is_demo?: boolean;
-}
-
-export interface ConversationDetail extends ConversationSummary {
-  model_name?: string | null;
-}
-
-export interface ConversationListResponse {
-  conversations: ConversationSummary[];
-  total: number;
-  has_more: boolean;
-}
-
-export interface CreateConversationRequest {
-  case_id?: string | null;
-}
+export type {
+  ConversationSummary,
+  ConversationDetail,
+  ConversationListResponse,
+  CreateConversationRequest,
+} from "@/lib/contracts";
 
 // ==========================================
 // MESSAGES
 // ==========================================
 
-/** Discriminator for messages tied to an agent ask_user pause/resume cycle. */
-export type MessageMetadataKind = 'agent_question' | 'agent_answer';
-
-export interface MessageMetadata {
-  /** When set, this message is part of an agent ask_user turn. */
-  kind?: MessageMetadataKind;
-  /** The agent_run that originated the question / is being answered. */
-  run_id?: string;
-  /** The agent family that paused for input. */
-  agent_family?: AgentFamily;
-  /** Optional suggested replies surfaced with an agent_question. */
-  suggestions?: string[];
-  /**
-   * Clickable next-step chips (next_step_suggestions plan §3.6/§3.7) offered
-   * under a finished deep_search / simple_search answer. NOT the same thing
-   * as ``suggestions`` above (read-only agent_question replies).
-   */
-  next_steps?: NextStep[];
-  /**
-   * Templates a writer draft was built on. An EMPTY list means a draft was
-   * produced without a template; the key is ABSENT on turns that drafted
-   * nothing. Validate with ``parseTemplatesUsed`` (lib/templates-used.ts).
-   */
-  templates_used?: TemplateUsed[];
-  [key: string]: unknown;
-}
-
-/** Scope of a قالب: ``system`` = قالب عام (read-only), ``user`` = قالب خاص. */
-export type TemplateScope = "user" | "system";
-
-/** One template a writer draft was built on (``metadata.templates_used``). */
-export interface TemplateUsed {
-  template_id: string;
-  title: string;
-  scope: TemplateScope;
-  subtype: string | null;
-  court: string | null;
-  /** Absolute http(s) URLs (e.g. our blog posts). */
-  sources: string[];
-}
-
-/**
- * What a next-step chip offers (next_step_suggestions plan §3.2).
- * ``open`` is simple_search only (an unselected candidate / rest of a doc).
- */
-export type NextStepKind = "narrow_search" | "draft" | "apply" | "open";
-
-export interface NextStep {
-  kind: NextStepKind;
-  /** Chip text — short Arabic label, no trailing punctuation. */
-  label: string;
-  /** Full first-person message pasted into the composer on click. */
-  prompt: string;
-}
-
-export interface Message {
-  message_id: string;
-  conversation_id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  model?: string;
-  attachments: Attachment[];
-  created_at: string;
-  metadata?: MessageMetadata;
-  /**
-   * Workspace item ids produced by the agent run that authored this message.
-   * Populated by the backend on assistant messages whose agent_runs created
-   * one or more ``workspace_items``. Always undefined / empty for user or
-   * legacy / Q&A / agent_question messages.
-   *
-   * NOTE (Window C, 2026-05-20): backend does not yet expose this field on
-   * ``MessageResponse``; the frontend treats it defensively as possibly
-   * undefined so the new citation + chip UI is a no-op until the backend
-   * ships it.
-   */
-  artifact_ids?: string[] | null;
-  /**
-   * Workspace items the planner pointed back to instead of publishing a new
-   * card (Phase E ``build_artifact=False``). Drives the prior-card chip in
-   * the assistant bubble. When set, the chat-store entry recorded by the
-   * live ``referenced_existing_item`` SSE event still wins for the
-   * just-streamed turn; the persisted value lights up the chip on refresh.
-   */
-  referenced_item_ids?: string[] | null;
-  isOptimistic?: boolean;
-  isFailed?: boolean;
-  isStreaming?: boolean;
-}
-
-export interface Attachment {
-  id: string;
-  document_id: string;
-  attachment_type: 'pdf' | 'image' | 'file';
-  filename: string;
-  file_size?: number;
-  /**
-   * ``workspace_items.kind`` of the attached item (messages API embeds it via
-   * the migration-088 FK). Distinguishes an uploaded file (``attachment``)
-   * from an item attached from within the conversation (e.g. a blog import =
-   * ``agent_search``) on the message chips. Optional: absent on legacy cache
-   * entries — the chip falls back to ``artifactLookup``.
-   */
-  kind?: WorkspaceItemKind;
-}
-
-export interface MessageListResponse {
-  messages: Message[];
-  has_more: boolean;
-  /**
-   * Server truth: this conversation has a live run right now (snapshotted
-   * before the read). An empty assistant placeholder with `run_active: false`
-   * has nothing left to fill it — the run died with a restart/deploy — so it
-   * renders as failed instead of «ريحان يفكّر». Absent on older backends.
-   */
-  run_active?: boolean;
-}
+export type {
+  MessageMetadataKind,
+  MessageMetadata,
+  TemplateScope,
+  TemplateUsed,
+  NextStepKind,
+  NextStep,
+  Message,
+  Attachment,
+  MessageListResponse,
+} from "@/lib/contracts";
 
 // ==========================================
 // DOCUMENTS
@@ -420,118 +280,21 @@ export interface PendingLibraryItem extends LibraryItemRef {
 // RESUMABLE UPLOADS
 // ==========================================
 
-/** Server response from `/cases/{id}/documents/init` and the workspace twin. */
-export interface UploadInitResponse {
-  /** Present on document init. */
-  document_id?: string;
-  /** Present on workspace-attachment init. */
-  item_id?: string;
-  storage_path: string;
-  bucket: string;
-  upload_url: string;
-  expires_at: string;
-}
+export type {
+  UploadInitResponse,
+} from "@/lib/contracts";
 
 // ==========================================
 // SSE EVENTS
 // ==========================================
 
-export interface SSEMessageStart {
-  user_message_id: string;
-  assistant_message_id: string;
-  conversation_id: string;
-}
-
-export interface SSEToken {
-  text: string;
-}
-
-/**
- * Emitted INSTEAD of message_start when a send is rejected because a pipeline
- * is already running for this conversation (per-conversation in-flight dedup —
- * backend message_service `_active_runs`). No new pipeline is started and no
- * duplicate user message is saved. The client drops its optimistic duplicate
- * and lets the existing in-flight assistant message surface on completion.
- */
-export interface SSEDuplicate {
-  assistant_message_id: string;
-  conversation_id: string;
-  detail: string;
-}
-
-/**
- * Emitted INSTEAD of message_start when the per-user quota gate rejects the
- * send (shared/quota gate fires before OCR + router). The user message is
- * already persisted; no assistant placeholder is created and the stream ends
- * immediately. ``meter`` is which counter tripped ("plan" = account not
- * activated yet), ``period`` is the window ("session" = rolling 5h),
- * ``resets_at`` is ISO-8601 UTC (empty for plan-inactive). ``message_ar`` is
- * a pre-rendered Arabic string the banner can show verbatim. Point limits:
- * 1 USD = 100 points.
- */
-export interface SSEQuotaExceeded {
-  meter: "ocr" | "ord" | "web" | "plan";
-  period: "session" | "daily" | "weekly" | "monthly" | "none";
-  used: number;
-  limit: number;
-  resets_at: string;
-  message_ar: string;
-  /**
-   * The plan the block was enforced against — EFFECTIVE, so an expired paid
-   * subscription that fell back reports `"free"`. `null` = no plan assigned
-   * (account not activated), which buying a plan does not fix. Optional so a
-   * pre-deploy backend that omits the field degrades to the banner rather than
-   * mis-triggering.
-   *
-   * Drives the AUTO-OPENING modal only, which stays free-only — WHAT to offer
-   * comes from `upgrade_options`. A full-screen pitch at someone who already
-   * paid reads differently than one at a free user.
-   */
-  plan_id?: string | null;
-  /**
-   * The plans that would actually unblock this send: purchasable, priced above
-   * the user's plan, AND with a strictly higher limit on the window that
-   * blocked them — ordered by price, cheapest first.
-   *
-   * Computed server-side (`shared/quota._upgrade_options`) because the enforced
-   * limits live in the `plans` table and `lib/pricing.ts` carries them only as
-   * Arabic prose; a client-side ladder would need a second copy of every number
-   * to drift against.
-   *
-   * Empty = there is nothing to sell: `max` is already at the top of the ladder,
-   * and an unactivated account (`plan_id: null`) is not fixed by a purchase.
-   * Optional so a pre-deploy backend that omits the field degrades to
-   * banner-only (a missed upsell, never a pitch that cannot help).
-   */
-  upgrade_options?: string[];
-  /**
-   * parallel_conversations plan §2: why the gate refused. `"parallel_reserve"`
-   * = the user is NOT out of points — the balance just cannot cover another
-   * run alongside the ones already in flight, so the client shows `detail`
-   * without the "you've hit your limit" upgrade framing. Absent on older
-   * backends (= `"limit"`).
-   */
-  reason?: "limit" | "parallel_reserve";
-  /** Arabic explanation for `reason: "parallel_reserve"` (falls back to `message_ar`). */
-  detail?: string;
-}
-
-/**
- * SSE `parallel_limit` — the per-plan cap on conversations answering at the
- * same time refused this send (parallel_conversations plan §2). Like
- * `quota_exceeded`, the server persisted nothing.
- */
-export interface SSEParallelLimit {
-  /** Arabic banner text. */
-  detail: string;
-  /** The plan's `max_parallel_runs`. */
-  limit: number;
-  /** Runs of this user already in flight server-side. */
-  running: number;
-  running_conversation_ids: string[];
-  /** `"max"` when upgrading to «القصوى» would raise the cap; else `null`. */
-  upgrade_plan: "max" | null;
-}
+export type {
+  SSEMessageStart,
+  SSEToken,
+  SSEDuplicate,
+  SSEQuotaExceeded,
+  SSEParallelLimit,
+} from "@/lib/contracts";
 
 /** One progress bar in the Settings → حدود الاستخدام dialog.
  *  ``limit: null`` = unlimited (no cap on this window). */
@@ -613,499 +376,37 @@ export interface RedeemCodeResponse {
   expires_at: string | null;
 }
 
-export interface SSEDone {
-  message_id: string;
-  usage: {
-    prompt_tokens: number;
-    completion_tokens: number;
-  };
-  /**
-   * Window B Tasks 5–7: workspace_items produced by the agent run that
-   * authored this assistant message. Echoed on the live `done` event so the
-   * chip + clickable [n] citations light up immediately, without waiting for
-   * the next messages-list refetch. ``null`` when the turn produced no
-   * artifact (mock RAG, Q&A, paused agent_question, etc).
-   */
-  artifact_ids?: string[] | null;
-  /**
-   * Window B Tasks 5–7: workspace_items the planner referenced instead of
-   * publishing a new card (Phase E build_artifact=False branch). Drives the
-   * "راجع البطاقة السابقة" chip.
-   */
-  referenced_item_ids?: string[] | null;
-}
+export type {
+  SSEDone,
+} from "@/lib/contracts";
 
 // ==========================================
 // AGENTS & WORKSPACE ITEMS
 // ==========================================
 
-export type AgentFamily = 'deep_search' | 'writing' | 'memory' | 'router';
-
-export type TaskType = 'deep_search' | 'writing';
-
-export type WorkspaceItemKind =
-  | 'attachment'
-  | 'note'
-  | 'agent_search'
-  | 'agent_writing'
-  | 'convo_context'
-  | 'references';
-
-export type WorkspaceCreator = 'user' | 'agent';
-
-/** A user's 👍/👎 rating on a workspace item. ``null`` = no rating. */
-export type WorkspaceFeedback = 'up' | 'down' | null;
-
-/** Free-form subtype string carried in metadata.subtype — drives chip color/icon. */
-export type WorkspaceItemSubtype =
-  | 'report'
-  | 'contract'
-  | 'memo'
-  | 'summary'
-  | 'memory_file'
-  | 'legal_opinion'
-  | 'legal_synthesis'
-  | (string & {});
-
-export interface WorkspaceItem {
-  item_id: string;
-  user_id: string;
-  conversation_id: string | null;
-  case_id: string | null;
-  message_id?: string | null;
-  /**
-   * Migration 052: conversation-scoped 1-based alias. The router and the
-   * planners address items as «WI-{wi_seq}» and say that alias out loud in chat
-   * («حفظت النص … (WI-1)»), so the UI renders it via ``WiBadge`` — otherwise the
-   * reader has no way to tell which card the sentence points at. ``null`` for
-   * items with no conversation home; ``undefined`` on responses from a backend
-   * older than this field.
-   */
-  wi_seq?: number | null;
-  agent_family: AgentFamily | null;
-  kind: WorkspaceItemKind;
-  created_by: WorkspaceCreator;
-  title: string;
-  content_md: string | null;
-  storage_path: string | null;
-  document_id: string | null;
-  is_visible: boolean;
-  /** User 👍/👎 rating: 'up' | 'down' | null (no rating). Migration 073. */
-  feedback: WorkspaceFeedback;
-  metadata: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface WorkspaceItemListResponse {
-  items: WorkspaceItem[];
-  total: number;
-}
+export type {
+  AgentFamily,
+  TaskType,
+  WorkspaceItemKind,
+  WorkspaceCreator,
+  WorkspaceFeedback,
+  WorkspaceItemSubtype,
+  WorkspaceItem,
+  WorkspaceItemListResponse,
+} from "@/lib/contracts";
 
 // ==========================================
 // DEEP_SEARCH ARTIFACT REFERENCES (JSON render object)
 // ==========================================
-// Mirrors agents/deep_search_v4/aggregator/models.py::Reference and
-// agents/deep_search_v4/source_viewer.py::SourceView. Migration 049: refs
-// live in the relational `workspace_item_references` table; the backend
-// reconstructs this shape on read by joining to source tables. The
-// frontend fetches via `useWorkspaceItemReferences(item_id)` and the
-// workspace ReferencePanel renders the response.
 
-/**
- * The cited object's WING — the read path keys every shell builder off this.
- *
- * `regulations` means **a chunk** of a نظام (`chunks_v2.id`), which is why the
- * two `simple_search` additions could not reuse it:
- *
- * - `articles`         — one مادة (`articles_v2.id`), `ref_id` = `article:<uuid>`
- * - `regulation_docs`  — a WHOLE نظام (`regulations_v2.id`), `ref_id` =
- *                        `regdoc:<uuid>`
- *
- * ⚠ NEVER give either of them the `reg:` prefix. `domain='regulations'` hard-
- * assumes the id is a `chunks_v2.id`; a regulation/article uuid passes the uuid
- * check, inserts cleanly, then resolves to nothing on read and renders a dead
- * stub with no «عرض المصدر» — zero errors anywhere in the chain.
- *
- * Mirrors the DB CHECK on `workspace_item_references.domain` and the Literal on
- * `agents/deep_search_v4/aggregator/models.py::Reference.domain`. The
- * `Record<ReferenceDomain, …>` tables in `ReferencePanel` are exhaustive on
- * purpose: adding a member here must not compile until the panel knows it.
- */
-export type ReferenceDomain =
-  | 'regulations'
-  | 'compliance'
-  | 'cases'
-  | 'circulars'
-  | 'articles'
-  | 'regulation_docs';
-
-export type ReferenceSourceType =
-  | 'article'
-  | 'section'
-  | 'chunk'
-  | 'regulation'
-  | 'gov_service'
-  | 'form'
-  | 'case'
-  | 'circular'
-  // simple_search (§6.1). Deliberately NOT `article` / `regulation` — those two
-  // names are already taken by the legacy views below, and reusing them gives
-  // the backend's Pydantic discriminated union duplicate discriminator values
-  // (an import-time crash) and the frontend union a silent wrong-arm match.
-  | 'article_full'
-  | 'regulation_summary';
-
-/** One resolved cross-reference from a regulation chunk to a target unit. */
-export interface CrossRef {
-  target_type: string;
-  target_reg_title: string;
-  target_number: number | null;
-  relation: string;
-  content: string;
-}
-
-/** Click-ready original-source payload — discriminated on `source_type`. */
-export type SourceView =
-  | {
-      source_type: 'chunk';
-      title: string;
-      content: string;
-      /**
-       * The same مقطع split into prose runs, rendered tables and rendered
-       * FIGURES — the corpus flattened every table into a bulleted list before
-       * ingestion and flattened every figure into nothing but its own file
-       * path, and this puts the grid and the diagram back for the reader.
-       *
-       * `content` above stays the PROSE and is still what «نسخ المحتوى» copies:
-       * pasting a source into a memo must yield text, not `<table>` markup and
-       * not a CDN url.
-       *
-       * Empty (or absent) means "render `content`, exactly as before" — which
-       * is the 82% of chunks with no table, the 96.7% with no figure, every
-       * judgment riding this shape, and every artifact persisted before this
-       * shipped. (Persisted citations rebuild from the DB on the click, so the
-       * 56 that point at raw image markup repair themselves; nothing is
-       * backfilled.) Each `html` is sanitized server-side by an allowlist
-       * re-serializer.
-       */
-      display_segments?: (
-        | { kind: 'text'; text: string }
-        | { kind: 'table'; ref: string; html: string; md: string }
-        /**
-         * A figure spliced in where the corpus wrote `![img-1.jpeg](images/…)`.
-         * Until this shipped, `MarkdownRenderer` turned that span into an
-         * `<img src="images/page_005_img_001.jpeg">` — a RELATIVE url against
-         * the app origin, so 56 already-written citations rendered a broken
-         * image icon inside a cited statute.
-         *
-         * `n` is the render-order caption number (chunk-scoped in this popup),
-         * `description` is the alt, `title` the caption. `weight` / `span_len`
-         * are the GATE's arithmetic, settled server-side and never rendered —
-         * carried so a caller holding a whole segment can pass it around whole.
-         */
-        | {
-            kind: 'image';
-            image_ref: string;
-            n: number;
-            title: string;
-            description: string;
-            url: string;
-            width: number;
-            height: number;
-            weight: number;
-            span_len: number;
-          }
-      )[];
-      regulation_title: string;
-      /**
-       * Parent regulation's landing page — the ONE external exit. The PDF
-       * companion was removed with the reference redesign (2026-08-01): the
-       * source popup offers exactly two ways out, the official link and the
-       * item's page in our own library.
-       */
-      regulation_source_url: string;
-    }
-  | {
-      source_type: 'case';
-      title: string;
-      /**
-       * The ruling's structured ملخص (`cases.summary`, falling back to
-       * `short_summary`) — markdown, and what the popup RENDERS. The raw
-       * judgment text is deliberately not here: «فتح الحكم في ريحان» opens
-       * `/judgments/{slug}`, and the reveal already paid the unlock for that
-       * same document, so the full text costs nothing extra to reach.
-       */
-      summary: string;
-      /**
-       * Raw ruling text (markdown) — a LAST-RESORT body, non-empty only for the
-       * handful of rulings that carry no summary. Never both this and `summary`.
-       */
-      content: string;
-      /**
-       * The ruling's own page on the issuing body's site — وزارة العدل only (20,671
-       * of 30,531 rulings). The rest were parsed out of PDFs and reach their source
-       * through `official_sources`. This stays the target of «فتح المصدر الرسمي».
-       */
-      details_url: string;
-      /**
-       * «المجلد» / «الصفحات» — which bound مجلد this ruling was lifted out of and at
-       * which pages. Present for the 5,538 volume-parsed rulings, empty for a وزارة
-       * العدل ruling (it has its own page) and for a standalone قرار PDF (one file,
-       * one decision — a page range would describe the file, not locate anything).
-       *
-       * OPTIONAL: artifacts persisted before 2026-08-19 have no such key, and their
-       * dialogs simply render no citation block.
-       */
-      citation?: { label: string; value: string }[];
-      /**
-       * The publisher's collection page and the volume/decision PDF, for the 9,860
-       * rulings with no `details_url` of their own. This is what lets «عرض المصدر»
-       * answer "where is this from?" for a قرار زكوي or a ديوان المظالم ruling —
-       * before it, those revealed a body with no attribution at all.
-       *
-       * Safe to render here even though the /judgments page withholds the same links
-       * from anonymous readers: reaching this view already spent the item's unlock.
-       */
-      official_sources?: { title: string; href: string }[];
-    }
-  | {
-      /**
-       * A government service — title and link, NO body, and that is still true
-       * (2026-08-19). The popup used to restate the service's intro, الخطوات,
-       * المتطلبات and المستندات المطلوبة. That content is gone and stays gone: a
-       * procedure goes stale when its issuing entity edits it, and repeating the
-       * entity's own text under our chrome makes us look like the authority on a
-       * process we don't own. The service's own page is the authority.
-       *
-       * What DID come back is the `/compliance` wing, with different content:
-       * **service guides**, our own authored rewrite of the issuing entity's
-       * official PDF user guide, published in full and ungated at
-       * `/compliance/{slug}`. ~169 of 4,746 services have one. That changes the
-       * dialog's EXITS, not this view — when a guide exists the panel gains a
-       * second button («افتح الدليل الشامل للخدمة في ريحان») and the reader
-       * leaves for the guide's own page. No guide content is ever inlined here,
-       * and none of it enters agent context.
-       */
-      source_type: 'gov_service';
-      title: string;
-      /**
-       * `services.service_url` — the OFFICIAL exit, and still the only outbound
-       * one: the guide never links the source PDF, and the المنصة الوطنية portal
-       * link (`national_platform_url`) went with the body, because a portal home
-       * page is not the cited source. May be "" when the corpus has no link, in
-       * which case the popup shows the title alone (plus the guide exit, if the
-       * backend resolved one).
-       */
-      service_url: string;
-    }
-  | {
-      source_type: 'circular';
-      title: string;
-      /** Issuing authority name (``entities.name``). */
-      entity_name: string;
-      /**
-       * FULL circular body (markdown) — uncapped. Can be extremely long
-       * (up to ~168k chars for outliers); the source-view dialog scrolls it
-       * inside its own ``overflow-y-auto`` container rather than growing the
-       * layout.
-       */
-      content: string;
-      /** Circular reference id (``circulars.circ_ref``). */
-      circ_ref: string;
-      /** Optional external source link (``circulars.source``); may be "". */
-      url: string;
-    }
-  // ---- simple_search (§6.1a) ----------------------------------------------
-  // ⚠ These MUST stay ABOVE the legacy arm. That arm is a permissive
-  // ``[k: string]: unknown`` bag, so a variant whose ``source_type`` overlapped
-  // it would be absorbed with NO compile error and would render through
-  // ``SourceViewContent``'s fall-through as bare markdown — looking like it
-  // works. The distinct ``article_full`` / ``regulation_summary`` discriminators
-  // are what keep the narrowing honest; never rename them to
-  // ``article`` / ``regulation``.
-  | {
-      /**
-       * ONE مادة, served whole — ``articles_v2.content`` verbatim, never a chunk
-       * slice. This is simple_search's L3 leg, and the one behavioural
-       * difference from deep_search, where a fetched article is text-only and
-       * never becomes a citation.
-       */
-      source_type: 'article_full';
-      /** «المادة 81 من نظام العمل». */
-      title: string;
-      /**
-       * ``articles_v2.article_number`` — **text**, not a number: the corpus
-       * carries forms like «81 مكرر» that no integer column can hold. Rendered
-       * verbatim, in Western digits (§6.4's digit rule).
-       */
-      article_num: string | null;
-      /**
-       * The FULL article body (markdown). Named ``content`` on purpose:
-       * ``extractSourceContent`` does ``"content" in view ? view.content : ""``,
-       * so any other field name silently yields a blank dialog with no copy
-       * button.
-       */
-      content: string;
-      /** Parent نظام's title, for the dialog's «نص المادة … — …» header line. */
-      regulation_title: string;
-      /** Parent ``regulations_v2.landing_url`` — the ONE external exit. */
-      regulation_source_url: string;
-    }
-  | {
-      /**
-       * A WHOLE نظام, represented by its SUMMARY. The body here is
-       * ``regulations_v2.llm_summary`` (falling back to ``summary``) —
-       * deliberately NOT the statute's full text, which runs past 1.1M chars for
-       * outliers and belongs on the library page this dialog links to. The popup
-       * frames it as a ملخص so it is never mistaken for the نظام itself.
-       */
-      source_type: 'regulation_summary';
-      /** ``clean_title`` or ``title``. */
-      title: string;
-      /** The regulation's summary (markdown). See ``article_full.content``. */
-      content: string;
-      /** ``regulations_v2.landing_url`` — the ONE external exit. */
-      regulation_source_url: string;
-    }
-  // Legacy variants — retained for reload of pre-URA-v3.0 artifacts.
-  | {
-      source_type: 'article' | 'section' | 'regulation';
-      title: string;
-      content?: string;
-      [k: string]: unknown;
-    };
-
-/** One numbered citation entry in a deep_search artifact's reference list. */
-export interface Reference {
-  n: number;
-  source_type: ReferenceSourceType;
-  domain: ReferenceDomain;
-  relevance: 'high' | 'medium';
-  regulation_title: string;
-  title: string;
-  snippet: string;
-  ref_id: string;
-  article_num?: string | null;
-  section_title?: string | null;
-  landing_url: string;
-  service_url: string;
-  url: string;
-  details_url: string;
-  entity_name: string;
-  /**
-   * `cases.case_number` (falling back to `judgment_number`) — the ruling's own
-   * number, and `cases.date_hijri` already reduced to its bare 4-digit year by
-   * the backend's `judgment_naming.hijri_year`.
-   *
-   * NEITHER IS RENDERED on the card: its title is the ruling's SUBJECT, which
-   * is what tells two judgments apart while reading. These exist for
-   * `referenceCopyLabel` — a subject sentence does not LOCATE a ruling, and
-   * «434939 — 1443 — وزارة العدل» is what a pasted مذكرة needs.
-   *
-   * Optional because a blog snapshot frozen into `references_json` before these
-   * shipped has neither key; the copy label falls back to the title there. The
-   * year is also absent for the 3,552 rulings whose date does not parse.
-   * `cases` domain only.
-   */
-  case_number?: string;
-  hijri_year?: string;
-  /**
-   * `regulations_v2.doc_type_raw` — the document's own Arabic type
-   * (لائحة / تنظيم / دليل / مواصفة قياسية / …). Rendered as the card's type
-   * chip in place of the blanket نظام label. Empty string (or absent, on
-   * pre-existing snapshots) when the corpus has no determined type — the
-   * panel then falls back to the domain's own label. «غير محدد» is the
-   * corpus's "could not determine" sentinel and is treated as absent.
-   *
-   * Carried by the two regulation-backed domains only: `regulations` (a chunk
-   * of the document) and `regulation_docs` (the whole document). NOT by
-   * `articles` — a مادة is «المادة» whatever its parent's doc type is.
-   */
-  doc_type?: string;
-  /**
-   * «الإحالات» — the citations this source points at, rendered inside the
-   * source-reveal dialog under the body.
-   *
-   * Populated for BOTH regulations (projected from `cross_references_v2`) and
-   * cases (a ruling's `referenced_regulations`, normalised onto this same shape
-   * by `preprocessor.case_ref_to_cross_ref`) — one shape, one renderer. Empty
-   * for compliance / circulars, which have no citation mesh.
-   */
-  cross_refs: CrossRef[];
-  /**
-   * ACCESS-TIERS PHASE C (§6.2 step 1): **always `null` on the list payload.**
-   * Source bodies left the references list — the full body is metered content
-   * now and is fetched one item at a time from
-   * ``GET /workspace/{item_id}/references/{n}/source`` after ``resolve_access``.
-   * The key is retained on the wire so an un-migrated client degrades to "no
-   * reveal button" instead of crashing on a missing property.
-   *
-   * ⚠ NEVER branch on this to decide whether a source exists — branch on
-   * ``has_source``. This field only ever carries a body for a caller that
-   * explicitly asked the backend for one (none do today).
-   */
-  source_view: SourceView | null;
-  /**
-   * ACCESS-TIERS PHASE C: a full source view CAN be built for this ``n``.
-   *
-   * THIS is what decides whether «عرض المصدر» renders and whether a ``[n]``
-   * click opens the reveal dialog. It costs no request to learn (a probe would
-   * be either a charge or a free oracle), and it is false for references whose
-   * source row could not be reconstructed (stub cards) — and for every
-   * reference on an anonymous blog snapshot, whose frozen bodies the backend
-   * strips on read.
-   */
-  has_source: boolean;
-  /**
-   * The cited item's page in OUR library («فتح الحكم في ريحان»). `null` when
-   * the item has no published page — the card then renders the external link
-   * alone, never a hub fallback. Absent on pre-existing blog snapshots.
-   *
-   * NAVIGATION, NOT CONTENT: this link is free and unmetered. The library page
-   * enforces its own access tier; metering the link too would double-charge.
-   * Compliance references never carry one — `/compliance` was retired and has
-   * no wing to point at.
-   */
-  library_url?: string | null;
-  /**
-   * Writer-publisher attribution: when this reference was projected onto an
-   * ``agent_writing`` workspace item from a source research WI, ``source_wi``
-   * carries the LLM-facing alias (e.g. ``"WI-1"``) of that source. Lives
-   * exclusively in ``workspace_items.metadata.references`` on the writer's
-   * output row — NOT in ``workspace_item_references`` rows — so callers that
-   * fetch references via ``/workspace/{id}/references`` must overlay it from
-   * the item's metadata blob to surface provenance to the lawyer.
-   *
-   * Always undefined for ``agent_search`` items (no source disambiguation
-   * applies — the search agent IS the source).
-   */
-  source_wi?: string | null;
-  /**
-   * Writer-publisher attribution: the ``n`` this ref had inside the source WI
-   * before the writer renumbered it 1..K in body order. Useful for forensic
-   * click-through ("which (n) on WI-1 produced this card?"); same overlay
-   * rules as ``source_wi``.
-   */
-  source_n?: number | null;
-}
-
-/**
- * Entry shape inside ``workspace_items.metadata.references`` for an
- * ``agent_writing`` item. Written by ``agents.writer.publisher`` to give the
- * frontend a thin attribution view that maps the writer's body-order ``n``
- * back to (source_wi alias, source ref n, ref_id, domain). The full Reference
- * payload (title, snippet, source_view, …) still lives in the relational
- * ``workspace_item_references`` table and is reconstructed by the existing
- * ``/workspace/{id}/references`` endpoint.
- */
-export interface WriterMetadataReferenceView {
-  n: number;
-  source_wi: string | null;
-  source_n: number;
-  ref_id: string;
-  domain: ReferenceDomain;
-}
+export type {
+  ReferenceDomain,
+  ReferenceSourceType,
+  CrossRef,
+  SourceView,
+  Reference,
+  WriterMetadataReferenceView,
+} from "@/lib/contracts";
 
 /**
  * Typed view of `metadata` on an `agent_search` workspace item.
@@ -1542,263 +843,43 @@ export type TemplateIngestResponse =
 // SSE EVENTS (Agent)
 // ==========================================
 
-export interface SSEAgentRunStarted {
-  agent_family: AgentFamily;
-  subtype?: string | null;
-}
-
-/**
- * deep_search_progress_bar plan — the four ordered stages of a deep_search
- * run, plus the terminal ``done`` marker that carries the run totals for the
- * collapsed summary chip.
- *
- * ``done`` is NOT a step: the tracker renders four steps
- * (planning → searching → aggregating → writing) and treats ``done`` as
- * "all four complete".
- */
-export type DeepSearchStage =
-  | "planning"
-  | "searching"
-  | "evaluating"
-  | "aggregating"
-  | "writing"
-  | "done";
-
-/**
- * Optional evidence payload on an ``agent_progress`` event. EVERY key is
- * optional — a phase-boundary event may carry counts while a lifecycle event
- * carries none, so consumers must treat a missing key as "unchanged", never
- * as zero.
- */
-export interface SSEAgentProgressData {
-  /** Cumulative retrieved/kept results so far. */
-  sources?: number;
-  /** Sub-queries the planner generated. */
-  queries?: number;
-  /** Planner-picked sectors. */
-  sectors?: string[];
-  /** Which executor phase just finished. */
-  phase?: "reg_compliance" | "case";
-  confidence?: number;
-  elapsed_s?: number;
-}
-
-/**
- * ``event: agent_progress`` — the live staged-progress event emitted by the
- * deep_search branch of the orchestrator (planner-level only; the reg /
- * compliance / case executor loops stay batched). Drives
- * ``DeepSearchProgress``; the terminal ``stage: "done"`` event seals
- * ``chat-store.deepSearchSummaries[assistant_message_id]``.
- */
-export interface SSEAgentProgress {
-  stage: DeepSearchStage;
-  /** Arabic detail line for the active stage. */
-  text?: string | null;
-  data?: SSEAgentProgressData | null;
-}
-
-/**
- * ``event: status`` — free-text Arabic progress line. The backend has emitted
- * these from ~50 call sites all along (batch-flushed just before the answer
- * tokens); the frontend now consumes them to populate the expanded log of the
- * deep_search summary chip. Ignored when no deep_search run is in flight.
- */
-export interface SSEStatus {
-  text: string;
-}
-
-export interface SSEAgentRunFinished {
-  agent_family: AgentFamily;
-}
-
-/** Emitted when an agent pauses to ask the user a question (ask_user tool). */
-export interface SSEAgentQuestion {
-  type: 'agent_question';
-  run_id: string;
-  question: string;
-  suggestions?: string[];
-}
-
-/** Emitted when a paused agent_run resumes after the user replied. */
-export interface SSEAgentResumed {
-  type: 'agent_resumed';
-  run_id: string;
-  agent_family: AgentFamily;
-}
-
-export interface SSEWorkspaceItemCreated {
-  item_id: string;
-  kind: WorkspaceItemKind;
-  title: string;
-  created_by: WorkspaceCreator;
-  subtype?: string;
-}
-
-export interface SSEWorkspaceItemUpdated {
-  item_id: string;
-}
-
-export interface SSEWorkspaceItemLocked {
-  item_id: string;
-  locked_until: string;
-}
-
-export interface SSEWorkspaceItemUnlocked {
-  item_id: string;
-}
-
-/**
- * Phase E (full_redesign §3.4a / §6.3 / §9 O5):
- *
- * Emitted by the orchestrator when the planner's responder concludes that a
- * prior workspace_item already covers the current question and therefore
- * sets ``build_artifact=False`` + ``referenced_item_id=<id>``. No new card
- * is published; the frontend surfaces a chip on the in-flight assistant
- * bubble that the user can click to jump to the existing card.
- */
-export interface SSEReferencedExistingItem {
-  type: "referenced_existing_item";
-  item_id: string;
-}
-
-/**
- * next_step_suggestions plan §3.6: ``event: next_steps`` — 0–3 clickable
- * follow-ups for the answer just streamed. Emitted once, after the last
- * ``token`` and before ``done``, and only when non-empty. The same items are
- * persisted on the assistant row as ``metadata.next_steps``.
- */
-export interface SSENextSteps {
-  items: NextStep[];
-}
-
-/**
- * ``event: templates_used`` — the templates a writing turn's draft was built
- * on, emitted before the chat text tokens. Empty list = drafted without a
- * template. Persisted on the assistant row as ``metadata.templates_used``.
- */
-export interface SSETemplatesUsed {
-  items: TemplateUsed[];
-}
+export type {
+  SSEAgentRunStarted,
+  DeepSearchStage,
+  SSEAgentProgressData,
+  SSEAgentProgress,
+  SSEStatus,
+  SSEAgentRunFinished,
+  SSEAgentQuestion,
+  SSEAgentResumed,
+  SSEWorkspaceItemCreated,
+  SSEWorkspaceItemUpdated,
+  SSEWorkspaceItemLocked,
+  SSEWorkspaceItemUnlocked,
+  SSEReferencedExistingItem,
+  SSENextSteps,
+  SSETemplatesUsed,
+} from "@/lib/contracts";
 
 // ==========================================
 // SEND MESSAGE PAYLOAD
 // ==========================================
 
-export interface SendMessagePayload {
-  content: string;
-  attachment_ids?: string[] | null;
-}
+export type {
+  SendMessagePayload,
+} from "@/lib/contracts";
 
 // ==========================================
 // ON-DEMAND REFERENCE SOURCE REVEAL (access-tiers Phase C, §6.2)
 // ==========================================
-// GET /api/v1/workspace/{item_id}/references/{n}/source
-//   authed · `Cache-Control: private, no-store` · 20/min per verified caller
-//   (one shared budget with `/library/full/*`, so a 429 is reachable).
-//
-//   200 → { n, ref_id, domain, source_view, unlocked, balance }
-//   402 → the D14 refusal body (parsed by `parseRefusal`, rendered by
-//         `refusalCardCopy` — both in lib/library/*). NO content bytes.
-//   404 → «العنصر غير موجود» / «المرجع غير موجود» / «تعذّر عرض هذا المصدر».
-//         The last one is a corpus gap, not a refusal — the unlock (if one was
-//         spent) is permanent, so a later retry costs nothing.
 
-/**
- * Why the reveal succeeded. Only `granted` actually spent anything:
- * - `granted`          — a ledger row was just written; `cost` was charged.
- * - `already_unlocked` — the item was on the shelf already (free, forever).
- * - `open`             — policy-open item (compliance service, short تعميم);
- *                        the quota was never consulted, so `balance` is null.
- */
-export type ReferenceUnlockReason = 'granted' | 'already_unlocked' | 'open';
-
-/**
- * WHAT was unlocked — not what was clicked (D15.1).
- *
- * ~81% of `reg:` citations resolve to the whole نظام rather than the single
- * chunk the lawyer clicked, because only 2,140 of 11,455 chunks own exactly one
- * مادة. The unlock genuinely covers the entire statute (and every مادة under
- * it, per D5), so the UI must say so: a reader who thinks they spent an unlock
- * on one paragraph has been tricked by the interface, not by the meter.
- */
-export interface ReferenceUnlockInfo {
-  /** `regulation` | `article` | `judgment` | `circular` | `service` | … */
-  content_type: string;
-  content_id: string;
-  /** Human title of the unlocked item — the نظام, never the chunk. */
-  title: string;
-  /**
-   * Non-null only when the chunk owned exactly one مادة.
-   *
-   * ⚠ STRING, not number (§12a C4). `articles_v2.article_number` is TEXT and
-   * carries «1-1» and «81 مكرر» — 487 of 51,792 rows. Typed `number` the
-   * backend had to send `null` for exactly those, and the notice silently fell
-   * back to naming the whole نظام *after* the reader spent an unlock. Pinned
-   * `string | null` at every hop; render it with `arDigits`, never `arNumber`
-   * (which rounds).
-   */
-  article_no: string | null;
-  charged: boolean;
-  /** Weighted cost (§1.2.1): 1 for most items, up to 8 for a large نظام. */
-  cost: number;
-  reason: ReferenceUnlockReason;
-}
-
-/**
- * The «فتح المصادر» allowance AFTER this reveal (a `granted` decision reports
- * the post-charge number). `null` on the response — not here — means the quota
- * was never consulted; `limit: null` means unlimited. Those are different, and
- * conflating them shows «0 متبقٍ» to a dev account.
- */
-export interface ReferenceBalance {
-  used: number;
-  /** `null` = unlimited. */
-  limit: number | null;
-  resets_at: string | null;
-}
-
-/** 200 body of the metered reveal. */
-export interface ReferenceSourceResponse {
-  n: number;
-  ref_id: string;
-  /** `ReferenceDomain` on every real row; typed loosely — it is display-inert. */
-  domain: string;
-  source_view: SourceView;
-  unlocked: ReferenceUnlockInfo;
-  /** `null` for a policy-open item — the meter was never consulted. */
-  balance: ReferenceBalance | null;
-  /**
-   * The cited item's page in OUR library — `/regulations/{slug}`,
-   * `/judgments/{slug}`, `/circulars/{slug}` or `/compliance/{slug}` — for the
-   * «فتح ... في ريحان» button beside the official link.
-   *
-   * `null` means the item has NO published page (no `seo_item_meta` slug yet),
-   * and the button must then be dropped entirely. Never substitute the wing hub:
-   * a button that promises the document and delivers a list is worse than one
-   * that isn't there.
-   *
-   * A مادة-level citation resolves to its **نظام** page, not to
-   * `/regulations/{reg}/{article}` — the chunk behind a citation is an arbitrary
-   * slice and 81% of them already lift to the whole statute, so the button
-   * always lands in the same place.
-   */
-  library_url: string | null;
-}
-
-/** Why a reveal produced no source, when it was NOT an entitlement refusal. */
-export type ReferenceSourceError =
-  /** No in-memory access token (session never hydrated). */
-  | 'no_token'
-  /** 401/403 — the session died. Card + login CTA, never a forced redirect. */
-  | 'unauthorized'
-  /** 404 — unknown item/ref, or the corpus row is gone. */
-  | 'not_found'
-  /** 429 — the shared 20/min library budget. NOT a quota refusal. */
-  | 'rate_limited'
-  /** Network failure / unparsable body. */
-  | 'network'
-  /** 5xx or any other unexpected status. */
-  | 'server';
+export type {
+  ReferenceUnlockReason,
+  ReferenceUnlockInfo,
+  ReferenceBalance,
+  ReferenceSourceResponse,
+  ReferenceSourceError,
+} from "@/lib/contracts";
 
 // -----------------------------------------------
 // Payments — Moyasar one-time checkout (Wave 1)

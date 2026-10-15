@@ -9,3 +9,22 @@ export * from "./auth";
 export * from "./errors";
 export * from "./legal";
 export * from "./numerals";
+export * from "./agents";
+export * from "./conversations";
+export * from "./messages";
+export * from "./references";
+export * from "./sse";
+
+// Pure helpers (mobile Phase 2 — see README "What lives here").
+export * from "./citations";
+export * from "./library-refusal";
+export * from "./markdown/images";
+export * from "./markdown/plain-text";
+export * from "./markdown/streaming";
+export * from "./next-steps";
+export * from "./placeholder";
+export * from "./reference-labels";
+export * from "./references-copy";
+export * from "./sse-parser";
+export * from "./templates-used";
+export * from "./utf8";

@@ -73,3 +73,39 @@ export function toLatinDigits(input: string): string {
     return String(EXTENDED_ARABIC_INDIC.indexOf(d));
   });
 }
+
+/**
+ * A count → Latin digits, rounded, Arabic grouping — `1,234`. Moved from
+ * `lib/library/gate-copy.ts` (which re-exports it).
+ *
+ * The `toLatinDigits` pass is a no-op wherever `AR_NUM_LOCALE` is honoured (the
+ * web); it is there for JS engines whose `Intl` ignores the `-u-nu-latn`
+ * extension and would otherwise emit Arabic-Indic digits.
+ */
+export function arNumber(value: number): string {
+  return toLatinDigits(Math.round(value).toLocaleString(AR_NUM_LOCALE));
+}
+
+/**
+ * An ISO instant → «1 أغسطس 2026», or "" when absent/unparsable. Callers must
+ * treat "" as "no date to show" and fall back to the date-free copy variant.
+ * Moved from `lib/library/gate-copy.ts` (which re-exports it); same
+ * `toLatinDigits` guard as `arNumber`.
+ */
+export function arResetDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  try {
+    return toLatinDigits(
+      new Intl.DateTimeFormat(AR_DATE_LOCALE, {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        calendar: "gregory",
+      }).format(new Date(ms)),
+    );
+  } catch {
+    return "";
+  }
+}

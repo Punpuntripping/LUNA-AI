@@ -35,6 +35,11 @@
 
 import { getAccessToken } from "@/lib/api";
 import type { UsageReport } from "@/types";
+import {
+  parseRefusal,
+  type LibraryRefusal,
+  type LibraryRefusalReason,
+} from "@/lib/contracts/library-refusal";
 // Type-only: `legal-text` renders JSX, and this is a plain fetch module.
 import type {
   LegalImageMap,
@@ -174,32 +179,10 @@ export type FullContentPayload =
 // Refusal (D14) — the 402 contract
 // ------------------------------------------------------------------
 
-export type LibraryRefusalReason =
-  | "anonymous"
-  | "quota_exhausted"
-  | "frozen_library"
-  | "locked"
-  | "unresolvable";
-
-const REFUSAL_REASONS: readonly string[] = [
-  "anonymous",
-  "quota_exhausted",
-  "frozen_library",
-  "locked",
-  "unresolvable",
-];
-
-/** The normalized 402 body. `stored_count` is only sent for `frozen_library`. */
-export interface LibraryRefusal {
-  reason: LibraryRefusalReason;
-  /** The backend's own Arabic message — a last-resort fallback for the card. */
-  message: string;
-  used: number;
-  /** `null` = unlimited (so a refusal with a null limit should never happen). */
-  limit: number | null;
-  resets_at: string | null;
-  stored_count: number | null;
-}
+// The 402 shape and its parser are shared with the mobile app
+// (`lib/contracts/library-refusal.ts`); re-exported here unchanged.
+export { parseRefusal };
+export type { LibraryRefusal, LibraryRefusalReason };
 
 /** Why a reveal produced no content, when it was NOT an entitlement refusal. */
 export type FullContentError =
@@ -232,51 +215,6 @@ export type FullContentResult<T extends FullContentPayload> =
   | { ok: true; data: T }
   | { ok: false; kind: "refusal"; refusal: LibraryRefusal }
   | { ok: false; kind: "error"; error: FullContentError; status: number | null };
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function asIntOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.trunc(value)
-    : null;
-}
-
-/**
- * Normalize a 402 body defensively. A refusal must ALWAYS produce a renderable
- * card, so every field falls back rather than throwing — an unrecognised
- * `reason` degrades to `unresolvable`, whose copy never blames the reader.
- *
- * Exported (Phase C) so the workspace reference-source reveal parses the SAME
- * D14 body with the SAME defensiveness. There is exactly one refusal shape on
- * the wire; there must be exactly one parser for it, or the two surfaces drift.
- */
-export function parseRefusal(body: unknown): LibraryRefusal {
-  const raw = asRecord(body);
-  const error = asRecord(raw.error);
-
-  const rawReason = typeof raw.reason === "string" ? raw.reason : "";
-  const reason: LibraryRefusalReason = REFUSAL_REASONS.includes(rawReason)
-    ? (rawReason as LibraryRefusalReason)
-    : "unresolvable";
-
-  const message =
-    (typeof error.message === "string" && error.message) ||
-    (typeof raw.detail === "string" && raw.detail) ||
-    "";
-
-  return {
-    reason,
-    message,
-    used: asIntOrNull(raw.used) ?? 0,
-    limit: asIntOrNull(raw.limit),
-    resets_at: typeof raw.resets_at === "string" ? raw.resets_at : null,
-    stored_count: asIntOrNull(raw.stored_count),
-  };
-}
 
 /**
  * Encode an Arabic key for the backend path exactly once (Next delivers non-ASCII
