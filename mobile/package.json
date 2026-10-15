@@ -40,9 +40,11 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~57.0.2",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -51,7 +53,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test \"src/**/__tests__/*.test.ts\""
   },
   "private": true,
   "enriched-markdown": {

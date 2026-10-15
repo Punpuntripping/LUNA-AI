@@ -4,6 +4,7 @@ import { LEGAL_VERSION, type AuthResponse, type SignupResponse, type User } from
 
 import * as authApi from "@/api/auth";
 import { ApiError, errorMessage, MSG_UNKNOWN } from "@/api/errors";
+import { chatEngine } from "@/chat/chat-engine";
 import { queryClient } from "@/lib/query-client";
 
 import {
@@ -85,6 +86,9 @@ export const useSession = create<SessionState>((set, get) => {
   }
 
   function signedOut(): void {
+    // Abort every in-flight send and drop live chat state before the cache:
+    // nothing of this account may survive into the next one.
+    chatEngine.reset();
     queryClient.clear();
     set({ status: "signedOut", user: null, unavailableMessage: null });
   }
