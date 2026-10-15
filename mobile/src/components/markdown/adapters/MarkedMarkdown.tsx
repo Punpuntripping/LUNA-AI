@@ -2,10 +2,11 @@ import { Lexer, type Token } from "marked";
 import { useMemo } from "react";
 import { StyleSheet, View } from "react-native";
 
+import { splitStreamingContent } from "@contracts";
+
 import { useTheme } from "@/theme/ThemeProvider";
 
 import type { MarkdownAdapterProps } from "../types";
-import { splitStreamingContent } from "../streaming";
 import { Block } from "./marked/blocks";
 import type { RenderCtx } from "./marked/context";
 

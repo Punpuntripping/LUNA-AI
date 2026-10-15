@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -9,6 +10,8 @@ export interface StackHeaderProps {
   title: string;
   /** Renders the «رجوع» button when the screen has somewhere to go back to. */
   onBack?: () => void;
+  /** Buttons at the end of the row (left in RTL), e.g. the chat's «…» menu. */
+  actions?: ReactNode;
 }
 
 /**
@@ -19,7 +22,7 @@ export interface StackHeaderProps {
  * second flip. The arrow is drawn with plain transforms (no start/end, no
  * glyph), so it always points right: «back» in an RTL app.
  */
-export function StackHeader({ title, onBack }: StackHeaderProps) {
+export function StackHeader({ title, onBack, actions }: StackHeaderProps) {
   const { colours } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -42,6 +45,7 @@ export function StackHeader({ title, onBack }: StackHeaderProps) {
         <AppText variant="lg" weight={600} numberOfLines={1} style={styles.title} accessibilityRole="header">
           {title}
         </AppText>
+        {actions ? <View style={styles.actions}>{actions}</View> : null}
       </View>
     </View>
   );
@@ -68,6 +72,7 @@ const styles = StyleSheet.create({
   back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   spacer: { width: 12 },
   title: { flex: 1 },
+  actions: { flexDirection: "row", alignItems: "center", gap: 2 },
   arrow: { width: 16, height: 18, alignItems: "center", justifyContent: "center" },
   bar1: {
     position: "absolute",

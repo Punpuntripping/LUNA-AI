@@ -353,3 +353,8 @@ export function useReferencedItems(messageId: string): string[] | null {
 export function useAutoOpen(conversationId: string): AutoOpenSignal | null {
   return useStreamSelector((s) => s.autoOpen[conversationId] ?? null);
 }
+
+/** How many conversations have a send in flight in this app (parallel cap). */
+export function useStreamCount(): number {
+  return useStreamSelector((s) => Object.keys(s.streams).length);
+}

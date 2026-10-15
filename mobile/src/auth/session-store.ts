@@ -6,6 +6,7 @@ import * as authApi from "@/api/auth";
 import { ApiError, errorMessage, MSG_UNKNOWN } from "@/api/errors";
 import { chatEngine } from "@/chat/chat-engine";
 import { queryClient } from "@/lib/query-client";
+import { useComposerDrafts } from "@/stores/composer-drafts";
 
 import {
   cancelProactiveRefresh,
@@ -89,6 +90,7 @@ export const useSession = create<SessionState>((set, get) => {
     // Abort every in-flight send and drop live chat state before the cache:
     // nothing of this account may survive into the next one.
     chatEngine.reset();
+    useComposerDrafts.getState().clear();
     queryClient.clear();
     set({ status: "signedOut", user: null, unavailableMessage: null });
   }
