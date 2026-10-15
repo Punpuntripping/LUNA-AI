@@ -7,6 +7,7 @@ import { useSession } from "@/auth/session-store";
 import { AppText } from "@/components/AppText";
 import { Button } from "@/components/Button";
 import { ErrorBanner } from "@/components/ErrorBanner";
+import { LinkText } from "@/components/LinkText";
 import { Screen } from "@/components/Screen";
 import { APP_BUILD, APP_UPDATE_ID, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
@@ -91,6 +92,9 @@ export default function SettingsScreen() {
       </View>
 
       {__DEV__ ? <DigitsCheck /> : null}
+      {__DEV__ ? (
+        <LinkText label="Markdown spike" variant="xs" onPress={() => router.push("/dev-markdown")} testID="settings-dev-markdown" />
+      ) : null}
 
       <Button
         label="تسجيل الخروج"

@@ -31,6 +31,8 @@ export default function AppLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="settings" options={{ headerShown: true, title: "الإعدادات" }} />
         <Stack.Screen name="change-password" options={{ headerShown: true, title: "تغيير كلمة المرور" }} />
+        {/* K0 spike — dev builds only (the screen redirects home in release). */}
+        <Stack.Screen name="dev-markdown" options={{ headerShown: true, title: "Markdown spike" }} />
       </Stack.Protected>
       <Stack.Protected guard={deletionPending}>
         <Stack.Screen name="account-restore" options={{ gestureEnabled: false }} />

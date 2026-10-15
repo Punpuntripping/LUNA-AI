@@ -5,6 +5,22 @@ Android dev build DONE 2026-10-13 (`ee2513fb`, channel development). Marks: ✅ 
 ❓ owner decision · 🔎 not verified, check before relying on it. Scope: `01_app_scope.md`
 (chat with **all** web features; citations option B). Phases: `03` §3.
 
+## Owner decisions (2026-10-15) — override the sections below
+- **R4 → (a):** «فتح ال… في ريحان» opens `https://rayhanai.com{library_url}` in the in-app browser
+  (`expo-web-browser`). Known trade-off: no web session there → the visitor/anonymous view and gate.
+  No native full-document screen in Phase 2 (E6 dropped).
+- **D1 → yes:** permanent one-line footer under the composer «ريحان مساعد بالذكاء الاصطناعي وقد
+  يخطئ — تحقق من المصادر» (plus the full disclaimer on the empty state and in agent viewers).
+- **S3 / B4 → leave:** Stop = detach (as web). No server-side cancel.
+- **NEW — auto-open artifacts over the chat (reverses W4 "no auto-open on the phone"):** when a turn
+  produces an agent output (`workspace_item_created` with kind `agent_search` or `agent_writing`),
+  it opens automatically as a **sheet/modal over the chat** (chat stays underneath; dismiss returns
+  to the chat at the same scroll). Notes, attachments (user-uploaded) and `convo_context` /
+  `references` never auto-open. Opens once per item (not again on refetch/resume); if the user is
+  scrolled/typing it still opens (owner rule) — dismissible with swipe-down / «إغلاق». ⇒ a **basic
+  artifact viewer** (agent_search markdown + `[n]` → reader + reference cards; agent_writing preview
+  + disclaimer + copy) moves from 2b into **2a**; the full workspace list stays 2b.
+
 ---
 
 ## 1. Goal + exit criteria

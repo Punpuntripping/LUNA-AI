@@ -26,9 +26,11 @@
     "expo-system-ui": "~57.0.4",
     "expo-updates": "~57.0.26",
     "expo-web-browser": "~57.0.3",
+    "marked": "^18.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-enriched-markdown": "^1.1.1",
     "react-native-gesture-handler": "~2.32.0",
     "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
@@ -51,5 +53,9 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit"
   },
-  "private": true
+  "private": true,
+  "enriched-markdown": {
+    "enableMath": false,
+    "enableCodeHighlight": false
+  }
 }
