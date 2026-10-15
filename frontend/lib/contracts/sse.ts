@@ -276,8 +276,9 @@ export interface SSETemplatesUsed {
 
 /**
  * ``event: error`` — the run (or the send) failed. ``detail`` is Arabic and is
- * shown verbatim. ``code`` is set only on the quota-unavailable refusal
- * (``"QUOTA_UNAVAILABLE"``, message_service.py) — absent everywhere else.
+ * shown verbatim. ``code`` is optional: ``"QUOTA_UNAVAILABLE"`` (quota
+ * refusal) or ``"PIPELINE_TIMEOUT"`` (message_service.py) — never branch on it
+ * as an exhaustive set.
  */
 export interface SSEError {
   detail: string;
