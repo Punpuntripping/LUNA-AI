@@ -41,6 +41,8 @@ from agents.utils.welcome import render_welcome_instruction
 from .models import (
     RESPONDER_BODY_CHARS,
     RESPONDER_EXCERPT_CHARS,
+    SYNTHESIS_HEAD_CHARS,
+    SYNTHESIS_TAIL_CHARS,
     DeepSearchArtifact,
     ResponderInput,
     ResponderMode,
@@ -348,6 +350,21 @@ def clip_body(text: str | None, budget: int = RESPONDER_BODY_CHARS) -> tuple[str
     return body[:budget].rstrip() + " […]", True
 
 
+def clip_head_tail(
+    text: str | None,
+    head: int = SYNTHESIS_HEAD_CHARS,
+    tail: int = SYNTHESIS_TAIL_CHARS,
+) -> tuple[str, bool]:
+    """Keep the first ``head`` and last ``tail`` chars with a « […] » gap.
+
+    Returns ``(text, clipped)``; ``text`` is whole when it fits in ``head + tail``.
+    """
+    body = (text or "").strip()
+    if len(body) <= head + tail:
+        return body, False
+    return body[:head].rstrip() + "\n\n[…]\n\n" + body[-tail:].lstrip(), True
+
+
 _HEADING_RE = re.compile(r"^#{1,6}\s+.+$", re.MULTILINE)
 
 
@@ -441,7 +458,7 @@ def render_deep_search_package(a: DeepSearchArtifact) -> str:
         return "\n".join(parts)
 
     counts = {"regulations": 0, "compliance": 0, "cases": 0, **(a.ref_counts or {})}
-    body, clipped = clip_body(a.synthesis_md)
+    body, clipped = clip_head_tail(a.synthesis_md)
     parts += [
         "## Search outcome (for reference — do not copy it verbatim)",
         "",
@@ -461,7 +478,8 @@ def render_deep_search_package(a: DeepSearchArtifact) -> str:
     if a.key_findings:
         parts += ["### Key findings", _bullets(a.key_findings, ""), ""]
     parts += [
-        "### The synthesis" + (" (clipped — the card holds the rest)" if clipped else ""),
+        "### The synthesis"
+        + (" (clipped: its opening and its close; the card holds the rest)" if clipped else ""),
         body,
     ]
     if prior:

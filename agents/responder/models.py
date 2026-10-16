@@ -44,10 +44,16 @@ FOLLOW_UP_QUESTION_MAX = 300
 #: responder enforces on its card titles.
 WI_TITLE_MAX = 80
 
-#: §5.4 — how much artifact body the responder may read. The deep_search
-#: synthesis and the writing draft are passed in full up to this budget and
-#: clipped (with an explicit marker) beyond it.
+#: §5.4 — how much writing-draft body the responder may read: the full draft
+#: up to this budget, else outline + first/last sections.
 RESPONDER_BODY_CHARS = 12_000
+
+#: deep_search synthesis window: its opening (the direct answer) and its close
+#: (conclusion / caveats), with a marker between. 12k of synthesis roughly
+#: doubled the responder's latency (~74 s vs ~35 s p50 on planner_responder,
+#: which read a 1,600-char head) — the card holds the full report anyway.
+SYNTHESIS_HEAD_CHARS = 1_500
+SYNTHESIS_TAIL_CHARS = 500
 
 #: simple_search per-document digest budget — unchanged from
 #: ``simple_search.responder.RESPONDER_EXCERPT_CHARS`` (§5.4).
@@ -417,6 +423,8 @@ __all__ = [
     "FOLLOW_UP_QUESTION_MAX",
     "WI_TITLE_MAX",
     "RESPONDER_BODY_CHARS",
+    "SYNTHESIS_HEAD_CHARS",
+    "SYNTHESIS_TAIL_CHARS",
     "RESPONDER_EXCERPT_CHARS",
     "ResponderBase",
     "DeepSearchResponse",
