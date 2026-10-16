@@ -13,17 +13,23 @@ import { isHttpUrlLike, parseTemplatesUsed } from "../contracts/templates-used";
  * fixtures plus a seeded random sweep. The web files re-export the contracts
  * port only because this passes.
  *
+ * 2026-10-15 (unified_responder plan §6.3): the reference below was extended
+ * with the `answer` kind — exempt from one-per-kind dedup, at most two kept,
+ * total cap still 3 — and the explicit `answer` cases at the bottom pin that
+ * rule independently of the reference.
+ *
  * Lives outside `lib/contracts/` because it imports zod (contracts may not).
  *
  * Run:  cd frontend && npx tsx --test lib/__tests__/contracts-parsers-equivalence.test.ts
  */
 
-// ---- verbatim zod originals -------------------------------------------------
+// ---- zod originals (verbatim, plus the `answer` rule) ------------------------
 
 const MAX_NEXT_STEPS = 3;
+const MAX_ANSWER_STEPS = 2;
 
 const nextStepSchema = z.object({
-  kind: z.enum(["narrow_search", "draft", "apply", "open"]),
+  kind: z.enum(["narrow_search", "draft", "apply", "open", "answer"]),
   label: z.string().trim().min(1),
   prompt: z.string().trim().min(1),
 });
@@ -32,11 +38,17 @@ function zodParseNextSteps(raw: unknown) {
   if (!Array.isArray(raw)) return [];
   const out: z.infer<typeof nextStepSchema>[] = [];
   const seenKinds = new Set<string>();
+  let answers = 0;
   for (const item of raw) {
     const parsed = nextStepSchema.safeParse(item);
     if (!parsed.success) continue;
-    if (seenKinds.has(parsed.data.kind)) continue;
-    seenKinds.add(parsed.data.kind);
+    if (parsed.data.kind === "answer") {
+      if (answers >= MAX_ANSWER_STEPS) continue;
+      answers += 1;
+    } else {
+      if (seenKinds.has(parsed.data.kind)) continue;
+      seenKinds.add(parsed.data.kind);
+    }
     out.push(parsed.data);
     if (out.length >= MAX_NEXT_STEPS) break;
   }
@@ -115,6 +127,18 @@ const NEXT_STEP_FIXTURES: unknown[] = [
   [{ kind: "open", label: " x ", prompt: "\ny\t" }],
   // eslint-disable-next-line no-sparse-arrays
   [, { kind: "draft", label: "a", prompt: "b" }],
+  [
+    { kind: "answer", label: "نعم، يوجد شرط جزائي", prompt: "نعم، ينص العقد على شرط جزائي بقيمة …" },
+    { kind: "answer", label: "لا يوجد شرط جزائي", prompt: "لا، لا ينص العقد على شرط جزائي" },
+    { kind: "answer", label: "ثالث", prompt: "ثالث" },
+    { kind: "draft", label: "صياغة إنذار", prompt: "صغ لي إنذاراً للمطور" },
+  ],
+  [
+    { kind: "answer", label: "  ", prompt: "x" },
+    { kind: "answer", label: "a", prompt: "b" },
+    { kind: "answer", label: "a", prompt: "b" },
+    { kind: "answer", label: "c", prompt: "d" },
+  ],
 ];
 
 const URLS = [
@@ -177,7 +201,7 @@ function pick<T>(r: () => number, xs: readonly T[]): T {
 function randomNextStep(r: () => number): unknown {
   if (r() < 0.15) return pick(r, ODD_VALUES);
   const o: Record<string, unknown> = {};
-  if (r() < 0.9) o.kind = pick(r, ["narrow_search", "draft", "apply", "open", "x", "", 1, null]);
+  if (r() < 0.9) o.kind = pick(r, ["narrow_search", "draft", "apply", "open", "answer", "answer", "x", "", 1, null]);
   if (r() < 0.9) o.label = pick(r, ["a", " a ", "", "  ", "\t", 1, null, undefined, "نص"]);
   if (r() < 0.9) o.prompt = pick(r, ["p", " p ", "", "\n", 0, null, "طلب"]);
   return o;
@@ -217,6 +241,42 @@ test("parseNextSteps: contracts port ≡ zod original (5,000 random lists)", () 
     const raw = Array.from({ length: Math.floor(r() * 6) }, () => randomNextStep(r));
     assert.deepStrictEqual(parseNextSteps(raw), zodParseNextSteps(raw), JSON.stringify(raw));
   }
+});
+
+// ---- answer kind (unified_responder plan §6.3) ------------------------------
+
+const ANS_1 = { kind: "answer", label: "نعم، يوجد شرط جزائي", prompt: "نعم، ينص العقد على شرط جزائي بقيمة …" };
+const ANS_2 = { kind: "answer", label: "لا يوجد شرط جزائي", prompt: "لا، لا ينص العقد على شرط جزائي" };
+const ANS_3 = { kind: "answer", label: "يوجد مهلة سماح", prompt: "ينص العقد على مهلة سماح مدتها …" };
+const DRAFT = { kind: "draft", label: "صياغة إنذار للمطور", prompt: "صغ لي إنذاراً للمطور" };
+
+test("parseNextSteps: 2 answer chips + 1 action are all kept, in order", () => {
+  assert.deepStrictEqual(parseNextSteps([ANS_1, ANS_2, DRAFT]), [ANS_1, ANS_2, DRAFT]);
+  assert.deepStrictEqual(parseNextSteps([ANS_1, DRAFT, ANS_2]), [ANS_1, DRAFT, ANS_2]);
+});
+
+test("parseNextSteps: 3 answer chips → the first 2 are kept", () => {
+  assert.deepStrictEqual(parseNextSteps([ANS_1, ANS_2, ANS_3]), [ANS_1, ANS_2]);
+  // The skipped 3rd answer does not use up the total cap.
+  assert.deepStrictEqual(parseNextSteps([ANS_1, ANS_2, ANS_3, DRAFT]), [ANS_1, ANS_2, DRAFT]);
+});
+
+test("parseNextSteps: a duplicate non-answer kind is still deduped", () => {
+  const draft2 = { kind: "draft", label: "مكرر", prompt: "مكرر" };
+  const apply = { kind: "apply", label: "تطبيق", prompt: "طبّق" };
+  assert.deepStrictEqual(parseNextSteps([DRAFT, draft2, apply]), [DRAFT, apply]);
+  assert.deepStrictEqual(parseNextSteps([ANS_1, DRAFT, draft2]), [ANS_1, DRAFT]);
+});
+
+test("parseNextSteps: an unknown kind is dropped", () => {
+  const bogus = { kind: "reply", label: "a", prompt: "b" };
+  assert.deepStrictEqual(parseNextSteps([bogus, ANS_1]), [ANS_1]);
+  assert.deepStrictEqual(parseNextSteps([{ ...ANS_1, kind: "ANSWER" }]), []);
+});
+
+test("parseNextSteps: total cap stays 3 with answer chips", () => {
+  const apply = { kind: "apply", label: "تطبيق", prompt: "طبّق" };
+  assert.deepStrictEqual(parseNextSteps([ANS_1, DRAFT, apply, ANS_2]), [ANS_1, DRAFT, apply]);
 });
 
 test("parseTemplatesUsed: contracts port + web URL check ≡ zod original (fixtures)", () => {

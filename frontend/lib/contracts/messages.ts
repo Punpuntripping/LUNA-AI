@@ -26,6 +26,17 @@ export interface MessageMetadata {
    */
   next_steps?: NextStep[];
   /**
+   * The responder's follow-up question for this answer (unified_responder
+   * plan D6/D10, §6.4): the one material fact whose answer would change the
+   * legal conclusion. Appended to the bubble text by the backend on its own
+   * line, so the UI needs no extra rendering; the matching ``answer`` chips
+   * live in ``next_steps``. NOT an ``agent_question`` (that is a blocking
+   * pause).
+   */
+  follow_up_question?: string;
+  /** Internal: which gap/fact the follow-up question targets. Never shown. */
+  question_basis?: string;
+  /**
    * Templates a writer draft was built on. An EMPTY list means a draft was
    * produced without a template; the key is ABSENT on turns that drafted
    * nothing. Validate with ``parseTemplatesUsed`` (lib/templates-used.ts).
@@ -51,8 +62,11 @@ export interface TemplateUsed {
 /**
  * What a next-step chip offers (next_step_suggestions plan §3.2).
  * ``open`` is simple_search only (an unselected candidate / rest of a doc).
+ * ``answer`` (unified_responder plan D8, §6.3) is a half-written first-person
+ * reply to the turn's ``follow_up_question`` — it may end with «…» for the
+ * user to complete. Up to two per turn; exempt from one-per-kind dedup.
  */
-export type NextStepKind = "narrow_search" | "draft" | "apply" | "open";
+export type NextStepKind = "narrow_search" | "draft" | "apply" | "open" | "answer";
 
 export interface NextStep {
   kind: NextStepKind;

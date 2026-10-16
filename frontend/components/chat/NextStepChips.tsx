@@ -4,6 +4,7 @@ import { memo, useCallback } from "react";
 import {
   ArrowUpLeft,
   BookOpen,
+  MessageSquareReply,
   PenLine,
   Scale,
   Search,
@@ -22,6 +23,8 @@ const KIND_ICON: Record<NextStepKind, LucideIcon> = {
   draft: PenLine,
   apply: Scale,
   open: BookOpen,
+  // unified_responder plan §6.3: a half-written reply to the follow-up question.
+  answer: MessageSquareReply,
 };
 
 interface NextStepChipsProps {
@@ -39,7 +42,9 @@ interface NextStepChipsProps {
  *
  * Click = PASTE the chip's full prompt into the composer (replacing whatever
  * is there), focused and editable. It NEVER sends — the user may edit, and a
- * sent chip is an ordinary user message the router classifies as usual.
+ * sent chip is an ordinary user message the router classifies as usual. This
+ * matters most for ``answer`` chips, whose prompt may end with «…» for the
+ * user to complete; up to two of them can share a turn, so keys are per item.
  *
  * Visual language matches the bubble's other outline pills
  * (``ReferencedItemChip``): rounded-full, h-7, muted text that lifts on hover.
@@ -84,11 +89,11 @@ export const NextStepChips = memo(function NextStepChips({
         aria-labelledby={`next-steps-${messageId}`}
         className="flex flex-wrap items-center gap-1.5"
       >
-        {steps.map((step) => {
+        {steps.map((step, index) => {
           const Icon = KIND_ICON[step.kind];
           return (
             <Button
-              key={step.kind}
+              key={`${step.kind}-${index}`}
               type="button"
               variant="outline"
               size="sm"

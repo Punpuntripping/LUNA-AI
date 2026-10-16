@@ -253,7 +253,8 @@ export interface SSEReferencedExistingItem {
 
 /**
  * next_step_suggestions plan §3.6: ``event: next_steps`` — 0–3 clickable
- * follow-ups for the answer just streamed. Emitted once, after the last
+ * follow-ups for the answer just streamed (actions one-per-kind, plus up to
+ * two ``answer`` chips — unified_responder plan §6.3). Emitted once, after the last
  * ``token`` and before ``done``, and only when non-empty. The same items are
  * persisted on the assistant row as ``metadata.next_steps``.
  */

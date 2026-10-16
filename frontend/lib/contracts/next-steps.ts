@@ -7,16 +7,21 @@
  * allowed to break the bubble — chips are never worth failing a render over.
  *
  * Zod-free port of the web's original zod schema (contracts take no third-party
- * packages). Equivalence with that schema is pinned by
+ * packages), extended with the `answer` kind (unified_responder plan §6.3).
+ * Equivalence with the zod reference (updated to the same rule) is pinned by
  * `lib/__tests__/contracts-parsers-equivalence.test.ts`.
  */
 
 import type { NextStep, NextStepKind } from "./messages";
 
-/** D3: at most three chips, each a different kind. */
+/**
+ * D3: at most three chips. Action kinds are one-per-kind; ``answer`` chips
+ * (unified_responder plan §6.3) are exempt from that dedup but capped at two.
+ */
 const MAX_NEXT_STEPS = 3;
+const MAX_ANSWER_STEPS = 2;
 
-const NEXT_STEP_KINDS: readonly string[] = ["narrow_search", "draft", "apply", "open"];
+const NEXT_STEP_KINDS: readonly string[] = ["narrow_search", "draft", "apply", "open", "answer"];
 
 /**
  * What zod's `z.object` accepts as an object: non-null, not an array, not a
@@ -50,19 +55,26 @@ function parseNextStep(item: unknown): NextStep | null {
 }
 
 /**
- * Validate + normalise a raw `next_steps` value. Invalid items are skipped,
- * duplicate kinds keep the first occurrence, and the list is capped at 3.
- * Anything that is not an array yields `[]`.
+ * Validate + normalise a raw `next_steps` value. Invalid items (incl. unknown
+ * kinds) are skipped; duplicate action kinds keep the first occurrence;
+ * `answer` items are exempt from that dedup but only the first two are kept;
+ * the list is capped at 3 overall. Anything that is not an array yields `[]`.
  */
 export function parseNextSteps(raw: unknown): NextStep[] {
   if (!Array.isArray(raw)) return [];
   const out: NextStep[] = [];
   const seenKinds = new Set<string>();
+  let answers = 0;
   for (const item of raw) {
     const parsed = parseNextStep(item);
     if (parsed === null) continue;
-    if (seenKinds.has(parsed.kind)) continue;
-    seenKinds.add(parsed.kind);
+    if (parsed.kind === "answer") {
+      if (answers >= MAX_ANSWER_STEPS) continue;
+      answers += 1;
+    } else {
+      if (seenKinds.has(parsed.kind)) continue;
+      seenKinds.add(parsed.kind);
+    }
     out.push(parsed);
     if (out.length >= MAX_NEXT_STEPS) break;
   }
