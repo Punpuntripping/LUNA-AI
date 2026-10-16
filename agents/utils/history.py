@@ -141,10 +141,85 @@ def _row_next_steps(row: dict) -> list[dict] | None:
     return steps if isinstance(steps, list) else None
 
 
+#: Hard cap on the follow-up question rendered into a history note — the
+#: responder schema caps the field at 300 chars; this is the floor for rows
+#: written by anything else.
+FOLLOW_UP_NOTE_MAX = 300
+
+
+def build_follow_up_note(question: str | None) -> str | None:
+    """One-line note naming the follow-up question asked under an assistant turn.
+
+    Plan ``unified_responder.md`` §6.4 / D10. The question is captured in
+    ``messages.metadata.follow_up_question`` — it is NOT an ``agent_question``
+    (that kind is a blocking pause and is filtered out of router history), so
+    without this note an agent reading history cannot tell that the user's next
+    message («نعم، يوجد شرط جزائي») is an answer. Returns ``None`` when empty.
+    """
+    text = " ".join(str(question or "").split())
+    if not text:
+        return None
+    if len(text) > FOLLOW_UP_NOTE_MAX:
+        text = text[:FOLLOW_UP_NOTE_MAX].rstrip() + "…"
+    return f"〔[نظام] سُئل المستخدم: {text}〕"
+
+
+def _row_follow_up_question(row: dict) -> str | None:
+    """``metadata.follow_up_question`` of a message row, tolerating odd metadata."""
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    q = metadata.get("follow_up_question")
+    return q if isinstance(q, str) else None
+
+
 def append_next_steps_note(content: str, row: dict) -> str:
-    """Return ``content`` with :func:`build_next_steps_note` appended, if any."""
-    note = build_next_steps_note(_row_next_steps(row))
-    return f"{content}\n{note}" if note else content
+    """Return ``content`` with the turn's system notes appended, if any.
+
+    Order mirrors the bubble: the follow-up question note
+    (:func:`build_follow_up_note`, from ``metadata.follow_up_question``) first,
+    then the chips note (:func:`build_next_steps_note`). A row with neither
+    field is returned unchanged (every row written before the unified
+    responder).
+    """
+    notes = [
+        n
+        for n in (
+            build_follow_up_note(_row_follow_up_question(row)),
+            build_next_steps_note(_row_next_steps(row)),
+        )
+        if n
+    ]
+    return "\n".join([content, *notes]) if notes else content
+
+
+def compose_bubble(
+    chat_summary_md: str | None,
+    key_findings: list[str] | None = None,
+    follow_up_question: str | None = None,
+) -> str:
+    """Assemble the final chat bubble text (plan ``unified_responder.md`` §6.2).
+
+    ``chat_summary_md`` → (writing turns: ``key_findings`` as bullets) → the
+    follow-up question as its OWN paragraph, always last. The closing line
+    («والتفاصيل والمراجع الكاملة في بطاقة البحث المرفقة.») stays the last line
+    of ``chat_summary_md``; the question is never merged into it. Empty parts
+    are skipped, so a turn with no question and no findings is just the summary.
+
+    Bullets use «•» — the same marker the orchestrator streams for
+    ``key_findings`` today (``orchestrator.py`` ``"\\n".join(f"• {k}" …)``).
+    """
+    parts: list[str] = []
+    summary = (chat_summary_md or "").strip()
+    if summary:
+        parts.append(summary)
+    bullets = [f"• {str(k).strip()}" for k in (key_findings or []) if str(k or "").strip()]
+    if bullets:
+        parts.append("\n".join(bullets))
+    question = (follow_up_question or "").strip()
+    if question:
+        parts.append(question)
+    return "\n\n".join(parts)
 
 
 def messages_to_history(

@@ -87,6 +87,12 @@ class PlannerTurnResult:
     decision: PlannerDecision | None = None
     agg_output: "AggregatorOutput | None" = None
     degraded: bool = False
+    # Unified responder only (RESPONDER_UNIFIED_FAMILIES ∋ deep_search): the
+    # follow-up question + its internal basis. Carried here rather than on
+    # ``PlannerResponse`` so the old responder's output schema (= its tool
+    # schema = its cached prefix) stays byte-identical. None on the old path.
+    follow_up_question: str | None = None
+    question_basis: str | None = None
     # paused
     planner_result: Any = None
     deferred: "DeferredToolRequests | None" = None
@@ -187,6 +193,83 @@ def _minimal_response(reason: str) -> PlannerResponse:
 # ---------------------------------------------------------------------------
 # Phase helpers
 # ---------------------------------------------------------------------------
+
+
+def _ref_counts(agg_output: Any) -> dict[str, int]:
+    """Per-source reference counts — same tally ``build_responder_instructions`` shows."""
+    counts = {"regulations": 0, "compliance": 0, "cases": 0}
+    for ref in getattr(agg_output, "references", None) or []:
+        dom = getattr(ref, "domain", None)
+        if dom in counts:
+            counts[dom] += 1
+    return counts
+
+
+async def _run_unified_responder(
+    retrieval_query: str,
+    deps: PlannerDeps,
+    agg_output: "AggregatorOutput",
+    decision: PlannerDecision,
+) -> tuple[PlannerResponse, Any] | None:
+    """Phase 3 on the unified responder (plan unified_responder.md §5.1).
+
+    Returns ``(PlannerResponse, DeepSearchResponse)`` — the responder output
+    mapped onto the existing ``PlannerResponse`` so the orchestrator's
+    publish-gate branch is untouched — or ``None`` when the responder failed
+    (the caller applies ``_response_from_artifact``, unchanged policy).
+
+    Context (D4): ``deps.router_context`` verbatim when the router ran this
+    turn; otherwise (resume / pinned / headless) the old phase-3 context,
+    ``render_responder_context(deps)``. وضع السرية: ``synthesis_md``, gaps and
+    the brief are the SAME encoded objects the old responder read from
+    ``deps._agg_output`` / ``deps._decision`` — nothing is re-encoded.
+    """
+    from agents.responder import DeepSearchArtifact, ResponderInput, run_responder
+    from agents.responder.wiring import load_profession_group, load_style_profile
+
+    router_ctx = getattr(deps, "router_context", None)
+    artifact = DeepSearchArtifact(
+        query=retrieval_query,
+        search_mode=getattr(decision, "mode", "reg_compliance_led") or "reg_compliance_led",
+        synthesis_md=(getattr(agg_output, "synthesis_md", "") or "").strip(),
+        confidence=str(getattr(agg_output, "confidence", "medium") or "medium"),
+        gaps=[str(g) for g in (getattr(agg_output, "gaps", None) or [])],
+        key_findings=[str(k) for k in (getattr(agg_output, "key_findings", None) or [])],
+        planner_brief=getattr(decision, "planner_brief", "") or "",
+        ref_counts=_ref_counts(agg_output),
+        prior_searches=list(getattr(deps, "prior_searches", None) or []),
+    )
+    inp = ResponderInput(
+        mode="deep_search",
+        artifact=artifact,
+        router_context=router_ctx,
+        fallback_context=None if router_ctx is not None else render_responder_context(deps),
+        welcome=getattr(deps, "welcome", None),
+        welcome_instruction=getattr(deps, "welcome_instruction", None),
+        profession_group=load_profession_group(
+            getattr(deps, "supabase", None), getattr(deps, "user_id", "")
+        ),
+        # P4 — users.user_id (PlannerDeps.user_id is the users PK).
+        style_profile=load_style_profile(
+            getattr(deps, "supabase", None), getattr(deps, "user_id", "")
+        ),
+        conversation_id=getattr(deps, "conversation_id", "") or "",
+        wi_alias_map=dict(getattr(deps, "wi_alias_map", None) or {}),
+    )
+    out = await run_responder(inp, model_override=deps.model_override)
+    if out is None:
+        return None
+    response = PlannerResponse(
+        chat_summary_md=out.chat_summary_md,
+        next_steps=list(out.next_steps),
+        build_artifact=bool(getattr(out, "build_artifact", True)),
+        referenced_wi=getattr(out, "referenced_wi", None),
+        # Resolved by the responder's own output validator against the SAME
+        # deps.wi_alias_map the old planner_responder resolver consulted.
+        referenced_item_id=getattr(out, "referenced_item_id", None),
+    )
+    response._next_steps_salvaged = bool(getattr(out, "_next_steps_salvaged", False))
+    return response, out
 
 
 async def _resolve_run_retrieval(injected: Callable | None) -> Callable:
@@ -564,6 +647,13 @@ async def _run_planner_turn(
     # keeps the responder aligned with what was actually searched. Fresh
     # dispatch is unchanged: there `retrieval_query` falls back to `query`.
     t2 = time.perf_counter()
+    from agents.responder.wiring import responder_unified
+
+    if responder_unified("deep_search"):
+        return await _phase3_unified(
+            retrieval_query, deps, agg_output, decision,
+            decider_result=_decider_result, t2=t2,
+        )
     try:
         responder = create_planner_responder(model_override=deps.model_override)
         result = await responder.run(
@@ -634,6 +724,75 @@ async def _run_planner_turn(
         decision=decision,
         agg_output=agg_output,
         degraded=degraded,
+    )
+
+
+async def _phase3_unified(
+    retrieval_query: str,
+    deps: PlannerDeps,
+    agg_output: "AggregatorOutput",
+    decision: PlannerDecision,
+    *,
+    decider_result: Any,
+    t2: float,
+) -> PlannerTurnResult:
+    """Phase 3 when deep_search is on ``RESPONDER_UNIFIED_FAMILIES``.
+
+    Same events, span attributes and failure policy as the old block; the only
+    differences are who writes the bubble (the unified responder) and the
+    ledger split — the responder records its own ``responder`` row through
+    ``run_tracked``, so the ``deep_search.planner`` row carries the decider
+    only (no double-billing).
+    """
+    degraded = False
+    follow_up: str | None = None
+    basis: str | None = None
+    unified: tuple[PlannerResponse, Any] | None = None
+    try:
+        unified = await _run_unified_responder(retrieval_query, deps, agg_output, decision)
+    except Exception as exc:  # noqa: BLE001 — run_responder never raises; belt-and-braces
+        logger.error("planner: unified responder wiring raised (%s)", exc, exc_info=True)
+        unified = None
+    _emit_planner_ledger(decider_result)
+    if unified is None:
+        degraded = True
+        logger.error("planner: unified responder failed; response from artifact")
+        emit(deps, {"event": EVENT_ERROR, "phase": "respond", "error": "responder_failed"})
+        response = _response_from_artifact(agg_output)
+    else:
+        response, out = unified
+        follow_up = getattr(out, "follow_up_question", None)
+        basis = getattr(out, "question_basis", None)
+        emit(deps, {
+            "event": EVENT_RESPONDED,
+            "build_artifact": response.build_artifact,
+            "referenced_item_id": response.referenced_item_id,
+            "duration_s": round(time.perf_counter() - t2, 3),
+        })
+        try:
+            _span = _logfire.current_span()
+            if _span is not None:
+                _span.set_attributes({
+                    "planner.build_artifact": response.build_artifact,
+                    "planner.referenced_item_id": response.referenced_item_id,
+                    "planner.chat_summary_chars": len(response.chat_summary_md or ""),
+                    "planner.responder": "unified",
+                    "planner.router_context": getattr(deps, "router_context", None) is not None,
+                    "next_steps.count": len(response.next_steps),
+                    "next_steps.kinds": [s.kind for s in response.next_steps],
+                    "next_steps.salvaged": response._next_steps_salvaged,
+                    "responder.asked_question": bool(follow_up),
+                })
+        except Exception:
+            pass
+    return PlannerTurnResult(
+        kind="completed",
+        response=response,
+        decision=decision,
+        agg_output=agg_output,
+        degraded=degraded,
+        follow_up_question=follow_up,
+        question_basis=basis,
     )
 
 

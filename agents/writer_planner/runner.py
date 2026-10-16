@@ -652,6 +652,9 @@ async def handle_writer_planner_turn(
         )
 
         # --- 7. Run the writing executor on the package ------------------
+        from agents.responder.wiring import responder_unified
+
+        _unified_voice = responder_unified("writer")
         exec_deps = build_writer_deps(
             supabase=supabase,
             http_client=http_client,
@@ -669,7 +672,13 @@ async def handle_writer_planner_turn(
             tone=deps.style.tone,
             # رسائل الترحيب — set only when this is the user's opening turn, in
             # which case the executor's chat_summary is their first ever reply.
-            welcome_instruction=major_input.welcome_instruction,
+            # Unified responder (plan unified_responder.md §5.3): the greeting
+            # moves to the responder, so the executor gets none. The welcome
+            # block is the executor's LAST dynamic instruction, so dropping it
+            # leaves the cached prefix untouched.
+            welcome_instruction=(
+                None if _unified_voice else major_input.welcome_instruction
+            ),
         )
 
         # وضع السرية: the writer executor's system prompt is assembled by
@@ -758,12 +767,36 @@ async def handle_writer_planner_turn(
                 "items": list(writer_output.metadata.get("templates_used") or []),
             })
 
+        # --- 9. The voice (unified responder only) ------------------------
+        # Old path: the executor's chat_summary passes through. Flagged: the
+        # responder writes the bubble from the planner's decision + the
+        # executor's product; the executor's chat_summary is ignored (the field
+        # stays in its schema until the plan's §9 cleanup).
+        chat_summary = writer_output.chat_summary or ""
+        next_steps: list = []
+        follow_up_question: str | None = None
+        question_basis: str | None = None
+        if _unified_voice:
+            (
+                chat_summary, next_steps, follow_up_question, question_basis,
+            ) = await _writing_voice(
+                major_input=major_input,
+                supabase=supabase,
+                decision=decision,
+                llm_output=llm_output,
+                writer_output=writer_output,
+                chosen_template_ref=chosen_template_ref,
+            )
+
         return WriterPlannerTurnResult(
             kind="completed",
             result=SpecialistResult(
                 output_item_id=writer_output.item_id,
-                chat_summary=writer_output.chat_summary or "",
+                chat_summary=chat_summary,
                 key_findings=list(writer_output.key_findings or []),
+                next_steps=next_steps,
+                follow_up_question=follow_up_question,
+                question_basis=question_basis,
                 sse_events=sse_events,
                 model_used=writer_output.metadata.get(
                     "model_used", "writer_planner_decider"
@@ -780,7 +813,140 @@ async def handle_writer_planner_turn(
         )
 
 
+#: Unified responder failure line (plan unified_responder.md §5.3) — the
+#: executor's key_findings follow it as bullets («النقاط أدناه»).
+WRITING_FALLBACK_LINE = "أعددت المسودة في البطاقة المرفقة، وراجع النقاط أدناه."
+
+
+async def _writing_voice(
+    *,
+    major_input: MajorAgentInput,
+    supabase: Any,
+    decision: PlannerDecision,
+    llm_output: Any,
+    writer_output: Any,
+    chosen_template_ref: Any,
+) -> tuple[str, list, str | None, str | None]:
+    """The bubble of a completed drafting turn, written by the unified responder.
+
+    Returns ``(chat_summary, next_steps, follow_up_question, question_basis)``.
+    Never raises: a responder failure yields :data:`WRITING_FALLBACK_LINE`
+    (opened with the composed greeting when this turn owed one, so the welcome
+    is never burned on an exception), no chips and no question.
+
+    Inputs (§5.3): the planner's ``intent_ar`` / ``plan_md`` /
+    ``chosen_template`` / ``parties`` / ``edit_mode`` / ``subtype``; the
+    executor's draft, ``notes_ar``, ``confidence``, ``key_findings``; the
+    ``[…]`` placeholders the draft left unfilled. وضع السرية: the draft is
+    re-assembled from the executor's RAW output (``_assemble_content(llm_output)``
+    — the encoded domain the executor wrote in), NOT the decoded
+    ``writer_output.content_md``; notes / findings / parties are likewise the
+    encoded pipeline values. The responder's text therefore leaves encoded and
+    rides the same relay decode the executor's ``chat_summary`` did.
+
+    The «ما تُرفقه» exhibit guide and the ``مرفق n · WI-n`` annotations are
+    applied to the responder's summary exactly as the publisher applied them to
+    the executor's.
+    """
+    from agents.responder import ResponderInput, WritingArtifact, run_responder
+    from agents.responder.wiring import (
+        extract_unfilled_placeholders,
+        load_profession_group,
+        load_style_profile,
+    )
+    from agents.writer.publisher import _assemble_content, _chat_summary_with_guide
+
+    exhibits = list((getattr(writer_output, "metadata", None) or {}).get("exhibits") or [])
+    try:
+        draft_md = _assemble_content(llm_output)
+    except Exception:  # noqa: BLE001 — a malformed output must not cost the turn
+        draft_md = ""
+    template_label = None
+    if chosen_template_ref is not None:
+        template_label = (
+            getattr(chosen_template_ref, "title", None)
+            or getattr(chosen_template_ref, "name", None)
+            or decision.chosen_template
+        )
+    elif decision.chosen_template:
+        template_label = decision.chosen_template
+    if template_label:
+        # وضع السرية: a قوالبي title is user text — same encode the planner's
+        # template list got (``_encode_template_titles``); passthrough when off.
+        try:
+            from backend.app.services.masking_service import active_codec
+
+            _codec = active_codec()
+            if _codec is not None:
+                template_label = _codec.encode(str(template_label))
+        except Exception:  # noqa: BLE001
+            logger.debug("writer_planner: template title encode failed", exc_info=True)
+    artifact = WritingArtifact(
+        intent_ar=decision.intent_ar or major_input.describe_query or "",
+        title_ar=str(getattr(llm_output, "title_ar", "") or ""),
+        draft_md=draft_md,
+        subtype=str(getattr(decision, "subtype", "memo") or "memo"),
+        edit_mode=str(getattr(decision, "edit_mode", "fresh") or "fresh"),
+        plan_md=getattr(decision, "plan_md", "") or "",
+        chosen_template=str(template_label) if template_label else None,
+        parties=list(getattr(decision, "parties", None) or []),
+        notes_ar=[str(n) for n in (getattr(llm_output, "notes_ar", None) or [])],
+        confidence=str(getattr(llm_output, "confidence", "medium") or "medium"),
+        key_findings=[str(k) for k in (getattr(llm_output, "key_findings", None) or [])],
+        unfilled_placeholders=extract_unfilled_placeholders(draft_md),
+    )
+    out = None
+    try:
+        out = await run_responder(
+            ResponderInput(
+                mode="writing",
+                artifact=artifact,
+                router_context=getattr(major_input, "router_context", None),
+                # Headless / resume: the package (intent + plan + draft) is what
+                # the executor had — no wider conversation context.
+                fallback_context=None,
+                welcome=getattr(major_input, "welcome", None),
+                welcome_instruction=major_input.welcome_instruction,
+                profession_group=load_profession_group(supabase, major_input.user_id),
+                # P4 — users.user_id (MajorAgentInput.user_id is the users PK).
+                style_profile=load_style_profile(supabase, major_input.user_id),
+                conversation_id=major_input.conversation_id,
+                case_id=major_input.case_id,
+            )
+        )
+    except Exception:  # noqa: BLE001 — run_responder never raises; belt-and-braces
+        logger.warning("writer_planner: unified responder wiring raised", exc_info=True)
+        out = None
+
+    if out is None:
+        logger.warning(
+            "writer_planner: unified responder failed for conversation %s — "
+            "templated line + key_findings",
+            major_input.conversation_id,
+        )
+        line = WRITING_FALLBACK_LINE
+        welcome = getattr(major_input, "welcome", None)
+        if welcome is not None:
+            try:
+                from agents.utils.welcome import compose_opening
+
+                opening = (compose_opening(welcome) or "").strip()
+                if opening:
+                    line = f"{opening}\n\n{line}"
+            except Exception:  # noqa: BLE001
+                logger.debug("writer_planner: compose_opening failed", exc_info=True)
+        return _chat_summary_with_guide(line, exhibits), [], None, None
+
+    return (
+        _chat_summary_with_guide(out.chat_summary_md, exhibits),
+        list(out.next_steps),
+        out.follow_up_question,
+        out.question_basis,
+    )
+
+
 __all__ = [
     "WriterPlannerTurnResult",
     "handle_writer_planner_turn",
+    "WRITING_FALLBACK_LINE",
 ]

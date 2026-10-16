@@ -121,6 +121,17 @@ class PlannerDeps:
     # rebuilds deps and by then the conversation is no longer new.
     welcome_instruction: str | None = None
 
+    # Unified responder (plan unified_responder.md §4.3 / D4): the router's
+    # ``RouterContext`` for this turn, passed through VERBATIM from
+    # ``MajorAgentInput.router_context`` (already encoded — never re-encode).
+    # Read by phase 3 ONLY when deep_search is on RESPONDER_UNIFIED_FAMILIES;
+    # ``None`` on resume / pinned / headless dispatches → the responder falls
+    # back to ``render_responder_context(deps)``.
+    router_context: Any | None = None
+    # The turn's ``WelcomeState`` (``MajorAgentInput.welcome``) — unused by the
+    # old phase 3, carried for the unified responder.
+    welcome: Any | None = None
+
     # --- SSE event sink ----------------------------------------------------
     emit_sse: Callable[[dict], None] | None = None
     _events: list[dict] = field(default_factory=list)
@@ -181,6 +192,8 @@ def build_planner_deps(
     compaction_summary_md: str | None = None,
     wi_alias_map: dict[int, str] | None = None,
     welcome_instruction: str | None = None,
+    router_context: Any | None = None,
+    welcome: Any | None = None,
 ) -> PlannerDeps:
     """Construct a fresh :class:`PlannerDeps`.
 
@@ -216,6 +229,8 @@ def build_planner_deps(
         compaction_summary_md=compaction_summary_md or None,
         wi_alias_map=dict(wi_alias_map) if wi_alias_map else {},
         welcome_instruction=welcome_instruction or None,
+        router_context=router_context,
+        welcome=welcome,
     )
 
 

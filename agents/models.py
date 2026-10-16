@@ -8,7 +8,7 @@ into Tier-2 agents which never read the DB directly.
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Any, Literal
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -226,15 +226,35 @@ class MajorAgentInput(BaseModel):
     user_id: str
     conversation_id: str
     case_id: str | None = None
+    # ── Unified responder (plan unified_responder.md §4.3 / D4) ─────────────
+    # The router's ``RouterContext`` for this turn, handed down VERBATIM from
+    # ``_route`` (already encoded with the turn codec — never re-encode, never
+    # reload). ``None`` on resume legs and pinned / headless dispatches, where
+    # the responder falls back to its family's narrow context. Read only when
+    # the family is on ``RESPONDER_UNIFIED_FAMILIES``. ``exclude=True`` +
+    # ``repr=False``: it holds the whole message history and must never be
+    # dumped into a span, a log line or a serialized payload.
+    router_context: Any = Field(default=None, exclude=True, repr=False)
+    # The turn's ``WelcomeState`` (``agents/utils/welcome.py``) — the state
+    # behind ``welcome_instruction``. Lets a flagged family's failure fallback
+    # open with the composed greeting (``compose_opening``) instead of burning
+    # it. Same exclusion rules.
+    welcome: Any = Field(default=None, exclude=True, repr=False)
 
 
 # ── Next-step suggestion chips (plan: next_step_suggestions.md) ───────────
 
 # "open" (open a document the turn considered but did not open) is
 # simple_search only — deep_search references are already visible in the card.
-NextStepKind = Literal["narrow_search", "draft", "apply", "open"]
+# "answer" (plan: unified_responder.md §6.3 / D8) is the user's half-written
+# reply to the turn's follow-up question, pasted into the composer. Emitted only
+# by the unified responder (agents/responder/); it is exempt from the
+# one-per-kind rule (up to MAX_ANSWER_STEPS) and every other caller rejects it
+# (``allow_answer=False`` is the default).
+NextStepKind = Literal["narrow_search", "draft", "apply", "open", "answer"]
 
 MAX_NEXT_STEPS = 3
+MAX_ANSWER_STEPS = 2
 NEXT_STEP_LABEL_MAX = 40
 NEXT_STEP_PROMPT_MAX = 200
 
@@ -246,7 +266,10 @@ class NextStep(BaseModel):
             "narrow_search = a narrower search for a gap inside Rayhan's scope; "
             "draft = draft a legal document from the findings; "
             "apply = apply the finding to the user's own facts; "
-            "open = open a document considered but not opened (simple_search only)."
+            "open = open a document considered but not opened (simple_search only); "
+            "answer = the user's half-written reply to the follow-up question you "
+            "asked, first person, may end with «…» (only with a follow-up "
+            "question; up to 2, the one kind that may repeat)."
         ),
     )
     label: str = Field(
@@ -261,19 +284,41 @@ class NextStep(BaseModel):
 
 
 def next_step_errors(
-    steps: list[NextStep], *, allow_open: bool
+    steps: list[NextStep], *, allow_open: bool, allow_answer: bool = False
 ) -> list[str]:
     """Validation problems for a responder's ``next_steps`` (empty = valid).
 
     Used by the responders' output validators to raise ``ModelRetry`` once;
     :func:`salvage_next_steps` is the never-fail fallback after that.
+
+    ``allow_answer`` (unified responder only — plan unified_responder.md §6.3):
+    ``answer`` chips are exempt from the one-per-kind rule, capped at
+    :data:`MAX_ANSWER_STEPS`; at most one non-answer action may sit beside them
+    — the total stays ≤ :data:`MAX_NEXT_STEPS`. Whether a follow-up question
+    exists is the caller's check (an answer chip without a question is
+    meaningless), not this function's. With ``allow_answer=False`` (every
+    pre-existing caller) an ``answer`` chip is an error and the rules for the
+    other kinds are exactly as before.
     """
     errors: list[str] = []
     if len(steps) > MAX_NEXT_STEPS:
         errors.append(f"at most {MAX_NEXT_STEPS} next_steps (got {len(steps)})")
-    kinds = [s.kind for s in steps]
+    answers = [s for s in steps if s.kind == "answer"]
+    kinds = [s.kind for s in steps if s.kind != "answer"]
     if len(set(kinds)) != len(kinds):
         errors.append("each next_step must have a different kind")
+    if answers:
+        if not allow_answer:
+            errors.append("kind 'answer' is not allowed here")
+        else:
+            if len(answers) > MAX_ANSWER_STEPS:
+                errors.append(
+                    f"at most {MAX_ANSWER_STEPS} 'answer' next_steps (got {len(answers)})"
+                )
+            if len(kinds) > 1:
+                errors.append(
+                    "with 'answer' chips, at most one other (action) next_step"
+                )
     for s in steps:
         if s.kind == "open" and not allow_open:
             errors.append("kind 'open' is not allowed here — references are already visible")
@@ -285,17 +330,30 @@ def next_step_errors(
 
 
 def salvage_next_steps(
-    steps: list[NextStep], *, allow_open: bool
+    steps: list[NextStep], *, allow_open: bool, allow_answer: bool = False
 ) -> list[NextStep]:
     """Drop invalid / duplicate-kind chips and cap the count. Never raises.
 
     Chips are optional decoration — a bad chip must never fail the turn.
+    With ``allow_answer`` up to :data:`MAX_ANSWER_STEPS` ``answer`` chips are
+    kept (first wins) plus at most one action beside them; otherwise
+    ``answer`` chips are dropped and behaviour is exactly as before.
     """
     kept: list[NextStep] = []
     seen: set[str] = set()
+    n_answers = 0
+    has_answers = allow_answer and any(
+        getattr(s, "kind", None) == "answer" for s in steps or []
+    )
     for s in steps or []:
         label, prompt = s.label.strip(), s.prompt.strip()
-        if s.kind in seen or (s.kind == "open" and not allow_open):
+        if s.kind == "answer":
+            if not allow_answer or n_answers >= MAX_ANSWER_STEPS:
+                continue
+        elif s.kind in seen or (s.kind == "open" and not allow_open):
+            continue
+        elif has_answers and seen - {"answer"}:
+            # Beside answer chips only ONE action survives.
             continue
         if not label or not prompt:
             continue
@@ -306,6 +364,8 @@ def salvage_next_steps(
                 prompt=prompt[:NEXT_STEP_PROMPT_MAX],
             )
         )
+        if s.kind == "answer":
+            n_answers += 1
         seen.add(s.kind)
         if len(kept) == MAX_NEXT_STEPS:
             break
@@ -338,3 +398,10 @@ class SpecialistResult(BaseModel):
     # the last token and persisted to messages.metadata.next_steps. Never
     # concatenated into chat_summary.
     next_steps: list[NextStep] = Field(default_factory=list)
+    # Unified responder (plan unified_responder.md D6/§6.2): the follow-up
+    # question, appended BY CODE as the bubble's last paragraph
+    # (``agents.utils.history.compose_bubble``) — never inside chat_summary.
+    # ``question_basis`` is internal (which gap it targets): logged, never shown.
+    # Both None on every unflagged path.
+    follow_up_question: str | None = None
+    question_basis: str | None = None

@@ -264,6 +264,13 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # two-field output as text → a TextOutput JSON salvager avoids the retry.
     # See .claude/plans/writer_planner_user_templates.md §Wave D.
     "template_ingester":          ModelPolicy("tier_2", primary="deepseek"),
+    # Tier_2 DeepSeek-primary — Layer-4 memory agent that distils HOW a user
+    # writes (register, preferred length, counsel vs party, verbatim legal terms)
+    # into a small identifier-free profile for the unified responder. Runs
+    # async after a turn every STYLE_PROFILE_EVERY_N user messages. Short
+    # five-field structured output → plain _FLASH (no reasoning bump).
+    # See .claude/plans/unified_responder.md §7.
+    "style_profiler":             _FLASH,
     # Tier_2 DeepSeek-primary — the anonymous «اسأل ريحان» popup on public SEO
     # library pages (backend/app/services/ask_service.py). One short call per
     # anon question, grounded ONLY in the current page's content (no
@@ -301,6 +308,13 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # strings plus N card verdicts. Same policy as its deep_search counterpart,
     # `planner_responder`, which does the same job at the same shape.
     "simple_search_responder":    _FLASH,
+    # Layer-2 voice — the UNIFIED responder (agents/responder/, plan
+    # .claude/plans/unified_responder.md D1). One agent writes the chat bubble
+    # for deep_search, simple_search and writing turns (one Agent per mode, one
+    # cached prefix per mode). Same shape as the two slots it replaces
+    # (`planner_responder`, `simple_search_responder` — removed only in the
+    # plan's §9 cleanup), so the same plain _FLASH policy.
+    "responder":                  _FLASH,
     # Layer-3 task agent invoked as a router tool (edit_artifact) — one flash
     # call over a full injected artifact emitting a batched surgical-edit tool
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the

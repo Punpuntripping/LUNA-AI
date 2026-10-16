@@ -1050,6 +1050,11 @@ async def send_message_stream(
     # the turn's `next_steps` event, persisted to messages.metadata.next_steps at
     # `done`. Key is `next_steps`, never `suggestions` (= agent_question chips).
     captured_next_steps: list[dict] = []
+    # Unified responder follow-up question (plan unified_responder.md §6.4 /
+    # D10) — DECODED text from the turn's `follow_up` event, persisted to
+    # messages.metadata.follow_up_question (+ question_basis) at `done` in the
+    # same merged patch as next_steps. None = the turn asked nothing.
+    captured_follow_up: dict | None = None
     # «القوالب المستخدمة في الكتابة» — the writer's `templates_used` event,
     # persisted to messages.metadata.templates_used at `done`. None = the turn
     # drafted nothing; [] = a draft built without a template (still persisted,
@@ -1058,7 +1063,7 @@ async def send_message_stream(
 
     async def pipeline_producer() -> None:
         """Run agent pipeline and put SSE events on the queue."""
-        nonlocal full_content, paused, captured_templates_used
+        nonlocal full_content, paused, captured_templates_used, captured_follow_up
         # وضع السرية: buffered stream-decode of assistant text deltas. A fake can
         # split across SSE chunks, so the decoder holds back digit-run tails and
         # flushes on the first non-run char or at finalize(). full_content keeps
@@ -1236,6 +1241,36 @@ async def send_message_stream(
                                 await queue.put(_sse_event("token", {"text": tail}))
                             await queue.put(_sse_event("next_steps", {"items": items}))
 
+                    elif event_type == "follow_up":
+                        # وضع السرية: the question was generated from ENCODED
+                        # input — decode it like the next_steps chips (it is
+                        # also the bubble's last paragraph, already decoded on
+                        # the token stream). question_basis is internal: decoded
+                        # and persisted, never forwarded to the client.
+                        question = decode_text(
+                            codec, str(event.get("question") or ""), emit=True
+                        ).strip()
+                        if question:
+                            basis_raw = event.get("basis")
+                            basis = (
+                                decode_text(codec, str(basis_raw), emit=False).strip()
+                                if basis_raw
+                                else ""
+                            )
+                            captured_follow_up = {
+                                "follow_up_question": question,
+                                "question_basis": basis or None,
+                            }
+                            # Emitted after the LAST token: flush the decode tail
+                            # first so no token trails the event (as next_steps).
+                            tail = stream_decoder.finalize()
+                            if tail:
+                                await queue.put(_sse_event("token", {"text": tail}))
+                            # Forwarded for future clients; web
+                            # (toTypedSSEEvent / use-chat switch) and mobile
+                            # (run-send default branch) ignore unknown events.
+                            await queue.put(_sse_event("follow_up", {"question": question}))
+
                     elif event_type == "templates_used":
                         # Titles come from template rows / repo files (store-real),
                         # never from LLM text — no decode needed.
@@ -1313,6 +1348,8 @@ async def send_message_stream(
                                 meta_patch: dict = {}
                                 if captured_next_steps:
                                     meta_patch["next_steps"] = captured_next_steps
+                                if captured_follow_up:
+                                    meta_patch.update(captured_follow_up)
                                 if captured_templates_used is not None:
                                     meta_patch["templates_used"] = captured_templates_used
                                 if meta_patch:
@@ -1332,6 +1369,19 @@ async def send_message_stream(
                                 await run_db(
                                     _update_message_content,
                                     supabase, assistant_msg_id, update_data,
+                                )
+                                # style_profiler (unified_responder.md §7 / P4):
+                                # post-turn, fire-and-forget, AFTER the assistant
+                                # row is saved. No-op unless
+                                # STYLE_PROFILE_REFRESH_ENABLED + a flagged family;
+                                # the profiler itself decides whether a refresh
+                                # is due (every N user messages). Never raises.
+                                from agents.responder.wiring import (
+                                    schedule_style_refresh,
+                                )
+
+                                schedule_style_refresh(
+                                    supabase, user_id, conversation_id=conversation_id
                                 )
                             except Exception as e:
                                 logger.exception("Error updating assistant message: %s", e)

@@ -139,6 +139,51 @@ def _next_steps_event(steps: list[NextStep] | None) -> dict | None:
     return {"type": "next_steps", "items": [s.model_dump() for s in steps]}
 
 
+def _bubble_tokens(result: Any) -> list[str]:
+    """The ``token`` texts of a completed delivery, in order.
+
+    No follow-up question (every unflagged path) → EXACTLY the historical
+    emission: ``chat_summary`` as one token, then ``"\\n\\n• …"`` key_findings
+    bullets as a second. With a question (unified responder, plan
+    unified_responder.md §6.2) → one token assembled by
+    :func:`agents.utils.history.compose_bubble`: summary → bullets → the
+    question as its own LAST paragraph, after the closing line. The tokens are
+    still ENCODED under وضع السرية; message_service stream-decodes and
+    persists their concatenation, so persisted content == streamed content.
+    """
+    summary = getattr(result, "chat_summary", "") or ""
+    findings = list(getattr(result, "key_findings", None) or [])
+    question = (getattr(result, "follow_up_question", None) or "").strip()
+    if not question:
+        out: list[str] = []
+        if summary:
+            out.append(summary)
+        if findings:
+            out.append("\n\n" + "\n".join(f"• {k}" for k in findings))
+        return out
+    from agents.utils.history import compose_bubble
+
+    return [compose_bubble(summary, findings, question)]
+
+
+def _follow_up_event(result: Any) -> dict | None:
+    """The ``follow_up`` SSE event for a completed delivery, or None.
+
+    Plan unified_responder.md §6.4 / D10: emitted AFTER the bubble's last
+    ``token`` and BEFORE ``next_steps`` / ``done`` — only when the unified
+    responder asked a question (every unflagged path → None → historical event
+    shape). The question is ALSO the bubble's last paragraph (``_bubble_tokens``);
+    this event exists so message_service can persist it, decoded, to
+    ``messages.metadata.follow_up_question`` (+ ``question_basis``). Both values
+    are still ENCODED here under وضع السرية — message_service decodes them.
+    """
+    question = (getattr(result, "follow_up_question", None) or "").strip()
+    if not question:
+        return None
+    basis = (getattr(result, "question_basis", None) or "").strip() or None
+    return {"type": "follow_up", "question": question, "basis": basis}
+
+
 def _zero_usage(model: str) -> dict:
     return {"prompt_tokens": 0, "completion_tokens": 0, "model": model}
 
@@ -1075,11 +1120,14 @@ async def _resume_major_agent_inner(
                 run_result = wp_outcome.result
                 for ev in run_result.sse_events:
                     yield ev
-                if run_result.chat_summary:
-                    yield {"type": "token", "text": run_result.chat_summary}
-                if run_result.key_findings:
-                    bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
-                    yield {"type": "token", "text": bullets}
+                for _text in _bubble_tokens(run_result):
+                    yield {"type": "token", "text": _text}
+                if (fu_ev := _follow_up_event(run_result)) is not None:
+                    yield fu_ev
+                # Writer turns carry chips only on the unified responder path
+                # (empty otherwise → no event, historical shape).
+                if (ns_ev := _next_steps_event(run_result.next_steps)) is not None:
+                    yield ns_ev
                 yield {
                     "type": "done",
                     "usage": {
@@ -1412,12 +1460,10 @@ async def _resume_major_agent_inner(
                 continue
             yield ev
 
-        if run_result.chat_summary:
-            yield {"type": "token", "text": run_result.chat_summary}
-
-        if run_result.key_findings:
-            bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
-            yield {"type": "token", "text": bullets}
+        for _text in _bubble_tokens(run_result):
+            yield {"type": "token", "text": _text}
+        if (fu_ev := _follow_up_event(run_result)) is not None:
+            yield fu_ev
 
         # Chips after the last token, before done — the resume leg is where
         # deliveries got dropped before ([responder-resume]); mirror _dispatch.
@@ -1615,11 +1661,10 @@ async def _resume_simple_search_leg(
                 if ev.get("streamed"):
                     continue
                 yield ev
-            if ds_result.chat_summary:
-                yield {"type": "token", "text": ds_result.chat_summary}
-            if ds_result.key_findings:
-                bullets = "\n\n" + "\n".join(f"• {k}" for k in ds_result.key_findings)
-                yield {"type": "token", "text": bullets}
+            for _text in _bubble_tokens(ds_result):
+                yield {"type": "token", "text": _text}
+            if (fu_ev := _follow_up_event(ds_result)) is not None:
+                yield fu_ev
             if (ns_ev := _next_steps_event(ds_result.next_steps)) is not None:
                 yield ns_ev
             yield {
@@ -1704,8 +1749,25 @@ async def _resume_simple_search_leg(
                 delivered = delivered + [ss_question]
                 answer_text = "\n\n".join(delivered)
 
+        # Unified responder only: the follow-up question as the bubble's last
+        # paragraph — never on a paused leg (its question was just delivered).
+        _ss_follow_up = (
+            None if ss_outcome.paused
+            else (getattr(ss_outcome, "follow_up_question", None) or "").strip() or None
+        )
+        if _ss_follow_up:
+            from agents.utils.history import compose_bubble
+
+            answer_text = compose_bubble(answer_text, None, _ss_follow_up)
         if answer_text:
             yield {"type": "token", "text": answer_text}
+        if _ss_follow_up:
+            yield {
+                "type": "follow_up",
+                "question": _ss_follow_up,
+                "basis": (getattr(ss_outcome, "question_basis", None) or "").strip()
+                or None,
+            }
         # Chips only on a clean delivery: a paused run that fell through to here
         # just delivered its question as text, and chips would compete with it.
         if not ss_outcome.paused and (
@@ -2297,6 +2359,67 @@ async def _handle_message_inner(
 # ---------------------------------------------------------------------------
 
 
+def _classify_follow_up(pending: Any, decision: Any) -> str | None:
+    """Did this turn's router decision treat the user's message as an ANSWER to
+    the follow-up question under the previous reply? (unified_responder.md §6.1
+    rule 7 / §6.4 / §8.)
+
+    Returns ``None`` (no pending question), ``"answered"`` or ``"unanswered"``.
+
+    Heuristic — structural, no extra LLM call, mirrors the router's answer rule
+    («route to the SAME family with target_wi = that turn's WI»):
+
+    * ``"answered"`` ⇔ the router DISPATCHED with ``target_item_id`` equal to one
+      of the items the asking reply produced (``pending.item_ids``) — i.e. it
+      routed the message as a refine of that turn.
+    * everything else is ``"unanswered"``: a fresh dispatch (new target / no
+      target), a direct ``ChatResponse``, or an asking reply that produced no
+      item (nothing structural to anchor on — counted conservatively, which
+      at worst suppresses ONE follow-up question; never a nag).
+    """
+    if pending is None:
+        return None
+    item_ids = {str(i) for i in (getattr(pending, "item_ids", None) or []) if i}
+    if isinstance(decision, DispatchAgent) and item_ids:
+        target = getattr(decision, "target_item_id", None)
+        if target and str(target) in item_ids:
+            return "answered"
+    return "unanswered"
+
+
+def _record_follow_up_status(
+    ctx: Any, decision: Any, conversation_id: str
+) -> str | None:
+    """Stamp ``ctx.follow_up_status`` (read by the unified responder through the
+    verbatim RouterContext) and emit the §8 telemetry. Never raises.
+
+    ``follow_up_answered`` is a Logfire event, NOT an ``analytics_events`` row:
+    that table is session-keyed (``session_key`` NOT NULL = a browser tab's
+    sessionStorage key, migration 139) and documented as written only by the
+    public events route — a server-minted key would show up as a phantom
+    session in every session-based funnel query.
+    """
+    try:
+        status = _classify_follow_up(getattr(ctx, "pending_follow_up", None), decision)
+        if hasattr(ctx, "follow_up_status"):
+            ctx.follow_up_status = status
+        if status is not None:
+            _logfire.info(
+                "follow_up_answered" if status == "answered" else "follow_up_unanswered",
+                conversation_id=conversation_id,
+                follow_up_status=status,
+                agent_family=getattr(decision, "agent_family", None),
+                decision_type=type(decision).__name__,
+                asking_message_id=getattr(
+                    getattr(ctx, "pending_follow_up", None), "message_id", None
+                ),
+            )
+        return status
+    except Exception:  # noqa: BLE001 — telemetry must never break routing
+        logger.debug("follow-up status classification failed", exc_info=True)
+        return None
+
+
 async def _route(
     question: str,
     supabase: SupabaseClient,
@@ -2353,6 +2476,10 @@ async def _route(
         yield ev
     result = router_result.output
     force_attach_item_ids = list(router_result.force_attach_item_ids)
+    # Follow-up capture (unified_responder.md §6.4 / §8): was the user's message
+    # an answer to the question under the previous reply? Stamped on ctx so the
+    # responder (which receives ctx verbatim) does not nag on "unanswered".
+    _record_follow_up_status(ctx, result, conversation_id)
 
     if isinstance(result, ChatResponse):
         # Fake-stream word-by-word — no agent_runs row for direct chat responses.
@@ -2403,6 +2530,10 @@ async def _route(
             # re-querying it here would be a second DB round-trip per turn.
             compaction_summary_md=ctx.compaction_summary_md,
             welcome=welcome,
+            # Unified responder (plan unified_responder.md D4): the SAME
+            # RouterContext object the router just read — encoded once above,
+            # never reloaded. Consumed only by flagged families.
+            router_context=ctx,
         ):
             yield ev
         return
@@ -2574,6 +2705,7 @@ async def _dispatch(
     compaction_summary_md: str | None = None,
     welcome: "WelcomeState | None" = None,
     pinned_plan: "PinnedPlan | None" = None,
+    router_context: "Any | None" = None,
 ) -> AsyncGenerator[dict, None]:
     """Invoke the appropriate specialist agent and stream results.
 
@@ -2607,6 +2739,11 @@ async def _dispatch(
     ``pinned_plan`` rides the headless editorial path (blog_subjects.md §5) and
     is consumed ONLY by the deep_search branch — which is the only family a pin
     ever selects, since it is what forced this dispatch in the first place.
+
+    ``router_context`` is the ``RouterContext`` ``_route`` built and the router
+    read (unified_responder.md D4) — carried on ``MajorAgentInput`` to the
+    family runners, consumed only by families on RESPONDER_UNIFIED_FAMILIES.
+    ``None`` for pinned / headless dispatches (no router ran).
     """
     # ── Ownership gate on the router-emitted target ─────────────────────
     if target_item_id is not None and not _owned_item_exists(
@@ -2703,6 +2840,8 @@ async def _dispatch(
                 user_id=user_id,
                 conversation_id=conversation_id,
                 case_id=case_id,
+                router_context=router_context,
+                welcome=welcome,
             )
 
             if agent_family == "deep_search":
@@ -2850,6 +2989,7 @@ async def _dispatch(
                     # ride along rather than being re-derived.
                     recent_messages=recent_messages,
                     welcome=welcome,
+                    router_context=router_context,
                 )
 
                 if ss_outcome.paused:
@@ -3013,6 +3153,17 @@ async def _dispatch(
                     ),
                     sse_events=list(ss_outcome.sse_events),
                     model_used="simple_search",
+                    # Unified responder only; never beside a delivered question.
+                    follow_up_question=(
+                        None
+                        if ss_outcome.paused
+                        else getattr(ss_outcome, "follow_up_question", None)
+                    ),
+                    question_basis=(
+                        None
+                        if ss_outcome.paused
+                        else getattr(ss_outcome, "question_basis", None)
+                    ),
                 )
             elif agent_family == "memory":
                 run_result = await _run_memory(
@@ -3036,24 +3187,30 @@ async def _dispatch(
                     continue
                 yield ev
 
-            # Stream chat_summary to chat — full body stays in workspace item only.
-            if run_result.chat_summary:
-                yield {"type": "token", "text": run_result.chat_summary}
-                # The specialist wrote this turn's reply, welcome and all, and
-                # it reached the user. Every paused branch above either raised
-                # _SkipRunRecord before here (having marked the welcome itself
-                # iff it delivered an answer) or, on simple_search's
-                # question-as-text path, cleared `welcome` when the turn produced
-                # nothing but a question. Either way the invariant holds: a turn
-                # that only ASKED leaves the welcome unspent for the next one.
-                from agents.utils.welcome import mark_welcomed
+            # Stream chat_summary to chat — full body stays in workspace item
+            # only — then key_findings as a single bullet block, then (unified
+            # responder only) the follow-up question as the last paragraph.
+            # `_bubble_tokens` keeps the historical two-token shape when there
+            # is no question.
+            for _i, _text in enumerate(_bubble_tokens(run_result)):
+                yield {"type": "token", "text": _text}
+                if _i == 0 and run_result.chat_summary:
+                    # The specialist wrote this turn's reply, welcome and all,
+                    # and it reached the user. Every paused branch above either
+                    # raised _SkipRunRecord before here (having marked the
+                    # welcome itself iff it delivered an answer) or, on
+                    # simple_search's question-as-text path, cleared `welcome`
+                    # when the turn produced nothing but a question. Either way
+                    # the invariant holds: a turn that only ASKED leaves the
+                    # welcome unspent for the next one.
+                    from agents.utils.welcome import mark_welcomed
 
-                mark_welcomed(supabase, user_id, welcome)
+                    mark_welcomed(supabase, user_id, welcome)
 
-            # Stream key_findings as a single token block after chat_summary.
-            if run_result.key_findings:
-                bullets = "\n\n" + "\n".join(f"• {k}" for k in run_result.key_findings)
-                yield {"type": "token", "text": bullets}
+            # Follow-up question capture event (unified responder only) —
+            # after the last token, before the chips.
+            if (fu_ev := _follow_up_event(run_result)) is not None:
+                yield fu_ev
 
             # Next-step chips (deep_search / simple_search; empty elsewhere) —
             # after the last token, before done. Paused branches never get here.
@@ -3321,6 +3478,11 @@ async def _run_deep_search(
             welcome_instruction=input.welcome_instruction,
             # Live progress sink (None outside _dispatch → hook stays dead).
             emit_sse=emit_sse,
+            # Unified responder (plan unified_responder.md §4.3): the router's
+            # context VERBATIM (None on resume / pinned / headless) + the
+            # welcome state. Read by phase 3 only when deep_search is flagged.
+            router_context=getattr(input, "router_context", None),
+            welcome=getattr(input, "welcome", None),
         )
 
         # Flush the attached-item fakes minted just above BEFORE the decider LLM
@@ -3342,6 +3504,9 @@ async def _run_deep_search(
 
         # Pipeline-accumulated SSE events (planner + executor progress).
         sse_events.extend(deps._events)
+        # Unified responder only (None on the old path).
+        follow_up_question = getattr(turn, "follow_up_question", None)
+        question_basis = getattr(turn, "question_basis", None)
 
         if turn.kind == "paused":
             # Phase-1 ask_user pause — hand the raw pause state back to the
@@ -3496,6 +3661,8 @@ async def _run_deep_search(
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             per_phase_stats=stats,
+            follow_up_question=follow_up_question,
+            question_basis=question_basis,
         ),
     )
 

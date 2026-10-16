@@ -375,6 +375,42 @@ class Settings(BaseSettings):
     APP_STORE_URL_IOS: str = ""
     APP_STORE_URL_ANDROID: str = ""
 
+    # ── style_profiler (Layer-4 memory) — .claude/plans/unified_responder.md §7
+    # Refresh a user's identifier-free writing-style profile (user_style_profiles,
+    # migration 176) once they have sent this many NEW user messages since the
+    # last profile (or when none exists). 0 or negative disables refreshes
+    # entirely (existing profiles are still read). Env var name == field name.
+    STYLE_PROFILE_EVERY_N: int = 8
+    # Post-turn trigger for the refresh above (message_service, after the
+    # assistant message is saved). Its llm_calls row counts against the user's
+    # usage windows like every background agent (owner decision 2026-10-16).
+    # Kill switch only — refreshes fail quietly until migration 176 is applied.
+    # Reading existing profiles (responder input) is NOT gated by this.
+    # Env var name == field name.
+    STYLE_PROFILE_REFRESH_ENABLED: bool = True
+
+    # ── Unified responder rollout — .claude/plans/unified_responder.md D11 ──
+    # Comma list of families whose chat bubble is written by the unified
+    # responder (agents/responder/): deep_search, simple_search, writer.
+    # Unset / empty => the old per-family responders everywhere (instant
+    # per-family rollback). Env var name == field name (no validation_alias).
+    # Settings is lru_cache'd, so a change needs the redeploy Railway does on
+    # every variable edit anyway. Read via agents.responder.wiring.responder_unified.
+    RESPONDER_UNIFIED_FAMILIES: Optional[str] = None
+
+    @property
+    def responder_unified_families(self) -> frozenset[str]:
+        """Parse RESPONDER_UNIFIED_FAMILIES (empty = old path everywhere).
+
+        Raw lowercased tokens; ``agents.responder.wiring`` maps aliases
+        (``writing`` → ``writer``) and drops unknown ones.
+        """
+        return frozenset(
+            t.strip().lower()
+            for t in (self.RESPONDER_UNIFIED_FAMILIES or "").split(",")
+            if t.strip()
+        )
+
     # ========================================
     # ENVIRONMENT
     # ========================================

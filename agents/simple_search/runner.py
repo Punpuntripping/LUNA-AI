@@ -316,6 +316,12 @@ class SimpleSearchRunResult:
     #: pause leg — the orchestrator relays it as-is. Never part of
     #: ``chat_messages``: the suggestion no longer rides in the bubble (D2).
     next_steps: list[NextStep] = field(default_factory=list)
+    #: Unified responder only (plan unified_responder.md D6): the follow-up
+    #: question the orchestrator appends as the bubble's LAST paragraph
+    #: (``compose_bubble``), plus its internal basis. Never set on the pause
+    #: leg; always None on the old path.
+    follow_up_question: str | None = None
+    question_basis: str | None = None
 
 
 def _empty(**over: Any) -> SimpleSearchRunResult:
@@ -1006,6 +1012,7 @@ async def run_simple_search(
     user_call_name: str | None = None,
     welcome: "WelcomeState | None" = None,
     emit_sse: "Callable[[dict], Awaitable[None]] | None" = None,
+    router_context: Any = None,
 ) -> "SimpleSearchRunResult":
     """Run one ``simple_search`` turn: resolve, open, answer, publish.
 
@@ -1040,6 +1047,10 @@ async def run_simple_search(
             turn's ``workspace_item_created`` events are NOT sent through it —
             they come back on ``sse_events`` so ``_route`` drains them exactly
             once (C1).
+        router_context: the router's ``RouterContext`` for this turn, VERBATIM
+            (unified_responder.md D4). Read only when simple_search is on
+            ``RESPONDER_UNIFIED_FAMILIES``; ``None`` falls back to the old
+            ``<recent_messages>`` window.
 
     Returns:
         A :class:`SimpleSearchRunResult`. Never raises for an agent-level
@@ -1133,6 +1144,7 @@ async def run_simple_search(
             judgment_access=grant_judgment_access,
             recent_messages=recent_messages,
             span=span,
+            router_context=router_context,
         )
 
 
@@ -1153,6 +1165,7 @@ async def _answer_loop(
     first_run_kwargs: dict | None = None,
     skip_keys: set[str] | None = None,
     turn_question: str = "",
+    router_context: Any = None,
 ) -> SimpleSearchRunResult:
     """The D3 loop — shared by fresh dispatch and by :func:`resume_simple_search`.
 
@@ -1249,6 +1262,7 @@ async def _answer_loop(
                 unlock_records=unlock_records,
                 suppress_suggestion=True,
                 degraded_fallback=False,
+                router_context=router_context,
             )
 
             # §13l.3 — the pause slot holds ONE row per conversation and the
@@ -1385,6 +1399,7 @@ async def _answer_loop(
         # would be a lie about work that succeeded. No responder call on that
         # path either (§8): with no answers there is nothing to respond about.
         degraded_text=_ALREADY_ANSWERED_AR if (skip and not answers) else _DEGRADED_AR,
+        router_context=router_context,
     )
 
 
@@ -1535,6 +1550,7 @@ async def _finalise(
     suppress_suggestion: bool = False,
     degraded_fallback: bool = True,
     degraded_text: str = _DEGRADED_AR,
+    router_context: Any = None,
 ) -> SimpleSearchRunResult:
     """Run the responder, publish what it cards, assemble the bubble (§7/§9).
 
@@ -1643,6 +1659,10 @@ async def _finalise(
             at.
         suppress_suggestion: the pause leg (§8). Told to the prompt AND enforced
             here: ``next_steps`` is forced empty on the way out.
+        router_context: unified responder only (``RESPONDER_UNIFIED_FAMILIES``
+            ∋ simple_search, plan unified_responder.md §5.2): the router's
+            context, verbatim. With the flag on, step 4 calls the unified
+            responder instead; D7, the vetoes and the assembly are unchanged.
     """
     created_item_ids: list[str] = []
     sse_events: list[dict] = []
@@ -1693,7 +1713,47 @@ async def _finalise(
     responder: ResponderOutput | None = None
     summary = ""
     next_steps: list[NextStep] = []
-    if live:
+    follow_up_question: str | None = None
+    question_basis: str | None = None
+    from agents.responder.wiring import responder_unified
+
+    if live and responder_unified(AGENT_FAMILY):
+        unified = await _run_unified_responder(
+            question,
+            docs,
+            supabase=supabase,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            dispatched=int(dispatched or 0) + (len(docs) - len(live)),
+            unselected_candidates=unselected_candidates,
+            welcome_instruction=welcome_instruction,
+            suppress_suggestion=suppress_suggestion,
+            router_context=router_context,
+            recent_messages=recent_messages,
+        )
+        if unified is not None:
+            # SimpleSearchResponse has the same ``verdict_for`` contract the
+            # vetoes below read, and its labels were validated against the SAME
+            # ``docs`` tuple — the publish loop is untouched.
+            responder = unified  # type: ignore[assignment]
+            summary = unified.chat_summary_md.strip()
+            next_steps = list(unified.next_steps)
+            follow_up_question = unified.follow_up_question
+            question_basis = unified.question_basis
+        else:
+            # D7 — identical to the old failure branch: every body ships
+            # uncarded, no chips, and the composed greeting stands in.
+            logger.warning(
+                "simple_search: unified responder failed for conversation %s "
+                "(%d answer(s), %d dispatched) — delivering every body uncarded "
+                "and publishing nothing (D7)",
+                conversation_id, len(live), dispatched,
+            )
+            responder = None
+            summary = welcome_opening
+            next_steps = []
+    elif live:
         try:
             # Built HERE, per turn — never a module-level singleton. The house
             # test harness stubs agents by patching each module's
@@ -1826,6 +1886,8 @@ async def _finalise(
     # message, and chips beside it read as competing questions.
     if suppress_suggestion:
         next_steps = []
+        follow_up_question = None
+        question_basis = None
 
     if not chat_messages and degraded_fallback:
         # Every round rejected, or every synthesizer failed — so the responder
@@ -1849,7 +1911,64 @@ async def _finalise(
         sse_events=sse_events,
         unlock_notes=unlock_notes,
         next_steps=next_steps,
+        follow_up_question=follow_up_question,
+        question_basis=question_basis,
     )
+
+
+async def _run_unified_responder(
+    question: str,
+    docs: list[ResponderDocDigest],
+    *,
+    supabase: Any,
+    user_id: str,
+    conversation_id: str,
+    case_id: str | None,
+    dispatched: int,
+    unselected_candidates: list[str] | None,
+    welcome_instruction: str | None,
+    suppress_suggestion: bool,
+    router_context: Any,
+    recent_messages: list | None,
+) -> Any:
+    """Step 4 on the unified responder (plan unified_responder.md §5.2).
+
+    Same inputs the old ``simple_search_responder`` read — the RAW question,
+    the D1..Dn digests (``ResponderDocDigest`` duck-types ``DocDigest``), the
+    dispatched count, the unselected candidates, the welcome block and the
+    pause-leg suppression — plus the router's context (D4). With no router
+    context (resume leg) the fallback is the old ``<recent_messages>`` window.
+    Returns a ``SimpleSearchResponse`` or ``None`` (caller applies D7).
+
+    وضع السرية: the digests are slices of the synthesizers' ``synthesis_md`` —
+    the same encoded bodies the old responder was shown. Nothing re-encoded.
+    """
+    from agents.responder import ResponderInput, SimpleSearchArtifact, run_responder
+    from agents.responder.wiring import load_profession_group, load_style_profile
+    from agents.simple_search.prompts import render_recent_messages
+
+    artifact = SimpleSearchArtifact(
+        question=question,
+        docs=list(docs),
+        dispatched=max(int(dispatched or 0), len(docs)),
+        unselected_candidates=list(unselected_candidates or []),
+        suppress_next_steps=bool(suppress_suggestion),
+    )
+    fallback = None
+    if router_context is None:
+        fallback = render_recent_messages(recent_messages) or None
+    inp = ResponderInput(
+        mode="simple_search",
+        artifact=artifact,
+        router_context=router_context,
+        fallback_context=fallback,
+        welcome_instruction=welcome_instruction,
+        profession_group=load_profession_group(supabase, user_id),
+        style_profile=load_style_profile(supabase, user_id),  # P4, users.user_id
+        conversation_id=conversation_id,
+        case_id=case_id,
+    )
+    return await run_responder(inp)
 
 
 # =========================================================================== #

@@ -65,6 +65,50 @@ _SUMMARY_FALLBACK_TOTAL_CHARS = 6000
 
 
 @dataclass
+class PendingFollowUp:
+    """The follow-up question asked under the conversation's LAST assistant reply.
+
+    Plan unified_responder.md §6.4 / D10: the unified responder's question is
+    captured in ``messages.metadata.follow_up_question``. Derived from the rows
+    ``load_router_context`` already loaded (no extra query). ``question`` is the
+    REAL (stored, decoded) text — never sent to an LLM from here; the router and
+    responder read it through the encoded history note instead.
+
+    ``item_ids`` are that reply's ``artifact_ids`` (the WI(s) it produced) —
+    the structural anchor ``_route`` uses to tell an answer (a dispatch that
+    refines one of them) from a user who moved on.
+    """
+
+    message_id: str | None
+    question: str
+    item_ids: list[str] = field(default_factory=list)
+
+
+def find_pending_follow_up(msg_rows: list[dict]) -> PendingFollowUp | None:
+    """The :class:`PendingFollowUp` of the last non-empty assistant row, or None.
+
+    Only the LAST assistant reply counts — a question two replies back was
+    either answered or abandoned already. Empty assistant rows (this turn's own
+    placeholder, orphaned placeholders) are skipped.
+    """
+    for row in reversed(msg_rows or []):
+        if (row.get("role") or "") != "assistant":
+            continue
+        if not (row.get("content") or "").strip():
+            continue
+        meta = row.get("metadata")
+        q = meta.get("follow_up_question") if isinstance(meta, dict) else None
+        if not isinstance(q, str) or not q.strip():
+            return None
+        return PendingFollowUp(
+            message_id=(str(row["message_id"]) if row.get("message_id") else None),
+            question=q.strip(),
+            item_ids=[str(i) for i in (row.get("artifact_ids") or []) if i],
+        )
+    return None
+
+
+@dataclass
 class RouterContext:
     """Bundle returned by ``load_router_context``."""
 
@@ -78,6 +122,14 @@ class RouterContext:
     workspace_item_summaries: list[dict] = field(default_factory=list)
     compaction_summary_md: str | None = None
     message_history: list[ModelMessage] = field(default_factory=list)
+    # Unified responder follow-up capture (plan unified_responder.md §6.4):
+    # the question under the last assistant reply, if any (see
+    # ``find_pending_follow_up``). ``follow_up_status`` is set by
+    # ``orchestrator._route`` AFTER the router decided, so the responder (which
+    # receives this object verbatim) knows whether the user answered:
+    # ``None`` = no pending question · ``"answered"`` · ``"unanswered"``.
+    pending_follow_up: PendingFollowUp | None = None
+    follow_up_status: str | None = None
 
 
 def _load_case_block(
@@ -506,7 +558,13 @@ def load_router_context(
         workspace_item_summaries=workspace_item_summaries,
         compaction_summary_md=compaction_summary_md,
         message_history=message_history,
+        pending_follow_up=find_pending_follow_up(msg_rows),
     )
 
 
-__all__ = ["RouterContext", "load_router_context"]
+__all__ = [
+    "PendingFollowUp",
+    "RouterContext",
+    "find_pending_follow_up",
+    "load_router_context",
+]
