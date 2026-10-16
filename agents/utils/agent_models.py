@@ -314,7 +314,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # cached prefix per mode). Same shape as the two slots it replaces
     # (`planner_responder`, `simple_search_responder` — removed only in the
     # plan's §9 cleanup), so the same plain _FLASH policy.
-    "responder":                  _FLASH,
+    "responder":                  _FLASH_MEDIUM,
     # Layer-3 task agent invoked as a router tool (edit_artifact) — one flash
     # call over a full injected artifact emitting a batched surgical-edit tool
     # call. reasoning=medium gives the Arabic grammar-agreement reasoning the
