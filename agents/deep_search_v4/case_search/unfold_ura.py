@@ -78,6 +78,9 @@ AGGREGATOR_CASE_FIELDS = (
     "judgment_number",
     "date_hijri",
     "date_gregorian",
+    # Migration 178: the ruling's Gregorian year on every row (date_gregorian
+    # covers 60%), rendered to the aggregator as «سنة القضية» for age weighting.
+    "year_gregorian",
     "details_url",
     "summary",
     "short_summary",
@@ -149,6 +152,18 @@ def _assemble_title(row: dict[str, Any]) -> str:
     case_num = row.get("case_number", "") or ""
     date = row.get("date_hijri", "") or ""
     return " | ".join(p for p in (court, case_num, date) if p)
+
+
+def _judgment_year(row: dict[str, Any]) -> int | None:
+    """Gregorian year of the ruling: ``year_gregorian``, else ``date_gregorian``.
+
+    The fallback covers rows ingested after the migration-178 backfill.
+    """
+    year = row.get("year_gregorian")
+    if year:
+        return int(year)
+    date = str(row.get("date_gregorian") or "")
+    return int(date[:4]) if date[:4].isdigit() else None
 
 
 def _resolve_summary(full_row: dict[str, Any]) -> str:
@@ -229,6 +244,7 @@ def _build_reranked_case_result(
         case_number=full_row.get("case_number") or None,
         judgment_number=full_row.get("judgment_number") or None,
         date_hijri=full_row.get("date_hijri") or None,
+        year_gregorian=_judgment_year(full_row),
         content=content,
         legal_domains=list(legal_domains),
         referenced_regulations=list(refs),

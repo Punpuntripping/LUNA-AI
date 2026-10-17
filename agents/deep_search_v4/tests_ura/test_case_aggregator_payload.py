@@ -268,11 +268,12 @@ def test_summary_none_never_produces_the_literal_none_anywhere():
 
     rendered = render_aggregator_content(item)
     assert "None" not in rendered
-    # The court header + referenced_regulations still render; only the
+    # The court header, year + referenced_regulations still render; only the
     # summary body is missing — no empty block, no "None" placeholder.
     assert rendered.splitlines()[0] == "المحكمة: المحكمة التجارية (ابتدائي)"
     assert rendered == (
-        "المحكمة: المحكمة التجارية (ابتدائي)\n\nنظام المحاكم التجارية — المادة 20"
+        "المحكمة: المحكمة التجارية (ابتدائي)\n\nسنة القضية: 2023"
+        "\n\nنظام المحاكم التجارية — المادة 20"
     )
 
 
@@ -775,3 +776,32 @@ def test_missing_db_row_is_skipped():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# F. «سنة القضية» — the ruling's Gregorian year (migration 178)
+# ---------------------------------------------------------------------------
+
+
+def test_year_gregorian_is_selected():
+    assert "year_gregorian" in AGGREGATOR_CASE_FIELDS
+
+
+def test_year_gregorian_reaches_rendered_content_under_the_court_line():
+    reranked, _ = assemble_one(make_case_row(year_gregorian=1989))
+    lines = render_aggregator_content(to_aggregator_item(reranked)).split("\n\n")
+    assert lines[0] == "المحكمة: المحكمة التجارية (ابتدائي)"
+    assert lines[1] == "سنة القضية: 1989"
+
+
+def test_year_falls_back_to_date_gregorian_for_rows_ingested_after_backfill():
+    reranked, _ = assemble_one(make_case_row(year_gregorian=None))
+    assert reranked.year_gregorian == 2023
+    assert "سنة القضية: 2023" in render_aggregator_content(to_aggregator_item(reranked))
+
+
+def test_undated_ruling_renders_no_year_line():
+    row = make_case_row(year_gregorian=None, date_gregorian=None)
+    reranked, _ = assemble_one(row)
+    assert reranked.year_gregorian is None
+    assert "سنة القضية" not in render_aggregator_content(to_aggregator_item(reranked))

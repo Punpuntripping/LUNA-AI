@@ -42,6 +42,7 @@ def _case_to_ura(r) -> CaseURAResult | None:
         title=r.title or "",
         court_level=r.court_level,
         date_hijri=r.date_hijri,
+        year_gregorian=r.year_gregorian,
         legal_domains=list(r.legal_domains or []),
         appeal_result=r.appeal_result,
     )

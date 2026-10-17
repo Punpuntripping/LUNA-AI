@@ -216,6 +216,9 @@ class RerankedCaseResult(BaseModel):
     case_number: Optional[str] = Field(default=None, description="Case number")
     judgment_number: Optional[str] = Field(default=None, description="Judgment number")
     date_hijri: Optional[str] = Field(default=None, description="Hijri date")
+    year_gregorian: Optional[int] = Field(
+        default=None, description="Gregorian year of the ruling (cases.year_gregorian)"
+    )
     legal_domains: list[str] = Field(default_factory=list)
     referenced_regulations: list[dict] = Field(default_factory=list)
     appeal_result: Optional[str] = Field(default=None)

@@ -230,11 +230,12 @@ def render_aggregator_content(item: AggregatorItem) -> str:
     - regulations: ``chunk_content`` followed by rendered ``cross_refs``.
     - compliance:  ``service_context``.
     - circulars:   ``تعميم: {title}`` / ``الجهة: {entity}`` / body (capped 4k).
-    - cases:       ``المحكمة: {court} ({court_level_ar})`` header, then
-      ``case_content``, then ``referenced_regulations``. ``case_content`` is
-      `cases.summary` — a DERIVED structured summary, not the ruling text (D2).
-      The header line is omitted when ``court`` is empty; the parenthetical is
-      omitted when ``court_level`` is empty or unrecognised.
+    - cases:       ``المحكمة: {court} ({court_level_ar})`` header and
+      ``سنة القضية: {year_gregorian}``, then ``case_content``, then
+      ``referenced_regulations``. ``case_content`` is `cases.summary` — a
+      DERIVED structured summary, not the ruling text (D2). The court line is
+      omitted when ``court`` is empty; the parenthetical when ``court_level`` is
+      empty or unrecognised; the year line when the row has no year.
     """
     parts: list[str] = []
     if item.domain == "regulations":
@@ -264,6 +265,8 @@ def render_aggregator_content(item: AggregatorItem) -> str:
             parts.append(
                 f"المحكمة: {court} ({level_ar})" if level_ar else f"المحكمة: {court}"
             )
+        if item.year_gregorian:
+            parts.append(f"سنة القضية: {item.year_gregorian}")
         if item.case_content:
             # Old persisted URAs carry `case_content` from before unfold_ura
             # stripped the pipeline's internal sections — strip here too so a

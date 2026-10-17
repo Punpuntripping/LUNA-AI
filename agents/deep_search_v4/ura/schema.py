@@ -222,6 +222,9 @@ class AggregatorItem(BaseModel):
     case_content: str = ""
     court: str = ""
     court_level: str = ""  # first_instance | appeal | supreme (informational, D5)
+    # Gregorian year of the ruling, rendered as «سنة القضية: 1989» so the
+    # aggregator can prefer the statutory text / newer rulings over an old one.
+    year_gregorian: int | None = None
     referenced_regulations: list[dict] = Field(default_factory=list)
 
 
@@ -590,6 +593,7 @@ class CaseURAResult(URAResultBase):
     # boost, no reranker instruction to prefer appeal/supreme.
     court_level: str | None = None
     date_hijri: str | None = None   # stored only
+    year_gregorian: int | None = None  # → AggregatorItem («سنة القضية»)
     legal_domains: list[str] = Field(default_factory=list)  # stored only
     appeal_result: str | None = None  # stored only
 
@@ -603,6 +607,7 @@ class CaseURAResult(URAResultBase):
             case_content=self.case_content,
             court=self.court or "",
             court_level=self.court_level or "",
+            year_gregorian=self.year_gregorian,
             referenced_regulations=list(
                 self.referenced_regulations[:MAX_CROSS_REFS_AGG_CASE]
             ),
