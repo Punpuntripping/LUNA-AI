@@ -31,7 +31,7 @@ import {
 import { useConversationDetail, useCreateConversation } from "@/chat/use-conversations";
 import { useMessages } from "@/chat/use-messages";
 import { useParallelGate } from "@/chat/use-parallel-cap";
-import { useArtifactKinds } from "@/chat/use-workspace-lookup";
+import { useArtifactInfo, useArtifactKinds } from "@/chat/use-workspace-lookup";
 import { AppText } from "@/components/AppText";
 import { ArtifactSheet } from "@/components/artifact/ArtifactSheet";
 import { Button } from "@/components/Button";
@@ -96,6 +96,10 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   );
   const hasArtifacts = useMemo(() => messages.some((m) => (m.artifact_ids?.length ?? 0) > 0), [messages]);
   const artifactKinds = useArtifactKinds(conversationId ?? undefined, hasArtifacts);
+  const artifactInfo = useArtifactInfo(conversationId ?? undefined, hasArtifacts);
+  // An output the user reopened from an answer («افتح ال…»); wins over the
+  // auto-open signal while shown.
+  const [openedItemId, setOpenedItemId] = useState<string | null>(null);
 
   // ---- composer ----
   const draft = useDraft(draftKey);
@@ -151,6 +155,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       conversationId: conversationId ?? "",
       isDemo,
       artifactKinds,
+      artifactInfo,
       pasteIntoComposer: (text) => {
         setDraft(draftKey, text);
         setTimeout(() => inputRef.current?.focus(), 50);
@@ -171,8 +176,9 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
         // The reader route belongs to the source module (plan R2).
         router.push({ pathname: "/source/[itemId]/[n]", params: { itemId: artifactId, n: String(n) } });
       },
+      openArtifact: setOpenedItemId,
     }),
-    [conversationId, isDemo, artifactKinds, draftKey, setDraft, startSend, scrollToEnd],
+    [conversationId, isDemo, artifactKinds, artifactInfo, draftKey, setDraft, startSend, scrollToEnd],
   );
 
   // ---- auto-open agent outputs over the chat (owner decision 2026-10-15) ----
@@ -180,8 +186,12 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   // user dismisses it, which consumes the signal (a newer output replaces it).
   const autoOpen = useAutoOpen(conversationId ?? "");
   const closeArtifact = useCallback(() => {
+    if (openedItemId !== null) {
+      setOpenedItemId(null);
+      return;
+    }
     if (conversationId && autoOpen) streamStore.consumeAutoOpen(conversationId, autoOpen.itemId);
-  }, [conversationId, autoOpen]);
+  }, [conversationId, autoOpen, openedItemId]);
 
   // ---- scrolling ----
   const [showPill, setShowPill] = useState(false);
@@ -295,7 +305,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       />
 
       {conversationId ? (
-        <ArtifactSheet conversationId={conversationId} itemId={autoOpen?.itemId ?? null} onClose={closeArtifact} />
+        <ArtifactSheet conversationId={conversationId} itemId={openedItemId ?? autoOpen?.itemId ?? null} onClose={closeArtifact} />
       ) : null}
     </View>
   );

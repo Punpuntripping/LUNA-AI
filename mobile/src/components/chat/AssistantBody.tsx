@@ -17,13 +17,15 @@ import { useChatRow } from "./ChatContext";
 import { DeepSearchSummaryChip } from "./DeepSearchProgress";
 import { RetryButton } from "./FailedBubble";
 import { NextStepChips } from "./NextStepChips";
+import { OpenArtifactButton, viewableArtifacts } from "./OpenArtifactButton";
 import { TemplatesUsedLine } from "./TemplatesUsedLine";
 
 // M4 — an assistant answer: unframed full-width markdown (port of the web's
 // MessageBubble assistant branch). Settled extras: «القوالب المستخدمة»,
 // next-step chips (latest answer only), نسخ + «إعادة التوليد». An
 // `agent_question` turn renders as the framed «السؤال» callout instead.
-// «افتح التحليل» / referenced-item chips arrive with the workspace (2b).
+// «افتح ال…» reopens the turn's agent output over the chat; referenced-item
+// chips arrive with the workspace (2b).
 
 export interface AssistantBodyProps {
   message: Message;
@@ -35,7 +37,8 @@ export interface AssistantBodyProps {
 
 export const AssistantBody = memo(function AssistantBody({ message, streamingContent = null, isLatest = false }: AssistantBodyProps) {
   const { colours } = useTheme();
-  const { conversationId, isDemo, artifactKinds, pasteIntoComposer, regenerate, openCitation } = useChatRow();
+  const { conversationId, isDemo, artifactKinds, artifactInfo, pasteIntoComposer, regenerate, openCitation, openArtifact } =
+    useChatRow();
   const running = useIsConversationRunning(conversationId);
   const summary = useDeepSearchSummary(message.message_id);
   const [menu, setMenu] = useState(false);
@@ -64,6 +67,11 @@ export const AssistantBody = memo(function AssistantBody({ message, streamingCon
     [isLatest, settled, isQuestion, message.isFailed, isDemo, message.metadata?.next_steps],
   );
 
+  const openable = useMemo(
+    () => (settled && !isQuestion && !message.isFailed ? viewableArtifacts(message.artifact_ids, artifactInfo) : []),
+    [settled, isQuestion, message.isFailed, message.artifact_ids, artifactInfo],
+  );
+
   const body = <Markdown content={content ?? ""} streaming={streaming} variant="chat" onCitationPress={onCitationPress} />;
 
   return (
@@ -83,6 +91,7 @@ export const AssistantBody = memo(function AssistantBody({ message, streamingCon
         )}
       </Pressable>
 
+      {openable.length > 0 ? <OpenArtifactButton ids={openable} info={artifactInfo} onOpen={openArtifact} /> : null}
       {templates !== undefined ? <TemplatesUsedLine templates={templates} /> : null}
       {nextSteps.length > 0 ? <NextStepChips steps={nextSteps} onPaste={pasteIntoComposer} /> : null}
 

@@ -15,7 +15,24 @@ import { workspaceKeys } from "./keys";
 
 export type ArtifactKinds = ReadonlyMap<string, WorkspaceItemKind>;
 
+/** What the «افتح ال…» button needs to name a card (web MessageList `artifactLookup`). */
+export interface ArtifactInfo {
+  kind: WorkspaceItemKind;
+  subtype?: string;
+  title: string;
+}
+export type ArtifactInfoMap = ReadonlyMap<string, ArtifactInfo>;
+
 export function useArtifactKinds(conversationId: string | undefined, enabled: boolean): ArtifactKinds {
+  const info = useArtifactInfo(conversationId, enabled);
+  return useMemo(() => {
+    const map = new Map<string, WorkspaceItemKind>();
+    for (const [id, entry] of info) map.set(id, entry.kind);
+    return map;
+  }, [info]);
+}
+
+export function useArtifactInfo(conversationId: string | undefined, enabled: boolean): ArtifactInfoMap {
   const { data } = useQuery({
     queryKey: workspaceKeys.byConversation(conversationId ?? ""),
     queryFn: () => listConversationWorkspace(conversationId as string),
@@ -23,8 +40,12 @@ export function useArtifactKinds(conversationId: string | undefined, enabled: bo
     staleTime: 30_000,
   });
   return useMemo(() => {
-    const map = new Map<string, WorkspaceItemKind>();
-    for (const item of data?.items ?? []) if (item.kind) map.set(item.item_id, item.kind);
+    const map = new Map<string, ArtifactInfo>();
+    for (const item of data?.items ?? []) {
+      if (!item.kind) continue;
+      const subtype = (item.metadata as { subtype?: unknown } | undefined)?.subtype;
+      map.set(item.item_id, { kind: item.kind, subtype: typeof subtype === "string" ? subtype : undefined, title: item.title });
+    }
     return map;
   }, [data]);
 }
