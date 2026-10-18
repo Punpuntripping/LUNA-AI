@@ -30,9 +30,10 @@ _logfire = get_logfire()
 # Module constants (see .claude/plans/ocr_extraction_agent.md)
 # ---------------------------------------------------------------------------
 OCR_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB — over this → skipped_too_large
-OCR_USER_QUOTA = 100  # lifetime successful OCR runs per user
 # OCR_MAX_PAGES is owned by mistral_ocr; re-exported for callers/tests.
-__all__ = ["run_ocr_extraction", "OCR_MAX_FILE_BYTES", "OCR_MAX_PAGES", "OCR_USER_QUOTA"]
+# No per-user cap here: the plan's ocr_pages_monthly quota is enforced by the
+# message gate (message_service._estimate_ocr_pages) + the post-OCR settle.
+__all__ = ["run_ocr_extraction", "OCR_MAX_FILE_BYTES", "OCR_MAX_PAGES"]
 
 _SUPPORTED_MIME_TYPES = {"application/pdf", "image/png", "image/jpeg"}
 _SIGNED_URL_EXPIRY_S = 3600  # ~1 hour — Mistral fetches the file server-side
@@ -71,31 +72,6 @@ def _mark_status(
         )
 
 
-def _count_prior_ocr_runs(supabase: SupabaseClient, user_id: str) -> int:
-    """Lifetime count of this user's successful OCR extractions.
-
-    Counts ``llm_calls`` ledger rows for the OCR agent (migration 058 — the
-    per-call ledger replaced agent_runs for cost/pages telemetry). On query
-    failure returns 0 (fail-open: a transient telemetry-table error must not
-    block document extraction).
-    """
-    try:
-        result = (
-            supabase.table("llm_calls")
-            .select("call_id", count="exact")
-            .eq("user_id", user_id)
-            .eq("agent", "memory.ocr_extraction")
-            .execute()
-        )
-        count = getattr(result, "count", None)
-        if count is not None:
-            return int(count)
-        return len(getattr(result, "data", None) or [])
-    except Exception:  # noqa: BLE001
-        logger.warning("OCR: quota count query failed — treating as 0", exc_info=True)
-        return 0
-
-
 async def run_ocr_extraction(
     supabase: SupabaseClient,
     conversation_id: str,
@@ -112,7 +88,7 @@ async def run_ocr_extraction(
         supabase: A (sync) Supabase client — the established pattern is to use
             it inside async functions.
         conversation_id: The conversation whose attachments to scan.
-        user_id: The ``users.user_id`` of the conversation owner (drives quota).
+        user_id: The ``users.user_id`` of the conversation owner.
 
     Returns:
         The run's ``OcrExtractionStats`` — ``filled_item_ids`` lists the
@@ -147,7 +123,6 @@ async def run_ocr_extraction(
                 "candidates": stats.candidates,
                 "extracted": stats.extracted,
                 "skipped_unsupported": stats.skipped_unsupported,
-                "skipped_quota": stats.skipped_quota,
                 "skipped_too_large": stats.skipped_too_large,
                 "failed": stats.failed,
                 "empty": stats.empty,
@@ -158,12 +133,11 @@ async def run_ocr_extraction(
         if stats.candidates:
             logger.info(
                 "OCR: conversation %s — %d candidate(s): %d extracted, "
-                "%d unsupported, %d quota, %d too_large, %d failed, %d empty",
+                "%d unsupported, %d too_large, %d failed, %d empty",
                 conversation_id,
                 stats.candidates,
                 stats.extracted,
                 stats.skipped_unsupported,
-                stats.skipped_quota,
                 stats.skipped_too_large,
                 stats.failed,
                 stats.empty,
@@ -223,12 +197,6 @@ async def _run_inner(
         if mime_type not in _SUPPORTED_MIME_TYPES:
             stats.skipped_unsupported += 1
             _mark_status(supabase, item_id, metadata, "skipped_unsupported")
-            continue
-
-        # --- Lifetime quota ----------------------------------------------
-        if _count_prior_ocr_runs(supabase, user_id) >= OCR_USER_QUOTA:
-            stats.skipped_quota += 1
-            _mark_status(supabase, item_id, metadata, "skipped_quota")
             continue
 
         # --- Size --------------------------------------------------------
@@ -306,7 +274,6 @@ async def _run_inner(
         # OCR is a direct Mistral call (not a pydantic-ai agent), so the
         # tracking.py sink hook can't see it — feed the ledger explicitly.
         # Runs inside the handle_message capture scope; flushed + settled there.
-        # This row is also what _count_prior_ocr_runs counts for lifetime quota.
         _ocr_pages = int(ocr_result.page_count or 0)
         record_call(
             agent="memory.ocr_extraction",

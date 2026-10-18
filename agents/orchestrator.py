@@ -304,6 +304,35 @@ def _load_attached_items(
     return snapshots
 
 
+def _load_reply_attachment_ids(
+    supabase: SupabaseClient, user_message_id: str | None
+) -> list[str]:
+    """Workspace item ids the user attached to THIS message.
+
+    Resume legs skip the router, so nothing else names the reply's attachments;
+    without this a file sent as the answer to a pause never reaches the resumed
+    agent. Feed the result to ``_load_attached_items`` (which enforces the
+    user/conversation scope). Best-effort: on failure returns ``[]``.
+    """
+    if not user_message_id:
+        return []
+    try:
+        resp = (
+            supabase.table("message_attachments")
+            .select("document_id")
+            .eq("message_id", user_message_id)
+            .execute()
+        )
+        return [
+            str(r["document_id"])
+            for r in (getattr(resp, "data", None) or [])
+            if r.get("document_id")
+        ]
+    except Exception as e:
+        logger.warning("_load_reply_attachment_ids failed: %s", e)
+        return []
+
+
 def _encode_attached_for_planner(
     snapshots: list[WorkspaceItemSnapshot],
 ) -> list[WorkspaceItemSnapshot]:
@@ -1031,7 +1060,12 @@ async def _resume_major_agent_inner(
         # try/finally so the writing run is closed out first.
         _handoff = False
         try:
-            attached_items = _load_attached_items(supabase, [], user_id, conversation_id)
+            attached_items = _load_attached_items(
+                supabase,
+                _load_reply_attachment_ids(supabase, user_message_id),
+                user_id,
+                conversation_id,
+            )
             recent_messages = _load_recent_messages(
                 supabase, conversation_id, user_id=user_id
             )
@@ -1224,7 +1258,10 @@ async def _resume_major_agent_inner(
             supabase, conversation_id, user_id,
         )
         _resume_attached_items = _load_attached_items(
-            supabase, [], user_id, conversation_id
+            supabase,
+            _load_reply_attachment_ids(supabase, user_message_id),
+            user_id,
+            conversation_id,
         )
         _resume_recent_messages = _load_recent_messages(
             supabase, conversation_id, user_id=user_id
@@ -1252,9 +1289,8 @@ async def _resume_major_agent_inner(
 
         # وضع السرية: mask the attached items' inline content_md/title for the
         # decider (parity with fresh dispatch). Copies only; alias map built above
-        # from the REAL ids. On resume this list is empty in practice (loaded with
-        # item_ids=[]) so this is a no-op today, but it keeps the two entry points
-        # symmetric if a future resume ever re-hydrates attachments. case_brief +
+        # from the REAL ids. On resume the list holds the files attached to the
+        # reply message (_load_reply_attachment_ids). case_brief +
         # prior_searches were already encoded/persisted inside their loaders.
         _resume_attached_items = _encode_attached_for_planner(_resume_attached_items)
 
@@ -1376,7 +1412,10 @@ async def _resume_major_agent_inner(
 
     try:
         attached_items = _load_attached_items(
-            supabase, [], user_id, conversation_id
+            supabase,
+            _load_reply_attachment_ids(supabase, user_message_id),
+            user_id,
+            conversation_id,
         )
         recent_messages = _load_recent_messages(
             supabase, conversation_id, user_id=user_id
@@ -2233,7 +2272,7 @@ async def _handle_message_inner(
     # a headless editorial job with no artifact is forced to `low` confidence
     # and never publishes. One LLM call saved, one whole failure mode removed.
     #
-    # Steps 0/1/1b/1c are skipped with it, and each is a no-op on this path by
+    # Steps 0a/0b/0/1 are skipped with it, and each is a no-op on this path by
     # construction: the job creates a THROWAWAY conversation per run, so there
     # can be no pending pause to resume, no history to compact, and no
     # attachment to OCR.
@@ -2260,6 +2299,42 @@ async def _handle_message_inner(
         ):
             yield ev
         return
+
+    # 0a. OCR memory step — extract text from new PDF/image attachments so the
+    #     router (and any dispatched or RESUMED agent) can see document content.
+    #     Runs before the pause check: a reply to a paused agent can carry
+    #     attachments too, and the resume legs below read them via
+    #     _load_reply_attachment_ids.
+    ocr_item_ids: list[str] = []
+    _ocr_failed = 0
+    try:
+        # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
+        # eat the overall pipeline budget. Caps the worst case of k×60s.
+        ocr_stats = await asyncio.wait_for(
+            run_ocr_extraction(supabase, conversation_id, user_id),
+            timeout=180.0,
+        )
+        ocr_item_ids = ocr_stats.filled_item_ids
+        _ocr_failed = ocr_stats.failed
+    except (asyncio.TimeoutError, Exception):
+        logger.warning("OCR extraction step failed", exc_info=True)
+        _ocr_failed = 1
+    if _ocr_failed:
+        yield {
+            "type": "status",
+            "text": (
+                "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
+                "الاستناد إلى محتواها."
+            ),
+        }
+
+    # 0b. Summarize the freshly-OCR'd attachments inline (awaited) before
+    #     routing or resuming.
+    for _ocr_item_id in ocr_item_ids:
+        try:
+            await summarize_workspace_item(supabase, _ocr_item_id)
+        except Exception:
+            logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
 
     # 0. Pre-route pause check — resume a pending major agent if one exists.
     pending = _find_awaiting_user(supabase, conversation_id, user_id)
@@ -2309,38 +2384,6 @@ async def _handle_message_inner(
         await memory.compact_conversation(supabase, conversation_id, user_id)
     except Exception:
         logger.warning("memory pre-hook failed", exc_info=True)
-
-    # 1b. OCR memory step — extract text from new PDF/image attachments so the
-    #     router (and any dispatched agent) can see document content.
-    ocr_item_ids: list[str] = []
-    _ocr_failed = 0
-    try:
-        # Whole-step budget: N hung attachments (≤60s each after fix 2) must not
-        # eat the overall pipeline budget. Caps the worst case of k×60s.
-        ocr_stats = await asyncio.wait_for(
-            run_ocr_extraction(supabase, conversation_id, user_id),
-            timeout=180.0,
-        )
-        ocr_item_ids = ocr_stats.filled_item_ids
-        _ocr_failed = ocr_stats.failed
-    except (asyncio.TimeoutError, Exception):
-        logger.warning("OCR extraction step failed", exc_info=True)
-        _ocr_failed = 1
-    if _ocr_failed:
-        yield {
-            "type": "status",
-            "text": (
-                "تعذّرت قراءة بعض المرفقات، وسيتابع المساعد الإجابة دون "
-                "الاستناد إلى محتواها."
-            ),
-        }
-
-    # 1c. Summarize the freshly-OCR'd attachments inline (awaited) before routing.
-    for _ocr_item_id in ocr_item_ids:
-        try:
-            await summarize_workspace_item(supabase, _ocr_item_id)
-        except Exception:
-            logger.warning("inline summarize failed for %s", _ocr_item_id, exc_info=True)
 
     async for ev in _route(
         question=question,

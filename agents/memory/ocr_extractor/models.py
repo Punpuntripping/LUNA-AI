@@ -31,7 +31,6 @@ class OcrExtractionStats:
     candidates: int = 0
     extracted: int = 0
     skipped_unsupported: int = 0
-    skipped_quota: int = 0
     skipped_too_large: int = 0
     failed: int = 0
     empty: int = 0
