@@ -21,13 +21,16 @@ control surface. (Embeddings are NOT governed here — see
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Literal, Union
 
 from pydantic_ai.models.fallback import FallbackModel
 
-from agents.model_registry import create_model, get_model_config
+from agents.model_registry import create_model, get_model_config, registry_key_for
 from shared import pricing
+
+logger = logging.getLogger(__name__)
 
 Provider = Literal["alibaba", "openrouter"]
 Tier = Literal["tier_1", "tier_2"]
@@ -103,11 +106,18 @@ def resolve_chain(policy: ModelPolicy) -> list[str]:
     regardless of the slot's tier or family. Replaces the old 4-cell 2×2 chain.
 
     ``policy.head``, when set, replaces the first cell only (the two fallback
-    cells stay derived from ``TIERS``).
+    cells stay derived from ``TIERS``). A head served by a DIFFERENT provider
+    than the policy's (e.g. the Baseten V4.1 head on an Alibaba policy) gets a
+    3-cell chain instead: head → the slot's own primary cell (Alibaba,
+    same family) → the cross-provider net (OpenRouter). The other-family cell
+    is dropped — a qwen3.5-flash aggregator scored worst in the 2026-10-18 A/B.
     """
     fb_family = _OTHER_FAMILY[policy.primary]
     cells = TIERS[policy.tier]
-    head = policy.head or cells[policy.primary][policy.provider]
+    primary = cells[policy.primary][policy.provider]
+    head = policy.head or primary
+    if head != primary and get_model_config(head).provider != policy.provider:
+        return [head, primary, _CROSS_PROVIDER_FALLBACK[policy.provider]]
     return [
         head,
         cells[fb_family][policy.provider],
@@ -125,6 +135,9 @@ _MAX_THINKING_BUDGET = 24_000
 # Mid-effort Qwen thinking ceiling for reasoning="medium" — enough for grammar/
 # agreement reasoning without max-effort latency.
 _MEDIUM_THINKING_BUDGET = 8_000
+# Baseten reasoning ceiling — a CEILING like the Qwen budgets, set high enough to
+# be effectively uncapped (the prod aggregator thinks ~12k, peaks ~22k).
+_BASETEN_REASONING_CEILING = 60_000
 
 
 def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
@@ -143,11 +156,25 @@ def _reasoning_settings(key: str, reasoning: Reasoning) -> dict | None:
 
     Returns ``None`` for ``reasoning="default"`` so non-flagged slots keep their
     historical provider-default thinking behavior (no settings attached).
+
+      * DeepSeek on Baseten     -> ``chat_template_kwargs.thinking`` (on at every
+        level, matching Alibaba's thinking-on default) + ``reasoning_effort``
+        high|max + ``reasoning.max_tokens``. Baseten hard-cuts thinking at
+        ~4096 tokens unless ``reasoning.max_tokens`` is sent — verified
+        2026-10-18; thinking_budget / max_thinking_tokens do NOT lift it.
     """
+    cfg = get_model_config(key)
+    if cfg.provider == "baseten":
+        extra: dict = {
+            "chat_template_kwargs": {"thinking": True},
+            "reasoning": {"max_tokens": _BASETEN_REASONING_CEILING},
+        }
+        if reasoning != "default":
+            extra["reasoning_effort"] = "max" if reasoning == "max" else "high"
+        return {"extra_body": extra}
     if reasoning == "default":
         return None
     is_max = reasoning == "max"
-    cfg = get_model_config(key)
     if cfg.provider == "openrouter":
         return {"extra_body": {"reasoning": {"effort": "xhigh" if is_max else "medium"}}}
     # Alibaba DashScope (OpenAI-compatible). DeepSeek-V4 on DashScope only
@@ -178,10 +205,18 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
     reasoning settings baked on (see :func:`_reasoning_settings`); pydantic_ai
     merges those per-cell defaults under any agent/run-level ``model_settings``.
     """
-    models = [
-        create_model(key, model_settings=_reasoning_settings(key, policy.reasoning))
-        for key in resolve_chain(policy)
-    ]
+    models = []
+    for key in resolve_chain(policy):
+        try:
+            models.append(
+                create_model(key, model_settings=_reasoning_settings(key, policy.reasoning))
+            )
+        except ValueError:
+            # Missing API key for an optional provider (e.g. BASETEN_API_KEY
+            # unset) — drop that cell, the rest of the chain still serves.
+            if get_model_config(key).provider != "baseten":
+                raise
+            logger.warning("agent_models: skipping %s (BASETEN_API_KEY unset)", key)
     return FallbackModel(models[0], *models[1:])
 
 
@@ -210,12 +245,21 @@ _FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium")
 # reranker change. Fallbacks here stay deepseek-v4-flash → or-deepseek-v4-flash.
 # Revert = drop the `head=` kwarg.
 _RERANKER = ModelPolicy("tier_2", head="qwen3.7-flash")
+# DeepSeek V4.1 Flash 1017 on Baseten (2026-10-18). Blind A/B on 10 gold
+# questions: 7.5/10 vs 5.9 for the 0731 flash, mostly completeness + grounding;
+# ~2.4× cost per deep_search turn ($0.30/$1.20 per 1M). Chain: V4.1 (Baseten) →
+# deepseek-v4-flash (Alibaba) → or-deepseek-v4-flash (OpenRouter) (see
+# resolve_chain's cross-provider-head rule). Revert = point the slots back at
+# _FLASH_MAX / _FLASH_MEDIUM.
+_V41 = "baseten-deepseek-v4.1-flash-1017"
+_V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_V41)
+_V41_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_V41)
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
     "planner_responder":          _FLASH,
-    "aggregator":                 _FLASH_MAX,
-    "agent_writer":               _FLASH_MAX,
+    "aggregator":                 _V41_MAX,
+    "agent_writer":               _V41_MAX,
     # Layer-2 Major planner that sits in front of writing_executor.
     # Talks to the user (ask_user, present_plan_for_approval), inspects prior-WI
     # content on demand via unfold_workspace_item, and hands a WriterPackage to
@@ -228,11 +272,12 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # The three deep_search expanders run at fixed medium reasoning (baked per
     # provider/family by _reasoning_settings — deepseek reasoning_effort=medium,
     # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
-    # planner no longer varies expander effort.
-    "reg_compliance_expander":        _FLASH_MEDIUM,
+    # planner no longer varies expander effort. reg + case expanders head on
+    # V4.1 (it writes more sub-queries → ~40% more reranker calls per turn).
+    "reg_compliance_expander":        _V41_MEDIUM,
     "reg_compliance_reranker":        _RERANKER,
     "reg_compliance_aggregator":      _FLASH,
-    "case_search_expander":       _FLASH_MEDIUM,
+    "case_search_expander":       _V41_MEDIUM,
     # NOT on _RERANKER yet — deliberately still the tier's qwen3.5-flash cell.
     # The qwen3.7-flash swap was validated ONLY on the reg family: 3.7 under the
     # un-recalibrated prompt collapsed downstream recall (0.59 vs 0.89 of the
@@ -420,12 +465,12 @@ def get_agent_model(
 # than the primary fires, the inner_usage entry's ``model`` field (when set by the
 # caller) overrides this lookup.
 _SUBAGENT_MODEL: dict[str, str] = {
-    "expander":      "deepseek-v4-flash",
+    "expander":      _V41,
     # Legacy fallback only: BOTH rerankers now set an explicit per-slot ``model``
     # on their usage entries (via primary_model_of_slot), which wins over this
     # role lookup. Kept for entries emitted before that change.
     "reranker":      "qwen3.7-flash",
-    "aggregator":    "deepseek-v4-flash",
+    "aggregator":    _V41,
     "sector_picker": "deepseek-v4-flash",
 }
 
@@ -485,6 +530,11 @@ def cost_usd(
     """
     del reasoning_tokens  # informational only — already inside output_tokens
     price = pricing.get_price(model_name) if model_name else None
+    if price is None and model_name:
+        # Provider echo name (e.g. "deepseek-v4-flash-0731") → registry key row.
+        key = registry_key_for(model_name)
+        if key and key != model_name:
+            price = pricing.get_price(key)
     if price is None:
         return 0.0
     cached = max(int(cached_tokens or 0), 0)

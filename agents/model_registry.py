@@ -761,6 +761,22 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         cached_input_price=0.0028,
     ),
 
+    # Baseten-served DeepSeek V4.1 Flash 1017 — the aggregator / writer /
+    # expander head (agent_models._V41_*). Priced separately from 0731 (own
+    # model_pricing row, migration 179). Baseten caps thinking at ~4096 tokens
+    # unless reasoning.max_tokens is sent — see agent_models._reasoning_settings.
+    "baseten-deepseek-v4.1-flash-1017": ModelConfig(
+        model_id="deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        provider="baseten",
+        display_name="DeepSeek V4.1 Flash 1017 (Baseten)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=1048576,
+        input_price=0.30,
+        output_price=1.20,
+        cached_input_price=0.007,
+    ),
+
     # --- Qwen3.5 series (February 2026) ---
     "qwen3.5-plus": ModelConfig(
         model_id="qwen3.5-plus",
@@ -950,6 +966,22 @@ def get_model_config(model_name: str) -> ModelConfig:
     )
 
 
+def registry_key_for(model_name: str) -> Optional[str]:
+    """Registry key for a key OR an exact provider ``model_id`` echo.
+
+    Responses carry the provider's model id (``deepseek-v4-flash-0731``,
+    ``deepseek-ai/DeepSeek-V4.1-Flash-1017``), but model_pricing rows are keyed
+    by registry key — this bridges the two for cost lookup. Exact matches only
+    (no prefix guessing), so an unknown name stays unknown.
+    """
+    if model_name in MODEL_REGISTRY:
+        return model_name
+    for key, config in MODEL_REGISTRY.items():
+        if config.model_id == model_name:
+            return key
+    return None
+
+
 def get_api_key(provider: str) -> str:
     """Get API key for a provider from settings."""
     key_map = {
@@ -964,6 +996,7 @@ def get_api_key(provider: str) -> str:
         "alibaba": getattr(settings, "ALIBABA_API_KEY_GLOBAL", "")
         or getattr(settings, "ALIBABA_API_KEY", ""),
         "openrouter": getattr(settings, "OPENROUTER_API_KEY", ""),
+        "baseten": getattr(settings, "BASETEN_API_KEY", ""),
     }
     return key_map.get(provider, "")
 
@@ -1097,6 +1130,23 @@ def create_model(model_name: str, model_settings: Any = None):
                 base_url=base_url,
                 api_key=api_key,
             ),
+            profile=OpenAIModelProfile(
+                openai_supports_tool_choice_required=False,
+            ),
+            settings=model_settings,
+        )
+
+    elif config.provider == "baseten":
+        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(
+            config.model_id,
+            provider=OpenAIProvider(
+                base_url=settings.BASETEN_BASE_URL,
+                api_key=api_key,
+            ),
+            # Same as the Alibaba cells: forced tool_choice OFF (structured
+            # output still goes through the output tool).
             profile=OpenAIModelProfile(
                 openai_supports_tool_choice_required=False,
             ),

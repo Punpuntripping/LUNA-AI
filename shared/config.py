@@ -125,6 +125,12 @@ class Settings(BaseSettings):
     ALIBABA_API_KEY_GLOBAL: Optional[str] = None
     ALIBABA_BASE_URL_GLOBAL: str = "https://ws-pz0iv9oq6gq1mhjy.eu-central-1.maas.aliyuncs.com/compatible-mode/v1"
 
+    # Baseten Model APIs (OpenAI-compatible) — serves DeepSeek V4.1 Flash 1017
+    # for the slots pinned to it in agents/utils/agent_models.py. Unset => those
+    # cells are skipped and the chain starts at the slot's Alibaba cell.
+    BASETEN_API_KEY: Optional[str] = None
+    BASETEN_BASE_URL: str = "https://inference.baseten.co/v1"
+
     # ========================================
     # AGENT FRAMEWORK
     # ========================================
