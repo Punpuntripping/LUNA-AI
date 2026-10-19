@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 // Who else has a RN Modal up (or just took one down)? Android shows each RN
 // Modal as its own Dialog window, and iOS refuses to present a modal while
@@ -23,6 +23,10 @@ export interface ModalCoordinator {
   msUntilSettled: () => number;
   /** Runs `cb` once no other modal is open/dismissing. Returns a cancel. */
   whenSettled: (cb: () => void) => () => void;
+  /** Number of modals currently open. */
+  openCount: () => number;
+  /** Notified whenever `openCount` changes. Returns an unsubscribe. */
+  subscribe: (listener: () => void) => () => void;
 }
 
 export function createModalCoordinator(
@@ -33,6 +37,8 @@ export function createModalCoordinator(
   },
 ): ModalCoordinator {
   const state: CoordinatorState = { open: 0, lastDismissAt: Number.NEGATIVE_INFINITY };
+  const listeners = new Set<() => void>();
+  const notify = () => listeners.forEach((l) => l());
 
   const msUntilSettled = () => {
     if (state.open > 0) return POLL_MS;
@@ -42,12 +48,21 @@ export function createModalCoordinator(
   return {
     acquire: () => {
       state.open += 1;
+      notify();
       let released = false;
       return () => {
         if (released) return;
         released = true;
         state.open = Math.max(0, state.open - 1);
         state.lastDismissAt = now();
+        notify();
+      };
+    },
+    openCount: () => state.open,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
       };
     },
     msUntilSettled,
@@ -82,4 +97,12 @@ export function useModalPresence(visible: boolean): void {
     if (!visible) return undefined;
     return modalCoordinator.acquire();
   }, [visible]);
+}
+
+/** True while any registered Modal (shared Sheet, CopyMenu, …) is open. */
+export function useAnyModalOpen(): boolean {
+  return useSyncExternalStore(
+    modalCoordinator.subscribe,
+    () => modalCoordinator.openCount() > 0,
+  );
 }

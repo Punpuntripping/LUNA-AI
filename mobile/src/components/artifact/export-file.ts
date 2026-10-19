@@ -5,6 +5,8 @@ import type { ExportFormat } from "@contracts";
 
 import { exportDocument } from "@/api/workspace";
 
+import { parseLastFolder, pickerStartUri, serializeLastFolder } from "@/lib/saf";
+
 import { EXPORT_MIME, exportDocTitle, exportFileName } from "./action-bar";
 
 export type ExportOutcome = "shared" | "saved" | "cancelled";
@@ -16,7 +18,11 @@ export type ExportOutcome = "shared" | "saved" | "cancelled";
  * - iOS: written to the cache, then the native share sheet («حفظ في الملفات»,
  *   Mail, WhatsApp…) — `Share.share({ url })` takes a file URL on iOS.
  * - Android: RN's Share carries text only, so the system folder picker (SAF)
- *   asks where to save it, and the file is written there.
+ *   asks where to save it, and the file is written there. The picker opens in
+ *   the folder used last time, else «Documents» — never «Download», whose root
+ *   Android 11+ refuses («Can't use this folder»), which forced the user to
+ *   make a sub-folder first. So «Use this folder» is one tap. (A true
+ *   «save to Downloads» needs a native module — see the QA report F2.)
  *
  * `beforePresent` runs after the render, before any system UI is shown (the
  * caller waits there for its own menu sheet to finish dismissing — iOS will
@@ -44,11 +50,37 @@ export async function exportAndDeliver(
 
   let dir: Directory;
   try {
-    dir = await Directory.pickDirectoryAsync();
+    dir = await Directory.pickDirectoryAsync(pickerStartUri(readLastFolder()));
   } catch {
     return "cancelled"; // picker dismissed
   }
   const file = dir.createFile(name, EXPORT_MIME[format]);
   file.write(bytes);
+  rememberFolder(dir.uri);
   return "saved";
+}
+
+// The picker keeps a persisted grant on the chosen folder; the app only
+// remembers its URI so the next export opens there.
+function lastFolderFile(): File {
+  return new File(Paths.document, "export-folder.json");
+}
+
+function readLastFolder(): string | null {
+  try {
+    const file = lastFolderFile();
+    return file.exists ? parseLastFolder(file.textSync()) : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberFolder(treeUri: string): void {
+  try {
+    const file = lastFolderFile();
+    if (!file.exists) file.create();
+    file.write(serializeLastFolder(treeUri));
+  } catch {
+    // Best effort: the next export just opens in «Documents».
+  }
 }

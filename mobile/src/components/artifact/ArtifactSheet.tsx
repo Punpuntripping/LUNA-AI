@@ -1,6 +1,6 @@
 import { useIsFocused } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { Modal, Platform, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
+import { Modal, Platform, Pressable, StatusBar, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -87,6 +87,19 @@ export function ArtifactSheet({ itemId, isDemo, onClose }: ArtifactSheetProps) {
   }, []);
   const restore = activeId && anchor?.itemId === activeId ? anchor.anchor : null;
 
+  // QA F6: on Android the sheet is its own Dialog window, which copies the
+  // activity's status-bar appearance once at creation and could come up with
+  // dark icons over the dark canvas. Once shown (the window is registered with
+  // RN's StatusBar module as an extra window by then), push the theme's style
+  // again — StatusBar.setBarStyle applies it to the activity AND the dialog.
+  const { scheme } = useTheme();
+  const [shown, setShown] = useState(false);
+  if (!visible && shown) setShown(false);
+  useEffect(() => {
+    if (Platform.OS !== "android" || !shown) return;
+    StatusBar.setBarStyle(scheme === "dark" ? "light-content" : "dark-content", false);
+  }, [shown, scheme]);
+
   return (
     <Modal
       visible={visible}
@@ -96,6 +109,7 @@ export function ArtifactSheet({ itemId, isDemo, onClose }: ArtifactSheetProps) {
       statusBarTranslucent
       navigationBarTranslucent
       onRequestClose={onClose}
+      onShow={() => setShown(true)}
     >
       <SheetContent
         key={presented.seq}

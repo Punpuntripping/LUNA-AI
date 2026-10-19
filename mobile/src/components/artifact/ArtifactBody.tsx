@@ -1,6 +1,6 @@
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { router } from "expo-router";
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
 
 import { appendReferencesForCopy, type Reference, type WorkspaceFeedback, type WorkspaceItem } from "@contracts";
@@ -240,7 +240,7 @@ function SaveStatus({ saving, savedAt, updatedAt }: { saving: boolean; savedAt: 
         </AppText>
       </View>
       {updated ? (
-        <AppText variant="xs" tone="muted">
+        <AppText variant="xs" tone="muted" style={styles.shrink}>
           آخر تحديث: {updated}
         </AppText>
       ) : null}
@@ -336,6 +336,12 @@ interface PreviewListProps {
   onOpenSource?: (n: number, anchor: ScrollAnchor | null) => void;
 }
 
+/** Back from the reader, the restore re-applies while the content is still
+ *  being measured, until it stops growing for this long (or the user drags)… */
+const RESTORE_SETTLE_MS = 600;
+/** …and never for longer than this. */
+const RESTORE_MAX_MS = 2_500;
+
 /** The rendered read: markdown blocks + المراجع + disclaimer in one FlashList
  *  (long drafts stay smooth), padded so its end clears the action bar. */
 function PreviewList({ content, refs, bottomInset, restore, onOpenSource }: PreviewListProps) {
@@ -343,21 +349,51 @@ function PreviewList({ content, refs, bottomInset, restore, onOpenSource }: Prev
   // Mount-time value only: a later prop change must not re-scroll the list.
   const [initialAnchor] = useState(restore);
   const rows = useMemo(() => buildRows(content, refs), [content, refs]);
+  const rowCount = rows.length;
 
   const open = useMemo(
     () => (onOpenSource ? (n: number) => onOpenSource(n, readAnchor(listRef.current)) : undefined),
     [onOpenSource],
   );
 
-  // Back from the reader: start at the row the user left from, then nudge to
-  // the exact pixel once that row is measured.
-  const onLoad = useCallback(() => {
+  // Back from the reader (QA N5/F4): land on the row the user left from, at
+  // the same pixel. One scroll at load was not enough — the sheet's content
+  // is mounted fresh as the Modal slides in, so that first scroll ran before
+  // the native content had its height (Android clamps it to 0) and long
+  // markdown rows kept growing after it. So: bring the anchor row into the
+  // render window, then re-apply «row top + delta» on every content-size
+  // change until it settles; a drag hands control back to the user.
+  const restoring = useRef(initialAnchor !== null);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopRestore = useCallback(() => {
+    restoring.current = false;
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = null;
+  }, []);
+  useEffect(() => {
+    if (!restoring.current) return undefined;
+    const cap = setTimeout(stopRestore, RESTORE_MAX_MS);
+    return () => {
+      clearTimeout(cap);
+      stopRestore();
+    };
+  }, [stopRestore]);
+  const applyRestore = useCallback(() => {
     const list = listRef.current;
-    if (!list || !initialAnchor || initialAnchor.delta <= 0) return;
+    if (!restoring.current || !list || !initialAnchor) return;
     const layout = list.getLayout(initialAnchor.index);
     if (!layout) return;
     list.scrollToOffset({ offset: list.getFirstItemOffset() + layout.y + initialAnchor.delta, animated: false });
-  }, [initialAnchor]);
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(stopRestore, RESTORE_SETTLE_MS);
+  }, [initialAnchor, stopRestore]);
+  const onLoad = useCallback(() => {
+    const list = listRef.current;
+    if (!list || !initialAnchor || !restoring.current) return;
+    // Its row not there yet (المراجع still loading): content-size changes retry.
+    if (initialAnchor.index >= rowCount) return;
+    void list.scrollToIndex({ index: initialAnchor.index, animated: false }).then(applyRestore);
+  }, [initialAnchor, rowCount, applyRestore]);
 
   return (
     <FlashList
@@ -365,6 +401,8 @@ function PreviewList({ content, refs, bottomInset, restore, onOpenSource }: Prev
       data={rows}
       initialScrollIndex={initialAnchor && initialAnchor.index < rows.length ? initialAnchor.index : undefined}
       onLoad={onLoad}
+      onContentSizeChange={applyRestore}
+      onScrollBeginDrag={stopRestore}
       keyExtractor={(row) => row.key}
       getItemType={(row) => row.kind}
       renderItem={({ item: row }) => <>{renderRow(row, refs, open)}</>}
@@ -399,12 +437,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    // Large font scales (QA F5): the two halves wrap instead of clipping.
+    flexWrap: "wrap",
     gap: 8,
     paddingHorizontal: 16,
     paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  statusStart: { flexDirection: "row", alignItems: "center", gap: 6 },
+  statusStart: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
+  shrink: { flexShrink: 1 },
   block: { paddingBottom: 12 },
   refsHeading: { marginTop: 12, marginBottom: 8 },
   inlineState: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8, flexWrap: "wrap" },

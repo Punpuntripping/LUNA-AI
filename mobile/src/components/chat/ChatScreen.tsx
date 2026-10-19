@@ -13,6 +13,7 @@ import {
   type TextInput,
 } from "react-native";
 import { KeyboardChatScrollView, KeyboardController, KeyboardEvents, KeyboardStickyView } from "react-native-keyboard-controller";
+import { useSharedValue } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AGENT_OUTPUT_DISCLAIMER_AR, type ConversationListResponse, type ConversationSummary } from "@contracts";
@@ -33,6 +34,7 @@ import {
 import { useConversationDetail, useCreateConversation, useDeleteConversation } from "@/chat/use-conversations";
 import { useMessages } from "@/chat/use-messages";
 import { useParallelGate } from "@/chat/use-parallel-cap";
+import { MODAL_SETTLE_MS, useAnyModalOpen } from "@/lib/modal-coordinator";
 import { useArtifactInfo, useArtifactKinds } from "@/chat/use-workspace-lookup";
 import { AppText } from "@/components/AppText";
 import { ArtifactSheet } from "@/components/artifact/ArtifactSheet";
@@ -69,6 +71,11 @@ const OPEN_PIN_SETTLE_MS = 1_200;
 /** `c/new` waits this long for `message_start` before showing `c/{id}` anyway
  *  (a gate refusal comes back well before; this only bounds a slow start). */
 const FIRST_SEND_WAIT_MS = 4_000;
+/** After the last modal over the chat is gone, its dismissal's synthetic
+ *  keyboard event still has to pass before the list listens again (QA F3). */
+const MODAL_FREEZE_TAIL_MS = MODAL_SETTLE_MS + 200;
+/** A keyboard that does not report hidden by then is frozen over anyway. */
+const KEYBOARD_DISMISS_WAIT_MS = 1_000;
 
 /** While a user bubble is edited inline the list must NOT lift with the
  *  keyboard (QA F3) — read by the scroll component, whose identity must stay
@@ -350,6 +357,46 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
     if (conversationId && autoOpen) streamStore.consumeAutoOpen(conversationId, autoOpen.itemId);
   }, [conversationId, autoOpen, openedItemId]);
 
+  // ---- modals over the chat vs. the list's keyboard handling (QA F3) ----
+  // react-native-keyboard-controller re-syncs the keyboard whenever an RN Modal
+  // is shown or dismissed on Android (ModalAttachedWatcher): a bare onMove +
+  // onEnd of height 0, with no onStart. KeyboardChatScrollView then scrolls to
+  // «offset captured at the last keyboard open» — 0 if the keyboard was never
+  // opened in this visit — so closing the output sheet in a long conversation
+  // threw the chat to its first messages (and to a stale spot otherwise).
+  // While the sheet or the conversation menu is up — and for the tail of its
+  // dismissal — the list ignores keyboard events (the library's `freeze`, made
+  // for exactly this). A keyboard that is open when a modal comes up is
+  // dismissed first and handled normally, so no keyboard padding is left
+  // frozen into the list.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const sheetItemId = openedItemId ?? autoOpen?.itemId ?? null;
+  // Row long-press / copy menus are Modals too (shared Sheet registers with the
+  // modal coordinator) — they trigger the same keyboard re-sync on dismiss.
+  const anyModalOpen = useAnyModalOpen();
+  const modalOverChat = sheetItemId !== null || menuOpen || anyModalOpen;
+  const keyboardFrozen = useSharedValue(false);
+  useEffect(() => {
+    if (!modalOverChat) {
+      const tail = setTimeout(() => keyboardFrozen.set(false), MODAL_FREEZE_TAIL_MS);
+      return () => clearTimeout(tail);
+    }
+    if (!KeyboardController.isVisible()) {
+      keyboardFrozen.set(true);
+      return undefined;
+    }
+    let cancelled = false;
+    const freeze = () => {
+      if (!cancelled) keyboardFrozen.set(true);
+    };
+    void KeyboardController.dismiss().then(freeze);
+    const fallback = setTimeout(freeze, KEYBOARD_DISMISS_WAIT_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(fallback);
+    };
+  }, [modalOverChat, keyboardFrozen]);
+
   // ---- scrolling ----
   // QA N7: startRenderingFromBottom scrolls to the TOP of the last item, laid
   // out with ESTIMATED heights; real rows (markdown, chips, «افتح ال…») are
@@ -387,15 +434,16 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
     () =>
       function ChatScrollView(props: ScrollViewProps) {
         const lift = useContext(ListLiftContext);
-        return <KeyboardChatScrollView {...props} offset={bottomInset} keyboardLiftBehavior={lift} />;
+        return (
+          <KeyboardChatScrollView {...props} offset={bottomInset} keyboardLiftBehavior={lift} freeze={keyboardFrozen} />
+        );
       },
-    [bottomInset],
+    [bottomInset, keyboardFrozen],
   );
 
   // ---- header ----
   // Back to the list (a deep link may have opened the chat with no history).
   const leave = useCallback(() => (router.canGoBack() ? router.back() : router.replace("/")), []);
-  const [menuOpen, setMenuOpen] = useState(false);
   // F9: «محادثة جديدة» only for c/new or a conversation known to be untitled;
   // while an existing one loads, its cached list row's title or a blank header.
   const cached = useMemo(
@@ -500,7 +548,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       {conversationId ? (
         <ArtifactSheet
           conversationId={conversationId}
-          itemId={openedItemId ?? autoOpen?.itemId ?? null}
+          itemId={sheetItemId}
           isDemo={isDemo}
           onClose={closeArtifact}
         />

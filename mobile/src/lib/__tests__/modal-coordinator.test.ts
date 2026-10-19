@@ -81,4 +81,16 @@ describe("modalCoordinator", () => {
     clock.advance(MODAL_SETTLE_MS);
     assert.equal(c.msUntilSettled(), 0);
   });
+
+  test("subscribers see openCount changes on acquire and release", () => {
+    const c = createModalCoordinator();
+    const seen: number[] = [];
+    const unsubscribe = c.subscribe(() => seen.push(c.openCount()));
+    const release = c.acquire();
+    release();
+    release();
+    unsubscribe();
+    c.acquire();
+    assert.deepEqual(seen, [1, 0]);
+  });
 });

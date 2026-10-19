@@ -6,6 +6,10 @@ import {
   barSlots,
   barSpec,
   buildSaveBlogRequest,
+  compressionLadder,
+  compressionsAt,
+  hexWithAlpha,
+  nextFitLevel,
   buildShareRequest,
   draftPatch,
   exportDocTitle,
@@ -41,6 +45,44 @@ describe("bar layout (web WorkspaceItemActionBar order)", () => {
     assert.equal(spec.publishDisabled, true);
     assert.equal(spec.feedback, false);
     assert.deepEqual(barSlots(spec), ["share", "saveBlog", "copy", "export"]);
+  });
+});
+
+describe("phone fit (label dropping)", () => {
+  const writing = { toggle: true, share: true, saveBlog: true, export: true };
+
+  test("agent_writing drops longest labels first, toggle last", () => {
+    assert.deepEqual(compressionLadder(writing), [
+      "saveBlog",
+      "share",
+      "copy",
+      "export",
+      "toggleUnselected",
+      "toggleAll",
+    ]);
+  });
+
+  test("only steps that change this bar", () => {
+    assert.deepEqual(compressionLadder({ ...writing, toggle: false }), ["saveBlog", "share", "copy", "export"]);
+    assert.deepEqual(compressionLadder({ toggle: false, share: false, saveBlog: false, export: false }), ["copy"]);
+  });
+
+  test("level 0 keeps every label; level n applies the first n steps", () => {
+    const ladder = compressionLadder(writing);
+    assert.equal(compressionsAt(ladder, 0).size, 0);
+    assert.deepEqual([...compressionsAt(ladder, 2)], ["saveBlog", "share"]);
+    assert.equal(compressionsAt(ladder, 99).size, ladder.length);
+  });
+
+  test("steps down only while overflowing, never past the ladder", () => {
+    assert.equal(nextFitLevel(0, 6, 540, 344), 1);
+    assert.equal(nextFitLevel(3, 6, 340, 344), 3);
+    assert.equal(nextFitLevel(6, 6, 400, 344), 6);
+  });
+
+  test("hex colours get an alpha byte; others pass through", () => {
+    assert.equal(hexWithAlpha("#F7F2EC", 0.95), "#F7F2ECF2");
+    assert.equal(hexWithAlpha("rgba(0, 0, 0, 0.1)", 0.5), "rgba(0, 0, 0, 0.1)");
   });
 });
 

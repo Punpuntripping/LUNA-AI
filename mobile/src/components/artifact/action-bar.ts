@@ -44,6 +44,69 @@ export function barSlots(spec: BarSpec): BarSlot[] {
   return out;
 }
 
+// --- phone fit ---------------------------------------------------------------
+// The web's phone dock (`max-md:`) keeps every label and scrolls sideways when
+// the row is wider than the viewport. On a 360–420dp phone the agent_writing
+// row is ~540dp, so the app instead drops labels one control at a time —
+// longest / least important first — until the row fits. The label stays as the
+// accessibilityLabel (and a long-press toast). Order never changes.
+
+/** One step of label-dropping, applied in this order. */
+export type BarCompression = "saveBlog" | "share" | "copy" | "export" | "toggleUnselected" | "toggleAll";
+
+const COMPRESSION_ORDER: readonly BarCompression[] = [
+  "saveBlog",
+  "share",
+  "copy",
+  "export",
+  "toggleUnselected",
+  "toggleAll",
+];
+
+/** Which labelled controls the bar actually renders (نسخ always does). */
+export interface BarLabelled {
+  toggle: boolean;
+  share: boolean;
+  saveBlog: boolean;
+  export: boolean;
+}
+
+/** The compressions that change THIS bar (each step removes a visible label). */
+export function compressionLadder(present: BarLabelled): BarCompression[] {
+  return COMPRESSION_ORDER.filter((step) => {
+    switch (step) {
+      case "saveBlog":
+        return present.saveBlog;
+      case "share":
+        return present.share;
+      case "copy":
+        return true;
+      case "export":
+        return present.export;
+      case "toggleUnselected":
+      case "toggleAll":
+        return present.toggle;
+    }
+  });
+}
+
+/** The compressions in force at `level` (0 = every label, as on the web). */
+export function compressionsAt(ladder: readonly BarCompression[], level: number): ReadonlySet<BarCompression> {
+  return new Set(ladder.slice(0, Math.max(0, level)));
+}
+
+/** Next level after a measurement: one more step while the row overflows. */
+export function nextFitLevel(level: number, ladderLength: number, contentWidth: number, viewportWidth: number): number {
+  return contentWidth > viewportWidth + 0.5 && level < ladderLength ? level + 1 : level;
+}
+
+/** `#RRGGBB` → `#RRGGBBAA` (the web's `bg-background/95`); other forms as-is. */
+export function hexWithAlpha(colour: string, alpha: number): string {
+  if (!/^#[0-9a-f]{6}$/i.test(colour)) return colour;
+  const a = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
+  return colour + a.toString(16).padStart(2, "0").toUpperCase();
+}
+
 /** Tapping the active thumb clears the rating; the other thumb replaces it. */
 export function nextFeedback(current: WorkspaceFeedback, thumb: "up" | "down"): WorkspaceFeedback {
   return current === thumb ? null : thumb;

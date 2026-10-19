@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -8,6 +8,7 @@ import {
   useWindowDimensions,
   View,
   type ColorValue,
+  type LayoutChangeEvent,
 } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 
@@ -22,12 +23,32 @@ import { modalCoordinator } from "@/lib/modal-coordinator";
 import { showToast } from "@/stores/toast";
 import { useTheme } from "@/theme/ThemeProvider";
 
-import { EXPORT_ERROR, nextFeedback, type ViewMode } from "./action-bar";
+import {
+  compressionLadder,
+  compressionsAt,
+  EXPORT_ERROR,
+  hexWithAlpha,
+  nextFitLevel,
+  nextFeedback,
+  type ViewMode,
+} from "./action-bar";
 import { exportAndDeliver } from "./export-file";
 
-/** Height the floating bar takes over the viewer (pill + its gap) — hosts pad
- *  their scroll content by this so the end of the document clears it. */
-export const ACTION_BAR_SPACE = 68;
+/** The dock's own height above the safe-area inset — the web's `h-[3rem]`. */
+export const ACTION_BAR_HEIGHT = 48;
+
+/** Height the docked bar takes over the viewer, EXCLUDING the safe-area inset
+ *  (hosts add `bottomInset` themselves) — hosts pad their scroll content by
+ *  this so the end of the document, «المراجع» and the disclaimer clear it. */
+export const ACTION_BAR_SPACE = ACTION_BAR_HEIGHT;
+
+/** Web `h-9` / `w-9`: button height and icon-only width. */
+const CONTROL = 36;
+/** Half of the web's `gap-1`: each control's transparent side padding, so the
+ *  hit area spans the gap and the full bar height (48dp) without overlapping. */
+const HALF_GAP = 2;
+/** Give up hiding the bar while it measures after this long (never stuck invisible). */
+const FIT_TIMEOUT_MS = 400;
 
 export interface WorkspaceItemActionBarProps {
   /** Markdown نسخ copies (body + «المراجع») — also what PDF / Word export. */
@@ -54,6 +75,13 @@ export interface WorkspaceItemActionBarProps {
 
 type Menu = "copy" | "export" | null;
 
+interface Fit {
+  key: string;
+  level: number;
+  /** Measured and fitting (or out of steps) — the bar is shown. */
+  settled: boolean;
+}
+
 /**
  * The agent-output action bar — port of the web's WorkspaceItemActionBar
  * (frontend/components/workspace/WorkspaceItemActionBar.tsx), one standard:
@@ -61,10 +89,13 @@ type Menu = "copy" | "export" | null;
  * - agent_writing: معاينة/تحرير · مشاركة · حفظ كمدونة · نسخ · PDF · 👍 · 👎
  * - agent_search:  مشاركة · حفظ كمدونة · نسخ · PDF · 👍 · 👎
  *
- * A floating pill anchored bottom-left (the end side in RTL) over the viewer,
- * buttons in RTL order. Wider than the screen → it scrolls sideways (the web's
- * phone dock does the same). Not draggable. Every affordance is opt-in by prop,
- * exactly like the web.
+ * Rendered as the web's PHONE layout (`max-md:` "docked bar"): a full-width bar
+ * fixed to the bottom, 48dp + safe-area inset, top border, translucent canvas,
+ * `gap-1 px-2`, 36dp controls, `text-xs` labels, icon-only thumbs. Buttons in
+ * RTL order. Where the web scrolls the row sideways, the app drops labels one
+ * control at a time until the row fits (see `compressionLadder`) — the label
+ * stays as the accessibilityLabel and a long-press toast. Every affordance is
+ * opt-in by prop, exactly like the web.
  */
 export function WorkspaceItemActionBar({
   copyText,
@@ -80,8 +111,8 @@ export function WorkspaceItemActionBar({
   feedbackPending = false,
   bottomInset,
 }: WorkspaceItemActionBarProps) {
-  const { colours, radius, shadows } = useTheme();
-  const { width } = useWindowDimensions();
+  const { colours, radius } = useTheme();
+  const { width, fontScale } = useWindowDimensions();
   const [menu, setMenu] = useState<Menu>(null);
   const [exporting, setExporting] = useState(false);
   const mounted = useRef(true);
@@ -94,6 +125,45 @@ export function WorkspaceItemActionBar({
 
   const canCopy = copyText.trim().length > 0;
   const publishDisabled = !!publishDisabledHint;
+  const showToggle = mode !== undefined && onModeChange !== undefined;
+
+  // --- fit: drop labels until the row is no wider than the screen ----------
+  const ladder = useMemo(
+    () =>
+      compressionLadder({
+        toggle: showToggle,
+        share: onShare !== undefined,
+        saveBlog: onSaveBlog !== undefined,
+        export: exportTitle !== undefined,
+      }),
+    [showToggle, onShare, onSaveBlog, exportTitle],
+  );
+  const fitKey = `${width}|${fontScale}|${ladder.join(",")}`;
+  const [fitState, setFit] = useState<Fit>({ key: fitKey, level: 0, settled: false });
+  // Screen / font scale / controls changed → measure again from full labels.
+  const fit = fitState.key === fitKey ? fitState : { key: fitKey, level: 0, settled: false };
+  if (fitState.key !== fitKey) setFit(fit);
+  const compact = compressionsAt(ladder, fit.level);
+
+  const viewportWidth = useRef(0);
+  const contentWidth = useRef(0);
+  const evaluate = () => {
+    const v = viewportWidth.current;
+    const c = contentWidth.current;
+    if (v <= 0 || c <= 0) return;
+    setFit((prev) => {
+      if (prev.key !== fitKey) return prev;
+      const level = nextFitLevel(prev.level, ladder.length, c, v);
+      if (level !== prev.level) return { ...prev, level };
+      return prev.settled ? prev : { ...prev, settled: true };
+    });
+  };
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFit((prev) => (prev.key === fitKey && !prev.settled ? { ...prev, settled: true } : prev));
+    }, FIT_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [fitKey]);
 
   const runExport = async (format: ExportFormat) => {
     if (exporting || exportTitle === undefined) return;
@@ -123,38 +193,58 @@ export function WorkspaceItemActionBar({
   return (
     <>
       {/* The dock rides on top of the keyboard while a draft is edited (same
-          offsets as the chat composer), so معاينة stays one tap away. It has
-          the bar's real height: Android drops touches outside a parent. */}
+          offsets as the chat composer), so معاينة stays one tap away; its
+          safe-area padding then tucks behind the keyboard. */}
       <KeyboardStickyView
         offset={{ closed: 0, opened: bottomInset }}
-        pointerEvents="box-none"
-        style={[styles.dock, { height: bottomInset + ACTION_BAR_SPACE }]}
+        style={[
+          styles.dock,
+          {
+            height: ACTION_BAR_HEIGHT + bottomInset,
+            paddingBottom: bottomInset,
+            // Web: bg-background/95 + backdrop-blur (no blur module in the app).
+            backgroundColor: hexWithAlpha(colours.canvas, 0.95),
+            borderTopColor: colours.border,
+          },
+        ]}
       >
-        <View
-          style={[
-            styles.pill,
-            {
-              bottom: bottomInset + 8,
-              maxWidth: width - 24,
-              backgroundColor: colours.surface1,
-              borderColor: colours.border,
-              borderRadius: radius.xl,
-              boxShadow: shadows.shadowMd,
-            },
-          ]}
+        <ScrollView
+          horizontal
+          // Last resort only (tiny screen + largest font): every label already dropped.
+          showsHorizontalScrollIndicator={false}
+          bounces={false}
+          keyboardShouldPersistTaps="handled"
+          onLayout={(e: LayoutChangeEvent) => {
+            viewportWidth.current = e.nativeEvent.layout.width;
+            evaluate();
+          }}
+          onContentSizeChange={(w) => {
+            contentWidth.current = w;
+            evaluate();
+          }}
+          style={[styles.scroller, { opacity: fit.settled ? 1 : 0 }]}
+          contentContainerStyle={styles.row}
           testID="wi-action-bar"
         >
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row} bounces={false}>
-            {mode !== undefined && onModeChange ? (
+          {showToggle ? (
+            <View style={styles.slot}>
               <View
                 accessibilityRole="tablist"
                 accessibilityLabel="وضع العرض"
-                style={[styles.toggle, { borderColor: colours.border, backgroundColor: colours.surface2, borderRadius: radius.default }]}
+                style={[
+                  styles.toggle,
+                  {
+                    borderColor: colours.border,
+                    backgroundColor: hexWithAlpha(colours.surface2, 0.3),
+                    borderRadius: radius.default,
+                  },
+                ]}
               >
                 <ToggleTab
                   label="تحرير"
                   icon="edit"
                   selected={mode === "edit"}
+                  iconOnly={compact.has("toggleAll") || (compact.has("toggleUnselected") && mode !== "edit")}
                   disabled={editDisabled}
                   onPress={() => onModeChange("edit")}
                   testID="wi-mode-edit"
@@ -163,73 +253,84 @@ export function WorkspaceItemActionBar({
                   label="معاينة"
                   icon="preview"
                   selected={mode === "preview"}
+                  iconOnly={compact.has("toggleAll") || (compact.has("toggleUnselected") && mode !== "preview")}
                   onPress={() => onModeChange("preview")}
                   testID="wi-mode-preview"
                 />
               </View>
-            ) : null}
+            </View>
+          ) : null}
 
-            {onShare ? (
-              <BarButton
-                label="مشاركة"
-                a11yLabel="مشاركة عبر رابط"
-                icon="share"
-                looksDisabled={publishDisabled}
-                hint={publishDisabledHint}
-                onPress={publishPress(onShare)}
-                testID="wi-share"
+          {onShare ? (
+            <BarButton
+              label="مشاركة"
+              a11yLabel="مشاركة عبر رابط"
+              icon="share"
+              iconOnly={compact.has("share")}
+              looksDisabled={publishDisabled}
+              hint={publishDisabledHint}
+              onPress={publishPress(onShare)}
+              testID="wi-share"
+            />
+          ) : null}
+
+          {onSaveBlog ? (
+            <BarButton
+              label="حفظ كمدونة"
+              icon="bookmarkAdd"
+              iconOnly={compact.has("saveBlog")}
+              looksDisabled={publishDisabled}
+              hint={publishDisabledHint}
+              onPress={publishPress(onSaveBlog)}
+              testID="wi-save-blog"
+            />
+          ) : null}
+
+          <BarButton
+            label="نسخ"
+            icon="copy"
+            iconOnly={compact.has("copy")}
+            disabled={!canCopy}
+            onPress={() => setMenu("copy")}
+            testID="wi-copy"
+          />
+
+          {exportTitle !== undefined ? (
+            <BarButton
+              label="PDF"
+              a11yLabel={exporting ? "جارٍ تجهيز الملف" : "تنزيل كملف PDF أو Word"}
+              icon="download"
+              iconOnly={compact.has("export")}
+              busy={exporting}
+              disabled={!canCopy || exporting}
+              onPress={() => setMenu("export")}
+              testID="wi-export"
+            />
+          ) : null}
+
+          {onFeedback ? (
+            <>
+              <ThumbButton
+                label="إعجاب"
+                icon={feedback === "up" ? "thumbUpFill" : "thumbUp"}
+                active={feedback === "up"}
+                activeColour={colours.primary}
+                disabled={feedbackPending}
+                onPress={() => onFeedback(nextFeedback(feedback, "up"))}
+                testID="wi-like"
               />
-            ) : null}
-
-            {onSaveBlog ? (
-              <BarButton
-                label="حفظ كمدونة"
-                icon="bookmarkAdd"
-                looksDisabled={publishDisabled}
-                hint={publishDisabledHint}
-                onPress={publishPress(onSaveBlog)}
-                testID="wi-save-blog"
+              <ThumbButton
+                label="عدم إعجاب"
+                icon={feedback === "down" ? "thumbDownFill" : "thumbDown"}
+                active={feedback === "down"}
+                activeColour={colours.destructive}
+                disabled={feedbackPending}
+                onPress={() => onFeedback(nextFeedback(feedback, "down"))}
+                testID="wi-dislike"
               />
-            ) : null}
-
-            <BarButton label="نسخ" icon="copy" disabled={!canCopy} onPress={() => setMenu("copy")} testID="wi-copy" />
-
-            {exportTitle !== undefined ? (
-              <BarButton
-                label="PDF"
-                a11yLabel={exporting ? "جارٍ تجهيز الملف" : "تنزيل كملف PDF أو Word"}
-                icon="download"
-                busy={exporting}
-                disabled={!canCopy || exporting}
-                onPress={() => setMenu("export")}
-                testID="wi-export"
-              />
-            ) : null}
-
-            {onFeedback ? (
-              <>
-                <ThumbButton
-                  label="إعجاب"
-                  icon={feedback === "up" ? "thumbUpFill" : "thumbUp"}
-                  active={feedback === "up"}
-                  activeColour={colours.primary}
-                  disabled={feedbackPending}
-                  onPress={() => onFeedback(nextFeedback(feedback, "up"))}
-                  testID="wi-like"
-                />
-                <ThumbButton
-                  label="عدم إعجاب"
-                  icon={feedback === "down" ? "thumbDownFill" : "thumbDown"}
-                  active={feedback === "down"}
-                  activeColour={colours.destructive}
-                  disabled={feedbackPending}
-                  onPress={() => onFeedback(nextFeedback(feedback, "down"))}
-                  testID="wi-dislike"
-                />
-              </>
-            ) : null}
-          </ScrollView>
-        </View>
+            </>
+          ) : null}
+        </ScrollView>
       </KeyboardStickyView>
 
       <ActionSheet
@@ -247,6 +348,8 @@ interface BarButtonProps {
   /** Screen-reader label when it differs from the visible text. */
   a11yLabel?: string;
   icon: IconName;
+  /** Label dropped to fit the screen: a square 36dp icon button. */
+  iconOnly?: boolean;
   onPress: () => void;
   disabled?: boolean;
   /** Dimmed and announced disabled, but still tappable (shows `hint`). */
@@ -256,9 +359,21 @@ interface BarButtonProps {
   testID?: string;
 }
 
-/** Ghost icon + label (the web's `variant="ghost" size="sm"` bar button). */
-function BarButton({ label, a11yLabel, icon, onPress, disabled = false, looksDisabled = false, hint, busy = false, testID }: BarButtonProps) {
-  const { colours } = useTheme();
+/** Ghost icon + label — the web's `variant="ghost" size="sm"` bar button at
+ *  `max-md:h-9 gap-1.5 px-2 text-xs`. */
+function BarButton({
+  label,
+  a11yLabel,
+  icon,
+  iconOnly = false,
+  onPress,
+  disabled = false,
+  looksDisabled = false,
+  hint,
+  busy = false,
+  testID,
+}: BarButtonProps) {
+  const { colours, radius } = useTheme();
   const dim = disabled || looksDisabled;
   return (
     <Pressable
@@ -269,12 +384,29 @@ function BarButton({ label, a11yLabel, icon, onPress, disabled = false, looksDis
       accessibilityState={{ disabled: dim, busy }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.button, { opacity: dim ? 0.45 : pressed ? 0.6 : 1 }]}
+      // The web's hover tooltip, for a control whose label was dropped.
+      onLongPress={iconOnly ? () => showToast(label) : undefined}
+      style={[styles.slot, { opacity: dim ? 0.45 : 1 }]}
     >
-      {busy ? <ActivityIndicator size="small" color={colours.textMuted} /> : <Icon name={icon} size={16} colour={colours.textMuted} />}
-      <AppText variant="sm" style={{ color: colours.textMuted }} numberOfLines={1}>
-        {label}
-      </AppText>
+      {({ pressed }) => (
+        <View
+          style={[
+            iconOnly ? styles.iconFace : styles.buttonFace,
+            { borderRadius: radius.default, backgroundColor: pressed ? colours.surface2 : "transparent" },
+          ]}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={colours.textMuted} />
+          ) : (
+            <Icon name={icon} size={iconOnly ? 18 : 15} colour={colours.textMuted} />
+          )}
+          {iconOnly ? null : (
+            <AppText variant="xs" style={{ color: colours.textMuted }} numberOfLines={1}>
+              {label}
+            </AppText>
+          )}
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -283,12 +415,15 @@ interface ToggleTabProps {
   label: string;
   icon: IconName;
   selected: boolean;
+  iconOnly: boolean;
   disabled?: boolean;
   onPress: () => void;
   testID?: string;
 }
 
-function ToggleTab({ label, icon, selected, disabled = false, onPress, testID }: ToggleTabProps) {
+/** One segment of معاينة/تحرير — web `max-md:h-9 gap-1 px-2 text-xs`, the
+ *  selected one in `variant="default"` (primary). */
+function ToggleTab({ label, icon, selected, iconOnly, disabled = false, onPress, testID }: ToggleTabProps) {
   const { colours, radius } = useTheme();
   const fg = selected ? colours.primaryFg : colours.textMuted;
   return (
@@ -298,21 +433,25 @@ function ToggleTab({ label, icon, selected, disabled = false, onPress, testID }:
       accessibilityLabel={label}
       accessibilityState={{ selected, disabled }}
       disabled={disabled}
-      hitSlop={{ top: 2, bottom: 2 }}
+      // 36dp segment + 6 + 6 = the bar's full 48dp.
+      hitSlop={{ top: 6, bottom: 6 }}
       onPress={onPress}
+      onLongPress={iconOnly ? () => showToast(label) : undefined}
       style={({ pressed }) => [
-        styles.tab,
+        iconOnly ? styles.tabIcon : styles.tab,
         {
-          backgroundColor: selected ? colours.primary : "transparent",
+          backgroundColor: selected ? colours.primary : pressed ? colours.surface2 : "transparent",
           borderRadius: radius.sm,
-          opacity: disabled ? 0.45 : pressed ? 0.75 : 1,
+          opacity: disabled ? 0.45 : 1,
         },
       ]}
     >
-      <Icon name={icon} size={14} colour={fg} />
-      <AppText variant="sm" weight={selected ? 600 : 400} style={{ color: fg }} numberOfLines={1}>
-        {label}
-      </AppText>
+      <Icon name={icon} size={iconOnly ? 16 : 13} colour={fg} />
+      {iconOnly ? null : (
+        <AppText variant="xs" weight={selected ? 600 : 400} style={{ color: fg }} numberOfLines={1}>
+          {label}
+        </AppText>
+      )}
     </Pressable>
   );
 }
@@ -327,8 +466,9 @@ interface ThumbButtonProps {
   testID?: string;
 }
 
+/** Icon-only `size="icon"` thumb — web `max-md:h-9 max-md:w-9`. */
 function ThumbButton({ label, icon, active, activeColour, disabled, onPress, testID }: ThumbButtonProps) {
-  const { colours } = useTheme();
+  const { colours, radius } = useTheme();
   return (
     <Pressable
       testID={testID}
@@ -338,25 +478,40 @@ function ThumbButton({ label, icon, active, activeColour, disabled, onPress, tes
       accessibilityState={{ selected: active, disabled }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.thumb, { opacity: disabled ? 0.45 : pressed ? 0.6 : 1 }]}
+      onLongPress={() => showToast(label)}
+      style={[styles.slot, { opacity: disabled ? 0.45 : 1 }]}
     >
-      <Icon name={icon} size={Platform.OS === "ios" ? 17 : 18} colour={active ? activeColour : colours.textMuted} />
+      {({ pressed }) => (
+        <View
+          style={[styles.iconFace, { borderRadius: radius.default, backgroundColor: pressed ? colours.surface2 : "transparent" }]}
+        >
+          <Icon name={icon} size={Platform.OS === "ios" ? 17 : 18} colour={active ? activeColour : colours.textMuted} />
+        </View>
+      )}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  dock: { position: "absolute", start: 0, end: 0, bottom: 0 },
-  pill: {
+  dock: {
     position: "absolute",
-    end: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
+    start: 0,
+    end: 0,
+    bottom: 0,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    boxShadow: "0px -1px 3px rgba(0, 0, 0, 0.08)",
     direction: "rtl",
   },
-  row: { flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 4, paddingVertical: 4 },
+  scroller: { height: ACTION_BAR_HEIGHT, flexGrow: 0 },
+  // px-2 (8dp) = 6 here + each control's 2dp half-gap.
+  // flexGrow: a row that fits still fills the bar and starts at the right (RTL).
+  row: { flexGrow: 1, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 - HALF_GAP },
+  // Every control: full bar height, half the gap on each side (gap-1 = 4dp).
+  slot: { height: ACTION_BAR_HEIGHT, paddingHorizontal: HALF_GAP, alignItems: "center", justifyContent: "center" },
+  buttonFace: { flexDirection: "row", alignItems: "center", gap: 6, height: CONTROL, paddingHorizontal: 8 },
+  iconFace: { width: CONTROL, height: CONTROL, alignItems: "center", justifyContent: "center" },
+  // rounded-md border bg-muted/30 p-0.5 gap-0.5
   toggle: { flexDirection: "row", alignItems: "center", gap: 2, padding: 2, borderWidth: StyleSheet.hairlineWidth },
-  tab: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 40, paddingHorizontal: 10 },
-  button: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 10 },
-  thumb: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  tab: { flexDirection: "row", alignItems: "center", gap: 4, height: CONTROL, paddingHorizontal: 8 },
+  tabIcon: { width: CONTROL, height: CONTROL, alignItems: "center", justifyContent: "center" },
 });
