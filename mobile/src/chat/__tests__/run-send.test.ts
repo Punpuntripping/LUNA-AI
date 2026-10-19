@@ -598,6 +598,65 @@ describe("retry / regenerate", () => {
     await p;
   });
 
+  test("retry refused by the server keeps the failed row — its text is never lost (QA F4)", async () => {
+    const h = harness();
+    h.cache.seed(C1, [msg({ message_id: "f1", role: "user", content: "نص لا يضيع", isFailed: true })]);
+    const p = h.engine.retry(C1, "f1");
+    await tick();
+    h.streams[0].push(frame("quota_exceeded", { meter: "ord", period: "monthly", used: 6, limit: 5, resets_at: "", message_ar: "حد" }));
+    const result = await p;
+    assert.equal(result.status, "refused");
+    // The composer may hold newer text: nothing is restored there…
+    assert.equal(result.status === "refused" && result.restoreText, null);
+    // …the failed bubble comes back instead (once — the optimistic retry row is gone).
+    const users = h.cache.rows(C1).filter((m) => m.role === "user");
+    assert.equal(users.length, 1);
+    assert.equal(users[0].message_id, "f1");
+    assert.equal(users[0].content, "نص لا يضيع");
+    assert.equal(users[0].isFailed, true);
+    assert.equal(users[0].isOptimistic, false);
+    assert.deepEqual(h.store.getState().notices[C1]?.kind, "quota");
+  });
+
+  test("retry refused by the parallel cap also keeps the failed row", async () => {
+    const h = harness();
+    h.cache.seed(C1, [msg({ message_id: "f1", role: "user", content: "نص ثان", isFailed: true })]);
+    const p = h.engine.retry(C1, "f1");
+    await tick();
+    h.streams[0].push(frame("parallel_limit", { detail: "حد التوازي", limit: 1, running: 1, running_conversation_ids: [], upgrade_plan: null }));
+    const result = await p;
+    assert.equal(result.status === "refused" && result.reason, "parallel_limit");
+    const users = h.cache.rows(C1).filter((m) => m.role === "user");
+    assert.deepEqual(
+      users.map((m) => [m.message_id, m.content, m.isFailed]),
+      [["f1", "نص ثان", true]],
+    );
+  });
+
+  test("retry answered «duplicate» does not resurrect the failed row (the server has it)", async () => {
+    const h = harness();
+    h.cache.seed(C1, [msg({ message_id: "f1", role: "user", content: "مكرر", isFailed: true })]);
+    const p = h.engine.retry(C1, "f1");
+    await tick();
+    h.streams[0].push(frame("duplicate", { assistant_message_id: "a0", conversation_id: C1, detail: "رسالة مكررة" }));
+    const result = await p;
+    assert.equal(result.status === "refused" && result.reason, "duplicate");
+    assert.equal(h.cache.rows(C1).some((m) => m.message_id === "f1"), false);
+  });
+
+  test("regenerate refused → no text restored (the question is still listed)", async () => {
+    const h = harness();
+    h.cache.seed(C1, [
+      msg({ message_id: "a0", role: "assistant", content: "جواب" }),
+      msg({ message_id: "u0", role: "user", content: "السؤال الأصلي" }),
+    ]);
+    const p = h.engine.regenerate(C1, "a0");
+    await tick();
+    h.streams[0].push(frame("quota_exceeded", { meter: "ord", period: "monthly", used: 6, limit: 5, resets_at: "", message_ar: "حد" }));
+    const result = await p;
+    assert.equal(result.status === "refused" && result.restoreText, null);
+  });
+
   test("regenerate re-sends the preceding user message", async () => {
     const h = harness();
     h.cache.seed(C1, [

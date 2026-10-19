@@ -1,6 +1,7 @@
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
+import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   ScrollView,
@@ -11,16 +12,17 @@ import {
   type ScrollViewProps,
   type TextInput,
 } from "react-native";
-import { KeyboardChatScrollView, KeyboardStickyView } from "react-native-keyboard-controller";
+import { KeyboardChatScrollView, KeyboardController, KeyboardEvents, KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AGENT_OUTPUT_DISCLAIMER_AR, type ConversationSummary } from "@contracts";
+import { AGENT_OUTPUT_DISCLAIMER_AR, type ConversationListResponse, type ConversationSummary } from "@contracts";
 
 import { errorMessage } from "@/api/errors";
 import { useSession } from "@/auth/session-store";
 import { chatEngine } from "@/chat/chat-engine";
 import { buildChatItems, type ChatItem } from "@/chat/chat-items";
-import { chronological } from "@/chat/message-cache";
+import { conversationKeys, messageKeys } from "@/chat/keys";
+import { chronological, type MessagesData } from "@/chat/message-cache";
 import {
   streamStore,
   useAutoOpen,
@@ -28,7 +30,7 @@ import {
   useStreamPhase,
   useStreamingMessageId,
 } from "@/chat/stream-store";
-import { useConversationDetail, useCreateConversation } from "@/chat/use-conversations";
+import { useConversationDetail, useCreateConversation, useDeleteConversation } from "@/chat/use-conversations";
 import { useMessages } from "@/chat/use-messages";
 import { useParallelGate } from "@/chat/use-parallel-cap";
 import { useArtifactInfo, useArtifactKinds } from "@/chat/use-workspace-lookup";
@@ -49,14 +51,41 @@ import { NoticeBanner } from "./NoticeBanner";
 import { ScrollToBottom } from "./ScrollToBottom";
 
 // M1 — the chat. `conversationId === null` is `c/new`: the first send creates
-// the conversation (POST), replaces the route with `c/{id}` and sends there —
-// the send engine is app-wide, so the stream survives the route swap.
+// the conversation (POST), sends there, and replaces the route with `c/{id}`
+// once the server took the send (`message_start`) — the send engine is
+// app-wide, so the stream survives the route swap. A first send REFUSED by the
+// gate (quota / parallel — nothing persisted) deletes that just-created, empty
+// conversation and stays on `c/new` with the text and the banner (QA F6), so
+// no empty «محادثة جديدة» is left in the list.
 //
 // Layout (top → bottom): header · FlashList (NOT inverted, plan M2) · notices
 // + composer + AI footer in a KeyboardStickyView. The list's scroll view is a
 // KeyboardChatScrollView, so the newest messages lift with the keyboard.
 
 const SCROLL_PILL_DISTANCE = 400;
+/** `c/new` waits this long for `message_start` before showing `c/{id}` anyway
+ *  (a gate refusal comes back well before; this only bounds a slow start). */
+const FIRST_SEND_WAIT_MS = 4_000;
+
+/** While a user bubble is edited inline the list must NOT lift with the
+ *  keyboard (QA F3) — read by the scroll component, whose identity must stay
+ *  stable (a new component type would remount the list's ScrollView). */
+const ListLiftContext = createContext<"whenAtEnd" | "never">("whenAtEnd");
+
+/** A conversation's summary from any cached list page (F9: the header can show
+ *  the real title while the detail query is still loading). */
+function findInLists(
+  pages: [unknown, InfiniteData<ConversationListResponse> | undefined][],
+  id: string,
+): ConversationSummary | null {
+  for (const [, data] of pages) {
+    for (const page of data?.pages ?? []) {
+      const hit = page.conversations.find((c) => c.conversation_id === id);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
 
 const keyExtractor = (item: ChatItem) => item.key;
 const getItemType = (item: ChatItem) => item.kind;
@@ -105,12 +134,50 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   const draft = useDraft(draftKey);
   const setDraft = useComposerDrafts((s) => s.setDraft);
   const restoreDraft = useComposerDrafts((s) => s.restoreDraft);
+  const qc = useQueryClient();
   const create = useCreateConversation();
+  const removeConversation = useDeleteConversation();
   const [createError, setCreateError] = useState<string | null>(null);
+  // c/new: created + sent, waiting for the server to take it (see top note).
+  const [firstSending, setFirstSending] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const scrollToEnd = useCallback(() => {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
   }, []);
+
+  // ---- inline edit (QA F3) ----
+  // Editing a bubble near the end: the keyboard lifted the list (whenAtEnd, the
+  // newest answer stays visible) and the growing edit box could trip
+  // maintainVisibleContentPosition's auto-scroll to the end — both pushed the
+  // edited bubble off the top. While a bubble is edited: no lift, no
+  // end-autoscroll, and once the keyboard is up the row is scrolled to the top
+  // of the visible area (its input + «حفظ وإرسال» sit right under it).
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const setEditingMessage = useCallback((messageId: string, editing: boolean) => {
+    setEditingId((current) => (editing ? messageId : current === messageId ? null : current));
+  }, []);
+  const itemsRef = useRef<ChatItem[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+  const revealEdited = useCallback((messageId: string) => {
+    const index = itemsRef.current.findIndex((it) => it.key === messageId);
+    // FlashList ADDS viewOffset to the target offset: negative = a gap above.
+    if (index >= 0) void listRef.current?.scrollToIndex({ index, viewPosition: 0, viewOffset: -8, animated: true });
+  }, []);
+  useEffect(() => {
+    if (!editingId) return;
+    if (KeyboardController.isVisible()) revealEdited(editingId);
+    const sub = KeyboardEvents.addListener("keyboardDidShow", () => revealEdited(editingId));
+    return () => sub.remove();
+  }, [editingId, revealEdited]);
 
   const startSend = useCallback(
     (id: string, content: string) => {
@@ -134,16 +201,61 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       return;
     }
     setCreateError(null);
+    streamStore.setNotice(NEW_CHAT_DRAFT, null);
+    let id: string;
     try {
       const created = await create.mutateAsync();
-      const id = created.conversation_id;
-      setDraft(NEW_CHAT_DRAFT, "");
-      startSend(id, content);
-      router.replace({ pathname: "/c/[id]", params: { id } });
+      id = created.conversation_id;
     } catch (err) {
       setCreateError(errorMessage(err));
+      return;
     }
-  }, [draft, conversationId, draftKey, setDraft, startSend, scrollToEnd, create]);
+    setDraft(NEW_CHAT_DRAFT, "");
+    setFirstSending(true);
+    let settled = false;
+    const open = () => {
+      if (settled) return;
+      settled = true;
+      setFirstSending(false);
+      if (mounted.current) router.replace({ pathname: "/c/[id]", params: { id } });
+    };
+    const timer = setTimeout(open, FIRST_SEND_WAIT_MS);
+    chatEngine
+      .send({
+        conversationId: id,
+        content,
+        onCommitted: () => {
+          clearTimeout(timer);
+          open();
+        },
+      })
+      .then((result) => {
+        clearTimeout(timer);
+        if (result.status === "refused") {
+          // Already shown as c/{id} (slow refusal after the fallback) but the
+          // conversation still has no message: same clean-up, back to c/new.
+          const navigated = settled;
+          const persisted = chronological(qc.getQueryData<MessagesData>(messageKeys.list(id))).some(
+            (m) => !m.isOptimistic && !m.isFailed,
+          );
+          if (!navigated || !persisted) {
+            // Nothing was persisted: drop the empty conversation, keep the user
+            // on c/new with their text and the server's banner.
+            settled = true;
+            setFirstSending(false);
+            streamStore.setNotice(id, null);
+            streamStore.setNotice(NEW_CHAT_DRAFT, result.notice);
+            if (result.restoreText) restoreDraft(NEW_CHAT_DRAFT, result.restoreText);
+            removeConversation.mutate(id);
+            if (navigated) router.replace("/c/new");
+            return;
+          }
+          if (result.restoreText) restoreDraft(id, result.restoreText);
+        }
+        open();
+      })
+      .catch(() => open());
+  }, [draft, conversationId, draftKey, setDraft, startSend, scrollToEnd, create, restoreDraft, removeConversation, qc]);
 
   const onStop = useCallback(() => {
     if (conversationId) chatEngine.stop(conversationId);
@@ -160,6 +272,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
         setDraft(draftKey, text);
         setTimeout(() => inputRef.current?.focus(), 50);
       },
+      setEditingMessage,
       editAndResend: (text) => {
         if (!conversationId) return;
         startSend(conversationId, text);
@@ -178,7 +291,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       },
       openArtifact: setOpenedItemId,
     }),
-    [conversationId, isDemo, artifactKinds, artifactInfo, draftKey, setDraft, startSend, scrollToEnd],
+    [conversationId, isDemo, artifactKinds, artifactInfo, draftKey, setDraft, setEditingMessage, startSend, scrollToEnd],
   );
 
   // ---- auto-open agent outputs over the chat (owner decision 2026-10-15) ----
@@ -211,7 +324,8 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   const renderScrollComponent = useMemo(
     () =>
       function ChatScrollView(props: ScrollViewProps) {
-        return <KeyboardChatScrollView {...props} offset={bottomInset} keyboardLiftBehavior="whenAtEnd" />;
+        const lift = useContext(ListLiftContext);
+        return <KeyboardChatScrollView {...props} offset={bottomInset} keyboardLiftBehavior={lift} />;
       },
     [bottomInset],
   );
@@ -220,7 +334,17 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   // Back to the list (a deep link may have opened the chat with no history).
   const leave = useCallback(() => (router.canGoBack() ? router.back() : router.replace("/")), []);
   const [menuOpen, setMenuOpen] = useState(false);
-  const title = conversationId ? conversationTitle(conversation) : DEFAULT_TITLE;
+  // F9: «محادثة جديدة» only for c/new or a conversation known to be untitled;
+  // while an existing one loads, its cached list row's title or a blank header.
+  const cached = useMemo(
+    () =>
+      conversationId
+        ? findInLists(qc.getQueriesData<InfiniteData<ConversationListResponse>>({ queryKey: conversationKeys.lists() }), conversationId)
+        : null,
+    [qc, conversationId],
+  );
+  const known = conversation ?? cached;
+  const title = !conversationId ? DEFAULT_TITLE : known ? conversationTitle(known) : "";
 
   const loading = !!conversationId && messagesQuery.isPending;
   const loadError = conversationId && messagesQuery.isError && !data ? errorMessage(messagesQuery.error) : null;
@@ -252,25 +376,30 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
           <EmptyChat />
         ) : (
           <ChatRowProvider value={rowActions}>
-            <FlashList
-              ref={listRef}
-              data={items}
-              renderItem={renderItem}
-              keyExtractor={keyExtractor}
-              getItemType={getItemType}
-              renderScrollComponent={renderScrollComponent}
-              maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}
-              onStartReached={onStartReached}
-              onStartReachedThreshold={0.5}
-              onScroll={onScroll}
-              scrollEventThrottle={100}
-              keyboardShouldPersistTaps="handled"
-              keyboardDismissMode="interactive"
-              contentContainerStyle={styles.listContent}
-              ListHeaderComponent={
-                isFetchingNextPage ? <ActivityIndicator style={styles.older} color={colours.textMuted} /> : null
-              }
-            />
+            <ListLiftContext.Provider value={editingId ? "never" : "whenAtEnd"}>
+              <FlashList
+                ref={listRef}
+                data={items}
+                renderItem={renderItem}
+                keyExtractor={keyExtractor}
+                getItemType={getItemType}
+                renderScrollComponent={renderScrollComponent}
+                maintainVisibleContentPosition={{
+                  startRenderingFromBottom: true,
+                  autoscrollToBottomThreshold: editingId ? undefined : 0.2,
+                }}
+                onStartReached={onStartReached}
+                onStartReachedThreshold={0.5}
+                onScroll={onScroll}
+                scrollEventThrottle={100}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="interactive"
+                contentContainerStyle={styles.listContent}
+                ListHeaderComponent={
+                  isFetchingNextPage ? <ActivityIndicator style={styles.older} color={colours.textMuted} /> : null
+                }
+              />
+            </ListLiftContext.Provider>
             <ScrollToBottom visible={showPill} onPress={() => listRef.current?.scrollToEnd({ animated: true })} />
           </ChatRowProvider>
         )}
@@ -278,7 +407,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
 
       <KeyboardStickyView offset={{ closed: 0, opened: bottomInset }}>
         <View style={styles.bottom}>
-          {conversationId ? <NoticeBanner conversationId={conversationId} /> : null}
+          <NoticeBanner conversationId={conversationId ?? NEW_CHAT_DRAFT} />
           {createError ? <ErrorBanner message={createError} /> : null}
         </View>
         <Composer
@@ -290,7 +419,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
           running={running}
           atParallelCap={parallel.atCap}
           parallelCap={parallel.cap}
-          busy={create.isPending}
+          busy={create.isPending || firstSending}
           demo={isDemo}
           onStartNewChat={() => router.replace("/c/new")}
         />

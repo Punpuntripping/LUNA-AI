@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import type { Message } from "@contracts";
@@ -29,12 +29,16 @@ export const MAX_MESSAGE_CHARS = 10_000;
 
 export const UserBubble = memo(function UserBubble({ message }: { message: Message }) {
   const { colours, radius } = useTheme();
-  const { conversationId, isDemo, editAndResend, retry } = useChatRow();
+  const { conversationId, isDemo, editAndResend, setEditingMessage, retry } = useChatRow();
   const running = useIsConversationRunning(conversationId);
   const name = useSession((s) => s.user?.call_name?.trim() || s.user?.full_name_ar?.trim() || "أنت");
   const [menu, setMenu] = useState(false);
-  const [editing, setEditing] = useState(false);
+  // Keyed by message id, not a boolean: FlashList recycles this component for
+  // other rows, and an open editor must not follow the cell to another message.
+  const [editingFor, setEditingFor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const id = message.message_id;
+  const editing = editingFor === id;
 
   const settled = !message.isOptimistic && !message.isFailed;
   // No edit while this conversation is answering (it would supersede the run).
@@ -42,13 +46,22 @@ export const UserBubble = memo(function UserBubble({ message }: { message: Messa
   const isAnswer = message.metadata?.kind === "agent_answer";
   const getText = useCallback(() => message.content, [message.content]);
 
+  // Tell the screen in the SAME batch as opening the editor, so the list stops
+  // lifting with the keyboard before the auto-focused input raises it (F3).
   const startEdit = () => {
     setDraft(message.content);
-    setEditing(true);
+    setEditingFor(id);
+    setEditingMessage(id, true);
   };
+  const stopEdit = () => setEditingFor(null);
+  // Closing, recycling to another row or unmounting all release the screen.
+  useEffect(() => {
+    if (!editing) return;
+    return () => setEditingMessage(id, false);
+  }, [editing, id, setEditingMessage]);
   const saveEdit = () => {
     const text = draft.trim();
-    setEditing(false);
+    stopEdit();
     if (text && text !== message.content.trim()) editAndResend(text);
   };
 
@@ -98,7 +111,7 @@ export const UserBubble = memo(function UserBubble({ message }: { message: Messa
               <Button label="حفظ وإرسال" onPress={saveEdit} disabled={!draft.trim()} testID="user-message-edit-save" />
             </View>
             <View style={styles.flex}>
-              <Button label="إلغاء" variant="ghost" onPress={() => setEditing(false)} />
+              <Button label="إلغاء" variant="ghost" onPress={stopEdit} />
             </View>
           </View>
         </View>

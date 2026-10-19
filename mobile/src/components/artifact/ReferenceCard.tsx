@@ -12,6 +12,7 @@ import {
 import { AppText } from "@/components/AppText";
 import { libraryWebUrl, openInBrowser } from "@/components/source/exits";
 import { LRI, PDI } from "@/components/markdown/links";
+import { plainSnippet } from "@/lib/snippet";
 import { useTheme } from "@/theme/ThemeProvider";
 
 import { ActionChip } from "./ActionChip";
@@ -55,6 +56,9 @@ export function ReferenceCard({ reference, onViewSource, showExits = true, snipp
   const libraryUrl = libraryWebUrl(reference.library_url);
   const officialUrl = referencePrimaryUrl(reference);
   const high = reference.relevance === "high";
+  // The snippet is a raw markdown excerpt (`# …`, `## …`, `**…**`) — a
+  // preview is plain text; the reader below renders the source itself.
+  const snippet = plainSnippet(reference.snippet);
 
   return (
     <View
@@ -85,9 +89,9 @@ export function ReferenceCard({ reference, onViewSource, showExits = true, snipp
           <AppText variant="sm" weight={600}>
             {referenceLabel(reference)}
           </AppText>
-          {reference.snippet ? (
+          {snippet ? (
             <AppText variant="xs" tone="secondary" numberOfLines={snippetLines}>
-              {reference.snippet}
+              {snippet}
             </AppText>
           ) : null}
           {onViewSource || showExits ? (

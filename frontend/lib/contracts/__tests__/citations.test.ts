@@ -96,6 +96,16 @@ test("linkifyCitations: existing markdown syntax and idempotency", () => {
   assert.equal(linkifyCitations(once), once);
 });
 
+test("linkifyCitations: adjacent markers and a marker before a mid-line colon (QA F1)", () => {
+  assert.equal(linkifyCitations("كتابي [1][6]:"), "كتابي [[1]](cite:1)[[6]](cite:6):");
+  assert.equal(linkifyCitations("شهرين [1][5]."), "شهرين [[1]](cite:1)[[5]](cite:5).");
+  assert.equal(linkifyCitations("كالآتي [1]:"), "كالآتي [[1]](cite:1):");
+  assert.equal(linkifyCitations("- البند [2]: نص"), "- البند [[2]](cite:2): نص");
+  assert.equal(linkifyCitations("[4،5][6]"), "[[4]](cite:4)[[5]](cite:5)[[6]](cite:6)");
+  const once = linkifyCitations("أ [1][2]: ب");
+  assert.equal(linkifyCitations(once), once);
+});
+
 test("linkifyCitations: no '[' → same string back; [0] removed like the web", () => {
   const s = "لا توجد إشارات هنا";
   assert.equal(linkifyCitations(s), s);

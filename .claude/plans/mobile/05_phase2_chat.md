@@ -1,7 +1,9 @@
 # Mobile — Phase 2: Chat core
 
-**Status:** PLANNED 2026-10-13 · nothing built · Phase 1 deployed (`04` §Status) · first
-Android dev build DONE 2026-10-13 (`ee2513fb`, channel development). Marks: ✅ decided ·
+**Status:** 2a BUILT 2026-10-15/17 (`c45d75b` stream layer, `ebe792d` screens, `4b2b584`
+«افتح ال…») · Android dev build `dd0fb640` (from `ebe792d`, expires 2026-10-29) · 2a emulator QA
+started 2026-10-19 → `agents_reports/mobile_qa/2026-10-19_phase2a/` · 2b/2c NOT started ·
+Phase 1 deployed (`04` §Status). Marks: ✅ decided ·
 ❓ owner decision · 🔎 not verified, check before relying on it. Scope: `01_app_scope.md`
 (chat with **all** web features; citations option B). Phases: `03` §3.
 

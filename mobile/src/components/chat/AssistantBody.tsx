@@ -131,5 +131,7 @@ const styles = StyleSheet.create({
   caption: { marginBottom: 4 },
   failedFrame: { borderWidth: 2, borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12 },
   failedRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8 },
-  actions: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 4 },
+  // minHeight 44 = the copy button's slop-extended target fits even without
+  // the (44dp) regenerate button (demo / running).
+  actions: { flexDirection: "row", alignItems: "center", gap: 2, marginTop: 4, minHeight: 44 },
 });

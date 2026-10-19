@@ -77,6 +77,13 @@ const CODE_SPAN = /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g;
 /** Private-use placeholder for a parked code span (never in real text). */
 const PH = /(\d+)/g;
 
+/** Does a citation group (`[6]`, `[6،7]`) start exactly at `index`? */
+function startsWithCitation(str: string, index: number): boolean {
+  const re = new RegExp(CITATION_RE.source, "y");
+  re.lastIndex = index;
+  return re.test(str);
+}
+
 function linkifyLine(line: string): string {
   const kept: string[] = [];
   let s = line.replace(CODE_SPAN, (m) => {
@@ -89,9 +96,13 @@ function linkifyLine(line: string): string {
     const before = offset > 0 ? str[offset - 1] : "";
     const after = str[offset + whole.length] ?? "";
     // Leave markdown syntax alone: a link/image text `[4](…)`, a reference
-    // link `[4][a]`, a definition `[4]: url`, an escaped `\[4]`, and a marker
-    // that is already linkified (`[[4]](cite:4)`).
-    if (after === "(" || after === "[" || after === ":") return whole;
+    // link `[4][a]`, a definition `[4]: url` (line start only), an escaped
+    // `\[4]`, and a marker that is already linkified (`[[4]](cite:4)`).
+    // NOT syntax (the web's remark plugin pills these, so must we): adjacent
+    // markers `[1][6]` and a marker before a colon mid-line «كالآتي [1]:».
+    if (after === "(") return whole;
+    if (after === "[" && !startsWithCitation(str, offset + whole.length)) return whole;
+    if (after === ":" && /^\s{0,3}$/.test(str.slice(0, offset))) return whole;
     if (before === "\\" || before === "!" || before === "[") return whole;
     return groupNumbers(inner)
       .map((n) => `[[${n}]](cite:${n})`)

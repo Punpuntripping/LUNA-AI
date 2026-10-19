@@ -116,9 +116,15 @@ export interface ChatEngine {
   send(params: SendParams): Promise<SendResult>;
   /** Stop = abort + invalidate. The server keeps running the turn. */
   stop(conversationId: string): void;
-  /** Re-send a failed user row's text (a NEW POST — server dedup still guards). */
+  /** Re-send a failed user row's text (a NEW POST — server dedup still guards).
+   *  The failed row is removed first; a quota / parallel refusal puts it BACK
+   *  (still failed, «إعادة المحاولة» again) so its text is never lost (QA F4) —
+   *  `restoreText` is then null (the composer may hold newer text). A
+   *  `duplicate` refusal does not: the server already has that message. */
   retry(conversationId: string, messageId: string): Promise<SendResult>;
-  /** Re-send the user message that preceded this assistant message. */
+  /** Re-send the user message that preceded this assistant message. A refusal
+   *  never restores text (`restoreText: null`): the question is still in the
+   *  list and the user did not type anything. */
   regenerate(conversationId: string, assistantMessageId: string): Promise<SendResult>;
   /** AppState → active: streams silent for >10 s are dead — recover them. */
   onAppActive(): void;
@@ -584,19 +590,25 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       cache.setMessages(conversationId, (d) => removeMessage(d, messageId));
       store.setError(conversationId, null);
       const ids = failed.attachments.map((a) => a.document_id).filter(Boolean);
-      return engine.send({
+      const result = await engine.send({
         conversationId,
         content: failed.content,
         attachmentIds: ids.length ? ids : undefined,
         optimisticAttachments: failed.attachments,
       });
+      if (result.status !== "refused" || result.reason === "duplicate") return result;
+      // Not optimistic (same as markFailed): an adopt merge drops optimistic rows.
+      cache.setMessages(conversationId, (d) => addOptimistic(d, { ...failed, isOptimistic: false, isFailed: true }));
+      return { ...result, restoreText: null };
     },
 
     async regenerate(conversationId, assistantMessageId) {
       const msgs = chronological(cache.getMessages(conversationId));
       const idx = msgs.findIndex((m) => m.message_id === assistantMessageId);
       for (let i = idx - 1; i >= 0; i--) {
-        if (msgs[i].role === "user") return engine.send({ conversationId, content: msgs[i].content });
+        if (msgs[i].role !== "user") continue;
+        const result = await engine.send({ conversationId, content: msgs[i].content });
+        return result.status === "refused" ? { ...result, restoreText: null } : result;
       }
       return { status: "skipped" };
     },

@@ -15,6 +15,11 @@ import { Icon } from "./Icon";
 // stripped — Najiz's editor pastes plain text). Haptic + «تم النسخ».
 // Rich-HTML «نسخ» (web) is deferred (plan Y3).
 
+// Visual box stays 36dp; the slop lifts the touch target to 44 (HIG / Material
+// minimum). Exactly 4 so it stays inside a 44dp action row — Android drops
+// touches that fall outside the parent's bounds.
+const HIT_SLOP = 4;
+
 export type CopyMode = "markdown" | "najiz";
 
 const MSG_COPIED = "تم النسخ";
@@ -56,7 +61,7 @@ export function CopyMenu({ getText, testID }: CopyMenuProps) {
         testID={testID}
         accessibilityRole="button"
         accessibilityLabel="نسخ"
-        hitSlop={6}
+        hitSlop={HIT_SLOP}
         onPress={() => setOpen(true)}
         style={({ pressed }) => [styles.button, { opacity: pressed ? 0.6 : 1 }]}
       >

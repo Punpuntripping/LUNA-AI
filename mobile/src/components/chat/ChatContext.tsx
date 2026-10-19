@@ -15,6 +15,10 @@ export interface ChatRowActions {
   pasteIntoComposer: (text: string) => void;
   /** «تعديل» → «حفظ وإرسال»: a NEW send with the edited text. */
   editAndResend: (text: string) => void;
+  /** This user message's inline editor opened (`true`) / closed (`false`) —
+   *  the screen keeps that row in view above the keyboard (QA F3). Closing
+   *  only clears the screen's state if it still points at this message. */
+  setEditingMessage: (messageId: string, editing: boolean) => void;
   retry: (userMessageId: string) => void;
   regenerate: (assistantMessageId: string) => void;
   openCitation: (artifactId: string, n: number) => void;

@@ -58,7 +58,7 @@ export const NoticeBanner = memo(function NoticeBanner({ conversationId }: { con
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="إغلاق"
-        hitSlop={10}
+        style={styles.close}
         onPress={() => {
           if (notice) streamStore.setNotice(conversationId, null);
           else streamStore.setError(conversationId, null);
@@ -73,4 +73,8 @@ export const NoticeBanner = memo(function NoticeBanner({ conversationId }: { con
 const styles = StyleSheet.create({
   box: { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8 },
   text: { flex: 1 },
+  // 44×44 touch target around the 16dp glyph; the negative margin gives the
+  // extra 14dp back so the banner's layout is unchanged. (A plain hitSlop
+  // would poke outside the banner, where Android drops the touch.)
+  close: { width: 44, height: 44, alignItems: "center", justifyContent: "center", margin: -14 },
 });
