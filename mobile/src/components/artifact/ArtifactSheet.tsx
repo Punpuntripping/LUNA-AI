@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useIsFocused } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import { Modal, Platform, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
@@ -6,9 +7,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { scheduleOnRN } from "react-native-worklets";
 
 import { AppText } from "@/components/AppText";
+import { modalCoordinator } from "@/lib/modal-coordinator";
 import { useTheme } from "@/theme/ThemeProvider";
 
-import { ArtifactBody } from "./ArtifactBody";
+import { ArtifactBody, type ScrollAnchor } from "./ArtifactBody";
 import { useWorkspaceItem } from "./use-artifact";
 
 export interface ArtifactSheetProps {
@@ -37,15 +39,22 @@ const DISMISS_VELOCITY = 900;
  * Android). Gestures inside a RN Modal need their own GestureHandlerRootView
  * on Android (RNGH docs, "Modals").
  *
- * Opening a source (`[n]` / «عرض المصدر») CLOSES the sheet and pushes the
- * reader route: a RN Modal draws above the whole navigator, so a pushed screen
- * would otherwise open hidden behind it.
+ * Presenting (QA N1, blank white sheet): the Modal is shown only once
+ *   - the host screen is focused, and
+ *   - no other Modal is open or still animating out (`modalCoordinator`).
+ * Its content (and the drag offset) is remounted on every presentation, so a
+ * previous drag-to-dismiss can never leave the new sheet translated off-screen.
+ *
+ * Opening a source (`[n]` / «عرض المصدر») does NOT close the sheet (QA N5): it
+ * pushes the reader route, the host screen loses focus and the Modal hides
+ * (a RN Modal draws above the whole navigator, so the reader would otherwise
+ * open hidden behind it). Back → focus returns → the sheet shows again at the
+ * row the user left from.
  */
 export function ArtifactSheet({ itemId, onClose }: ArtifactSheetProps) {
-  const { colours, scheme } = useTheme();
-  const insets = useSafeAreaInsets();
-  const { height } = useWindowDimensions();
   const open = itemId !== null;
+  const focused = useIsFocused();
+  const wanted = open && focused;
 
   // Keep the last id while the close animation runs, so the body does not
   // flash empty on its way down (state adjusted during render, not a ref).
@@ -53,14 +62,62 @@ export function ArtifactSheet({ itemId, onClose }: ArtifactSheetProps) {
   if (itemId !== null && itemId !== lastId) setLastId(itemId);
   const activeId = itemId ?? lastId;
 
+  // `wanted` → wait for the other modals to settle → visible. Hiding is
+  // immediate. Each presentation gets a new `seq` (remounts the content).
+  const [presented, setPresented] = useState<{ visible: boolean; seq: number }>({ visible: false, seq: 0 });
+  useEffect(() => {
+    if (!wanted) return undefined;
+    const cancel = modalCoordinator.whenSettled(() => setPresented((p) => ({ visible: true, seq: p.seq + 1 })));
+    return () => {
+      cancel();
+      setPresented((p) => (p.visible ? { ...p, visible: false } : p));
+    };
+  }, [wanted]);
+  const visible = wanted && presented.visible;
+
+  // Where the user was when they left for the reader; used by the next
+  // presentation of the same item, dropped when the sheet really closes.
+  const [anchor, setAnchor] = useState<{ itemId: string; anchor: ScrollAnchor } | null>(null);
+  if (!open && anchor !== null) setAnchor(null);
+  const onLeave = useCallback((id: string, a: ScrollAnchor | null) => {
+    setAnchor(a ? { itemId: id, anchor: a } : null);
+  }, []);
+  const restore = activeId && anchor?.itemId === activeId ? anchor.anchor : null;
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle={Platform.OS === "ios" ? "pageSheet" : undefined}
+      allowSwipeDismissal
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onClose}
+    >
+      <SheetContent key={presented.seq} activeId={activeId} restore={restore} onLeave={onLeave} onClose={onClose} />
+    </Modal>
+  );
+}
+
+interface SheetContentProps {
+  activeId: string | null;
+  restore: ScrollAnchor | null;
+  onLeave: (itemId: string, anchor: ScrollAnchor | null) => void;
+  onClose: () => void;
+}
+
+/** The sheet's window content. Mounted fresh per presentation: the drag
+ *  offset starts at 0 every time (it used to live in the parent and keep the
+ *  dismissed `height` across opens — N1). */
+function SheetContent({ activeId, restore, onLeave, onClose }: SheetContentProps) {
+  const { colours, scheme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   const ios = Platform.OS === "ios";
 
   // Android drag-to-dismiss: the sheet follows the finger, then either slides
   // away (and closes) or springs back.
   const dragY = useSharedValue(0);
-  useEffect(() => {
-    if (open) dragY.set(0);
-  }, [open, dragY]);
 
   const drag = Gesture.Pan()
     .enabled(!ios)
@@ -79,59 +136,55 @@ export function ArtifactSheet({ itemId, onClose }: ArtifactSheetProps) {
       }
     });
 
-  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: dragY.get() }] }));
+  // Never trust a non-finite / negative offset — the sheet must not be able
+  // to end up mounted but off-screen.
+  const sheetStyle = useAnimatedStyle(() => {
+    const y = dragY.get();
+    return { transform: [{ translateY: Number.isFinite(y) && y > 0 ? y : 0 }] };
+  });
 
   return (
-    <Modal
-      visible={open}
-      animationType="slide"
-      presentationStyle={ios ? "pageSheet" : undefined}
-      allowSwipeDismissal
-      statusBarTranslucent
-      navigationBarTranslucent
-      onRequestClose={onClose}
-    >
-      <GestureHandlerRootView style={styles.fill}>
-        <Animated.View
-          style={[
-            styles.root,
-            {
-              backgroundColor: colours.canvas,
-              paddingTop: ios ? 0 : insets.top,
-            },
-            sheetStyle,
-          ]}
-        >
-          <GestureDetector gesture={drag}>
-            <View style={[styles.header, { borderBottomColor: colours.border }]} testID="artifact-drag-handle">
-              <View style={[styles.grabber, { backgroundColor: scheme === "dark" ? colours.borderStrong : colours.border }]} />
-              <View style={styles.headerRow}>
-                <SheetTitle itemId={activeId} />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="إغلاق"
-                  onPress={onClose}
-                  hitSlop={8}
-                  style={({ pressed }) => [styles.close, { opacity: pressed ? 0.6 : 1 }]}
-                  testID="artifact-close"
-                >
-                  <AppText variant="base" weight={600} tone="link">
-                    إغلاق
-                  </AppText>
-                </Pressable>
-              </View>
+    <GestureHandlerRootView style={styles.fill}>
+      <Animated.View
+        style={[
+          styles.root,
+          {
+            backgroundColor: colours.canvas,
+            paddingTop: ios ? 0 : insets.top,
+          },
+          sheetStyle,
+        ]}
+      >
+        <GestureDetector gesture={drag}>
+          <View style={[styles.header, { borderBottomColor: colours.border }]} testID="artifact-drag-handle">
+            <View style={[styles.grabber, { backgroundColor: scheme === "dark" ? colours.borderStrong : colours.border }]} />
+            <View style={styles.headerRow}>
+              <SheetTitle itemId={activeId} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="إغلاق"
+                onPress={onClose}
+                hitSlop={8}
+                style={({ pressed }) => [styles.close, { opacity: pressed ? 0.6 : 1 }]}
+                testID="artifact-close"
+              >
+                <AppText variant="base" weight={600} tone="link">
+                  إغلاق
+                </AppText>
+              </Pressable>
             </View>
-          </GestureDetector>
-          {activeId ? (
-            <ArtifactBody
-              itemId={activeId}
-              bottomInset={insets.bottom}
-              onLeave={onClose}
-            />
-          ) : null}
-        </Animated.View>
-      </GestureHandlerRootView>
-    </Modal>
+          </View>
+        </GestureDetector>
+        {activeId ? (
+          <ArtifactBody
+            itemId={activeId}
+            bottomInset={insets.bottom}
+            restore={restore}
+            onLeave={(a) => onLeave(activeId, a)}
+          />
+        ) : null}
+      </Animated.View>
+    </GestureHandlerRootView>
   );
 }
 

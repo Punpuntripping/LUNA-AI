@@ -249,6 +249,8 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       if (!ctx.committed) cache.setMessages(ctx.conversationId, (d) => removeMessage(d, ctx.optimisticId));
       return { status: "superseded" };
     }
+    // Stop = detach: the run goes on server-side, keep its tracker (N4).
+    if (ctx.committed && ctx.assistantId && !ctx.paused) store.park(ctx.conversationId, ctx.sendId);
     release(ctx);
     if (ctx.committed && ctx.assistantId && !ctx.paused) {
       const assistantId = ctx.assistantId;
@@ -273,6 +275,9 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       cache.invalidateMessages(ctx.conversationId);
       return { status: "paused" };
     }
+    // Before release (which drops the live entry): the placeholder's
+    // «ريحان يفكّر» row keeps the last tracker state (QA N4).
+    store.park(ctx.conversationId, ctx.sendId);
     release(ctx);
     if (ctx.assistantId) {
       const assistantId = ctx.assistantId;
@@ -603,7 +608,20 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
     },
 
     async regenerate(conversationId, assistantMessageId) {
-      const msgs = chronological(cache.getMessages(conversationId));
+      const data = cache.getMessages(conversationId);
+      // A detached run we are still waiting for is NOT dead: re-sending its
+      // question would be the duplicate of a send the server already has (QA
+      // N2). Only the server (`run_active: false`) or the age cap can kill it.
+      const w = watches.get(conversationId);
+      if (
+        w?.assistantId === assistantMessageId &&
+        data?.pages[0]?.run_active !== false &&
+        now() - w.since <= PLACEHOLDER_LIVE_CAP_MS
+      ) {
+        const row = chronological(data).find((m) => m.message_id === assistantMessageId);
+        if (row && (row.content ?? "").trim() === "") return { status: "skipped" };
+      }
+      const msgs = chronological(data);
       const idx = msgs.findIndex((m) => m.message_id === assistantMessageId);
       for (let i = idx - 1; i >= 0; i--) {
         if (msgs[i].role !== "user") continue;
@@ -631,13 +649,19 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       if (!row) {
         // Gone (a paused turn deletes its placeholder) — nothing to wait for.
         watches.delete(conversationId);
+        store.unpark(conversationId, w.assistantId, false);
         return;
       }
       if ((row.content ?? "").trim() === "") {
-        if (now() - w.since > PLACEHOLDER_LIVE_CAP_MS) watches.delete(conversationId);
+        if (now() - w.since > PLACEHOLDER_LIVE_CAP_MS) {
+          watches.delete(conversationId);
+          store.unpark(conversationId, w.assistantId, false);
+        }
         return;
       }
       watches.delete(conversationId);
+      // Answered while detached: the frozen tracker becomes the summary chip.
+      store.unpark(conversationId, w.assistantId, true);
       const ids = row.artifact_ids ?? [];
       if (ids.length === 0) return;
       cache

@@ -42,6 +42,17 @@ export interface ConversationStream {
   sealable: DeepSearchProgressState | null;
 }
 
+/** The last live state of a committed run whose stream dropped (background,
+ *  network, Stop). The backend has no progress endpoint — the web shows only
+ *  the generic phrase after a reload — so the «ريحان يفكّر» row of THIS
+ *  placeholder keeps the tracker as it last was instead of losing it (QA N4).
+ *  Frozen: no new stages arrive until the poll brings the answer. */
+export interface ParkedRun {
+  assistantMessageId: string;
+  agentFamily: AgentFamily | null;
+  progress: DeepSearchProgressState | null;
+}
+
 export type ChatNotice =
   | { kind: "quota"; info: SSEQuotaExceeded }
   | { kind: "parallel_limit"; info: SSEParallelLimit }
@@ -70,6 +81,8 @@ export interface StreamStoreState {
   referencedItems: Record<string, string[]>;
   /** Pending auto-open, by conversation. */
   autoOpen: Record<string, AutoOpenSignal>;
+  /** Detached runs still answering server-side, by conversation. */
+  parked: Record<string, ParkedRun>;
 }
 
 export interface StreamStore {
@@ -89,6 +102,12 @@ export interface StreamStore {
   progress: (conversationId: string, sendId: number, event: SSEAgentProgress) => void;
   status: (conversationId: string, sendId: number, text: string) => void;
   seal: (conversationId: string, sendId: number, messageId: string) => void;
+  /** The stream of a committed run dropped: keep its agent + tracker for the
+   *  placeholder (call BEFORE `finish`). */
+  park: (conversationId: string, sendId: number) => void;
+  /** The parked run of `assistantMessageId` is over. `seal` = it answered:
+   *  turn the frozen tracker into the summary chip, as a live `done` would. */
+  unpark: (conversationId: string, assistantMessageId: string, seal: boolean) => void;
   setError: (conversationId: string, message: string | null) => void;
   setNotice: (conversationId: string, notice: ChatNotice | null) => void;
   recordReferencedItem: (messageId: string, itemId: string) => void;
@@ -113,6 +132,7 @@ const initialState = (): StreamStoreState => ({
   summaries: {},
   referencedItems: {},
   autoOpen: {},
+  parked: {},
 });
 
 function without<V>(map: Record<string, V>, key: string): Record<string, V> {
@@ -191,6 +211,7 @@ export function createStreamStore(opts: StreamStoreOptions = {}): StreamStore {
         // A new attempt replaces the previous banner of THIS conversation.
         errors: without(s.errors, conversationId),
         notices: without(s.notices, conversationId),
+        parked: without(s.parked, conversationId),
       }));
     },
 
@@ -254,6 +275,29 @@ export function createStreamStore(opts: StreamStoreOptions = {}): StreamStore {
       const run = cur.progress ?? cur.sealable;
       if (!run) return;
       setState((s) => ({ summaries: { ...s.summaries, [messageId]: sealSummary(run, now()) } }));
+    },
+
+    park: (conversationId, sendId) => {
+      const cur = getState().streams[conversationId];
+      if (!cur || cur.sendId !== sendId || !cur.assistantMessageId) return;
+      // After agent_run_finished the run sits in `sealable` (answer tokens next).
+      const progress = cur.progress ?? cur.sealable;
+      const agentFamily = cur.agentFamily ?? (progress ? "deep_search" : null);
+      if (!agentFamily && !progress) return;
+      const run: ParkedRun = { assistantMessageId: cur.assistantMessageId, agentFamily, progress };
+      setState((s) => ({ parked: { ...s.parked, [conversationId]: run } }));
+    },
+
+    unpark: (conversationId, assistantMessageId, seal) => {
+      const run = getState().parked[conversationId];
+      if (!run || run.assistantMessageId !== assistantMessageId) return;
+      setState((s) => ({
+        parked: without(s.parked, conversationId),
+        summaries:
+          seal && run.progress && !s.summaries[assistantMessageId]
+            ? { ...s.summaries, [assistantMessageId]: sealSummary(run.progress, now()) }
+            : s.summaries,
+      }));
     },
 
     setError: (conversationId, message) =>
@@ -323,13 +367,27 @@ export function useIsConversationRunning(conversationId: string): boolean {
   return useStreamSelector((s) => conversationId in s.streams);
 }
 
+/** The live stream's agent, else the parked one of a detached run. */
+export function selectRunningAgent(s: StreamStoreState, conversationId: string): AgentFamily | null {
+  const live = s.streams[conversationId];
+  if (live) return live.agentFamily;
+  return s.parked[conversationId]?.agentFamily ?? null;
+}
+
+/** The live tracker, else the last known one of a detached run (frozen). */
+export function selectDeepSearchProgress(s: StreamStoreState, conversationId: string): DeepSearchProgressState | null {
+  const live = s.streams[conversationId];
+  if (live) return live.progress;
+  return s.parked[conversationId]?.progress ?? null;
+}
+
 export function useRunningAgent(conversationId: string): AgentFamily | null {
-  return useStreamSelector((s) => s.streams[conversationId]?.agentFamily ?? null);
+  return useStreamSelector((s) => selectRunningAgent(s, conversationId));
 }
 
 /** Deep-search tracker — subscribe from the tracker component only. */
 export function useDeepSearchProgress(conversationId: string): DeepSearchProgressState | null {
-  return useStreamSelector((s) => s.streams[conversationId]?.progress ?? null);
+  return useStreamSelector((s) => selectDeepSearchProgress(s, conversationId));
 }
 
 export function useDeepSearchSummary(messageId: string): DeepSearchSummary | null {

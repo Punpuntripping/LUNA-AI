@@ -63,6 +63,9 @@ import { ScrollToBottom } from "./ScrollToBottom";
 // KeyboardChatScrollView, so the newest messages lift with the keyboard.
 
 const SCROLL_PILL_DISTANCE = 400;
+/** Opening a conversation keeps it pinned to the newest message until its
+ *  content stops growing for this long (or the user drags) — QA N7. */
+const OPEN_PIN_SETTLE_MS = 1_200;
 /** `c/new` waits this long for `message_start` before showing `c/{id}` anyway
  *  (a gate refusal comes back well before; this only bounds a slow start). */
 const FIRST_SEND_WAIT_MS = 4_000;
@@ -148,6 +151,11 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
     };
   }, []);
 
+  // Open-pin state (QA N7, see «scrolling» below) — declared first because the
+  // inline edit releases it.
+  const pinToEnd = useRef(true);
+  const pinTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const scrollToEnd = useCallback(() => {
     setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
   }, []);
@@ -161,6 +169,8 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   // of the visible area (its input + «حفظ وإرسال» sit right under it).
   const [editingId, setEditingId] = useState<string | null>(null);
   const setEditingMessage = useCallback((messageId: string, editing: boolean) => {
+    // An edit is a deliberate scroll position: the open-pin (N7) never fights it.
+    if (editing) pinToEnd.current = false;
     setEditingId((current) => (editing ? messageId : current === messageId ? null : current));
   }, []);
   const itemsRef = useRef<ChatItem[]>([]);
@@ -257,6 +267,40 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       .catch(() => open());
   }, [draft, conversationId, draftKey, setDraft, startSend, scrollToEnd, create, restoreDraft, removeConversation, qc]);
 
+  // ---- banner lifetime (QA N3) ----
+  // A send-failure / refusal banner belongs to the visit it happened in:
+  // leaving the conversation clears it, so reopening never shows a stale «تعذّر
+  // إرسال الرسالة…». One that lands while the user is away (a background send
+  // failing) is still shown once on the next visit. A new send clears it
+  // (stream-store `begin`); so does a later answer reaching the list (below).
+  // c/new's key is NEW_CHAT_DRAFT: the F6 refusal moved there shows on the
+  // new-chat screen and is cleared when that screen is left.
+  useEffect(
+    () => () => {
+      streamStore.setError(draftKey, null);
+      streamStore.setNotice(draftKey, null);
+    },
+    [draftKey],
+  );
+  const latestAnswerId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && !m.isOptimistic && !m.isFailed && m.content.trim()) return m.message_id;
+    }
+    return null;
+  }, [messages]);
+  const seenAnswerId = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!conversationId || !data) return;
+    const previous = seenAnswerId.current;
+    seenAnswerId.current = latestAnswerId;
+    if (previous === undefined || latestAnswerId === null || latestAnswerId === previous) return;
+    // A newer answer arrived (stream end, poll, adopt): the failure is over.
+    // Quota / parallel notices stay — they are about the NEXT send.
+    streamStore.setError(conversationId, null);
+    if (streamStore.getState().notices[conversationId]?.kind === "duplicate") streamStore.setNotice(conversationId, null);
+  }, [conversationId, data, latestAnswerId]);
+
   const onStop = useCallback(() => {
     if (conversationId) chatEngine.stop(conversationId);
   }, [conversationId]);
@@ -307,6 +351,24 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
   }, [conversationId, autoOpen, openedItemId]);
 
   // ---- scrolling ----
+  // QA N7: startRenderingFromBottom scrolls to the TOP of the last item, laid
+  // out with ESTIMATED heights; real rows (markdown, chips, «افتح ال…») are
+  // taller and maintainVisibleContentPosition then anchors the visible row, so
+  // a long conversation opened a few screens above its end. While the opened
+  // list settles, every content-size change re-pins it to the end; the first
+  // drag, an inline edit, or OPEN_PIN_SETTLE_MS without growth releases it.
+  const releasePin = useCallback(() => {
+    pinToEnd.current = false;
+    if (pinTimer.current) clearTimeout(pinTimer.current);
+    pinTimer.current = null;
+  }, []);
+  useEffect(() => releasePin, [releasePin]);
+  const onContentSizeChange = useCallback(() => {
+    if (!pinToEnd.current) return;
+    listRef.current?.scrollToEnd({ animated: false });
+    if (pinTimer.current) clearTimeout(pinTimer.current);
+    pinTimer.current = setTimeout(releasePin, OPEN_PIN_SETTLE_MS);
+  }, [releasePin]);
   const [showPill, setShowPill] = useState(false);
   const onScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -391,6 +453,8 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
                 onStartReached={onStartReached}
                 onStartReachedThreshold={0.5}
                 onScroll={onScroll}
+                onContentSizeChange={onContentSizeChange}
+                onScrollBeginDrag={releasePin}
                 scrollEventThrottle={100}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="interactive"

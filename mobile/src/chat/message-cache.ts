@@ -187,20 +187,36 @@ export function writeFinalAssistant(data: MessagesData | undefined, final: Final
  * A committed run lost its stream (drop / Stop / background): make sure the
  * empty assistant row exists so the list shows «ريحان يفكّر» and the poll
  * (placeholderPollMs on the newest row) starts right away.
+ *
+ * The newest page's `run_active` is the server's snapshot from the LAST fetch
+ * — usually taken before this send, when nothing ran (`false`). Left as is,
+ * `isDeadPlaceholder` reads that stale `false` and flips the fresh placeholder
+ * to «تعذّر إكمال الرد» + «إعادة المحاولة» at once; while offline no refetch
+ * corrects it, and its retry (= regenerate) re-POSTs the question (QA N2). We
+ * KNOW the server owns this run, so mark it live until the next fetch answers.
  */
 export function ensureAssistantPlaceholder(
   data: MessagesData | undefined,
   placeholder: { id: string; conversationId: string; createdAt: string },
 ): MessagesData {
-  if (data && hasMessage(data, placeholder.id)) return data;
-  return prependToFirstPage(data, {
-    message_id: placeholder.id,
-    conversation_id: placeholder.conversationId,
-    role: "assistant",
-    content: "",
-    attachments: [],
-    created_at: placeholder.createdAt,
-  });
+  if (data && hasMessage(data, placeholder.id)) return markRunActive(data);
+  return markRunActive(
+    prependToFirstPage(data, {
+      message_id: placeholder.id,
+      conversation_id: placeholder.conversationId,
+      role: "assistant",
+      content: "",
+      attachments: [],
+      created_at: placeholder.createdAt,
+    }),
+  );
+}
+
+function markRunActive(data: MessagesData): MessagesData {
+  if (data.pages.length === 0 || data.pages[0].run_active === true) return data;
+  const pages = [...data.pages];
+  pages[0] = { ...pages[0], run_active: true };
+  return { ...data, pages };
 }
 
 /**

@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { fontFamilyFor } from "@/theme/fonts";
 import { useTheme } from "@/theme/ThemeProvider";
 import { typeVariants } from "@/theme/typography";
+import { useModalPresence } from "@/lib/modal-coordinator";
 
 import { AppText } from "./AppText";
 import { Button } from "./Button";
@@ -34,6 +35,9 @@ export interface SheetFrameProps {
 export function Sheet({ visible, onClose, children, testID }: SheetFrameProps) {
   const { colours, radius } = useTheme();
   const insets = useSafeAreaInsets();
+  // A sheet that presents itself (ArtifactSheet auto-open) waits until this
+  // one is gone and its dismiss animation has finished.
+  useModalPresence(visible);
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
       {/* A prompt's keyboard pushes the panel up (edge-to-edge: no window resize). */}

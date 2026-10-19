@@ -5,7 +5,12 @@ import { describe, test } from "node:test";
 import { ApiError } from "@/api/errors";
 import { StreamNotSentError } from "@/api/stream-errors";
 
+import { placeholderPollMs } from "@contracts";
+
+import { buildChatItems } from "../chat-items";
+import { chronological } from "../message-cache";
 import { MSG_SEND_FAILED } from "../run-send";
+import { selectDeepSearchProgress, selectRunningAgent } from "../stream-store";
 import { frame, harness, msg, tick } from "./helpers";
 
 const C1 = "c1";
@@ -466,6 +471,202 @@ describe("send — drop AFTER message_start", () => {
     assert.equal(h.engine.isSending(C2), true);
     h.streams[1].push(frame("done", { ...DONE, message_id: "a2" }));
     assert.equal((await b.promise).status, "done");
+  });
+});
+
+describe("QA N2 — airplane mode mid-answer never produces a ghost send", () => {
+  const Q = "ما هي مدة الإشعار؟";
+
+  /** The conversation as it was opened: an answered turn, nothing running. */
+  function seedIdle(h: ReturnType<typeof harness>) {
+    h.cache.data.set(C1, {
+      pages: [
+        {
+          messages: [
+            msg({ message_id: "a0", role: "assistant", content: "جواب سابق" }),
+            msg({ message_id: "u0", role: "user", content: "سؤال سابق" }),
+          ],
+          has_more: false,
+          run_active: false,
+        },
+      ],
+      pageParams: [undefined],
+    });
+  }
+
+  async function dropMidAnswer(h: ReturnType<typeof harness>) {
+    const { promise } = await startSend(h, Q);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("agent_run_started", { agent_family: "deep_search" }));
+    s.push(frame("agent_progress", { stage: "searching", text: "البحث", data: { sources: 7 } }));
+    await tick();
+    s.fail(); // airplane mode
+    return promise;
+  }
+
+  function items(h: ReturnType<typeof harness>) {
+    const data = h.cache.getMessages(C1);
+    const live = h.store.getState().streams[C1];
+    return buildChatItems(
+      chronological(data),
+      { phase: live?.phase ?? null, assistantMessageId: live?.assistantMessageId ?? null },
+      data?.pages[0]?.run_active,
+      h.clock.now,
+    );
+  }
+
+  test("the stale `run_active: false` of the last fetch no longer turns the placeholder into a failed bubble", async () => {
+    const h = harness();
+    seedIdle(h);
+    assert.deepEqual(await dropMidAnswer(h), { status: "detached" });
+
+    const list = items(h);
+    assert.equal(list[list.length - 1].kind, "thinking", "«ريحان يفكّر», not «تعذّر إكمال الرد» + retry");
+    assert.equal(list.filter((i) => i.kind === "failed").length, 0);
+    const users = list.filter((i) => i.kind === "user" && i.message.content === Q);
+    assert.equal(users.length, 1, "exactly one bubble for the question");
+    assert.equal(users[0].kind === "user" && users[0].message.message_id, "u1");
+    assert.equal(h.store.getState().errors[C1], undefined, "no failure banner");
+    assert.equal(h.posts.length, 1);
+
+    // The poll keeps running (fast cadence) until the network returns.
+    const first = h.cache.getMessages(C1)?.pages[0];
+    assert.equal(placeholderPollMs(first?.messages[0], first?.run_active, h.clock.now), 4000);
+  });
+
+  test("regenerate on the detached placeholder is refused — the server already has that send", async () => {
+    const h = harness();
+    seedIdle(h);
+    await dropMidAnswer(h);
+    assert.deepEqual(await h.engine.regenerate(C1, "a1"), { status: "skipped" });
+    assert.equal(h.posts.length, 1, "no second POST");
+    assert.equal(h.cache.rows(C1).filter((m) => m.role === "user" && m.content === Q).length, 1);
+  });
+
+  test("once the server says nothing runs, the dead placeholder's retry re-sends (the run is really gone)", async () => {
+    const h = harness();
+    seedIdle(h);
+    await dropMidAnswer(h);
+    h.cache.data.set(C1, {
+      pages: [
+        {
+          messages: [
+            msg({ message_id: "a1", role: "assistant", content: "" }),
+            msg({ message_id: "u1", role: "user", content: Q }),
+          ],
+          has_more: false,
+          run_active: false,
+        },
+      ],
+      pageParams: [undefined],
+    });
+    const p = h.engine.regenerate(C1, "a1");
+    await tick();
+    assert.equal(h.posts.length, 2);
+    h.streams[1].push(frame("duplicate", { detail: "مكرر", assistant_message_id: "ax", conversation_id: C1 }));
+    await p;
+  });
+
+  test("the answer fills in from the poll — no reopen, no extra rows", async () => {
+    const h = harness();
+    seedIdle(h);
+    await dropMidAnswer(h);
+    const page = {
+      messages: [
+        msg({ message_id: "a1", role: "assistant", content: "مدة الإشعار ستون يوماً" }),
+        msg({ message_id: "u1", role: "user", content: Q }),
+        msg({ message_id: "a0", role: "assistant", content: "جواب سابق" }),
+        msg({ message_id: "u0", role: "user", content: "سؤال سابق" }),
+      ],
+      has_more: false,
+      run_active: false,
+    };
+    h.cache.data.set(C1, { pages: [page], pageParams: [undefined] }); // the refetch
+    h.engine.noteMessagesPage(C1, page);
+    assert.deepEqual(
+      items(h).map((i) => i.kind),
+      ["user", "assistant", "user", "assistant"],
+    );
+  });
+});
+
+describe("QA N4 — the tracker survives a dropped / backgrounded stream", () => {
+  async function deepSearchUntilDrop(h: ReturnType<typeof harness>, drop: "network" | "resume") {
+    const { promise } = await startSend(h);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("agent_run_started", { agent_family: "deep_search" }));
+    s.push(frame("agent_progress", { stage: "planning", text: "تخطيط" }));
+    s.push(frame("agent_progress", { stage: "searching", text: "البحث في الأنظمة", data: { sources: 7 } }));
+    await tick();
+    if (drop === "network") {
+      s.fail();
+    } else {
+      h.clock.now += 60_000; // backgrounded, the OS killed the socket
+      h.engine.onAppActive();
+    }
+    return promise;
+  }
+
+  for (const drop of ["network", "resume"] as const) {
+    test(`${drop}: the placeholder keeps the last tracker; the answer seals it into the chip`, async () => {
+      const h = harness();
+      assert.deepEqual(await deepSearchUntilDrop(h, drop), { status: "detached" });
+      const state = h.store.getState();
+      assert.equal(state.streams[C1], undefined, "live entry gone (the poll takes over)");
+      assert.equal(selectRunningAgent(state, C1), "deep_search");
+      const progress = selectDeepSearchProgress(state, C1);
+      assert.equal(progress?.stage, "searching");
+      assert.equal(progress?.sources, 7);
+
+      h.engine.noteMessagesPage(C1, {
+        messages: [msg({ message_id: "a1", role: "assistant", content: "الجواب" })],
+        has_more: false,
+      });
+      const after = h.store.getState();
+      assert.equal(after.parked[C1], undefined);
+      assert.equal(selectDeepSearchProgress(after, C1), null);
+      assert.equal(after.summaries.a1?.sources, 7);
+    });
+  }
+
+  test("Stop parks it too; a new send in the conversation clears it", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    h.streams[0].push(frame("message_start", START));
+    h.streams[0].push(frame("agent_run_started", { agent_family: "deep_search" }));
+    h.streams[0].push(frame("agent_progress", { stage: "evaluating", text: "تقييم" }));
+    await tick();
+    h.engine.stop(C1);
+    await promise;
+    assert.equal(selectDeepSearchProgress(h.store.getState(), C1)?.stage, "evaluating");
+
+    const next = await startSend(h, "سؤال آخر");
+    assert.equal(h.store.getState().parked[C1], undefined);
+    assert.equal(selectDeepSearchProgress(h.store.getState(), C1), null, "the new send's own (empty) tracker");
+    h.streams[1].push(frame("duplicate", { detail: "مكرر", assistant_message_id: "ax", conversation_id: C1 }));
+    await next.promise;
+  });
+
+  test("a run without an agent parks nothing (generic phrase, as before)", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    h.streams[0].push(frame("message_start", START));
+    h.streams[0].push(frame("token", { text: "نص" }));
+    await tick();
+    h.streams[0].fail();
+    await promise;
+    assert.equal(h.store.getState().parked[C1], undefined);
+    assert.equal(selectRunningAgent(h.store.getState(), C1), null);
+  });
+
+  test("a placeholder that disappears (paused turn) drops the parked tracker without a chip", async () => {
+    const h = harness();
+    await deepSearchUntilDrop(h, "network");
+    h.engine.noteMessagesPage(C1, { messages: [], has_more: false });
+    assert.equal(h.store.getState().parked[C1], undefined);
+    assert.equal(h.store.getState().summaries.a1, undefined);
   });
 });
 

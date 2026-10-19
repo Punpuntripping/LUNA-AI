@@ -11,9 +11,9 @@ import { DeepSearchProgress } from "./DeepSearchProgress";
 
 // «ريحان يفكّر» — the row shown while an answer is on its way (port of the
 // web's ThinkingRow + TypingIndicator, MessageList.tsx / TypingIndicator.tsx).
-// A live deep_search gets the step tracker; everything else (and every
-// placeholder after a resume — progress is not replayed, plan X6) the
-// rotating phrase.
+// A deep_search gets the step tracker — live, or frozen at its last stage
+// after the stream detached (resume / network drop; stream-store keeps it);
+// everything else the rotating phrase.
 
 const RAYHAN = "ريحان";
 const ROTATION_MS = 7000;

@@ -1,6 +1,6 @@
-import { FlashList } from "@shopify/flash-list";
+import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { router } from "expo-router";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
 import { appendReferencesForCopy, type Reference, type WorkspaceItem } from "@contracts";
@@ -27,11 +27,20 @@ type Row =
 
 const AGENT_KINDS: ReadonlySet<WorkspaceItem["kind"]> = new Set<WorkspaceItem["kind"]>(["agent_search", "agent_writing"]);
 
+/** Scroll position to come back to: the first visible row + how far into it. */
+export interface ScrollAnchor {
+  index: number;
+  delta: number;
+}
+
 export interface ArtifactBodyProps {
   itemId: string;
   bottomInset: number;
-  /** Called before navigating to the reader (the sheet closes — see ArtifactSheet). */
-  onLeave: () => void;
+  /** Where to start (the user is back from the reader); read on mount only. */
+  restore?: ScrollAnchor | null;
+  /** Called with the current scroll anchor right before the reader is pushed
+   *  (the sheet hides while the reader is up and comes back — ArtifactSheet). */
+  onLeave: (anchor: ScrollAnchor | null) => void;
 }
 
 /**
@@ -40,20 +49,34 @@ export interface ArtifactBodyProps {
  * legal disclaimer. Anything else (never auto-opened, but reachable) renders
  * its markdown alone.
  */
-export function ArtifactBody({ itemId, bottomInset, onLeave }: ArtifactBodyProps) {
+export function ArtifactBody({ itemId, bottomInset, restore = null, onLeave }: ArtifactBodyProps) {
   const { colours } = useTheme();
   const item = useWorkspaceItem(itemId);
   const isAgent = item.data ? AGENT_KINDS.has(item.data.kind) : false;
   const refs = useReferences(itemId, isAgent);
   const references = useMemo(() => refs.data ?? [], [refs.data]);
 
+  const listRef = useRef<FlashListRef<Row>>(null);
+  // Mount-time value only: a later prop change must not re-scroll the list.
+  const [initialAnchor] = useState(restore);
+
   const openSource = useCallback(
     (n: number) => {
-      onLeave();
+      onLeave(readAnchor(listRef.current));
       router.push(sourceHref(itemId, n));
     },
     [itemId, onLeave],
   );
+
+  // Back from the reader: start at the row the user left from, then nudge to
+  // the exact pixel once that row is measured.
+  const onLoad = useCallback(() => {
+    const list = listRef.current;
+    if (!list || !initialAnchor || initialAnchor.delta <= 0) return;
+    const layout = list.getLayout(initialAnchor.index);
+    if (!layout) return;
+    list.scrollToOffset({ offset: list.getFirstItemOffset() + layout.y + initialAnchor.delta, animated: false });
+  }, [initialAnchor]);
 
   const content = item.data?.content_md ?? "";
   const rows = useMemo<Row[]>(() => {
@@ -151,7 +174,10 @@ export function ArtifactBody({ itemId, bottomInset, onLeave }: ArtifactBodyProps
         <CopyActions text={copyText} />
       </View>
       <FlashList
+        ref={listRef}
         data={rows}
+        initialScrollIndex={initialAnchor && initialAnchor.index < rows.length ? initialAnchor.index : undefined}
+        onLoad={onLoad}
         keyExtractor={(row) => row.key}
         getItemType={(row) => row.kind}
         renderItem={renderRow}
@@ -164,6 +190,16 @@ export function ArtifactBody({ itemId, bottomInset, onLeave }: ArtifactBodyProps
       />
     </View>
   );
+}
+
+function readAnchor(list: FlashListRef<Row> | null): ScrollAnchor | null {
+  if (!list) return null;
+  const index = list.getFirstVisibleIndex();
+  if (index < 0) return null;
+  const layout = list.getLayout(index);
+  const offset = list.getAbsoluteLastScrollOffset();
+  const delta = layout ? offset - (list.getFirstItemOffset() + layout.y) : 0;
+  return { index, delta: Number.isFinite(delta) && delta > 0 ? delta : 0 };
 }
 
 const styles = StyleSheet.create({
