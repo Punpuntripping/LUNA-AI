@@ -11,12 +11,27 @@ const dateFmt = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
   calendar: "gregory",
 });
 
+const dateTimeFmt = new Intl.DateTimeFormat(AR_DATE_LOCALE, {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  calendar: "gregory",
+});
+
 const numFmt = new Intl.NumberFormat(AR_NUM_LOCALE, { maximumFractionDigits: 2 });
 
 /** «18 أغسطس 2026». Invalid input → "". */
 export function formatDate(value: string | number | Date): string {
   const d = value instanceof Date ? value : new Date(value);
   return Number.isNaN(d.getTime()) ? "" : toLatinDigits(dateFmt.format(d));
+}
+
+/** «19 أكتوبر 2026 في 3:45 م» — the draft editor's «آخر تحديث». Invalid → "". */
+export function formatDateTime(value: string | number | Date): string {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : toLatinDigits(dateTimeFmt.format(d));
 }
 
 /** «20,182.5». */

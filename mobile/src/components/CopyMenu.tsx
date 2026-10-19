@@ -40,8 +40,20 @@ export async function copyText(text: string, mode: CopyMode): Promise<void> {
  *  `getText` is read at tap time — a streaming bubble copies its live content. */
 export function copyActions(getText: () => string): SheetAction[] {
   return [
-    { key: "copy", label: "نسخ", icon: "copy", onPress: () => void copyText(getText(), "markdown") },
-    { key: "copy-najiz", label: "النسخ لناجز", icon: "copy", onPress: () => void copyText(getText(), "najiz") },
+    {
+      key: "copy",
+      label: "نسخ",
+      hint: "يحتفظ بالعناوين والتنسيق",
+      icon: "copy",
+      onPress: () => void copyText(getText(), "markdown"),
+    },
+    {
+      key: "copy-najiz",
+      label: "النسخ لناجز",
+      hint: "نص عادي بدون أي تنسيق — جاهز للصق في ناجز",
+      icon: "copy",
+      onPress: () => void copyText(getText(), "najiz"),
+    },
   ];
 }
 

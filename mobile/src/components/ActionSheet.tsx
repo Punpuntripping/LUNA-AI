@@ -19,6 +19,8 @@ export interface SheetAction {
   key: string;
   label: string;
   icon?: IconName;
+  /** Muted second line under the label (the web menus' item hints). */
+  hint?: string;
   destructive?: boolean;
   onPress: () => void;
 }
@@ -97,6 +99,7 @@ export function SheetActions({ onClose, title, message, actions, keepOpenOnPress
             testID={testID ? `${testID}-${a.key}` : undefined}
             accessibilityRole="button"
             accessibilityLabel={a.label}
+            accessibilityHint={a.hint}
             onPress={() => {
               if (!keepOpenOnPress) onClose();
               a.onPress();
@@ -104,9 +107,20 @@ export function SheetActions({ onClose, title, message, actions, keepOpenOnPress
             style={({ pressed }) => [styles.row, pressed && { backgroundColor: colours.surface2 }]}
           >
             {a.icon ? <Icon name={a.icon} size={20} colour={fg} /> : null}
-            <AppText variant="base" style={{ color: fg }}>
-              {a.label}
-            </AppText>
+            {a.hint ? (
+              <View style={styles.labels}>
+                <AppText variant="base" style={{ color: fg }}>
+                  {a.label}
+                </AppText>
+                <AppText variant="sm" tone="muted">
+                  {a.hint}
+                </AppText>
+              </View>
+            ) : (
+              <AppText variant="base" style={{ color: fg }}>
+                {a.label}
+              </AppText>
+            )}
           </Pressable>
         );
       })}
@@ -201,6 +215,7 @@ const styles = StyleSheet.create({
   title: { paddingHorizontal: 12, paddingVertical: 8 },
   message: { paddingHorizontal: 12, paddingBottom: 8 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 52, paddingHorizontal: 12, borderRadius: 10 },
+  labels: { flex: 1, paddingVertical: 6 },
   cancel: { justifyContent: "center" },
   input: { marginHorizontal: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, textAlign: "right", writingDirection: "rtl" },
   buttons: { paddingHorizontal: 12, paddingTop: 12, gap: 8 },

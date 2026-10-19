@@ -1,9 +1,15 @@
 import {
   parseRefusal,
+  type ExportDocumentRequest,
   type LibraryRefusal,
   type Reference,
   type ReferenceSourceError,
   type ReferenceSourceResponse,
+  type ShareArtifactRequest,
+  type ShareArtifactResponse,
+  type ShareDraftResponse,
+  type UpdateWorkspaceItemRequest,
+  type WorkspaceFeedback,
   type WorkspaceItem,
   type WorkspaceItemListResponse,
 } from "@contracts";
@@ -12,7 +18,7 @@ import { getAccessToken } from "@/auth/token-store";
 import { API_PREFIX, API_URL } from "@/config/env";
 import { useUpdateGate } from "@/stores/update-gate";
 
-import { apiFetch } from "./client";
+import { apiFetch, apiFetchBytes } from "./client";
 import { appHeaders } from "./headers";
 
 // Workspace items + references — backend/app/api/workspace.py.
@@ -28,6 +34,36 @@ export function listConversationWorkspace(conversationId: string): Promise<Works
 
 export function getWorkspaceItem(itemId: string): Promise<WorkspaceItem> {
   return apiFetch<WorkspaceItem>(`/workspace/${encodeURIComponent(itemId)}`);
+}
+
+/** Edit a note / agent_writing draft (the agent lock answers 409). */
+export function updateWorkspaceItem(itemId: string, patch: UpdateWorkspaceItemRequest): Promise<WorkspaceItem> {
+  return apiFetch<WorkspaceItem>(`/workspace/${encodeURIComponent(itemId)}`, { method: "PATCH", body: patch });
+}
+
+/** 👍/👎 on an agent output; `null` clears the rating. */
+export function setWorkspaceFeedback(itemId: string, feedback: WorkspaceFeedback): Promise<WorkspaceItem> {
+  return apiFetch<WorkspaceItem>(`/workspace/${encodeURIComponent(itemId)}/feedback`, {
+    method: "PATCH",
+    body: { feedback },
+  });
+}
+
+/** Pre-fill for مشاركة / حفظ كمدونة (default السؤال + title). */
+export function getShareDraft(itemId: string): Promise<ShareDraftResponse> {
+  return apiFetch<ShareDraftResponse>(`/workspace/${encodeURIComponent(itemId)}/share-draft`);
+}
+
+/** Publish a snapshot behind an unguessable public URL (`blog_posts` row —
+ *  it also lands in the user's مدوناتي). */
+export function shareArtifact(itemId: string, body: ShareArtifactRequest): Promise<ShareArtifactResponse> {
+  return apiFetch<ShareArtifactResponse>(`/workspace/${encodeURIComponent(itemId)}/share`, { method: "POST", body });
+}
+
+/** Server-rendered PDF / Word of the given markdown — the file bytes. A render
+ *  can take a while on a long draft, hence the longer timeout. */
+export function exportDocument(body: ExportDocumentRequest): Promise<Uint8Array> {
+  return apiFetchBytes("/export", { method: "POST", body, timeoutMs: 90_000 });
 }
 
 /** The citation mesh of an `agent_search` item — FREE (no source bodies;

@@ -58,6 +58,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `next-steps.ts`, `templates-used.ts` | zod-free `parseNextSteps` / `parseTemplatesUsed` (URL check injectable) | `@/lib/next-steps`, `@/lib/templates-used` (re-export / wrap) |
 | `citations.ts` | `CITATION_RE`, `toAsciiDigits`, `splitCitations`, `linkifyCitations` | — (web keeps its remark plugin) |
 | `placeholder.ts` | `PLACEHOLDER_MAX_AGE_MS`, `placeholderPollMs`, `isDeadPlaceholder` | — (web keeps its own copy in use-messages / MessageList) |
+| `share.ts` | `ShareDraftResponse`, `ShareArtifactRequest`, `ShareArtifactResponse`, `UpdateWorkspaceItemRequest`, `ExportFormat`, `ExportDocumentRequest` (added, not moved — identical shapes) | — (web still declares its own in `@/types` / `@/lib/api`) |
 | `reference-labels.ts`, `references-copy.ts` | `referenceLabel`, `referenceCopyLabel`, `referenceLibraryExitLabel`, `officialUrl`, `appendReferencesForCopy`, … (moved) | `@/components/workspace/ReferencePanel` (re-export) |
 | `library-refusal.ts` | `parseRefusal`, `refusalCardCopy(input, ctas)` — CTAs are a parameter (the app must never point at web pricing) | `@/lib/library/full-content`, `@/lib/library/gate-copy` (re-export / wrap) |
 

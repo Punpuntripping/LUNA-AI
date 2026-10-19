@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-import { formatCount, formatElapsed, formatRelativeTime } from "../format";
+import { formatCount, formatDateTime, formatElapsed, formatRelativeTime } from "../format";
 
 const NOW = Date.parse("2026-10-15T10:00:00Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -46,5 +46,15 @@ describe("formatCount / formatElapsed", () => {
   test("m:ss", () => {
     assert.equal(formatElapsed(0), "0:00");
     assert.equal(formatElapsed(65_400), "1:05");
+  });
+});
+
+describe("formatDateTime", () => {
+  test("Arabic words, Latin digits, invalid → empty", () => {
+    const out = formatDateTime("2026-10-19T12:05:00Z");
+    assert.match(out, /2026/);
+    assert.match(out, /05/);
+    assert.doesNotMatch(out, /[٠-٩]/);
+    assert.equal(formatDateTime("nope"), "");
   });
 });

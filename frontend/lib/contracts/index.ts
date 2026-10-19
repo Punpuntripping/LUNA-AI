@@ -13,6 +13,7 @@ export * from "./agents";
 export * from "./conversations";
 export * from "./messages";
 export * from "./references";
+export * from "./share";
 export * from "./sse";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").

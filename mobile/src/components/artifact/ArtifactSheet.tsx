@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { scheduleOnRN } from "react-native-worklets";
 
 import { AppText } from "@/components/AppText";
+import { ToastHost } from "@/components/ToastHost";
 import { modalCoordinator } from "@/lib/modal-coordinator";
 import { useTheme } from "@/theme/ThemeProvider";
 
@@ -18,6 +19,8 @@ export interface ArtifactSheetProps {
   conversationId: string;
   /** `null` = closed. */
   itemId: string | null;
+  /** The shared demo conversation (action bar: no 👍/👎, publish disabled). */
+  isDemo: boolean;
   onClose: () => void;
 }
 
@@ -51,7 +54,7 @@ const DISMISS_VELOCITY = 900;
  * open hidden behind it). Back → focus returns → the sheet shows again at the
  * row the user left from.
  */
-export function ArtifactSheet({ itemId, onClose }: ArtifactSheetProps) {
+export function ArtifactSheet({ itemId, isDemo, onClose }: ArtifactSheetProps) {
   const open = itemId !== null;
   const focused = useIsFocused();
   const wanted = open && focused;
@@ -94,13 +97,21 @@ export function ArtifactSheet({ itemId, onClose }: ArtifactSheetProps) {
       navigationBarTranslucent
       onRequestClose={onClose}
     >
-      <SheetContent key={presented.seq} activeId={activeId} restore={restore} onLeave={onLeave} onClose={onClose} />
+      <SheetContent
+        key={presented.seq}
+        activeId={activeId}
+        isDemo={isDemo}
+        restore={restore}
+        onLeave={onLeave}
+        onClose={onClose}
+      />
     </Modal>
   );
 }
 
 interface SheetContentProps {
   activeId: string | null;
+  isDemo: boolean;
   restore: ScrollAnchor | null;
   onLeave: (itemId: string, anchor: ScrollAnchor | null) => void;
   onClose: () => void;
@@ -109,7 +120,7 @@ interface SheetContentProps {
 /** The sheet's window content. Mounted fresh per presentation: the drag
  *  offset starts at 0 every time (it used to live in the parent and keep the
  *  dismissed `height` across opens — N1). */
-function SheetContent({ activeId, restore, onLeave, onClose }: SheetContentProps) {
+function SheetContent({ activeId, isDemo, restore, onLeave, onClose }: SheetContentProps) {
   const { colours, scheme } = useTheme();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
@@ -179,10 +190,14 @@ function SheetContent({ activeId, restore, onLeave, onClose }: SheetContentProps
           <ArtifactBody
             itemId={activeId}
             bottomInset={insets.bottom}
+            isDemo={isDemo}
             restore={restore}
             onLeave={(a) => onLeave(activeId, a)}
           />
         ) : null}
+        {/* The app's ToastHost sits under this Modal; «تم النسخ» etc. from the
+            action bar must show on top of the sheet. */}
+        <ToastHost />
       </Animated.View>
     </GestureHandlerRootView>
   );

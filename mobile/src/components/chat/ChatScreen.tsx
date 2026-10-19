@@ -498,7 +498,12 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       />
 
       {conversationId ? (
-        <ArtifactSheet conversationId={conversationId} itemId={openedItemId ?? autoOpen?.itemId ?? null} onClose={closeArtifact} />
+        <ArtifactSheet
+          conversationId={conversationId}
+          itemId={openedItemId ?? autoOpen?.itemId ?? null}
+          isDemo={isDemo}
+          onClose={closeArtifact}
+        />
       ) : null}
     </View>
   );

@@ -44,6 +44,23 @@ const ICONS = {
   chat: { ios: "bubble.left", android: "chat_bubble" },
   trash: { ios: "trash", android: "delete" },
   hide: { ios: "eye.slash", android: "visibility_off" },
+  // Agent-output action bar (web WorkspaceItemActionBar: lucide Eye, Pencil,
+  // Share2, BookmarkPlus, Download, ThumbsUp/Down; ExportMenu FileText/FileType2).
+  // Android's Material Symbols font has no filled variant, so an active thumb
+  // is told apart by colour there (iOS also switches to the `.fill` glyph).
+  preview: { ios: "eye", android: "visibility" },
+  share: { ios: "square.and.arrow.up", android: "share" },
+  bookmarkAdd: { ios: "bookmark", android: "bookmark_add" },
+  download: { ios: "square.and.arrow.down", android: "download" },
+  filePdf: { ios: "doc.richtext", android: "picture_as_pdf" },
+  fileWord: { ios: "doc.text", android: "description" },
+  link: { ios: "link", android: "link" },
+  shareQuestion: { ios: "questionmark.bubble", android: "quiz" },
+  shareArticle: { ios: "newspaper", android: "newspaper" },
+  thumbUp: { ios: "hand.thumbsup", android: "thumb_up" },
+  thumbUpFill: { ios: "hand.thumbsup.fill", android: "thumb_up" },
+  thumbDown: { ios: "hand.thumbsdown", android: "thumb_down" },
+  thumbDownFill: { ios: "hand.thumbsdown.fill", android: "thumb_down" },
 } as const satisfies Record<string, Exclude<SymbolName, string>>;
 
 export type IconName = keyof typeof ICONS;

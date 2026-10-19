@@ -1,3 +1,5 @@
+import { fetch as expoFetch } from "expo/fetch";
+
 import { API_PREFIX, API_URL } from "@/config/env";
 import { useUpdateGate } from "@/stores/update-gate";
 
@@ -50,29 +52,74 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     opts.signal?.removeEventListener("abort", onOuterAbort);
   }
 
-  const contentType = res.headers.get("content-type");
-  // A Cloudflare challenge/block is HTML (or flagged by cf-mitigated), never
-  // our JSON. A native app cannot solve it — say so in Arabic.
-  if (res.headers.get("cf-mitigated") || looksLikeHtml(contentType)) {
-    throw new ApiError({ kind: "edge", status: res.status, message: MSG_EDGE, requestId });
-  }
-
-  if (!res.ok) {
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      body = null;
-    }
-    const err = errorFromBody(res.status, body, requestId);
-    if (res.status === 426) useUpdateGate.getState().markUpdateRequired();
-    throw err;
-  }
+  await throwIfFailed(res, requestId);
 
   if (res.status === 204) return undefined as T;
   try {
     return (await res.json()) as T;
   } catch {
     throw new ApiError({ kind: "edge", status: res.status, message: MSG_EDGE, requestId });
+  }
+}
+
+/** The parts of a fetch Response the error check reads (RN fetch and
+ *  `expo/fetch` both satisfy it). */
+interface ResponseLike {
+  ok: boolean;
+  status: number;
+  headers: { get: (name: string) => string | null };
+  json: () => Promise<unknown>;
+}
+
+async function throwIfFailed(res: ResponseLike, requestId: string): Promise<void> {
+  const contentType = res.headers.get("content-type");
+  // A Cloudflare challenge/block is HTML (or flagged by cf-mitigated), never
+  // our JSON. A native app cannot solve it — say so in Arabic.
+  if (res.headers.get("cf-mitigated") || looksLikeHtml(contentType)) {
+    throw new ApiError({ kind: "edge", status: res.status, message: MSG_EDGE, requestId });
+  }
+  if (res.ok) return;
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  const err = errorFromBody(res.status, body, requestId);
+  if (res.status === 426) useUpdateGate.getState().markUpdateRequired();
+  throw err;
+}
+
+/** A binary success body (e.g. `POST /export`). Same headers, timeout and
+ *  Arabic error mapping as `request`; the body is read through `expo/fetch`
+ *  because React Native's own fetch cannot hand back an ArrayBuffer. */
+export async function requestBytes(path: string, opts: RequestOptions = {}): Promise<Uint8Array> {
+  const { headers: base, requestId } = appHeaders();
+  const headers: Record<string, string> = { ...base, Accept: "*/*" };
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+  if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  try {
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}${API_PREFIX}${path}`, {
+        method: opts.method ?? "GET",
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: controller.signal,
+      });
+    } catch {
+      throw new ApiError({ kind: "network", status: 0, message: MSG_NETWORK, requestId });
+    }
+    await throwIfFailed(res, requestId);
+    try {
+      return new Uint8Array(await res.arrayBuffer());
+    } catch {
+      throw new ApiError({ kind: "network", status: 0, message: MSG_NETWORK, requestId });
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
