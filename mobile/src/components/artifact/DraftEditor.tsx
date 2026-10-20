@@ -16,6 +16,10 @@ export interface DraftEditorProps {
   bottomInset: number;
   /** المراجع + the AI disclaimer, under the body in the SAME scroll column. */
   footer?: ReactNode;
+  /** Defaults to the draft's; notes pass «اكتب ملاحظاتك هنا...». */
+  placeholder?: string;
+  /** Screen-reader label (default «محتوى المسودة»). */
+  label?: string;
 }
 
 /**
@@ -24,7 +28,15 @@ export interface DraftEditorProps {
  * auto-growing textarea), so the caret is scrolled clear of the keyboard and
  * of the action bar riding on top of it.
  */
-export function DraftEditor({ value, onChangeText, readOnly, bottomInset, footer }: DraftEditorProps) {
+export function DraftEditor({
+  value,
+  onChangeText,
+  readOnly,
+  bottomInset,
+  footer,
+  placeholder = "محتوى المسودة...",
+  label = "محتوى المسودة",
+}: DraftEditorProps) {
   const { colours } = useTheme();
   return (
     <KeyboardAwareScrollView
@@ -41,9 +53,9 @@ export function DraftEditor({ value, onChangeText, readOnly, bottomInset, footer
         multiline
         scrollEnabled={false}
         textAlignVertical="top"
-        placeholder="محتوى المسودة..."
+        placeholder={placeholder}
         placeholderTextColor={colours.textSubtle}
-        accessibilityLabel="محتوى المسودة"
+        accessibilityLabel={label}
         autoCorrect={false}
         style={[
           styles.input,

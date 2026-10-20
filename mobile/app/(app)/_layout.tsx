@@ -41,6 +41,9 @@ export default function AppLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="c/new" />
           <Stack.Screen name="c/[id]" />
+          {/* «مساحة العمل» + one item (2b) — they draw their own header (WI-n badge). */}
+          <Stack.Screen name="workspace/[conversationId]" />
+          <Stack.Screen name="workspace/item/[itemId]" />
           {/* Source reader (citation `[n]` taps) — owned by the source module; it sets its own title. */}
           <Stack.Screen name="source/[itemId]/[n]" options={{ headerShown: true, title: "المصدر" }} />
           <Stack.Screen name="settings" options={{ headerShown: true, title: "الإعدادات" }} />

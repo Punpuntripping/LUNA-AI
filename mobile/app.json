@@ -26,7 +26,10 @@
       },
       "predictiveBackGestureEnabled": false,
       "googleServicesFile": "./google-services.json",
-      "package": "com.rayhanai.app"
+      "package": "com.rayhanai.app",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE"
+      ]
     },
     "web": {
       "output": "static",
@@ -52,7 +55,18 @@
           "supportsRTL": true,
           "forcesRTL": true
         }
-      ]
+      ],
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "يحتاج ريحان إلى الوصول إلى صورك لاختيار صور المستندات وإرفاقها في المحادثة.",
+          "cameraPermission": "يحتاج ريحان إلى الكاميرا لتصوير المستندات وإرفاقها في المحادثة.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-document-picker",
+      "./plugins/with-android-config-changes"
     ],
     "experiments": {
       "typedRoutes": true,

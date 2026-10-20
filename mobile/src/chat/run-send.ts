@@ -451,6 +451,7 @@ export function createChatEngine(deps: ChatEngineDeps): ChatEngine {
       case "workspace_item_locked":
       case "workspace_item_unlocked":
         cache.invalidateWorkspace(conv);
+        if (ev.data.item_id) cache.invalidateWorkspaceItem(ev.data.item_id);
         return false;
       case "referenced_existing_item":
         if (ctx.assistantId && ev.data.item_id) store.recordReferencedItem(ctx.assistantId, ev.data.item_id);

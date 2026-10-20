@@ -9,6 +9,7 @@ import { Button } from "@/components/Button";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { LinkText } from "@/components/LinkText";
 import { Screen } from "@/components/Screen";
+import { DetailLevelControl } from "@/components/settings/DetailLevelControl";
 import { APP_BUILD, APP_UPDATE_ID, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
 import { useNotice } from "@/stores/notice";
@@ -70,6 +71,20 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      {/* Web «إعدادات المحادثة» (ConversationSettingsDialog) — مستوى التفصيل. */}
+      <View style={styles.section}>
+        <AppText variant="sm" weight={600} tone="secondary">
+          إعدادات المحادثة
+        </AppText>
+        <AppText variant="xs" tone="muted">
+          خيارات تتحكم في طريقة إجابة ريحان في جميع محادثاتك.
+        </AppText>
+        <AppText variant="base" weight={600} style={styles.subheading}>
+          مستوى التفصيل
+        </AppText>
+        <DetailLevelControl />
+      </View>
+
       <View style={styles.section}>
         <AppText variant="sm" weight={600} tone="secondary">
           الحساب
@@ -129,6 +144,7 @@ function DigitsCheck() {
 
 const styles = StyleSheet.create({
   section: { gap: 6 },
+  subheading: { marginTop: 4 },
   segment: { flexDirection: "row", padding: 4, gap: 4 },
   segmentItem: { flex: 1, minHeight: 44, paddingVertical: 8, justifyContent: "center" },
 });

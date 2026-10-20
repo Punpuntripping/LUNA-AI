@@ -83,3 +83,28 @@ export interface WorkspaceItemListResponse {
   items: WorkspaceItem[];
   total: number;
 }
+
+// ------------------------------------------
+// Workspace write bodies — ADDED (identical shapes to `frontend/types/index.ts`,
+// which the web keeps declaring for itself), for the mobile workspace screen.
+// ------------------------------------------
+
+/** `POST /conversations/{id}/workspace/notes` (and `/references`). */
+export interface CreateNoteRequest {
+  title: string;
+  content_md?: string;
+}
+
+export type CreateReferenceRequest = CreateNoteRequest;
+
+/** `PATCH /workspace/{id}/visibility` — `false` keeps the item out of the
+ *  agents' workspace context (the router never sees it). */
+export interface UpdateVisibilityRequest {
+  is_visible: boolean;
+}
+
+/** `GET /workspace/{id}/file` — short-lived signed URL of an attachment's original. */
+export interface WorkspaceFileUrlResponse {
+  url: string;
+  expires_at: string;
+}

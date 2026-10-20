@@ -21,7 +21,7 @@ import { PublishSheet, type PublishFlow } from "./PublishSheet";
 import { ReferenceCard } from "./ReferenceCard";
 import { isAgentLocked, useReferences, useWorkspaceItem } from "./use-artifact";
 import { useDraft, useSetFeedback } from "./use-output-actions";
-import { ACTION_BAR_SPACE, WorkspaceItemActionBar } from "./WorkspaceItemActionBar";
+import { ACTION_BAR_SPACE, WorkspaceItemActionBar, type ManageActions } from "./WorkspaceItemActionBar";
 
 type Row =
   | { kind: "md"; key: string; text: string }
@@ -46,6 +46,9 @@ export interface ArtifactBodyProps {
   /** Called with the current scroll anchor right before the reader is pushed
    *  (the sheet hides while the reader is up and comes back — ArtifactSheet). */
   onLeave: (anchor: ScrollAnchor | null) => void;
+  /** Workspace screen only: the bar's «المزيد» (إخفاء/إظهار · حذف). The
+   *  chat's sheet passes none. */
+  manage?: ManageActions;
 }
 
 function isAgentKind(kind: WorkspaceItem["kind"]): kind is AgentOutputKind {
@@ -59,7 +62,7 @@ function isAgentKind(kind: WorkspaceItem["kind"]): kind is AgentOutputKind {
  * one standard). Anything else (never auto-opened, but reachable) renders its
  * markdown with a نسخ-only bar (web: convo_context / references).
  */
-export function ArtifactBody({ itemId, bottomInset, isDemo, restore = null, onLeave }: ArtifactBodyProps) {
+export function ArtifactBody({ itemId, bottomInset, isDemo, restore = null, onLeave, manage }: ArtifactBodyProps) {
   const { colours } = useTheme();
   const item = useWorkspaceItem(itemId);
 
@@ -88,7 +91,7 @@ export function ArtifactBody({ itemId, bottomInset, isDemo, restore = null, onLe
   }
 
   const data = item.data;
-  const common = { bottomInset, restore, onLeave };
+  const common = { bottomInset, restore, onLeave, manage };
   if (data.kind === "agent_writing") return <WritingOutput key={data.item_id} item={data} isDemo={isDemo} {...common} />;
   if (isAgentKind(data.kind)) return <SearchOutput key={data.item_id} item={data} isDemo={isDemo} {...common} />;
   return <PlainOutput item={data} {...common} />;
@@ -100,6 +103,7 @@ interface OutputProps {
   bottomInset: number;
   restore: ScrollAnchor | null;
   onLeave: (anchor: ScrollAnchor | null) => void;
+  manage?: ManageActions;
 }
 
 /** References + publish sheet + 👍/👎 — what both agent outputs share. */
@@ -139,7 +143,7 @@ function useAgentOutput(item: WorkspaceItem, isDemo: boolean, onLeave: (a: Scrol
   return { refsState, references, openSource, barProps, publishSheet };
 }
 
-function SearchOutput({ item, isDemo, bottomInset, restore, onLeave }: OutputProps) {
+function SearchOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: OutputProps) {
   const { refsState, references, openSource, barProps, publishSheet } = useAgentOutput(item, isDemo, onLeave);
   const content = item.content_md ?? "";
   // نسخ copies the body PLUS «المراجع» (the [n] markers resolve in the paste).
@@ -154,13 +158,13 @@ function SearchOutput({ item, isDemo, bottomInset, restore, onLeave }: OutputPro
         restore={restore}
         onOpenSource={openSource}
       />
-      <WorkspaceItemActionBar copyText={copyText} exportTitle={item.title} bottomInset={bottomInset} {...barProps} />
+      <WorkspaceItemActionBar copyText={copyText} exportTitle={item.title} bottomInset={bottomInset} manage={manage} {...barProps} />
       {publishSheet}
     </View>
   );
 }
 
-function WritingOutput({ item, isDemo, bottomInset, restore, onLeave }: OutputProps) {
+function WritingOutput({ item, isDemo, bottomInset, restore, onLeave, manage }: OutputProps) {
   const { colours } = useTheme();
   const { refsState, references, openSource, barProps, publishSheet } = useAgentOutput(item, isDemo, onLeave);
   const locked = isAgentLocked(item);
@@ -209,6 +213,7 @@ function WritingOutput({ item, isDemo, bottomInset, restore, onLeave }: OutputPr
         onModeChange={draft.setMode}
         editDisabled={locked}
         bottomInset={bottomInset}
+        manage={manage}
         {...barProps}
       />
       {publishSheet}
@@ -217,12 +222,12 @@ function WritingOutput({ item, isDemo, bottomInset, restore, onLeave }: OutputPr
 }
 
 /** Non-agent items (reachable, never auto-opened): markdown + نسخ only. */
-function PlainOutput({ item, bottomInset, restore }: Omit<OutputProps, "isDemo">) {
+function PlainOutput({ item, bottomInset, restore, manage }: Omit<OutputProps, "isDemo">) {
   const content = item.content_md ?? "";
   return (
     <View style={styles.root}>
       <PreviewList content={content} refs={null} bottomInset={bottomInset} restore={restore} />
-      <WorkspaceItemActionBar copyText={content} bottomInset={bottomInset} />
+      <WorkspaceItemActionBar copyText={content} bottomInset={bottomInset} manage={manage} />
     </View>
   );
 }

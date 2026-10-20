@@ -112,6 +112,9 @@ export class FakeCache implements ChatCacheAdapter {
   invalidateWorkspace(id: string) {
     this.log.push(`invalidate:workspace:${id}`);
   }
+  invalidateWorkspaceItem(itemId: string) {
+    this.log.push(`invalidate:item:${itemId}`);
+  }
   fetchLatestMessages(id: string) {
     this.log.push(`fetch:${id}`);
     return this.server(id);

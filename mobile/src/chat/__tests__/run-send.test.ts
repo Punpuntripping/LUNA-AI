@@ -787,6 +787,24 @@ describe("auto-open", () => {
   });
 });
 
+describe("workspace item events", () => {
+  test("updated / locked / unlocked refresh the list AND the item's detail", async () => {
+    const h = harness();
+    const { promise } = await startSend(h);
+    const s = h.streams[0];
+    s.push(frame("message_start", START));
+    s.push(frame("workspace_item_locked", { item_id: "d1", locked_until: "2026-10-15T10:05:00Z" }));
+    s.push(frame("workspace_item_updated", { item_id: "d1" }));
+    s.push(frame("workspace_item_unlocked", { item_id: "d1" }));
+    s.push(frame("workspace_item_updated", { item_id: "d2" }));
+    s.push(frame("done", DONE));
+    await promise;
+    assert.equal(h.cache.count("invalidate:item:d1"), 3);
+    assert.equal(h.cache.count("invalidate:item:d2"), 1);
+    assert.ok(h.cache.count(`invalidate:workspace:${C1}`) >= 4);
+  });
+});
+
 describe("retry / regenerate", () => {
   test("retry removes the failed row and sends its text as a new POST", async () => {
     const h = harness();

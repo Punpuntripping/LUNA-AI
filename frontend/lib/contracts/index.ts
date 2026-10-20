@@ -15,6 +15,9 @@ export * from "./messages";
 export * from "./references";
 export * from "./share";
 export * from "./sse";
+export * from "./templates";
+export * from "./blogs";
+export * from "./preferences";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";

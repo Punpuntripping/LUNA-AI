@@ -1,6 +1,11 @@
-import { forwardRef } from "react";
+import { forwardRef, useCallback, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
+import { attachmentGate, useConversationAttachments } from "@/attachments/hooks";
+import { MAX_ATTACHMENTS, MSG_TOO_MANY, validatePicks, type PickedFile } from "@/attachments/limits";
+import { pickDocuments, PickerDenied, pickPhotos, takePhoto } from "@/attachments/pickers";
+import { attachmentUploads } from "@/attachments/uploader";
+import type { SheetAction } from "@/components/ActionSheet";
 import { AppText } from "@/components/AppText";
 import { Button } from "@/components/Button";
 import { Icon } from "@/components/Icon";
@@ -10,6 +15,8 @@ import { fontFamilyFor } from "@/theme/fonts";
 import { useTheme } from "@/theme/ThemeProvider";
 import { typeVariants } from "@/theme/typography";
 
+import { AttachmentChips } from "./composer/AttachmentChips";
+import { AttachSheet, type AttachSource } from "./composer/AttachSheet";
 import { MAX_MESSAGE_CHARS } from "./UserBubble";
 
 // M7 — the composer. Multiline; Enter inserts a newline (touch rule, web
@@ -20,12 +27,24 @@ import { MAX_MESSAGE_CHARS } from "./UserBubble";
 //
 // Text alignment is physical on purpose (see TextField.tsx): TextInput's
 // textAlign is absolute on both platforms.
+//
+// F4 — «+» opens the attach sheet (ملف / الصور / الكاميرا + the screen's extra
+// rows); chips sit above the input. Send is blocked while any chip uploads and
+// possible with completed chips alone (the engine then sends «مرفق» as the
+// text). In c/new a pick first asks the screen to create the conversation
+// (`onRequireConversation`, web create-on-attach) and uploads there. The
+// screen's قالب / مدونة pills ride in `extraChips`; `sendableWithoutText` /
+// `blockSend` fold them into the same send gate.
 
 export const AI_FOOTER = "ريحان مساعد بالذكاء الاصطناعي وقد يخطئ — تحقق من المصادر";
 const COUNTER_FROM = 9_000;  // «9,500 / 10,000» kept LTR inside the RTL line
 
 export const DEMO_COMPOSER_HINT = "هذه محادثة تجريبية للاطّلاع";
 export const DEMO_COMPOSER_CTA = "ابدأ محادثة جديدة";
+
+// Web ChatInput.tsx:870 (no create-on-attach handler).
+const MSG_NEEDS_CONVERSATION = "ابدأ محادثة أولاً قبل إضافة المرفقات";
+const MSG_PICKER_FAILED = "تعذّر فتح الملفات — حاول مجدداً";
 
 export interface ComposerProps {
   value: string;
@@ -42,13 +61,110 @@ export interface ComposerProps {
   /** Shared demo conversation: read-only hint instead of the input. */
   demo?: boolean;
   onStartNewChat?: () => void;
+  /** Attachments: the conversation the chips belong to (`null` = c/new).
+   *  Omitted ⇒ no «+» at all. */
+  conversationId?: string | null;
+  /** c/new: create the conversation (and switch to it); resolves its id, or
+   *  null when creation failed (the screen shows why). */
+  onRequireConversation?: () => Promise<string | null>;
+  /** More rows for the «+» sheet (قالب، مدونة، مستوى التفصيل…). */
+  attachActions?: SheetAction[];
+  /** More pills above the input, before the attachment chips (قالب / مدونة). */
+  extraChips?: ReactNode;
+  /** Something outside the text makes the message sendable (a template, a
+   *  ready blog) — like completed attachment chips. */
+  sendableWithoutText?: boolean;
+  /** Something outside the text is still loading (a blog import) — no send. */
+  blockSend?: boolean;
 }
 
 export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
-  { value, onChangeText, onSend, onStop, running, atParallelCap, parallelCap, busy = false, demo = false, onStartNewChat },
+  {
+    value,
+    onChangeText,
+    onSend,
+    onStop,
+    running,
+    atParallelCap,
+    parallelCap,
+    busy = false,
+    demo = false,
+    onStartNewChat,
+    conversationId,
+    onRequireConversation,
+    attachActions,
+    extraChips,
+    sendableWithoutText = false,
+    blockSend = false,
+  },
   ref,
 ) {
   const { colours, radius } = useTheme();
+
+  // ---- attachments (F4) ----
+  const attachEnabled = conversationId !== undefined;
+  const chips = useConversationAttachments(conversationId ?? null);
+  const gate = attachmentGate(chips);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const canAttach = attachEnabled && (!!conversationId || !!onRequireConversation);
+
+  const addPicked = useCallback(
+    async (picked: PickedFile[]) => {
+      if (picked.length === 0) return;
+      // The web's up-front check: one bad file refuses the whole selection,
+      // and c/new never creates a conversation for an invalid one.
+      const invalid = validatePicks(chips.length, picked);
+      if (invalid) {
+        setAttachError(invalid);
+        return;
+      }
+      setAttachError(null);
+      let id = conversationId ?? null;
+      if (!id) {
+        if (!onRequireConversation) {
+          setAttachError(MSG_NEEDS_CONVERSATION);
+          return;
+        }
+        id = await onRequireConversation();
+        if (!id) return;
+      }
+      attachmentUploads.add(id, picked);
+    },
+    [chips.length, conversationId, onRequireConversation],
+  );
+
+  const onPick = useCallback(
+    async (source: AttachSource) => {
+      setAttachError(null);
+      const remaining = MAX_ATTACHMENTS - chips.length;
+      if (remaining <= 0) {
+        setAttachError(MSG_TOO_MANY);
+        return;
+      }
+      try {
+        const picked =
+          source === "files" ? await pickDocuments() : source === "photos" ? await pickPhotos(remaining) : await takePhoto();
+        await addPicked(picked);
+      } catch (err) {
+        setAttachError(err instanceof PickerDenied ? err.message : MSG_PICKER_FAILED);
+      }
+    },
+    [chips.length, addPicked],
+  );
+
+  const onRemoveChip = useCallback(
+    (id: string) => {
+      if (conversationId) attachmentUploads.remove(conversationId, id);
+    },
+    [conversationId],
+  );
+  const onRetryChip = useCallback(
+    (id: string) => {
+      if (conversationId) attachmentUploads.retry(conversationId, id);
+    },
+    [conversationId],
+  );
 
   if (demo) {
     return (
@@ -65,8 +181,16 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
   }
 
   const trimmed = value.trim();
-  const canSend = !running && !busy && !atParallelCap && trimmed.length > 0 && value.length <= MAX_MESSAGE_CHARS;
+  const canSend =
+    !running &&
+    !busy &&
+    !atParallelCap &&
+    !gate.uploading &&
+    !blockSend &&
+    (trimmed.length > 0 || gate.sendable > 0 || sendableWithoutText) &&
+    value.length <= MAX_MESSAGE_CHARS;
   const showCounter = value.length >= COUNTER_FROM;
+  const addDisabled = running || busy;
 
   return (
     <View style={[styles.wrap, { borderTopColor: colours.border, backgroundColor: colours.canvas }]}>
@@ -78,7 +202,29 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
         </AppText>
       ) : null}
 
+      {extraChips}
+      {attachEnabled ? <AttachmentChips chips={chips} onRemove={onRemoveChip} onRetry={onRetryChip} /> : null}
+      {attachError ? (
+        <AppText variant="xs" tone="destructive" style={styles.note} testID="composer-attach-error">
+          {attachError}
+        </AppText>
+      ) : null}
+
       <View style={[styles.box, { borderColor: colours.border, backgroundColor: colours.surface1, borderRadius: radius["2xl"] }]}>
+        {attachEnabled ? (
+          <Pressable
+            testID="composer-add"
+            accessibilityRole="button"
+            accessibilityLabel="إضافة إلى الرسالة"
+            accessibilityState={{ disabled: addDisabled }}
+            disabled={addDisabled}
+            hitSlop={6}
+            onPress={() => setSheetOpen(true)}
+            style={({ pressed }) => [styles.add, { opacity: addDisabled ? 0.4 : pressed ? 0.6 : 1 }]}
+          >
+            <Icon name="plus" size={22} colour={colours.textMuted} />
+          </Pressable>
+        ) : null}
         <TextInput
           ref={ref}
           testID="composer-input"
@@ -112,7 +258,7 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
             <Pressable
               testID="composer-send"
               accessibilityRole="button"
-              accessibilityLabel="إرسال"
+              accessibilityLabel={gate.uploading || blockSend ? "جارٍ رفع المرفقات" : "إرسال"}
               accessibilityState={{ disabled: !canSend }}
               disabled={!canSend}
               onPress={onSend}
@@ -142,6 +288,16 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
       ) : null}
 
       <Footer />
+
+      {attachEnabled ? (
+        <AttachSheet
+          visible={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          onPick={(source) => void onPick(source)}
+          canAttach={canAttach}
+          actions={attachActions}
+        />
+      ) : null}
     </View>
   );
 });
@@ -158,6 +314,7 @@ const styles = StyleSheet.create({
   wrap: { paddingHorizontal: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
   note: { marginBottom: 6, paddingHorizontal: 4 },
   box: { flexDirection: "row", alignItems: "flex-end", borderWidth: 1, paddingStart: 14, paddingEnd: 6, paddingVertical: 6 },
+  add: { width: 36, height: 38, marginStart: -10, alignItems: "center", justifyContent: "center" },
   input: {
     flex: 1,
     minHeight: 40,

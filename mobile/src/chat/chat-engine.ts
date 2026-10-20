@@ -30,6 +30,10 @@ export function createQueryCacheAdapter(qc: QueryClient): ChatCacheAdapter {
     invalidateWorkspace: (id) => {
       void qc.invalidateQueries({ queryKey: workspaceKeys.byConversation(id) });
     },
+    invalidateWorkspaceItem: (itemId) => {
+      // Exact: the item's signed-file URL (`[...detail, "file"]`) is unaffected.
+      void qc.invalidateQueries({ queryKey: workspaceKeys.detail(itemId), exact: true });
+    },
     fetchLatestMessages: (id) => listMessages(id, { limit: MESSAGE_PAGE_SIZE }),
     lookupWorkspaceItems: async (id, itemIds) => {
       const res = await qc.fetchQuery({

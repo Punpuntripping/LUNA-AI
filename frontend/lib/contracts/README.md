@@ -47,7 +47,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `errors.ts` | `ErrorCode` union (mirror of `backend/app/errors.py`), `ApiErrorEnvelope` | — |
 | `legal.ts` | `LEGAL_VERSION`, `LEGAL_ROUTES`, `AGENT_OUTPUT_DISCLAIMER_AR` (moved) | `@/lib/legal`, `@/components/workspace/AgentOutputDisclaimer` (re-export) |
 | `numerals.ts` | `AR_NUM_LOCALE`, `AR_DATE_LOCALE`, `toLatinDigits` (moved) + `arNumber`, `arResetDate` (moved from gate-copy) | `@/lib/format/numerals`, `@/lib/library/gate-copy` (re-export) |
-| `agents.ts` | `AgentFamily`, `WorkspaceItem*`, `UploadInitResponse` (moved) | `@/types` (re-export) |
+| `agents.ts` | `AgentFamily`, `WorkspaceItem*`, `UploadInitResponse` (moved) + `CreateNoteRequest`, `CreateReferenceRequest`, `UpdateVisibilityRequest`, `WorkspaceFileUrlResponse` (added, identical shapes) | `@/types` (re-export; the added four are still declared by the web itself) |
 | `conversations.ts` | `ConversationSummary`, `ConversationDetail`, list/create shapes (moved) | `@/types` (re-export) |
 | `messages.ts` | `Message`, `MessageMetadata`, `NextStep`, `TemplateUsed`, `MessageListResponse` (incl. `run_active`), `SendMessagePayload` (moved) | `@/types` (re-export) |
 | `references.ts` | `Reference`, `SourceView`, `ReferenceSourceResponse`, unlock/balance shapes (moved) | `@/types` (re-export) |
@@ -59,6 +59,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `citations.ts` | `CITATION_RE`, `toAsciiDigits`, `splitCitations`, `linkifyCitations` | — (web keeps its remark plugin) |
 | `placeholder.ts` | `PLACEHOLDER_MAX_AGE_MS`, `placeholderPollMs`, `isDeadPlaceholder` | — (web keeps its own copy in use-messages / MessageList) |
 | `share.ts` | `ShareDraftResponse`, `ShareArtifactRequest`, `ShareArtifactResponse`, `UpdateWorkspaceItemRequest`, `ExportFormat`, `ExportDocumentRequest` (added, not moved — identical shapes) | — (web still declares its own in `@/types` / `@/lib/api`) |
+| `templates.ts`, `blogs.ts`, `preferences.ts` | composer «+» extras: `UserTemplate`, `TemplateListResponse`, `PendingTemplate`, `withTemplateDirective` (the `استخدم القالب: «…»` line) · `MyBlogItem`, `BlogItemResponse`, `extractBlogToken`, `planBlogQueue`, `MAX_BLOG_CHIPS` · `DetailLevel`, `DETAIL_LEVEL_OPTIONS`, `coerceDetailLevel`, `/preferences` shapes (added, not moved — identical to the web's) | — (web keeps its own in `@/types`, ChatInput, ComposerPlusMenu, DetailLevelToggle) |
 | `reference-labels.ts`, `references-copy.ts` | `referenceLabel`, `referenceCopyLabel`, `referenceLibraryExitLabel`, `officialUrl`, `appendReferencesForCopy`, … (moved) | `@/components/workspace/ReferencePanel` (re-export) |
 | `library-refusal.ts` | `parseRefusal`, `refusalCardCopy(input, ctas)` — CTAs are a parameter (the app must never point at web pricing) | `@/lib/library/full-content`, `@/lib/library/gate-copy` (re-export / wrap) |
 

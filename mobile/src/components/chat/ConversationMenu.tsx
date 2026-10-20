@@ -1,3 +1,4 @@
+import { router } from "expo-router";
 import { useState } from "react";
 
 import type { ConversationSummary } from "@contracts";
@@ -5,12 +6,16 @@ import type { ConversationSummary } from "@contracts";
 import { errorMessage } from "@/api/errors";
 import { useDeleteConversation, useRenameConversation, useStarConversation } from "@/chat/use-conversations";
 import { Sheet, SheetActions, SheetPrompt, type SheetAction } from "@/components/ActionSheet";
+import { workspaceHref } from "@/components/workspace/hrefs";
+import { useWorkspaceCount } from "@/components/workspace/use-workspace";
+import { workspaceMenuLabel } from "@/components/workspace/workspace-model";
 import { showToast } from "@/stores/toast";
 
 // L4 / M9 — the conversation's menu (list long-press and the chat header):
-// تمييز / إلغاء التمييز · إعادة تسمية · حذف (confirmed). The shared demo
-// conversation is read-only: its only action is «إخفاء» (DELETE on the demo
-// hides it for this user only — conversation_service.delete_conversation).
+// «مساحة العمل (n)» (2b, W1) · تمييز / إلغاء التمييز · إعادة تسمية · حذف
+// (confirmed). The shared demo conversation is read-only: besides its
+// (read-only) workspace its only action is «إخفاء» (DELETE on the demo hides
+// it for this user only — conversation_service.delete_conversation).
 // One Modal for the whole flow; the steps swap its content.
 
 export const DEFAULT_TITLE = "محادثة جديدة";
@@ -44,10 +49,22 @@ export function ConversationMenu({ conversation, onClose, onDeleted, testID = "c
   const visible = conversation !== null;
   const id = conversation?.conversation_id ?? "";
   const demo = conversation?.is_demo === true;
+  const workspaceCount = useWorkspaceCount(id || undefined, visible);
+
+  const workspaceAction: SheetAction = {
+    key: "workspace",
+    label: workspaceMenuLabel(workspaceCount),
+    icon: "template",
+    onPress: () => {
+      close();
+      router.push(workspaceHref(id));
+    },
+  };
 
   const menuActions: SheetAction[] = demo
-    ? [{ key: "hide", label: "إخفاء", icon: "hide", destructive: true, onPress: () => setStep("confirm") }]
+    ? [workspaceAction, { key: "hide", label: "إخفاء", icon: "hide", destructive: true, onPress: () => setStep("confirm") }]
     : [
+        workspaceAction,
         {
           key: "star",
           label: conversation?.is_starred ? "إلغاء التمييز" : "تمييز",

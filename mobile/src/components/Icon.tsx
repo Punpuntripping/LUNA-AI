@@ -61,6 +61,15 @@ const ICONS = {
   thumbUpFill: { ios: "hand.thumbsup.fill", android: "thumb_up" },
   thumbDown: { ios: "hand.thumbsdown", android: "thumb_down" },
   thumbDownFill: { ios: "hand.thumbsdown.fill", android: "thumb_down" },
+  // Composer attachments (web ComposerPlusMenu: lucide Plus, Paperclip).
+  plus: { ios: "plus", android: "add" },
+  attachFile: { ios: "paperclip", android: "attach_file" },
+  photos: { ios: "photo.on.rectangle", android: "photo_library" },
+  camera: { ios: "camera", android: "photo_camera" },
+  image: { ios: "photo", android: "image" },
+  // Composer extras (web ComposerPlusMenu: lucide BookText, SlidersHorizontal).
+  blog: { ios: "text.book.closed", android: "auto_stories" },
+  sliders: { ios: "slider.horizontal.3", android: "tune" },
 } as const satisfies Record<string, Exclude<SymbolName, string>>;
 
 export type IconName = keyof typeof ICONS;

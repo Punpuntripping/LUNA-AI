@@ -16,6 +16,11 @@ import type { ExportFormat, WorkspaceFeedback } from "@contracts";
 
 import { errorMessage } from "@/api/errors";
 import { ActionSheet, type SheetAction } from "@/components/ActionSheet";
+import {
+  DELETE_CONFIRM,
+  VISIBILITY_HINT,
+  visibilityActionLabel,
+} from "@/components/workspace/workspace-model";
 import { AppText } from "@/components/AppText";
 import { copyActions } from "@/components/CopyMenu";
 import { Icon, type IconName } from "@/components/Icon";
@@ -71,9 +76,24 @@ export interface WorkspaceItemActionBarProps {
   feedbackPending?: boolean;
   /** Safe-area bottom inset of the host. */
   bottomInset: number;
+  /** نسخ's visible label (the attachment viewer: «نسخ النص المستخرج»). */
+  copyLabel?: string;
+  /** With at least one handler: the trailing «المزيد» menu (workspace screen,
+   *  plan 05 §W3) — إخفاء/إظهار and حذف (confirmed). Omit to render none. */
+  manage?: ManageActions;
 }
 
-type Menu = "copy" | "export" | null;
+export interface ManageActions {
+  /** Current `is_visible` (names the toggle: إخفاء عن ريحان / إظهار لريحان). */
+  isVisible: boolean;
+  onToggleVisibility?: () => void;
+  /** Runs after the confirm step. */
+  onDelete?: () => void;
+  /** A request in flight: the «المزيد» button shows a spinner. */
+  pending?: boolean;
+}
+
+type Menu = "copy" | "export" | "manage" | "confirmDelete" | null;
 
 interface Fit {
   key: string;
@@ -88,6 +108,11 @@ interface Fit {
  *
  * - agent_writing: معاينة/تحرير · مشاركة · حفظ كمدونة · نسخ · PDF · 👍 · 👎
  * - agent_search:  مشاركة · حفظ كمدونة · نسخ · PDF · 👍 · 👎
+ * - note: معاينة/تحرير · نسخ; attachment / convo_context / references: نسخ
+ *
+ * App addition (no web button yet, plan 05 §W3): an icon-only «المزيد» at the
+ * end with إخفاء/إظهار and حذف (confirmed) — workspace screen only, never on
+ * the demo conversation.
  *
  * Rendered as the web's PHONE layout (`max-md:` "docked bar"): a full-width bar
  * fixed to the bottom, 48dp + safe-area inset, top border, translucent canvas,
@@ -110,6 +135,8 @@ export function WorkspaceItemActionBar({
   onFeedback,
   feedbackPending = false,
   bottomInset,
+  copyLabel = "نسخ",
+  manage,
 }: WorkspaceItemActionBarProps) {
   const { colours, radius } = useTheme();
   const { width, fontScale } = useWindowDimensions();
@@ -184,6 +211,46 @@ export function WorkspaceItemActionBar({
     { key: "pdf", label: "PDF", hint: "ملف جاهز للطباعة والإرسال", icon: "filePdf", onPress: () => void runExport("pdf") },
     { key: "docx", label: "Word", hint: "مستند قابل للتعديل", icon: "fileWord", onPress: () => void runExport("docx") },
   ];
+
+  const showManage = manage !== undefined && (manage.onToggleVisibility !== undefined || manage.onDelete !== undefined);
+  const manageActions: SheetAction[] = [];
+  if (manage?.onToggleVisibility) {
+    const toggle = manage.onToggleVisibility;
+    manageActions.push({
+      key: "visibility",
+      label: visibilityActionLabel(manage.isVisible),
+      hint: manage.isVisible ? VISIBILITY_HINT.hide : VISIBILITY_HINT.show,
+      icon: manage.isVisible ? "hide" : "preview",
+      onPress: () => {
+        setMenu(null);
+        toggle();
+      },
+    });
+  }
+  if (manage?.onDelete) {
+    manageActions.push({ key: "delete", label: "حذف", icon: "trash", destructive: true, onPress: () => setMenu("confirmDelete") });
+  }
+  const confirmActions: SheetAction[] = [
+    {
+      key: "confirm",
+      label: DELETE_CONFIRM.confirm,
+      icon: "trash",
+      destructive: true,
+      onPress: () => {
+        setMenu(null);
+        manage?.onDelete?.();
+      },
+    },
+  ];
+
+  const sheetActions =
+    menu === "export"
+      ? exportActions
+      : menu === "manage"
+        ? manageActions
+        : menu === "confirmDelete"
+          ? confirmActions
+          : copyActions(() => copyText);
 
   const publishPress = (action: (() => void) | undefined) => () => {
     if (publishDisabledHint) showToast(publishDisabledHint);
@@ -287,7 +354,7 @@ export function WorkspaceItemActionBar({
           ) : null}
 
           <BarButton
-            label="نسخ"
+            label={copyLabel}
             icon="copy"
             iconOnly={compact.has("copy")}
             disabled={!canCopy}
@@ -330,14 +397,31 @@ export function WorkspaceItemActionBar({
               />
             </>
           ) : null}
+
+          {showManage ? (
+            <BarButton
+              label="المزيد"
+              a11yLabel="خيارات العنصر"
+              icon="more"
+              iconOnly
+              busy={manage?.pending === true}
+              disabled={manage?.pending === true}
+              onPress={() => setMenu("manage")}
+              testID="wi-more"
+            />
+          ) : null}
         </ScrollView>
       </KeyboardStickyView>
 
       <ActionSheet
         visible={menu !== null}
         onClose={() => setMenu(null)}
-        actions={menu === "export" ? exportActions : copyActions(() => copyText)}
-        testID={menu === "export" ? "wi-export-sheet" : "wi-copy-sheet"}
+        actions={sheetActions}
+        title={menu === "confirmDelete" ? DELETE_CONFIRM.title : undefined}
+        message={menu === "confirmDelete" ? DELETE_CONFIRM.message : undefined}
+        // The manage rows decide what comes next (the confirm step).
+        keepOpenOnPress={menu === "manage" || menu === "confirmDelete"}
+        testID={menu === "export" ? "wi-export-sheet" : menu === "manage" ? "wi-manage-sheet" : menu === "confirmDelete" ? "wi-delete-confirm" : "wi-copy-sheet"}
       />
     </>
   );

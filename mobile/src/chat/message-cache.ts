@@ -28,6 +28,8 @@ export interface ChatCacheAdapter {
   invalidateMessages(conversationId: string): void;
   invalidateConversationLists(): void;
   invalidateWorkspace(conversationId: string): void;
+  /** One item's detail (the output sheet / item screen) — writer updates, locks. */
+  invalidateWorkspaceItem(itemId: string): void;
   /** Fresh read of the newest page (never served from cache). */
   fetchLatestMessages(conversationId: string): Promise<MessageListResponse>;
   /** The conversation's workspace items with these ids (kind + title). */

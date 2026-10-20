@@ -1,5 +1,7 @@
 import {
   parseRefusal,
+  type CreateNoteRequest,
+  type CreateReferenceRequest,
   type ExportDocumentRequest,
   type LibraryRefusal,
   type Reference,
@@ -10,6 +12,7 @@ import {
   type ShareDraftResponse,
   type UpdateWorkspaceItemRequest,
   type WorkspaceFeedback,
+  type WorkspaceFileUrlResponse,
   type WorkspaceItem,
   type WorkspaceItemListResponse,
 } from "@contracts";
@@ -39,6 +42,41 @@ export function getWorkspaceItem(itemId: string): Promise<WorkspaceItem> {
 /** Edit a note / agent_writing draft (the agent lock answers 409). */
 export function updateWorkspaceItem(itemId: string, patch: UpdateWorkspaceItemRequest): Promise<WorkspaceItem> {
   return apiFetch<WorkspaceItem>(`/workspace/${encodeURIComponent(itemId)}`, { method: "PATCH", body: patch });
+}
+
+/** Soft delete (an `agent_search` loses its reference rows — no undo). */
+export function deleteWorkspaceItem(itemId: string): Promise<{ success: boolean }> {
+  return apiFetch<{ success: boolean }>(`/workspace/${encodeURIComponent(itemId)}`, { method: "DELETE" });
+}
+
+/** إخفاء / إظهار — `is_visible: false` keeps the item out of the agents'
+ *  workspace context; it stays in the list (any kind). */
+export function setWorkspaceVisibility(itemId: string, isVisible: boolean): Promise<WorkspaceItem> {
+  return apiFetch<WorkspaceItem>(`/workspace/${encodeURIComponent(itemId)}/visibility`, {
+    method: "PATCH",
+    body: { is_visible: isVisible },
+  });
+}
+
+/** «إضافة عنصر» → «ملاحظة». */
+export function createNote(conversationId: string, body: CreateNoteRequest): Promise<WorkspaceItem> {
+  return apiFetch<WorkspaceItem>(`/conversations/${encodeURIComponent(conversationId)}/workspace/notes`, {
+    method: "POST",
+    body,
+  });
+}
+
+/** «إضافة عنصر» → «مراجع (قيد التطوير)» (web stub). */
+export function createReferenceItem(conversationId: string, body: CreateReferenceRequest): Promise<WorkspaceItem> {
+  return apiFetch<WorkspaceItem>(`/conversations/${encodeURIComponent(conversationId)}/workspace/references`, {
+    method: "POST",
+    body,
+  });
+}
+
+/** Signed URL of an attachment's original file (404 once purged — Arabic detail). */
+export function getWorkspaceFileUrl(itemId: string): Promise<WorkspaceFileUrlResponse> {
+  return apiFetch<WorkspaceFileUrlResponse>(`/workspace/${encodeURIComponent(itemId)}/file`);
 }
 
 /** 👍/👎 on an agent output; `null` clears the rating. */

@@ -19,11 +19,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AGENT_OUTPUT_DISCLAIMER_AR, type ConversationListResponse, type ConversationSummary } from "@contracts";
 
 import { errorMessage } from "@/api/errors";
+import { attachmentUploads } from "@/attachments/uploader";
 import { useSession } from "@/auth/session-store";
 import { chatEngine } from "@/chat/chat-engine";
 import { buildChatItems, type ChatItem } from "@/chat/chat-items";
 import { conversationKeys, messageKeys } from "@/chat/keys";
 import { chronological, type MessagesData } from "@/chat/message-cache";
+import type { SendParams } from "@/chat/run-send";
 import {
   streamStore,
   useAutoOpen,
@@ -39,6 +41,7 @@ import { useArtifactInfo, useArtifactKinds } from "@/chat/use-workspace-lookup";
 import { AppText } from "@/components/AppText";
 import { ArtifactSheet } from "@/components/artifact/ArtifactSheet";
 import { Button } from "@/components/Button";
+import { useComposerExtraActions, useComposerExtrasStore } from "@/components/composer-extras";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { IconButton } from "@/components/IconButton";
 import { StackHeader } from "@/components/StackHeader";
@@ -59,6 +62,13 @@ import { ScrollToBottom } from "./ScrollToBottom";
 // gate (quota / parallel — nothing persisted) deletes that just-created, empty
 // conversation and stays on `c/new` with the text and the banner (QA F6), so
 // no empty «محادثة جديدة» is left in the list.
+//
+// The «+» sheet (attachments, قالب, مدونة, مستوى التفصيل): on `c/new` adding a
+// file or a blog first creates the conversation and switches to it
+// (`requireConversation`, web create-on-attach) — the typed draft and a picked
+// template ride along. Chips (attachments, template, blogs) leave the composer
+// only when the server took the send (`onCommitted`); a refusal keeps them and
+// restores the typed text.
 //
 // Layout (top → bottom): header · FlashList (NOT inverted, plan M2) · notices
 // + composer + AI footer in a KeyboardStickyView. The list's scroll view is a
@@ -196,28 +206,94 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
     return () => sub.remove();
   }, [editingId, revealEdited]);
 
+  /** `typed` = what goes back into the composer on a refusal — the user's own
+   *  text, never the template directive line appended to `content`. */
   const startSend = useCallback(
-    (id: string, content: string) => {
+    (id: string, content: string, typed: string = content, extra: Omit<SendParams, "conversationId" | "content"> = {}) => {
       chatEngine
-        .send({ conversationId: id, content })
+        .send({ conversationId: id, content, ...extra })
         .then((result) => {
-          if (result.status === "refused" && result.restoreText) restoreDraft(id, result.restoreText);
+          if (result.status === "refused" && result.restoreText && typed.trim()) restoreDraft(id, typed);
         })
         .catch(() => undefined);
     },
     [restoreDraft],
   );
 
+  // ---- create-on-attach (c/new) ----
+  // Adding a file or a blog on c/new needs a conversation to own it: create
+  // it, carry the draft + template over, switch the route, and hand back the
+  // id (null = failed, the banner says why). One creation at a time.
+  const pendingCreate = useRef<Promise<string | null> | null>(null);
+  const requireConversation = useCallback((): Promise<string | null> => {
+    if (conversationId) return Promise.resolve(conversationId);
+    if (pendingCreate.current) return pendingCreate.current;
+    setCreateError(null);
+    const pending = (async () => {
+      try {
+        const created = await create.mutateAsync();
+        const id = created.conversation_id;
+        const text = useComposerDrafts.getState().drafts[NEW_CHAT_DRAFT] ?? "";
+        if (text) {
+          setDraft(id, text);
+          setDraft(NEW_CHAT_DRAFT, "");
+        }
+        useComposerExtrasStore.getState().carryTemplate(NEW_CHAT_DRAFT, id);
+        if (mounted.current) router.replace({ pathname: "/c/[id]", params: { id } });
+        return id;
+      } catch (err) {
+        if (mounted.current) setCreateError(errorMessage(err));
+        return null;
+      } finally {
+        pendingCreate.current = null;
+      }
+    })();
+    pendingCreate.current = pending;
+    return pending;
+  }, [conversationId, create, setDraft]);
+
+  const extras = useComposerExtraActions({
+    conversationId,
+    ensureConversation: conversationId ? undefined : requireConversation,
+  });
+  const { takeForSend: takeExtrasForSend, blocksSend: extrasBlockSend } = extras;
+
   const onSend = useCallback(async () => {
-    const content = draft;
-    if (!content.trim()) return;
-    if (conversationId) {
+    const typed = draft;
+    const current = conversationId;
+    // Nothing leaves the composer while a file or a blog import is still on
+    // its way (the button is disabled too — this guards a double tap).
+    if (extrasBlockSend || (current && attachmentUploads.hasInFlight(current))) return;
+    // Validate first (the directive may push the text past the limit). Both
+    // takes are non-destructive: chips leave the stores only on `release`.
+    const taken = takeExtrasForSend(typed);
+    if (!taken.ok) {
+      setCreateError(taken.error);
+      return;
+    }
+    const att = current ? attachmentUploads.takeForSend(current) : null;
+    const content = taken.parts.content;
+    const attachmentIds = [...(att?.attachmentIds ?? []), ...taken.parts.attachmentIds];
+    const optimisticAttachments = [...(att?.optimisticAttachments ?? []), ...taken.parts.optimisticAttachments];
+    // Text, a template directive, or anything attached (the engine sends
+    // «مرفق» for an attachments-only message).
+    if (!content.trim() && attachmentIds.length === 0) return;
+    setCreateError(null);
+    const release = () => {
+      att?.release();
+      taken.release();
+    };
+
+    if (current) {
       setDraft(draftKey, "");
-      startSend(conversationId, content);
+      startSend(current, content, typed, {
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
+        optimisticAttachments,
+        onCommitted: release,
+      });
       scrollToEnd();
       return;
     }
-    setCreateError(null);
     streamStore.setNotice(NEW_CHAT_DRAFT, null);
     let id: string;
     try {
@@ -241,7 +317,12 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       .send({
         conversationId: id,
         content,
+        // c/new holds no attachment / blog chips (adding one creates the
+        // conversation first) — only a template, already in `content`.
+        attachmentIds: attachmentIds.length ? attachmentIds : undefined,
+        optimisticAttachments,
         onCommitted: () => {
+          release();
           clearTimeout(timer);
           open();
         },
@@ -249,30 +330,49 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       .then((result) => {
         clearTimeout(timer);
         if (result.status === "refused") {
+          const restore = result.restoreText && typed.trim() ? typed : null;
           // Already shown as c/{id} (slow refusal after the fallback) but the
           // conversation still has no message: same clean-up, back to c/new.
           const navigated = settled;
           const persisted = chronological(qc.getQueryData<MessagesData>(messageKeys.list(id))).some(
             (m) => !m.isOptimistic && !m.isFailed,
           );
-          if (!navigated || !persisted) {
+          // Files / blogs the user added there meanwhile keep it alive.
+          const userAdded =
+            attachmentUploads.list(id).length > 0 || (useComposerExtrasStore.getState().blogs[id]?.length ?? 0) > 0;
+          if ((!navigated || !persisted) && !userAdded) {
             // Nothing was persisted: drop the empty conversation, keep the user
-            // on c/new with their text and the server's banner.
+            // on c/new with their text, their template and the server's banner.
             settled = true;
             setFirstSending(false);
             streamStore.setNotice(id, null);
             streamStore.setNotice(NEW_CHAT_DRAFT, result.notice);
-            if (result.restoreText) restoreDraft(NEW_CHAT_DRAFT, result.restoreText);
+            if (restore) restoreDraft(NEW_CHAT_DRAFT, restore);
             removeConversation.mutate(id);
             if (navigated) router.replace("/c/new");
             return;
           }
-          if (result.restoreText) restoreDraft(id, result.restoreText);
+          // The conversation stays: the composer (text + template) moves to it.
+          if (restore) restoreDraft(id, restore);
+          useComposerExtrasStore.getState().carryTemplate(NEW_CHAT_DRAFT, id);
         }
         open();
       })
       .catch(() => open());
-  }, [draft, conversationId, draftKey, setDraft, startSend, scrollToEnd, create, restoreDraft, removeConversation, qc]);
+  }, [
+    draft,
+    conversationId,
+    draftKey,
+    extrasBlockSend,
+    takeExtrasForSend,
+    setDraft,
+    startSend,
+    scrollToEnd,
+    create,
+    restoreDraft,
+    removeConversation,
+    qc,
+  ]);
 
   // ---- banner lifetime (QA N3) ----
   // A send-failure / refusal banner belongs to the visit it happened in:
@@ -534,9 +634,17 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
           busy={create.isPending || firstSending}
           demo={isDemo}
           onStartNewChat={() => router.replace("/c/new")}
+          conversationId={conversationId}
+          onRequireConversation={conversationId ? undefined : requireConversation}
+          attachActions={extras.actions}
+          extraChips={extras.chips}
+          sendableWithoutText={extras.sendableWithoutText}
+          blockSend={extras.blocksSend}
         />
         <View style={{ height: bottomInset }} />
       </KeyboardStickyView>
+
+      {isDemo ? null : extras.sheets}
 
       <ConversationMenu
         conversation={menuOpen ? conversation : null}

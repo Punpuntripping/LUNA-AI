@@ -12,17 +12,25 @@ import { EXPORT_MIME, exportDocTitle, exportFileName } from "./action-bar";
 export type ExportOutcome = "shared" | "saved" | "cancelled";
 
 /**
- * «PDF» / «Word» — the web's ExportMenu downloads the file; a phone hands it
- * on instead, with expo-file-system only (no new native module):
+ * How the rendered file reaches the user.
+ * - `share` (default): the system share sheet — on Android it offers Drive,
+ *   Gmail, WhatsApp, «حفظ في Drive»…; on iOS also «حفظ في الملفات».
+ * - `folder` (Android only): the system folder picker (SAF) and the file is
+ *   written there — kept for a future «حفظ على الجهاز» entry; on iOS it is
+ *   the share sheet too.
+ */
+export type ExportDelivery = "share" | "folder";
+
+/**
+ * «PDF» / «Word» — the web's ExportMenu downloads the file; a phone hands it on.
+ * The file is written to the app cache and handed to the native share sheet:
+ * iOS via RN `Share.share({ url })`, Android via expo-sharing (RN's Share
+ * carries text only there).
  *
- * - iOS: written to the cache, then the native share sheet («حفظ في الملفات»,
- *   Mail, WhatsApp…) — `Share.share({ url })` takes a file URL on iOS.
- * - Android: RN's Share carries text only, so the system folder picker (SAF)
- *   asks where to save it, and the file is written there. The picker opens in
- *   the folder used last time, else «Documents» — never «Download», whose root
- *   Android 11+ refuses («Can't use this folder»), which forced the user to
- *   make a sub-folder first. So «Use this folder» is one tap. (A true
- *   «save to Downloads» needs a native module — see the QA report F2.)
+ * The folder path opens the picker in the folder used last time, else
+ * «Documents» — never «Download», whose root Android 11+ refuses («Can't use
+ * this folder»). It is also the fallback when the installed build predates
+ * expo-sharing (the native module is missing → the import throws).
  *
  * `beforePresent` runs after the render, before any system UI is shown (the
  * caller waits there for its own menu sheet to finish dismissing — iOS will
@@ -35,19 +43,51 @@ export async function exportAndDeliver(
   title: string,
   markdown: string,
   beforePresent: () => Promise<void>,
+  delivery: ExportDelivery = "share",
 ): Promise<ExportOutcome> {
   const bytes = await exportDocument({ format, title: exportDocTitle(title), markdown });
   const name = exportFileName(title, format);
   await beforePresent();
 
   if (Platform.OS === "ios") {
-    const file = new File(Paths.cache, name);
-    file.create({ overwrite: true });
-    file.write(bytes);
+    const file = writeToCache(name, bytes);
     const res = await Share.share({ url: file.uri, title: name });
     return res.action === Share.dismissedAction ? "cancelled" : "shared";
   }
 
+  if (delivery === "share") {
+    const sharing = await loadSharing();
+    if (sharing) {
+      const file = writeToCache(name, bytes);
+      // Android's chooser does not report whether a target was picked.
+      await sharing.shareAsync(file.uri, { mimeType: EXPORT_MIME[format], dialogTitle: name });
+      return "shared";
+    }
+  }
+  return saveToFolder(name, format, bytes);
+}
+
+function writeToCache(name: string, bytes: Uint8Array): File {
+  const file = new File(Paths.cache, name);
+  file.create({ overwrite: true });
+  file.write(bytes);
+  return file;
+}
+
+type SharingModule = typeof import("expo-sharing");
+
+// Lazy: expo-sharing resolves its native module at import time and throws when
+// the installed dev build has none — a static import would break the whole
+// action bar on such a build instead of falling back to the folder picker.
+async function loadSharing(): Promise<SharingModule | null> {
+  try {
+    return await import("expo-sharing");
+  } catch {
+    return null;
+  }
+}
+
+async function saveToFolder(name: string, format: ExportFormat, bytes: Uint8Array): Promise<ExportOutcome> {
   let dir: Directory;
   try {
     dir = await Directory.pickDirectoryAsync(pickerStartUri(readLastFolder()));
