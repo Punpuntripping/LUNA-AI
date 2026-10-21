@@ -28,6 +28,15 @@ import { useInstallNudgeStore } from "@/stores/install-nudge-store";
  */
 export const EDU_CADENCE = 4;
 
+/**
+ * Automatic delivery OFF (owner, 2026-10-20) — no lesson pops up in the chat on
+ * its own any more. Gates `bumpTurn`, the engine's only entry, so the turn
+ * counter stops too (no `edu_turns` PATCH per answer). The sidebar's lesson list
+ * (`showLesson`) is user-initiated and still works. Flip back to `true` to
+ * resume: the milestone rule picks up from the stored count and seen lessons.
+ */
+const EDU_AUTO_DELIVERY = false;
+
 /** At most one lesson per browser session… */
 const SESSION_CAP = 1;
 /** …and at most one per day. */
@@ -193,6 +202,7 @@ export const useEduStore = create<EduState>((set, get) => ({
   },
 
   bumpTurn: () => {
+    if (!EDU_AUTO_DELIVERY) return;
     const { hydrated, turns } = get();
     // Not hydrated ⇒ we do not know the real baseline, and writing `1` would
     // clobber a stored count with a wrong one. Skipping is the safe direction:
