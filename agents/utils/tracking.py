@@ -390,10 +390,20 @@ def _model_from_result(result: Any) -> str | None:
     except Exception:
         return None
     model = None
+    url = ""
     for m in msgs or []:
         mn = getattr(m, "model_name", None)
         if mn:
             model = mn
+            url = getattr(m, "provider_url", None) or ""
+    # Baseten and Alibaba both echo "deepseek-v4-flash-0731" — name a Baseten
+    # response by its registry key so the ledger prices (and labels) the right
+    # host. Unambiguous echoes (V4.1) are left as-is.
+    if model and "baseten" in url:
+        from agents.model_registry import registry_key_for
+        key = registry_key_for(model, provider="baseten")
+        if key and registry_key_for(model) != key:
+            model = key
     return model
 
 

@@ -13,7 +13,9 @@ primary provider, then both families on the fallback provider::
 output-validation and tool-retry failures do NOT trigger provider fallback.
 
 There are two providers (Alibaba primary, OpenRouter fallback) and two model
-families per tier (Qwen primary, DeepSeek fallback). Each agent declares an
+families per tier (Qwen primary, DeepSeek fallback). Every DeepSeek flash slot
+additionally pins a Baseten ``head`` (0731 or V4.1), so in practice Baseten
+serves first and Alibaba is the backup. Each agent declares an
 intent via ``ModelPolicy``; ``AGENT_MODELS`` below is the single editable
 control surface. (Embeddings are NOT governed here — see
 ``agents/utils/embeddings.py``, which stays on Alibaba DashScope.)
@@ -229,13 +231,20 @@ def build_fallback_model(policy: ModelPolicy) -> FallbackModel:
 # Rerankers stay tier_2 qwen-primary (never were 3.6-plus); as of 2026-08-31 their
 # head is pinned to qwen3.7-flash (see _RERANKER). Revert via git to
 # restore the all-tier_1 baseline.
-_FLASH = ModelPolicy("tier_2", primary="deepseek")  # deepseek-v4-flash head
+#
+# 2026-10-22: every flash slot heads on the SAME 0731 model served by Baseten;
+# Alibaba is backup only. Chain: 0731 (Baseten) → 0731 (Alibaba) →
+# or-deepseek-v4-flash (OpenRouter) — resolve_chain's cross-provider-head rule.
+# In the 2026-10-18 A/B Baseten 0731 ran turns in 213s vs 333s on Alibaba, at a
+# lower list price ($0.13/$0.26 vs $0.14/$0.28). Revert = drop `head=`.
+_BASETEN_FLASH = "baseten-deepseek-v4-flash-0731"
+_FLASH = ModelPolicy("tier_2", primary="deepseek", head=_BASETEN_FLASH)
 # Same flash head, but reasoning pushed to the provider ceiling (deepseek
 # reasoning_effort=max / qwen+openrouter equivalents). Used for the two heavy-
 # synthesis slots — the deep_search aggregator and the writing_executor.
-_FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max")
+_FLASH_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_BASETEN_FLASH)
 # Flash head with mid-effort reasoning — used by the artifact_editor slot.
-_FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium")
+_FLASH_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_BASETEN_FLASH)
 # The two reranker slots. Qwen-primary tier_2, but pinned to qwen3.7-flash
 # rather than the tier's qwen3.5-flash cell (2026-08-31). 3.7-flash is the
 # newer flash generation and ~3x cheaper on both legs ($0.03/$0.13 vs
@@ -254,6 +263,9 @@ _RERANKER = ModelPolicy("tier_2", head="qwen3.7-flash")
 _V41 = "baseten-deepseek-v4.1-flash-1017"
 _V41_MAX = ModelPolicy("tier_2", primary="deepseek", reasoning="max", head=_V41)
 _V41_MEDIUM = ModelPolicy("tier_2", primary="deepseek", reasoning="medium", head=_V41)
+# V4.1 at provider-default thinking — the router (2026-10-22). ~4× the 0731
+# decode speed (~450 vs ~106 tok/s, Logfire 2026-10-18..22), ~+$0.0019/call.
+_V41_DEFAULT = ModelPolicy("tier_2", primary="deepseek", head=_V41)
 
 AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "planner_decider":            _FLASH,
@@ -268,7 +280,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # list[PlannerDecision | DeferredToolRequests]; same shape as the
     # deep_search planner. See .claude/plans/writer_planner.md.
     "writer_planner_decider":     _FLASH,
-    "router":                     _FLASH,  # deepseek-v4-flash → qwen3.5-flash → or-deepseek-v4-flash
+    "router":                     _V41_DEFAULT,  # V4.1 (Baseten) → deepseek-v4-flash (Alibaba) → or-deepseek-v4-flash
     # The three deep_search expanders run at fixed medium reasoning (baked per
     # provider/family by _reasoning_settings — deepseek reasoning_effort=medium,
     # qwen enable_thinking+8k budget, openrouter reasoning.effort=medium). The
@@ -290,12 +302,12 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     "case_search_aggregator":     _FLASH,
     # Tier_2 DeepSeek-primary with reasoning enabled — runs once per published
     # workspace item to produce an agent-facing coverage summary.
-    "artifact_summarizer":        ModelPolicy("tier_2", primary="deepseek"),
+    "artifact_summarizer":        _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 librarian that verdicts workspace_items
     # against a caller's query. Two LLM calls max per analyze() invocation
     # (one per family: refs vs meta). Short structured outputs — reasoning
     # mode is OFF (see .claude/plans/item_analyzer_v2.md §6).
-    "item_analyzer":              ModelPolicy("tier_2", primary="deepseek"),
+    "item_analyzer":              _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 memory agent that compacts the oldest span
     # of a conversation into a single carry-forward summary (user intent + produced
     # WIs + open threads). One LLM call per compaction, fires at most once per turn
@@ -308,7 +320,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # user_templates. One LLM call per ingestion; deepseek-flash can emit the
     # two-field output as text → a TextOutput JSON salvager avoids the retry.
     # See .claude/plans/writer_planner_user_templates.md §Wave D.
-    "template_ingester":          ModelPolicy("tier_2", primary="deepseek"),
+    "template_ingester":          _FLASH,
     # Tier_2 DeepSeek-primary — Layer-4 memory agent that distils HOW a user
     # writes (register, preferred length, counsel vs party, verbatim legal terms)
     # into a small identifier-free profile for the unified responder. Runs
@@ -320,13 +332,13 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # library pages (backend/app/services/ask_service.py). One short call per
     # anon question, grounded ONLY in the current page's content (no
     # deep_search). Kill-switched via ANON_ASK_ENABLED (default off).
-    "anon_ask":                   ModelPolicy("tier_2", primary="deepseek"),
+    "anon_ask":                   _FLASH,
     # Tier_2 DeepSeek-primary — runs once per deep_search invocation, in parallel
     # with the expanders, to pick the 2-5 sector AND-filter. Replaces the old
     # planner_decider.sectors output (decider had no visibility into per-sector
     # corpus contents — diagnosed in conv faa3b71e). DeepSeek-flash is fast and
     # cheap; the call is short (two-field structured output).
-    "sector_picker":              ModelPolicy("tier_2", primary="deepseek"),
+    "sector_picker":              _FLASH,
     # ── simple_search — the lookup family (.claude/plans/simple_search_family.md §3)
     # Layer-2 Major. Resolves WHICH legal object the user is pointing at:
     # deterministic title/number resolution, manual search, ask_user on
@@ -383,7 +395,7 @@ AGENT_MODELS: dict[str, Union[ModelPolicy, FallbackModel]] = {
     # (anon مادة pages render only the cached teaser; no LLM call on read). Output
     # is a single free-text field (no JSON schema → no salvager needed), so a plain
     # str-output Agent suffices. Flash is plenty for this templated explainer.
-    "sharh_generator":            ModelPolicy("tier_2", primary="deepseek"),
+    "sharh_generator":            _FLASH,
 }
 
 
@@ -456,12 +468,12 @@ def get_agent_model(
 
 # A deep_search sub-agent's role name (the ``agent`` field on inner_usage
 # entries) → its primary model on the happy path. Mirrors AGENT_MODELS:
-#   expander       → AGENT_MODELS["*_search_expander"]      = _FLASH (deepseek-v4-flash)
+#   expander       → AGENT_MODELS["*_search_expander"]      = _V41_MEDIUM (V4.1, Baseten)
 #   reranker       → AGENT_MODELS["*_search_reranker"]      = _RERANKER (qwen3.7-flash)
-#   aggregator     → AGENT_MODELS["*_search_aggregator"]    = _FLASH (deepseek-v4-flash)
-#   sector_picker  → AGENT_MODELS["sector_picker"]          = deepseek primary tier_2
+#   aggregator     → AGENT_MODELS["aggregator"]             = _V41_MAX (V4.1, Baseten)
+#   sector_picker  → AGENT_MODELS["sector_picker"]          = _FLASH (0731, Baseten)
 # Unknown roles fall back to _DEFAULT_MODEL (a conservative tier_1 estimate; the
-# router no longer runs on it — it's _FLASH now). When a FallbackModel cell other
+# router no longer runs on it — it's _V41_DEFAULT now). When a FallbackModel cell other
 # than the primary fires, the inner_usage entry's ``model`` field (when set by the
 # caller) overrides this lookup.
 _SUBAGENT_MODEL: dict[str, str] = {
@@ -471,7 +483,7 @@ _SUBAGENT_MODEL: dict[str, str] = {
     # role lookup. Kept for entries emitted before that change.
     "reranker":      "qwen3.7-flash",
     "aggregator":    _V41,
-    "sector_picker": "deepseek-v4-flash",
+    "sector_picker": _BASETEN_FLASH,
 }
 
 _DEFAULT_MODEL = "qwen3.7-plus"  # tier_1 qwen primary; used when no slot match

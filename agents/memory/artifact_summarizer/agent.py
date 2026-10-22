@@ -1,8 +1,15 @@
 """Pydantic AI agent factory for the artifact_summarizer.
 
-Single tier_2 DeepSeek-primary slot with reasoning enabled via the
-``extra_body.enable_thinking`` model setting. Reasoning tokens are pulled
+Single tier_2 DeepSeek-primary slot (``_FLASH``). Reasoning tokens are pulled
 from ``usage.details.reasoning_tokens`` by the runner.
+
+NOTE — no agent-level ``model_settings`` (same as ``convo_compactor``). This
+used to set ``extra_body.enable_thinking``, a Qwen control inert on DeepSeek.
+Since the Baseten head (2026-10-22) it was harmful: pydantic-ai merges settings
+SHALLOWLY, so an agent ``extra_body`` replaces the cell's — dropping Baseten's
+``chat_template_kwargs.thinking`` and the ``reasoning.max_tokens`` lift of its
+~4096-token thinking cut. Thinking comes from the per-cell settings in
+``agents/utils/agent_models._reasoning_settings``.
 """
 from __future__ import annotations
 
@@ -61,11 +68,6 @@ def _build_summarizer_agent(instructions: str, output_type: Any) -> Agent[None, 
         name="artifact_summarizer",
         output_type=output_type,
         instructions=instructions,
-        model_settings={
-            "extra_body": {
-                "enable_thinking": True,
-            },
-        },
         retries=1,
     )
 

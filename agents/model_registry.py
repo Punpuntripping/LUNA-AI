@@ -761,6 +761,22 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         cached_input_price=0.0028,
     ),
 
+    # Baseten-served DeepSeek V4 Flash 0731 — the HEAD of every flash slot
+    # (agent_models._FLASH*); the Alibaba entry above is its backup. Echoes the
+    # SAME "deepseek-v4-flash-0731" as Alibaba, so the ledger tells the two apart
+    # by the response's provider_url (see registry_key_for). Baseten list price.
+    "baseten-deepseek-v4-flash-0731": ModelConfig(
+        model_id="deepseek-ai/DeepSeek-V4-Flash-0731",
+        provider="baseten",
+        display_name="DeepSeek V4 Flash 0731 (Baseten)",
+        supports_vision=False,
+        max_tokens=65536,
+        context_length=163840,
+        input_price=0.13,
+        output_price=0.26,
+        cached_input_price=0.028,
+    ),
+
     # Baseten-served DeepSeek V4.1 Flash 1017 — the aggregator / writer /
     # expander head (agent_models._V41_*). Priced separately from 0731 (own
     # model_pricing row, migration 179). Baseten caps thinking at ~4096 tokens
@@ -966,20 +982,31 @@ def get_model_config(model_name: str) -> ModelConfig:
     )
 
 
-def registry_key_for(model_name: str) -> Optional[str]:
+def registry_key_for(model_name: str, provider: Optional[str] = None) -> Optional[str]:
     """Registry key for a key OR an exact provider ``model_id`` echo.
 
     Responses carry the provider's model id (``deepseek-v4-flash-0731``,
     ``deepseek-ai/DeepSeek-V4.1-Flash-1017``), but model_pricing rows are keyed
     by registry key — this bridges the two for cost lookup. Exact matches only
     (no prefix guessing), so an unknown name stays unknown.
+
+    ``provider`` disambiguates an echo two hosts share: Baseten answers
+    ``deepseek-ai/DeepSeek-V4-Flash-0731`` with the same
+    ``deepseek-v4-flash-0731`` Alibaba does. Without it the first registry match
+    (Alibaba) wins.
     """
     if model_name in MODEL_REGISTRY:
         return model_name
+    first: Optional[str] = None
     for key, config in MODEL_REGISTRY.items():
-        if config.model_id == model_name:
-            return key
-    return None
+        if config.model_id == model_name or (
+            config.provider == "baseten"
+            and config.model_id.rsplit("/", 1)[-1].lower() == model_name.lower()
+        ):
+            if provider is None or config.provider == provider:
+                return key
+            first = first or key
+    return first
 
 
 def get_api_key(provider: str) -> str:
