@@ -200,11 +200,15 @@ class FakeSupabase:
             "subscription_cancellations": [],
             # The buyer's identity row — read at checkout and snapshotted onto
             # the payment (117), so the record survives the account.
+            # `profession_group` (115) is what عرض الشهر الأول keys on (183).
             "users": [{"user_id": USER, "full_name_ar": CUSTOMER_NAME,
-                       "email": CUSTOMER_EMAIL}],
+                       "email": CUSTOMER_EMAIL, "profession_group": None}],
         }
         self.calls: list[str] = []      # rpc + write sequence, in order
         self.writes: list[tuple] = []
+        # Every RPC's params, in order — for assertions on WHAT was asked (the
+        # renewal job's `p_at`), not just that something was.
+        self.rpc_params: list[tuple[str, dict]] = []
 
         # ── المشتركون الأوائل (migration 138) ───────────────────────────────
         # 138 ships `early_adopter_campaign.enabled = false`, so the default
@@ -221,6 +225,16 @@ class FakeSupabase:
         # which is `campaign_enabled` above and no longer refuses a claim.
         self.campaign_row_present = True
 
+        # ── عرض الشهر الأول (migration 183) ─────────────────────────────────
+        # Ships `intro_offer_campaign.enabled = false` like 138 did, so the
+        # default here is deploy-day production: every quote is empty and
+        # nothing in this suite changes. Set `db.intro_offer_enabled = True`
+        # (plus an open early-adopter campaign and a profession) to quote it.
+        self.intro_offer_enabled = False
+        self.intro_offer_ends_at = _now() + timedelta(days=60)
+        self.intro_offer_prices = {"legal": "1.99", "specialist": "9.90",
+                                   "entrepreneur": "9.90"}
+
     def table(self, name: str) -> _Query:
         return _Query(self, name)
 
@@ -235,13 +249,28 @@ class FakeSupabase:
             None,
         )
 
-    def _forfeited(self, user_id) -> bool:
-        """Did this user cancel and let it stand? §1.6 — the price is gone for
-        good, even while seats are open. Only an undo takes it back."""
+    def _cancelled_seat(self, user_id) -> bool:
         return any(
             s.get("user_id") == user_id and s.get("release_reason") == "cancelled"
             for s in self.early_adopter_seats
         )
+
+    def _intro_member(self, user_id) -> bool:
+        """``is_intro_offer_member`` (183): ever PAID an intro first month."""
+        return any(
+            r.get("user_id") == user_id and r.get("intro_offer_group")
+            and r.get("status") == "paid"
+            for r in self.tables["payment_transactions"]
+        )
+
+    def _forfeited(self, user_id) -> bool:
+        """Did this user cancel and let it stand? §1.6 — the price is gone for
+        good, even while seats are open. Only an undo takes it back.
+
+        EXCEPT an intro-offer member (183, owner 2026-10-21): their lapsed
+        cancellation does not forfeit, so a re-purchase while seats are open is
+        promo-priced and claims a fresh seat."""
+        return self._cancelled_seat(user_id) and not self._intro_member(user_id)
 
     def _campaign_open(self) -> bool:
         """Enabled AND under capacity. Capacity is `count(*) WHERE released_at
@@ -254,6 +283,7 @@ class FakeSupabase:
     # -- RPCs ------------------------------------------------------------
     def rpc(self, name: str, params: dict):
         self.calls.append(name)
+        self.rpc_params.append((name, dict(params)))
         payment_id = params.get("p_payment_id")
         row = next(
             (r for r in self.tables["payment_transactions"] if r.get("payment_id") == payment_id),
@@ -400,12 +430,47 @@ class FakeSupabase:
                 # Beats a live seat AND an open campaign, in both contexts.
                 return _Rpc(listed)
             seat = self._live_seat(uid)
-            in_window = seat is not None and str(seat["promo_ends_at"]) > _iso(_now())
+            # 182: `p_at` replaces now() in the live-seat test (the renewal job
+            # passes the START of the period it is charging for).
+            at = ps._parse_ts(params.get("p_at")) or _now()
+            in_window = seat is not None and ps._parse_ts(seat["promo_ends_at"]) > at
             if context == "current":
                 return _Rpc(promo if in_window else listed)
             if plan.get("plan_id") == "basic":
                 return _Rpc(promo if self._campaign_open() else listed)
             return _Rpc(promo if (in_window or self._campaign_open()) else listed)
+
+        # ── migration 183 — عرض الشهر الأول ──────────────────────────────
+        # A MODEL of 183's `intro_offer_quote`, with the same five walls in the
+        # same spirit; the live function is the authority.
+        if name == "intro_offer_quote":
+            uid = params.get("p_user_id")
+            if not (self.intro_offer_enabled and _now() < self.intro_offer_ends_at
+                    and self._campaign_open()):
+                return _Rpc([])
+            user = next((u for u in self.tables["users"] if u.get("user_id") == uid), {})
+            group = user.get("profession_group")
+            price = self.intro_offer_prices.get(group)
+            if price is None:
+                return _Rpc([])
+            # Effective plan must be free (or none): a live non-free term — or a
+            # non-expiring grant — is "subscribed to something".
+            sub_row = next((r for r in self.tables["user_subscriptions"]
+                            if r.get("user_id") == uid), None)
+            if sub_row and sub_row.get("plan_id") not in (None, "free"):
+                expires = ps._parse_ts(sub_row.get("expires_at"))
+                if expires is None or expires > _now():
+                    return _Rpc([])
+            if any(r.get("user_id") == uid and r.get("plan_id") in ("pro", "max")
+                   and r.get("status") in ("paid", "refunded")
+                   for r in self.tables["payment_transactions"]):
+                return _Rpc([])
+            if self._cancelled_seat(uid):
+                return _Rpc([])
+            return _Rpc([{"profession_group": group, "first_month_sar": price}])
+
+        if name == "is_intro_offer_member":
+            return _Rpc(self._intro_member(params.get("p_user_id")))
 
         if name == "claim_early_adopter_seat":
             # 138's eight actions, in its order. `seat_id IS NOT NULL`
@@ -1807,7 +1872,8 @@ def test_subscription_state_of_a_user_with_no_row():
                      # 138 — always present, and "not a member" is what every
                      # user reads while the campaign is disabled. No count here,
                      # by design (early_adopters.md §1.10).
-                     "early_adopter": {"is_member": False, "promo_ends_at": None}}
+                     "early_adopter": {"is_member": False, "promo_ends_at": None,
+                                       "returnable": False}}
 
 
 @pytest.mark.parametrize(
@@ -2081,3 +2147,288 @@ def test_clearing_the_flag_never_raises_into_the_money_path(monkeypatch):
 
     monkeypatch.setattr(ss, "_write_renewal_flag", _boom)
     assert ss.clear_renewal_cancellation(db, USER) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# عرض الشهر الأول — profession intro offer (profession_intro_offer.md §3)
+#
+# Eligibility is 183's (`intro_offer_quote`); FakeSupabase models it. What these
+# pin is the PYTHON side: the quote replaces the price for pro only, it is
+# stamped on the row, it fails closed, and the first month cannot be refunded.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def intro_db(profession="legal", subscription=None) -> FakeSupabase:
+    """Both switches on — the early-adopter campaign (whose seat prices months
+    2–3) and the intro offer — and a declared profession."""
+    db = FakeSupabase(subscription if subscription is not None else sub("free"))
+    db.campaign_enabled = True
+    db.intro_offer_enabled = True
+    db.tables["users"][0]["profession_group"] = profession
+    return db
+
+
+def _row(db, payment_id):
+    return next(r for r in db.tables["payment_transactions"]
+                if r["payment_id"] == payment_id)
+
+
+@pytest.mark.parametrize(
+    "profession, first, halalas",
+    [("legal", "1.99", 199), ("specialist", "9.90", 990), ("entrepreneur", "9.90", 990)],
+)
+def test_the_intro_offer_prices_the_first_month_by_profession(keys, profession, first, halalas):
+    db = intro_db(profession)
+    quote = checkout(db, "pro")
+
+    assert quote["amount_sar"] == first
+    assert quote["amount_halalas"] == halalas
+    assert quote["credit_sar"] == "0.00"
+    assert quote["non_refundable"] is True
+    assert quote["intro_offer"] == {
+        "profession_group": profession, "first_month_sar": first,
+        "then_sar": "49.90", "then_months": 2, "list_sar": "89.90",
+    }
+    assert quote["description"].endswith("(عرض الشهر الأول)")
+
+    row = _row(db, quote["payment_id"])
+    assert row["amount_sar"] == first
+    assert row["intro_offer_group"] == profession
+    # Frozen on the row BEFORE the page shows them — the v3-intro disclosure is
+    # rebuilt from exactly these, never from the live catalog.
+    assert row["intro_offer_terms"] == {
+        "first_month_sar": first, "then_sar": "49.90", "then_months": 2,
+        "list_sar": "89.90",
+    }
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["individual", "declined", "unasked", "prior_pro_paid", "prior_max_refunded",
+     "active_basic", "offer_switched_off", "offer_ended", "cancelled_seat"],
+)
+def test_the_intro_offer_is_not_quoted_to_ineligible_users(keys, case):
+    """Every wall of 183's quote, one at a time. Each answers the ORDINARY price
+    (the early-adopter 49.90 here, since that campaign is open) and stamps
+    nothing — an ordinary row's INSERT stays byte-identical to the pre-183 one."""
+    db = intro_db("legal")
+    if case == "individual":
+        db.tables["users"][0]["profession_group"] = "individual"
+    elif case == "declined":
+        db.tables["users"][0]["profession_group"] = "declined"
+    elif case == "unasked":
+        db.tables["users"][0]["profession_group"] = None
+    elif case == "prior_pro_paid":
+        paid_row(db, plan_id="pro", paid_at=_iso(_now() - timedelta(days=60)))
+    elif case == "prior_max_refunded":
+        paid_row(db, plan_id="max", status="refunded")
+    elif case == "active_basic":
+        db.tables["user_subscriptions"] = [sub("basic", source="payment", days_left=3)]
+    elif case == "offer_switched_off":
+        db.intro_offer_enabled = False
+    elif case == "offer_ended":
+        db.intro_offer_ends_at = _now() - timedelta(seconds=1)
+    elif case == "cancelled_seat":
+        db.early_adopter_seats.append({
+            "seat_id": "s", "user_id": USER, "payment_id": "p",
+            "promo_ends_at": _iso(_now() + timedelta(days=10)),
+            "released_at": _iso(_now()), "release_reason": "cancelled",
+            "over_capacity": False,
+        })
+
+    quote = checkout(db, "pro")
+
+    assert quote["intro_offer"] is None
+    assert quote["non_refundable"] is False
+    # 49.90 seat price for most. Never the offer's price; the active-basic case
+    # is an upgrade (49.90 minus its basic credit), and a non-member's
+    # cancelled seat is a forfeiture (list price, §1.6 — unchanged by 183).
+    assert quote["amount_sar"] not in ("1.99", "9.90")
+    if case == "cancelled_seat":
+        assert quote["amount_sar"] == "89.90"
+    elif case != "active_basic":
+        assert quote["amount_sar"] == "49.90"
+    row = _row(db, quote["payment_id"])
+    assert "intro_offer_group" not in row and "intro_offer_terms" not in row
+
+
+def test_the_intro_offer_closes_with_the_early_adopter_seats(keys):
+    """No seat ⇒ no months 2–3 ⇒ no offer. The checkout falls to list price."""
+    db = intro_db("legal")
+    db.campaign_seat_limit = 0
+    quote = checkout(db, "pro")
+    assert quote["intro_offer"] is None
+    assert quote["amount_sar"] == "89.90"
+
+
+def test_a_basic_only_past_buyer_still_qualifies(keys):
+    """Owner, 2026-10-21: only a past PRO or MAX purchase disqualifies. A
+    lapsed basic buyer is on free and has never paid for pro."""
+    db = intro_db("legal", subscription=sub("basic", source="payment", days_left=-2))
+    paid_row(db, plan_id="basic", amount="29.90",
+             paid_at=_iso(_now() - timedelta(days=9)))
+    assert checkout(db, "pro")["amount_sar"] == "1.99"
+
+
+def test_max_is_never_discounted_by_the_intro_offer(keys):
+    """Pro only (§1 rule 1). An eligible lawyer buying max pays max's own price."""
+    db = intro_db("legal")
+    quote = checkout(db, "max")
+    assert quote["intro_offer"] is None
+    assert quote["amount_sar"] == "99.90"
+
+
+def test_an_unreadable_quote_sells_at_the_ordinary_price(keys):
+    """FAIL-CLOSED: advertising 1.99 that checkout cannot honour is the failure
+    to avoid, so an RPC error is simply "no offer"."""
+    db = intro_db("legal")
+    real_rpc = db.rpc
+
+    def _rpc(name, params):
+        if name == "intro_offer_quote":
+            raise RuntimeError("function intro_offer_quote() does not exist")
+        return real_rpc(name, params)
+
+    db.rpc = _rpc
+    quote = checkout(db, "pro")
+    assert quote["intro_offer"] is None
+    assert quote["amount_sar"] == "49.90"
+
+
+def test_prices_that_do_not_step_up_are_not_sold(keys):
+    """A price row at or above the seat price is a misconfiguration, not an
+    offer — selling it would 'discount' someone into paying more."""
+    db = intro_db("legal")
+    db.intro_offer_prices["legal"] = "59.90"
+    quote = checkout(db, "pro")
+    assert quote["intro_offer"] is None
+    assert quote["amount_sar"] == "49.90"
+
+
+def test_an_intro_first_month_claims_a_seat(keys, monkeypatch):
+    """138's gate is amount + credit <= promo, so 1.99 seats like 49.90 does —
+    and that seat is what prices months 2–3 at 49.90."""
+    db = intro_db("legal")
+    quote = checkout(db, "pro")
+    patch_fetch(monkeypatch, moyasar_payment(quote["payment_id"], amount=199))
+    result = run(ps.verify_payment(db, USER, MOYASAR_ID))
+
+    assert result["granted"] is True
+    seats = [s for s in db.early_adopter_seats if s["user_id"] == USER]
+    assert len(seats) == 1 and seats[0]["payment_id"] == quote["payment_id"]
+    assert ps._parse_ts(seats[0]["promo_ends_at"]) > _now() + timedelta(days=89)
+
+
+def test_an_intro_first_month_is_not_refundable(keys, provider_refunds):
+    db = FakeSupabase(sub("pro", source="payment", days_left=29))
+    row = paid_row(db, amount="1.99", intro_offer_group="legal",
+                   intro_offer_terms={"first_month_sar": "1.99", "then_sar": "49.90",
+                                      "then_months": 2, "list_sar": "89.90"})
+
+    summary = ps.transaction_summary(row)
+    assert summary["refundable"] is False
+    assert summary["non_refundable"] is True
+    assert summary["refund_quote_amount_sar"] is None
+    assert run(ps.list_history(db, USER))[0]["refundable"] is False
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ps.refund_payment(db, USER, row["payment_id"]))
+    assert exc.value.status_code == 409
+    assert exc.value.code is ErrorCode.PAYMENT_NOT_REFUNDABLE
+    assert exc.value.detail == ps.REFUND_NOT_REFUNDABLE_AR
+    assert provider_refunds == []                  # no money moved
+    assert db.calls == []                          # and no grant was touched
+
+
+def test_an_ordinary_payment_keeps_its_refund(keys):
+    """Months 2+ are renewals and never carry the group — the normal 24h rule."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=29))
+    summary = ps.transaction_summary(paid_row(db, amount="49.90"))
+    assert summary["refundable"] is True
+    assert summary["non_refundable"] is False
+
+
+def test_a_dashboard_refund_of_an_intro_month_is_still_processed(keys, monkeypatch):
+    """Self-serve is refused; an operator's refund from Moyasar's dashboard
+    arrives as a webhook and must still revoke the term."""
+    db = FakeSupabase(sub("pro", source="payment", days_left=29))
+    row = paid_row(db, amount="1.99", intro_offer_group="legal")
+    patch_fetch(monkeypatch, moyasar_payment(row["payment_id"], status="refunded", amount=199))
+    result = run(ps.handle_webhook_event(
+        db, _event(row["payment_id"], event="payment_refunded")))
+    assert result["status"] == "refunded" and result["revoked"] is True
+    assert row["status"] == "refunded"
+
+
+def test_the_intro_offer_state_for_an_eligible_user(keys):
+    db = intro_db("specialist")
+    assert run(ps.intro_offer_state(db, USER)) == {
+        "eligible": True, "profession_group": "specialist",
+        "first_month_sar": "9.90", "then_sar": "49.90", "then_months": 2,
+        "list_sar": "89.90",
+    }
+
+
+CLOSED_OFFER = {"eligible": False, "profession_group": None, "first_month_sar": None,
+                "then_sar": None, "then_months": 2, "list_sar": None}
+
+
+def test_the_intro_offer_state_when_not_eligible(keys):
+    db = intro_db("individual")
+    assert run(ps.intro_offer_state(db, USER)) == CLOSED_OFFER
+
+
+def test_the_intro_offer_state_fails_closed(keys):
+    """No end date, no seat count, no 5xx — "not eligible" is the whole answer."""
+    db = intro_db("legal")
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    db.rpc = _boom
+    db.table = _boom
+    assert run(ps.intro_offer_state(db, USER)) == CLOSED_OFFER
+
+
+def test_the_intro_offer_route_returns_the_state_uncached(keys, monkeypatch):
+    from backend.app.api import payments as api
+
+    db = intro_db("legal")
+    monkeypatch.setattr(api, "get_user_id", lambda _sb, _auth: USER)
+
+    class _Resp:
+        def __init__(self):
+            self.headers: dict = {}
+
+    resp = _Resp()
+    user = type("U", (), {"auth_id": "auth-1"})()
+    result = run(api.intro_offer(resp, current_user=user, supabase=db))
+
+    assert result["eligible"] is True and result["first_month_sar"] == "1.99"
+    assert resp.headers["Cache-Control"] == "private, no-store"
+    assert set(result) == {"eligible", "profession_group", "first_month_sar",
+                           "then_sar", "then_months", "list_sar"}
+
+
+def test_an_intro_member_sees_returnable_on_the_subscription(keys, monkeypatch):
+    """§4.10: the cancel dialog swaps the forfeiture warning for the "you can
+    come back at 49.90" wording — only for users who started on the offer."""
+    db = intro_db("legal")
+    quote = checkout(db, "pro")
+    patch_fetch(monkeypatch, moyasar_payment(quote["payment_id"], amount=199))
+    run(ps.verify_payment(db, USER, MOYASAR_ID))
+
+    block = run(ss.get_subscription(db, USER))["early_adopter"]
+    assert block["is_member"] is True
+    assert block["returnable"] is True
+
+
+def test_returnable_is_false_for_everyone_else_and_on_failure(keys):
+    db = intro_db("legal")
+    assert run(ss.get_subscription(db, USER))["early_adopter"]["returnable"] is False
+
+    def _boom(name, params):
+        raise RuntimeError("permission denied")
+
+    db.rpc = _boom
+    assert run(ss.get_subscription(db, USER))["early_adopter"]["returnable"] is False

@@ -315,8 +315,10 @@ def resolve_paid_activated_at(row: Optional[dict]) -> Optional[datetime]:
     """WHEN this account last activated a paid plan **by paying for it** — or
     None, which is the answer for the overwhelming majority of accounts.
 
-    Read by ``GET /auth/me`` and, through it, by the «اتعرف على ريحان» intro
-    tour: the tour is meant to arrive right after a purchase (A2 in
+    Read by ``GET /auth/me``. Its only web consumer was the «اتعرف على ريحان»
+    intro tour, RETIRED 2026-10-21 (profession_intro_offer.md §4.7) — the field
+    stays because it is additive and shipped app builds may read it. The tour
+    was meant to arrive right after a purchase (A2 in
     `.claude/plans/edu_series.md` §8), and the frontend cannot decide that on
     ``plan_id`` alone. It used to try — ``plan_id !== "free"`` — which made
     every dev grant, every comp and every long-since-expired term read as
@@ -732,7 +734,7 @@ def _no_seat() -> dict:
     """The "not an early adopter" answer, as a FRESH dict every time (this value
     is embedded in an API payload — a shared literal would be one mutation away
     from telling every caller the same lie)."""
-    return {"is_member": False, "promo_ends_at": None}
+    return {"is_member": False, "promo_ends_at": None, "returnable": False}
 
 
 def _rpc_row(res: Any) -> dict:
@@ -966,8 +968,33 @@ def restore_early_adopter_seat(
     return restored
 
 
+def _is_intro_offer_member(supabase: SupabaseClient, user_id: str) -> bool:
+    """Has this user ever paid an عرض الشهر الأول first month? (migration 183)
+
+    Such a user is exempt from cancellation forfeiture: after a lapsed cancel
+    they may buy pro again at the seat price with a fresh 90 days (owner,
+    2026-10-21). The exemption itself is enforced in SQL; this only tells the
+    cancel dialog which warning to show. Never raises — any failure reads as
+    False, i.e. the stricter, ordinary warning.
+    """
+    try:
+        return _rpc_bool(
+            supabase.rpc("is_intro_offer_member", {"p_user_id": user_id}).execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — includes 183 not being applied
+        logger.warning(
+            "is_intro_offer_member unavailable for user=%s (reading as False): %s",
+            user_id, exc,
+        )
+        return False
+
+
 def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
-    """``early_adopter_status(user)`` → ``{is_member, promo_ends_at}``.
+    """``early_adopter_status(user)`` → ``{is_member, promo_ends_at, returnable}``.
+
+    ``returnable`` (183): the caller started on عرض الشهر الأول, so cancelling
+    does NOT forfeit the price for good — the dialog shows the "you can come
+    back at the seat price" wording instead of the forfeiture warning.
 
     The caller's OWN membership, and deliberately nothing else: the RPC also
     reports ``campaign_open``, which is dropped here because this payload is
@@ -995,8 +1022,9 @@ def early_adopter_status(supabase: SupabaseClient, user_id: str) -> dict:
             "early_adopter_status unavailable for user=%s (reading as 'not a "
             "member'): %s", user_id, exc,
         )
-        return _no_seat()
+        return {**_no_seat(), "returnable": _is_intro_offer_member(supabase, user_id)}
     return {
         "is_member": bool(row.get("has_seat")),
         "promo_ends_at": row.get("promo_ends_at") if row.get("has_seat") else None,
+        "returnable": _is_intro_offer_member(supabase, user_id),
     }

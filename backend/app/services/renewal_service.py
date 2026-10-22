@@ -419,6 +419,11 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
     # A failed lookup falls back to the catalog inside ``_effective_price`` — the
     # pre-campaign behaviour, and the only fallback that keeps this job charging
     # at all when 138 is missing.
+    #
+    # `at=expires_at` (migration 182): the seat is tested at the START of the
+    # period being bought, not at now(). This job runs up to 24h before that
+    # boundary, so testing at now() billed the period beginning on day 90 at the
+    # promo rate — a fourth promo charge for every seat holder.
     price = await run_db(
         ps._effective_price,
         supabase,
@@ -426,6 +431,7 @@ async def _renew_one(supabase: SupabaseClient, subscription: dict) -> str:
         plan_id,
         plan.get("price_sar"),
         context=ps.PRICE_CONTEXT_CURRENT,
+        at=expires_at,
     )
     if price < ps.MIN_CHARGE_SAR:
         logger.error("renewal skipped: plan=%s price %s is below the minimum", plan_id, price)

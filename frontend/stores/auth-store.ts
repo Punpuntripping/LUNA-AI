@@ -157,8 +157,11 @@ interface AuthState {
   restoreAccount: () => Promise<void>;
   /** Persist the onboarding profession answer (users.profession_*). Optimistic:
    *  the local user updates first so the prompt never re-opens this session;
-   *  a failed PATCH is swallowed (worst case: asked once more next login). */
-  saveProfession: (group: string, label: string | null) => Promise<void>;
+   *  a failed PATCH is swallowed (worst case: asked once more next login).
+   *  Resolves `true` only when the server STORED the answer — the intro offer
+   *  is priced off the DB value, so it must not be offered off an optimistic
+   *  one the server never received. */
+  saveProfession: (group: string, label: string | null) => Promise<boolean>;
   /** Persist «بماذا تحب أن نناديك؟» (users.preferred_name). Pass null to clear
    *  the override and fall back to the derived name. NOT optimistic and NOT
    *  swallowed: the settings dialog reports success and failure inline, and
@@ -373,15 +376,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   saveProfession: async (group, label) => {
     const current = get().user;
-    if (!current) return;
+    if (!current) return false;
     set({
       user: { ...current, profession_group: group, profession_label: label },
     });
     try {
       await authApi.updateProfession(group, label);
+      return true;
     } catch {
       // Swallow — the optimistic user object keeps the prompt closed for this
       // session; the DB stays NULL so the user is simply asked again later.
+      return false;
     }
   },
 

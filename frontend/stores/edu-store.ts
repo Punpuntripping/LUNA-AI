@@ -122,7 +122,7 @@ interface EduState {
   /**
    * Seed from the `/preferences` payload. Pass `null` for a FAILED read —
    * that fails CLOSED (everything marked seen, series silent) exactly like
-   * `onboardingSeen`. Teaching off a failed hydrate would re-nag users who
+   * `tourWorkspaceSeen`. Teaching off a failed hydrate would re-nag users who
    * finished the whole syllabus months ago.
    */
   hydrateFrom: (prefs: UserPreferencesData | null) => void;

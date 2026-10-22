@@ -31,7 +31,7 @@ import { ApiClientError, paymentsApi } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth-store";
 import { DeleteAccountDialog } from "@/components/Settings/DeleteAccountDialog";
 import { QuotaUpgradeDialog } from "@/components/chat/QuotaUpgradeDialog";
-import { pricingPlansAbove } from "@/lib/pricing";
+import { formatSar, pricingPlansAbove } from "@/lib/pricing";
 import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
 import { usePaymentMethod, useRemovePaymentMethod } from "@/hooks/use-payments";
 import type { CancelSubscriptionReason, SubscriptionState } from "@/types";
@@ -453,6 +453,14 @@ export function AccountSettingsDialog({
   // omits the block entirely, and absent must mean "no", so the warning below is
   // shown only on an explicit `true`.
   const isEarlyAdopter = subscription?.early_adopter?.is_member === true;
+  // عرض الشهر الأول members are EXEMPT from the forfeiture (owner, 2026-10-21):
+  // after a cancellation they may come back at the promo price, fresh 90 days,
+  // while the campaign is open. Same explicit-`true` rule as above. The price
+  // is the campaign's own answer for their plan; absent (campaign closed or
+  // unread) the sentence below simply names no number.
+  const isReturnable = subscription?.early_adopter?.returnable === true;
+  const returnPromoPrice =
+    campaign.promo[subscription?.plan_id ?? ""] ?? campaign.promo.pro ?? null;
 
   // The stored-card surface. Shown on `has_method` ALONE — never gated on a
   // running subscription: a credential the user cannot see is a credential they
@@ -984,7 +992,21 @@ export function AccountSettingsDialog({
                     NOT destructive-red, NOT a countdown, NOT a second confirm
                     step — the primary tint marks it as information about their
                     standing, not an alarm. Do not "strengthen" it. */}
-                {isEarlyAdopter && (
+                {isEarlyAdopter && isReturnable && (
+                  // The intro-offer exception (/promo-terms «عرض الشهر الأول»):
+                  // nothing is lost for good, so no permanent-loss wording —
+                  // same tint and tone as the note below.
+                  <span
+                    className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
+                    data-testid="cancel-early-adopter-returnable-note"
+                  >
+                    {returnPromoPrice
+                      ? `إذا ألغيت ثم رجعت لاحقاً، تقدر تشترك بسعر ${formatSar(returnPromoPrice)} ما دام عرض المشتركين الأوائل متاحاً.`
+                      : "إذا ألغيت ثم رجعت لاحقاً، تقدر تشترك بسعر المشتركين الأوائل ما دام العرض متاحاً."}
+                    <PromoTermsLink className="mt-2 block" />
+                  </span>
+                )}
+                {isEarlyAdopter && !isReturnable && (
                   <span
                     className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm leading-relaxed text-foreground"
                     data-testid="cancel-early-adopter-note"

@@ -11,6 +11,8 @@ interface PlanCheckoutCtaProps {
   planId: string;
   highlighted?: boolean;
   label?: string;
+  /** Side effect on click (analytics) — navigation is still the link's. */
+  onClick?: () => void;
 }
 
 /**
@@ -34,6 +36,7 @@ export function PlanCheckoutCta({
   planId,
   highlighted,
   label = "اشترك الآن",
+  onClick,
 }: PlanCheckoutCtaProps) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isLoading = useAuthStore((s) => s.isLoading);
@@ -52,6 +55,7 @@ export function PlanCheckoutCta({
         "w-full font-semibold",
       )}
       data-testid={`pricing-cta-${planId}`}
+      onClick={onClick}
     >
       {label}
     </Link>

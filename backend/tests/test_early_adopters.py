@@ -231,7 +231,7 @@ def test_the_campaign_ships_disabled_and_nothing_changes(keys, monkeypatch):
     assert result["granted"] is True
     assert db.early_adopter_seats == []
     assert run(ss.get_subscription(db, USER))["early_adopter"] == {
-        "is_member": False, "promo_ends_at": None
+        "is_member": False, "promo_ends_at": None, "returnable": False
     }
 
 
@@ -907,7 +907,8 @@ def test_the_subscription_payload_carries_membership_and_no_count(keys, monkeypa
 
     block = run(ss.get_subscription(db, USER))["early_adopter"]
 
-    assert set(block) == {"is_member", "promo_ends_at"}
+    # `returnable` (183) is about the caller too — never about capacity.
+    assert set(block) == {"is_member", "promo_ends_at", "returnable"}
     assert block["is_member"] is True
     assert block["promo_ends_at"] == live_seats(db, USER)[0]["promo_ends_at"]
 
@@ -923,5 +924,92 @@ def test_an_unreadable_seat_table_reads_as_not_a_member(keys):
 
     db.rpc = exploding
     assert run(ss.get_subscription(db, USER))["early_adopter"] == {
-        "is_member": False, "promo_ends_at": None
+        "is_member": False, "promo_ends_at": None, "returnable": False
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 12. عرض الشهر الأول members are exempt from forfeiture (183, owner 2026-10-21)
+#
+# Rule 6 stands for everyone else. A user who ever PAID an intro first month
+# may come back after a lapsed cancellation at the seat price, with a fresh 90
+# days, while the campaign is open. The exemption is SQL's; FakeSupabase models
+# it in `_forfeited`, which all three 138 functions share.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _lapsed_intro_member(db):
+    """Paid the 1.99 first month, cancelled, let it lapse."""
+    paid_row(db, plan_id="pro", amount="1.99", intro_offer_group="legal",
+             paid_at=_iso(_now() - timedelta(days=40)))
+    seat(db, days_left=50, released=True, reason="cancelled")
+
+
+def test_an_intro_member_comes_back_at_the_seat_price_with_fresh_days(keys, monkeypatch):
+    db = open_campaign(sub("pro", source="payment", days_left=-5,
+                           cancelled_at=_iso(_now() - timedelta(days=20))))
+    db.tables["users"][0]["profession_group"] = "legal"
+    db.intro_offer_enabled = True
+    _lapsed_intro_member(db)
+
+    quote, result = buy(db, monkeypatch, "pro")
+
+    # 49.90, never 1.99 again — they have now paid for pro.
+    assert quote["amount_sar"] == "49.90" and quote["intro_offer"] is None
+    assert result["granted"] is True
+    fresh = live_seats(db, USER)
+    assert len(fresh) == 1 and fresh[0]["payment_id"] == quote["payment_id"]
+    assert ps._parse_ts(fresh[0]["promo_ends_at"]) > _now() + timedelta(days=89)
+    assert run(ss.get_subscription(db, USER))["early_adopter"] == {
+        "is_member": True, "promo_ends_at": fresh[0]["promo_ends_at"],
+        "returnable": True,
+    }
+
+
+def test_an_ordinary_member_still_forfeits_for_good(keys, monkeypatch):
+    """The contrast: the same history without an intro first month is rule 6."""
+    db = open_campaign(sub("pro", source="payment", days_left=-5))
+    paid_row(db, plan_id="pro", amount="49.90",
+             paid_at=_iso(_now() - timedelta(days=40)))
+    seat(db, days_left=50, released=True, reason="cancelled")
+
+    quote, _ = buy(db, monkeypatch, "pro")
+
+    assert quote["amount_sar"] == "89.90"
+    assert live_seats(db, USER) == []
+
+
+def test_a_returning_member_cannot_reach_the_old_undo(keys, monkeypatch):
+    """After the re-buy, fulfilment clears renewal_cancelled_at, so «تراجع عن
+    الإلغاء» has nothing to undo — restore_early_adopter_seat is never asked to
+    revive the OLD seat beside the new live one (the one-live-seat index)."""
+    db = open_campaign(sub("pro", source="payment", days_left=-5,
+                           cancelled_at=_iso(_now() - timedelta(days=20))))
+    _lapsed_intro_member(db)
+    buy(db, monkeypatch, "pro")
+
+    assert db.tables["user_subscriptions"][0]["renewal_cancelled_at"] is None
+    from backend.app.errors import LunaHTTPException
+
+    with pytest.raises(LunaHTTPException) as exc:
+        run(ss.reactivate_renewal(db, USER))
+    assert exc.value.status_code == 409
+    assert "restore_early_adopter_seat" not in db.calls
+    assert len(live_seats(db, USER)) == 1
+
+
+def test_a_restore_that_hits_the_live_seat_index_never_raises(keys):
+    """Belt and braces for the same edge: if the undo were ever reached with a
+    live seat present, the 23505 is logged, not a 500 on the settings dialog."""
+    db = open_campaign(sub("pro", source="payment", days_left=20))
+
+    asked: list[str] = []
+
+    def _unique_violation(name, params):
+        asked.append(name)
+        raise RuntimeError('23505 duplicate key value violates unique constraint '
+                           '"early_adopter_seats_one_live_per_user"')
+
+    db.rpc = _unique_violation
+    assert ss.restore_early_adopter_seat(db, USER, plan_id="pro") is False
+    assert asked == ["restore_early_adopter_seat"]     # it really was reached

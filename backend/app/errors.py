@@ -82,6 +82,7 @@ class ErrorCode(str, Enum):
     PAYMENT_DOWNGRADE_BLOCKED = "PAYMENT_DOWNGRADE_BLOCKED"        # 409 — a higher-ranked plan is still active
     PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND"                        # 404 — no such payment for THIS caller (also: id unfetchable with our key)
     PAYMENT_REFUND_WINDOW_CLOSED = "PAYMENT_REFUND_WINDOW_CLOSED"  # 409 — past the 24h window, or the row is not in a refundable state
+    PAYMENT_NOT_REFUNDABLE = "PAYMENT_NOT_REFUNDABLE"              # 409 — an عرض الشهر الأول first month (profession_intro_offer.md §1 rule 6)
     PAYMENT_PROVIDER_ERROR = "PAYMENT_PROVIDER_ERROR"              # 400/502 — Moyasar refused / is unreachable / the payment disagrees with our row
     PAYMENT_CONSENT_INVALID = "PAYMENT_CONSENT_INVALID"            # 409 — recurring consent asked for a plan that does not renew, or for a payment that is no longer open (auto-renewal plan §6)
 

@@ -13,6 +13,7 @@ caller, delegate to ``backend.app.services.payment_service``, return.
     DELETE /method          authed   forget the stored card + revoke it at Moyasar
     POST /applepay/session  authed   Apple Pay merchant-validation proxy — UNUSED
     GET  /early-adopter     NO JWT   is the launch campaign open, and at what prices
+    GET  /intro-offer       authed   may the CALLER buy عرض الشهر الأول, and at what
     GET  /subscription      authed   plan + term + cancel eligibility
     POST /subscription/cancel     authed  opt out of renewal + exit survey
     POST /subscription/reactivate authed  undo that opt-out
@@ -114,7 +115,13 @@ async def checkout(
           "description": "ريحان — الاحترافية",
           "publishable_key": "pk_test_…",
           "callback_url": "https://rayhanai.com/pay/callback",
-          "applepay_enabled": false      # MOYASAR_APPLEPAY_ENABLED — form offers Apple Pay only when true
+          "applepay_enabled": false,     # MOYASAR_APPLEPAY_ENABLED — form offers Apple Pay only when true
+          "requires_recurring_consent": true,
+          "recurring_disclosure_ar": "…",  # v3-intro (with the price schedule) on an offer row
+          "intro_offer": null,             # عرض الشهر الأول: {"profession_group", "first_month_sar",
+                                           #   "then_sar", "then_months", "list_sar"} when this
+                                           #   checkout is the offer's first month
+          "non_refundable": false          # true exactly when intro_offer is set
         }
 
     Errors: 400 PAYMENT_PLAN_NOT_PURCHASABLE (unknown plan / price_sar NULL),
@@ -274,6 +281,7 @@ async def history(
           "created_at", "paid_at", "fulfilled_at", "updated_at",
           "refundable": true,               # status=paid AND within 24h AND not superseded
           "superseded": false,              # a later upgrade already spent this one's value
+          "non_refundable": false,          # عرض الشهر الأول first month — never refundable
           "refund_deadline": "2026-08-04T…" # paid_at + 24h, null before payment
         }
 
@@ -339,6 +347,43 @@ async def early_adopter(
     return result
 
 
+# ── /intro-offer (عرض الشهر الأول — profession_intro_offer.md) ───────────────
+# Per-user, unlike /early-adopter: the answer depends on the caller's declared
+# profession, plan and purchase history, so it is authed and never cached.
+
+@router.get("/intro-offer")
+async def intro_offer(
+    response: Response,
+    current_user: AuthUser = Depends(get_current_user),
+    supabase: SupabaseClient = Depends(get_supabase),
+):
+    """May the caller buy عرض الشهر الأول right now, and at what prices?
+
+    Returns::
+
+        {"eligible": true,
+         "profession_group": "legal",       # legal | specialist | entrepreneur
+         "first_month_sar": "1.99",         # 2-dp strings, like every amount here
+         "then_sar": "49.90",               # each of the next `then_months` months
+         "then_months": 2,
+         "list_sar": "94.90"}               # every month after that
+
+    …or, when not eligible (wrong profession, subscribed, already paid for
+    pro/max, campaign over, seats gone, anything unreadable)::
+
+        {"eligible": false, "profession_group": null, "first_month_sar": null,
+         "then_sar": null, "then_months": 2, "list_sar": null}
+
+    **No end date and no seat count, ever** (§1 rule 9) — "not eligible" is the
+    whole answer once the offer is over. Checkout re-derives eligibility itself;
+    this route only decides whether the popup is shown.
+    """
+    user_id = await run_db(get_user_id, supabase, current_user.auth_id)
+    result = await payment_service.intro_offer_state(supabase, user_id)
+    response.headers["Cache-Control"] = _NO_STORE
+    return result
+
+
 # ── /applepay/session ────────────────────────────────────────────────────────
 
 @router.post("/applepay/session")
@@ -394,8 +439,9 @@ async def subscription(
           "renewal_cancelled_at": null,         # set = already opted out
           "early_adopter": {                    # المشتركون الأوائل — the CALLER's own seat
             "is_member": true,
-            "promo_ends_at": "2026-11-14T…"     # null when not a member
-          }
+            "promo_ends_at": "2026-11-14T…",    # null when not a member
+            "returnable": false                 # started on عرض الشهر الأول → a cancel
+          }                                     #   does NOT forfeit the price for good
         }
 
     ``cancellable`` describes the SUBSCRIPTION, not the button: it stays true
@@ -643,6 +689,7 @@ async def refund(
     Errors: 404 PAYMENT_NOT_FOUND (not the caller's / unknown),
     409 PAYMENT_REFUND_WINDOW_CLOSED (past 24h, already refunded, not paid, or
     superseded by a later upgrade),
+    409 PAYMENT_NOT_REFUNDABLE (an عرض الشهر الأول first month),
     502 PAYMENT_PROVIDER_ERROR (Moyasar refused the refund).
     """
     validate_uuid(payment_id, "معرف عملية الدفع")

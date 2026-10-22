@@ -277,6 +277,7 @@ PROVIDER_ERROR_AR = "تعذّر إتمام العملية مع مزوّد الد
 REFUND_WINDOW_CLOSED_AR = "انتهت مهلة الاسترداد (24 ساعة). للمساعدة تواصل معنا على support@rayhanai.com"
 REFUND_NOT_PAID_AR = "لا يمكن استرداد عملية غير مكتملة"
 REFUND_ALREADY_AR = "تم استرداد هذه العملية من قبل"
+REFUND_NOT_REFUNDABLE_AR = "اشتراك الشهر الأول بسعر العرض غير قابل للاسترداد"
 REFUND_FAILED_AR = "تعذّر تنفيذ الاسترداد، تواصل معنا على support@rayhanai.com"
 REFUND_SUPERSEDED_AR = (
     "لا يمكن استرداد هذه العملية لأن قيمتها استُخدمت كخصم في ترقية أحدث. "
@@ -694,7 +695,12 @@ _TXN_COLUMNS = (
     # still standing from one whose refund already unwound it, and a row that
     # reads as standing when it isn't would block a refund the user is owed.
     "revoked_at, "
-    "refunded_amount_sar"
+    "refunded_amount_sar, "
+    # عرض الشهر الأول (migration 183). REQUIRED on every read path: the refund
+    # guard keys on the group, and capture_payment_method rebuilds the v3-intro
+    # disclosure hash from the terms. ⚠ Selecting them before 183 is applied
+    # 42703s history, verify and refund alike — 183 strictly before the deploy.
+    "intro_offer_group, intro_offer_terms"
 )
 
 
@@ -769,27 +775,36 @@ def _effective_price(
     catalog_price_sar: Any,
     *,
     context: str = PRICE_CONTEXT_PURCHASE,
+    at: Optional[datetime] = None,
 ) -> Decimal:
     """What THIS user pays for THIS plan right now, quantized to 2dp.
 
     ``context`` is passed explicitly on every call even though the SQL defaults
     it: a default that is only ever right for two of the four call sites is a
     trap, and the wire call is the place the choice should be readable.
+
+    ``at`` (migration 182) moves the live-seat test off ``now()``. Only the
+    renewal job passes it — the START of the period being charged for. It
+    charges up to 24h before that boundary, so testing the seat at ``now()``
+    priced the period that BEGINS on day 90 at the promo rate: four promo
+    charges instead of the three §1.3 promises. Every other caller prices the
+    term running now and leaves it unset, so its wire call is byte-identical to
+    the pre-182 one.
     """
     catalog = q2(catalog_price_sar)
     if not user_id or not plan_id:
         # A purged buyer (117) or an unbound row has no promotional identity to
         # resolve against; the catalog is the only honest answer.
         return catalog
+    params: dict[str, Any] = {
+        "p_user_id": str(user_id),
+        "p_plan_id": str(plan_id),
+        "p_context": context,
+    }
+    if at is not None:
+        params["p_at"] = at.isoformat()
     try:
-        res = supabase.rpc(
-            "effective_plan_price",
-            {
-                "p_user_id": str(user_id),
-                "p_plan_id": str(plan_id),
-                "p_context": context,
-            },
-        ).execute()
+        res = supabase.rpc("effective_plan_price", params).execute()
         data = getattr(res, "data", None)
         if isinstance(data, list):
             data = data[0] if data else None
@@ -904,6 +919,130 @@ async def early_adopter_campaign_state(supabase: SupabaseClient) -> dict:
         state = await run_db(_read_campaign_state, supabase)
         _CAMPAIGN_CACHE = (now, state)
     return {"open": bool(state.get("open")), "promo": dict(state.get("promo") or {})}
+
+
+# ── عرض الشهر الأول — profession intro offer (profession_intro_offer.md) ─────
+#
+# Pro at a first-month price set by the user's declared profession (legal 1.99,
+# specialist/entrepreneur 9.90 — rows in ``intro_offer_prices``), then the
+# early-adopter seat's own 49.90 for months 2–3, then list. Eligibility lives
+# ONCE, in SQL (``intro_offer_quote``, migration 183); this module only asks.
+#
+# Nothing here prices months 2–3: an offer purchase is an ordinary seat-claiming
+# pro purchase (``claim_early_adopter_seat`` accepts any amount at or below the
+# promo price), so the renewal job's 'current' price already says 49.90 for the
+# seat's 90 days. That is also why the offer requires a pro promo price to exist
+# at all — no seat price, no months 2–3, no offer.
+#
+# FAIL-CLOSED, the opposite of ``_effective_price``: an unreadable quote means
+# "no offer", and the user is quoted the ordinary price. Advertising 1.99 that
+# checkout then cannot honour is the failure to avoid.
+#
+# The wire never carries the end date or the seat count (§1 rule 9).
+INTRO_OFFER_PLAN_ID = "pro"
+INTRO_OFFER_THEN_MONTHS = 2
+
+
+def _intro_offer_quote(
+    supabase: SupabaseClient, user_id: Optional[str]
+) -> Optional[tuple[str, Decimal]]:
+    """``(profession_group, first_month_sar)`` when this user may buy the offer
+    right now, else None. Sync — call through ``run_db``."""
+    if not user_id:
+        return None
+    try:
+        res = supabase.rpc("intro_offer_quote", {"p_user_id": str(user_id)}).execute()
+        rows = getattr(res, "data", None)
+    except Exception as exc:  # noqa: BLE001 — includes 183 not being applied
+        logger.warning("intro_offer_quote unavailable for user=%s — no offer: %s", user_id, exc)
+        return None
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+        return None                                    # zero rows = not eligible
+    group = rows[0].get("profession_group")
+    price = _dec(rows[0].get("first_month_sar"), default="0")
+    if not group:
+        return None
+    if price < MIN_CHARGE_SAR:
+        # 183's CHECK forbids it; a row that slipped past would be a charge
+        # Moyasar refuses, so it is no offer rather than a broken checkout.
+        logger.error(
+            "intro_offer_quote returned %s for group=%s — below the %s minimum, no offer",
+            price, group, MIN_CHARGE_SAR,
+        )
+        return None
+    return str(group), q2(price)
+
+
+def _intro_offer_terms(
+    supabase: SupabaseClient, user_id: Optional[str], plan: Optional[dict]
+) -> Optional[dict]:
+    """The whole offer as checkout stamps it and ``GET /intro-offer`` states it.
+
+    ``plan`` is the pro catalog row (its ``price_sar`` is the month-4 list
+    price). Returns None — never a partial offer — when the user is not
+    eligible, when pro has no promo price (no seat ⇒ no months 2–3), or when the
+    numbers do not step UP (a misconfigured price row must not be sold).
+    """
+    if not plan or plan.get("price_sar") is None:
+        return None
+    quote = _intro_offer_quote(supabase, user_id)
+    if quote is None:
+        return None
+    group, first = quote
+    try:
+        then_raw = _fetch_promo_prices(supabase).get(INTRO_OFFER_PLAN_ID)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pro promo price unreadable — no intro offer for user=%s: %s", user_id, exc)
+        return None
+    if not then_raw:
+        return None
+    then, list_price = q2(then_raw), q2(plan["price_sar"])
+    if not (first < then <= list_price):
+        logger.error(
+            "intro offer prices do not step up (first=%s then=%s list=%s) for "
+            "group=%s — not offering it",
+            first, then, list_price, group,
+        )
+        return None
+    return {
+        "profession_group": group,
+        "first_month_sar": _money(first),
+        "then_sar": _money(then),
+        "then_months": INTRO_OFFER_THEN_MONTHS,
+        "list_sar": _money(list_price),
+    }
+
+
+def _intro_offer_closed() -> dict:
+    return {
+        "eligible": False,
+        "profession_group": None,
+        "first_month_sar": None,
+        "then_sar": None,
+        "then_months": INTRO_OFFER_THEN_MONTHS,
+        "list_sar": None,
+    }
+
+
+async def intro_offer_state(supabase: SupabaseClient, user_id: str) -> dict:
+    """``GET /payments/intro-offer`` — may THIS user buy the offer, and at what.
+
+    Never raises: any failure answers "not eligible", which is indistinguishable
+    from "the campaign is over" on purpose.
+    """
+    try:
+        plans = await run_db(_fetch_plans, supabase, [INTRO_OFFER_PLAN_ID])
+        terms = await run_db(
+            _intro_offer_terms, supabase, user_id, plans.get(INTRO_OFFER_PLAN_ID)
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("intro offer state unreadable for user=%s: %s", user_id, exc)
+        return _intro_offer_closed()
+    if terms is None:
+        return _intro_offer_closed()
+    return {"eligible": True, **terms}
 
 
 def _fetch_subscription(supabase: SupabaseClient, user_id: str) -> Optional[dict]:
@@ -1362,12 +1501,17 @@ def transaction_summary(
     """
     paid_at = _parse_ts(row.get("paid_at"))
     deadline = paid_at + REFUND_WINDOW if paid_at else None
+    # عرض الشهر الأول: the first month is non-refundable (owner, 2026-10-21) —
+    # and at 1.99 the refund fee alone exceeds the charge. Renewals of the same
+    # subscription never carry the group, so they keep the normal 24h refund.
+    non_refundable = bool(row.get("intro_offer_group"))
     refundable = bool(
         row.get("status") == "paid"
         and deadline
         and _now() <= deadline
         and row.get("provider_ref")
         and not superseded
+        and not non_refundable
     )
     return {
         "payment_id": row.get("payment_id"),
@@ -1392,6 +1536,9 @@ def transaction_summary(
         # window: a later upgrade already spent this payment's value, so the
         # stack has to unwind from the top first (M-1).
         "superseded": superseded,
+        # The third reason `refundable` is false: an intro-offer first month.
+        # Its own field so the receipts list can say WHY, not just hide a button.
+        "non_refundable": non_refundable,
         "refund_deadline": deadline.isoformat() if deadline else None,
         # What a refund WOULD cost and return, quoted per-payment so the
         # confirm dialog shows the true numbers instead of a guessed flat fee
@@ -1539,9 +1686,21 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
     # THE price, not the catalog's (early_adopters.md §2). Everything downstream
     # — the charge, the VAT split, the halalas the form is handed, the ledger row
     # — follows from this one number and is unchanged.
-    price = await run_db(
-        _effective_price, supabase, user_id, plan_id, plan["price_sar"]
-    )
+    #
+    # عرض الشهر الأول replaces it for pro when the user qualifies RIGHT NOW. The
+    # quote is taken here and stamped on the row, so the row — not a second
+    # read at settlement — is the record of what was offered. A quote issued at
+    # 23:59 on the last day is honoured like any other quote (the seat claim and
+    # _assert_matches both read the row).
+    intro = None
+    if plan_id == INTRO_OFFER_PLAN_ID:
+        intro = await run_db(_intro_offer_terms, supabase, user_id, plan)
+    if intro is not None:
+        price = q2(intro["first_month_sar"])
+    else:
+        price = await run_db(
+            _effective_price, supabase, user_id, plan_id, plan["price_sar"]
+        )
     expires_at = _parse_ts((subscription or {}).get("expires_at"))
     # NULL expires_at = non-expiring grant (dev/manual) — active, not expired.
     active = bool(subscription and current_plan_id and (expires_at is None or expires_at > _now()))
@@ -1576,6 +1735,8 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
 
     plan_name = plan.get("name_ar") or plan_id
     description = f"ريحان — {plan_name}" + (" (ترقية)" if credit > 0 else "")
+    if intro is not None:
+        description += " (عرض الشهر الأول)"
 
     # vat/net/upgrade_credit are stamped HERE, once (migration 113 columns).
     # prior_plan_id / prior_expires_at are NOT: the stamp_payment_prior_snapshot
@@ -1601,6 +1762,18 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         "customer_name_snapshot": customer.get("full_name_ar"),
         "customer_email_snapshot": customer.get("email"),
     }
+    # Only an offer row names the 183 columns, so an ordinary checkout's INSERT
+    # is byte-identical to the pre-183 one. The group marks the first month
+    # non-refundable; the terms are what the v3-intro disclosure is built from,
+    # frozen BEFORE the page shows them (payment_method_service.disclosure_text).
+    if intro is not None:
+        payload["intro_offer_group"] = intro["profession_group"]
+        payload["intro_offer_terms"] = {
+            "first_month_sar": intro["first_month_sar"],
+            "then_sar": intro["then_sar"],
+            "then_months": intro["then_months"],
+            "list_sar": intro["list_sar"],
+        }
 
     # SUPERSEDE THEN INSERT (H-4, layer 2), and in that order: the caller may
     # hold only one open quote, so the previous one stops being payable at the
@@ -1654,13 +1827,19 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
             "upgrade_credit_sar": _money(credit),
             "from_plan_id": current_plan_id,
             "provider": PROVIDER,
+            "intro_offer_group": intro["profession_group"] if intro else None,
         },
     )
 
     logger.info(
-        "checkout initiated: user=%s plan=%s charge=%s credit=%s payment=%s",
+        "checkout initiated: user=%s plan=%s charge=%s credit=%s payment=%s intro=%s",
         user_id, plan_id, charge, credit, payment_id,
+        intro["profession_group"] if intro else None,
     )
+
+    # The disclosure is built from the row as stamped — the same input the
+    # consent route and capture_payment_method will hash later.
+    stamped = {**payload, **(row or {})}
 
     return {
         "payment_id": payment_id,
@@ -1692,12 +1871,20 @@ async def create_checkout(supabase: SupabaseClient, user_id: str, plan_id: str) 
         # a step-up is coming. Whether to bump DISCLOSURE_VERSION to v3 for
         # seat-holding pro/max purchases is an OPEN OWNER DECISION; nothing here
         # touches DISCLOSURE_VERSION or recurring_disclosure_ar until it is made.
+        #
+        # عرض الشهر الأول rows resolve that TODO for themselves only: their
+        # disclosure carries the price schedule (v3-intro, built from the
+        # stamped `intro_offer_terms`). Ordinary seat purchases stay on v2.
         "requires_recurring_consent": payment_method_service.requires_recurring_consent(plan),
         "recurring_disclosure_ar": (
-            payment_method_service.recurring_disclosure_ar(plan)
+            payment_method_service.recurring_disclosure_ar(plan, stamped)
             if payment_method_service.requires_recurring_consent(plan)
             else None
         ),
+        # The offer the page must spell out (schedule + non-refundable line),
+        # or null for an ordinary purchase. Never an end date or a seat count.
+        "intro_offer": intro,
+        "non_refundable": intro is not None,
     }
 
 
@@ -1803,7 +1990,7 @@ async def record_recurring_consent(
         "disclosure_version": consent.get("disclosure_version"),
         # The exact text that was hashed, echoed back so the page can render the
         # confirmed wording without re-fetching the checkout session.
-        "recurring_disclosure_ar": payment_method_service.recurring_disclosure_ar(plan),
+        "recurring_disclosure_ar": payment_method_service.recurring_disclosure_ar(plan, row),
     }
 
 
@@ -2503,6 +2690,17 @@ async def refund_payment(supabase: SupabaseClient, user_id: str, payment_id: str
             status_code=409,
             code=ErrorCode.PAYMENT_REFUND_WINDOW_CLOSED,
             detail=REFUND_NOT_PAID_AR,
+        )
+
+    # عرض الشهر الأول — before the window check, so the answer is the true
+    # reason rather than "the window closed". Self-serve only: a refund an
+    # operator issues from Moyasar's dashboard arrives as a webhook and is
+    # processed by _mark_refunded like any other.
+    if row.get("intro_offer_group"):
+        raise LunaHTTPException(
+            status_code=409,
+            code=ErrorCode.PAYMENT_NOT_REFUNDABLE,
+            detail=REFUND_NOT_REFUNDABLE_AR,
         )
 
     paid_at = _parse_ts(row.get("paid_at"))

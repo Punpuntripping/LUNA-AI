@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, ShieldCheck, Sparkles, Zap } from "lucide-react";
 import {
@@ -26,7 +26,14 @@ import {
 } from "@/lib/pricing";
 import type { PricingPlan } from "@/lib/pricing";
 import { formatReset } from "@/lib/quota-reset";
+import { track } from "@/lib/analytics/client";
 import { useEarlyAdopterStore } from "@/stores/early-adopter-store";
+import { useIntroOfferStore } from "@/stores/intro-offer-store";
+import { IntroOfferSummary } from "@/components/promo/IntroOfferSummary";
+import {
+  INTRO_OFFER_COPY,
+  INTRO_OFFER_PLAN_ID,
+} from "@/components/promo/intro-offer-content";
 import type { SSEQuotaExceeded } from "@/types";
 
 interface QuotaUpgradeDialogProps {
@@ -103,6 +110,14 @@ export function QuotaUpgradeDialog({
     if (open) ensureCampaignLoaded();
   }, [open, ensureCampaignLoaded]);
 
+  // «عرض الشهر الأول» (profession_intro_offer §4.4). Re-asked on every open:
+  // eligibility is per-user and changes the moment they buy. Fail-closed like
+  // the campaign — until the server says eligible, the Pro card is unchanged.
+  const introOffer = useIntroOfferStore((s) => s.offer);
+  useEffect(() => {
+    if (open) void useIntroOfferStore.getState().refresh();
+  }, [open]);
+
   const ladder = info?.upgrade_options;
 
   const plans = useMemo<PricingPlan[]>(() => {
@@ -167,10 +182,34 @@ export function QuotaUpgradeDialog({
       ? "الترقية تصفّر استهلاكك الحالي وتعيدك للعمل فوراً."
       : "الاشتراك يرفع حدودك ويعيدك للعمل فوراً.";
 
+  // The intro offer replaces the Pro card's price block — only when the server
+  // says eligible AND the ladder actually holds Pro. Ranking and the card list
+  // are untouched: the offer price never enters `PRICING_PLANS`.
+  const offerOnCard =
+    introOffer !== null && plans.some((plan) => plan.id === INTRO_OFFER_PLAN_ID);
+
+  // One `intro_offer_shown` per opening of the BLOCK path (the quota wall); the
+  // Settings path shows the same card but is not the wall being measured.
+  const offerTrackedRef = useRef(false);
+  useEffect(() => {
+    if (!open || !offerOnCard || !info) {
+      if (!open) offerTrackedRef.current = false;
+      return;
+    }
+    if (offerTrackedRef.current || !introOffer) return;
+    offerTrackedRef.current = true;
+    track("intro_offer_shown", {
+      trigger: "quota",
+      group: introOffer.profession_group,
+    });
+  }, [open, offerOnCard, info, introOffer]);
+
   // The «ابتداءً من …» summary earns its place only when the full ladder is on
   // offer; one or two cards are read directly, and quoting the catalog's
-  // cheapest plan next to a card set that excludes it would be a lie.
-  const showFromPrice = plans.length === PRICING_PLANS.length;
+  // cheapest plan next to a card set that excludes it would be a lie. Hidden
+  // under the intro offer too, which would otherwise sit below a «ابتداءً من»
+  // figure higher than the price on its own card.
+  const showFromPrice = plans.length === PRICING_PLANS.length && !offerOnCard;
   // Cheapest by EFFECTIVE price, and quoted at the same price its own card
   // shows: during the campaign the list figure would undersell the offer by
   // naming a number nothing on screen charges.
@@ -268,62 +307,90 @@ export function QuotaUpgradeDialog({
         {/* Plan cards — same structure as app/pricing/page.tsx, tightened one
             step (p-5, text-base heading) to fit three across inside a modal. */}
         <div className={`mt-2 grid gap-4 ${gridClass}`}>
-          {cards.map(({ plan, pricing }) => (
-            <div
-              key={plan.id}
-              className={`relative flex flex-col rounded-2xl border bg-card p-5 ${
-                plan.highlighted ? "border-primary shadow-lg" : "border-border"
-              }`}
-            >
-              {plan.highlighted && (
-                <span className="absolute -top-3 right-5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">
-                  الأكثر شيوعاً
-                </span>
-              )}
+          {cards.map(({ plan, pricing }) => {
+            const offer =
+              offerOnCard && plan.id === INTRO_OFFER_PLAN_ID ? introOffer : null;
+            return (
+              <div
+                key={plan.id}
+                className={`relative flex flex-col rounded-2xl border bg-card p-5 ${
+                  plan.highlighted || offer
+                    ? "border-primary shadow-lg"
+                    : "border-border"
+                }`}
+                data-testid={offer ? "intro-offer-card" : undefined}
+              >
+                {(offer || plan.highlighted) && (
+                  <span className="absolute -top-3 right-5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground">
+                    {offer
+                      ? INTRO_OFFER_COPY.headline(offer.profession_group)
+                      : "الأكثر شيوعاً"}
+                  </span>
+                )}
 
-              <h3 className="text-base font-bold text-foreground">
-                {plan.nameAr}
-              </h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {plan.tagline}
-              </p>
-
-              <PlanPrice
-                price={pricing.price}
-                listPrice={pricing.listPrice}
-                period={plan.period}
-                className="mt-4"
-              />
-              <p className="mt-2 text-xs text-muted-foreground">
-                {pricing.billingNote}
-              </p>
-              {pricing.isPromo && (
-                <p className="mt-1.5 text-xs font-medium text-primary">
-                  {SEATS_LIMITED_NOTE}
+                <h3 className="text-base font-bold text-foreground">
+                  {plan.nameAr}
+                </h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {plan.tagline}
                 </p>
-              )}
 
-              <ul className="mt-5 flex flex-col gap-2.5">
-                {plan.features.map((feature) => (
-                  <li
-                    key={feature}
-                    className="flex items-start gap-2 text-sm text-foreground"
-                  >
-                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-                    <span>{feature}</span>
-                  </li>
-                ))}
-              </ul>
+                {offer ? (
+                  // The offer's own block carries the schedule, the
+                  // non-refundable first month, the cancel line, «المقاعد
+                  // محدودة» and the promo-terms link — the early-adopter price
+                  // it replaces is exactly its months 2–3.
+                  <IntroOfferSummary offer={offer} className="mt-4" />
+                ) : (
+                  <>
+                    <PlanPrice
+                      price={pricing.price}
+                      listPrice={pricing.listPrice}
+                      period={plan.period}
+                      className="mt-4"
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {pricing.billingNote}
+                    </p>
+                    {pricing.isPromo && (
+                      <p className="mt-1.5 text-xs font-medium text-primary">
+                        {SEATS_LIMITED_NOTE}
+                      </p>
+                    )}
+                  </>
+                )}
 
-              <div className="mt-auto pt-6">
-                <PlanCheckoutCta
-                  planId={plan.id}
-                  highlighted={plan.highlighted}
-                  label={onPaidPlan ? "ترقية الآن" : "اشترك الآن"}
-                />
+                <ul className="mt-5 flex flex-col gap-2.5">
+                  {plan.features.map((feature) => (
+                    <li
+                      key={feature}
+                      className="flex items-start gap-2 text-sm text-foreground"
+                    >
+                      <Check className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                      <span>{feature}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="mt-auto pt-6">
+                  <PlanCheckoutCta
+                    planId={plan.id}
+                    highlighted={plan.highlighted || offer !== null}
+                    label={onPaidPlan ? "ترقية الآن" : "اشترك الآن"}
+                    onClick={
+                      offer
+                        ? () =>
+                            track("intro_offer_cta", {
+                              trigger: "quota",
+                              group: offer.profession_group,
+                            })
+                        : undefined
+                    }
+                  />
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-2 flex flex-col items-center gap-3 text-center">

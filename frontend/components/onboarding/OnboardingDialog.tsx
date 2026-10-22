@@ -11,45 +11,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/stores/auth-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
-import { useChatStore } from "@/stores/chat-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
+import { useIntroOfferStore } from "@/stores/intro-offer-store";
 import { usePromoPopupHold } from "@/components/promo/use-promo-popup";
-import { cn } from "@/lib/utils";
 import { STEP_PROFESSION } from "./onboarding-content";
 import {
   StepProfession,
   type ProfessionSelection,
 } from "./steps/StepProfession";
-import { StepAgents } from "./steps/StepAgents";
-import { StepWorkspace } from "./steps/StepWorkspace";
-import { StepQuestions } from "./steps/StepQuestions";
-
-const FULL_STEPS = ["profession", "agents", "workspace", "questions"] as const;
-const PROFESSION_ONLY_STEPS = ["profession"] as const;
-
-/**
- * How long after a purchase the intro tour still counts as "post-purchase".
- *
- * Generous on purpose. The tour opens on the next /chat render, and the gap
- * between paying and getting there is not bounded by anything we control: a
- * `processing` payment is granted by webhook minutes later, and a 3DS redirect
- * can land the buyer on `/pay/callback`, then a receipt, then their inbox. A
- * day covers every one of those and still excludes "has been a subscriber for
- * a month" — which is the case that made this a bug.
- */
-const PURCHASE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-/** Did money land on this account within the window? Unparseable or absent
- *  (free, dev, comped, expired — the server already collapsed all four to
- *  null) reads as NO: the tour is opt-in from the sidebar for everyone else. */
-function withinPurchaseWindow(paidActivatedAt: string | null | undefined): boolean {
-  if (!paidActivatedAt) return false;
-  const at = Date.parse(paidActivatedAt);
-  if (Number.isNaN(at)) return false;
-  const age = Date.now() - at;
-  // Negative age = the server's clock is ahead of ours, not a future purchase.
-  return age < PURCHASE_WINDOW_MS;
-}
 
 const PROFESSION_GROUP_KEYS = [
   "legal",
@@ -58,6 +27,14 @@ const PROFESSION_GROUP_KEYS = [
   "individual",
   "declined",
 ] as const;
+
+/** The groups «عرض الشهر الأول» can apply to. Only a HINT that asking the
+ *  server is worthwhile — eligibility itself is decided server-side. */
+const INTRO_OFFER_GROUPS: ReadonlySet<string> = new Set([
+  "legal",
+  "specialist",
+  "entrepreneur",
+]);
 
 /** Map the stored users.profession_* back into a step selection — stored
  *  "unknown" (degraded read) and null (never asked) both start untouched. */
@@ -77,169 +54,120 @@ function selectionFromUser(): ProfessionSelection {
 }
 
 /**
- * «اتعرف على ريحان» — profession step + 3-step tour, retimed by
- * `.claude/plans/edu_series.md` §8 so the two halves no longer arrive together.
+ * «وش أقرب وصف لك؟» — the profession question, and since 2026-10-21 the ONLY
+ * thing this dialog does: the 3-step «اتعرف على ريحان» tour that used to follow
+ * it was retired (`.claude/plans/profession_intro_offer.md` §4.7) and
+ * «المحادثة التجريبية» is the walkthrough.
  *
- * Auto-opens per user, in this priority order:
- * - **profession step ALONE** whenever `users.profession_group` is exactly NULL
- *   — which is every brand-new signup (A1), and also the pre-115 accounts that
- *   predate the question. Asked exactly once ever; the column IS the gate.
- * - **full tour** on the first render after the account actually BUYS (A2):
- *   `paid_activated_at` within 24h && `!onboarding_seen` && profession answered.
- *   Not `plan_id !== "free"` — see the note on `justPaid` below.
+ * Auto-opens per user:
+ * - whenever `users.profession_group` is exactly NULL — every brand-new signup,
+ *   and the pre-115 accounts that predate the question. The column IS the gate.
+ * - ONCE more for an account whose stored answer is «declined», while
+ *   `preferences.profession_reask_done` is not set (§4.8). Only the exact
+ *   string counts: `"unknown"` (degraded read) and `undefined` never prompt.
  *
- * ANY dismissal (skip, X, ESC, finish, picking a question) resolves the
- * profession answer — the picked selection if there is one, «declined»
- * otherwise — so neither screen ever nags. Only a dismissal of the FULL tour
- * additionally marks `onboarding_seen`; see `finish()`.
+ * ANY dismissal (X, ESC, «حفظ») resolves the answer — the picked selection if
+ * there is one, «declined» otherwise — AND closes the re-ask for good, so the
+ * question never nags. A pick in an offer group then hands over to
+ * `IntroOfferDialog` (§4.3).
  *
- * Reopenable anytime from the sidebar settings popover via
- * `useOnboardingStore.open()` (full tour, stored profession pre-selected and
- * editable). Mounted in ChatLayoutClient so it only ever renders inside the
- * authenticated shell.
+ * Reopenable anytime from the sidebar settings popover («تغيير المهنة») via
+ * `useOnboardingStore.open()`, with the stored answer pre-selected. Mounted in
+ * ChatLayoutClient so it only ever renders inside the authenticated shell.
  */
 export function OnboardingDialog() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   // undefined = unknown/degraded (fail-closed); ONLY exactly null prompts.
   const professionGroup = useAuthStore((s) => s.user?.profession_group);
-  // The paid signal for A2, read off the user object /auth/me already returns.
-  // Deliberately DERIVED state, not an event handler on the payment callback:
-  // `/pay/callback` is a cold boot after a full-page 3DS redirect and lives
-  // outside ChatLayoutClient — this dialog is not even mounted there — and a
-  // `processing` payment's grant lands later via webhook, which an on-success
-  // handler would miss entirely. Reading it on the next /chat render covers both.
-  //
-  // ⚠ This was `plan_id !== "free"` until 2026-08-18, and that is not what
-  // "just paid" means: `dev` isn't `free` either, so every internal grant read
-  // as a fresh purchase and the 4-step tour opened for the team's own accounts
-  // on sight — which is how it looked like it was still firing at signup. Worse,
-  // the condition had no time in it at all, so it also fired for customers who
-  // had held their plan for months and simply never had the flag written.
-  // `paid_activated_at` is server-resolved from source + plan + a live term, and
-  // the window below is what makes this "just now" rather than "ever".
-  const paidActivatedAt = useAuthStore((s) => s.user?.paid_activated_at);
-  const justPaid = withinPurchaseWindow(paidActivatedAt);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
-  const onboardingSeen = usePreferencesStore((s) => s.onboardingSeen);
+  const professionReaskDone = usePreferencesStore((s) => s.professionReaskDone);
 
-  // «عندك رمز تفعيل؟» outranks both branches below while the two-week campaign
-  // is open — see `components/promo/PromoCodePopup`. Derived from the same
-  // stores that popup reads, so the two agree on the FIRST render and never
-  // stack; it goes false the instant the popup is resolved, which re-runs this
-  // effect and opens the profession step right behind it.
+  // «عندك رمز تفعيل؟» outranks this dialog while its campaign is open — see
+  // `components/promo/PromoCodePopup`. Derived from the same stores that popup
+  // reads, so the two agree on the FIRST render and never stack; it goes false
+  // the instant the popup is resolved, which re-runs the effect below.
   //
   // ⚠ HOLD, not "owed". It stays true through the window where we do not YET
   // know the plan — `/auth/login` returns no `plan_id`, so a brand-new account
-  // reads as neither free nor paid until /auth/me answers. Gating on `owed`
-  // alone let onboarding open into exactly that gap, with the promo popup
-  // landing on top of it a moment later.
+  // reads as neither free nor paid until /auth/me answers.
   const promoPopupHold = usePromoPopupHold();
 
   const open = useOnboardingStore((s) => s.isOpen);
-  const mode = useOnboardingStore((s) => s.mode);
-  const [step, setStep] = useState(0);
   const [selection, setSelection] = useState<ProfessionSelection>({
     group: null,
     label: null,
   });
 
-  const stepKeys = mode === "profession" ? PROFESSION_ONLY_STEPS : FULL_STEPS;
-  const totalSteps = stepKeys.length;
-
-  // Always restart from the first step when (re)opened — a manual reopen
-  // from settings should never resume mid-tour. The stored profession answer
-  // is pre-selected so a reopen doubles as "change my answer".
+  // The stored answer is pre-selected so a reopen doubles as "change my answer".
   useEffect(() => {
-    if (open) {
-      setStep(0);
-      setSelection(selectionFromUser());
-    }
+    if (open) setSelection(selectionFromUser());
   }, [open]);
 
   // Preferences hydration is otherwise lazy (settings dialogs trigger it) —
-  // kick it here so the first-run flag is known right after login.
+  // kick it here so the re-ask flag is known right after login.
   useEffect(() => {
     if (isAuthenticated && !isHydrated) {
       void usePreferencesStore.getState().hydrate();
     }
   }, [isAuthenticated, isHydrated]);
 
-  // Two first-runs, deliberately far apart in time (plan §8):
-  //
-  //   A1 · signup  → the profession step ALONE. One question, before the user
-  //                  has done anything, instead of a 4-step modal.
-  //   A2 · payment → the full tour, once the user has actually bought in.
-  //
-  // The profession branch is tested FIRST, so the null case can never fall
-  // through to the tour: a paid account that still owes the question answers it
-  // first and gets the tour on the very next pass (the effect re-runs when
-  // `saveProfession` fills the column) rather than both stacking at once.
-  // Reaching the second branch therefore already implies `professionGroup`
-  // is not null.
   useEffect(() => {
     if (!isAuthenticated || !isHydrated) return;
     if (promoPopupHold) return;
-    if (professionGroup === null) {
-      useOnboardingStore.getState().open("profession");
-    } else if (justPaid && !onboardingSeen) {
-      useOnboardingStore.getState().open("full");
+    if (
+      professionGroup === null ||
+      (professionGroup === "declined" && !professionReaskDone)
+    ) {
+      useOnboardingStore.getState().open();
     }
   }, [
     isAuthenticated,
     isHydrated,
-    justPaid,
-    onboardingSeen,
     professionGroup,
+    professionReaskDone,
     promoPopupHold,
   ]);
 
-  /** Persist the profession answer if it changed; a wholly untouched step on
-   *  a never-asked account records «declined» (dismissal = declining). */
-  const resolveProfession = () => {
+  /** Persist the answer if it changed; a wholly untouched step on a never-asked
+   *  account records «declined» (dismissal = declining). Returns the save in
+   *  flight, or null when nothing needed saving. */
+  const resolveProfession = (): Promise<boolean> | null => {
     const user = useAuthStore.getState().user;
     const stored = user?.profession_group;
     const storedLabel = user?.profession_label ?? null;
     if (selection.group) {
       const label = selection.label?.trim() || null;
       if (selection.group !== stored || label !== storedLabel) {
-        void useAuthStore.getState().saveProfession(selection.group, label);
+        return useAuthStore.getState().saveProfession(selection.group, label);
       }
-    } else if (stored === null) {
-      void useAuthStore.getState().saveProfession("declined", null);
+      return null;
     }
+    if (stored === null) {
+      return useAuthStore.getState().saveProfession("declined", null);
+    }
+    return null;
   };
 
   /**
-   * Dismissal — skip, X, ESC, «حفظ» / «ابدأ الاستخدام», or picking a question.
-   *
-   * ⚠ THE FLAG SPLIT. `onboarding_seen` now means «the intro tour has been
-   * shown», and ONLY a dismissal of the FULL tour may set it. Marking it from
-   * the profession-alone run — which is what signup opens after A1 — would
-   * retire the flag before the tour had ever run and permanently block A2 for
-   * every user: the post-payment tour would then never fire for anyone.
-   *
-   * The profession run needs no flag of its own to stay once-only; its gate is
-   * `users.profession_group`, which `resolveProfession()` fills on every exit
-   * («declined» when untouched). So the two screens keep independent gates.
+   * Every exit — X, ESC, «حفظ». The ORDER is load-bearing: `saveProfession`
+   * and `markProfessionReaskDone` both update their stores synchronously, so
+   * by the time the auto-open effect re-runs it already sees the new answer
+   * and the closed re-ask. Marking the re-ask on EVERY exit (not only the
+   * «declined» run) is what stops a brand-new user who declines at signup from
+   * being asked again on the very next render.
    */
   const finish = () => {
-    // Read through the store rather than the render-time `mode`: it is set at
-    // open() and never changes while open, and close() below leaves it intact.
-    const wasFullTour = useOnboardingStore.getState().mode !== "profession";
-    resolveProfession();
+    const group = selection.group;
+    const saving = resolveProfession();
+    void usePreferencesStore.getState().markProfessionReaskDone();
     useOnboardingStore.getState().close();
-    if (wasFullTour) {
-      void usePreferencesStore.getState().markOnboardingSeen();
+    // Once the server has STORED an offer-group answer, ask whether the caller
+    // is eligible for «عرض الشهر الأول». This dialog is already closed by then,
+    // so the two never share the screen.
+    if (saving && group && INTRO_OFFER_GROUPS.has(group)) {
+      void useIntroOfferStore.getState().openAfterSave(saving, "profession");
     }
   };
-
-  const handlePickQuestion = (question: string) => {
-    useChatStore.getState().injectComposerText(question);
-    finish();
-  };
-
-  const isLast = step === totalSteps - 1;
-  const current = stepKeys[step];
 
   return (
     <Dialog
@@ -249,73 +177,19 @@ export function OnboardingDialog() {
       }}
     >
       <DialogContent dir="rtl" className="max-h-[85dvh] max-w-2xl overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>اتعرف على ريحان</DialogTitle>
-          <DialogDescription>
-            {/* The full tour no longer runs «قبل أول سؤال» — after A2 it opens
-                once the user has paid, and the settings item reopens it at any
-                time — so the description no longer claims it does. */}
-            {mode === "profession"
-              ? "سؤال واحد سريع يساعدنا نطوّر ريحان."
-              : "جولة سريعة في أربع خطوات للتعرّف على ريحان."}
-          </DialogDescription>
+        {/* The step renders its own visible heading; these two exist for the
+            dialog's accessible name and are not drawn a second time. */}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{STEP_PROFESSION.heading}</DialogTitle>
+          <DialogDescription>{STEP_PROFESSION.intro}</DialogDescription>
         </DialogHeader>
 
-        {current === "profession" && (
-          <StepProfession value={selection} onChange={setSelection} />
-        )}
-        {current === "agents" && <StepAgents />}
-        {current === "workspace" && <StepWorkspace />}
-        {current === "questions" && (
-          <StepQuestions onPickQuestion={handlePickQuestion} />
-        )}
+        <StepProfession value={selection} onChange={setSelection} />
 
-        <div className="flex items-center justify-between pt-2">
-          {/* progress dots — pointless for the single-step profession ask */}
-          <div className="flex items-center gap-1.5" aria-hidden>
-            {totalSteps > 1 &&
-              Array.from({ length: totalSteps }, (_, i) => (
-                <span
-                  key={i}
-                  className={cn(
-                    "h-2 rounded-full transition-all",
-                    i === step ? "w-6 bg-primary" : "w-2 bg-border",
-                  )}
-                />
-              ))}
-          </div>
-
-          <div className="flex items-center gap-2">
-            {step === 0 ? (
-              mode !== "profession" && (
-                <Button variant="ghost" size="sm" onClick={finish}>
-                  تخطّي
-                </Button>
-              )
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setStep((s) => Math.max(0, s - 1))}
-              >
-                السابق
-              </Button>
-            )}
-            {isLast ? (
-              <Button size="sm" onClick={finish}>
-                {mode === "profession"
-                  ? STEP_PROFESSION.saveLabel
-                  : "ابدأ الاستخدام"}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => setStep((s) => Math.min(totalSteps - 1, s + 1))}
-              >
-                التالي
-              </Button>
-            )}
-          </div>
+        <div className="flex items-center justify-end pt-2">
+          <Button size="sm" onClick={finish}>
+            {STEP_PROFESSION.saveLabel}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

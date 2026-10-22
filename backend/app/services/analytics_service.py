@@ -60,6 +60,10 @@ PUBLIC_EVENT_NAMES = frozenset(
         "signup_started",    # /login?mode=register rendered
         "signup_completed",  # account created
         "quota_blocked",     # authed user refused by a limit
+        # عرض الشهر الأول (profession_intro_offer.md §3.4). Redemption is counted
+        # from payment_transactions.intro_offer_group, never from these.
+        "intro_offer_shown",  # offer surfaced: props.trigger profession|quota, props.group
+        "intro_offer_cta",    # «اشترك الآن» tapped on the offer
     }
 )
 

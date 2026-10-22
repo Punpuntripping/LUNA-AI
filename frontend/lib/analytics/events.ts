@@ -110,7 +110,13 @@ export type AnalyticsEventName =
   /** Password sign-in or signup accepted. Props: `method`, `mode`. */
   | "login_succeeded"
   /** Refused. Props: `method`, `mode`, `reason`, `status?`. */
-  | "login_failed";
+  | "login_failed"
+  // ---- profession_intro_offer.md — «عرض الشهر الأول» ---------------------
+  /** The offer was put on screen. Props: `trigger` (profession | quota),
+   *  `group`. Redemption is read from `payment_transactions`, not from here. */
+  | "intro_offer_shown"
+  /** «اشترك الآن» on the offer. Props: `trigger`, `group`. */
+  | "intro_offer_cta";
 
 /**
  * The real conversion surfaces, so the funnel can tell them apart (§3). The

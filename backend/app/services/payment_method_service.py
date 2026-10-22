@@ -119,6 +119,12 @@ NO_TOKEN_EVENT = "card_token_missing"
 # users saw — which is the entire reason this is versioned rather than edited
 # in place.
 DISCLOSURE_VERSION = "v2"
+# v3-intro (2026-10-21, profession_intro_offer.md §3.3): v2 + the price schedule,
+# for عرض الشهر الأول rows ONLY. A first month at 1.99 that steps up to 49.90 on
+# a saved card is exactly the charge a cardholder disputes, so for those rows the
+# amounts go back INTO the hashed text. Every other purchase stays byte-identical
+# v2.
+INTRO_DISCLOSURE_VERSION = "v3-intro"
 
 # ── Arabic (rule 5) ──────────────────────────────────────────────────────────
 
@@ -208,7 +214,60 @@ def _fmt_price(value: Any) -> str:
         return "0.00"
 
 
-def recurring_disclosure_ar(plan: Optional[dict]) -> Optional[str]:
+def _intro_schedule_ar(terms: Any) -> Optional[str]:
+    """The v3-intro schedule sentence, built ONLY from a row's stamped terms.
+
+    ``terms`` is ``payment_transactions.intro_offer_terms`` exactly as checkout
+    stamped it — never the live catalog. That is what keeps the hash
+    reproducible at every later call site: the string is a pure function of
+    values frozen on the row before the user saw it, so a price change between
+    checkout and capture cannot make the hash disagree with what was shown.
+
+    Returns None for a missing or malformed blob (an ordinary row, or a bug —
+    logged by the caller's fallback to v2).
+    """
+    if not isinstance(terms, dict):
+        return None
+    first, then, list_price = (
+        terms.get("first_month_sar"), terms.get("then_sar"), terms.get("list_sar"),
+    )
+    if first in (None, "") or then in (None, "") or list_price in (None, ""):
+        return None
+    return (
+        f"يُخصم {_fmt_price(first)} ر.س اليوم، ثم {_fmt_price(then)} ر.س لكلٍّ "
+        f"من الشهرين الثاني والثالث، ثم {_fmt_price(list_price)} ر.س كل 30 يوماً."
+    )
+
+
+def disclosure_text(payment_row: Optional[dict] = None) -> str:
+    """The disclosure for ONE payment row — v2, or v2 + schedule for an offer row.
+
+    The single builder behind checkout, ``record_consent`` and
+    ``capture_payment_method``: all three must hash the same characters the
+    page showed, and three builders would drift.
+    """
+    terms = (payment_row or {}).get("intro_offer_terms")
+    schedule = _intro_schedule_ar(terms)
+    if schedule is None:
+        if (payment_row or {}).get("intro_offer_group"):
+            logger.error(
+                "payment=%s is an intro-offer row with unusable intro_offer_terms "
+                "%r — falling back to the v2 disclosure WITHOUT the schedule",
+                (payment_row or {}).get("payment_id"), terms,
+            )
+        return RECURRING_DISCLOSURE_AR
+    return f"{RECURRING_DISCLOSURE_AR} {schedule}"
+
+
+def disclosure_version(payment_row: Optional[dict] = None) -> str:
+    """Which wording ``disclosure_text`` produced for this row."""
+    terms = (payment_row or {}).get("intro_offer_terms")
+    return INTRO_DISCLOSURE_VERSION if _intro_schedule_ar(terms) else DISCLOSURE_VERSION
+
+
+def recurring_disclosure_ar(
+    plan: Optional[dict], payment_row: Optional[dict] = None
+) -> Optional[str]:
     """THE canonical Arabic recurring disclosure, or None when none is owed.
 
     This is simultaneously the KSA e-commerce pre-purchase disclosure and the
@@ -237,10 +296,13 @@ def recurring_disclosure_ar(plan: Optional[dict]) -> Optional[str]:
     ``DISCLOSURE_VERSION`` at the same time so the audit rows say which text a
     given user actually agreed to. Consents recorded under v1 keep v1's hash and
     remain valid evidence of the longer text those users were shown.
+
+    ``payment_row`` (v3-intro): pass the row whenever one exists — an عرض الشهر
+    الأول row gets the price schedule appended (``disclosure_text``).
     """
     if not plan_renews(plan):
         return None
-    return RECURRING_DISCLOSURE_AR
+    return disclosure_text(payment_row)
 
 
 def consent_text_hash(text: str) -> str:
@@ -266,6 +328,7 @@ def _insert_consent_row(
     plan_id: str,
     text_hash: str,
     given_at: str,
+    version: str = DISCLOSURE_VERSION,
 ) -> dict:
     """Append the consent artefact. RAISES on failure, unlike ``write_audit_log``.
 
@@ -284,7 +347,7 @@ def _insert_consent_row(
             "event": CONSENT_EVENT,
             "plan_id": plan_id,
             "consent_text_hash": text_hash,
-            "disclosure_version": DISCLOSURE_VERSION,
+            "disclosure_version": version,
             # Stamped explicitly rather than read back from created_at: this is
             # the value copied onto payment_methods.consent_given_at, and it must
             # not depend on whether PostgREST returned the row's defaults.
@@ -352,9 +415,12 @@ async def record_consent(
     if existing:
         return {**existing, "already_recorded": True}
 
-    text = recurring_disclosure_ar(plan)
+    # Built from THIS row, so an intro-offer purchase hashes the v3-intro text
+    # its checkout page showed — never a catalog-derived rebuild.
+    text = recurring_disclosure_ar(plan, payment_row)
     if not text:                       # caller checked; second wall
         raise ValueError("plan does not renew — no consent to record")
+    version = disclosure_version(payment_row)
 
     given_at = _now_iso()
     await run_db(
@@ -365,15 +431,16 @@ async def record_consent(
         plan_id=str(plan.get("plan_id")),
         text_hash=consent_text_hash(text),
         given_at=given_at,
+        version=version,
     )
     logger.info(
         "recurring consent recorded: user=%s payment=%s plan=%s version=%s",
-        user_id, payment_id, plan.get("plan_id"), DISCLOSURE_VERSION,
+        user_id, payment_id, plan.get("plan_id"), version,
     )
     return {
         "consent_given_at": given_at,
         "consent_text_hash": consent_text_hash(text),
-        "disclosure_version": DISCLOSURE_VERSION,
+        "disclosure_version": version,
         "plan_id": plan.get("plan_id"),
         "already_recorded": False,
     }
@@ -919,22 +986,25 @@ async def capture_payment_method(
         #     moment and the exact text that user saw, including v1's longer
         #     wording;
         #   * otherwise the completed purchase IS the consent, stamped at
-        #     ``paid_at`` and hashed against RECURRING_DISCLOSURE_AR.
+        #     ``paid_at`` and hashed against ``disclosure_text(payment_row)``.
         #
-        # That fallback is only sound because the disclosure is now a CONSTANT.
-        # If it ever interpolates price or plan again, this hash stops being
-        # reproducible from here and the served text must be persisted at
-        # checkout instead — do not paper over it by hashing a rebuilt string.
+        # That fallback is only sound because the disclosure is reproducible
+        # from the ROW: v2 is a constant, and v3-intro (عرض الشهر الأول)
+        # interpolates only the prices checkout froze into
+        # ``intro_offer_terms`` before the page showed them. If it ever
+        # interpolates anything NOT persisted on the row, this hash stops being
+        # reproducible from here — do not paper over that by hashing a string
+        # rebuilt from the live catalog.
         consent = await run_db(fetch_consent, supabase, str(payment_id))
         if not consent or not consent.get("consent_text_hash"):
             consent = {
                 "consent_given_at": payment_row.get("paid_at") or _now_iso(),
-                "consent_text_hash": consent_text_hash(RECURRING_DISCLOSURE_AR),
+                "consent_text_hash": consent_text_hash(disclosure_text(payment_row)),
             }
             logger.info(
                 "payment=%s carries no explicit consent row — treating the "
                 "completed purchase as consent (disclosure %s)",
-                payment_id, DISCLOSURE_VERSION,
+                payment_id, disclosure_version(payment_row),
             )
 
         existing = await run_db(_select_active_with_token_safe, supabase, str(user_id))
@@ -1209,6 +1279,9 @@ __all__ = [
     "plan_renews",
     "requires_recurring_consent",
     "recurring_disclosure_ar",
+    "disclosure_text",
+    "disclosure_version",
+    "INTRO_DISCLOSURE_VERSION",
     "consent_text_hash",
     "record_consent",
     "fetch_consent",

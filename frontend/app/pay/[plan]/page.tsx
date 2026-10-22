@@ -21,6 +21,10 @@ import {
 import { useCheckout } from "@/hooks/use-payments";
 import { Button } from "@/components/ui/button";
 import { RiyalSymbol } from "@/components/icons/RiyalSymbol";
+import {
+  INTRO_OFFER_COPY,
+  introOfferScheduleRows,
+} from "@/components/promo/intro-offer-content";
 
 /**
  * Checkout — `/pay/{plan}`.
@@ -304,13 +308,28 @@ export default function PayPlanPage() {
   const creditSar = Number(session?.credit_sar ?? 0);
   const hasCredit = creditSar > 0;
 
+  // عرض الشهر الأول — the server priced THIS row by the profession intro offer
+  // (`amount_halalas` already is the first-month price). The block below only
+  // explains that number and the step-up after it; every figure is the
+  // server's. A partial block is ignored rather than half-rendered.
+  const introOffer =
+    session?.intro_offer &&
+    session.intro_offer.first_month_sar &&
+    session.intro_offer.then_sar &&
+    session.intro_offer.list_sar
+      ? session.intro_offer
+      : null;
+  const nonRefundable = Boolean(session?.non_refundable || introOffer);
+
   return (
     <div className="flex flex-col gap-8" data-testid="pay-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-bold text-foreground">
           إتمام الاشتراك — باقة {plan.nameAr}
         </h1>
-        <p className="text-sm text-muted-foreground">{plan.billingNote}</p>
+        <p className="text-sm text-muted-foreground">
+          {introOffer ? INTRO_OFFER_COPY.billingNote : plan.billingNote}
+        </p>
       </header>
 
       {/* Order summary. When a prorated upgrade credit applies, the charged
@@ -319,11 +338,41 @@ export default function PayPlanPage() {
       <section className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-5">
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-sm text-muted-foreground">سعر الباقة</span>
-          <span className="flex items-center gap-1 text-sm tabular-nums text-foreground">
-            {plan.price}
+          <span
+            className={
+              introOffer
+                ? "flex items-center gap-1 text-sm tabular-nums text-muted-foreground"
+                : "flex items-center gap-1 text-sm tabular-nums text-foreground"
+            }
+          >
+            {introOffer ? (
+              <>
+                <span className="sr-only">بدلاً من</span>
+                <span className="line-through">
+                  {formatSar(introOffer.list_sar)}
+                </span>
+              </>
+            ) : (
+              plan.price
+            )}
             <RiyalSymbol className="h-3.5 w-auto" />
           </span>
         </div>
+
+        {introOffer && (
+          <div
+            className="flex items-baseline justify-between gap-3"
+            data-testid="pay-intro-offer-price"
+          >
+            <span className="text-sm font-medium text-primary">
+              {INTRO_OFFER_COPY.offerPriceLabel}
+            </span>
+            <span className="flex items-center gap-1 text-sm font-medium tabular-nums text-primary">
+              {formatSar(introOffer.first_month_sar)}
+              <RiyalSymbol className="h-3.5 w-auto" />
+            </span>
+          </div>
+        )}
 
         {hasCredit && (
           <div
@@ -352,6 +401,51 @@ export default function PayPlanPage() {
             <RiyalSymbol className="h-6 w-auto" />
           </span>
         </div>
+
+        {/* The step-up, under the amount due and in the same figures the
+            server's disclosure states. The recurring consent text carries no
+            amounts for ordinary purchases, so for an offer that jumps from
+            1.99 to 49.90 on a saved card this block is part of the disclosure,
+            not decoration (profession_intro_offer §3.3 / §4.5). */}
+        {introOffer && (
+          <div
+            className="flex flex-col gap-2 border-t border-border pt-3"
+            data-testid="pay-intro-offer-schedule"
+          >
+            <span className="text-xs font-semibold text-muted-foreground">
+              {INTRO_OFFER_COPY.scheduleHeading}
+            </span>
+            {introOfferScheduleRows(
+              introOffer.then_sar,
+              introOffer.then_months,
+              introOffer.list_sar,
+            ).map((row) => (
+              <div
+                key={row.label}
+                className="flex items-baseline justify-between gap-3"
+              >
+                <span className="text-sm text-muted-foreground">{row.label}</span>
+                <span className="flex items-center gap-1 text-sm tabular-nums text-foreground">
+                  {row.amount}
+                  <RiyalSymbol className="h-3.5 w-auto" />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* The general refund terms stay off this page (see the footer note),
+            but a purchase that CANNOT be refunded has to say so before the card
+            is entered — the 24h window the user may know from elsewhere does
+            not apply to it. */}
+        {nonRefundable && (
+          <p
+            className="text-xs font-medium text-foreground"
+            data-testid="pay-non-refundable"
+          >
+            {INTRO_OFFER_COPY.nonRefundable}
+          </p>
+        )}
       </section>
 
       {/* Checkout failed to open — the server's Arabic message is the primary

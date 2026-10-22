@@ -69,6 +69,9 @@ const STATUS_META: Record<PaymentStatus, { label: string; tone: string }> = {
  * only a fallback for a backend that does not send the flag.
  */
 function isRefundable(item: PaymentHistoryItem): boolean {
+  // The intro offer's first month is never refundable — checked FIRST so even a
+  // backend that omitted `refundable` cannot fall through to the 24h fallback.
+  if (item.non_refundable === true) return false;
   if (typeof item.refundable === "boolean") return item.refundable;
   if (item.status !== "paid" || !item.paid_at) return false;
   const paidAt = Date.parse(item.paid_at);
@@ -122,6 +125,17 @@ function PaymentRow({ item, onRefund, refundingId }: PaymentRowProps) {
           {item.refund_fee_sar != null
             ? ` · رسوم معالجة ${formatFeeSar(item.refund_fee_sar)} ريال`
             : ""}
+        </p>
+      )}
+
+      {/* Says WHY a fresh, paid row has no button — otherwise it reads as a
+          broken refund window. */}
+      {item.non_refundable === true && item.status === "paid" && (
+        <p
+          className="text-xs text-muted-foreground"
+          data-testid={`payment-non-refundable-${item.payment_id}`}
+        >
+          غير قابل للاسترداد — عرض الشهر الأول
         </p>
       )}
 

@@ -17,9 +17,10 @@ import { cn } from "@/lib/utils";
 
 /**
  * «مساحة العمل» — the second اكتشف ريحان lesson (/learn/workspace).
- * Long-form version of onboarding STEP_WORKSPACE: the popup stays the summary
- * of THIS page (see .claude/plans/discover_rayhan_workspace.md — if copy
- * drifts, update the popup to match, never the other way). Same voice rules as
+ * Long-form version of the workspace step the retired «اتعرف على ريحان» tour
+ * carried (removed 2026-10-21); any short summary of it elsewhere follows THIS
+ * page (see .claude/plans/discover_rayhan_workspace.md — if copy drifts, update
+ * the summary to match, never the other way). Same voice rules as
  * how-it-works: reader-facing vocabulary only (الموجّه / الباحث / الكاتب /
  * المكتبة القانونية / مساحة العمل), models are open-source and never named,
  * no internal kind names — the six group cards use the exact Arabic labels the

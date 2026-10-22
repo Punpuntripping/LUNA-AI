@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/sidebar/Sidebar";
 import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { PromoCodePopup } from "@/components/promo/PromoCodePopup";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
+import { IntroOfferDialog } from "@/components/promo/IntroOfferDialog";
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
 import { InstallNudgeCard } from "@/components/install/InstallNudgeCard";
@@ -198,8 +199,15 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           below stands down while it is owed. */}
       <PromoCodePopup />
 
-      {/* first-run «اتعرف على ريحان» tour — self-gating, renders nothing once seen */}
+      {/* «وش أقرب وصف لك؟» — the profession question, the only first-run left
+          after the 4-step tour was retired. Self-gating; renders nothing once
+          answered (and once more for a stored «declined»). */}
       <OnboardingDialog />
+
+      {/* «عرض الشهر الأول» — opened by the dialog above right after an eligible
+          profession answer is saved; never on screen together with it. Also
+          (re)loads the caller's offer eligibility for the quota wall. */}
+      <IntroOfferDialog />
 
       {/* «جولة المخرجات» — the 5-step coach-mark tour over the shared demo
           conversation. Also self-gating and also renders null when closed, so

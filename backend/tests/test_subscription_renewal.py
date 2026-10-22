@@ -337,6 +337,7 @@ class FakeSupabase:
         }
         self.calls: list[str] = []
         self.writes: list[tuple] = []
+        self.rpc_params: list[tuple[str, dict]] = []
         self.missing_columns: set[str] = set()
 
         # ── المشتركون الأوائل (migration 138) ───────────────────────────────
@@ -385,6 +386,8 @@ class FakeSupabase:
 
     def rpc(self, name: str, params: dict):
         self.calls.append(name)
+        # Every RPC's params — the renewal job's `p_at` (182) is asserted on.
+        self.rpc_params.append((name, dict(params)))
         payment_id = params.get("p_payment_id")
         row = next(
             (r for r in self.tables["payment_transactions"]
@@ -481,7 +484,10 @@ class FakeSupabase:
             if self._forfeited(uid):
                 return _Rpc(listed)          # beats a live seat AND an open campaign
             seat = self._live_seat(uid)
-            in_window = seat is not None and str(seat["promo_ends_at"]) > _iso(_now())
+            # 182: the seat is tested at `p_at` (the period start the renewal
+            # job is charging for) when given, else at now().
+            at = ps._parse_ts(params.get("p_at")) or _now()
+            in_window = seat is not None and ps._parse_ts(seat["promo_ends_at"]) > at
             if context == "current":
                 return _Rpc(promo if in_window else listed)
             if plan.get("plan_id") == "basic":
@@ -2067,3 +2073,152 @@ def test_a_broken_selection_query_returns_cleanly(flag_on, charges, no_smtp):
     db.missing_columns = {"renewal_failed_count"}
     assert sweep(db) == {"scanned": 0, "error": 1}
     assert charges == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 182 — the seat is tested at the START of the period being charged
+# (profession_intro_offer.md §2.1)
+#
+# The job charges up to 24h BEFORE expiry. Testing the seat at now() billed the
+# period that BEGINS on day 90 at the promo price: four promo charges for every
+# seat holder instead of the three §1.3 promises.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _seat_db(promo_ends_at):
+    db = FakeSupabase(sub("pro"))                  # expires in 6h — due now
+    store_method(db)
+    db.campaign_enabled = True
+    db.early_adopter_seats.append({
+        "seat_id": "s", "user_id": USER, "payment_id": "p",
+        "promo_ends_at": _iso(promo_ends_at),
+        "released_at": None, "release_reason": None, "over_capacity": False,
+    })
+    return db
+
+
+def test_the_renewal_prices_the_seat_at_the_period_start(flag_on, charges, no_smtp):
+    """The wire call carries `p_at` = the term boundary being renewed — the
+    same value the job keys the period on."""
+    db = _seat_db(_now() + timedelta(days=40))
+    expires_at = db.tables["user_subscriptions"][0]["expires_at"]
+
+    sweep(db)
+
+    asked = [p for n, p in db.rpc_params if n == "effective_plan_price"]
+    assert len(asked) == 1
+    assert asked[0]["p_context"] == "current"
+    assert ps._parse_ts(asked[0]["p_at"]) == ps._parse_ts(expires_at)
+
+
+@pytest.mark.parametrize(
+    "promo_ends_after_expiry, expected_halalas",
+    [
+        (timedelta(days=60), 4990),     # renewal 1: the period starting on day 30
+        (timedelta(days=30), 4990),     # renewal 2: the period starting on day 60
+        # renewal 3: the period starting on day 90. The seat window is anchored at
+        # the payment's paid_at, and grant_plan runs AFTER paid_at is stamped, so
+        # the day-90 boundary sits a moment past promo_ends_at — full price.
+        (timedelta(seconds=-1), 8990),
+    ],
+)
+def test_a_seat_holder_gets_exactly_three_promo_charges(
+    flag_on, charges, no_smtp, promo_ends_after_expiry, expected_halalas
+):
+    """Day 0 at the offer/promo price, day 30 and day 60 at 49.90, day 90 at
+    list. Before 182 the day-90 renewal (charged ~day 89, inside the window by
+    now()) was a fourth promo charge."""
+    expires = ps._parse_ts(sub("pro")["expires_at"])
+    db = _seat_db(expires + promo_ends_after_expiry)
+    # Pin the term boundary to the value the seat was computed against.
+    db.tables["user_subscriptions"][0]["expires_at"] = _iso(expires)
+
+    sweep(db)
+
+    assert [c["amount"] for c in charges] == [expected_halalas]
+
+
+def test_the_seat_is_still_live_at_charge_time_but_the_period_is_not(flag_on, charges, no_smtp):
+    """The exact pre-182 bug, stated directly: the seat is LIVE right now (ends
+    in 3h) but the period being bought starts in 6h, after it. List price."""
+    db = _seat_db(_now() + timedelta(hours=3))
+
+    sweep(db)
+
+    assert [c["amount"] for c in charges] == [8990]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v3-intro — the disclosure carries the price schedule on an offer row
+# (profession_intro_offer.md §3.3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def intro_quote(monkeypatch):
+    """An eligible lawyer, without modelling 183 in this suite's fake."""
+    from decimal import Decimal
+
+    monkeypatch.setattr(ps, "_intro_offer_quote",
+                        lambda _sb, _uid: ("legal", Decimal("1.99")))
+
+
+def test_an_offer_checkout_discloses_the_schedule(flag_on, intro_quote):
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    session = run(ps.create_checkout(db, USER, "pro"))
+
+    text = session["recurring_disclosure_ar"]
+    assert session["amount_sar"] == "1.99"
+    assert text.startswith(pm.RECURRING_DISCLOSURE_AR)
+    for amount in ("1.99", "49.90", "89.90"):
+        assert amount in text, amount
+    assert "الشهرين الثاني والثالث" in text
+
+
+def test_an_ordinary_checkout_keeps_the_v2_text_byte_for_byte(flag_on):
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    session = run(ps.create_checkout(db, USER, "pro"))
+    assert session["recurring_disclosure_ar"] == pm.RECURRING_DISCLOSURE_AR
+    assert session["intro_offer"] is None
+
+
+def test_offer_consent_hashes_the_schedule_it_showed(flag_on, intro_quote):
+    """The consent route rebuilds the text from the ROW's frozen terms, so the
+    hash is of the exact characters the page rendered — and is versioned
+    v3-intro so an audit row says which wording it was."""
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    session = run(ps.create_checkout(db, USER, "pro"))
+    result = run(ps.record_recurring_consent(db, USER, session["payment_id"], accepted=True))
+
+    assert result["recurring_disclosure_ar"] == session["recurring_disclosure_ar"]
+    assert result["disclosure_version"] == pm.INTRO_DISCLOSURE_VERSION == "v3-intro"
+    meta = next(r["metadata"] for r in db.tables["audit_logs"]
+                if (r.get("metadata") or {}).get("event") == pm.CONSENT_EVENT)
+    assert meta["consent_text_hash"] == pm.consent_text_hash(session["recurring_disclosure_ar"])
+    assert meta["disclosure_version"] == "v3-intro"
+
+
+def test_offer_capture_without_a_consent_row_hashes_the_same_schedule(flag_on, intro_quote):
+    """The completed purchase IS the consent (v2 model). For an offer row the
+    fallback hash must be of the v3-intro text the page showed, not of the bare
+    v2 constant."""
+    db = FakeSupabase(sub("free", source="signup", hours_left=None))
+    session = run(ps.create_checkout(db, USER, "pro"))
+    row = next(r for r in db.tables["payment_transactions"]
+               if r["payment_id"] == session["payment_id"])
+    row = {**row, "paid_at": _iso(_now())}
+
+    assert run(pm.capture_payment_method(db, row, _paid_payload(row["payment_id"])))
+    stored = db.tables["payment_methods"][0]
+    assert stored["consent_text_hash"] == pm.consent_text_hash(
+        session["recurring_disclosure_ar"]
+    )
+    assert stored["consent_text_hash"] != pm.consent_text_hash(pm.RECURRING_DISCLOSURE_AR)
+
+
+def test_unusable_offer_terms_fall_back_to_v2(flag_on):
+    """A bug, not a state: an offer row whose terms cannot be read still gets a
+    valid disclosure rather than a crash on the money path."""
+    row = {"payment_id": "x", "intro_offer_group": "legal", "intro_offer_terms": None}
+    assert pm.disclosure_text(row) == pm.RECURRING_DISCLOSURE_AR
+    assert pm.disclosure_version(row) == pm.DISCLOSURE_VERSION

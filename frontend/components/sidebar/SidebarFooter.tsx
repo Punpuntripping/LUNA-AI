@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   BookMarked,
+  Briefcase,
   ChevronDown,
   CreditCard,
   Gauge,
@@ -370,16 +371,20 @@ export function SidebarFooter() {
                     data-testid="sidebar-settings-lessons-panel"
                   >
                     <div className="flex flex-col gap-0.5" dir="rtl">
+                      {/* Was «جولة التعريف السريعة» until the 4-step tour was
+                          retired (2026-10-21). The same dialog now asks only
+                          the profession, with the stored answer pre-selected. */}
                       <button
                         type="button"
                         onClick={() => {
                           useOnboardingStore.getState().open();
                           closeMenus();
                         }}
-                        data-testid="sidebar-settings-onboarding-trigger"
-                        className="rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        data-testid="sidebar-settings-profession-trigger"
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
-                        جولة التعريف السريعة
+                        <Briefcase className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">تغيير المهنة</span>
                       </button>
                       <Separator className="my-1" />
                       {EDU_SYLLABUS.map((lesson) => (

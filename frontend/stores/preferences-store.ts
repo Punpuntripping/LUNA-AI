@@ -28,23 +28,11 @@ interface PreferencesState {
   detailLevel: DetailLevel;
   privacyMasking: boolean;
   /**
-   * «اتعرف على ريحان» — *the intro tour has been shown*. Since the retiming in
-   * `.claude/plans/edu_series.md` §8 this no longer means "onboarding is done":
-   * signup opens the profession step alone and deliberately does NOT set this
-   * flag (that would permanently block the post-payment tour for everyone), so
-   * it is written ONLY by a dismissal of the full tour.
-   *
-   * Fail-closed, unchanged: defaults to true (= shown) so the tour never
-   * flashes for existing users before/without a successful hydrate — only an
-   * explicit absent/false value from the backend opens it.
-   */
-  onboardingSeen: boolean;
-  /**
    * «جولة المخرجات» — the coach-mark tour over the shared demo conversation.
-   * Fail-closed exactly like `onboardingSeen`: defaults to true (= seen) so an
-   * API blip can never re-nag an existing user. Only an explicit absent/false
-   * value from a SUCCESSFUL hydrate opens it, and only after «اتعرف على ريحان»
-   * has been dismissed (never both on screen at once).
+   * Fail-closed: defaults to true (= seen) so an API blip can never re-nag an
+   * existing user. Only an explicit absent/false value from a SUCCESSFUL
+   * hydrate opens it, and only while the profession dialog is closed (never
+   * both on screen at once).
    */
   tourWorkspaceSeen: boolean;
   /**
@@ -63,6 +51,16 @@ interface PreferencesState {
    * explicit absent/false from a SUCCESSFUL read opens it.
    */
   promoCodePopupSeen: boolean;
+  /**
+   * The ONE re-ask of the profession question for an account whose stored
+   * answer is «declined» has happened — picked or dismissed
+   * (`.claude/plans/profession_intro_offer.md` §4.8).
+   *
+   * Fail-closed like the flags above: defaults to true (= done) so a failed
+   * hydrate can never re-open the question, and only an explicit absent/false
+   * from a SUCCESSFUL read lets `OnboardingDialog` ask once more.
+   */
+  professionReaskDone: boolean;
   isHydrated: boolean;
   isSaving: boolean;
   error: string | null;
@@ -73,17 +71,16 @@ interface PreferencesState {
   setDetailLevel: (level: DetailLevel) => Promise<void>;
   /** Optimistically update وضع السرية; PATCH /preferences; rollback on failure. */
   setPrivacyMasking: (enabled: boolean) => Promise<void>;
-  /** Mark the intro tour as shown; PATCH /preferences (no rollback — worst case
-   *  the tour shows once more next session). Call this ONLY from a dismissal of
-   *  the FULL «اتعرف على ريحان» tour, never from the profession-alone run. */
-  markOnboardingSeen: () => Promise<void>;
-  /** Mark «جولة المخرجات» as seen (finish OR skip); same no-rollback contract. */
+  /** Mark «جولة المخرجات» as seen (finish OR skip); PATCH /preferences with no
+   *  rollback — worst case the tour offers itself once more next login. */
   markTourWorkspaceSeen: () => Promise<void>;
   /** «إخفاء» the shared demo conversation for THIS user only (D8). */
   hideDemoConversation: () => Promise<void>;
   /** Resolve the «عندك رمز تفعيل؟» popup — written on EVERY exit path, so the
    *  campaign asks at most once per account. */
   markPromoCodePopupSeen: () => Promise<void>;
+  /** Close the «declined» re-ask for good — written on EVERY exit of that run. */
+  markProfessionReaskDone: () => Promise<void>;
   /** Clear the last error (e.g. after the user dismisses a toast). */
   clearError: () => void;
   /** Reset to defaults (used on logout). */
@@ -93,10 +90,10 @@ interface PreferencesState {
 export const usePreferencesStore = create<PreferencesState>((set, get) => ({
   detailLevel: DEFAULT_DETAIL_LEVEL,
   privacyMasking: DEFAULT_PRIVACY_MASKING,
-  onboardingSeen: true,
   tourWorkspaceSeen: true,
   demoConversationHidden: false,
   promoCodePopupSeen: true,
+  professionReaskDone: true,
   isHydrated: false,
   isSaving: false,
   error: null,
@@ -107,10 +104,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     set({
       detailLevel: DEFAULT_DETAIL_LEVEL,
       privacyMasking: DEFAULT_PRIVACY_MASKING,
-      onboardingSeen: true,
       tourWorkspaceSeen: true,
       demoConversationHidden: false,
       promoCodePopupSeen: true,
+      professionReaskDone: true,
       isHydrated: false,
       isSaving: false,
       error: null,
@@ -130,13 +127,10 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       set({
         detailLevel: coerceDetailLevel(prefs.detail_level),
         privacyMasking: coercePrivacyMasking(prefs.privacy_masking),
-        // Only an explicit true counts as shown — a brand-new user has no
-        // stored key, which is what leaves the intro tour still owed until
-        // the account turns paid (edu_series §8, A2).
-        onboardingSeen: prefs.onboarding_seen === true,
         tourWorkspaceSeen: prefs.tour_workspace_seen === true,
         demoConversationHidden: prefs.demo_conversation_hidden === true,
         promoCodePopupSeen: prefs.promo_code_popup_seen === true,
+        professionReaskDone: prefs.profession_reask_done === true,
         isHydrated: true,
         error: null,
       });
@@ -151,12 +145,13 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
         detailLevel: DEFAULT_DETAIL_LEVEL,
         privacyMasking: DEFAULT_PRIVACY_MASKING,
         // Fail-closed: never open a tour off a failed hydrate.
-        onboardingSeen: true,
         tourWorkspaceSeen: true,
         // Fail-open: never hide the user's demo row off a failed hydrate.
         demoConversationHidden: false,
         // Fail-closed again: never open the promo popup off a failed hydrate.
         promoCodePopupSeen: true,
+        // …and never re-ask the profession question off one either.
+        professionReaskDone: true,
         isHydrated: true,
         error:
           err instanceof ApiClientError
@@ -190,17 +185,6 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     }
   },
 
-  markOnboardingSeen: async () => {
-    if (get().onboardingSeen) return;
-    set({ onboardingSeen: true });
-    try {
-      await preferencesApi.update({ onboarding_seen: true });
-    } catch {
-      // Swallow — keep the local flag so the tour doesn't reappear this
-      // session; worst case it shows once more next login.
-    }
-  },
-
   markTourWorkspaceSeen: async () => {
     if (get().tourWorkspaceSeen) return;
     set({ tourWorkspaceSeen: true });
@@ -210,8 +194,8 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
       // sibling preference another tab set ([[project_edu_popups]]).
       await preferencesApi.update({ tour_workspace_seen: true });
     } catch {
-      // Same contract as markOnboardingSeen: keep the local flag; worst case
-      // the tour offers itself once more next login.
+      // Swallow — keep the local flag so the tour doesn't reappear this
+      // session; worst case it offers itself once more next login.
     }
   },
 
@@ -239,6 +223,18 @@ export const usePreferencesStore = create<PreferencesState>((set, get) => ({
     } catch {
       // Same contract as the tour flags: keep the local flag so the popup stays
       // shut this session; worst case it offers itself once more next login.
+    }
+  },
+
+  markProfessionReaskDone: async () => {
+    if (get().professionReaskDone) return;
+    set({ professionReaskDone: true });
+    try {
+      // FLAT key — `merge_preferences` is a SHALLOW merge ([[project_edu_popups]]).
+      await preferencesApi.update({ profession_reask_done: true });
+    } catch {
+      // Same contract as the flags above: keep the local flag so the question
+      // stays shut this session; worst case it is asked once more next login.
     }
   },
 

@@ -717,11 +717,16 @@ export interface UserPreferencesData {
    */
   privacy_masking?: boolean;
   /**
-   * «اتعرف على ريحان» first-run tour. Absent/false → the tour opens once
-   * after login; any dismissal PATCHes it to true. Same JSONB `/preferences`
-   * endpoint as the other keys — no backend change needed.
+   * RETIRED with the 4-step «اتعرف على ريحان» tour (2026-10-21). Old rows
+   * still carry it; nothing reads or writes it any more.
    */
   onboarding_seen?: boolean;
+  /**
+   * The one re-ask of the profession question for users who answered
+   * «declined» has happened (picked OR dismissed). Absent/false + a stored
+   * `declined` → the profession step opens once more.
+   */
+  profession_reask_done?: boolean;
   /**
    * «جولة المخرجات» — the 5-step coach-mark tour over the shared demo
    * conversation. Absent/false → the tour auto-starts once, AFTER «اتعرف على
@@ -970,6 +975,44 @@ export interface PaymentCheckoutResponse {
    * payment method, this flag is the thing it has to consult.
    */
   requires_recurring_consent: boolean;
+  /**
+   * عرض الشهر الأول — set when THIS checkout was priced by the profession intro
+   * offer (`.claude/plans/profession_intro_offer.md`); null/absent otherwise.
+   * `amount_halalas` already IS the first-month price — this block only lets
+   * the page explain the number and the step-up that follows it.
+   */
+  intro_offer?: CheckoutIntroOffer | null;
+  /** The first month of the intro offer cannot be refunded. Absent = false. */
+  non_refundable?: boolean;
+}
+
+/**
+ * The priced intro offer on a checkout row. 2-dp LATIN strings like every other
+ * money field. `then_sar` is the early-adopter seat price the next
+ * `then_months` renewals are charged; `list_sar` is what follows them.
+ */
+export interface CheckoutIntroOffer {
+  profession_group: string;
+  first_month_sar: string;
+  then_sar: string;
+  then_months: number;
+  list_sar: string;
+}
+
+/**
+ * `GET /payments/intro-offer` — the CALLER's eligibility for عرض الشهر الأول.
+ *
+ * Server-decided end to end: the client never names a price, and an ineligible
+ * answer carries nulls. ⚠ No end date and no seat count — same rule as the
+ * early-adopter campaign; «المقاعد محدودة» is the only scarcity signal.
+ */
+export interface IntroOfferState {
+  eligible: boolean;
+  profession_group: string | null;
+  first_month_sar: string | null;
+  then_sar: string | null;
+  then_months: number;
+  list_sar: string | null;
 }
 
 /**
@@ -1039,6 +1082,9 @@ export interface PaymentHistoryItem {
    */
   refund_quote_fee_sar?: string | null;
   refund_quote_amount_sar?: string | null;
+  /** The intro offer's first month — never refundable (`refundable` is false
+   *  for it too; this says WHY, so the row can explain the missing button). */
+  non_refundable?: boolean;
 }
 
 export interface PaymentHistoryResponse {
@@ -1177,6 +1223,12 @@ export interface EarlyAdopterCampaign {
 export interface EarlyAdopterState {
   is_member: boolean;
   promo_ends_at: string | null;
+  /**
+   * The caller once paid an intro-offer first month, so a cancellation does NOT
+   * forfeit the early-adopter price for them: coming back while the campaign is
+   * open costs the promo price again with a fresh 90 days. Absent = false.
+   */
+  returnable?: boolean;
 }
 
 // -----------------------------------------------
@@ -1224,7 +1276,8 @@ export interface SubscriptionState {
    * المشتركون الأوائل standing. ABSENT on an older backend — treat a missing
    * block as "not a member" (see `EarlyAdopterState`). The cancel flow reads
    * this to warn a seat holder that cancelling forfeits the price permanently,
-   * which is the one place that rule is stated before the user acts.
+   * which is the one place that rule is stated before the user acts — or, for
+   * a `returnable` intro-offer member, that they may come back at it.
    */
   early_adopter?: EarlyAdopterState | null;
 }

@@ -56,6 +56,7 @@ import type {
   SubscriptionState,
   CancelSubscriptionReason,
   EarlyAdopterCampaign,
+  IntroOfferState,
 } from "@/types";
 import type {
   OtpRequestResponse,
@@ -1221,6 +1222,17 @@ export const paymentsApi = {
    */
   getEarlyAdopter: () =>
     api.get<EarlyAdopterCampaign>("/payments/early-adopter"),
+
+  /**
+   * عرض الشهر الأول — is THIS caller eligible, and at what first-month price
+   * (`.claude/plans/profession_intro_offer.md`). Authed and per-user, unlike
+   * `getEarlyAdopter`: eligibility depends on the caller's profession, plan and
+   * purchase history, all decided server-side.
+   *
+   * ⚠ No end date and no seat count, ever. A 404 (backend older than the
+   * feature) is treated by the store as "not eligible".
+   */
+  introOffer: () => api.get<IntroOfferState>("/payments/intro-offer"),
 
   /**
    * Current subscription state for إعدادات الحساب: plan, term end, `source`,

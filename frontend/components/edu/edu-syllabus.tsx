@@ -151,8 +151,7 @@ export const EDU_SYLLABUS: readonly EduLesson[] = [
     ],
     action: {
       label: "جرّبها الآن",
-      // Fills the composer only — never sends. Same contract as the onboarding
-      // starter questions (`STEP_QUESTIONS`).
+      // Fills the composer only — never sends (`injectComposerText`'s contract).
       run: () =>
         useChatStore
           .getState()

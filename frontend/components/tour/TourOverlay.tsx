@@ -8,6 +8,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { usePreferencesStore } from "@/stores/preferences-store";
 import { useTourStore } from "@/stores/tour-store";
+import { useIntroOfferStore } from "@/stores/intro-offer-store";
 import { useIsMobile } from "@/hooks/use-media-query";
 import { useIsDemoConversation } from "@/hooks/use-demo-conversation";
 import {
@@ -110,8 +111,9 @@ function isSatisfied(condition: TourCondition, snapshot: BeatSnapshot): boolean 
  * toured, so arriving there IS the request to see it — and a user who wants to
  * re-watch shouldn't have to hunt through the settings popover for it.
  *
- * Fires when: authenticated · preferences hydrated · «اتعرف على ريحان» is NOT on
- * screen and has nothing left to ask (never both at once) · this is the demo
+ * Fires when: authenticated · preferences hydrated · the profession dialog is
+ * NOT on screen and has nothing left to ask (never both at once) · «عرض الشهر
+ * الأول» is neither open nor about to open · this is the demo
  * conversation · and Act 1's anchor has actually rendered. The last two are
  * separate tests on purpose: the first says the script matches this screen, the
  * second says the screen has finished painting it.
@@ -151,8 +153,15 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const isHydrated = usePreferencesStore((s) => s.isHydrated);
   const onboardingOpen = useOnboardingStore((s) => s.isOpen);
-  // Exactly null = «اتعرف على ريحان» still owes the profession question.
+  // Exactly null = the profession question is still owed. A stored «declined»
+  // with the one re-ask not yet done is owed too (profession_intro_offer §4.8)
+  // — same stale-selector hole as the null case below.
   const professionPending = useAuthStore((s) => s.user?.profession_group === null);
+  const reaskPending = useAuthStore((s) => s.user?.profession_group === "declined");
+  const reaskDone = usePreferencesStore((s) => s.professionReaskDone);
+  // «عرض الشهر الأول» — open, or about to open after a profession save. The
+  // tour's root sits above every Radix layer and would bury it.
+  const introOfferHold = useIntroOfferStore((s) => s.isOpen || s.checking);
   const isDemo = useIsDemoConversation(conversationId);
   const startedForRef = useRef<string | null>(null);
 
@@ -165,7 +174,14 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
       return;
     }
     if (isOpen || startedForRef.current === conversationId) return;
-    if (!isAuthenticated || !isHydrated || onboardingOpen || professionPending) {
+    if (
+      !isAuthenticated ||
+      !isHydrated ||
+      onboardingOpen ||
+      professionPending ||
+      (reaskPending && !reaskDone) ||
+      introOfferHold
+    ) {
       return;
     }
 
@@ -193,6 +209,9 @@ function useTourAutoStart(isOpen: boolean, conversationId?: string): void {
     isHydrated,
     onboardingOpen,
     professionPending,
+    reaskPending,
+    reaskDone,
+    introOfferHold,
     isDemo,
     conversationId,
   ]);

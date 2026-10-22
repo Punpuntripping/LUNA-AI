@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Clock, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useVerifyPayment } from "@/hooks/use-payments";
 import { useAuthStore } from "@/stores/auth-store";
+import { useIntroOfferStore } from "@/stores/intro-offer-store";
 import type { PaymentVerifyResponse } from "@/types";
 
 /**
@@ -123,6 +124,10 @@ export default function PayCallbackPage() {
           // the honest state and the webhook finishes the job.
           if (res.status === "paid" && res.granted !== false) {
             setPhase("paid");
+            // Any purchase ends intro-offer eligibility (it is only for users
+            // on no plan) — re-ask now rather than letting the quota wall
+            // quote a cached offer until the next reload.
+            void useIntroOfferStore.getState().refresh();
             return;
           }
           if (res.status === "failed") {
