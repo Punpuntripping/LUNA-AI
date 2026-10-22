@@ -163,9 +163,14 @@ export function OnboardingDialog() {
     useOnboardingStore.getState().close();
     // Once the server has STORED an offer-group answer, ask whether the caller
     // is eligible for «عرض الشهر الأول». This dialog is already closed by then,
-    // so the two never share the screen.
-    if (saving && group && INTRO_OFFER_GROUPS.has(group)) {
-      void useIntroOfferStore.getState().openAfterSave(saving, "profession");
+    // so the two never share the screen. An UNCHANGED offer-group answer (no
+    // save — the «تغيير المهنة» reopen pre-selects it) still asks: otherwise an
+    // account that answered before the offer existed could never see it here.
+    // Eligibility is the server's call either way (it reads the FIRST answer).
+    if (group && INTRO_OFFER_GROUPS.has(group)) {
+      void useIntroOfferStore
+        .getState()
+        .openAfterSave(saving ?? Promise.resolve(true), "profession");
     }
   };
 
