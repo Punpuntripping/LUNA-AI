@@ -3,14 +3,16 @@
 // The `@contracts` alias itself comes from tsconfig.json `paths` (Expo resolves
 // tsconfig paths natively); this file only makes the folder visible to Metro
 // and guarantees modules are resolved from mobile's OWN node_modules.
+// getSentryExpoConfig = Expo's default config + Sentry Debug IDs on bundles and
+// source maps (so stack traces in Sentry resolve to our TS lines).
 const path = require("path");
-const { getDefaultConfig } = require("expo/metro-config");
+const { getSentryExpoConfig } = require("@sentry/react-native/metro");
 
 const projectRoot = __dirname;
 const contractsRoot = path.resolve(projectRoot, "../frontend/lib/contracts");
 const frontendNodeModules = path.resolve(projectRoot, "../frontend/node_modules");
 
-const config = getDefaultConfig(projectRoot);
+const config = getSentryExpoConfig(projectRoot);
 
 // Let Metro watch/serve files from the contracts folder (outside projectRoot).
 config.watchFolders = [...(config.watchFolders ?? []), contractsRoot];

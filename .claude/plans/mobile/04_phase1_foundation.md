@@ -298,6 +298,28 @@ When it's done, the owner can do all of this on an Android emulator and on an iP
   `eas update` 🔎.
 - ✔ **Acceptance:** exit criterion 8. Inspect the event JSON: no `user.email`, no IP (`sendDefaultPii` off),
   no request body.
+- **Status 2026-10-24 — S1/S2 BUILT (uncommitted):** owner opened Sentry org `rayhan-tak` (EU). SDK
+  `@sentry/react-native` ~7.11.0 (SDK 57 pin), plugin `@sentry/react-native/expo` (url `https://de.sentry.io/`,
+  project `rayhan-mobile`), `getSentryExpoConfig` in metro, `src/observability/sentry.ts` + `Sentry.wrap` in
+  `app/_layout.tsx`. DSN via `SENTRY_DSN` in `src/config/env.ts` (empty ⇒ off). **Deviation from S2/S3:**
+  `tracePropagationTargets: []` + no `traceparent` — a sampled-out `traceparent` would make backend OTel drop
+  spans, and the backend is out of scope (owner rule); Logfire link = `request_id` tag only. EAS Update
+  source maps: `npx --package=@sentry/react-native sentry-expo-upload-sourcemaps dist` (SDK < 8.9).
+  Project `rayhan-mobile` created via the Sentry MCP (team `rayhan-tak`); DSN `…ingest.de.sentry.io` is the
+  default in `env.ts`. **JS self-test PASSED** on the emulator (old dev build + Metro, JS transport):
+  RAYHAN-MOBILE-1/2 — email → `[email]`, no user/IP, no breadcrumbs (console dropped), tags `request_id`,
+  `update_id`, env `development`. ⚠ `user.geo` (country/region) still derived from the connection IP — Sentry
+  does this even with «Prevent Storing of IP Addresses» → needs the Advanced Data Scrubbing rule
+  `[Remove] [Anything] from [$user.geo.**]` (owner, Sentry UI). Next: `SENTRY_AUTH_TOKEN` EAS secret (without
+  it the native build FAILS at upload) → Android dev build → native re-test (geo gone, native crash symbolicated).
+- **2026-10-24 later:** owner added the geo rule. Android dev build `d9bf7a13` (Sentry native, from the dirty
+  tree) — dev/debug builds skip ALL Sentry uploads, so no token needed for them; preview/production DO need it.
+  Native re-test PASSED: no `user.geo`, no IP, email masked, release `com.rayhanai.app@1.0.0+1`. Native events
+  (ANR via AppExitInfo) skip JS `beforeSend` and carry Sentry's random install id (`user.id` = `device.id`) —
+  not linked to the account; kept (crash-free-user counts) — declare as diagnostics in the store privacy forms.
+  `Sentry.nativeCrash()` in a dev build is caught by the dev launcher's error screen, so native-crash capture is
+  verifiable only on a preview build. Emulator: Expo Go uninstalled (storage full; debug APK = 283 MB).
+  Test issues RAYHAN-MOBILE-1/2/3 resolved. ⏳ Commit · `SENTRY_AUTH_TOKEN` before the first preview build.
 
 ### N — Native-client backend/edge checks
 - **N1 Cloudflare probes** (do these first, day 1, with curl).

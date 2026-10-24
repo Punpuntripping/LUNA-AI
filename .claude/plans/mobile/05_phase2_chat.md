@@ -280,8 +280,11 @@ None of it runs on RN.
   exits, disclaimer); `agent_writing` (preview + disclaimer, lock badge); `note` (create `POST
   …/workspace/notes`, edit PATCH); `attachment` (`content_md` OCR first, «الملف الأصلي» via
   `GET /workspace/{id}/file`, `ocr_status` banner); `convo_context` / `references` view only.
-- **W3** Action bar: نسخ menu, 👍/👎 (`PATCH /workspace/{id}/feedback`, hidden on demo), إخفاء/إظهار,
-  حذف. مشاركة / حفظ كمدونة → 2c.
+- **W3** Action bar: نسخ menu, 👍/👎 (`PATCH /workspace/{id}/feedback`, hidden on demo). مشاركة / حفظ
+  كمدونة → 2c. ❌ إخفاء/إظهار and حذف are **removed** (owner, 2026-10-20): the web has no such
+  buttons and the owner never approved them. `manageSpec` returns all-false; the code stays dormant.
+  Rule: the app matches the web; nothing new that touches agents, agent context or the backend
+  without the owner's explicit OK.
 - **W4** `workspace_item_created/updated` invalidate; ✅ **no auto-open on the phone**
   (`use-chat.ts:791-801`); «افتح التحليل» / «راجع البطاقة السابقة» chips open W2.
 

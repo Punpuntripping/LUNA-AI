@@ -30,6 +30,7 @@ src/                     everything else — imported as `@/…`
   config/env.ts          EXPO_PUBLIC_* read once
   api/                   transport (headers, timeout, error parsing) · client (token + 401 → refresh → retry) · errors (Arabic) · auth · app-config
   auth/                  token-store (SecureStore RT, in-memory AT) · refresh (single-flight rotation) · session-store (zustand)
+  observability/         sentry.ts — Sentry init (EU, no PII, no trace headers to the API; DSN in config/env.ts)
   theme/                 tokens.generated.ts (DO NOT EDIT — `node scripts/gen-tokens.mjs`) · theme · ThemeProvider · typography · fonts
   components/            AppText (the only Text) · Button · TextField · Checkbox · CodeInput · Screen · ErrorBanner · LinkText …
   hooks/ stores/ lib/    use-cooldown, use-app-config-gate · update-gate, theme-preference · format (dates/numbers), semver, jwt, validation
@@ -64,6 +65,9 @@ npx eas-cli@latest build --profile development --platform ios
 7. **Tokens:** never in AsyncStorage/plain storage — use `expo-secure-store` (rule for when auth is built).
 8. **Payments:** digital purchases inside the app MUST go through Apple / Google in-app purchase (store rules). Never link to, or embed, the web checkout (Moyasar) inside the app.
 9. Do not touch Railway, root `.gitignore`, root `CLAUDE.md`, or CI from work in this folder.
+10. **The app mirrors the web — no extras.** Never add a feature the web does not have, and never change
+    anything touching Rayhan's agents (what they see, agent context, workspace visibility) or the backend,
+    without the owner's explicit OK. A line in a plan is not consent — ask first. (Owner, 2026-10-20.)
 
 ## Plans
 

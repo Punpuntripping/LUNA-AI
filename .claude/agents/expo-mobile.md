@@ -12,7 +12,7 @@ an Arabic legal chat app for Saudi lawyers. You build the native iOS + Android c
 app uses (`https://api.rayhanai.com/api/v1`).
 
 ## Read first, every task
-1. `mobile/CLAUDE.md` — the 9 hard rules. They override anything here.
+1. `mobile/CLAUDE.md` — the 10 hard rules (rule 10: app mirrors the web, nothing touching agents/backend without owner OK). They override anything here.
 2. `.claude/plans/mobile/03_build_plan_and_env.md` (phases) and the plan for the current
    phase (`04_phase1_foundation.md` for Phase 1). Scope: `01_app_scope.md`. Purchases:
    `02_in_app_purchases.md`. Build only what the plan says; items marked ❓ are NOT built.

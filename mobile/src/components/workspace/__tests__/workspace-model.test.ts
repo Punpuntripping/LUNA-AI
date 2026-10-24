@@ -128,11 +128,10 @@ describe("hidden items", () => {
 });
 
 describe("manage (إخفاء / حذف)", () => {
-  test("never on the demo, never on convo_context; every other kind gets both", () => {
+  test("off for every kind (not on the web; owner has not approved it)", () => {
     assert.deepEqual(manageSpec("note", true), { hide: false, remove: false });
-    assert.deepEqual(manageSpec("convo_context", false), { hide: false, remove: false });
-    for (const k of ["note", "attachment", "agent_search", "agent_writing", "references"] as const) {
-      assert.deepEqual(manageSpec(k, false), { hide: true, remove: true });
+    for (const k of ["note", "attachment", "agent_search", "agent_writing", "references", "convo_context"] as const) {
+      assert.deepEqual(manageSpec(k, false), { hide: false, remove: false });
     }
   });
 });

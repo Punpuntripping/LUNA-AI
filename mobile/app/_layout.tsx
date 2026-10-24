@@ -10,9 +10,12 @@ import { AppText } from "@/components/AppText";
 import { useAppConfigGate } from "@/hooks/use-app-config-gate";
 import { useSession } from "@/auth/session-store";
 import { queryClient } from "@/lib/query-client";
+import { initSentry, wrapRoot } from "@/observability/sentry";
 import { useUpdateGate } from "@/stores/update-gate";
 import { fontMap } from "@/theme/fonts";
 import { ThemeProvider, useTheme } from "@/theme/ThemeProvider";
+
+initSentry();
 
 // Arabic-only app: RTL always. The expo-localization plugin (app.json) sets
 // this natively in builds; these calls cover the JS side. Expo Go on SDK 57
@@ -22,7 +25,9 @@ I18nManager.forceRTL(true);
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
-export default function RootLayout() {
+export default wrapRoot(RootLayout);
+
+function RootLayout() {
   const [fontsLoaded, fontError] = useFonts(fontMap);
   const status = useSession((s) => s.status);
   const bootstrap = useSession((s) => s.bootstrap);

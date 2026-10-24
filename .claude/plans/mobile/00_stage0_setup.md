@@ -51,8 +51,13 @@ Legend: 👤 = owner must do it (identity, money, legal) · 🤖 = Claude can do
       (or the number is on too many Apple Accounts). Retry after 24 h, no VPN,
       try "Call me", or sign up on an iPhone / Apple Developer app, or use a
       different (company) number; last resort getsupport.apple.com.
-- [ ] **D-U-N-S number** for the company ⏱ (free; legal name + address exactly
-      as in the CR). Does NOT need the company Apple Account: request it via
+- [ ] **D-U-N-S number** for the company ⏱ — ⏳ **REQUESTED 2026-10-20 01:47 UTC**
+      (D&B iResearch "Add business — Mini Inquiry, Identity Data Only"; tracking
+      ID 11080229, case 11138731, request key 2JS384R3V4; business name as
+      submitted «rayhan tak», Makkah). Confirmation went to the company inbox,
+      not the owner's personal Gmail. Expect the result ~2026-10-27 (+ ~2 days
+      to reach Apple); D&B may email asking for the CR — answer fast.
+      (free; legal name + address exactly as in the CR). Does NOT need the company Apple Account: request it via
       developer.apple.com/enroll/duns-lookup signed in with the owner's
       **personal** Apple Account (number belongs to the company, usable from
       any account; ~5 business days + ~2 days to reach Apple). Fallback:
@@ -102,7 +107,8 @@ Legend: 👤 = owner must do it (identity, money, legal) · 🤖 = Claude can do
 - [x] **RevenueCat** account + project — opened 2026-10-12; connect after
       store accounts exist (needs ASC In-App Purchase key + Play service
       account). Public SDK keys go in the app; the secret key never does.
-- [ ] **Sentry** account — choose the **EU (Frankfurt)** region at signup (permanent).
+- [x] **Sentry** account — choose the **EU (Frankfurt)** region at signup (permanent).
+      Owner created it 2026-10-24; project + DSN + `SENTRY_AUTH_TOKEN` (EAS secret) next.
 - No new AI-provider projects (Mistral / Alibaba / DeepSeek): the app never
   calls them — only the backend does, with its existing keys.
 

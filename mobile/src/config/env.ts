@@ -17,3 +17,10 @@ export const API_PREFIX = "/api/v1";
 
 /** Public web origin — legal pages open here in the in-app browser. */
 export const WEB_URL = "https://rayhanai.com";
+
+/** Sentry DSN (public by design — it only lets the app SEND events). Empty =
+ *  crash reporting off. EU region: the host must be `*.ingest.de.sentry.io`. */
+const DEFAULT_SENTRY_DSN =
+  "https://15550da2b3f41b341ed23e27551c1752@o4512311675060224.ingest.de.sentry.io/4512311789224016";
+
+export const SENTRY_DSN = (process.env.EXPO_PUBLIC_SENTRY_DSN ?? "").trim() || DEFAULT_SENTRY_DSN;

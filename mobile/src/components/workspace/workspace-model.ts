@@ -125,20 +125,16 @@ export function toggleHiddenLabel(showHidden: boolean, count: number): string {
 }
 
 // --- إخفاء / حذف -------------------------------------------------------------
-// The web has the endpoints and hooks (useToggleWorkspaceVisibility,
-// useDeleteWorkspaceItem) but no button for them yet; the app offers both
-// from the action bar's «المزيد» (plan 05 §W3). Nothing on the shared demo
-// conversation (one row for every account; the server refuses writes there),
-// nothing on `convo_context` (system-owned running summary).
+// OFF: the web has no button for these, and the owner did not approve adding
+// them to the app (2026-10-20). Keep both false until the owner asks for them.
 
 export interface ManageSpec {
   hide: boolean;
   remove: boolean;
 }
 
-export function manageSpec(kind: WorkspaceItemKind, isDemo: boolean): ManageSpec {
-  if (isDemo || kind === "convo_context") return { hide: false, remove: false };
-  return { hide: true, remove: true };
+export function manageSpec(_kind: WorkspaceItemKind, _isDemo: boolean): ManageSpec {
+  return { hide: false, remove: false };
 }
 
 export function visibilityActionLabel(isVisible: boolean): string {
