@@ -87,13 +87,21 @@ function renderLink(href: string, children: Token[], ctx: RenderCtx, key: string
 }
 
 /** «[N]» marker (web CitationMarker): LTR-isolated, primary on a soft brand
- *  ground, muted and inert when the message has no search artifact. */
+ *  ground, muted and inert when the message has no search artifact.
+ *
+ *  Accessibility: the role must stay "link" — RN Android turns a NESTED Text
+ *  into a focusable, activatable span only for that role (TextLayoutManager
+ *  `roleIsLink`) and already exposes the span with the Button class. RN reads
+ *  such spans by their visible text on both platforms (Android
+ *  ReactTextViewAccessibilityDelegate `AccessibilityLinks`, iOS
+ *  RCTParagraphComponentAccessibilityProvider), so the label below only takes
+ *  effect if the marker ever becomes its own view. */
 function CitationPill({ n, ctx }: { n: number; ctx: RenderCtx }) {
   const onPress = ctx.onCitationPress;
   return (
     <Text
       accessibilityRole={onPress ? "link" : undefined}
-      accessibilityLabel={`فتح المرجع رقم ${n}`}
+      accessibilityLabel={`المصدر ${n}`}
       onPress={onPress ? () => onPress(n) : undefined}
       suppressHighlighting={false}
       style={{

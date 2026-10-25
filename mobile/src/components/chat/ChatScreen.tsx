@@ -640,6 +640,7 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
           extraChips={extras.chips}
           sendableWithoutText={extras.sendableWithoutText}
           blockSend={extras.blocksSend}
+          errorResetKey={extras.errorResetKey}
         />
         <View style={{ height: bottomInset }} />
       </KeyboardStickyView>

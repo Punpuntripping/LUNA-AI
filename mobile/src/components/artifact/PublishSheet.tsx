@@ -334,7 +334,7 @@ function SheetHeading({ icon, title }: { icon: IconName; title: string }) {
   return (
     <View style={styles.heading}>
       <Icon name={icon} size={16} colour={colours.textPrimary} />
-      <AppText variant="base" weight={600} accessibilityRole="header">
+      <AppText variant="base" weight={600} accessibilityRole="header" style={styles.fill}>
         {title}
       </AppText>
     </View>
@@ -448,7 +448,7 @@ function Done({ text }: { text: string }) {
       <View style={[styles.doneDot, { backgroundColor: colours.successBg }]}>
         <Icon name="check" size={14} colour={colours.successFg} />
       </View>
-      <AppText variant="sm" weight={600}>
+      <AppText variant="sm" weight={600} style={styles.fill}>
         {text}
       </AppText>
     </View>
@@ -458,6 +458,9 @@ function Done({ text }: { text: string }) {
 const styles = StyleSheet.create({
   body: { paddingHorizontal: 12, paddingBottom: 4, gap: 10 },
   heading: { flexDirection: "row", alignItems: "center", gap: 8 },
+  // Heading / «تم» labels take the row width — a shrink-wrapped Naskh label
+  // loses its last glyph at large font scales on Android (QA F3, ActionSheet.tsx).
+  fill: { flex: 1 },
   segments: { flexDirection: "row", alignSelf: "flex-start", gap: 2, padding: 2, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6 },
   segment: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 44, paddingHorizontal: 14 },
   input: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, textAlign: "right", writingDirection: "rtl", minHeight: 44 },

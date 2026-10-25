@@ -8,6 +8,7 @@ import {
   attachmentView,
   ATTACHMENT_TEXTS,
   cardLabel,
+  definiteArtifactName,
   groupItems,
   hiddenCount,
   isUserHidden,
@@ -81,12 +82,42 @@ describe("grouping (web WorkspaceList)", () => {
 });
 
 describe("card labels (web WorkspaceCard)", () => {
-  test("subtype wins, unknown subtype shown raw, else kind label", () => {
+  test("subtype wins, else kind label", () => {
     assert.equal(cardLabel(item("agent_writing", { metadata: { subtype: "memo" } })), "مذكرة");
     assert.equal(cardLabel(item("agent_writing", { metadata: { subtype: "legal_synthesis" } })), "تحليل قانوني");
-    assert.equal(cardLabel(item("agent_writing", { metadata: { subtype: "brief_x" } })), "brief_x");
     assert.equal(cardLabel(item("agent_search")), "بحث");
     assert.equal(cardLabel(item("attachment", { metadata: { subtype: "" } })), "مرفق");
+  });
+
+  test("every writer subtype has an Arabic pill (agents/writer/models.py WriterSubtype)", () => {
+    const expected: Record<string, string> = {
+      contract: "عقد",
+      memo: "مذكرة",
+      legal_opinion: "رأي قانوني",
+      defense_brief: "مذكرة دفاع",
+      letter: "خطاب",
+      summary: "ملخص",
+      statement_of_claim: "صحيفة دعوى",
+    };
+    for (const [subtype, label] of Object.entries(expected)) {
+      assert.equal(cardLabel(item("agent_writing", { metadata: { subtype } })), label);
+    }
+  });
+
+  test("an unknown subtype falls back to the kind label, never the raw key", () => {
+    assert.equal(cardLabel(item("agent_writing", { metadata: { subtype: "brief_x" } })), "مسودة");
+    assert.equal(cardLabel(item("agent_search", { metadata: { subtype: "new_thing" } })), "بحث");
+    assert.equal(cardLabel(item("note", { kind: "something_new" as WorkspaceItemKind, metadata: { subtype: "x_y" } })), "عنصر");
+  });
+
+  test("«افتح ال…» names (web MessageBubble): subtype, else kind, else «المصدر» — never a raw key", () => {
+    assert.equal(definiteArtifactName({ kind: "agent_writing", subtype: "memo" }), "المذكرة");
+    assert.equal(definiteArtifactName({ kind: "agent_writing", subtype: "defense_brief" }), "المسودة");
+    assert.equal(definiteArtifactName({ kind: "agent_search", subtype: "legal_synthesis" }), "التحليل القانوني");
+    assert.equal(definiteArtifactName({ kind: "agent_writing", subtype: "brief_x" }), "المسودة");
+    assert.equal(definiteArtifactName({ kind: "agent_search" }), "نتيجة البحث");
+    assert.equal(definiteArtifactName({ kind: "mystery" }), "المصدر");
+    assert.equal(definiteArtifactName(undefined), "المصدر");
   });
 
   test("WI-n alias: Latin, only for a positive integer", () => {

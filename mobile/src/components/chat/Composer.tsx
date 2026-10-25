@@ -76,6 +76,9 @@ export interface ComposerProps {
   sendableWithoutText?: boolean;
   /** Something outside the text is still loading (a blog import) — no send. */
   blockSend?: boolean;
+  /** Bumped when the screen adds a قالب or مدونة — clears the attachment
+   *  error line like the web's `setValidationError(null)` on those picks. */
+  errorResetKey?: number;
 }
 
 export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
@@ -96,6 +99,7 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
     extraChips,
     sendableWithoutText = false,
     blockSend = false,
+    errorResetKey = 0,
   },
   ref,
 ) {
@@ -106,7 +110,15 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
   const chips = useConversationAttachments(conversationId ?? null);
   const gate = attachmentGate(chips);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // The web's one `validationError` line (ChatInput.tsx): cleared when files
+  // are picked again, on a قالب / مدونة pick (`errorResetKey`) and on send —
+  // never left standing until the screen is left (QA F6).
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [seenResetKey, setSeenResetKey] = useState(errorResetKey);
+  if (seenResetKey !== errorResetKey) {
+    setSeenResetKey(errorResetKey);
+    setAttachError(null);
+  }
   const canAttach = attachEnabled && (!!conversationId || !!onRequireConversation);
 
   const addPicked = useCallback(
@@ -261,7 +273,12 @@ export const Composer = forwardRef<TextInput, ComposerProps>(function Composer(
               accessibilityLabel={gate.uploading || blockSend ? "جارٍ رفع المرفقات" : "إرسال"}
               accessibilityState={{ disabled: !canSend }}
               disabled={!canSend}
-              onPress={onSend}
+              onPress={() => {
+                // Web: a send clears the line (a too-long text replaces it
+                // with its own error, shown by the screen).
+                setAttachError(null);
+                onSend();
+              }}
               style={({ pressed }) => [
                 styles.action,
                 {

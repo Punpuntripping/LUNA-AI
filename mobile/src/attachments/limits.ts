@@ -89,3 +89,45 @@ export function withJpegExtension(name: string): string {
   const base = name.replace(/\.[^./\\]+$/, "");
   return `${base || "صورة"}.jpg`;
 }
+
+// --- readable names for photos (QA F9) -----------------------------------------
+// The image picker names its cache copies with a UUID (`2d0394d3-….jpeg` —
+// every Android camera shot); that is what the chip, the workspace card and the
+// agents would show. Camera shots, and photos whose only name is such a UUID,
+// get «صورة 2026-10-25 14-03.jpeg» instead. Real names are kept.
+
+const GENERATED_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.[a-z0-9]+)?$/i;
+
+/** A picker-generated UUID name (or none at all) — not a name the user knows. */
+export function isGeneratedFileName(name: string | null | undefined): boolean {
+  const trimmed = (name ?? "").trim();
+  return trimmed.length === 0 || GENERATED_NAME.test(trimmed);
+}
+
+const IMAGE_EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": ".jpeg",
+  "image/jpg": ".jpeg",
+  "image/png": ".png",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/webp": ".webp",
+};
+
+/** The image's extension, from its file name / URI, else its MIME, else `.jpeg`.
+ *  (The uploader still swaps it for `.jpg` when it converts the bytes.) */
+export function imageExtension(nameOrUri: string | null | undefined, mimeType: string | null | undefined): string {
+  const m = /\.([a-z0-9]{2,5})$/i.exec((nameOrUri ?? "").split(/[?#]/)[0]);
+  if (m) return `.${m[1].toLowerCase()}`;
+  return IMAGE_EXT_BY_MIME[(mimeType ?? "").toLowerCase()] ?? ".jpeg";
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** «صورة 2026-10-25 14-03.jpeg» — local time, Latin digits, no `:` (illegal
+ *  in file names on Windows). `index` ≥ 1 numbers photos of one selection. */
+export function photoFileName(at: Date, extension: string, index = 0): string {
+  const date = `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`;
+  const time = `${pad2(at.getHours())}-${pad2(at.getMinutes())}`;
+  const suffix = index >= 1 ? ` (${index})` : "";
+  return `صورة ${date} ${time}${suffix}${extension}`;
+}

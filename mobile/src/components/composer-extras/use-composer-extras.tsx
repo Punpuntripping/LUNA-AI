@@ -57,6 +57,9 @@ export interface ComposerExtras {
   sendableWithoutText: boolean;
   /** A blog import is still running — keep «إرسال» disabled. */
   blocksSend: boolean;
+  /** Bumped on every قالب pick and every مدونة queued — the composer clears
+   *  its error line then (web ChatInput `setValidationError(null)`). */
+  errorResetKey: number;
   /**
    * At send: the outgoing text (directive line appended) + blog attachment ids.
    * Takes nothing out of the store: `release` (the send's `onCommitted`) drops
@@ -104,10 +107,22 @@ export function useComposerExtraActions({ conversationId, ensureConversation }: 
     return list;
   }, [canBlog, detailLabel, openSheet]);
 
-  const onPickTemplate = useCallback((t: PendingTemplate) => setTemplate(draftKey, t), [draftKey, setTemplate]);
+  const [errorResetKey, setErrorResetKey] = useState(0);
+  const bumpErrorReset = useCallback(() => setErrorResetKey((k) => k + 1), []);
+  const onPickTemplate = useCallback(
+    (t: PendingTemplate) => {
+      bumpErrorReset();
+      setTemplate(draftKey, t);
+    },
+    [draftKey, setTemplate, bumpErrorReset],
+  );
   const onAddTokens = useCallback(
-    (tokens: string[]) => queueBlogTokens({ conversationId, draftKey, tokens, ensureConversation }),
-    [conversationId, draftKey, ensureConversation],
+    async (tokens: string[]) => {
+      const err = await queueBlogTokens({ conversationId, draftKey, tokens, ensureConversation });
+      if (err === null) bumpErrorReset();
+      return err;
+    },
+    [conversationId, draftKey, ensureConversation, bumpErrorReset],
   );
 
   const takeForSend = useCallback(
@@ -147,6 +162,7 @@ export function useComposerExtraActions({ conversationId, ensureConversation }: 
     template,
     sendableWithoutText: extrasMakeSendable(template, blogs),
     blocksSend: extrasBlockSend(blogs),
+    errorResetKey,
     takeForSend,
   };
 }

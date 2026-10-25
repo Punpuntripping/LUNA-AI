@@ -10,7 +10,7 @@ import { ErrorBanner } from "@/components/ErrorBanner";
 import { LinkText } from "@/components/LinkText";
 import { Screen } from "@/components/Screen";
 import { DetailLevelControl } from "@/components/settings/DetailLevelControl";
-import { APP_BUILD, APP_UPDATE_ID, APP_VERSION } from "@/lib/app-info";
+import { APP_BUILD, APP_UPDATE_ID_LABEL, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
 import { useNotice } from "@/stores/notice";
 import { useThemePreference, type ThemePreference } from "@/stores/theme-preference";
@@ -103,7 +103,7 @@ export default function SettingsScreen() {
           عن التطبيق
         </AppText>
         <AppText variant="sm" tone="muted">{`الإصدار ${APP_VERSION} (البناء ${APP_BUILD})`}</AppText>
-        <AppText variant="xs" tone="subtle" selectable>{`معرّف التحديث: ${APP_UPDATE_ID}`}</AppText>
+        <AppText variant="xs" tone="subtle" selectable>{`معرّف التحديث: ${APP_UPDATE_ID_LABEL}`}</AppText>
       </View>
 
       {__DEV__ ? <DigitsCheck /> : null}

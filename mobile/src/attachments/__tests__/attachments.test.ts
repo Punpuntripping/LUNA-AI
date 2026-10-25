@@ -7,10 +7,13 @@ import type { UploadInitResponse, WorkspaceItem } from "@contracts";
 import {
   classifyPick,
   formatBytes,
+  imageExtension,
+  isGeneratedFileName,
   MAX_ATTACHMENT_BYTES,
   MSG_BAD_TYPE,
   MSG_TOO_BIG,
   MSG_TOO_MANY,
+  photoFileName,
   sniffMime,
   validatePicks,
   withJpegExtension,
@@ -67,6 +70,27 @@ describe("limits", () => {
     assert.equal(formatBytes(512), "512 B");
     assert.equal(formatBytes(2048), "2.0 KB");
     assert.equal(formatBytes(5 * 1024 * 1024), "5.0 MB");
+  });
+
+  test("photo names: picker UUIDs are not names; dated Arabic name with Latin digits (QA F9)", () => {
+    assert.equal(isGeneratedFileName("2d0394d3-5e2f-4c1a-9b7e-0123456789ab.jpeg"), true);
+    assert.equal(isGeneratedFileName("2D0394D3-5E2F-4C1A-9B7E-0123456789AB"), true);
+    assert.equal(isGeneratedFileName(""), true);
+    assert.equal(isGeneratedFileName(null), true);
+    assert.equal(isGeneratedFileName("IMG_1234.HEIC"), false);
+    assert.equal(isGeneratedFileName("عقد الإيجار.jpg"), false);
+
+    const at = new Date(2026, 9, 5, 9, 3); // local time, months 0-based
+    assert.equal(photoFileName(at, ".jpeg"), "صورة 2026-10-05 09-03.jpeg");
+    assert.equal(photoFileName(at, ".jpg", 2), "صورة 2026-10-05 09-03 (2).jpg");
+    assert.match(photoFileName(at, ".jpeg"), /^[^٠-٩:]*$/); // no Arabic-Indic digits, no «:»
+
+    assert.equal(imageExtension("file:///cache/2d0394d3-5e2f-4c1a-9b7e-0123456789ab.JPEG", null), ".jpeg");
+    assert.equal(imageExtension("IMG_1.HEIC", "image/heic"), ".heic");
+    assert.equal(imageExtension("content://media/123", "image/png"), ".png");
+    assert.equal(imageExtension(null, null), ".jpeg");
+    // A converted HEIC keeps the readable stem.
+    assert.equal(withJpegExtension(photoFileName(at, ".heic")), "صورة 2026-10-05 09-03.jpg");
   });
 });
 

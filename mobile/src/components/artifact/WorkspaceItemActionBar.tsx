@@ -115,7 +115,7 @@ interface Fit {
  * the demo conversation.
  *
  * Rendered as the web's PHONE layout (`max-md:` "docked bar"): a full-width bar
- * fixed to the bottom, 48dp + safe-area inset, top border, translucent canvas,
+ * fixed to the bottom, 48dp + safe-area inset, top border, opaque canvas,
  * `gap-1 px-2`, 36dp controls, `text-xs` labels, icon-only thumbs. Buttons in
  * RTL order. Where the web scrolls the row sideways, the app drops labels one
  * control at a time until the row fits (see `compressionLadder`) — the label
@@ -192,8 +192,11 @@ export function WorkspaceItemActionBar({
     return () => clearTimeout(timer);
   }, [fitKey]);
 
+  // A ref, not the state: two taps inside one render must not start two renders.
+  const exportBusy = useRef(false);
   const runExport = async (format: ExportFormat) => {
-    if (exporting || exportTitle === undefined) return;
+    if (exportBusy.current || exportTitle === undefined) return;
+    exportBusy.current = true;
     setExporting(true);
     try {
       // The menu sheet must be fully gone before iOS presents the share sheet.
@@ -203,6 +206,7 @@ export function WorkspaceItemActionBar({
     } catch (err) {
       showToast(errorMessage(err, EXPORT_ERROR));
     } finally {
+      exportBusy.current = false;
       if (mounted.current) setExporting(false);
     }
   };
@@ -269,8 +273,10 @@ export function WorkspaceItemActionBar({
           {
             height: ACTION_BAR_HEIGHT + bottomInset,
             paddingBottom: bottomInset,
-            // Web: bg-background/95 + backdrop-blur (no blur module in the app).
-            backgroundColor: hexWithAlpha(colours.canvas, 0.95),
+            // Web: bg-background/95 + backdrop-blur. Without a blur module the
+            // 95% let the document read through the bar (QA F4) — the same
+            // background token, opaque, in light and dark.
+            backgroundColor: colours.canvas,
             borderTopColor: colours.border,
           },
         ]}
@@ -458,7 +464,10 @@ function BarButton({
   testID,
 }: BarButtonProps) {
   const { colours, radius } = useTheme();
-  const dim = disabled || looksDisabled;
+  // Busy is not "disabled-looking": the render behind PDF / Word takes ~10 s
+  // and a dimmed muted spinner read as nothing happening (QA F10). Taps stay
+  // blocked through `disabled`.
+  const dim = (disabled && !busy) || looksDisabled;
   return (
     <Pressable
       testID={testID}
@@ -480,7 +489,7 @@ function BarButton({
           ]}
         >
           {busy ? (
-            <ActivityIndicator size="small" color={colours.textMuted} />
+            <ActivityIndicator size="small" color={colours.primary} />
           ) : (
             <Icon name={icon} size={iconOnly ? 18 : 15} colour={colours.textMuted} />
           )}

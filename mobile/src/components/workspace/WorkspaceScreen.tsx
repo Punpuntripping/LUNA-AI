@@ -118,7 +118,7 @@ export function WorkspaceScreen({ conversationId }: { conversationId: string }) 
             style={({ pressed }) => [styles.toggle, { backgroundColor: pressed ? colours.surface2 : "transparent", borderRadius: radius.md }]}
           >
             <Icon name={showHidden ? "hide" : "preview"} size={16} colour={colours.primary} />
-            <AppText variant="sm" tone="link">
+            <AppText variant="sm" tone="link" style={styles.flex}>
               {toggleHiddenLabel(showHidden, hidden)}
             </AppText>
           </Pressable>
@@ -217,14 +217,21 @@ export function WorkspaceScreen({ conversationId }: { conversationId: string }) 
             },
           ]}
         >
-          {create.isPending ? (
-            <ActivityIndicator size="small" color={colours.textMuted} />
-          ) : (
-            <Icon name="plus" size={16} colour={colours.textPrimary} />
-          )}
-          <AppText variant="sm" weight={500}>
+          {/* The label spans the button (flex: 1, centred) between two equal
+              slots, never shrink-wrapped: Android re-used a short measurement
+              at font scale 1.3 and wrapped «عنصر» onto a clipped second line
+              (QA F3, same cause as Button.tsx). Grows instead of clipping. */}
+          <View style={styles.addSlot}>
+            {create.isPending ? (
+              <ActivityIndicator size="small" color={colours.textMuted} />
+            ) : (
+              <Icon name="plus" size={16} colour={colours.textPrimary} />
+            )}
+          </View>
+          <AppText variant="sm" weight={500} align="center" style={styles.flex}>
             {ADD_ITEM_LABEL}
           </AppText>
+          <View style={styles.addSlot} />
         </Pressable>
       </View>
       <ActionSheet
@@ -249,5 +256,14 @@ const styles = StyleSheet.create({
   cardWrap: { paddingStart: 8, paddingBottom: 6 },
   empty: { alignItems: "center", gap: 12, paddingVertical: 64, paddingHorizontal: 24 },
   footer: { paddingHorizontal: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
-  addButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 44, borderWidth: StyleSheet.hairlineWidth },
+  addButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  addSlot: { width: 20, alignItems: "center", justifyContent: "center" },
 });

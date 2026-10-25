@@ -107,6 +107,10 @@ export function SheetActions({ onClose, title, message, actions, keepOpenOnPress
             style={({ pressed }) => [styles.row, pressed && { backgroundColor: colours.surface2 }]}
           >
             {a.icon ? <Icon name={a.icon} size={20} colour={fg} /> : null}
+            {/* Labels take the row's width (flex: 1), never their own measured
+                width: Android re-uses a stale/short measurement for a
+                shrink-wrapped Naskh label at large font scales and cuts its
+                last glyph (QA F3 «قالب» → «قال»; same cause as Button.tsx). */}
             {a.hint ? (
               <View style={styles.labels}>
                 <AppText variant="base" style={{ color: fg }}>
@@ -117,7 +121,7 @@ export function SheetActions({ onClose, title, message, actions, keepOpenOnPress
                 </AppText>
               </View>
             ) : (
-              <AppText variant="base" style={{ color: fg }}>
+              <AppText variant="base" style={[styles.label, { color: fg }]}>
                 {a.label}
               </AppText>
             )}
@@ -130,7 +134,7 @@ export function SheetActions({ onClose, title, message, actions, keepOpenOnPress
         onPress={onClose}
         style={({ pressed }) => [styles.row, styles.cancel, pressed && { backgroundColor: colours.surface2 }]}
       >
-        <AppText variant="base" weight={600} tone="muted">
+        <AppText variant="base" weight={600} tone="muted" align="center" style={styles.label}>
           إلغاء
         </AppText>
       </Pressable>
@@ -216,6 +220,7 @@ const styles = StyleSheet.create({
   message: { paddingHorizontal: 12, paddingBottom: 8 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 52, paddingHorizontal: 12, borderRadius: 10 },
   labels: { flex: 1, paddingVertical: 6 },
+  label: { flex: 1, paddingVertical: 6 },
   cancel: { justifyContent: "center" },
   input: { marginHorizontal: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, textAlign: "right", writingDirection: "rtl" },
   buttons: { paddingHorizontal: 12, paddingTop: 12, gap: 8 },

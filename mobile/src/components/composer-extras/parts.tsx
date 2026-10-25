@@ -15,7 +15,9 @@ export function SheetHeading({ icon, title }: { icon: IconName; title: string })
   return (
     <View style={styles.heading}>
       <Icon name={icon} size={16} colour={colours.textPrimary} />
-      <AppText variant="base" weight={600} accessibilityRole="header">
+      {/* flex: 1 — never shrink-wrapped (large font scales clip the last
+          glyph of a self-measured Naskh label on Android, QA F3). */}
+      <AppText variant="base" weight={600} accessibilityRole="header" style={styles.fill}>
         {title}
       </AppText>
     </View>
@@ -28,7 +30,7 @@ export function ListStatus({ text, loading = false }: { text: string; loading?: 
   return (
     <View style={styles.status} accessibilityLiveRegion="polite">
       {loading ? <ActivityIndicator size="small" color={colours.textMuted} /> : null}
-      <AppText variant="xs" tone="muted">
+      <AppText variant="xs" tone="muted" style={styles.fill}>
         {text}
       </AppText>
     </View>
@@ -116,6 +118,7 @@ const styles = StyleSheet.create({
   status: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 4, paddingVertical: 10 },
   row: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 48, paddingHorizontal: 8, borderRadius: 10 },
   rowLabel: { flex: 1 },
+  fill: { flex: 1 },
   disabled: { opacity: 0.5 },
   input: { borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, minHeight: 44 },
 });

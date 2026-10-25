@@ -37,7 +37,10 @@ export const KIND_LABEL: Record<WorkspaceItemKind, string> = {
   references: "مراجع",
 };
 
-/** `metadata.subtype` wins over the kind — web WorkspaceCard `SUBTYPE_LABEL`. */
+/** `metadata.subtype` wins over the kind — web WorkspaceCard `SUBTYPE_LABEL`,
+ *  plus the writer subtypes the web map lacks (agents/writer/models.py
+ *  `WriterSubtype`: defense_brief, letter, statement_of_claim), same
+ *  no-tashkeel style. */
 export const SUBTYPE_LABEL: Record<string, string> = {
   report: "تقرير",
   contract: "عقد",
@@ -46,6 +49,9 @@ export const SUBTYPE_LABEL: Record<string, string> = {
   memory_file: "ذاكرة",
   legal_opinion: "رأي قانوني",
   legal_synthesis: "تحليل قانوني",
+  defense_brief: "مذكرة دفاع",
+  letter: "خطاب",
+  statement_of_claim: "صحيفة دعوى",
 };
 
 /** Web WorkspaceList empty state. */
@@ -58,11 +64,43 @@ export function subtypeOf(item: Pick<WorkspaceItem, "metadata">): string | undef
   return typeof raw === "string" && raw.length > 0 ? raw : undefined;
 }
 
-/** The card's pill: subtype label (or the raw subtype), else the kind label. */
+/** Neutral Arabic pill for a kind the app does not know yet. */
+const UNKNOWN_KIND_LABEL = "عنصر";
+
+/** The card's pill: the subtype's label, else the kind label. An unknown
+ *  subtype (or kind) never shows its raw English key. */
 export function cardLabel(item: Pick<WorkspaceItem, "kind" | "metadata">): string {
   const subtype = subtypeOf(item);
-  if (subtype) return SUBTYPE_LABEL[subtype] ?? subtype;
-  return KIND_LABEL[item.kind] ?? item.kind;
+  const bySubtype = subtype ? SUBTYPE_LABEL[subtype] : undefined;
+  return bySubtype ?? KIND_LABEL[item.kind] ?? UNKNOWN_KIND_LABEL;
+}
+
+// «افتح ال…» under an answer — exactly web MessageBubble DEFINITE_SUBTYPE /
+// DEFINITE_KIND (other writer subtypes fall back to «المسودة», as on the web).
+// Lookups, not morphology: «نتيجة البحث» / «ملخص المحادثة» are definite by إضافة.
+const DEFINITE_SUBTYPE: Record<string, string> = {
+  report: "التقرير",
+  contract: "العقد",
+  memo: "المذكرة",
+  summary: "الملخص",
+  memory_file: "الذاكرة",
+  legal_opinion: "الرأي القانوني",
+  legal_synthesis: "التحليل القانوني",
+};
+const DEFINITE_KIND: Record<WorkspaceItemKind, string> = {
+  attachment: "المرفق",
+  note: "الملاحظة",
+  agent_search: "نتيجة البحث",
+  agent_writing: "المسودة",
+  convo_context: "ملخص المحادثة",
+  references: "المراجع",
+};
+
+/** The output's name with the article; «المصدر» while unknown — never a raw key. */
+export function definiteArtifactName(entry: { kind: string; subtype?: string } | undefined): string {
+  if (!entry) return "المصدر";
+  const bySubtype = entry.subtype ? DEFINITE_SUBTYPE[entry.subtype] : undefined;
+  return bySubtype ?? DEFINITE_KIND[entry.kind as WorkspaceItemKind] ?? "المصدر";
 }
 
 /** «WI-3» — the alias the agents say in chat; null when the item has none
