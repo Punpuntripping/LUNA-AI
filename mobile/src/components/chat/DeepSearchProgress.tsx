@@ -54,14 +54,16 @@ const QUIET_PHRASES: Partial<Record<RunningStage, readonly string[]>> = {
 // Bar: each stage owns a band; inside it the fill creeps towards the next
 // anchor (never reaching it) on the stage's expected duration — same numbers
 // as the web.
-const ANCHOR: Record<RunningStage, number> = { planning: 5, searching: 10, evaluating: 35, aggregating: 80, writing: 98 };
-const TARGET: Record<RunningStage, number> = { planning: 10, searching: 35, evaluating: 80, aggregating: 98, writing: 100 };
+// The aggregator + responder are over 75% of a run since the rerankers moved to
+// the decider engine, so they own the bar: aggregating 25→75, writing 75→100.
+const ANCHOR: Record<RunningStage, number> = { planning: 5, searching: 10, evaluating: 20, aggregating: 25, writing: 75 };
+const TARGET: Record<RunningStage, number> = { planning: 10, searching: 20, evaluating: 25, aggregating: 75, writing: 100 };
 const EXPECTED_MS: Record<RunningStage, number> = {
-  planning: 30_000,
-  searching: 25_000,
-  evaluating: 70_000,
-  aggregating: 90_000,
-  writing: 15_000,
+  planning: 20_000,
+  searching: 30_000,
+  evaluating: 5_000,
+  aggregating: 60_000,
+  writing: 55_000,
 };
 const CREEP_K = 2.5;
 const CREEP_CAP = 0.94;
