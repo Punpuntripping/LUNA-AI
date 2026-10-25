@@ -298,7 +298,7 @@ When it's done, the owner can do all of this on an Android emulator and on an iP
   `eas update` 🔎.
 - ✔ **Acceptance:** exit criterion 8. Inspect the event JSON: no `user.email`, no IP (`sendDefaultPii` off),
   no request body.
-- **Status 2026-10-24 — S1/S2 BUILT (uncommitted):** owner opened Sentry org `rayhan-tak` (EU). SDK
+- **Status 2026-10-24 — S1/S2 BUILT (committed `e2fb613`):** owner opened Sentry org `rayhan-tak` (EU). SDK
   `@sentry/react-native` ~7.11.0 (SDK 57 pin), plugin `@sentry/react-native/expo` (url `https://de.sentry.io/`,
   project `rayhan-mobile`), `getSentryExpoConfig` in metro, `src/observability/sentry.ts` + `Sentry.wrap` in
   `app/_layout.tsx`. DSN via `SENTRY_DSN` in `src/config/env.ts` (empty ⇒ off). **Deviation from S2/S3:**
@@ -319,7 +319,9 @@ When it's done, the owner can do all of this on an Android emulator and on an iP
   not linked to the account; kept (crash-free-user counts) — declare as diagnostics in the store privacy forms.
   `Sentry.nativeCrash()` in a dev build is caught by the dev launcher's error screen, so native-crash capture is
   verifiable only on a preview build. Emulator: Expo Go uninstalled (storage full; debug APK = 283 MB).
-  Test issues RAYHAN-MOBILE-1/2/3 resolved. ⏳ Commit · `SENTRY_AUTH_TOKEN` before the first preview build.
+  Test issues RAYHAN-MOBILE-1/2/3 resolved. Committed `e2fb613`. `SENTRY_AUTH_TOKEN` set 2026-10-24 (org
+  token `eas-builds`, EAS project var, Secret, development/preview/production). ⏳ Native-crash check on the
+  first preview build.
 
 ### N — Native-client backend/edge checks
 - **N1 Cloudflare probes** (do these first, day 1, with curl).
