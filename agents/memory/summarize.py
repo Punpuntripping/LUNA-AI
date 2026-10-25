@@ -320,6 +320,10 @@ def _persist_attachment_summary(
         "fallback_used": summary.fallback_used,
         "context_link": summary.context_link or "",
     }
+    # What the document is (judgment, contract, …) — read beside the summary by
+    # the router, responder, planners and compactor. Unset = unknown.
+    if summary.doc_type:
+        metadata["doc_type"] = summary.doc_type
     update: dict = {
         "summary": summary.summary_md,
         "summary_updated_at": datetime.now(timezone.utc).isoformat(),
@@ -586,6 +590,7 @@ async def summarize_workspace_item(
                         "tokens_out": att_summary.tokens_out,
                         "fallback_used": att_summary.fallback_used,
                         "title_chars": len(att_summary.title or ""),
+                        "doc_type": att_summary.doc_type,
                         "summary_chars": len(att_summary.summary_md or ""),
                     })
                 except Exception:

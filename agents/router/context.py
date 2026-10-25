@@ -290,7 +290,10 @@ def _load_workspace_item_summaries(
     try:
         resp = (
             supabase.table("workspace_items")
-            .select("item_id, wi_seq, kind, title, summary, content_md, created_at")
+            .select(
+                "item_id, wi_seq, kind, title, summary, content_md, created_at, "
+                "doc_type:metadata->>doc_type"
+            )
             .eq("conversation_id", conversation_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -326,6 +329,9 @@ def _load_workspace_item_summaries(
             "kind": kind or "agent_search",
             "title": row.get("title") or "",
             "summary": row.get("summary"),  # may be NULL — filled below
+            # Attachments only: what the document is (judgment, contract, …),
+            # set by the attachment summarizer. A closed label, so not masked.
+            "doc_type": row.get("doc_type") or "",
             # Carried only so the fallback pass below can read it; dropped
             # again before the dict leaves this function.
             "_content_md": row.get("content_md") or "",

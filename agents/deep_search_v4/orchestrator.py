@@ -58,6 +58,11 @@ from agents.deep_search_v4.reg_compliance_search.models import (
     RegSearchResult,
 )
 from agents.deep_search_v4.shared import DEFAULT_SEARCH_CONCURRENCY
+from agents.deep_search_v4.shared.case_documents import (
+    build_case_document_blocks,
+    forwardable_documents,
+    parse_wi_aliases,
+)
 from agents.deep_search_v4.shared.context import ContextBlock
 from agents.deep_search_v4.shared.models import RerankerQueryResult
 from agents.deep_search_v4.ura.case_adapter import case_to_rqr
@@ -159,10 +164,25 @@ class FullLoopDeps:
     # from ``decision.context_labels``; ``run_full_loop`` reads it. Default
     # empty preserves pre-redesign behavior. NEVER threaded into any reranker.
     context_blocks: list[ContextBlock] = field(default_factory=list)
+    # Case documents (case_documents_forwarding.md §3.2) — one ``case_document``
+    # block per uploaded case paper attached to this turn, one list per
+    # recipient: ``"case"`` / ``"reg"`` (every document's summary, plus the full
+    # text of those the planner named for that expander) and ``"aggregator"``
+    # (every document in full). Kept apart from ``context_blocks`` because the
+    # three lists differ; ``_with_case_documents`` splices each into its
+    # recipient's copy right after ``case_brief``. ``run_retrieval`` populates
+    # it; empty (the default, and every turn without an uploaded case paper)
+    # leaves every expander / aggregator message byte-identical. NEVER reaches
+    # the sector_picker or a reranker.
+    case_document_blocks: dict[str, list[ContextBlock]] = field(default_factory=dict)
     _events: list[dict] = field(default_factory=list)
     # Telemetry stash — the planner's RetrievalConfig / decision, when run via
     # run_retrieval. Typed Any to keep this module decoupled from the schema.
     _plan: Any = None
+    # Telemetry stash — the ``case_docs.*`` attributes ``run_retrieval`` computed
+    # while building ``case_document_blocks``; stamped on the
+    # ``deep_search.aggregator`` span. Empty when the turn forwards no document.
+    _case_docs_telemetry: dict[str, Any] = field(default_factory=dict)
     _ura: UnifiedRetrievalArtifact | None = None
     _reg_rqrs: list[RerankerQueryResult] = field(default_factory=list)
     _case_rqrs: list[RerankerQueryResult] = field(default_factory=list)
@@ -314,6 +334,35 @@ def _emit_search_fee(executor_short: str, queries_used: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Case documents — per-recipient splice
+# ---------------------------------------------------------------------------
+
+
+def _with_case_documents(
+    blocks: list[ContextBlock] | None,
+    extra: list[ContextBlock] | None,
+) -> list[ContextBlock]:
+    """``blocks`` with the recipient's ``case_document`` blocks spliced in.
+
+    Inserted right after ``case_brief`` — or at the front when there is none —
+    so the reader meets the facts of the matter, then the statute text, then the
+    planner's gloss, then the lessons. Always returns a fresh list; with no
+    ``extra`` it is a plain copy of ``blocks``, so a turn without an uploaded
+    case paper renders exactly what it rendered before.
+    """
+    base = list(blocks or [])
+    if not extra:
+        return base
+    at = next((i + 1 for i, b in enumerate(base) if b.label == "case_brief"), 0)
+    return base[:at] + list(extra) + base[at:]
+
+
+def _case_documents_for(deps: FullLoopDeps, recipient: str) -> list[ContextBlock]:
+    """The ``case_document`` blocks built for one recipient (may be empty)."""
+    return list((deps.case_document_blocks or {}).get(recipient) or [])
+
+
+# ---------------------------------------------------------------------------
 # Phase wrappers
 # ---------------------------------------------------------------------------
 
@@ -401,7 +450,11 @@ async def _run_reg_compliance_phase(
                 list(deps.sectors_override) if deps.sectors_override else None
             ),
             sectors_future=deps.sectors_future,
-            context_blocks=list(deps.context_blocks) if deps.context_blocks else [],
+            # The shared bundle + this expander's case documents (summaries,
+            # full text only for the planner's ``reg_full_text_wis``).
+            context_blocks=_with_case_documents(
+                deps.context_blocks, _case_documents_for(deps, "reg")
+            ),
             # Editorial query cap — the same ceiling the case phase gets.
             expander_query_cap=deps.expander_query_cap,
         )
@@ -623,7 +676,11 @@ async def _run_case_phase(
             # not re-thread it here.
             sectors_override=deps.sectors_override,
             score_threshold=deps.case_score_threshold,
-            context_blocks=list(deps.context_blocks) if deps.context_blocks else None,
+            # The shared bundle + this expander's case documents (summaries,
+            # full text only for the planner's ``case_full_text_wis``).
+            context_blocks=_with_case_documents(
+                deps.context_blocks, _case_documents_for(deps, "case")
+            ) or None,
             # Editorial query cap — the same ceiling the reg phase gets.
             # Under واقعة معينة (reg_compliance_led + support) both executors run
             # and both are asked for the same cap; that is the point of D7.
@@ -843,11 +900,16 @@ async def run_full_loop(
         )
         # Thread the planner-curated context bundle into the aggregator user
         # message (rendered before <references> by build_aggregator_user_message).
-        # SAME filtered list the executors received -- §3.6 (run_retrieval changes).
+        # SAME filtered list the executors received -- §3.6 (run_retrieval changes)
+        # -- plus the aggregator's own case documents, every one in full
+        # (case_documents_forwarding.md §3.2).
         # ``AggregatorInput.context_blocks`` defaults to []; setting it after
         # ``from_ura`` avoids touching the classmethod (out of scope per Phase D).
-        if deps.context_blocks:
-            agg_input.context_blocks = list(deps.context_blocks)
+        agg_blocks = _with_case_documents(
+            deps.context_blocks, _case_documents_for(deps, "aggregator")
+        )
+        if agg_blocks:
+            agg_input.context_blocks = agg_blocks
         deps._aggregator_input = agg_input
         agg_deps = build_aggregator_deps(
             detail_level=deps.detail_level,
@@ -874,6 +936,8 @@ async def run_full_loop(
             ura_high=len(ura.high_results),
             ura_medium=len(ura.medium_results),
         ) as _agg_span:
+            if deps._case_docs_telemetry:
+                _agg_span.set(**deps._case_docs_telemetry)
             agg_output = await handle_aggregator_turn(agg_input, agg_deps)
             _agg_span.set(
                 references=len(agg_output.references),
@@ -924,7 +988,8 @@ def _spawn_sector_picker_task(
     future at its sector-filter join point (post-RPC, before the reranker). The
     picker reads the assembled ``ContextBlock`` list the aggregator + expanders
     will see, so its view of the question matches what the rest of the pipeline
-    gets.
+    gets — minus the ``case_document`` blocks, which only the two expanders and
+    the aggregator receive (case_documents_forwarding.md D11).
 
     Resolves to ``list[str]`` (2-5 canonical sector names) when the picker
     emits a valid filter, or ``None`` for every failure mode (timeout, error,
@@ -973,13 +1038,17 @@ def _build_candidate_context_blocks(
     would produce an empty body (e.g. ``deps.case_brief is None``,
     ``decision.planner_brief`` blank, ``deps.prior_searches`` empty).
 
-    Three labels are emitted: ``case_brief``, ``planner_brief``,
-    ``prior_search_lessons``. ``attached_artifacts`` is intentionally NOT
-    forwarded — the planner reads attachments in its decider phase and, when
-    relevant, distills them into ``planner_brief``. See §4.2 (vocabulary table)
-    of the full_redesign spec. Note that ``recent_messages`` is NOT a context
-    block — it reaches the decider prompt only via dynamic instructions
-    (handled by the planner in Wave 2), never downstream.
+    Four labels are emitted: ``case_brief``, ``statute_articles``,
+    ``planner_brief``, ``prior_search_lessons``. Attachments are not built here:
+    uploaded case papers travel as ``case_document`` blocks, built per recipient
+    by ``run_retrieval`` (:func:`_build_case_document_lists`) and spliced in at
+    each call site by :func:`_with_case_documents` — deliberately outside this
+    builder, so the sector_picker (which also goes through
+    :func:`_select_forwarded_blocks`) never receives them. Every other attached
+    item stays planner-only; the planner distills what matters from it into
+    ``planner_brief``. Note that ``recent_messages`` is NOT a context block — it
+    reaches the decider prompt only via dynamic instructions (handled by the
+    planner in Wave 2), never downstream.
     """
     candidates: dict[str, ContextBlock] = {}
 
@@ -1052,11 +1121,13 @@ def _build_candidate_context_blocks(
             persistence="conversation",
         )
 
-    # NOTE: attached_artifacts is intentionally NOT forwarded downstream.
-    # The planner decider reads ``deps.attached_items`` via its dynamic
-    # instructions and, when something in them matters for the search, the
-    # planner distills it into ``planner_brief``. Raw content_md never flows
-    # to expanders / aggregator.
+    # NOTE: attachments are NOT candidates here. Uploaded case papers reach the
+    # expanders + aggregator as ``case_document`` blocks built per recipient in
+    # ``run_retrieval`` (case_documents_forwarding.md §3.2) — kept out of this
+    # builder so the sector_picker path never sees them. Every other attached
+    # item (chat, official record, notes, reference, non-attachment kinds) stays
+    # with the planner decider, which distills what matters into
+    # ``planner_brief``; its raw content_md never flows downstream.
 
     return candidates
 
@@ -1113,6 +1184,49 @@ def _select_forwarded_blocks(
     ]
 
 
+def _build_case_document_lists(
+    decision: Any,
+    deps: PlannerDeps,
+) -> tuple[dict[str, list[ContextBlock]], dict[str, Any]]:
+    """Build this turn's per-recipient ``case_document`` lists (§3.2).
+
+    Returns ``(lists, telemetry)``. ``lists`` is keyed by recipient:
+
+    - ``"case"`` / ``"reg"`` — every forwarded document's summary, plus the full
+      text of the documents the planner named in ``case_full_text_wis`` /
+      ``reg_full_text_wis``;
+    - ``"aggregator"`` — every document in full, planner-named first so they
+      win the total cap.
+
+    ``decision is None`` (editorial / replay paths) → the expanders get
+    summaries only; the aggregator still reads everything. Built from
+    ``deps.attached_items`` as-is — those are the planner's already-encoded
+    copies (وضع السرية), so nothing here encodes or decodes. No forwardable
+    document → ``({}, {})``.
+    """
+    docs = forwardable_documents(getattr(deps, "attached_items", None) or [])
+    if not docs:
+        return {}, {}
+    case_ids = parse_wi_aliases(getattr(decision, "case_full_text_wis", None) or [], docs)
+    reg_ids = parse_wi_aliases(getattr(decision, "reg_full_text_wis", None) or [], docs)
+    agg_ids = list(dict.fromkeys([*case_ids, *reg_ids, *(str(d.item_id) for d in docs)]))
+
+    lists: dict[str, list[ContextBlock]] = {}
+    telemetry: dict[str, Any] = {"case_docs.count": len(docs)}
+    truncated: list[str] = []
+    over_total: list[str] = []
+    for recipient, ids in (("case", case_ids), ("reg", reg_ids), ("aggregator", agg_ids)):
+        stats: dict[str, Any] = {}
+        lists[recipient] = build_case_document_blocks(docs, ids, stats=stats)
+        telemetry[f"case_docs.full_text.{recipient}"] = stats["full_text"]
+        telemetry[f"case_docs.full_text_chars.{recipient}"] = stats["full_text_chars"]
+        truncated += [a for a in stats["truncated"] if a not in truncated]
+        over_total += [f"{recipient}:{a}" for a in stats["over_total"]]
+    telemetry["case_docs.truncated"] = truncated
+    telemetry["case_docs.over_total"] = over_total
+    return lists, telemetry
+
+
 async def run_retrieval(
     query: str,
     config: RetrievalConfig,
@@ -1155,6 +1269,33 @@ async def run_retrieval(
             [b.label for b in selected_blocks],
         )
 
+    # Case documents — the uploaded case papers the router attached to THIS
+    # turn, one list per recipient (case_documents_forwarding.md §3.2). Built
+    # once here and spliced in at the reg / case / aggregator call sites; NOT
+    # part of ``selected_blocks``, so the sector_picker below never sees them.
+    # A failure costs the documents, never the turn.
+    try:
+        case_document_blocks, case_docs_telemetry = _build_case_document_lists(
+            decision, deps
+        )
+    except Exception:  # noqa: BLE001 - forwarding is additive; retrieval must run
+        logger.warning(
+            "run_retrieval: case_document blocks failed — forwarding none",
+            exc_info=True,
+        )
+        case_document_blocks, case_docs_telemetry = {}, {}
+    if case_docs_telemetry:
+        logger.info(
+            "run_retrieval: case_documents count=%d full_text case=%s reg=%s "
+            "aggregator=%s truncated=%s over_total=%s",
+            case_docs_telemetry["case_docs.count"],
+            case_docs_telemetry["case_docs.full_text.case"],
+            case_docs_telemetry["case_docs.full_text.reg"],
+            case_docs_telemetry["case_docs.full_text.aggregator"],
+            case_docs_telemetry["case_docs.truncated"],
+            case_docs_telemetry["case_docs.over_total"],
+        )
+
     # Spawn the sector_picker in parallel with the executors. The picker reads
     # the query + planner_brief + assembled context_blocks and emits a 2-5
     # sector AND-filter (or null → unfiltered). Each executor awaits this
@@ -1193,12 +1334,14 @@ async def run_retrieval(
         aggregator_logger=deps.aggregator_logger,
         enable_planner=False,
         context_blocks=selected_blocks,
+        case_document_blocks=case_document_blocks,
         conversation_id=getattr(deps, "conversation_id", "") or "",
         # Live progress sink — the SAME callback the planner's logger fires
         # (PlannerDeps.emit_sse). None outside a real dispatch → guarded no-op.
         emit_sse=getattr(deps, "emit_sse", None),
     )
     full_deps._plan = config
+    full_deps._case_docs_telemetry = case_docs_telemetry
 
     agg_output = await run_full_loop(
         query=query,

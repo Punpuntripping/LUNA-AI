@@ -9,8 +9,9 @@ re-reading the full ``content_md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 @dataclass
@@ -75,6 +76,29 @@ class ArtifactSummaryOutput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: What an uploaded document IS — one label per attachment, picked by the
+#: attachment flow and stored in ``workspace_items.metadata.doc_type``. The set
+#: was drawn from the summaries of 162 real uploads (2026-10-25); the prompt
+#: (``SYSTEM_PROMPT_ATTACHMENT_AR``) defines each label.
+DocType = Literal[
+    "judgment",          # حكم / صك قضائي
+    "hearing_minutes",   # محضر / ضبط جلسة
+    "claim",             # صحيفة دعوى / لائحة اعتراضية
+    "memo",              # مذكرة جوابية / دفاع / إيضاحية
+    "contract",          # عقد
+    "chat",              # محادثة (واتساب ونحوه)
+    "letter",            # خطاب / إنذار / إشعار / تظلم
+    "financial",         # إيصال / كشف حساب / مخالصة / سند قبض
+    "official_record",   # صك ملكية / وكالة / حصر ورثة / شهادة رسمية
+    "expert_report",     # تقرير خبير
+    "statement",         # إقرار / شهادة شاهد
+    "user_notes",        # ما أعدّه المستخدم لقضيته: جدول أدلة، بيان وقائع
+    "reference",         # نص نظامي / مادة علمية / مقال
+    "other",
+]
+DOC_TYPES: tuple[str, ...] = get_args(DocType)
+
+
 @dataclass
 class AttachmentSummaryInput:
     """Everything the attachment-flow summarizer needs.
@@ -122,14 +146,36 @@ class AttachmentSummaryLLMOutput(BaseModel):
             "covered inside summary_md."
         ),
     )
+    doc_type: DocType = Field(
+        default="other",
+        description=(
+            "What the document IS — exactly one label from the list in the "
+            "instructions (judgment, contract, chat, …)."
+        ),
+    )
+
+    @field_validator("doc_type", mode="before")
+    @classmethod
+    def _v_doc_type(cls, v: Any) -> str:
+        """Lenient: a stray label (``"Judgment"``, ``"court_judgment"``) must
+        not fail validation — with ``retries=1`` and no output fallback, two
+        misses would cost the whole attachment summary. Unknown → ``"other"``.
+        """
+        label = str(v or "").strip().lower()
+        return label if label in DOC_TYPES else "other"
 
 
 class AttachmentSummaryOutput(BaseModel):
-    """Final attachment-flow output returned by the runner to callers."""
+    """Final attachment-flow output returned by the runner to callers.
+
+    ``doc_type`` is ``""`` when the LLM produced no label (empty content, a
+    failed call) — the persist step then leaves ``metadata.doc_type`` unset.
+    """
 
     title: str
     summary_md: str
     context_link: str = ""
+    doc_type: str = ""
     tokens_in: int = 0
     tokens_out: int = 0
     tokens_reasoning: int = 0

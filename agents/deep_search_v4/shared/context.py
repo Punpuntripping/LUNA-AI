@@ -31,14 +31,28 @@ type):
     |                        | ``{title, describe_query, confidence, summary}`` (summary =            |                | and small)           |                                   |
     |                        | artifact_summarizer output, already includes gap analysis)             |                |                      |                                   |
 
-Note on attached artifacts: the router-curated ``attached_items`` reach the
-*planner decider only* — they are NOT forwarded to expanders / aggregator.
-When something in an attachment matters downstream, the planner distills it
-into ``planner_brief``. There is no ``attached_artifacts`` label.
+``case_document`` (added 2026-10-25 — ``.claude/plans/case_documents_forwarding.md``):
+
+    | label                  | source                                                                 | persistence    | default opt-in?      | volume                            |
+    |------------------------|------------------------------------------------------------------------|----------------|----------------------|-----------------------------------|
+    | case_document          | orchestrator: ``shared/case_documents.build_case_document_blocks``     | turn           | n/a — not a planner  | per document: summary always;     |
+    |                        | from the turn's ``attached_items`` (uploaded case papers only — see    |                | label; forwarded     | full text ≤ 12,000 chars when due |
+    |                        | ``forwardable_documents``). ONE block per document,                    |                | whenever the turn    | (≤ 30,000 per recipient)          |
+    |                        | ``source_item_id`` = the document's ``item_id``                        |                | attaches one         |                                   |
+
+``case_document`` is NOT in the planner's ``context_labels`` vocabulary and is
+not chosen by it: every forwarded document reaches both expanders (summary,
+plus full text for those the planner names in ``case_full_text_wis`` /
+``reg_full_text_wis``) and the aggregator (full text), inserted right after
+``case_brief``. It never reaches the sector_picker or a reranker. Every other
+attached item (a chat, an official record, the user's notes, a reference text,
+any non-attachment kind) still reaches the *planner decider only* — when
+something in it matters downstream, the planner distills it into
+``planner_brief``.
 
 New labels require a doc update (this module's docstring + §4.2 of the redesign
 spec). Do NOT add labels ad-hoc — the planner system prompt enumerates the
-exact three strings above.
+exact strings above.
 """
 from __future__ import annotations
 
@@ -51,15 +65,17 @@ class ContextBlock:
     """A single structured context block carried by the planner's bundle.
 
     ``label`` — one of the frozen vocabulary strings: ``"case_brief"``,
-    ``"statute_articles"``, ``"planner_brief"``, ``"prior_search_lessons"``.
+    ``"statute_articles"``, ``"planner_brief"``, ``"prior_search_lessons"``,
+    ``"case_document"``.
     ``body`` — Arabic prose, rendered verbatim into the ``<context_blocks>`` XML
     block in the expander + aggregator user messages.
     ``persistence`` — lifetime classification for telemetry / future caching:
     ``"case"`` (lives with the case), ``"conversation"`` (lives with the
     conversation), or ``"turn"`` (recomputed each dispatch).
     ``source_item_id`` — optional ``workspace_items.item_id`` reference for
-    audit / dedup / UI back-link; ``None`` for synthesized blocks
-    (``case_brief``, ``planner_brief``, ``statute_articles``).
+    audit / dedup / UI back-link; set on every ``case_document`` block, ``None``
+    for synthesized blocks (``case_brief``, ``planner_brief``,
+    ``statute_articles``).
 
     ``statute_articles`` carries the verbatim text of every article
     ``fetch_article`` resolved this turn, and is the one block whose body is NOT

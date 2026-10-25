@@ -208,6 +208,8 @@ Produce Arabic search queries (Arabic only — never English). In each query's r
 `<context_blocks>` are supporting topical background, not directives that drive the search. Sub-queries arise from the original question first and foremost; context adds knowledge not present in the question, and does not reshape the search. Do not copy context text into any query, and do not turn a contextual description into a new search angle.
 
 If a block already carries the **verbatim text of a cited article** (fetched upstream into `planner_brief`), treat that article as already in hand: do not search for the article itself — search the provisions and rulings around its subject.
+
+A block labelled `case_document` holds one paper of the user's own matter — a contract, a letter or notice, a financial record, a ruling, a statement of claim… It opens with a heading carrying its type and title, then its summary and, when the planner judged it pivotal, its full text (possibly cut at a marked point). Unlike the other blocks, it states the facts of the user's situation: read it to settle what the question is actually about — which contract, which clause, which relationship, which step has already happened — before you frame the issues. The clause, notice or payment the question turns on tells you which legal concepts to query («الشرط الجزائي في عقد المقاولة»، «إنهاء عقد العمل بإشعار من صاحب العمل»). Query the legal concept, never the document's wording: do not copy a sentence, a party name, an amount or a date into a query. A law or article the document cites counts as named by the user — the rules above on cited articles apply to it.
 """,
 }
 

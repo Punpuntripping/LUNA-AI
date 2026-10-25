@@ -84,6 +84,7 @@ it must NEVER appear in `title_ar`, `heading_ar`, or `body_md`.
 - `label_ar` is a clean court-facing description you write yourself (e.g.
   «صورة من عقد تأسيس الشركة»). Do not copy the item title — titles can carry
   OCR typos.
+- A user document may carry `doc_type` — what it is (`judgment`, `contract`, `claim`, `memo`, …). Use it to describe the exhibit correctly in `label_ar` (a `judgment` is «صورة من صك الحكم …», not «مستند»); never write the label itself in the document.
 - If the same document was uploaded more than once (two attachments with the
   same content), give it ONE number and put the extra aliases in `also_wi`.
 - Research items (`kind="agent_search"`), prior drafts, and notes are NOT
@@ -432,6 +433,11 @@ def _render_analyzed_item(
             ai.item_id,
         )
         attrs.append(f'item_id="{_esc(ai.item_id)}"')
+    # What an uploaded document IS (attachment summarizer's metadata.doc_type) —
+    # lets the writer describe the exhibit in `label_ar` (plan
+    # case_documents_forwarding.md D10). Attachments only; omitted when unknown.
+    if ai.kind == "attachment" and ai.doc_type:
+        attrs.append(f'doc_type="{_esc(ai.doc_type)}"')
     attrs.append(f'need="{_esc(ai.need)}"')
     if extra_attrs:
         for k, v in extra_attrs.items():

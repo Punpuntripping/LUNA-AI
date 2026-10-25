@@ -120,7 +120,10 @@ def _render_items(workspace_items: list[dict] | None) -> str:
         seq = item.get("wi_seq")
         kind = str(item.get("kind") or "").strip() or "unknown"
         title = str(item.get("title") or "").strip() or "(بلا عنوان)"
-        line = f"- WI-{seq} ({kind}) — {title}"
+        # An uploaded document's type (judgment, contract, …) beside its kind.
+        doc_type = str(item.get("doc_type") or "").strip()
+        kind_label = f"{kind}, {doc_type}" if doc_type else kind
+        line = f"- WI-{seq} ({kind_label}) — {title}"
         summary = _clip(str(item.get("summary") or ""), _MAX_ITEM_SUMMARY_CHARS)
         if summary:
             # Indent so the item's own summary reads as subordinate to its row.

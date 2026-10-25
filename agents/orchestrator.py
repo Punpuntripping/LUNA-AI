@@ -279,7 +279,7 @@ def _load_attached_items(
         try:
             row = (
                 supabase.table("workspace_items")
-                .select("item_id, wi_seq, kind, title, content_md, metadata")
+                .select("item_id, wi_seq, kind, title, content_md, summary, metadata")
                 .eq("item_id", item_id)
                 .eq("user_id", user_id)
                 .eq("conversation_id", conversation_id)
@@ -296,6 +296,11 @@ def _load_attached_items(
                         kind=d.get("kind") or "unknown",
                         title=d.get("title") or "",
                         content_md=d.get("content_md") or "",
+                        # The artifact_summarizer's summary — what a forwarded
+                        # case document carries to the deep_search expanders
+                        # (case_documents_forwarding.md §3.6). May be empty
+                        # (not written yet).
+                        summary=d.get("summary") or "",
                         metadata=d.get("metadata") or {},
                     )
                 )

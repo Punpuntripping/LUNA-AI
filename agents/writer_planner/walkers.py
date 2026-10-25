@@ -58,7 +58,7 @@ def _fetch_workspace_items_sync(
             .table("workspace_items")
             .select(
                 "item_id, wi_seq, kind, title, content_md, word_count, summary, "
-                "conversation_id, user_id"
+                "conversation_id, user_id, doc_type:metadata->>doc_type"
             )
             .in_("item_id", item_ids)
             .eq("conversation_id", conversation_id)
@@ -255,6 +255,7 @@ async def build_analyzed_items_direct(
                 word_count_before=word_count,
                 word_count_after=word_count,
                 resolved_refs_md=resolved_refs_md,
+                doc_type=str(wi.get("doc_type") or ""),
             )
         )
 

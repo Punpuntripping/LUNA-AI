@@ -240,7 +240,10 @@ def _load_compaction_context(
     try:
         resp = (
             supabase.table("workspace_items")
-            .select("wi_seq, kind, title, summary, content_md, created_at")
+            .select(
+                "wi_seq, kind, title, summary, content_md, created_at, "
+                "doc_type:metadata->>doc_type"
+            )
             .eq("conversation_id", conversation_id)
             .eq("user_id", user_id)
             .is_("deleted_at", "null")
@@ -272,6 +275,7 @@ def _load_compaction_context(
             "kind": kind or "agent_search",
             "title": row.get("title") or "",
             "summary": row.get("summary"),   # may be NULL — the prompt handles it
+            "doc_type": row.get("doc_type") or "",  # attachments only
         })
 
     return prior_summary_md, items
@@ -610,6 +614,7 @@ async def compact_conversation(
             "kind": r.get("kind"),
             "title": _enc(codec, r.get("title") or ""),
             "summary": _enc(codec, r["summary"]) if r.get("summary") else None,
+            "doc_type": r.get("doc_type") or "",
         }
         for r in wi_rows
     ]

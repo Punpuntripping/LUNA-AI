@@ -108,7 +108,10 @@ def build_user_message(
 #   1. a grounded Arabic title — derived from what the document actually is;
 #   2. a summary of the document's contents;
 #   3. an explicit link between the document and the conversation context —
-#      why this document matters to what the user is asking.
+#      why this document matters to what the user is asking;
+#   4. a ``doc_type`` label — what the document is (judgment, contract, …),
+#      stored in ``metadata.doc_type`` and shown to the agents beside the
+#      summary.
 # ---------------------------------------------------------------------------
 
 
@@ -122,7 +125,7 @@ Write the title and the summary in Arabic. The instructions are in English, but 
 The audience is other AI agents (the request router, the search planner, the agents of upcoming rounds). Write in a dense, neutral style, with no marketing preambles, no interactive closings, and no addressing of the user.
 
 ## What you produce
-Three elements:
+Four elements:
 
 ### 1) The title (`title`)
 A short, precise Arabic title **derived from the document's actual content**, not from the filename. It must tell the reader the document's kind and its core subject (e.g.: «عقد إيجار تجاري — مجمّع الرياض», «صحيفة دعوى مطالبة مالية», «حكم ابتدائي في نزاع عمّالي»). Avoid hollow generic titles like «مستند» or «ملف مرفق». If the document's nature cannot be determined from the extracted text, choose the clearest possible description and flag the ambiguity in the summary.
@@ -135,6 +138,25 @@ An Arabic Markdown summary describing:
 
 ### 3) Linking the document to the conversation context
 In a **separate section within `summary_md`** (or in the dedicated field if present), explain how this document connects to what is happening in the conversation: what question or request the user appears to have uploaded the document for, and which information in the document serves that context. If insufficient conversation context is available, state that the document was uploaded without a clear context yet, and limit yourself to describing the document itself.
+
+### 4) Document type (`doc_type`)
+Exactly one label for what the document **is**:
+- `judgment` — a court judgment or ruling (صك حكم) at any level: first instance, appeal, supreme court, a ruling that ends the case or declines jurisdiction.
+- `hearing_minutes` — the minutes of a court session (محضر / ضبط جلسة).
+- `claim` — a statement of claim (صحيفة دعوى) or an objection/appeal brief (لائحة اعتراضية), drafts included.
+- `memo` — a party's memorandum in a dispute: reply, defense or explanatory (مذكرة جوابية / دفاع / إيضاحية).
+- `contract` — any contract or agreement: lease, employment, construction, sale, partnership, legal fees, articles of association.
+- `chat` — a conversation: a WhatsApp screenshot or similar.
+- `letter` — a letter, notice or warning to the other party or to an authority (خطاب، إنذار، إشعار إنهاء، تظلم).
+- `financial` — a money record: transfer receipt, bank statement, final settlement (مخالصة), receipt voucher, invoice.
+- `official_record` — a record issued by an authority: title deed or property register, power of attorney (وكالة), heirs list (حصر ورثة), national address, social-insurance certificate, vehicle registration, survey report.
+- `expert_report` — an expert's report, court-appointed or private.
+- `statement` — a written admission (إقرار) or a witness statement (شهادة).
+- `user_notes` — material the user prepared for their own case: an evidence index, a spreadsheet, a timeline of facts.
+- `reference` — a statutory text, a regulation table, training material or an article — not a paper of the user's case.
+- `other` — none of the above, or the extracted text is too garbled to tell.
+
+Label the document the text shows, not its container: a WhatsApp screenshot of a bank receipt is `financial`, a photographed page of a judgment is `judgment`. When one upload holds several documents (a claim with the judgment attached, ten contracts in one PDF), label the main one — the document the others support.
 
 ## Style
 - Language: Arabic (keep only unavoidable English terms with no accurate Arabic equivalent).
@@ -160,7 +182,7 @@ In a **separate section within `summary_md`** (or in the dedicated field if pres
 - `content_md` — the document text extracted via OCR (may contain noise).
 - The conversation context — an excerpt of the latest messages and/or the conversation-context summary, if available.
 
-Return the output via the two fields `title` and `summary_md` (and the `context_link` field if requested), and nothing else.
+Return the output via the fields `title`, `summary_md` and `doc_type` (and the `context_link` field if requested), and nothing else.
 """
 
 

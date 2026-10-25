@@ -47,7 +47,8 @@ def _sha(text: str) -> str:
 
 # ---------------------------------------------------------------------------
 # The pin — captured from the pre-extraction prompts.py; re-captured for the
-# deliberate «سنة القضية» ruling-age rule added to _SHARED_ROLE_AR.
+# deliberate «سنة القضية» ruling-age rule added to _SHARED_ROLE_AR, and again
+# for the `case_document` rule (case_documents_forwarding.md §5.4).
 # ---------------------------------------------------------------------------
 
 # (constant, expected length in characters, expected sha256 of the UTF-8 bytes)
@@ -55,20 +56,20 @@ PRE_REFACTOR: list[tuple[str, str, int, str]] = [
     (
         "PROMPT_MODE_CASE",
         PROMPT_MODE_CASE,
-        15080,
-        "45ed25cf4f6162e858748a9206b0a9ce8cf7da7b9b697a9d59a717baea374760",
+        16202,
+        "32b480216aeb0f93920ab2b5a92fd9c6453f4873a3036c6251d23acffceb9813",
     ),
     (
         "PROMPT_MODE_REG",
         PROMPT_MODE_REG,
-        17914,
-        "481f1bfb4379774e46a1a9df1667c9cea54373265dd4d9e54e62448eaaea7ed0",
+        19036,
+        "ce9841ae4523b9cc82f2a3e60ca63137d0b3663bcef61ea6f75196ed603b4849",
     ),
     (
         "PROMPT_MODE_FULL",
         PROMPT_MODE_FULL,
-        16082,
-        "e1c49798e2a2201936fe76813015e0ecc89b7e97d94bc7e2b2d00d43eee567c5",
+        17204,
+        "6a8f9e6d7d6924822d5aa2e63a0e45f2e0ac95d3be09582257bb019c55e5817b",
     ),
 ]
 

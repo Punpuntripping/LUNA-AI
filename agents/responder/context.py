@@ -2,8 +2,10 @@
 
 The responder reads the SAME ``RouterContext`` object the router read this turn
 — passed through the orchestrator, never reloaded — so the data parts are
-rendered by the router's own renderers (``agents/utils/router_context_render.py``):
-same escaping, same ``<workspace_items>`` fence, same item shape. What differs is
+rendered by the router's own renderers (``agents/utils/router_context_render.py``),
+with the same escaping. One part is deliberately left out: the
+``<workspace_items>`` list (titles, summaries, ``doc_type``) — the responder never
+sees it (plan case_documents_forwarding.md D1); the router keeps it. What differs is
 the framing: the responder inherits the router's CONTEXT, never its
 INSTRUCTIONS, so the router's routing lines («use these aliases in
 attached_wis…», «classify and route…», the ``unfold_workspace_item`` hint) are
@@ -24,7 +26,6 @@ from typing import TYPE_CHECKING
 from agents.utils.router_context_render import (
     render_user_name_tag,
     render_user_preference_lines,
-    render_workspace_items_fence,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -61,8 +62,9 @@ def render_router_context(ctx: "RouterContext", *, welcome_due: bool = False) ->
     """Render the router's per-turn context blocks for the responder, or ``""``.
 
     Order follows the router's own instruction order: call name → preferences →
-    case context → workspace items → compaction summary (the back-story, last,
-    immediately before the message history it precedes).
+    case context → compaction summary (the back-story, last, immediately before
+    the message history it precedes). The router's workspace-items list is not
+    rendered here (plan case_documents_forwarding.md D1).
     """
     blocks: list[str] = []
 
@@ -92,16 +94,6 @@ def render_router_context(ctx: "RouterContext", *, welcome_due: bool = False) ->
     case_md = getattr(ctx, "case_memory_md", None)
     if case_md:
         blocks.append(f"### Current case context\n{case_md}")
-
-    fence = render_workspace_items_fence(getattr(ctx, "workspace_item_summaries", None))
-    if fence:
-        blocks.append(
-            "### Workspace items in this conversation\n"
-            "Title + summary per item (an item with <content> instead of "
-            "<summary> has no summary yet and shows its own text). Read-only "
-            "here: you cannot open or attach items.\n"
-            f"{fence}"
-        )
 
     compaction = getattr(ctx, "compaction_summary_md", None)
     if compaction:

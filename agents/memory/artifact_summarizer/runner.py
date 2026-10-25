@@ -257,6 +257,7 @@ async def handle_attachment_summary_turn(
         title = (result.output.title or "").strip()
         summary_md = (result.output.summary_md or "").strip()
         context_link = (result.output.context_link or "").strip()
+        doc_type = result.output.doc_type or ""
         if not summary_md:
             logger.warning("attachment_summarizer: empty summary — using fallback")
             try:
@@ -268,6 +269,7 @@ async def handle_attachment_summary_turn(
                 title=title or (input.filename or "").strip(),
                 summary_md=input.content_md[:_FALLBACK_LEN],
                 context_link=context_link,
+                doc_type=doc_type,
                 fallback_used=True,
             )
 
@@ -284,6 +286,7 @@ async def handle_attachment_summary_turn(
             title=title or (input.filename or "").strip(),
             summary_md=summary_md,
             context_link=context_link,
+            doc_type=doc_type,
             tokens_in=int(usage.input_tokens or 0),
             tokens_out=int(usage.output_tokens or 0),
             tokens_reasoning=tokens_reasoning,
@@ -302,6 +305,7 @@ async def handle_attachment_summary_turn(
                 "tokens_out": output.tokens_out,
                 "tokens_reasoning": tokens_reasoning,
                 "title_chars": len(output.title),
+                "doc_type": doc_type,
                 "summary_chars": len(summary_md),
                 "duration_s": round(duration_s, 3),
                 "fallback_used": False,

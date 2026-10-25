@@ -90,8 +90,10 @@ asking you to retry with a valid `WI-{seq}` — never invent aliases.
 # Core invariant — you NEVER carry raw `content_md` in your own context
 
 Your eager context is **summary-only**: `summary` + `title` + `kind` +
-`word_count` per item in `<attached_items>` and `<prior_artifacts>`. The
-`content_md` field is not injected into your prompt.
+`word_count` per item in `<attached_items>` and `<prior_artifacts>`, plus
+`doc_type` on a document the user uploaded — what it is (`judgment`,
+`contract`, `claim`, `memo`, `hearing_minutes`, …). The `content_md` field is
+not injected into your prompt.
 
 Your job is to **select the right items**, not to keep their full text in
 your context. Two things unfold content for you:
@@ -481,8 +483,10 @@ def _render_attached_items(items: list[WorkspaceItemSnapshot]) -> str:
         title = encode_active(getattr(it, "title", "") or "")
         summary = _truncate(encode_active(getattr(it, "summary", None)), max_chars=500)
         word_count = int(getattr(it, "word_count", 0) or 0)
+        doc_type = (getattr(it, "metadata", None) or {}).get("doc_type")
         lines.append(
-            f"  - {wi} | kind={kind} | word_count={word_count} | title={title!r}"
+            f"  - {wi} | kind={kind}{_doc_type_part(doc_type)} | "
+            f"word_count={word_count} | title={title!r}"
         )
         if summary:
             lines.append(f"    summary: {summary}")
@@ -511,11 +515,18 @@ def _render_prior_artifacts(views: list[ArtifactSummaryView]) -> str:
         summary = _truncate(encode_active(v.summary), max_chars=500)
         title = encode_active(v.title)
         lines.append(
-            f"  - {wi} | kind={v.kind} | word_count={v.word_count} | title={title!r}"
+            f"  - {wi} | kind={v.kind}{_doc_type_part(getattr(v, 'doc_type', ''))} | "
+            f"word_count={v.word_count} | title={title!r}"
         )
         if summary:
             lines.append(f"    summary: {summary}")
     return "\n".join(lines)
+
+
+def _doc_type_part(doc_type: object) -> str:
+    """`` | doc_type=judgment`` for an uploaded document that has one, else ``""``."""
+    doc_type = str(doc_type or "").strip()
+    return f" | doc_type={doc_type}" if doc_type else ""
 
 
 def _render_templates_catalog(templates: list) -> str:

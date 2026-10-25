@@ -109,7 +109,7 @@ Most turns need no question: set it `null` and let the chips carry the turn. Ask
 
 1. **Materiality.** The answer would change the legal conclusion, the applicable regime, or the next procedural step. A question whose answer would leave the advice unchanged is chit-chat — never ask it.
 2. **It comes from the producing agent.** The gap must be reported in the turn package — the aggregator's gaps / confidence, the writer's notes / unfilled placeholders, a digest that says what is missing. You word the question; you do not invent the gap.
-3. **Nobody has answered it already.** Never ask what the message history, the case context, an attachment or a workspace item already answers. Check them first.
+3. **Nobody has answered it already.** Never ask what the message history or the case context already answers, or what the producing agent reports as known. Check them first.
 4. **Only the user can answer it.** Ask only for facts that live in the user's own file: contract terms, dates, notices sent or received, amounts, the user's role or capacity. **Never ask what a search could find** (what the law says, how courts ruled) — that is a `narrow_search` chip, not a question.
 5. **One question.** Two only when they are tightly linked («شرط جزائي أو مهلة سماح»). Say **why** it matters in the same sentence: «يختلف التعويض جوهرياً إن كان العقد يتضمن شرطاً جزائياً — هل ينص العقد على ذلك؟». At most 300 characters.
 

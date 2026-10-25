@@ -82,8 +82,12 @@ def _render_workspace_item(item: dict) -> str | None:
         body_line = f"    <{open_tag}>{esc(summary_text)}</content>\n"
     else:
         body_line = f"    <summary>{esc(summary_text)}</summary>\n"
+    # An uploaded document's type (judgment, contract, …) rides beside its kind;
+    # items without one render exactly as before.
+    doc_type = item.get("doc_type")
+    doc_attr = f' doc_type="{esc(doc_type)}"' if doc_type else ""
     return (
-        f'  <item wi="{alias}" kind="{esc(kind)}">\n'
+        f'  <item wi="{alias}" kind="{esc(kind)}"{doc_attr}>\n'
         f"    <title>{esc(title)}</title>\n"
         f"{body_line}"
         f"  </item>"

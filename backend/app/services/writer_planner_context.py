@@ -52,6 +52,9 @@ class ArtifactSummaryView:
     word_count: int
     created_at: str  # ISO timestamp; used only for ordering in dynamic instructions
     wi_seq: int | None = None
+    # Attachments only: what the document is (judgment, contract, …) —
+    # ``metadata.doc_type`` from the attachment summarizer. "" = unknown.
+    doc_type: str = ""
 
     def is_summary_thin(self, min_chars: int = 40) -> bool:
         """True when the summary is missing or too short to triage from.
@@ -96,7 +99,10 @@ async def load_writer_planner_context(
         result = (
             supabase
             .table("workspace_items")
-            .select("item_id, kind, title, summary, word_count, created_at, wi_seq")
+            .select(
+                "item_id, kind, title, summary, word_count, created_at, wi_seq, "
+                "doc_type:metadata->>doc_type"
+            )
             .eq("conversation_id", conversation_id)
             .is_("deleted_at", None)
             .order("created_at", desc=True)
@@ -131,6 +137,7 @@ async def load_writer_planner_context(
                     word_count=int(row.get("word_count") or 0),
                     created_at=str(row.get("created_at") or ""),
                     wi_seq=wi_seq,
+                    doc_type=str(row.get("doc_type") or ""),
                 )
             )
         except (KeyError, ValueError, TypeError) as exc:

@@ -9,9 +9,11 @@ Two LLM phases, two prompts:
   :class:`~.models.PlannerDecision` — mode + support PLUS ``query_restatement``
   (a faithful, zero-bias restatement of the user's real question that becomes
   the canonical retrieval query), ``planner_brief`` (novel factual context,
-  empty by default) and ``context_labels`` (opt-in forwarding of
+  empty by default), ``context_labels`` (opt-in forwarding of
   ``prior_search_lessons``; ``case_brief`` + ``planner_brief`` forward
-  automatically). May pause via ``ask_user`` when the query is too
+  automatically) and ``case_full_text_wis`` / ``reg_full_text_wis`` (which
+  forwarded case documents each executor reads in full — the documents
+  themselves travel on their own). May pause via ``ask_user`` when the query is too
   vague to plan, when the legal parties / intent cannot be identified, OR to
   reflect its understanding back for confirmation on a long, multi-aspect
   question where misreading the situation is a real risk.
@@ -27,7 +29,8 @@ Both phases get a **dynamic instruction**:
   and — ONLY when
   attachments or prior searches are present — appends the detailed
   ``planner_brief`` editing rules (kept out of the static prompt so the common
-  no-attachment turn pays no tokens for guidance it won't use).
+  no-attachment turn pays no tokens for guidance it won't use), and — ONLY when
+  an attached item is a forwardable case document — the full-text rules.
 - :func:`build_responder_instructions` — phase 3. Renders the decider's
   conversation-context blocks (minus ``<attached_items>``), then a trimmed
   digest of the retrieval artifact plus the mode-specific chat-summary
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import html
 
+from agents.deep_search_v4.shared.case_documents import forwardable_documents
 from agents.utils.rayhan_capabilities import RAYHAN_CAPABILITIES_MD
 
 from .models import Mode
@@ -111,9 +115,13 @@ Injected below (as available):
 - `<conversation_summary>` — a summary of the **earlier part of this conversation**, written when it grew long enough to be compacted: what the user asked for, what was produced, and what is still open. **Those turns are NOT in `<recent_messages>`** — this block is the only trace of them, so read it as the conversation's back-story before reading the recent window. (Absent = nothing has been compacted yet, i.e. `<recent_messages>` covers the whole conversation.)
 - `<recent_messages>` — the latest conversation messages (role, content, creation time).
 - `<prior_searches>` — prior search tasks in the conversation: `title`, `describe_query`, `confidence`, and (when available) a `summary` that recaps what the search covered and what it missed.
-- `<attached_items>` — attached items the router selected, with their full content (memos / notes / highly relevant documents).
+- `<attached_items>` — attached items the router selected, with their full content (memos / notes / highly relevant documents). An uploaded document carries `doc_type` — what it is (`judgment`, `contract`, `claim`, …) — and `forwarded="true"` when it travels downstream as a case document (below).
 
-Only three blocks flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), and `prior_search_lessons` (a summary of `<prior_searches>`). `<conversation_summary>`, `<recent_messages>` and `<attached_items>` are for you alone — if you find in them a fact the search needs, carry it into `planner_brief`.
+Four kinds of block flow to the executors and the aggregator: `case_brief`, `planner_brief` (which you write), `prior_search_lessons` (a summary of `<prior_searches>`), and `case_document` — the user's own case papers.
+
+Case documents are forwarded for you: every attached item marked `forwarded="true"` (an uploaded judgment, claim, hearing minutes, memo, statement, expert report, financial record, contract or letter — or an upload with no type yet) reaches both executors with its title, type and summary, and reaches the aggregator **with its full text**. The one thing you decide about them is which documents each executor also reads in full (`case_full_text_wis` / `reg_full_text_wis`).
+
+Everything else — `<conversation_summary>`, `<recent_messages>`, and every attached item without `forwarded="true"` (a chat, an official record, the user's notes, a reference text, a draft, a prior card) — is for you alone: if you find in it a fact the search needs, carry it into `planner_brief`.
 
 ## The `unfold_workspace_item` tool — reveal a prior item's sources
 
@@ -141,11 +149,11 @@ The test is not "who typed the number" but "does the answer depend on what that 
 
 ## `planner_brief` — the facts channel for downstream
 
-A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question — and in particular: the content of `<attached_items>` reaches the search only through this field. (The one exception: articles you fetched with `fetch_article` are forwarded downstream in full on their own channel, so they do not need to be quoted here.) Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
+A field passed to the executors and the aggregator. **Empty is the default** for ordinary questions. Write it only when the attachments or the case context carry an explicit fact necessary to steer the search that will not arrive via the question. Two channels carry text downstream on their own, so never retell them here: the articles you fetched with `fetch_article` (forwarded verbatim), and the forwarded case documents (summary to the executors, full text to the aggregator). For a forwarded document, the brief adds only what no single summary says — how the documents relate to each other and to the question (e.g. «الحكم المرفق قضى بعدم الاختصاص، وصحيفة الدعوى المرفقة سابقة له»). The content of every other attached item reaches the search only through this field. Descriptive, not directive: state the discovered facts, not the suggested angles. (The detailed editing rules are injected into the dynamic instructions when attachments or prior searches are present.)
 
 ## `context_labels` — opt in `prior_search_lessons` only
 
-`case_brief` and `planner_brief` are forwarded downstream **automatically** whenever they are non-empty — you do **not** list them, and forgetting to does not drop them. `context_labels` is now only for one optional block: add `prior_search_lessons` when prior searches exist (a cheap block — include it by default). Any other label is ignored. Attachments are not a label — their facts go via `planner_brief`.
+`case_brief` and `planner_brief` are forwarded downstream **automatically** whenever they are non-empty — you do **not** list them, and forgetting to does not drop them. `context_labels` is now only for one optional block: add `prior_search_lessons` when prior searches exist (a cheap block — include it by default). Any other label is ignored. Attachments are not a label — forwarded case documents travel on their own (you only pick their full-text readers), and facts from any other attached item go via `planner_brief`.
 
 ## `ask_user` — the clarification and review tool
 
@@ -173,6 +181,8 @@ Return a JSON object matching this schema only (no text outside it, no comments)
   "query_restatement": "<إعادة صياغة محايدة للسؤال بالفصحى، أو فارغ إن كان نظيفاً — بلا أي نظام/جهة لم يذكرها المستخدم>",
   "rationale": "<مبرّر عربي مختصر — للسجل فقط، لا يراه المستخدم>",
   "planner_brief": "<فارغ افتراضاً؛ حقائق المرفقات/القضية اللازمة للبحث عند وجودها>",
+  "case_full_text_wis": ["<WI-N لوثيقة مُمرَّرة يقرأ بحثُ الأحكام نصّها كاملاً — فارغ افتراضاً>"],
+  "reg_full_text_wis": ["<WI-N لوثيقة مُمرَّرة يقرأ بحثُ الأنظمة نصّها كاملاً — فارغ افتراضاً>"],
   "context_labels": ["prior_search_lessons"]
 }
 ```
@@ -337,11 +347,29 @@ _PLANNER_BRIEF_DETAIL_RULES = """\
 - **Descriptive, not directive.** State the discovered facts, not the angles you suggest searching.
   - ✗ «ركّز على المادة 81 من نظام العمل».
   - ✓ «المستخدم أرفق عقد عمل محدد المدة سنةً، يتضمّن شرط عدم منافسة بعد انتهاء العقد لمدة سنتين في الرياض».
-- **Excerpt, do not copy.** For long attachments: pick out the facts the search needs (parties, dates, amounts, conditions, quoted rulings), and do not copy a whole text.
+- **Excerpt, do not copy.** For a long attached item that is **not** forwarded: pick out the facts the search needs (parties, dates, amounts, conditions, quoted rulings), and do not copy a whole text. A forwarded case document is never excerpted here — its summary and text travel on their own.
 - **Cited articles: name them, don't quote them.** When the attachment reasons from a numbered article, fetch it with `fetch_article` and then say in the brief which article it is and what the attachment concludes from it. The verbatim text travels downstream on its own — quoting it here duplicates it, and what you were shown may be shortened while what the executors receive is complete.
 - **Name the source briefly:** «من المذكرة المرفقة:…» or «من الحكم المرفق:…».
 - **Do not repeat `case_brief` or `prior_searches`** — those blocks arrive on their own.
-- **Length:** usually 3–15 sentences after excerpting, even for large attachments. The final test: "the executors read `query_restatement` + `planner_brief` only (they do not see the attachments) — is that enough for them to steer their queries precisely?" If the answer is no, fill out `planner_brief`. Write `planner_brief` in Arabic."""
+- **Length:** usually 3–15 sentences after excerpting, even for large attachments — and often empty when every attachment is a forwarded case document. The final test: "the executors read `query_restatement` + `planner_brief` + the forwarded documents' summaries (and the full text of those I named) — they see no other attachment. Is that enough for them to steer their queries precisely?" If the answer is no, fill out `planner_brief`. Write `planner_brief` in Arabic."""
+
+
+# ---------------------------------------------------------------------------
+# Case-documents full-text rules — injected by build_decider_instructions ONLY
+# when the turn carries at least one forwardable case document
+# (``shared/case_documents.forwardable_documents``). Same token discipline as
+# _PLANNER_BRIEF_DETAIL_RULES: a turn with nothing to name pays nothing.
+# ---------------------------------------------------------------------------
+
+_CASE_DOCUMENTS_RULES = """\
+## `case_full_text_wis` / `reg_full_text_wis` — which case documents each executor reads in full (this turn carries forwarded documents)
+
+Both executors already receive every forwarded document's title, type and summary, and the aggregator receives every one in full. Name a document here, by its `WI-N` alias, only when an executor needs the document's own text — not just its summary — to search well:
+
+- `case_full_text_wis` — the rulings search. It looks for how courts decided disputes like this one, so it gains most from the papers of the dispute itself: a `judgment` (what it decided and on what ground), `hearing_minutes`, a `claim` or a `memo` (the grounds each party raised), an `expert_report`. Name a court paper whenever the question turns on what it says («هل أعترض على الحكم؟»، «ما رأيك في دفوع الخصم؟»).
+- `reg_full_text_wis` — the regulations search. It needs a document's text when the question turns on its exact terms: a `contract` clause, the wording of a `letter` or notice, the items of a `financial` record. A court paper rarely helps it beyond its summary.
+
+Leave both lists empty when the summaries are enough — the document was attached as background, or the question does not turn on its wording. A document is shown up to 12,000 characters; each executor reads at most 30,000 characters of full text per turn, in the order you list them — put the decisive document first. Only aliases of items marked `forwarded="true"` count; any other alias is ignored."""
 
 
 def build_decider_user_message(query: str) -> str:
@@ -489,9 +517,17 @@ def _render_attached_items(attached_items) -> str | None:
     Migration 052: ``wi="WI-{seq}"`` replaces the raw ``item_id`` attribute.
     Snapshots without a ``wi_seq`` (rare — case-only items, legacy rows) are
     skipped from the alias-rendered surface.
+
+    ``forwarded="true"`` marks the items that travel downstream on their own as
+    ``case_document`` blocks (``shared/case_documents.forwardable_documents`` —
+    the same function the orchestrator builds the blocks with), so the planner
+    never has to guess which ones the executors will see.
     """
     if not attached_items:
         return None
+    forwarded_ids = {
+        str(d.item_id) for d in forwardable_documents(attached_items)
+    }
     parts = ["<attached_items>"]
     for item in attached_items:
         wi_seq = getattr(item, "wi_seq", None)
@@ -501,8 +537,13 @@ def _render_attached_items(attached_items) -> str | None:
         kind = _esc(getattr(item, "kind", ""))
         title = _esc(getattr(item, "title", ""))
         content_md = _esc(getattr(item, "content_md", "") or "")
+        # An uploaded document's type (judgment, contract, …), when it has one.
+        doc_type = (getattr(item, "metadata", None) or {}).get("doc_type")
+        doc_attr = f' doc_type="{_esc(doc_type)}"' if doc_type else ""
+        if str(getattr(item, "item_id", "")) in forwarded_ids:
+            doc_attr += ' forwarded="true"'
         parts.append(
-            f'  <attached_item wi="{wi}" kind="{kind}">'
+            f'  <attached_item wi="{wi}" kind="{kind}"{doc_attr}>'
         )
         parts.append(f"    <title>{title}</title>")
         parts.append(f"    <content_md>{content_md}</content_md>")
@@ -526,7 +567,10 @@ def build_decider_instructions(deps) -> str:
     (:data:`_PLANNER_BRIEF_DETAIL_RULES`) live here and are appended ONLY when
     the turn actually carries ``attached_items`` or ``prior_searches`` — the
     only situations where a non-empty ``planner_brief`` is expected. The common
-    no-context turn never pays for that guidance.
+    no-context turn never pays for that guidance. Likewise
+    :data:`_CASE_DOCUMENTS_RULES` (choosing ``case_full_text_wis`` /
+    ``reg_full_text_wis``) is appended ONLY when at least one attached item is a
+    forwardable case document.
 
     Registered as an ``@agent.instructions`` callback on ``planner_decider``.
     """
@@ -565,6 +609,10 @@ def build_decider_instructions(deps) -> str:
     )
     if has_brief_sources:
         rendered = f"{rendered}\n\n{_PLANNER_BRIEF_DETAIL_RULES}"
+    # Conditional full-text rules — only when at least one attached item
+    # travels downstream as a case document (i.e. carries forwarded="true").
+    if forwardable_documents(getattr(deps, "attached_items", None) or []):
+        rendered = f"{rendered}\n\n{_CASE_DOCUMENTS_RULES}"
     return rendered
 
 

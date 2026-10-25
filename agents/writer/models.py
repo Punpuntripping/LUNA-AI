@@ -274,6 +274,13 @@ class AnalyzedItem(BaseModel):
     kind: str = Field(
         description="Original workspace_items.kind (e.g. agent_search, agent_writer, attachment, notes)"
     )
+    doc_type: str = Field(
+        default="",
+        description=(
+            "What an uploaded document IS — workspace_items.metadata.doc_type from the "
+            "attachment summarizer (judgment, contract, claim, …). Attachments only; '' = unknown."
+        ),
+    )
     role: Literal["template", "source", "reference", "prior_draft"] = Field(
         description=(
             "Role assigned by the planner based on user wording + item title + "

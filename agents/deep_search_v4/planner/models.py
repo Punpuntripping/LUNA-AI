@@ -6,8 +6,11 @@ The planner is a **two-phase** agent:
   one of three retrieval *modes*, an optional ``support`` flag (modes 1–2),
   a logged rationale, AND the comprehension outputs: ``planner_brief`` (novel
   factual context the planner discovered that isn't already carried by the
-  query or other context blocks) and ``context_labels`` (which context blocks
-  flow to the expanders + aggregator). The decider may instead pause via the
+  query or other context blocks), ``context_labels`` (which context blocks
+  flow to the expanders + aggregator) and ``case_full_text_wis`` /
+  ``reg_full_text_wis`` (which forwarded case documents each executor reads in
+  full — the documents themselves travel on their own; see
+  ``shared/case_documents.py``). The decider may instead pause via the
   ``ask_user`` deferred tool when the query is too vague to plan, when the
   parties / intent are unclear, or to reflect its understanding back for
   confirmation on a long, multi-aspect question.
@@ -140,14 +143,33 @@ class PlannerDecision(BaseModel):
             "(case_brief, prior_search_lessons). "
             "Empty is the EXPECTED default — non-empty only when the "
             "planner has genuinely new context to inject. "
-            "When the user attaches workspace_items (the planner sees them "
-            "as <attached_items> in its decider input but they are NOT "
-            "forwarded downstream), planner_brief is the sole channel for "
-            "any attachment-derived facts the search needs. "
+            "Two channels carry text downstream on their own, so never retell "
+            "them here: articles fetched with fetch_article (forwarded "
+            "verbatim), and the forwarded case documents — attached items "
+            "marked forwarded=\"true\" (summary to the executors, full text to "
+            "the aggregator). For a forwarded document, the brief adds only "
+            "what no single summary says — how the documents relate to each "
+            "other and to the question. For every OTHER attached item (not "
+            "forwarded downstream), planner_brief is the sole channel for any "
+            "facts from it the search needs. "
             "Descriptive, not directive: state facts, do NOT propose angles "
             "or instruct downstream agents what to look for. The expanders "
             "and aggregator are designed to work from the raw query — the "
             "brief supplements, never steers."
+        ),
+    )
+    case_full_text_wis: list[str] = Field(
+        default_factory=list,
+        description=(
+            "WI-N aliases of forwarded case documents the RULINGS search must read in full "
+            "(it always gets every forwarded document's summary). Empty = summaries only."
+        ),
+    )
+    reg_full_text_wis: list[str] = Field(
+        default_factory=list,
+        description=(
+            "WI-N aliases of forwarded case documents the REGULATIONS search must read in full "
+            "(it always gets every forwarded document's summary). Empty = summaries only."
         ),
     )
     context_labels: list[str] = Field(
@@ -159,13 +181,28 @@ class PlannerDecision(BaseModel):
             "they need NOT be listed here, and omitting them no longer drops "
             "them. Any other label is ignored. The forwarded set flows to all "
             "executor expanders AND the aggregator (the reranker never receives "
-            "context). Attachments are NOT a label — downstream-relevant facts "
-            "go via planner_brief instead."
+            "context). Attachments are NOT a label — forwarded case documents "
+            "travel on their own (the planner only picks their full-text "
+            "readers via case_full_text_wis / reg_full_text_wis), and facts "
+            "from any other attached item go via planner_brief."
         ),
     )
 
-    # No field validators — mode/support/aborted are constrained by type, and
-    # sectors moved out to ``sector_picker`` in Wave B (see module docstring).
+    # mode/support/aborted are constrained by type, and sectors moved out to
+    # ``sector_picker`` in Wave B (see module docstring). The one validator below
+    # is lenient on purpose: the full-text lists are optional hints, so a
+    # ``null`` or a bare ``"WI-3"`` from the LLM must not cost a decider retry.
+    # Which aliases actually count is decided downstream
+    # (``shared/case_documents.parse_wi_aliases``).
+
+    @field_validator("case_full_text_wis", "reg_full_text_wis", mode="before")
+    @classmethod
+    def _coerce_alias_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        return v
 
 
 class PriorSearchSummary(BaseModel):
