@@ -23,10 +23,15 @@ deploy, run `eas build/update/submit`, buy anything, or delete accounts.
   `adb shell getprop sys.boot_completed` returns `1`. If `adb devices` shows
   `emulator-5554 unauthorized`, run `adb kill-server` then `adb start-server` (seen
   2026-10-12 — the key is fine, the server is stale).
-- Run the app: Phase 1–2 use **Expo Go** — from `mobile/`, start
-  `npx expo start --android` in the background (it installs Expo Go and opens the app).
-  From Phase 3 (push) / 4 (purchases) use the **development build** APK the parent gives
-  you (`mobile_install_app`). Never run `npx expo prebuild` or modify the project.
+- Run the app on the **development build** `com.rayhanai.app` (Expo Go is uninstalled and no longer
+  used): check it is installed (`mobile_list_apps`; if missing, STOP and report — never download or
+  build). From `mobile/`, start `npx expo start --dev-client` in the background, `adb reverse tcp:8081
+  tcp:8081`, then open the app on the local server. Metro serves the working tree.
+- Stop Metro ONLY by its own PID (the background shell you started, or the PID listening on 8081:
+  `netstat -ano | grep :8081`). NEVER kill all `node` processes (`taskkill /IM node.exe`, `pkill node`) —
+  that also kills the user's dev servers and Claude Code's MCP servers (happened 2026-10-25).
+- `mobile_type_keys` with two «r» in quick succession triggers the RN dev «RR» reload — type such text
+  in chunks.
 - iOS cannot be tested here (no Mac). Say so in the report; never claim iOS passes.
 
 ## Accounts and data
@@ -68,7 +73,7 @@ Grade only what the parent's prompt + current phase plan put in scope
 ## Report (also save as `agents_reports/mobile_qa/<folder>/report.md`)
 ```
 MOBILE QA — <topic> — <date>
-Device: Android emulator <AVD/API> · Runtime: Expo Go | dev build <id> · iOS: NOT TESTED
+Device: Android emulator <AVD/API> · Runtime: dev build <id> + Metro · iOS: NOT TESTED
 Account: <test account label, never the password>
 
 | Check | Result | Evidence |
