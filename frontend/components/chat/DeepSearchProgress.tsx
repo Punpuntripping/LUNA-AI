@@ -82,14 +82,16 @@ const QUERY_FORMS: ArabicPlural = {
 const QUERY_COUNTER_PREFIX = "الاستعلام ";
 
 /**
- * Cosmetic labels rotated in the detail line during the two stages that stream
- * NO topics — `planning` (~50s) and `aggregating` (~90s) — so the card never
- * looks frozen. These name a real running stage; they do NOT fake counts or
+ * Cosmetic labels rotated in the detail line so the card never looks frozen.
+ * Since 2026-10-26 NO stage streams topics: the backend stopped relaying the
+ * sub-query lines (they expose the search logic), so `searching` rotates too.
+ * These name a real running stage — never a query; they do NOT fake counts or
  * move the bar. Same rotation cadence/convention as AGENT_PHRASES in
  * TypingIndicator.tsx.
  */
 const QUIET_PHRASES: Partial<Record<RunningStage, readonly string[]>> = {
   planning: ["تحليل السؤال…", "تحديد نطاق البحث…", "اختيار المصادر…"],
+  searching: ["صياغة استعلامات البحث…", "البحث في المصادر…", "جمع النتائج المرشّحة…"],
   // The rerankers: judging each retrieved result against its sub-query.
   evaluating: ["مطابقة النتائج بالأسئلة…", "استبعاد غير المتصل…", "ترجيح الأقوى…"],
   // The aggregator writing the answer + its citations — the longest stage.
@@ -370,13 +372,13 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({
     setStageStartedAt(stage === null ? null : Date.now());
   }, [stage, startedAt]);
 
-  // Rotate the quiet-stage phrases (planning / aggregating only). Reset to the
+  // Rotate the quiet-stage phrases (every stage that has them). Reset to the
   // first phrase whenever the stage changes so a fresh stage starts clean.
   // Local state — never touches the store, so it can't re-render the list.
   const [phraseIndex, setPhraseIndex] = useState(0);
   useEffect(() => {
     setPhraseIndex(0);
-    if (stage !== "planning" && stage !== "aggregating") return;
+    if (stage === null || stage === "done") return;
     const phrases = QUIET_PHRASES[stage];
     if (!phrases || phrases.length < 2) return;
     const id = window.setInterval(() => {
