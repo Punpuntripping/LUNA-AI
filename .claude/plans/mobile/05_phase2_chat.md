@@ -4,7 +4,8 @@
 `4b2b584` «افتح ال…») → QA'd 2026-10-19 (`agents_reports/mobile_qa/2026-10-19_phase2a*/`) → fixes
 `c8491c3`, `b330340`; action bar `711269e`, `e84e340` · 2b/2c BUILT 2026-10-20 (`c69eefb`) ·
 workspace «إخفاء/حذف» removed (`e2fb613`) · Android dev builds `fb329f85` (expires 2026-11-03),
-`d9bf7a13` (adds Sentry native) · ⏳ 2b/2c emulator QA (2026-10-25) · Phase 1 deployed (`04`
+`d9bf7a13` (adds Sentry native) · 2b/2c emulator QA 2026-10-25 (`agents_reports/mobile_qa/2026-10-25_phase2bc*/`)
+→ fixes `6207137` → retest PASS · Phase 1 deployed (`04`
 §Status). Marks: ✅ decided ·
 ❓ owner decision · 🔎 not verified, check before relying on it. Scope: `01_app_scope.md`
 (chat with **all** web features; citations option B). Phases: `03` §3.
@@ -276,8 +277,8 @@ None of it runs on RN.
 - **Y3** ❓ Rich-HTML «نسخ» deferred (`expo-clipboard` `StringFormat.HTML` exists).
 
 ### W — Workspace (2b)
-- **W1** `c/[id]/workspace.tsx` (grouped: المرفقات، الملاحظات، المسودات، نتائج البحث، ملخص المحادثة،
-  المراجع; «WI-n» badge; hidden toggle) + `workspace/[itemId].tsx`.
+- **W1** `c/[id]/workspace.tsx` (grouped in the web's `KIND_ORDER`: المسودات، نتائج البحث، الملاحظات،
+  المرفقات، المراجع، ملخص المحادثة; «WI-n» badge; hidden toggle) + `workspace/[itemId].tsx`.
 - **W2** Viewers: `agent_search` (markdown + `[n]` → R2, reference cards with «عرض المصدر» + both
   exits, disclaimer); `agent_writing` (preview + disclaimer, lock badge); `note` (create `POST
   …/workspace/notes`, edit PATCH); `attachment` (`content_md` OCR first, «الملف الأصلي» via
