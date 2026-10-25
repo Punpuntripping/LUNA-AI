@@ -120,21 +120,21 @@ const TOPIC_REVEAL_MS = 5000;
 //     so it is always in motion during the long quiet stretches.
 //   • The creep decays exponentially and is capped short of the next anchor
 //     (CREEP_CAP) — so the bar can never *cross* a milestone the pipeline has
-//     not actually reached. A slow aggregator asymptotes just under 95%; it
-//     hits 95% only when the writer really starts, and 100% only on `done`.
+//     not actually reached. A slow aggregator asymptotes just under 75%; it
+//     hits 75% only when the responder really starts, and 100% only on `done`.
 //
 // The creep is calibrated (STAGE_EXPECTED_MS ≈ our observed p50 timings) so a
-// typical 3–5 min run reads as one continuous sweep rather than four jumps.
-// Budget shape: searching + evaluating are the stages the user actually waits
-// through, so they OWN the middle of the bar — searching 10→35, evaluating
-// 35→80. Planning creeps up to 10 before the search starts; the tail (aggregator
-// writing, responder presenting) rides 80→95→100.
+// typical 3–4 min run reads as one continuous sweep rather than four jumps.
+// Budget shape (owner, 2026-10-26): since the rerankers moved to the decider
+// engine (seconds, not ~70s), the aggregator + responder are over 75% of a run,
+// so they OWN the bar — aggregating 25→75, writing 75→100. Planning, the
+// search and the reranking share the first quarter (5→10→20→25).
 const STAGE_ANCHORS: Record<RunningStage, number> = {
   planning: 5,
   searching: 10,
-  evaluating: 35,
-  aggregating: 80,
-  writing: 98,
+  evaluating: 20,
+  aggregating: 25,
+  writing: 75,
 };
 
 /** Ceiling each stage creeps toward — the next stage's anchor (`done` = 100). */
@@ -148,16 +148,17 @@ const STAGE_TARGETS: Record<RunningStage, number> = {
 
 /**
  * Typical wall-clock per stage — the creep's time constant, not a promise.
- * Calibrated to observed p50s: planning ~30s, searching ~25s (the vector search
- * is fast; it's the rerankers that grind), evaluating ~70s, aggregating ~90s
- * (long, but it only has 80→95 to cover), writing ~15s.
+ * Logfire p50s over 109 turns (12–26 Oct 2026): planning ~19s, aggregator
+ * 41–84s, responder ~57s. Searching (expander + vector search) ~30s; with the
+ * decider engine evaluating is a few seconds (it was ~70s on qwen — a qwen
+ * fallback simply sits capped under 25%). Re-tune once decider turns pile up.
  */
 const STAGE_EXPECTED_MS: Record<RunningStage, number> = {
-  planning: 30_000,
-  searching: 25_000,
-  evaluating: 70_000,
-  aggregating: 90_000,
-  writing: 15_000,
+  planning: 20_000,
+  searching: 30_000,
+  evaluating: 5_000,
+  aggregating: 60_000,
+  writing: 55_000,
 };
 
 /** Creep shape: 1 − e^(−k·t/expected) → ~92% of the gap at the expected time. */
