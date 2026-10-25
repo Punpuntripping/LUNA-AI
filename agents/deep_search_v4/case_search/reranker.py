@@ -8,6 +8,12 @@ longer a zero-context surface: ``run_reranker_for_query`` accepts the planner's
 ``planner_brief`` and renders it at the HEAD of the *user* message. The system
 prompt (``create_reranker_agent``'s ``instructions=``) stays per-run constant —
 it is the primary prompt-cache prefix and must not vary per turn.
+
+Decider engine (``.claude/plans/reranker_decider_engine.md``, phase B): with
+``CASE_RERANKER_ENGINE=decider`` each sub-query first asks the OpenRouter
+decision models (``shared/decider.py``, rules in ``decider_rules.py``); the
+qwen agent below runs only when no decider answers (D1/D2), so one turn may
+mix engines.
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ from typing import Any
 from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
+from agents.deep_search_v4.shared import decider as _decider
 from agents.deep_search_v4.shared.court_levels import (
     COURT_LEVEL_FROM_AR,
     normalize_court_level,
@@ -26,6 +33,7 @@ from agents.utils.agent_models import get_agent_model, primary_model_of_slot
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
 
+from . import decider_rules
 from .models import (
     CaseRerankerClassification,
     RerankedCaseResult,
@@ -241,6 +249,98 @@ def _extract_content(md: str) -> str:
     return "\n".join(content_lines).strip()[:3000]
 
 
+# -- Decider engine (plan reranker_decider_engine.md, phase B) -----------------
+
+
+def _decider_models(engine: str | None, model_override: str | None) -> list[str]:
+    """The ``CASE_RERANKER_DECIDERS`` chain when the decider engine should run, else ``[]``.
+
+    ``[]`` (→ today's qwen path) when a ``model_override`` is set, the engine
+    (``engine`` or, when None, ``CASE_RERANKER_ENGINE``) is not ``"decider"``,
+    the dedicated key is missing (D6), or settings can't load.
+    """
+    if model_override is not None:
+        return []
+    if engine is not None and engine.strip().lower() != "decider":
+        return []
+    try:
+        from shared.config import get_settings
+
+        settings = get_settings()
+    except Exception:  # noqa: BLE001 — settings unavailable (bare test env)
+        return []
+    if (engine or settings.CASE_RERANKER_ENGINE or "").strip().lower() != "decider":
+        return []
+    if not settings.OPENROUTER_RERANKER_API_KEY:
+        return []
+    return _decider.parse_models(settings.CASE_RERANKER_DECIDERS)
+
+
+async def _run_decider(
+    *,
+    query: str,
+    rationale: str,
+    raw_markdown: str,
+    planner_brief: str | None,
+    positions: list[int],
+    max_keep: int,
+    models: list[str],
+    failures: list[str],
+) -> tuple[CaseRerankerClassification | None, dict | None, dict | None]:
+    """One decider request for this sub-query → ``(classification, usage_entry, trace)``.
+
+    ``classification`` is None when the caller must run qwen; the reason goes to
+    ``failures``. ``usage_entry`` is set whenever a decider answered (it was
+    billed), even if its answer could not be used. Never raises.
+    """
+    state = decider_rules.build_state(query, rationale, raw_markdown, planner_brief=planner_brief)
+    questions, required = decider_rules.build_questions(positions, decider_rules.channel_of(rationale))
+    try:
+        reply = await _decider.decide(state, questions, required=required, models=models)
+    except Exception as e:  # noqa: BLE001 — the engine must never break the reranker
+        logger.warning("Reranker [%s]: decider raised %s — qwen path", query[:40], e, exc_info=True)
+        failures.append(f"decider error: {type(e).__name__}")
+        return None, None, None
+    if reply is None:   # decide() logged each model's failure
+        failures.append("decider: no answer")
+        return None, None, None
+
+    # The ledger prices by ``model`` and buckets by ``agent`` (orchestrator
+    # ``_emit_executor_ledger`` → deep_search.reranker.case), so both are pinned.
+    usage_entry = {**reply.usage_entry, "agent": "reranker", "model": reply.model, "query": query[:80]}
+    try:
+        scores = decider_rules.scores_from_answers(reply.answers, positions)
+        classification = decider_rules.classify(scores, model=reply.model, max_keep=max_keep)
+    except Exception as e:  # noqa: BLE001 — unusable answer → qwen, like any decider failure
+        logger.warning(
+            "Reranker [%s]: decider %s answer unusable (%s) — qwen path",
+            query[:40], reply.model, e,
+        )
+        failures.extend(reply.fallback_from)
+        failures.append(f"{reply.model}: rules failed ({type(e).__name__})")
+        return None, usage_entry, None
+
+    logger.info(
+        "Reranker [%s]: decider %s (%s) kept %d of %d%s",
+        query[:40], reply.model, reply.model_served, len(classification.keeps),
+        len(positions), f", after {reply.fallback_from}" if reply.fallback_from else "",
+    )
+
+    trace = {
+        "round_num": 1,
+        "engine": "decider",
+        "model": reply.model,
+        "model_served": reply.model_served,
+        "fallback_from": list(reply.fallback_from),
+        "user_msg": state,
+        "scores": {p: s for p, (s, _m) in scores.items()},
+        "mech": {p: m for p, (_s, m) in scores.items()},
+        "classification": classification.model_dump(),
+        "usage": usage_entry,
+    }
+    return classification, usage_entry, trace
+
+
 # -- Main entry point ----------------------------------------------------------
 
 
@@ -254,6 +354,7 @@ async def run_reranker_for_query(
     max_keep: int = 10,
     round_trace: list[dict] | None = None,
     planner_brief: str | None = None,
+    engine: str | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
     """Run per-query LLM reranker classification for a single sub-query.
 
@@ -269,6 +370,9 @@ async def run_reranker_for_query(
             ``planner_brief`` ``ContextBlock.body`` only — never ``case_brief``
             / ``prior_search_lessons``). Rendered at the HEAD of the user
             message; empty/None renders nothing.
+        engine: ``"llm"`` | ``"decider"``; None reads ``CASE_RERANKER_ENGINE``.
+            The decider path needs ``model_override is None`` and the
+            dedicated key; if no decider answers, the qwen path runs as before.
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
@@ -292,7 +396,6 @@ async def run_reranker_for_query(
             summary_note="لم يتم العثور على نتائج قابلة للتصنيف",
         ), [], []
 
-    agent = create_reranker_agent(prompt_key=prompt_key, model_override=model_override)
     user_msg = build_reranker_user_message(
         query, rationale, raw_markdown,
         max_keep=max_keep,
@@ -383,55 +486,82 @@ async def run_reranker_for_query(
 
         return kept, len(dropped_positions), log_entries
 
-    try:
-        classification, usage_entry = await _run_once()
-        usage_entries.append(usage_entry)
-        if round_trace is not None:
-            round_trace.append({
-                "round_num": 1,
-                "user_msg": user_msg,
-                "classification": classification.model_dump(),
-                "usage": usage_entry,
-            })
-
-        kept, dropped, decision_log = _build_from_classification(classification)
-
-        # kept == 0 of N>0 → ONE retry with a dynamic nudge; accept empty on
-        # the 2nd pass. Only retained retry signal (keep-only removed the
-        # count-mismatch / undecided failure class).
-        if not kept and len(blocks) > 0:
-            note = (
-                f"You classified 0 of {len(blocks)} rulings as keep. "
-                "If truly none apply to the sub-query, return an empty keeps "
-                "list — otherwise reconsider and keep the genuinely relevant "
-                "rulings."
-            )
-            logger.info(
-                "Reranker [%s]: kept 0 of %d — one retry with nudge",
-                query[:40], len(blocks),
-            )
-            classification2, usage_entry2 = await _run_once(extra_note=note)
-            usage_entries.append(usage_entry2)
+    # Decider engine first (plan reranker_decider_engine.md, phase B). Its keeps
+    # come back already capped and ranked, and zero keeps is a valid answer, so
+    # there is no reconsider nudge on this path (D4). No answer → qwen below.
+    classification: CaseRerankerClassification | None = None
+    decider_failures: list[str] = []
+    models = _decider_models(engine, model_override)
+    # Only the sectioned loop's channel-prefixed sub-queries were tested; the
+    # legacy RerankerNode (no ``[channel]`` prefix) stays on qwen.
+    if models and decider_rules.channel_of(rationale) in decider_rules.RUBRIC_V2_CHANNEL:
+        classification, decider_usage, decider_trace = await _run_decider(
+            query=query, rationale=rationale, raw_markdown=raw_markdown,
+            planner_brief=planner_brief, positions=list(pos_to_block),
+            max_keep=max_keep, models=models, failures=decider_failures,
+        )
+        if decider_usage is not None:   # billed even when its answer was unusable
+            usage_entries.append(decider_usage)
+        if classification is not None:
             if round_trace is not None:
-                round_trace.append({
-                    "round_num": 2,
-                    "user_msg": f"{user_msg}\n\n{note}",
-                    "classification": classification2.model_dump(),
-                    "usage": usage_entry2,
-                })
-            classification = classification2
+                round_trace.append(decider_trace)
             kept, dropped, decision_log = _build_from_classification(classification)
 
-    except Exception as e:
-        logger.error("Reranker error [%s]: %s", query[:40], e, exc_info=True)
-        return RerankerQueryResult(
-            query=query,
-            rationale=rationale,
-            sufficient=False,
-            results=[],
-            dropped_count=len(blocks),
-            summary_note=f"خطأ في التصنيف: {str(e)[:100]}",
-        ), [], []
+    if classification is None:
+        agent = create_reranker_agent(prompt_key=prompt_key, model_override=model_override)
+        try:
+            classification, usage_entry = await _run_once()
+            usage_entries.append(usage_entry)
+            if round_trace is not None:
+                round_trace.append({
+                    "round_num": 1,
+                    "engine": "llm",
+                    "fallback_from": list(decider_failures),
+                    "user_msg": user_msg,
+                    "classification": classification.model_dump(),
+                    "usage": usage_entry,
+                })
+
+            kept, dropped, decision_log = _build_from_classification(classification)
+
+            # kept == 0 of N>0 → ONE retry with a dynamic nudge; accept empty on
+            # the 2nd pass. Only retained retry signal (keep-only removed the
+            # count-mismatch / undecided failure class).
+            if not kept and len(blocks) > 0:
+                note = (
+                    f"You classified 0 of {len(blocks)} rulings as keep. "
+                    "If truly none apply to the sub-query, return an empty keeps "
+                    "list — otherwise reconsider and keep the genuinely relevant "
+                    "rulings."
+                )
+                logger.info(
+                    "Reranker [%s]: kept 0 of %d — one retry with nudge",
+                    query[:40], len(blocks),
+                )
+                classification2, usage_entry2 = await _run_once(extra_note=note)
+                usage_entries.append(usage_entry2)
+                if round_trace is not None:
+                    round_trace.append({
+                        "round_num": 2,
+                        "engine": "llm",
+                        "fallback_from": list(decider_failures),
+                        "user_msg": f"{user_msg}\n\n{note}",
+                        "classification": classification2.model_dump(),
+                        "usage": usage_entry2,
+                    })
+                classification = classification2
+                kept, dropped, decision_log = _build_from_classification(classification)
+
+        except Exception as e:
+            logger.error("Reranker error [%s]: %s", query[:40], e, exc_info=True)
+            return RerankerQueryResult(
+                query=query,
+                rationale=rationale,
+                sufficient=False,
+                results=[],
+                dropped_count=len(blocks),
+                summary_note=f"خطأ في التصنيف: {str(e)[:100]}",
+            ), [], []
 
     # Apply a single flat per-sub-query keep cap. High-relevance results are
     # ordered ahead of medium; ties broken by score desc.

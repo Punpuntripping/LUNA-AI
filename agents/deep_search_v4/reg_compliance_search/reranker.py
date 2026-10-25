@@ -26,6 +26,12 @@ stays; only the neighbour-fetch loop is gone.
 Replaces the legacy 3-tier (article / section / regulation) reranker. The
 search -> reranker contract changed: ``run_reranker_for_query`` now receives
 chunk rows (``chunks``), not pre-rendered markdown.
+
+Decider engine (``.claude/plans/reranker_decider_engine.md``, phase A): with
+``REG_RERANKER_ENGINE=decider`` step 2 is first tried on a decision model
+(``shared/decider.py`` + ``decider_rules.py``), one request per sub-query; when
+every decider fails the qwen pass below runs unchanged (D1). Steps 3-4 are the
+same for both engines.
 """
 from __future__ import annotations
 
@@ -36,11 +42,14 @@ from typing import Any
 from pydantic_ai import Agent, TextOutput
 from pydantic_ai.usage import UsageLimits
 
+from agents.deep_search_v4.shared import decider as _decider
 from agents.utils.agent_models import get_agent_model, primary_model_of_slot
 from agents.utils.usage_limits import OUTPUT_TOKENS_CAP
 from agents.utils.structured_output import make_json_salvager
+from shared.config import get_settings
 from supabase import Client as SupabaseClient
 
+from . import decider_rules
 from .models import (
     RegRerankerClassification,
     RerankedResult,
@@ -300,6 +309,50 @@ def _assemble_result(block: dict[str, Any], decision: dict[str, Any]) -> Reranke
     )
 
 
+# -- Decider engine (phase A) --------------------------------------------------
+
+
+def _decider_models(engine: str | None, model_override: str | None) -> list[str]:
+    """The decider chain for this call, or ``[]`` when the qwen path must run.
+
+    Off unless the engine (``engine`` arg, else ``REG_RERANKER_ENGINE``) is
+    ``"decider"``. An explicit ``model_override`` (CLI / A/B) always means the
+    LLM, and a missing ``OPENROUTER_RERANKER_API_KEY`` skips the deciders (D6).
+    """
+    settings = get_settings()
+    engine = (engine or settings.REG_RERANKER_ENGINE or "llm").strip().lower()
+    if engine != "decider" or model_override is not None:
+        return []
+    if not (settings.OPENROUTER_RERANKER_API_KEY or "").strip():
+        logger.warning("Reranker: engine=decider but OPENROUTER_RERANKER_API_KEY is unset — qwen path")
+        return []
+    return _decider.parse_models(settings.REG_RERANKER_DECIDERS)
+
+
+async def _run_decider(
+    query: str,
+    user_msg: str,
+    labels: list[str],
+    models: list[str],
+) -> tuple[_decider.DeciderReply, RegRerankerClassification, dict[str, float]] | None:
+    """One decider request for the sub-query → ``(reply, classification, scores)``.
+
+    ``None`` = every decider failed (or answered malformed) → the caller runs
+    qwen. Never raises: a decider bug must cost speed, not the sub-query.
+    """
+    questions, required = decider_rules.build_questions(labels)
+    try:
+        reply = await _decider.decide(user_msg, questions, required=required, models=models)
+        if reply is None:
+            return None
+        scores = decider_rules.label_scores(reply.answers, labels)
+        classification = decider_rules.classify(reply.answers, labels)
+    except Exception as e:
+        logger.warning("Reranker [%s]: decider error, falling back to qwen: %s", query[:40], e)
+        return None
+    return reply, classification, scores
+
+
 # -- Main entry point ----------------------------------------------------------
 
 
@@ -313,11 +366,14 @@ async def run_reranker_for_query(
     model_override: str | None = None,
     round_trace: list[dict] | None = None,
     planner_brief: str | None = None,
+    engine: str | None = None,
 ) -> tuple[RerankerQueryResult, list[dict], list[dict]]:
     """Run a single keep-only classification pass and derive the drop set.
 
     The LLM emits one entry only for each chunk it keeps; chunks it does not
-    list are dropped, and code derives the drop set by set-difference.
+    list are dropped, and code derives the drop set by set-difference. With the
+    decider engine on, a decision model scores every chunk first and the D9
+    rules pick the keeps; qwen runs only when every decider fails.
 
     Args:
         query: The sub-query string.
@@ -336,6 +392,9 @@ async def run_reranker_for_query(
             ``planner_brief`` ``ContextBlock.body`` only — never ``case_brief``
             / ``prior_search_lessons``). Rendered at the HEAD of the user
             message; empty/None renders nothing.
+        engine: ``"llm"`` | ``"decider"``; ``None`` reads ``REG_RERANKER_ENGINE``.
+            The decider path also needs ``model_override is None`` and the
+            dedicated key (see ``_decider_models``).
 
     Returns:
         (RerankerQueryResult, usage_entries, decision_log)
@@ -347,8 +406,6 @@ async def run_reranker_for_query(
     sub-query so the N concurrent calls of one turn share the longest possible
     prefix. See ``build_reranker_user_message``.
     """
-    agent = create_reranker_agent(model_override=model_override)
-
     # -- Stable label minting --------------------------------------------------
     label_state = {"n": 0}
 
@@ -400,76 +457,109 @@ async def run_reranker_for_query(
         bool((planner_brief or "").strip()),
     )
 
-    # Run the agent with retries. The integrity gate (kept==0 of N>0) may append
-    # ONE dynamic note and re-run; that is the only retained retry signal.
     classification = None
-    retried_for_zero_keep = False
-    extra_note = ""
-    last_err: Exception | None = None
+    # label -> decider score (0..4); empty on the qwen path, where every keep
+    # sorts with score 0 so the cap order stays (tier, -rrf).
+    decider_scores: dict[str, float] = {}
+    engine_trace: dict[str, Any] = {
+        "engine": "llm", "model_served": "", "scores": {}, "sufficient_p": None,
+        "fallback_from": [],
+    }
 
-    for attempt in range(3):
-        run_msg = user_msg + extra_note
-        try:
-            result = await agent.run(run_msg, usage_limits=RERANKER_LIMITS)
-        except Exception as e:
-            last_err = e
+    # Decider engine first (phase A, D1). Success skips the qwen pass below,
+    # including its zero-keep reconsider retry (D4). ``None`` → qwen, unchanged.
+    decider_models = _decider_models(engine, model_override)
+    if decider_models:
+        decided = await _run_decider(query, user_msg, list(by_label), decider_models)
+        if decided is not None:
+            reply, classification, decider_scores = decided
+            usage_entries.append(reply.usage_entry)
+            engine_trace = {
+                "engine": "decider",
+                "model_served": reply.model_served,
+                "scores": dict(decider_scores),
+                "sufficient_p": decider_rules.sufficient_p(reply.answers),
+                "fallback_from": list(reply.fallback_from),
+            }
+        else:
+            engine_trace["fallback_from"] = [f"{','.join(decider_models)}: no answer"]
             logger.warning(
-                "Reranker attempt %d/3 failed: %s", attempt + 1, e,
+                "Reranker [%s]: every decider failed (%s) — qwen path",
+                query[:40], ",".join(decider_models),
             )
-            if attempt < 2:
-                await asyncio.sleep(1.5 * (attempt + 1))
-            continue
-
-        cand = result.output
-
-        ru = result.usage()
-        usage_entries.append({
-            "agent": "reranker",
-            # Explicit per-slot model: the "reranker" ROLE is shared with
-            # case_search, which heads on a different model — see
-            # primary_model_of_slot's docstring.
-            "model": primary_model_of_slot("reg_compliance_reranker"),
-            "reranker_round": 1,
-            "requests": ru.requests,
-            "input_tokens": ru.input_tokens,
-            "output_tokens": ru.output_tokens,
-            "total_tokens": ru.total_tokens,
-            "details": dict(ru.details) if ru.details else {},
-        })
-
-        # Integrity gate: kept==0 of N>0 → ONE retry with a dynamic note. If the
-        # model truly keeps nothing, accept the empty list on the second pass.
-        n_keeps = len(cand.keeps)
-        if n_keeps == 0 and len(by_label) > 0 and not retried_for_zero_keep:
-            retried_for_zero_keep = True
-            extra_note = (
-                f"\n\n---\nNote: you classified 0 of {len(by_label)} candidates "
-                f"as keep. If truly none apply, return an empty `keeps` list — "
-                f"otherwise reconsider and keep the chunks whose parent system "
-                f"scope governs the sub-query."
-            )
-            logger.warning(
-                "Reranker [%s]: kept 0 of %d — retrying once with a reconsider note",
-                query[:40], len(by_label),
-            )
-            continue
-
-        classification = cand
-        break
 
     if classification is None:
-        logger.error(
-            "Reranker gave up after 3 attempts: %s", last_err
-        )
-        return (
-            RerankerQueryResult(
-                query=query, rationale=rationale, sufficient=False,
-                results=[], dropped_count=0,
-                summary_note=f"تعذّر تصنيف النتائج: {str(last_err)[:100]}",
-            ),
-            usage_entries,
-            decision_log,
-        )
+        agent = create_reranker_agent(model_override=model_override)
+
+        # Run the agent with retries. The integrity gate (kept==0 of N>0) may append
+        # ONE dynamic note and re-run; that is the only retained retry signal.
+        retried_for_zero_keep = False
+        extra_note = ""
+        last_err: Exception | None = None
+
+        for attempt in range(3):
+            run_msg = user_msg + extra_note
+            try:
+                result = await agent.run(run_msg, usage_limits=RERANKER_LIMITS)
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "Reranker attempt %d/3 failed: %s", attempt + 1, e,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+
+            cand = result.output
+
+            ru = result.usage()
+            usage_entries.append({
+                "agent": "reranker",
+                # Explicit per-slot model: the "reranker" ROLE is shared with
+                # case_search, which heads on a different model — see
+                # primary_model_of_slot's docstring.
+                "model": primary_model_of_slot("reg_compliance_reranker"),
+                "reranker_round": 1,
+                "requests": ru.requests,
+                "input_tokens": ru.input_tokens,
+                "output_tokens": ru.output_tokens,
+                "total_tokens": ru.total_tokens,
+                "details": dict(ru.details) if ru.details else {},
+            })
+
+            # Integrity gate: kept==0 of N>0 → ONE retry with a dynamic note. If the
+            # model truly keeps nothing, accept the empty list on the second pass.
+            n_keeps = len(cand.keeps)
+            if n_keeps == 0 and len(by_label) > 0 and not retried_for_zero_keep:
+                retried_for_zero_keep = True
+                extra_note = (
+                    f"\n\n---\nNote: you classified 0 of {len(by_label)} candidates "
+                    f"as keep. If truly none apply, return an empty `keeps` list — "
+                    f"otherwise reconsider and keep the chunks whose parent system "
+                    f"scope governs the sub-query."
+                )
+                logger.warning(
+                    "Reranker [%s]: kept 0 of %d — retrying once with a reconsider note",
+                    query[:40], len(by_label),
+                )
+                continue
+
+            classification = cand
+            break
+
+        if classification is None:
+            logger.error(
+                "Reranker gave up after 3 attempts: %s", last_err
+            )
+            return (
+                RerankerQueryResult(
+                    query=query, rationale=rationale, sufficient=False,
+                    results=[], dropped_count=0,
+                    summary_note=f"تعذّر تصنيف النتائج: {str(last_err)[:100]}",
+                ),
+                usage_entries,
+                decision_log,
+            )
 
     # -- Apply the keeps + integrity gate (invalid/duplicate label) -----------
     kept_labels: set[str] = set()
@@ -496,6 +586,7 @@ async def run_reranker_for_query(
         keep_dict = {
             "relevance": keep.relevance,
             "reasoning": keep.reasoning,
+            "score": decider_scores.get(norm_label, 0.0),   # cap-sort key; 0 on the qwen path
         }
         all_kept.append((block, keep_dict))
         decision_log.append({
@@ -521,8 +612,9 @@ async def run_reranker_for_query(
     last_sufficient = classification.sufficient
 
     logger.info(
-        "Reranker [%s]: %d kept, %d dropped (derived), sufficient=%s",
+        "Reranker [%s]: %d kept, %d dropped (derived), sufficient=%s, engine=%s %s",
         query[:40], len(all_kept), len(dropped_labels), last_sufficient,
+        engine_trace["engine"], engine_trace["model_served"],
     )
 
     if round_trace is not None:
@@ -532,6 +624,9 @@ async def run_reranker_for_query(
             "classification": classification.model_dump(),
             "unfolds": [],
             "usage": usage_entries[-1] if usage_entries else {},
+            # Which engine served this sub-query (D5) + the decider's scores —
+            # decision models give no per-keep reasoning, so these are the record.
+            **engine_trace,
         })
 
     # -- Dedup kept blocks by generic source id (keep the higher-rrf copy) -----
@@ -553,11 +648,13 @@ async def run_reranker_for_query(
 
     # -- Apply the per-sub-query keep cap (single flat cap) -------------------
     # One flat cap over all kept chunks. Within the cap, high-relevance chunks
-    # are ordered ahead of medium; ties broken by rrf score (descending).
-    def _cap_sort_key(p: tuple[dict, dict]) -> tuple[int, float]:
+    # are ordered ahead of medium; then the decider score (descending; 0 for
+    # every qwen keep, so qwen's order is unchanged); ties broken by rrf score
+    # (descending).
+    def _cap_sort_key(p: tuple[dict, dict]) -> tuple[int, float, float]:
         block, dec = p
         rel = dec.get("relevance") or "medium"
-        return (0 if rel == "high" else 1, -block["rrf"])
+        return (0 if rel == "high" else 1, -float(dec.get("score") or 0.0), -block["rrf"])
 
     all_kept.sort(key=_cap_sort_key)
     truncated = max(0, len(all_kept) - max_keep)

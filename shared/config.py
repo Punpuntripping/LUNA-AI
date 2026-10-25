@@ -426,6 +426,18 @@ class Settings(BaseSettings):
             if t.strip()
         )
 
+    # ── Reranker decider engine — .claude/plans/reranker_decider_engine.md ──
+    # "llm" | "decider". "llm" = today's qwen path (default). "decider" =
+    # OpenRouter Decisions API per sub-query, falling back down the
+    # *_DECIDERS chain and finally to qwen. Env var name == field name.
+    REG_RERANKER_ENGINE: str = "llm"
+    CASE_RERANKER_ENGINE: str = "llm"   # phase B; flip only after phase A is stable
+    # Comma list, order = fallback order (D1/D11).
+    REG_RERANKER_DECIDERS: str = "liquid/d1-ultra,typesafe/jev-1.14"
+    CASE_RERANKER_DECIDERS: str = "liquid/d1-ultra,typesafe/jev-1.14"
+    # Dedicated key (D6). Unset => the decider engine is skipped and qwen runs.
+    OPENROUTER_RERANKER_API_KEY: Optional[str] = None
+
     # ========================================
     # ENVIRONMENT
     # ========================================
