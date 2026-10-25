@@ -10,6 +10,7 @@ import { ErrorBanner } from "@/components/ErrorBanner";
 import { LinkText } from "@/components/LinkText";
 import { Screen } from "@/components/Screen";
 import { DetailLevelControl } from "@/components/settings/DetailLevelControl";
+import { PushNotificationsSection } from "@/components/settings/PushNotificationsSection";
 import { APP_BUILD, APP_UPDATE_ID_LABEL, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
 import { useNotice } from "@/stores/notice";
@@ -71,7 +72,7 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* Web «إعدادات المحادثة» (ConversationSettingsDialog) — مستوى التفصيل. */}
+      {/* Web «إعدادات المحادثة» (ConversationSettingsDialog) — مستوى التفصيل + الإشعارات. */}
       <View style={styles.section}>
         <AppText variant="sm" weight={600} tone="secondary">
           إعدادات المحادثة
@@ -83,6 +84,7 @@ export default function SettingsScreen() {
           مستوى التفصيل
         </AppText>
         <DetailLevelControl />
+        <PushNotificationsSection />
       </View>
 
       <View style={styles.section}>

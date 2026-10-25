@@ -14,9 +14,11 @@ import { SENTRY_DSN } from "@/config/env";
 // Logfire is the `request_id` tag (= the X-Request-ID the backend logs).
 
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+/** Expo push token — a device identifier (Phase 3 push). */
+const PUSH_TOKEN = /ExponentPushToken\[[^\]]*\]/g;
 
 function redact(text: string): string {
-  return text.replace(EMAIL, "[email]");
+  return text.replace(EMAIL, "[email]").replace(PUSH_TOKEN, "[push-token]");
 }
 
 function stripQuery(url: string): string {
@@ -77,3 +79,16 @@ export function initSentry(): void {
 }
 
 export const wrapRoot = Sentry.wrap;
+
+/**
+ * A background job failed quietly (push registration…): a breadcrumb, plus an
+ * event when `capture`. Only the area, the stage and an error CODE leave the
+ * phone — never the original error, whose text can quote a device token.
+ */
+export function reportQuietFailure(area: string, stage: string, code: string, capture: boolean): void {
+  if (!SENTRY_DSN) return;
+  Sentry.addBreadcrumb({ category: area, level: "warning", message: `${stage} failed`, data: { code } });
+  if (capture) {
+    Sentry.captureException(new Error(`${area} ${stage} failed (${code})`), { tags: { area, stage, code } });
+  }
+}

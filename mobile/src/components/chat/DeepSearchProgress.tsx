@@ -10,6 +10,8 @@ import { Icon } from "@/components/Icon";
 import { formatCount, formatElapsed, type ArabicPlural } from "@/lib/format";
 import { useTheme } from "@/theme/ThemeProvider";
 
+import { PushReadyChip } from "./PushReadyChip";
+
 // M6 — live tracker for a running deep_search (port of the web's
 // DeepSearchProgress.tsx, simplified for the phone): note, title + stopwatch,
 // a bar that creeps inside the active stage, the 5 steps, the active detail
@@ -120,6 +122,8 @@ export const DeepSearchProgress = memo(function DeepSearchProgress({ conversatio
           <AppText variant="xs" tone="muted">
             {NOTE_BODY}
           </AppText>
+          {/* Web DeepSearchNote: the push opt-in rides on the note while the run is in flight. */}
+          {progress.stage !== "done" ? <PushReadyChip /> : null}
         </View>
       </View>
 

@@ -2,6 +2,9 @@
 
 Spec: .claude/plans/pwa_step1.md §1D. Table: migration 165 (push_subscriptions).
 
+The native app (Expo) channel lives in ``app_push_service`` (migration 185,
+mobile/06_phase3_push.md §3 B); ``schedule_turn_ready`` below fires both.
+
 Two halves:
 
 * Subscription CRUD (sync, run via ``run_db`` from ``api/push.py``):
@@ -431,14 +434,37 @@ def schedule_turn_ready(
     *,
     supabase: Optional[SupabaseClient] = None,
 ) -> None:
-    """Fire-and-forget ``notify_turn_ready``. Sync, never raises, never blocks."""
+    """Fire-and-forget both push channels. Sync, never raises, never blocks.
+
+    * web (``notify_turn_ready``)                    iff VAPID is configured
+    * app (``app_push_service.notify_turn_ready_app``) iff EXPO_PUSH_ENABLED
+
+    Each half is its own task held in ``_background_tasks`` and guarded by its
+    own try, so neither can stop the other. With EXPO_PUSH_ENABLED off the web
+    half behaves exactly as before the app half existed.
+    """
     try:
-        if _vapid_config() is None:
-            return
-        task = asyncio.get_running_loop().create_task(
-            notify_turn_ready(user_id, conversation_id, supabase=supabase)
-        )
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        if _vapid_config() is not None:
+            task = asyncio.get_running_loop().create_task(
+                notify_turn_ready(user_id, conversation_id, supabase=supabase)
+            )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
     except Exception:  # noqa: BLE001
         logger.warning("push: failed to schedule notify_turn_ready", exc_info=True)
+
+    try:
+        # Lazy: app_push_service imports this module's constants, so a
+        # top-level import here would be circular. After the first call this
+        # is a sys.modules lookup.
+        from backend.app.services import app_push_service
+
+        if app_push_service.expo_push_enabled():
+            loop = asyncio.get_running_loop()  # before the coroutine exists: no orphan on failure
+            task = loop.create_task(
+                app_push_service.notify_turn_ready_app(user_id, conversation_id, supabase=supabase)
+            )
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+    except Exception:  # noqa: BLE001
+        logger.warning("push: failed to schedule notify_turn_ready_app", exc_info=True)

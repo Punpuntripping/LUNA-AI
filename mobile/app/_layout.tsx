@@ -11,11 +11,16 @@ import { useAppConfigGate } from "@/hooks/use-app-config-gate";
 import { useSession } from "@/auth/session-store";
 import { queryClient } from "@/lib/query-client";
 import { initSentry, wrapRoot } from "@/observability/sentry";
+import { installPushHandling } from "@/push/handling";
 import { useUpdateGate } from "@/stores/update-gate";
 import { fontMap } from "@/theme/fonts";
 import { ThemeProvider, useTheme } from "@/theme/ThemeProvider";
 
 initSentry();
+// Push «إجابتك جاهزة»: foreground handler, tap listener (before the first
+// render — a tap that launched the app must not be missed) and the Android
+// channel. Never asks for permission.
+installPushHandling();
 
 // Arabic-only app: RTL always. The expo-localization plugin (app.json) sets
 // this natively in builds; these calls cover the JS side. Expo Go on SDK 57

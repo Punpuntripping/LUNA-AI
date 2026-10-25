@@ -140,6 +140,8 @@ CASCADING_TABLES: list[tuple[str, str]] = [
     ("payment_methods", "user_id"),
     ("user_subscriptions", "user_id"),
     ("anon_questions", "claimed_by_user_id"),  # no FK at all — would dangle
+    ("push_subscriptions", "user_id"),          # web push (165)
+    ("app_push_tokens", "user_id"),             # app push (185)
 ]
 
 # Tables the PRODUCTION purge deliberately keeps. Each is opt-in/opt-out here

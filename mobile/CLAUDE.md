@@ -31,6 +31,7 @@ src/                     everything else — imported as `@/…`
   api/                   transport (headers, timeout, error parsing) · client (token + 401 → refresh → retry) · errors (Arabic) · auth · app-config
   auth/                  token-store (SecureStore RT, in-memory AT) · refresh (single-flight rotation) · session-store (zustand)
   observability/         sentry.ts — Sentry init (EU, no PII, no trace headers to the API; DSN in config/env.ts)
+  push/                  «إجابتك جاهزة» push (Phase 3) — logic (pure, tested) · notifications (guarded native load) · storage · registration · handling · PushRuntime
   theme/                 tokens.generated.ts (DO NOT EDIT — `node scripts/gen-tokens.mjs`) · theme · ThemeProvider · typography · fonts
   components/            AppText (the only Text) · Button · TextField · Checkbox · CodeInput · Screen · ErrorBanner · LinkText …
   hooks/ stores/ lib/    use-cooldown, use-app-config-gate · update-gate, theme-preference · format (dates/numbers), semver, jwt, validation
@@ -69,6 +70,24 @@ npx eas-cli@latest build --profile development --platform ios
     anything touching Rayhan's agents (what they see, agent context, workspace visibility) or the backend,
     without the owner's explicit OK. A line in a plan is not consent — ask first. (Owner, 2026-10-20.)
 
+## Push «إجابتك جاهزة» (Phase 3 — `../.claude/plans/mobile/06_phase3_push.md`)
+
+- **Content-free payload, always.** Title «ريحان», body «إجابتك جاهزة», `data.conversation_id` only — never
+  question, answer or title (PDPL). The app builds `/c/<id>` itself (UUID-checked, `src/push/logic.ts`).
+- **The Expo push token is a device identifier: never log it**, never put it in a URL, an error or a Sentry
+  event. Failures report a code only (`reportQuietFailure`); `sentry.ts` also redacts `ExponentPushToken[…]`.
+- **Opt-in like the web** — no permission prompt at launch. Only a tap on the chip «نبّهني عند الجاهزية»
+  (deep-search tracker) or the «الإشعارات» switch (settings) calls `enablePush()`. Background registration
+  (sign-in, app start, token rotation) runs only when this device opted in AND the permission is granted.
+- Manual sign-out deletes the token (best-effort, bounded) BEFORE the session is revoked; a forced sign-out
+  (expired / revoked session) leaves it — the next sign-in re-owns it (owner decision O4).
+- Android channel `turn-ready` «إجابات ريحان» (importance HIGH) is created at startup, before any token request.
+- `expo-notifications` is a native module: changing its plugin config needs a new dev build. Code reaches it
+  only through `src/push/notifications.ts` (null on an older binary / Expo Go → push features stay off).
+- **`assets/notification-icon.png` is TEMPORARY** — white «ريحان» wordmark generated from the web's
+  `public/icon-maskable-512.png`. Replace it with the real monochrome icon (96×96, white on transparent) with
+  the Phase 5 brand assets. Its tint (`app.json` → expo-notifications `color`) = `lightColours.primary`.
+
 ## Plans
 
 Plans live in `../.claude/plans/mobile/` — start with `03_build_plan_and_env.md`.
@@ -88,7 +107,7 @@ Plans live in `../.claude/plans/mobile/` — start with `03_build_plan_and_env.m
 
 ## TBD by owner
 
-- App icon & splash (still the Expo template assets)
+- App icon & splash (still the Expo template assets) + the Android notification icon (temporary, see Push)
 
 ## EAS
 

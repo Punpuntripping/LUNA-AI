@@ -49,16 +49,19 @@ export async function clearTokens(): Promise<void> {
   }
 }
 
-/** Run once at cold start, BEFORE reading the refresh token. */
-export async function wipeIfFreshInstall(): Promise<void> {
+/** Run once at cold start, BEFORE reading the refresh token. Resolves true
+ *  when this is a fresh install (the caller wipes its own keychain state). */
+export async function wipeIfFreshInstall(): Promise<boolean> {
   try {
     const marker = new File(Paths.document, INSTALL_MARKER);
-    if (marker.exists) return;
+    if (marker.exists) return false;
     await clearTokens();
     marker.create();
     marker.write("1");
+    return true;
   } catch {
     // A marker failure must never block startup; worst case the next launch
     // retries the check.
+    return false;
   }
 }

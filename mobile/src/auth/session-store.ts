@@ -6,6 +6,8 @@ import * as authApi from "@/api/auth";
 import { ApiError, errorMessage, MSG_UNKNOWN } from "@/api/errors";
 import { chatEngine } from "@/chat/chat-engine";
 import { queryClient } from "@/lib/query-client";
+import { unregisterPushOnSignOut } from "@/push/registration";
+import { wipePushStorage } from "@/push/storage";
 import { useComposerDrafts } from "@/stores/composer-drafts";
 
 import {
@@ -103,7 +105,8 @@ export const useSession = create<SessionState>((set, get) => {
     unavailableMessage: null,
 
     bootstrap: async () => {
-      await wipeIfFreshInstall();
+      // Push state lives in the keychain too — a reinstall starts clean.
+      if (await wipeIfFreshInstall()) await wipePushStorage();
       if (!(await getRefreshToken())) {
         set({ status: "signedOut" });
         return;
@@ -191,9 +194,14 @@ export const useSession = create<SessionState>((set, get) => {
       }
     },
 
+    // Manual sign-out only (a forced one goes through signedOut() directly and
+    // leaves the push token on the server — owner decision O4).
     logout: async () => {
       const token = getAccessToken();
       cancelProactiveRefresh();
+      // This device stops getting this account's pushes — best-effort and
+      // bounded, while the session is still valid.
+      await unregisterPushOnSignOut(token);
       if (token) {
         // Always 200 server-side; a failure here must not keep anyone signed in.
         await authApi.logout(token).catch(() => undefined);

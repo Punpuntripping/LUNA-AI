@@ -365,6 +365,15 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: Optional[str] = None   # backend only, never leaves the server
     VAPID_SUBJECT: Optional[str] = None       # "mailto:support@rayhanai.com" — push services contact this on abuse; defaulted in push_service if unset
 
+    # ── App push «إجابتك جاهزة» (Expo Push Service) — mobile/06_phase3_push.md §3 B ──
+    # Env var name == field name (no validation_alias). EXPO_PUSH_ENABLED gates
+    # SENDING only: POST /api/v1/push/app-token stores device tokens whatever
+    # its value, so the backend deploys dark and is flipped after the device
+    # test. EXPO_ACCESS_TOKEN is the expo.dev access token that "Enhanced push
+    # security" requires (sent as `Authorization: Bearer`); secret, backend only.
+    EXPO_PUSH_ENABLED: bool = False
+    EXPO_ACCESS_TOKEN: Optional[str] = None
+
     # ── Native app (Expo iOS/Android) version gate — mobile/04 §U1/U2 ───────
     # Served by GET /api/v1/app/config and enforced by
     # backend/app/middleware/app_version.py (426 APP_UPDATE_REQUIRED, ONLY for

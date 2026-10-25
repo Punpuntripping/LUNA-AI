@@ -5,6 +5,7 @@ import { useSession } from "@/auth/session-store";
 import { useChatResumeOnForeground } from "@/chat/use-messages";
 import { StackHeader } from "@/components/StackHeader";
 import { ToastHost } from "@/components/ToastHost";
+import { PushRuntime } from "@/push/PushRuntime";
 import { useTheme } from "@/theme/ThemeProvider";
 
 export const unstable_settings = { anchor: "index" };
@@ -18,6 +19,7 @@ export const unstable_settings = { anchor: "index" };
 // KeyboardProvider (react-native-keyboard-controller — native module, needs a
 // dev build) drives the chat composer + list; useChatResumeOnForeground
 // recovers streams the OS killed while the app was in the background (once).
+// PushRuntime: push registration + opening a tapped «إجابتك جاهزة» (Phase 3).
 export default function AppLayout() {
   const { colours } = useTheme();
   const deletionPending = useSession((s) => s.user?.deletion_pending === true);
@@ -56,6 +58,7 @@ export default function AppLayout() {
         </Stack.Protected>
       </Stack>
       <ToastHost />
+      <PushRuntime />
     </KeyboardProvider>
   );
 }

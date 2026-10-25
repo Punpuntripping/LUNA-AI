@@ -66,6 +66,14 @@
         }
       ],
       "expo-document-picker",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#4A6B5F",
+          "defaultChannel": "turn-ready"
+        }
+      ],
       "./plugins/with-android-config-changes",
       [
         "@sentry/react-native/expo",

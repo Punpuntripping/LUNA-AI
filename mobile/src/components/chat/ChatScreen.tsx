@@ -1,6 +1,6 @@
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -37,6 +37,7 @@ import { useConversationDetail, useCreateConversation, useDeleteConversation } f
 import { useMessages } from "@/chat/use-messages";
 import { useParallelGate } from "@/chat/use-parallel-cap";
 import { MODAL_SETTLE_MS, useAnyModalOpen } from "@/lib/modal-coordinator";
+import { clearVisibleConversation, setVisibleConversation } from "@/push/handling";
 import { useArtifactInfo, useArtifactKinds } from "@/chat/use-workspace-lookup";
 import { AppText } from "@/components/AppText";
 import { ArtifactSheet } from "@/components/artifact/ArtifactSheet";
@@ -167,6 +168,15 @@ export function ChatScreen({ conversationId }: { conversationId: string | null }
       mounted.current = false;
     };
   }, []);
+
+  // A «إجابتك جاهزة» push for the chat on screen stays silent (P5).
+  useFocusEffect(
+    useCallback(() => {
+      if (!conversationId) return;
+      setVisibleConversation(conversationId);
+      return () => clearVisibleConversation(conversationId);
+    }, [conversationId]),
+  );
 
   // Open-pin state (QA N7, see «scrolling» below) — declared first because the
   // inline edit releases it.
