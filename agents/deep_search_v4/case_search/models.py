@@ -85,7 +85,11 @@ class ExpanderOutputV2(BaseModel):
 
     queries: list[TypedQuery] = Field(
         default_factory=list,
-        description="Channel-tagged Arabic queries (usually 3-5, one per channel per angle)",
+        description=(
+            "Channel-tagged Arabic queries — one per distinct decision point, "
+            "each in the single channel where that point lives; never the same "
+            "point repeated in another channel"
+        ),
     )
 
     @field_validator("queries", mode="before")
@@ -516,9 +520,6 @@ class LoopState:
     # the question, not of the executor (D7). ``None`` (in-app, CLI, monitor)
     # renders no block and clamps nothing — the user message stays
     # byte-identical to what it was before.
-    #
-    # On the sectioned path the clamp is channel-aware: the prompt's «at least
-    # two channels» rule survives a truncation (see ``clamp_queries``).
     expander_query_cap: int | None = None
 
 

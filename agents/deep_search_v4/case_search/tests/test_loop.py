@@ -397,7 +397,9 @@ async def test_the_flat_case_expander_trims_rationales_in_step(case_search_deps)
     assert state.all_queries_used == state.expander_output.queries
 
 
-# -- Sectioned path: the >=2-channel invariant survives the clamp --------------
+# -- Sectioned path: the clamp is a plain head-slice ----------------------------
+# prompt_4 dropped the «at least two channels» rule (case_expander_prompt_4.md
+# D6/D8), so the clamp keeps the model's first N, whatever their channels.
 
 
 async def _run_sectioned_expander(typed_queries, cap, deps):
@@ -407,7 +409,7 @@ async def _run_sectioned_expander(typed_queries, cap, deps):
     state = LoopState(
         focus_instruction="سؤال",
         user_context="",
-        expander_prompt_key="prompt_3",
+        expander_prompt_key="prompt_4",
         expander_query_cap=cap,
     )
     deps._log_id = ""
@@ -424,15 +426,9 @@ def _tq(text: str, channel: str):
 
 
 @pytest.mark.asyncio
-async def test_sectioned_clamp_keeps_at_least_two_channels(case_search_deps):
-    """§7.5 — a head-slice that lands in one channel would break the prompt's
-    «at least two channels» rule; the clamp swaps the cheapest kept query for
-    the first dropped one carrying a new channel.
-
-    ⚠ The rescue needs ≥2 kept slots to mean anything, which is exactly why the
-    wire floors ``cap`` at 2 (D5). At a cap of 1 the rule is unreachable and the
-    swap would only throw away the model's top-ranked query.
-    """
+async def test_sectioned_clamp_keeps_a_single_channel_head_as_ranked(case_search_deps):
+    """A head that lands in one channel is the model's own ranking — it is no
+    longer reshuffled to buy a second channel at the cost of a better query."""
     typed = [
         _tq("p1", "principle"),
         _tq("p2", "principle"),
@@ -444,12 +440,9 @@ async def test_sectioned_clamp_keeps_at_least_two_channels(case_search_deps):
     state = await _run_sectioned_expander(typed, 4, case_search_deps)
 
     kept = state.expander_output_v2.queries
-    assert len(kept) == 4
-    assert len({q.channel for q in kept}) >= 2
-    assert [q.text for q in kept[:3]] == ["p1", "p2", "p3"]
-    assert kept[-1].text == "f1"
+    assert [q.text for q in kept] == ["p1", "p2", "p3", "p4"]
     # all_queries_used mirrors what actually survived.
-    assert state.all_queries_used == ["p1", "p2", "p3", "f1"]
+    assert state.all_queries_used == ["p1", "p2", "p3", "p4"]
 
 
 @pytest.mark.asyncio
@@ -466,9 +459,8 @@ async def test_sectioned_clamp_leaves_a_mixed_head_in_the_models_order(case_sear
 
 
 @pytest.mark.asyncio
-async def test_the_wire_minimum_cap_of_two_still_reaches_two_channels(case_search_deps):
-    """D5 at the boundary — ``cap=2`` is the smallest the API accepts, and it is
-    the smallest at which the ≥2-channel rescue can fire at all."""
+async def test_the_wire_minimum_cap_of_two_is_a_plain_head_slice(case_search_deps):
+    """``cap=2`` is the smallest the API accepts; it keeps the top two as ranked."""
     typed = [
         _tq("p1", "principle"),
         _tq("p2", "principle"),
@@ -476,8 +468,7 @@ async def test_the_wire_minimum_cap_of_two_still_reaches_two_channels(case_searc
     ]
     state = await _run_sectioned_expander(typed, 2, case_search_deps)
     kept = state.expander_output_v2.queries
-    assert [q.text for q in kept] == ["p1", "f1"]
-    assert len({q.channel for q in kept}) == 2
+    assert [q.text for q in kept] == ["p1", "p2"]
 
 
 @pytest.mark.asyncio
@@ -497,7 +488,7 @@ async def test_sectioned_expander_sees_the_block_in_its_user_message(case_search
     state = LoopState(
         focus_instruction="سؤال",
         user_context="",
-        expander_prompt_key="prompt_3",
+        expander_prompt_key="prompt_4",
         expander_query_cap=6,
     )
     case_search_deps._log_id = ""

@@ -1,6 +1,10 @@
 # Expander query cap — `cap` on the Blog-Post API
 
 **Status:** planned, not built
+**Amended 2026-10-25:** the sectioned case path's ≥2-channel rescue (`channel_of` on
+`clamp_queries`, D5's rationale, the §7.5 swap) was removed with case prompt_4 —
+`.claude/plans/case_expander_prompt_4.md` D8. The clamp is a plain head-slice on every
+path; the `cap ≥ 2` floor is unchanged.
 **Supersedes:** the uncommitted `complexity` work in the working tree (see §2)
 **Scope:** the editorial/marketing API only. The in-app path cannot reach this — §3.
 

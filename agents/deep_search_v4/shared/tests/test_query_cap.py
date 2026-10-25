@@ -7,9 +7,8 @@ The two halves of the editorial query cap that both executors share
   silent behaviour change nothing else would catch;
 - the block says **at most** and never asks for a minimum — the cap is a
   ceiling, and an expander that answers in fewer queries answered correctly;
-- the clamp truncates **in emitted order** — any other rule makes which angle
-  of the question survives a coin toss;
-- the sectioned path's ≥2-channel invariant survives a truncation.
+- the clamp truncates **in emitted order**, channel-tagged queries included —
+  any other rule makes which angle of the question survives a coin toss.
 """
 from __future__ import annotations
 
@@ -127,12 +126,12 @@ def test_no_log_when_nothing_was_dropped(caplog: pytest.LogCaptureFixture) -> No
 
 
 # ===========================================================================
-# clamp_queries — the sectioned ≥2-channel rescue
+# clamp_queries — channel-tagged queries are a plain head-slice too
 # ===========================================================================
 
 
 class _TQ:
-    """Stand-in for TypedQuery — only ``.channel`` is read."""
+    """Stand-in for TypedQuery — only ``.channel`` matters to the caller."""
 
     def __init__(self, text: str, channel: str) -> None:
         self.text = text
@@ -142,91 +141,11 @@ class _TQ:
         return f"_TQ({self.text!r}, {self.channel!r})"
 
 
-def _channel_of(q: _TQ) -> str:
-    return q.channel
-
-
-def test_sectioned_clamp_rescues_a_second_channel() -> None:
-    """A flat head-slice can land entirely in one channel; the prompt forbids it.
-
-    The LAST kept query — least important by the model's own ordering — is the
-    one given up, and the count is unchanged.
-    """
-    items = [
-        _TQ("p1", "principle"),
-        _TQ("p2", "principle"),
-        _TQ("p3", "principle"),
-        _TQ("p4", "principle"),
-        _TQ("f1", "facts"),
-        _TQ("b1", "basis"),
-    ]
-    kept, dropped = clamp_queries(items, 4, channel_of=_channel_of)
-
-    assert len(kept) == 4
-    assert len(dropped) == 2
-    assert len({q.channel for q in kept}) >= 2
-    # The first dropped query with a NEW channel is the one promoted…
-    assert kept[-1].text == "f1"
-    # …and the query it displaced is now in the dropped set, not lost.
-    assert {q.text for q in kept} | {q.text for q in dropped} == {
-        "p1", "p2", "p3", "p4", "f1", "b1"
-    }
-    assert [q.text for q in kept[:3]] == ["p1", "p2", "p3"]
-
-
-def test_the_rescue_is_reachable_at_the_wire_minimum() -> None:
-    """⚠ This is why the API floors ``cap`` at 2.
-
-    At cap=2 a single-channel head still gets its second channel back. At cap=1
-    it could not — which is the whole reason ``cap: 1`` is a 400.
-    """
-    items = [
-        _TQ("p1", "principle"),
-        _TQ("p2", "principle"),
-        _TQ("f1", "facts"),
-    ]
-    kept, dropped = clamp_queries(items, 2, channel_of=_channel_of)
-    assert len(kept) == 2
-    assert len({q.channel for q in kept}) == 2
-    assert [q.text for q in kept] == ["p1", "f1"]
-    assert [q.text for q in dropped] == ["p2"]
-
-
-def test_sectioned_clamp_leaves_an_already_mixed_head_alone() -> None:
-    """No rescue needed ⇒ no reshuffle: the model's ordering is untouched."""
-    items = [
-        _TQ("p1", "principle"),
-        _TQ("f1", "facts"),
-        _TQ("p2", "principle"),
-        _TQ("b1", "basis"),
-        _TQ("p3", "principle"),
-    ]
-    kept, dropped = clamp_queries(items, 3, channel_of=_channel_of)
-    assert [q.text for q in kept] == ["p1", "f1", "p2"]
-    assert [q.text for q in dropped] == ["b1", "p3"]
-
-
-def test_sectioned_clamp_cannot_invent_a_channel_that_is_not_there() -> None:
-    """Single-channel input stays single-channel — nothing to rescue."""
-    items = [_TQ(f"p{i}", "principle") for i in range(6)]
-    kept, dropped = clamp_queries(items, 2, channel_of=_channel_of)
+def test_a_single_channel_head_is_not_reshuffled() -> None:
+    """The sectioned case path's ≥2-channel rescue is gone
+    (case_expander_prompt_4.md D8): channels follow the decision points, so a
+    head that lands in one channel is the model's own ranking, kept as is."""
+    items = [_TQ(f"p{i}", "principle") for i in range(4)] + [_TQ("f1", "facts")]
+    kept, dropped = clamp_queries(items, 2)
     assert [q.text for q in kept] == ["p0", "p1"]
-    assert len(dropped) == 4
-
-
-def test_a_ceiling_of_one_keeps_the_top_query_rather_than_reshuffling() -> None:
-    """cap=1 never reaches here from the API (it is a 400), but CLI and monitor
-    paths can set one by hand. With cap == 1 the ≥2-channel rule is unreachable
-    and swapping would only throw away the most important query for nothing."""
-    items = [_TQ("p1", "principle"), _TQ("f1", "facts")]
-    kept, dropped = clamp_queries(items, 1, channel_of=_channel_of)
-    assert [q.text for q in kept] == ["p1"]
-    assert [q.text for q in dropped] == ["f1"]
-
-
-def test_channel_of_is_ignored_on_the_flat_path() -> None:
-    """Without ``channel_of`` the clamp is a plain head-slice — the legacy
-    case path and the reg path both rely on that."""
-    items = [_TQ(f"p{i}", "principle") for i in range(3)] + [_TQ("f1", "facts")]
-    kept, _ = clamp_queries(items, 2)
-    assert [q.text for q in kept] == ["p0", "p1"]
+    assert [q.text for q in dropped] == ["p2", "p3", "f1"]

@@ -256,8 +256,6 @@ class ExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult]):
             # ── Editorial query cap — the ceiling (expander_query_cap.md §7.5)
             # Mutated on the INSTANCE, never on the schema, so the fallback
             # below («expander failed → one query») stays untouched.
-            # ``channel_of`` is deliberately absent here: this is the flat
-            # legacy path, its queries carry no channel.
             # A ceiling only — there is no floor and nothing pads a short
             # answer; an expander that judged the question settled in fewer
             # queries is left alone (D3).
@@ -603,21 +601,17 @@ class SectionedExpanderNode(BaseNode[LoopState, CaseSearchDeps, CaseSearchResult
             output: ExpanderOutputV2 = result.output
 
             # ── Editorial query cap — the ceiling (expander_query_cap.md §7.5)
-            # ``channel_of`` is what makes this path different: a flat
-            # ``queries[:cap]`` can land entirely inside one channel, and this
-            # prompt requires at least two. The clamp swaps the least important
-            # kept query for the first dropped one carrying a new channel, so
-            # the invariant survives the truncation at no cost in count.
-            # ⚠ That rescue needs ≥2 kept slots to mean anything, which is
-            # exactly why the wire floors ``cap`` at 2 (D5) — at a cap of 1 the
-            # «at least two channels» rule is unreachable by construction.
+            # A plain head-slice in emitted order. There is no channel rescue:
+            # prompt_4 drops the «at least two channels» rule (channels follow
+            # the decision points), so swapping in a lower-ranked query to
+            # cover a second channel would only lose a better one
+            # (case_expander_prompt_4.md D8).
             # Mutated on the INSTANCE — the fallback below is untouched.
             emitted_count = len(output.queries)
             if state.expander_query_cap is not None:
                 kept, dropped = clamp_queries(
                     output.queries,
                     state.expander_query_cap,
-                    channel_of=lambda q: q.channel,
                     executor="case_search (sectioned)",
                 )
                 if dropped:

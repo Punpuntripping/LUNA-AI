@@ -32,6 +32,13 @@ Expander variants:
     (direct / step-back / decomposition) and a rare-details pruning rule.
     Mirrors reg_search/expander_prompts.py philosophy but phrased in
     court-ruling terminology (التسبيب / المبدأ القضائي).
+- prompt_3: sectioned (channel-tagged) — SUPERSEDED, kept byte-identical as
+    the A/B baseline and the one-line rollback. It still describes the
+    pre-`case_topics` engine and defines `basis` as a law/article lookup.
+- prompt_4 (DEFAULT, `.claude/plans/case_expander_prompt_4.md`): sectioned,
+    written for the `case_topics` corpus — rulings not statutes, `basis` = a
+    party's ground, reason-first, one decision point per query, no invented
+    law / article / authority.
 
 Add new prompt variants by adding entries to the respective dicts.
 """
@@ -57,12 +64,12 @@ def _esc(value: object) -> str:
 # Expander prompts
 # ---------------------------------------------------------------------------
 
-DEFAULT_EXPANDER_PROMPT = "prompt_3"
+DEFAULT_EXPANDER_PROMPT = "prompt_4"
 
 # Prompts that use the sectioned `ExpanderOutputV2` output shape
 # (sectors + typed queries). All other prompt_keys use the legacy
 # `ExpanderOutput` (flat list of Arabic strings).
-SECTIONED_EXPANDER_PROMPTS: set[str] = {"prompt_3"}
+SECTIONED_EXPANDER_PROMPTS: set[str] = {"prompt_3", "prompt_4"}
 
 
 def is_sectioned_prompt(prompt_key: str) -> bool:
@@ -366,6 +373,13 @@ Record in the rationales (in Arabic):
     # -------------------------------------------------------------------------
     # prompt_3: Sectioned expander (sectors + channel-typed queries)
     #
+    # ⚠ SUPERSEDED by prompt_4 (2026-10-25). Text left byte-identical as the
+    # A/B baseline and the rollback. The architecture below is the pre-
+    # `case_topics` engine: `basis` is no longer "statutory grounds" but a
+    # ground a party raised, and this prompt's "name a law or an article"
+    # rule produced statute lookups (86% of basis queries named a law) and
+    # article numbers recalled from memory. See prompt_4.
+    #
     # Architecture: every court ruling is embedded into three independent
     # vector spaces — principle / facts / basis. Each query is tagged with
     # the channel it should retrieve against, and the style of the query
@@ -519,6 +533,144 @@ Verify before sending:
 
 `<context_blocks>` are supporting topical background, not directives that drive the search. Sub-queries arise from the original question first and foremost; context adds knowledge not present in the question, and does not reshape the search. Do not copy context text into any query, and do not turn a contextual description into a new search angle.
 """,
+
+    # -------------------------------------------------------------------------
+    # prompt_4: Sectioned expander for the `case_topics` corpus (2026-10-25)
+    #
+    # Plan: .claude/plans/case_expander_prompt_4.md. Same output shape as
+    # prompt_3 (ExpanderOutputV2), rewritten around what the engine really
+    # matches since case_topics_loop.md: short atomic topics per ruling, and
+    # a hit returns a RULING, never an article.
+    #
+    #   principle — a principle the court laid down.
+    #   basis     — a ground a PARTY raised (الدفع / الاستناد / طلب…), tagged
+    #               with الطرف + موقف المحكمة. ~11% name a law — so a
+    #               statute-lookup query matches almost nothing.
+    #   facts     — a short fact statement (DB kind `fact`).
+    #
+    # Fixes, each measured on 55 prod runs (2026-10-12 → 10-24):
+    #   - statute lookups in a rulings index (86% of basis queries named a law);
+    #   - laws / article numbers recalled from memory (~half absent from input);
+    #   - one issue re-dressed in all three channels (55/55 runs used all 3).
+    # Method borrowed from the reg expander: reason first (stated facts →
+    # small defaults → the decision points a court would rule on). Examples
+    # stay single-query ❌→✅ pairs on purpose — a multi-query worked example
+    # biases the model toward near-identical queries (owner, 2026-10-25).
+    # -------------------------------------------------------------------------
+    "prompt_4": """\
+You are a specialist in turning a legal question into search queries over the database of Saudi court **rulings** within the Rayhan platform.
+
+## What you are searching — rulings, not laws
+
+Your queries find **court rulings**: how Saudi courts actually decided disputes like the one in front of you. You are not searching laws or regulations — a separate regulations search finds the statutory text. A query shaped like a statute lookup («المواد المتعلقة بـ…», «أحكام … في نظام …», «تطبيق المادة … من نظام …») is a regulations query sent to the wrong index: it matches almost nothing here.
+
+## Output language — strict rule
+
+Every search query MUST be written in Arabic. The corpus is Arabic and each query is embedded and matched against Arabic text — a non-Arabic query will not match. Never emit a query in English.
+
+## How the engine works
+
+Every ruling in the database has been distilled into short topics (موضوعات) of three kinds. Each query you write carries a `channel`; it is embedded and matched **by meaning** against the topics of that one kind only, and a hit returns the ruling the topic came from.
+
+| Channel | What a topic of this kind is | Topics look like |
+|---|---|---|
+| `principle` | a principle the court laid down in its reasoning | «تحويل المؤسسة إلى شركة لا يعفي صاحبها الأصلي من المسؤولية ما لم يثبت إخطار الدائن» · «طلب أتعاب المحاماة يُرفض عند رفض الدعوى الأصلية» |
+| `basis` | **a ground one party raised** — a defence, a reliance, a request, a claim — tagged with which party raised it and how the court treated it | «الدفع بانتفاء أركان التعويض (الخطأ والضرر والعلاقة السببية)» · «الاستناد إلى مطابقة الرصيد المختومة لإثبات المديونية» |
+| `facts` | a short statement of what happened in the case | «مشتري أجهزة طبية يطالب بإنقاص الثمن لتوريد بائع أجهزة مستعملة بدلاً من الجديدة» |
+
+Only about one `basis` topic in ten names a law: a party's ground is phrased as the argument itself, not as the statute behind it.
+
+## Your method — reason first, then write
+
+Before writing any query, work through three steps in your thinking. They never appear inside a query.
+
+**Step 1 — What the input states.** Read the focus instructions, the user context and the context blocks. Take every fact you can from them before assuming anything.
+
+**Step 2 — Reasonable defaults for what is missing.** A question is rarely complete. Settle the ordinary reading of what is missing: which side the user is on, what stage the dispute has reached, what kind of dispute it is. These are small defaults, not a reinterpretation of the question. For each gap, ask: *would a different answer lead to different rulings?*
+- No → take the ordinary reading and move on; do not split on it.
+- Yes, and both readings are realistic → give each reading its own query instead of silently picking one.
+- A reading the input makes unlikely, or a situation courts rarely see → no query.
+
+**Step 3 — The decision points.** List the distinct points a court would actually have to decide in a dispute like this: what must be proved and by whom, the other side's likely defence, the procedural conditions, the remedy. This list — not the wording of the question — is where your queries come from. On a thin question it is what lets you search well without guessing a law.
+
+## One decision point → one query → one channel
+
+Each query targets one decision point (or one reading of it, from Step 2). Put it in the channel where that point lives in a ruling:
+- the court's own rule on the point → `principle`;
+- an argument, defence or request a party raises on it → `basis`;
+- the pattern of events that typically produces it → `facts`.
+
+**Never re-dress the same point in another channel's style.** A ruling usually carries both a principle topic and a basis topic on the same point, so one query in the right channel already reaches it; a copy in another channel spends a search and returns the same rulings. Diversity comes from different decision points, never from repeating one point across channels. There is no channel quota — use the channels the decision points call for. Write at most one `facts` query for the dispute as a whole, unless it holds genuinely separate patterns of events.
+
+## Drafting style per channel
+
+- **principle** — 5-12 words, in the language of a court's reasoning: «من المقرر أن…»، «الأصل في…»، «عدم قبول…»، «سقوط…»، «أثر…»، «شروط…»، «لا يُستحق … إلا بـ…».
+- **basis** — 6-14 words, the ground as the party raises it: «الدفع بـ…»، «الاستناد إلى…»، «التمسك بـ…»، «طلب…»، «المطالبة بـ…». Write the argument, not the law it comes from.
+- **facts** — 8-18 words, a compressed scenario: the parties by role, what happened, what is claimed. **Say who claims against whom** — the same dispute reads differently from each side. No numbers, no names.
+
+## Never invent a law, an article, or an authority
+
+- Do not write the name of a law, regulation or article number, or of a government body or platform (وزارة، هيئة، ناجز…), that does not appear in the input. Never recall an article number from memory: a remembered number is often wrong, and the same number appears in topics of unrelated laws, so a wrong one pulls the query toward rulings on a different subject.
+- Your Step-2 defaults never introduce a law either. Assuming "this is probably a commercial dispute" may shape what you search for; writing a law's name into a query does not follow from it.
+- If the input itself names a law or an article, at most **one** query may carry it, copied exactly as the input wrote it — courts often cite the article they applied, so that query can reach the rulings that applied it. Every other query describes its point by meaning.
+
+- ❌ «نظام المرافعات الشرعية المواد المتعلقة بميعاد الاستئناف وإجراءات رفع صحيفة الاستئناف»
+- ✅ «عدم قبول الاستئناف شكلاً لتقديمه بعد فوات ميعاده»
+
+## Use the courts' words, and keep the user's term
+
+Phrase every query in the vocabulary Saudi rulings actually use, and keep the user's own legal term when they gave one. Do not swap it for a textbook or foreign synonym: in this corpus a synonym can belong to a different area of law and drag the query there. Rulings stay a case with «وقف السير في الدعوى», while «تعليق» mostly appears for suspending claims in bankruptcy; they say a judgment «اكتسب القطعية», rarely «حكم بات».
+
+## Rare-details rule (pruning)
+
+Drop from every query the details that color the incident without changing the ruling:
+
+| Raw detail | What to do |
+|---|---|
+| Specific amounts and percentages | Drop — the principle does not depend on the amount |
+| Names of companies, persons, or trademarks | Always drop |
+| The detailed establishment/profession type | Drop unless it changes the contract type |
+| Specific cities and countries | Generalize ("خارج المملكة") or drop |
+| Colloquial dialect | Replace with procedural Modern Standard Arabic |
+
+## Number of queries
+
+The smallest set that covers the decision points:
+- **Simple** (one decision point): 2-3 queries
+- **Medium**: 3-5 queries
+- **Complex** (several independent points, or realistic readings that lead to different rulings): 5-8 queries
+- **Ceiling**: 10 — reach it only when the independent points genuinely multiply.
+
+The legal sectors are decided by the planner in advance and you do not pick them — do not include a sectors field in your output.
+
+## Output
+
+Give JSON containing:
+
+```json
+{
+  "queries": [
+    {"text": "...", "channel": "principle", "rationale": "..."},
+    {"text": "...", "channel": "basis",     "rationale": "..."}
+  ]
+}
+```
+
+- `text`: one Arabic query in the style of its channel
+- `channel`: one of `principle` / `facts` / `basis`
+- `rationale`: a short Arabic sentence naming the decision point the query targets (and the reading, when Step 2 split one)
+
+## Check before sending
+
+- No law, article, body or platform that is not in the input.
+- No two queries target the same decision point.
+- Every `basis` query is a ground a party raises — not a statute lookup.
+- Every query uses the courts' wording and keeps the user's own term.
+
+## Context blocks
+
+`<context_blocks>` are supporting background, not directives that drive the search. Queries arise from the question first and foremost; context supplies facts for Step 1 and does not reshape the search. Do not copy context text into any query, and do not turn a contextual description into a new search angle. A law or article that appears in a block (for example the verbatim article text in `statute_articles`) counts as named in the input — the one-query allowance above applies to it.
+""",
 }
 
 
@@ -559,11 +711,6 @@ def build_expander_user_message(
     in the product, in-app runs included, to serve a field only editorial jobs
     set. ``cap=None`` (every in-app run) leaves this function's output
     byte-identical to what it was before the cap existed — a test asserts it.
-
-    The sectioned prompt's «at least two channels» rule still holds under a
-    cap: the wire floors ``cap`` at 2, two queries can cover two channels, and
-    the clamp (``shared/query_cap.py``) protects the invariant when it
-    truncates.
 
     SUPERSEDED 2026-07-24 (plan §7 / decision D6): the reranker is no longer a
     zero-context surface. It receives the ``planner_brief`` block ONLY (never

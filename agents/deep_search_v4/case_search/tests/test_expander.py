@@ -200,3 +200,44 @@ async def test_the_pinned_message_is_what_the_agent_actually_receives():
     )
     await agent.run(build_expander_user_message("سؤال", "سياق", cap=4))
     assert any("Query count for this run" in c for c in seen)
+
+
+# ===========================================================================
+# prompt_4 — the live sectioned prompt (case_expander_prompt_4.md)
+# ===========================================================================
+
+
+def test_prompt_4_is_the_live_sectioned_default():
+    from agents.deep_search_v4.case_search.expander import resolve_output_type
+    from agents.deep_search_v4.case_search.models import ExpanderOutputV2
+    from agents.deep_search_v4.case_search.prompts import (
+        DEFAULT_EXPANDER_PROMPT,
+        is_sectioned_prompt,
+    )
+
+    assert DEFAULT_EXPANDER_PROMPT == "prompt_4"
+    assert is_sectioned_prompt("prompt_4")
+    # ⚠ Production does not read DEFAULT_EXPANDER_PROMPT — the orchestrator
+    # pins its own key on FullLoopDeps, and that is the one that ships.
+    import dataclasses
+
+    from agents.deep_search_v4.orchestrator import FullLoopDeps
+
+    pinned = {f.name: f.default for f in dataclasses.fields(FullLoopDeps)}
+    assert pinned["case_expander_prompt_key"] == "prompt_4"
+    assert resolve_output_type("prompt_4") is ExpanderOutputV2
+    # prompt_3 stays selectable as the A/B baseline and the rollback.
+    assert is_sectioned_prompt("prompt_3")
+
+
+def test_prompt_4_drops_the_statute_lookup_rules():
+    """The two rules that produced statute lookups and remembered article
+    numbers must not come back: `basis` defined as a law/article lookup, and
+    the mandatory channel mix that re-dressed one issue in every channel."""
+    prompt = get_expander_prompt("prompt_4")
+    assert "names a law, an article" not in prompt
+    assert "مواد نظام العمل" not in prompt
+    assert "covers **at least two**" not in prompt
+    # …and the rules that replace them are present.
+    assert "Never invent a law, an article, or an authority" in prompt
+    assert "One decision point → one query → one channel" in prompt

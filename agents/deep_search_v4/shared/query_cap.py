@@ -33,9 +33,9 @@ Three rules underneath this module, all easy to get wrong:
    number would spend a real search on a question the expander did not think
    worth asking.
 
-The wire refuses ``cap < 2`` (a 400 at the router), so ``clamp_queries`` always
-has at least two kept slots to work with and the sectioned path's ≥2-channel
-rescue below is always reachable.
+The wire refuses ``cap < 2`` (a 400 at the router). That floor was set for the
+sectioned case path's old ≥2-channel rescue, which is gone
+(``.claude/plans/case_expander_prompt_4.md`` D8); the floor itself is unchanged.
 
 This module is pure stdlib (``logging`` only) so both executors can import it
 without pulling anything new into their import graph.
@@ -43,7 +43,7 @@ without pulling anything new into their import graph.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Sequence, TypeVar
+from typing import Sequence, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,6 @@ def clamp_queries(
     items: Sequence[T],
     cap: int,
     *,
-    channel_of: Callable[[T], str] | None = None,
     executor: str = "",
 ) -> tuple[list[T], list[T]]:
     """Truncate an expander's emitted queries to ``cap``, in emitted order.
@@ -93,16 +92,9 @@ def clamp_queries(
     by importance and warns that only the first ``cap`` are used, so truncating
     from the tail is the model's own ranking being honoured. Any other rule —
     dropping the longest, sampling, re-ranking — makes which angle of the
-    question survives a coin toss.
-
-    ``channel_of`` is the sectioned case path's one exception. That prompt
-    requires at least two channels (principle / facts / basis), and a flat
-    ``items[:cap]`` can land entirely inside one of them. When it does and a
-    different channel exists among the dropped queries, the LAST kept query —
-    the least important one by the model's own ordering — is swapped for the
-    FIRST dropped query carrying a new channel. The invariant survives at the
-    cost of the cheapest query, and the count never changes. Left ``None``
-    (both flat paths) the swap never runs.
+    question survives a coin toss. That holds on every path, the sectioned
+    case path included: its channels follow the decision points, so a head
+    that lands in one channel is the model's choice, not a defect to repair.
 
     ``executor`` only names the caller in the log line.
     """
@@ -110,25 +102,6 @@ def clamp_queries(
     dropped = list(items[cap:])
     if not dropped:
         return (kept, [])
-
-    # ≥2-channel rescue — sectioned case path only. Needs at least two kept
-    # slots to be worth anything: at cap == 1 the invariant is unreachable and
-    # swapping would only throw away the top-ranked query. The wire's minimum
-    # of 2 means that case does not arise in production, but the guard stays —
-    # CLI and monitor paths can set a cap by hand.
-    if channel_of is not None and len(kept) >= 2:
-        kept_channels = {channel_of(q) for q in kept}
-        if len(kept_channels) == 1:
-            for i, candidate in enumerate(dropped):
-                if channel_of(candidate) not in kept_channels:
-                    kept[-1], dropped[i] = dropped[i], kept[-1]
-                    logger.info(
-                        "%s expander clamp: swapped the last kept query for a "
-                        "'%s' one — the >=2-channel rule survives the truncation",
-                        executor or "expander",
-                        channel_of(kept[-1]),
-                    )
-                    break
 
     logger.info(
         "%s expander emitted %d > %d — kept %d",

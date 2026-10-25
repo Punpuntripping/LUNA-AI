@@ -100,7 +100,7 @@ class FullLoopDeps:
     http_client: httpx.AsyncClient | None = None
     use_reranker: bool = False
     expander_prompt_key: str = "prompt_1"
-    case_expander_prompt_key: str = "prompt_3"   # sectioned default
+    case_expander_prompt_key: str = "prompt_4"   # sectioned default (case_expander_prompt_4.md; rollback = "prompt_3")
     concurrency: int = DEFAULT_SEARCH_CONCURRENCY
     unfold_mode: str = "precise"
     include_reg_compliance: bool = True

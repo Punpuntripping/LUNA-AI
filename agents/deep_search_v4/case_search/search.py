@@ -240,7 +240,7 @@ async def _hybrid_rpc_search(
     matches" — the same bug that produced the 2026-08-22 incident on the
     sectioned path. It survives here because this is the LEGACY
     (prompt_1 / prompt_2) pipeline: nothing in production reaches it
-    (`orchestrator.py:103` pins `case_expander_prompt_key = "prompt_3"`), and
+    (`orchestrator.py:103` pins a sectioned `case_expander_prompt_key`), and
     fixing it means changing `_search_cases_inner`'s `(markdown, count)`
     contract, which is a different piece of work from this one. If the legacy
     path is ever revived, fix this first.
