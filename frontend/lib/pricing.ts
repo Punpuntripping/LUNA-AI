@@ -4,7 +4,7 @@ import { AR_NUM_LOCALE, toLatinDigits } from "@/lib/format/numerals";
 /**
  * Pricing catalog for the public /pricing page. This is marketing copy — the
  * single source of truth for what is *displayed*. The matching enforcement
- * limits live in the `plans` DB table (migrations 076 + 147); keep the two in
+ * limits live in the `plans` DB table (migrations 076 + 147 + 187 + 188); keep the two in
  * sync by hand when limits change.
  *
  * ⚠ THE DB IS AUTHORITATIVE FOR THE AMOUNT. `plans.price_sar` is what
@@ -134,8 +134,8 @@ export const PRICING_PLANS: PricingPlan[] = [
     period: "أسبوعياً",
     billingNote: "ادفع مرة واحدة — بدون تجديد تلقائي",
     features: [
-      "50 نقطة استخدام طوال الاشتراك (7 أيام)",
-      "10 نقاط لكل جلسة (5 ساعات)",
+      "75 نقطة استخدام طوال الاشتراك (7 أيام)",
+      "15 نقطة لكل جلسة (5 ساعات)",
       "15 صفحة استخراج نص",
       "الوصول الكامل للمكتبة القانونية",
     ],
@@ -152,8 +152,8 @@ export const PRICING_PLANS: PricingPlan[] = [
       "فترة الاشتراك 30 يوماً · سعر المشتركين الأوائل لأول 90 يوماً، ثم يعود إلى السعر المعتاد",
     highlighted: true,
     features: [
-      "75 نقطة استخدام أسبوعياً",
-      "15 نقطة لكل جلسة (5 ساعات)",
+      "100 نقطة استخدام أسبوعياً",
+      "20 نقطة لكل جلسة (5 ساعات)",
       "40 صفحة استخراج نص شهرياً",
       "الوصول الكامل للمكتبة القانونية",
     ],
@@ -169,8 +169,8 @@ export const PRICING_PLANS: PricingPlan[] = [
     promoBillingNote:
       "فترة الاشتراك 30 يوماً · سعر المشتركين الأوائل لأول 90 يوماً، ثم يعود إلى السعر المعتاد",
     features: [
-      "375 نقطة استخدام أسبوعياً",
-      "75 نقطة لكل جلسة (5 ساعات)",
+      "500 نقطة استخدام أسبوعياً",
+      "100 نقطة لكل جلسة (5 ساعات)",
       "500 صفحة استخراج نص شهرياً",
       "حتى 5 محادثات متزامنة",
       "الوصول الكامل للمكتبة القانونية",

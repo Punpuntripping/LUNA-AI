@@ -18,16 +18,17 @@ import { cn } from "@/lib/utils";
  * «سياسة حد الاستخدام» — the fourth اكتشف ريحان lesson (/learn/usage-limits).
  *
  * EVERY number on this page is measured, not estimated. The per-operation costs
- * come from the `llm_calls` ledger (45-day window, 188 real deep_search turns,
- * points = cost_usd × 100 — see shared/quota POINTS_PER_USD):
+ * come from the `llm_calls` ledger (points = cost_usd × 100 — see shared/quota
+ * POINTS_PER_USD):
  *
  *     router     median 0.09  p90 0.18   →  «≈ 0.1 نقطة»
  *     writing    median 0.77  p90 1.41   →  «≈ 1 نقطة»
- *     deep_search median 3.96 p25–p75 3.19–4.61 → «3–5 نقاط»
+ *     deep_search (since 2026-10-18, 92 turns) p25 4.16 · p50 5.10 · p75 6.84
+ *                 · p90 8.98 → «5–10 نقاط» (was «3–5» on the 3.19–4.61 band)
  *
- * The per-plan counts are those medians divided into `plans.points_session` /
- * `points_weekly` (live values: basic 10/50 · pro 15/75 · max 75/375 — max was
- * raised from 50/250 by migration 147, 2026-08-29).
+ * The per-plan counts are the caps divided by that 5–10 band, floored on both
+ * ends, against `plans.points_session` / `points_weekly` (live values: basic
+ * 15/75 · pro 20/100 · max 100/500 — migrations 187 + 188, 2026-10-26).
  *
  * `free` is deliberately NOT in that table any more (migration 129): it has no
  * session and no weekly limit at all, just 5 points per rolling 30 days. Its
@@ -85,7 +86,7 @@ const OPERATION_ROWS: readonly OperationRow[] = [
   {
     icon: Search,
     label: "البحث المعمّق",
-    cost: "3–5 نقاط",
+    cost: "5–10 نقاط",
     note: "أثقل عملية في ريحان — عدة وكلاء على المصادر الرسمية",
     emphasis: true,
   },
@@ -114,29 +115,29 @@ interface PlanRow {
 }
 
 /** Session/weekly points are the live `plans` rows; the عمليات columns are those
- *  divided by the measured 3.19–4.61 deep_search range. */
+ *  divided by the 5–10 deep_search band. */
 const PLAN_ROWS: readonly PlanRow[] = [
   {
     plan: "الأساسية",
-    session: "10",
-    sessionRuns: "2–3",
-    weekly: "50",
-    weeklyRuns: "10–15",
+    session: "15",
+    sessionRuns: "1–3",
+    weekly: "75",
+    weeklyRuns: "7–15",
   },
   {
     plan: "الاحترافية",
-    session: "15",
-    sessionRuns: "3–4",
-    weekly: "75",
-    weeklyRuns: "16–23",
+    session: "20",
+    sessionRuns: "2–4",
+    weekly: "100",
+    weeklyRuns: "10–20",
     highlighted: true,
   },
   {
     plan: "القصوى",
-    session: "75",
-    sessionRuns: "16–23",
-    weekly: "375",
-    weeklyRuns: "81–117",
+    session: "100",
+    sessionRuns: "10–20",
+    weekly: "500",
+    weeklyRuns: "50–100",
   },
 ] as const;
 
@@ -428,7 +429,7 @@ export function UsageLimitsView() {
               نقاطك: <b className="text-foreground">فتح المصادر</b> من المكتبة
               (100 للأساسية · 200 للاحترافية · 1000 للقصوى)، و
               <b className="text-foreground"> استخراج النص</b> من الملفات
-              بالصفحات (15 · 40 · 200 شهرياً).
+              بالصفحات (15 · 40 · 500 شهرياً).
             </p>
             {/* The «سقف شهري احتياطي (300 / 1000)» line that stood here was
                 removed with migration 129: those numbers were set to NULL so
