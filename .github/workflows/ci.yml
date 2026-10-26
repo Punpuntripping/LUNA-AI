@@ -50,7 +50,11 @@ jobs:
       # because they pin a contract rather than a moment: entitlement and gate
       # invariants, the PDPL masking codec, and the chunk-table display layer
       # (whose sanitizer feeds `dangerouslySetInnerHTML`, so its allowlist is a
-      # security boundary, not a formatting preference).
+      # security boundary, not a formatting preference). Plus the public blog
+      # visibility contract — only reviewed (`approved`) articles are ever
+      # served or indexed, and new ones are written `pending` — and push.
+      # Those sat outside this list and rotted unseen for 7 weeks
+      # (agents_reports/backend_test_failures_2026-10-25.md).
       #
       # Deliberately NOT `pytest backend/tests/`: several suites there are LIVE
       # (`test_LIVE_*` in test_library_entities.py queries prod and drifts as the
@@ -64,7 +68,11 @@ jobs:
             shared/privacy/tests/ \
             backend/tests/test_library_gating.py \
             backend/tests/test_library_enforcement.py \
-            backend/tests/test_reference_source.py
+            backend/tests/test_reference_source.py \
+            backend/tests/test_public_blogs.py \
+            backend/tests/test_blog_sitemap_subjects.py \
+            backend/tests/test_blog_generation_context.py \
+            backend/tests/test_push.py
 
   frontend:
     name: Frontend

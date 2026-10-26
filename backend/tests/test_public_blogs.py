@@ -325,9 +325,11 @@ class FakeDB:
             "deleted_at": None,
             "job_id": None,
             "references_json": [],
-            # migration 157 — the column DEFAULT, mirrored. Nothing in the
-            # service filters on `review_status`, so this only ever shows up in
-            # a write assertion.
+            # migration 157 — the column DEFAULT, mirrored. ⚠ Since migration
+            # 159 every public read filters on `review_status='approved'`, so a
+            # row left at this default is INVISIBLE. `seed_blog` and
+            # `_insert_v1` stamp `approved` for exactly that reason; a test of
+            # the gate itself must ask for `pending` explicitly.
             "review_status": "pending",
             "generation_context": None,
             "created_at": "2026-09-01T00:00:00+00:00",
@@ -437,6 +439,9 @@ class FakeDB:
                 "content_md": "## أولاً: القاعدة\nنص.",
                 "references_json": [{"n": 1, "title": "مرجع"}],
                 "author_user_id": "editorial-bot",
+                # A seeded blog is a LIVE one — reviewed, so the read gate
+                # (migration 159) lets it through. Override to test the gate.
+                "review_status": "approved",
                 **over,
             },
         )
@@ -676,6 +681,10 @@ def _insert_v1(db: FakeDB, **over: Any) -> dict:
         "content_md": "# عنوان المقال\n\nنص المقال.",
         "author_user_id": "editorial-bot",
         "references_json": [{"n": 2, "title": "مرجع"}],
+        # Reviewed, so the read tests below see it (migration 159's gate). The
+        # service's own `pending` default is pinned in
+        # test_blog_generation_context.py, not here.
+        "review_status": "approved",
     }
     kwargs.update(over)
     return svc.insert_public_blog(db, **kwargs)
@@ -1082,6 +1091,78 @@ def test_subject_feed_is_empty_for_an_unfiled_subject() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The review gate — migration 159: only `approved` is ever served
+# ---------------------------------------------------------------------------
+
+PENDING_SLUG = "مقال-قيد-المراجعة"
+
+
+def _approved_and_pending(db: FakeDB) -> tuple[dict, dict]:
+    """Two blogs identical but for `review_status`, both filed under work-law.
+
+    The approved one is the control: every read below must still see it, so an
+    empty result can never pass for the gate working. The pending one is what a
+    fresh editorial publish looks like before anyone has read it.
+    """
+    db.seed_subjects()
+    approved = _insert_v1(db)
+    pending = _insert_v1(db, slug=PENDING_SLUG, review_status="pending")
+    svc.attach_subjects(db, approved["root_id"], ["work-law"])
+    svc.attach_subjects(db, pending["root_id"], ["work-law", "saudization"])
+    return approved, pending
+
+
+def test_a_pending_blog_is_absent_from_the_gallery() -> None:
+    db = FakeDB()
+    _approved_and_pending(db)
+    assert [c["slug"] for c in svc.list_gallery(db)] == [ARABIC_SLUG]
+
+
+def test_a_pending_blog_does_not_count_toward_a_subject() -> None:
+    db = FakeDB()
+    _approved_and_pending(db)
+    subjects = {s["slug"]: s for s in svc.list_subjects(db)}
+    assert subjects["work-law"]["blog_count"] == 1
+    assert subjects["saudization"]["blog_count"] == 0
+
+
+def test_a_pending_blog_is_absent_from_its_subject_feed() -> None:
+    db = FakeDB()
+    _approved_and_pending(db)
+    subject = svc.get_subject_by_slug(db, "work-law")
+    total, cards = svc.list_blogs_for_subject(db, subject["subject_id"])
+    assert total == 1
+    assert [c["slug"] for c in cards] == [ARABIC_SLUG]
+
+
+def test_a_pending_blog_does_not_resolve_by_slug() -> None:
+    """Not delisted like a retraction — unreachable. The article, the body behind
+    «اسأل ريحان» and the source reveal all answer "no such blog"."""
+    db = FakeDB()
+    _, pending = _approved_and_pending(db)
+
+    assert svc.get_by_slug(db, PENDING_SLUG) is None
+    assert svc.get_body_by_slug(db, PENDING_SLUG) is None
+    assert svc.get_references_by_slug(db, PENDING_SLUG) is None
+    stored = next(r for r in db.tables["public_blogs"] if r["blog_id"] == pending["blog_id"])
+    assert stored["view_count"] == 0, "an unreachable read must not count a view"
+
+    assert svc.get_by_slug(db, ARABIC_SLUG) is not None
+
+
+def test_approving_a_pending_blog_publishes_it() -> None:
+    """The gate is the ONLY thing hiding it — approval alone brings it back."""
+    db = FakeDB()
+    _, pending = _approved_and_pending(db)
+    for r in db.tables["public_blogs"]:
+        if r["blog_id"] == pending["blog_id"]:
+            r["review_status"] = "approved"
+
+    assert PENDING_SLUG in {c["slug"] for c in svc.list_gallery(db)}
+    assert svc.get_by_slug(db, PENDING_SLUG) is not None
+
+
+# ---------------------------------------------------------------------------
 # HTTP surface — anonymous, and every key survives `response_model`
 # ---------------------------------------------------------------------------
 
@@ -1174,6 +1255,19 @@ def test_http_detail_unknown_slug_404_in_arabic() -> None:
     assert r.json()["detail"] == "المدونة غير موجودة"
 
 
+def test_http_a_pending_blog_is_a_404_and_off_the_gallery() -> None:
+    db = FakeDB()
+    _approved_and_pending(db)
+    client = _client(db)
+
+    r = client.get(f"/api/v1/public/blogs/{PENDING_SLUG}")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "المدونة غير موجودة"
+    assert [b["slug"] for b in client.get("/api/v1/public/blogs").json()["blogs"]] == [
+        ARABIC_SLUG
+    ]
+
+
 def test_http_subjects_segment_is_not_read_as_a_blog_slug() -> None:
     """`/public/blogs/subjects` must hit the vocabulary, never `{slug}`."""
     db = _seeded()
@@ -1217,7 +1311,7 @@ def test_get_by_slug_resolves_a_former_slug_to_the_current_row() -> None:
     slug — that difference is what the frontend 308s on."""
     db = FakeDB()
     db.seed_subjects()
-    v1 = _insert_v1(db, review_status="approved")
+    v1 = _insert_v1(db)
     svc.append_version(db, v1["root_id"], content_md=REWRITE_MD, slug="unfair-dismissal-saudi")
     blog = svc.get_by_slug(db, ARABIC_SLUG)
     assert blog is not None

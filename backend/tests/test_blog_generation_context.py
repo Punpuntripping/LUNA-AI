@@ -40,9 +40,10 @@ The four that would hurt, and where each is pinned:
    all, while one with shortened bodies still says what was retrieved, for which
    sub-query, and why it was kept.
 
-⚠ `review_status` enforcement is NOT built and is not tested here. Nothing reads
-the column; §1 pins only that a new row carries an honest value and that a
-version does not re-stamp one.
+⚠ `review_status` enforcement (migration 159: every public read requires
+`approved`) is tested in test_public_blogs.py and test_blog_sitemap_subjects.py,
+not here. §1 pins only that a new row carries an honest value and that a version
+does not re-stamp one.
 
 No live DB / Redis / LLM. `FakeDB` comes from `test_public_blogs` (it enforces
 migration 153's unique indexes and rolls refused writes back) and now also
@@ -298,10 +299,8 @@ def test_a_new_article_is_written_pending(publish) -> None:
     """Nobody has read it yet, and saying otherwise would be a lie about a human
     decision that did not happen.
 
-    ⚠ This does NOT gate anything: no read predicate in `public_blog_service`
-    filters on `review_status` (migration 157 is explicit that enforcement is
-    unbuilt), so a `pending` row is publicly visible exactly like an `approved`
-    one. The value is a record, not a gate.
+    ⚠ Since migration 159 this IS the gate: every public read requires
+    `approved`, so a `pending` article is invisible until someone approves it.
     """
     db = FakeDB()
     _seed_forensics(db, ura=_ura())

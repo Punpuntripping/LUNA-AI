@@ -104,10 +104,12 @@ def test_lastmod_is_the_current_versions_updated_at() -> None:
         pytest.param({"is_public": False}, id="retracted"),
         pytest.param({"is_published": False}, id="unpublished-draft"),
         pytest.param({"deleted_at": "2026-09-02T00:00:00+00:00"}, id="deleted"),
+        # migration 159 — nobody has reviewed it, so nothing may index it.
+        pytest.param({"review_status": "pending"}, id="pending-review"),
     ],
 )
 def test_the_blog_feed_excludes_everything_the_gallery_excludes(over: dict) -> None:
-    """One predicate, four ways to fail it. Retraction is the sharp one: it
+    """One predicate, five ways to fail it. Retraction is the sharp one: it
     flips `is_public` and NOTHING else, precisely so the URL keeps resolving
     while it leaves every index — a feed that kept listing it would keep
     resubmitting an article the operator pulled."""
@@ -192,6 +194,23 @@ def test_a_subject_whose_only_blog_was_retracted_drops_out() -> None:
     urls, _ = library_service.sitemap_blog_subject_urls(db, BASE)
 
     assert urls == []
+
+
+def test_a_subject_whose_only_blog_is_pending_drops_out() -> None:
+    """A pending blog is not on the subject page (migration 159), so it cannot
+    hold that page in the feed either."""
+    db = FakeDB()
+    db.seed_subjects()
+    db.seed_blog(root_id="root-1", blog_id="root-1")
+    db.seed_blog(
+        root_id="root-2", blog_id="root-2", slug=ARABIC_SLUG_2, review_status="pending"
+    )
+    _attach(db, "root-1", "s-work")
+    _attach(db, "root-2", "s-note")
+
+    urls, _ = library_service.sitemap_blog_subject_urls(db, BASE)
+
+    assert [u["loc"] for u in urls] == [f"{BASE}/blog/work-law"]
 
 
 def test_an_inactive_subject_is_absent_even_with_public_blogs() -> None:
@@ -406,6 +425,23 @@ def test_an_unpublished_draft_is_not_reachable(monkeypatch) -> None:
     res = _reveal_client(monkeypatch, db).get(_reveal_url())
 
     assert res.status_code == 404
+
+
+def test_a_pending_blogs_sources_are_not_reachable(monkeypatch) -> None:
+    """Unlike a retraction, `pending` is not "delisted but linkable": the article
+    itself 404s (migration 159), so its sources must not answer either."""
+    db = FakeDB()
+    db.seed_blog(
+        root_id="root-1",
+        blog_id="root-1",
+        review_status="pending",
+        references_json=[{"n": 1, "ref_id": "reg:cccc3333", "domain": "regulation"}],
+    )
+
+    res = _reveal_client(monkeypatch, db).get(_reveal_url())
+
+    assert res.status_code == 404
+    assert "المدونة غير موجودة" in res.text
 
 
 def test_get_references_by_slug_distinguishes_missing_from_uncited() -> None:
