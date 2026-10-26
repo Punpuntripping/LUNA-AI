@@ -110,6 +110,11 @@ agents/deep_search_v4/case_search/tests/*
 # writes; without that, any row-count assertion after a constraint violation is
 # measuring debris.
 !backend/tests/test_public_blogs.py
+# «رسائل ريحان» — the announcements suite is durable: it pins the audience rule
+# (a free user never receives a paid-only message, a scheduled one stays hidden)
+# and that a read receipt can only be written for a message the caller can see.
+# It runs in CI, so it must be in the clone.
+!backend/tests/test_announcements.py
 # المشتركون الأوائل — the early-adopter promo suite is durable for the same
 # reason: it pins that a seat holder is precisely someone charged the promo
 # price, that cancelling forfeits it and a refund does not, and that a renewal

@@ -82,6 +82,39 @@ describe("modalCoordinator", () => {
     assert.equal(c.msUntilSettled(), 0);
   });
 
+  test("a full-screen sheet blocks whenClear but never whenSettled", () => {
+    const clock = fakeClock();
+    const c = createModalCoordinator(clock.now, clock.timers);
+    const release = c.acquireSheet();
+    let settled = 0;
+    let clear = 0;
+    c.whenSettled(() => settled++);
+    c.whenClear(() => clear++);
+    assert.equal(settled, 1, "actions inside the sheet still run");
+    clock.advance(1_000);
+    assert.equal(clear, 0);
+    release();
+    release();
+    clock.advance(MODAL_SETTLE_MS - 1);
+    assert.equal(clear, 0, "waits for the sheet's dismissal to settle");
+    clock.advance(200);
+    assert.equal(clear, 1);
+  });
+
+  test("whenClear also waits for ordinary modals", () => {
+    const clock = fakeClock();
+    const c = createModalCoordinator(clock.now, clock.timers);
+    const release = c.acquire();
+    let clear = 0;
+    const cancel = c.whenClear(() => clear++);
+    clock.advance(1_000);
+    assert.equal(clear, 0);
+    release();
+    clock.advance(MODAL_SETTLE_MS + 200);
+    assert.equal(clear, 1);
+    cancel();
+  });
+
   test("subscribers see openCount changes on acquire and release", () => {
     const c = createModalCoordinator();
     const seen: number[] = [];

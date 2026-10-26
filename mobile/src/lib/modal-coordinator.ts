@@ -5,6 +5,11 @@ import { useEffect, useSyncExternalStore } from "react";
 // another is dismissing — a sheet that presents itself (the ArtifactSheet
 // auto-open) waits here until the other modals are gone AND their dismiss
 // animation has had time to finish.
+//
+// Full-screen sheets (the ArtifactSheet) are tracked APART from `open`: the
+// actions inside them (export → share sheet) wait on `whenSettled`, which
+// would never fire if the sheet counted itself. Only popups that present
+// themselves unasked («رسائل ريحان») wait for them too — `whenClear`.
 
 /** Long enough for a `slide` Modal dismissal on both platforms (~300ms). */
 export const MODAL_SETTLE_MS = 400;
@@ -14,6 +19,8 @@ const POLL_MS = 150;
 interface CoordinatorState {
   open: number;
   lastDismissAt: number;
+  sheets: number;
+  lastSheetDismissAt: number;
 }
 
 export interface ModalCoordinator {
@@ -23,6 +30,10 @@ export interface ModalCoordinator {
   msUntilSettled: () => number;
   /** Runs `cb` once no other modal is open/dismissing. Returns a cancel. */
   whenSettled: (cb: () => void) => () => void;
+  /** A full-screen sheet wants to be / is on screen. Returns its release. */
+  acquireSheet: () => () => void;
+  /** `whenSettled` that also waits for full-screen sheets (unasked popups). */
+  whenClear: (cb: () => void) => () => void;
   /** Number of modals currently open. */
   openCount: () => number;
   /** Notified whenever `openCount` changes. Returns an unsubscribe. */
@@ -36,13 +47,43 @@ export function createModalCoordinator(
     clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
   },
 ): ModalCoordinator {
-  const state: CoordinatorState = { open: 0, lastDismissAt: Number.NEGATIVE_INFINITY };
+  const state: CoordinatorState = {
+    open: 0,
+    lastDismissAt: Number.NEGATIVE_INFINITY,
+    sheets: 0,
+    lastSheetDismissAt: Number.NEGATIVE_INFINITY,
+  };
   const listeners = new Set<() => void>();
   const notify = () => listeners.forEach((l) => l());
 
   const msUntilSettled = () => {
     if (state.open > 0) return POLL_MS;
     return Math.max(0, state.lastDismissAt + MODAL_SETTLE_MS - now());
+  };
+
+  const msUntilClear = () => {
+    if (state.sheets > 0) return POLL_MS;
+    return Math.max(msUntilSettled(), state.lastSheetDismissAt + MODAL_SETTLE_MS - now());
+  };
+
+  const waitFor = (ms: () => number, cb: () => void) => {
+    let handle: unknown = null;
+    let cancelled = false;
+    const check = () => {
+      if (cancelled) return;
+      const wait = ms();
+      if (wait <= 0) {
+        handle = null;
+        cb();
+        return;
+      }
+      handle = timers.set(check, wait);
+    };
+    check();
+    return () => {
+      cancelled = true;
+      if (handle !== null) timers.clear(handle);
+    };
   };
 
   return {
@@ -66,25 +107,18 @@ export function createModalCoordinator(
       };
     },
     msUntilSettled,
-    whenSettled: (cb) => {
-      let handle: unknown = null;
-      let cancelled = false;
-      const check = () => {
-        if (cancelled) return;
-        const wait = msUntilSettled();
-        if (wait <= 0) {
-          handle = null;
-          cb();
-          return;
-        }
-        handle = timers.set(check, wait);
-      };
-      check();
+    whenSettled: (cb) => waitFor(msUntilSettled, cb),
+    acquireSheet: () => {
+      state.sheets += 1;
+      let released = false;
       return () => {
-        cancelled = true;
-        if (handle !== null) timers.clear(handle);
+        if (released) return;
+        released = true;
+        state.sheets = Math.max(0, state.sheets - 1);
+        state.lastSheetDismissAt = now();
       };
     },
+    whenClear: (cb) => waitFor(msUntilClear, cb),
   };
 }
 
@@ -97,6 +131,15 @@ export function useModalPresence(visible: boolean): void {
     if (!visible) return undefined;
     return modalCoordinator.acquire();
   }, [visible]);
+}
+
+/** Registers a full-screen sheet while it is wanted on screen (including the
+ *  wait before it presents), so unasked popups never stack on it. */
+export function useSheetPresence(active: boolean): void {
+  useEffect(() => {
+    if (!active) return undefined;
+    return modalCoordinator.acquireSheet();
+  }, [active]);
 }
 
 /** True while any registered Modal (shared Sheet, CopyMenu, …) is open. */

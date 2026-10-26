@@ -8,6 +8,7 @@ import { AGENT_OUTPUT_DISCLAIMER_AR, type ConversationSummary } from "@contracts
 
 import { errorMessage } from "@/api/errors";
 import { useConversationsIndex, useSearchConversations } from "@/chat/use-conversations";
+import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import { AppText } from "@/components/AppText";
 import { Button } from "@/components/Button";
 import { ConversationMenu } from "@/components/chat/ConversationMenu";
@@ -80,6 +81,7 @@ export default function ConversationListScreen() {
         title="المحادثات"
         actions={
           <>
+            <AnnouncementsBell testID="home-messages" />
             <IconButton icon="settings" label="الإعدادات" onPress={() => router.push("/settings")} testID="home-settings" />
             <IconButton icon="newChat" label="محادثة جديدة" onPress={() => router.push("/c/new")} testID="home-new-chat" />
           </>

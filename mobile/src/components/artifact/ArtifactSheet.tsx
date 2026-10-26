@@ -8,7 +8,7 @@ import { scheduleOnRN } from "react-native-worklets";
 
 import { AppText } from "@/components/AppText";
 import { ToastHost } from "@/components/ToastHost";
-import { modalCoordinator } from "@/lib/modal-coordinator";
+import { modalCoordinator, useSheetPresence } from "@/lib/modal-coordinator";
 import { useTheme } from "@/theme/ThemeProvider";
 
 import { ArtifactBody, type ScrollAnchor } from "./ArtifactBody";
@@ -58,6 +58,9 @@ export function ArtifactSheet({ itemId, isDemo, onClose }: ArtifactSheetProps) {
   const open = itemId !== null;
   const focused = useIsFocused();
   const wanted = open && focused;
+  // Not `open` in the coordinator (the export flow inside waits on
+  // whenSettled) — a separate signal so «رسائل ريحان» never pops over it.
+  useSheetPresence(wanted);
 
   // Keep the last id while the close animation runs, so the body does not
   // flash empty on its way down (state adjusted during render, not a ref).

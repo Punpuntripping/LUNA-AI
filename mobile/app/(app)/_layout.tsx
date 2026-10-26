@@ -3,6 +3,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 
 import { useSession } from "@/auth/session-store";
 import { useChatResumeOnForeground } from "@/chat/use-messages";
+import { AnnouncementPopupHost } from "@/components/announcements/AnnouncementPopupHost";
 import { StackHeader } from "@/components/StackHeader";
 import { ToastHost } from "@/components/ToastHost";
 import { PushRuntime } from "@/push/PushRuntime";
@@ -20,6 +21,8 @@ export const unstable_settings = { anchor: "index" };
 // dev build) drives the chat composer + list; useChatResumeOnForeground
 // recovers streams the OS killed while the app was in the background (once).
 // PushRuntime: push registration + opening a tapped «إجابتك جاهزة» (Phase 3).
+// AnnouncementPopupHost: unread «رسائل ريحان» pop up one at a time (not on
+// the blocking restore screen).
 export default function AppLayout() {
   const { colours } = useTheme();
   const deletionPending = useSession((s) => s.user?.deletion_pending === true);
@@ -50,6 +53,7 @@ export default function AppLayout() {
           <Stack.Screen name="source/[itemId]/[n]" options={{ headerShown: true, title: "المصدر" }} />
           <Stack.Screen name="settings" options={{ headerShown: true, title: "الإعدادات" }} />
           <Stack.Screen name="change-password" options={{ headerShown: true, title: "تغيير كلمة المرور" }} />
+          <Stack.Screen name="messages" options={{ headerShown: true, title: "رسائل ريحان" }} />
           {/* K0 spike — dev builds only (the screen redirects home in release). */}
           <Stack.Screen name="dev-markdown" options={{ headerShown: true, title: "Markdown spike" }} />
         </Stack.Protected>
@@ -59,6 +63,7 @@ export default function AppLayout() {
       </Stack>
       <ToastHost />
       <PushRuntime />
+      {deletionPending ? null : <AnnouncementPopupHost />}
     </KeyboardProvider>
   );
 }

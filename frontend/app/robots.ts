@@ -34,6 +34,7 @@ export default function robots(): MetadataRoute.Robots {
         disallow: [
           "/chat",
           "/chats",
+          "/messages",
           "/cases",
           "/templates",
           "/login",

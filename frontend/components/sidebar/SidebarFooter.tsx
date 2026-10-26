@@ -45,6 +45,7 @@ import { RedeemCodeDialog } from "@/components/Settings/RedeemCodeDialog";
 import { AccountSettingsDialog } from "@/components/Settings/AccountSettingsDialog";
 import { PaymentHistoryDialog } from "@/components/Settings/PaymentHistoryDialog";
 import { InstallAppDialog } from "@/components/Settings/InstallAppDialog";
+import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import {
   detectInstallPlatform,
   isStandalone,
@@ -140,6 +141,7 @@ export function SidebarFooter() {
         </div>
 
         <div className="flex items-center gap-1">
+          <AnnouncementsBell />
           <Popover
             open={settingsOpen}
             onOpenChange={(open) => {

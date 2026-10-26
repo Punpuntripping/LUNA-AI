@@ -59,6 +59,7 @@ import type {
   IntroOfferState,
 } from "@/types";
 import type {
+  AnnouncementsResponse,
   OtpRequestResponse,
   PasswordForgotResponse,
   PasswordResetRequest,
@@ -1111,6 +1112,17 @@ export const preferencesApi = {
 
 export const usageApi = {
   get: () => api.get<UsageReport>("/usage"),
+};
+
+// -----------------------------------------------
+// «رسائل ريحان» — product announcements (.claude/plans/announcements.md)
+// -----------------------------------------------
+
+export const announcementsApi = {
+  list: () => api.get<AnnouncementsResponse>("/announcements"),
+
+  /** Idempotent (204); ids the caller cannot see are ignored server-side. */
+  markRead: (ids: string[]) => api.post<void>("/announcements/read", { ids }),
 };
 
 // -----------------------------------------------

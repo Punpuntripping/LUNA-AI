@@ -19,6 +19,7 @@ export * from "./templates";
 export * from "./blogs";
 export * from "./preferences";
 export * from "./push";
+export * from "./announcements";
 
 // Pure helpers (mobile Phase 2 — see README "What lives here").
 export * from "./citations";

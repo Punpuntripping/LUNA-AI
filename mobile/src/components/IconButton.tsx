@@ -8,6 +8,8 @@ export interface IconButtonProps {
   icon: IconName;
   /** Arabic label for screen readers (required — the button has no text). */
   label: string;
+  /** Read after the label (e.g. an unread count shown as a visual badge). */
+  value?: string;
   onPress: () => void;
   colour?: ColorValue;
   size?: number;
@@ -16,13 +18,14 @@ export interface IconButtonProps {
 }
 
 /** 44×44 touch target around one glyph. */
-export function IconButton({ icon, label, onPress, colour, size = 22, disabled = false, testID }: IconButtonProps) {
+export function IconButton({ icon, label, value, onPress, colour, size = 22, disabled = false, testID }: IconButtonProps) {
   const { colours } = useTheme();
   return (
     <Pressable
       testID={testID}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityValue={value ? { text: value } : undefined}
       accessibilityState={{ disabled }}
       disabled={disabled}
       hitSlop={4}

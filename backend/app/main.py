@@ -883,6 +883,16 @@ def create_app() -> FastAPI:
         tags=["push"],
     )
 
+    # «رسائل ريحان» — product announcements (announcements.md). AUTHED.
+    # ⚠ Requires migration 189 (announcements + get_user_announcements RPC).
+    from backend.app.api.announcements import router as announcements_router
+
+    application.include_router(
+        announcements_router,
+        prefix="/api/v1",
+        tags=["announcements"],
+    )
+
     # Templates router (قوالبي — per-user markdown templates)
     from backend.app.api.templates import router as templates_router
 

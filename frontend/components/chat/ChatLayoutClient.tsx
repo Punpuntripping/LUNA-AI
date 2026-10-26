@@ -8,6 +8,7 @@ import { WorkspacePane } from "@/components/workspace/WorkspacePane";
 import { PromoCodePopup } from "@/components/promo/PromoCodePopup";
 import { OnboardingDialog } from "@/components/onboarding/OnboardingDialog";
 import { IntroOfferDialog } from "@/components/promo/IntroOfferDialog";
+import { AnnouncementPopup } from "@/components/announcements/AnnouncementPopup";
 import TourOverlay from "@/components/tour/TourOverlay";
 import { EduLessonHost } from "@/components/edu/EduLessonHost";
 import { InstallNudgeCard } from "@/components/install/InstallNudgeCard";
@@ -208,6 +209,11 @@ export function ChatLayoutClient({ children }: ChatLayoutClientProps) {
           profession answer is saved; never on screen together with it. Also
           (re)loads the caller's offer eligibility for the quota wall. */}
       <IntroOfferDialog />
+
+      {/* «رسائل ريحان» — every unread announcement pops up once (oldest first),
+          and only when no other dialog is on screen: it waits out the three
+          above rather than stacking on them. Renders null otherwise. */}
+      <AnnouncementPopup />
 
       {/* «جولة المخرجات» — the 5-step coach-mark tour over the shared demo
           conversation. Also self-gating and also renders null when closed, so

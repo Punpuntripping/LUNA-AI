@@ -46,6 +46,8 @@ const ICONS = {
   hide: { ios: "eye.slash", android: "visibility_off" },
   // Push opt-in (web PushReadyChip / الإشعارات: lucide BellRing).
   bellRing: { ios: "bell.badge", android: "notifications_active" },
+  // «رسائل ريحان» beside the settings gear (web AnnouncementsBell: lucide Bell).
+  bell: { ios: "bell", android: "notifications" },
   // Agent-output action bar (web WorkspaceItemActionBar: lucide Eye, Pencil,
   // Share2, BookmarkPlus, Download, ThumbsUp/Down; ExportMenu FileText/FileType2).
   // Android's Material Symbols font has no filled variant, so an active thumb

@@ -72,7 +72,8 @@ jobs:
             backend/tests/test_public_blogs.py \
             backend/tests/test_blog_sitemap_subjects.py \
             backend/tests/test_blog_generation_context.py \
-            backend/tests/test_push.py
+            backend/tests/test_push.py \
+            backend/tests/test_announcements.py
 
   frontend:
     name: Frontend
