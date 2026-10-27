@@ -2672,31 +2672,31 @@ BEGIN
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_l1, 'pro') r;
-        IF v_s IS DISTINCT FROM 'true|19.90|pro_t1_a|1|2|legal' THEN
+        IF v_s IS DISTINCT FROM 't|19.90|pro_t1_a|1|2|legal' THEN
             RAISE EXCEPTION '192 self-test [C2 lawyer pro checkout]: got %', v_s;
         END IF;
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_i1, 'pro') r;
-        IF v_s IS DISTINCT FROM 'true|59.90|pro_t2_a|2|2|' THEN
+        IF v_s IS DISTINCT FROM 't|59.90|pro_t2_a|2|2|' THEN
             RAISE EXCEPTION '192 self-test [C2 tier 2 carries no intro group]: got %', v_s;
         END IF;
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_l1, 'max') r;
-        IF v_s IS DISTINCT FROM 'true|149.90|max_t1_a|1|4|' THEN
+        IF v_s IS DISTINCT FROM 't|149.90|max_t1_a|1|4|' THEN
             RAISE EXCEPTION '192 self-test [C2 max tier 1 carries no intro group]: got %', v_s;
         END IF;
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_p1, 'pro') r;
-        IF v_s IS DISTINCT FROM 'true|49.90||||' THEN
+        IF v_s IS DISTINCT FROM 't|49.90||||' THEN
             RAISE EXCEPTION '192 self-test [C2 legacy fallback, nothing stamped]: got %', v_s;
         END IF;
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_t1, 'pro') r;
-        IF v_s IS DISTINCT FROM 'true|19.90||||' THEN
+        IF v_s IS DISTINCT FROM 't|19.90||||' THEN
             RAISE EXCEPTION '192 self-test [C2 own batch seat fallback]: got %', v_s;
         END IF;
         SELECT count(*) INTO v_n FROM public.promo_checkout_price(v_l1, 'no_such_plan');
@@ -2816,7 +2816,7 @@ BEGIN
         SELECT format('%s|%s|%s|%s|%s', s.batch_id, s.plan_id, s.price_tier, s.price_sar,
                       s.released_at IS NULL)
           INTO v_s FROM public.early_adopter_seats s WHERE s.seat_id = v_c.seat_id;
-        IF v_s IS DISTINCT FROM 'max_t1_a|max|1|149.90|true' THEN
+        IF v_s IS DISTINCT FROM 'max_t1_a|max|1|149.90|t' THEN
             RAISE EXCEPTION '192 self-test [D new seat terms]: %', v_s;
         END IF;
         v_p := public.effective_plan_price(v_s1, 'max', 'current');
@@ -2862,7 +2862,7 @@ BEGIN
         SELECT * INTO v_c FROM public.claim_early_adopter_seat(v_b1, v_pay);
         SELECT format('%s|%s', s.price_sar, s.promo_ends_at = now() + make_interval(days => 60))
           INTO v_s FROM public.early_adopter_seats s WHERE s.seat_id = v_c.seat_id;
-        IF v_c.action IS DISTINCT FROM 'claimed' OR v_s IS DISTINCT FROM '59.90|true' THEN
+        IF v_c.action IS DISTINCT FROM 'claimed' OR v_s IS DISTINCT FROM '59.90|t' THEN
             RAISE EXCEPTION '192 self-test [E2 quoted terms survive a batch edit]: action %, seat %',
                 v_c.action, v_s;
         END IF;
@@ -3000,7 +3000,7 @@ BEGIN
         SELECT string_agg(format('%s|%s|%s|%s|%s|%s', r.ladder_v2, r.price_sar, r.batch_id,
                                  r.price_tier, r.months, r.intro_group), ',')
           INTO v_s FROM public.promo_checkout_price(v_i1, 'pro') r;
-        IF v_s IS DISTINCT FROM format('false|%s||||', public.effective_plan_price(v_i1, 'pro', 'purchase')) THEN
+        IF v_s IS DISTINCT FROM format('f|%s||||', public.effective_plan_price(v_i1, 'pro', 'purchase')) THEN
             RAISE EXCEPTION '192 self-test [G flag-off checkout price]: got %', v_s;
         END IF;
 
@@ -3012,12 +3012,12 @@ BEGIN
         END IF;
         SELECT format('%s|%s', s.release_reason, s.released_at IS NOT NULL)
           INTO v_s FROM public.early_adopter_seats s WHERE s.seat_id = v_swseat;
-        IF v_s IS DISTINCT FROM 'refund|true' THEN
+        IF v_s IS DISTINCT FROM 'refund|t' THEN
             RAISE EXCEPTION '192 self-test [R the refunded max seat]: %', v_s;
         END IF;
         SELECT format('%s|%s|%s', s.released_at IS NULL, s.release_reason, s.released_by_payment_id)
           INTO v_s FROM public.early_adopter_seats s WHERE s.seat_id = v_old;
-        IF v_s IS DISTINCT FROM 'true||' THEN
+        IF v_s IS DISTINCT FROM 't||' THEN
             RAISE EXCEPTION '192 self-test [R the superseded pro seat is live again]: %', v_s;
         END IF;
         v_p := public.effective_plan_price(v_s1, 'pro', 'current');
@@ -3026,8 +3026,12 @@ BEGIN
         END IF;
         -- a second refund call finds the restored pro seat live: it releases it
         -- (today's rule) but its own payment is still 'paid' → nothing comes back
-        IF NOT public.release_early_adopter_seat(v_s1, 'refund')
-           OR (SELECT s.release_reason FROM public.early_adopter_seats s WHERE s.seat_id = v_old)
+        -- the call and the checks are SEPARATE statements: one IF expression
+        -- reads a single snapshot and would not see the call's own release
+        IF NOT public.release_early_adopter_seat(v_s1, 'refund') THEN
+            RAISE EXCEPTION '192 self-test [R second refund call released nothing]';
+        END IF;
+        IF (SELECT s.release_reason FROM public.early_adopter_seats s WHERE s.seat_id = v_old)
               IS DISTINCT FROM 'refund'
            OR EXISTS (SELECT 1 FROM public.early_adopter_seats s
                        WHERE s.user_id = v_s1 AND s.released_at IS NULL) THEN
