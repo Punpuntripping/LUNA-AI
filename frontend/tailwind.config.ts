@@ -9,7 +9,81 @@ import type { Config } from "tailwindcss";
  *   2. Legacy shadcn aliases (background, foreground, card, popover, muted, secondary,
  *      destructive, accent, sidebar) mapped to the luna palette so existing
  *      shadcn/ui components keep working without code changes.
+ *
+ * Every CSS-variable colour goes through `cssVar()` so opacity modifiers work.
  */
+
+/**
+ * What Tailwind 3.4 hands a colour FUNCTION (`lib/util/withAlphaVariable.js`):
+ *   - unmodified utility (`bg-primary`) → `opacityValue: "var(--tw-bg-opacity, 1)"`
+ *   - modifier (`bg-primary/5`, `/[0.15]`) → `opacityValue: "0.05"`, `"0.15"`
+ *   - gradient implicit transparent stop → `opacityValue: 0` (a NUMBER)
+ *   - `shadow-primary`, `toColorValue()` → `{}` (no opacityValue)
+ */
+type TailwindColorFn = (opts: {
+  opacityValue?: string | number;
+  opacityVariable?: string;
+}) => string;
+
+/** Tailwind's own "no modifier" alpha: `var(--tw-bg-opacity, 1)` and friends. */
+const TW_DEFAULT_ALPHA_RE = /^var\(--tw-[a-z-]*opacity(?:,\s*1)?\)$/;
+
+/** "0.05" → "5%", 0 → "0%", "15%" → "15%", "var(--x)" → "calc(var(--x) * 100%)". */
+function alphaPercent(opacityValue: string | number): string {
+  if (typeof opacityValue === "string" && opacityValue.trim().endsWith("%")) {
+    return opacityValue.trim();
+  }
+  const n = typeof opacityValue === "number" ? opacityValue : Number(opacityValue);
+  if (Number.isFinite(n)) return `${Number((n * 100).toFixed(4))}%`;
+  return `calc(${opacityValue} * 100%)`;
+}
+
+/**
+ * A theme colour backed by a CSS variable that SUPPORTS the `/N` opacity
+ * modifier.
+ *
+ * WHY: the palette lives in `app/globals.css` as plain hex / oklch / rgba values
+ * behind `var(--x)`, and Tailwind 3.4 cannot parse a bare `var()` into channels
+ * — so with the old `"var(--x)"` strings every `bg-primary/5`,
+ * `border-primary/60`, `bg-muted/30`, `ring-primary/40` … silently generated NO
+ * CSS at all. A colour FUNCTION lets Tailwind ask for a given alpha, which we
+ * answer with `color-mix()` against `transparent` (same pattern globals.css
+ * already uses for the focus pulse).
+ *
+ * ⚠ UNMODIFIED UTILITIES ARE BYTE-IDENTICAL IN COLOUR. With no modifier
+ * Tailwind passes its own `var(--tw-*-opacity, 1)`; that (and `undefined`) gets
+ * the plain `var(--x)` back, exactly what these utilities emitted before — so
+ * `bg-primary`, `text-primary`, `border-border` do not route through
+ * `color-mix` and cannot shift by a rounding or gamut step. (The legacy
+ * `bg-opacity-*` utilities stay inert for these colours, as they always were.)
+ *
+ * `color-mix` needs Chrome 111 / Safari 16.2 / Firefox 113. An older browser
+ * drops the declaration — the same "no tint" it rendered before this existed.
+ *
+ * ⚠ The cast: Tailwind's RUNTIME accepts colour functions (see the type above),
+ * but its published `ThemeConfig.colors` type only admits strings. The function
+ * is never read as a string anywhere — nothing in this repo calls `theme()` or
+ * `resolveConfig` on colours.
+ */
+function cssVar(variable: `--${string}`): string {
+  const color: TailwindColorFn = ({ opacityValue }) => {
+    if (
+      opacityValue === undefined ||
+      (typeof opacityValue === "string" && TW_DEFAULT_ALPHA_RE.test(opacityValue))
+    ) {
+      return `var(${variable})`;
+    }
+    // The NUMBER 0 comes only from the gradient plugin's implicit transparent
+    // stop (`from-card`, `via-background`, …). Answer with exactly what Tailwind
+    // emitted for these colours before (its own fallback), so those unmodified
+    // gradients stay byte-identical — and never depend on `color-mix`, which on
+    // an older browser would invalidate the whole gradient. (A `/0` MODIFIER
+    // arrives as the string "0" and takes the color-mix path below.)
+    if (opacityValue === 0) return "rgb(255 255 255 / 0)";
+    return `color-mix(in srgb, var(${variable}) ${alphaPercent(opacityValue)}, transparent)`;
+  };
+  return color as unknown as string;
+}
 
 const config: Config = {
   darkMode: ["class"],
@@ -35,77 +109,77 @@ const config: Config = {
 
       colors: {
         // ---------- Luna v2 tokens ----------
-        canvas: "var(--canvas)",
+        canvas: cssVar("--canvas"),
 
         surface: {
-          1: "var(--surface-1)",
-          2: "var(--surface-2)",
-          3: "var(--surface-3)",
-          sidebar: "var(--surface-sidebar)",
+          1: cssVar("--surface-1"),
+          2: cssVar("--surface-2"),
+          3: cssVar("--surface-3"),
+          sidebar: cssVar("--surface-sidebar"),
         },
 
-        "text-primary": "var(--text-primary)",
-        "text-secondary": "var(--text-secondary)",
-        "text-muted": "var(--text-muted)",
-        "text-subtle": "var(--text-subtle)",
+        "text-primary": cssVar("--text-primary"),
+        "text-secondary": cssVar("--text-secondary"),
+        "text-muted": cssVar("--text-muted"),
+        "text-subtle": cssVar("--text-subtle"),
 
         primary: {
-          DEFAULT: "var(--primary)",
-          fg: "var(--primary-fg)",
-          foreground: "var(--primary-fg)", // legacy shadcn alias
-          hover: "var(--primary-hover)",
+          DEFAULT: cssVar("--primary"),
+          fg: cssVar("--primary-fg"),
+          foreground: cssVar("--primary-fg"), // legacy shadcn alias
+          hover: cssVar("--primary-hover"),
         },
 
         "brand-soft": {
-          DEFAULT: "var(--brand-soft-bg)",
-          fg: "var(--brand-soft-fg)",
+          DEFAULT: cssVar("--brand-soft-bg"),
+          fg: cssVar("--brand-soft-fg"),
         },
 
         // Direction 01 — pill chrome (sage @ 14% bg, sage-mauve fg)
         pill: {
-          DEFAULT: "var(--pill-bg)",
-          fg: "var(--pill-fg)",
+          DEFAULT: cssVar("--pill-bg"),
+          fg: cssVar("--pill-fg"),
         },
 
         // accent: shadcn semantic = "hover surface" (kept as surface-2),
         // luna semantic = brand sage available via .soft / .line subkeys.
         accent: {
-          DEFAULT: "var(--surface-2)",
-          foreground: "var(--text-primary)",
-          brand: "var(--accent)",
-          soft: "var(--accent-soft)",
-          line: "var(--accent-line)",
+          DEFAULT: cssVar("--surface-2"),
+          foreground: cssVar("--text-primary"),
+          brand: cssVar("--accent"),
+          soft: cssVar("--accent-soft"),
+          line: cssVar("--accent-line"),
         },
 
         bubble: {
-          user: "var(--bubble-user-bg)",
-          "user-fg": "var(--bubble-user-fg)",
+          user: cssVar("--bubble-user-bg"),
+          "user-fg": cssVar("--bubble-user-fg"),
         },
 
-        success: { DEFAULT: "var(--success-bg)", fg: "var(--success-fg)", foreground: "var(--success-fg)" },
-        warning: { DEFAULT: "var(--warning-bg)", fg: "var(--warning-fg)", foreground: "var(--warning-fg)" },
-        error:   { DEFAULT: "var(--error-bg)",   fg: "var(--error-fg)",   foreground: "var(--error-fg)"   },
-        info:    { DEFAULT: "var(--info-bg)",    fg: "var(--info-fg)",    foreground: "var(--info-fg)"    },
+        success: { DEFAULT: cssVar("--success-bg"), fg: cssVar("--success-fg"), foreground: cssVar("--success-fg") },
+        warning: { DEFAULT: cssVar("--warning-bg"), fg: cssVar("--warning-fg"), foreground: cssVar("--warning-fg") },
+        error:   { DEFAULT: cssVar("--error-bg"),   fg: cssVar("--error-fg"),   foreground: cssVar("--error-fg")   },
+        info:    { DEFAULT: cssVar("--info-bg"),    fg: cssVar("--info-fg"),    foreground: cssVar("--info-fg")    },
 
         case: {
-          realestate: { DEFAULT: "var(--case-realestate-bg)", fg: "var(--case-realestate-fg)" },
-          commercial: { DEFAULT: "var(--case-commercial-bg)", fg: "var(--case-commercial-fg)" },
-          labor:      { DEFAULT: "var(--case-labor-bg)",      fg: "var(--case-labor-fg)"      },
-          criminal:   { DEFAULT: "var(--case-criminal-bg)",   fg: "var(--case-criminal-fg)"   },
-          personal:   { DEFAULT: "var(--case-personal-bg)",   fg: "var(--case-personal-fg)"   },
-          admin:      { DEFAULT: "var(--case-admin-bg)",      fg: "var(--case-admin-fg)"      },
-          execution:  { DEFAULT: "var(--case-execution-bg)",  fg: "var(--case-execution-fg)"  },
+          realestate: { DEFAULT: cssVar("--case-realestate-bg"), fg: cssVar("--case-realestate-fg") },
+          commercial: { DEFAULT: cssVar("--case-commercial-bg"), fg: cssVar("--case-commercial-fg") },
+          labor:      { DEFAULT: cssVar("--case-labor-bg"),      fg: cssVar("--case-labor-fg")      },
+          criminal:   { DEFAULT: cssVar("--case-criminal-bg"),   fg: cssVar("--case-criminal-fg")   },
+          personal:   { DEFAULT: cssVar("--case-personal-bg"),   fg: cssVar("--case-personal-fg")   },
+          admin:      { DEFAULT: cssVar("--case-admin-bg"),      fg: cssVar("--case-admin-fg")      },
+          execution:  { DEFAULT: cssVar("--case-execution-bg"),  fg: cssVar("--case-execution-fg")  },
         },
 
-        ring: "var(--ring)",
+        ring: cssVar("--ring"),
 
         // code block plane (warm dark in both modes)
         code: {
-          DEFAULT: "var(--code-bg)",
-          head: "var(--code-head-bg)",
-          border: "var(--code-border)",
-          fg: "var(--code-fg)",
-          muted: "var(--code-muted)",
+          DEFAULT: cssVar("--code-bg"),
+          head: cssVar("--code-head-bg"),
+          border: cssVar("--code-border"),
+          fg: cssVar("--code-fg"),
+          muted: cssVar("--code-muted"),
         },
 
         // raw anchors (escape hatches)
@@ -119,39 +193,39 @@ const config: Config = {
         },
 
         // ---------- Legacy shadcn aliases (don't break existing components) ----------
-        background: "var(--canvas)",
-        foreground: "var(--text-primary)",
+        background: cssVar("--canvas"),
+        foreground: cssVar("--text-primary"),
 
         border: {
-          DEFAULT: "var(--border)",
-          strong: "var(--border-strong)",
+          DEFAULT: cssVar("--border"),
+          strong: cssVar("--border-strong"),
         },
-        input: "var(--border)",
+        input: cssVar("--border"),
 
         card: {
-          DEFAULT: "var(--surface-1)",
-          foreground: "var(--text-primary)",
+          DEFAULT: cssVar("--surface-1"),
+          foreground: cssVar("--text-primary"),
         },
         popover: {
-          DEFAULT: "var(--surface-1)",
-          foreground: "var(--text-primary)",
+          DEFAULT: cssVar("--surface-1"),
+          foreground: cssVar("--text-primary"),
         },
         muted: {
-          DEFAULT: "var(--surface-2)",
-          foreground: "var(--text-muted)",
+          DEFAULT: cssVar("--surface-2"),
+          foreground: cssVar("--text-muted"),
         },
         secondary: {
-          DEFAULT: "var(--surface-2)",
-          foreground: "var(--text-primary)",
+          DEFAULT: cssVar("--surface-2"),
+          foreground: cssVar("--text-primary"),
         },
         destructive: {
-          DEFAULT: "var(--destructive)",
-          foreground: "var(--destructive-foreground)",
+          DEFAULT: cssVar("--destructive"),
+          foreground: cssVar("--destructive-foreground"),
         },
         sidebar: {
-          DEFAULT: "var(--surface-sidebar)",
-          foreground: "var(--text-primary)",
-          border: "var(--border)",
+          DEFAULT: cssVar("--surface-sidebar"),
+          foreground: cssVar("--text-primary"),
+          border: cssVar("--border"),
         },
       },
 
