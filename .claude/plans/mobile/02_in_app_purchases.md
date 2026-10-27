@@ -1,6 +1,8 @@
 # Mobile — In-App Purchases & Launch Pricing
 
-**Status:** PLANNING 2026-10-11 · nothing built, no store products created
+**Status:** ⚠ PRICES SUPERSEDED 2026-10-27 — the ladder in §1–§2 (99.90 / 189.90 / 49.90×3) is replaced by
+the tiered campaigns in `../pricing_campaigns_v2.md` and the store plan `07_phase4_purchases.md`. §7 (store facts)
+and §8 (cross-provider rules) still apply. Originally: PLANNING 2026-10-11 · nothing built, no store products created
 **Depends on:** Apple Developer + Play Console accounts, Paid Apps Agreement /
 payments profile (see `00_stage0_setup.md` §2), RevenueCat account (✅ opened
 2026-10-12; Apple org account pending D-U-N-S, Play Console opened personal →

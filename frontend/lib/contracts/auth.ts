@@ -140,6 +140,28 @@ export interface PasswordForgotResponse {
   sent: boolean;
 }
 
+/** The four profession cards (users.profession_group, migration 115). */
+export type ProfessionGroupKey = "legal" | "entrepreneur" | "specialist" | "individual";
+
+/** Every value a client may WRITE to users.profession_group — the backend's
+ *  `UpdateProfessionRequest` allow-list. Reading `User.profession_group` stays
+ *  `string | null`: it can also be the server's "unknown" sentinel. */
+export type ProfessionAnswer = ProfessionGroupKey | "declined";
+
+/** PATCH /auth/profession. The label is kept only for specialist / individual
+ *  (the server drops it for the other answers); ≤120 chars, trimmed, empty →
+ *  null. An unknown group → 422 «قيمة المهنة غير صحيحة». */
+export interface UpdateProfessionRequest {
+  profession_group: ProfessionAnswer;
+  profession_label: string | null;
+}
+
+/** PATCH /auth/profession — echo of the stored answer. */
+export interface UpdateProfessionResponse {
+  profession_group: string;
+  profession_label: string | null;
+}
+
 /** POST /auth/password/reset — sets a new password with the emailed code and
  *  answers `AuthResponse` (same as /auth/login). 401 AUTH_INVALID = wrong or
  *  expired code · 429 = too many attempts · 400 = password rejected. Also how

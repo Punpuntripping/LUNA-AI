@@ -2,7 +2,7 @@ import { coerceDetailLevel, type DetailLevel, type PreferencesResponse } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { errorMessage } from "@/api/errors";
-import { getPreferences, updatePreferences } from "@/api/preferences";
+import { getPreferences, preferencesKeys, updatePreferences } from "@/api/preferences";
 import { showToast } from "@/stores/toast";
 
 // مستوى التفصيل — `user_preferences.detail_level`, the same value the web's
@@ -10,10 +10,6 @@ import { showToast } from "@/stores/toast";
 // Server state in TanStack Query (cleared with the cache on logout). A failed
 // read falls back to «متوسط» and stays editable, like the web's hydrate; a
 // change is optimistic and rolls back with an Arabic toast.
-
-export const preferencesKeys = {
-  all: ["preferences"] as const,
-};
 
 const SAVE_ERROR = "تعذر حفظ مستوى التفصيل. حاول مرة أخرى.";
 

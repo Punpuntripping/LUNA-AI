@@ -13,6 +13,7 @@ import { DetailLevelControl } from "@/components/settings/DetailLevelControl";
 import { PushNotificationsSection } from "@/components/settings/PushNotificationsSection";
 import { APP_BUILD, APP_UPDATE_ID_LABEL, APP_VERSION } from "@/lib/app-info";
 import { formatDate, formatNumber } from "@/lib/format";
+import { useProfessionPrompt } from "@/profession/store";
 import { useNotice } from "@/stores/notice";
 import { useThemePreference, type ThemePreference } from "@/stores/theme-preference";
 import { useTheme } from "@/theme/ThemeProvider";
@@ -97,6 +98,14 @@ export default function SettingsScreen() {
           variant="secondary"
           onPress={() => router.push("/change-password")}
           testID="settings-change-password"
+        />
+        {/* Web sidebar settings «تغيير المهنة»: reopens «وش أقرب وصف لك؟»
+            with the stored answer pre-selected (ProfessionPromptHost). */}
+        <Button
+          label="تغيير المهنة"
+          variant="secondary"
+          onPress={() => useProfessionPrompt.getState().open()}
+          testID="settings-change-profession"
         />
       </View>
 

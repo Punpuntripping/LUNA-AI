@@ -4,6 +4,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { useSession } from "@/auth/session-store";
 import { useChatResumeOnForeground } from "@/chat/use-messages";
 import { AnnouncementPopupHost } from "@/components/announcements/AnnouncementPopupHost";
+import { ProfessionPromptHost } from "@/components/profession/ProfessionPromptHost";
 import { StackHeader } from "@/components/StackHeader";
 import { ToastHost } from "@/components/ToastHost";
 import { PushRuntime } from "@/push/PushRuntime";
@@ -22,7 +23,8 @@ export const unstable_settings = { anchor: "index" };
 // recovers streams the OS killed while the app was in the background (once).
 // PushRuntime: push registration + opening a tapped «إجابتك جاهزة» (Phase 3).
 // AnnouncementPopupHost: unread «رسائل ريحان» pop up one at a time (not on
-// the blocking restore screen).
+// the blocking restore screen). ProfessionPromptHost: «وش أقرب وصف لك؟»
+// (web OnboardingDialog) — it claims the screen before the messages do.
 export default function AppLayout() {
   const { colours } = useTheme();
   const deletionPending = useSession((s) => s.user?.deletion_pending === true);
@@ -63,6 +65,7 @@ export default function AppLayout() {
       </Stack>
       <ToastHost />
       <PushRuntime />
+      {deletionPending ? null : <ProfessionPromptHost />}
       {deletionPending ? null : <AnnouncementPopupHost />}
     </KeyboardProvider>
   );

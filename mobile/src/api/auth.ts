@@ -8,6 +8,8 @@ import type {
   SignupRequest,
   SignupResponse,
   SuccessResponse,
+  UpdateProfessionRequest,
+  UpdateProfessionResponse,
   User,
 } from "@contracts";
 
@@ -50,6 +52,11 @@ export function resetPassword(body: PasswordResetRequest): Promise<AuthResponse>
 
 export function fetchMe(): Promise<User> {
   return apiFetch<User>("/auth/me");
+}
+
+/** «وش أقرب وصف لك؟» answer → users.profession_* (web `authApi.updateProfession`). */
+export function updateProfession(body: UpdateProfessionRequest): Promise<UpdateProfessionResponse> {
+  return apiFetch<UpdateProfessionResponse>("/auth/profession", { method: "PATCH", body });
 }
 
 export function restoreAccount(): Promise<SuccessResponse> {

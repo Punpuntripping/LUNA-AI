@@ -1,5 +1,6 @@
 // `/api/v1/preferences` — the user's JSONB preference blob. Shared by the web
-// and the mobile app. The app only reads/writes `detail_level` (مستوى التفصيل).
+// and the mobile app. The app reads/writes `detail_level` (مستوى التفصيل) and
+// `profession_reask_done` (the one re-ask of «وش أقرب وصف لك؟»).
 //
 // Additive: the web still declares `DetailLevel` / `UserPreferencesData` in
 // `@/types` and `DETAIL_LEVEL_OPTIONS` in `components/Settings/DetailLevelToggle`.
@@ -37,6 +38,9 @@ export function detailLevelLabel(level: DetailLevel): string {
  */
 export interface PreferencesBlob {
   detail_level?: DetailLevel;
+  /** The one re-ask of the profession question for a stored «declined» has
+   *  happened (web `UserPreferencesData.profession_reask_done`). */
+  profession_reask_done?: boolean;
   [key: string]: unknown;
 }
 

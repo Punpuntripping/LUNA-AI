@@ -42,7 +42,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 
 | File | Contents | Web keeps importing from |
 |---|---|---|
-| `auth.ts` | `User`, `AuthTokens`, `AuthResponse` (moved) + native auth bodies (`SignupRequest`, `SignupResponse`, `OtpRequestResponse`, …) | `@/types` (re-export) |
+| `auth.ts` | `User`, `AuthTokens`, `AuthResponse` (moved) + native auth bodies (`SignupRequest`, `SignupResponse`, `OtpRequestResponse`, …) + `ProfessionGroupKey`, `ProfessionAnswer`, `UpdateProfessionRequest`/`Response` (`PATCH /auth/profession`, added) | `@/types` (re-export; the profession types are not used by the web yet) |
 | `app-config.ts` | `AppConfig` (`GET /app/config`), `AppPlatform`, `APP_HEADERS` | — (native only) |
 | `errors.ts` | `ErrorCode` union (mirror of `backend/app/errors.py`), `ApiErrorEnvelope` | — |
 | `legal.ts` | `LEGAL_VERSION`, `LEGAL_ROUTES`, `AGENT_OUTPUT_DISCLAIMER_AR` (moved) | `@/lib/legal`, `@/components/workspace/AgentOutputDisclaimer` (re-export) |
@@ -59,7 +59,7 @@ Tests may use Node APIs (`node:test`, `TextDecoder`); the modules may not.
 | `citations.ts` | `CITATION_RE`, `toAsciiDigits`, `splitCitations`, `linkifyCitations` | — (web keeps its remark plugin) |
 | `placeholder.ts` | `PLACEHOLDER_MAX_AGE_MS`, `placeholderPollMs`, `isDeadPlaceholder` | — (web keeps its own copy in use-messages / MessageList) |
 | `share.ts` | `ShareDraftResponse`, `ShareArtifactRequest`, `ShareArtifactResponse`, `UpdateWorkspaceItemRequest`, `ExportFormat`, `ExportDocumentRequest` (added, not moved — identical shapes) | — (web still declares its own in `@/types` / `@/lib/api`) |
-| `templates.ts`, `blogs.ts`, `preferences.ts` | composer «+» extras: `UserTemplate`, `TemplateListResponse`, `PendingTemplate`, `withTemplateDirective` (the `استخدم القالب: «…»` line) · `MyBlogItem`, `BlogItemResponse`, `extractBlogToken`, `planBlogQueue`, `MAX_BLOG_CHIPS` · `DetailLevel`, `DETAIL_LEVEL_OPTIONS`, `coerceDetailLevel`, `/preferences` shapes (added, not moved — identical to the web's) | — (web keeps its own in `@/types`, ChatInput, ComposerPlusMenu, DetailLevelToggle) |
+| `templates.ts`, `blogs.ts`, `preferences.ts` | composer «+» extras: `UserTemplate`, `TemplateListResponse`, `PendingTemplate`, `withTemplateDirective` (the `استخدم القالب: «…»` line) · `MyBlogItem`, `BlogItemResponse`, `extractBlogToken`, `planBlogQueue`, `MAX_BLOG_CHIPS` · `DetailLevel`, `DETAIL_LEVEL_OPTIONS`, `coerceDetailLevel`, `/preferences` shapes incl. `profession_reask_done` (added, not moved — identical to the web's) | — (web keeps its own in `@/types`, ChatInput, ComposerPlusMenu, DetailLevelToggle) |
 | `push.ts` | `AppPushTokenRequest`, `AppPushTokenDeleteRequest` (`/push/app-token`), `TurnReadyPushData` (`data.conversation_id` of the «إجابتك جاهزة» push) — types only, added | — (native only; web push stays in `@/lib/push`) |
 | `reference-labels.ts`, `references-copy.ts` | `referenceLabel`, `referenceCopyLabel`, `referenceLibraryExitLabel`, `officialUrl`, `appendReferencesForCopy`, … (moved) | `@/components/workspace/ReferencePanel` (re-export) |
 | `library-refusal.ts` | `parseRefusal`, `refusalCardCopy(input, ctas)` — CTAs are a parameter (the app must never point at web pricing) | `@/lib/library/full-content`, `@/lib/library/gate-copy` (re-export / wrap) |

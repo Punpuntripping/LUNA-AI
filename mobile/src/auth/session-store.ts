@@ -1,11 +1,12 @@
 import { create } from "zustand";
 
-import { LEGAL_VERSION, type AuthResponse, type SignupResponse, type User } from "@contracts";
+import { LEGAL_VERSION, type AuthResponse, type ProfessionAnswer, type SignupResponse, type User } from "@contracts";
 
 import * as authApi from "@/api/auth";
 import { ApiError, errorMessage, MSG_UNKNOWN } from "@/api/errors";
 import { chatEngine } from "@/chat/chat-engine";
 import { queryClient } from "@/lib/query-client";
+import { useProfessionPrompt } from "@/profession/store";
 import { unregisterPushOnSignOut } from "@/push/registration";
 import { wipePushStorage } from "@/push/storage";
 import { useComposerDrafts } from "@/stores/composer-drafts";
@@ -55,6 +56,9 @@ interface SessionState {
    *  replaces the current one (same /auth/password/reset route). */
   changePassword: (code: string, newPassword: string) => Promise<void>;
   refreshUser: () => Promise<void>;
+  /** «وش أقرب وصف لك؟» — optimistic local update, then PATCH /auth/profession.
+   *  Resolves true only if the server saved it; never throws (web saveProfession). */
+  saveProfession: (group: ProfessionAnswer, label: string | null) => Promise<boolean>;
   restoreAccount: () => Promise<void>;
   /** Called when the app returns to the foreground. */
   resume: () => Promise<void>;
@@ -93,6 +97,7 @@ export const useSession = create<SessionState>((set, get) => {
     // nothing of this account may survive into the next one.
     chatEngine.reset();
     useComposerDrafts.getState().clear();
+    useProfessionPrompt.getState().reset();
     queryClient.clear();
     set({ status: "signedOut", user: null, unavailableMessage: null });
   }
@@ -175,6 +180,20 @@ export const useSession = create<SessionState>((set, get) => {
     refreshUser: async () => {
       const user = await authApi.fetchMe();
       set({ user });
+    },
+
+    saveProfession: async (group, label) => {
+      const current = get().user;
+      if (!current) return false;
+      set({ user: { ...current, profession_group: group, profession_label: label } });
+      try {
+        await authApi.updateProfession({ profession_group: group, profession_label: label });
+        return true;
+      } catch {
+        // Swallowed, like the web: the optimistic user keeps the question shut
+        // for this session; the DB stays as it was, so it is asked again later.
+        return false;
+      }
     },
 
     restoreAccount: async () => {

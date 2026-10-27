@@ -74,6 +74,12 @@ const ICONS = {
   // Composer extras (web ComposerPlusMenu: lucide BookText, SlidersHorizontal).
   blog: { ios: "text.book.closed", android: "auto_stories" },
   sliders: { ios: "slider.horizontal.3", android: "tune" },
+  // Profession cards (web onboarding-content: lucide Gavel, Rocket, BadgeCheck,
+  // Users). SF Symbols has no gavel or rocket: courthouse columns / briefcase.
+  professionLegal: { ios: "building.columns", android: "gavel" },
+  professionEntrepreneur: { ios: "briefcase", android: "rocket_launch" },
+  professionSpecialist: { ios: "checkmark.seal", android: "verified" },
+  professionIndividual: { ios: "person.2", android: "group" },
 } as const satisfies Record<string, Exclude<SymbolName, string>>;
 
 export type IconName = keyof typeof ICONS;

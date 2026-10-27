@@ -9,6 +9,7 @@ import { useAnnouncements, useMarkAnnouncementsRead } from "@/announcements/use-
 import { Sheet } from "@/components/ActionSheet";
 import { Button } from "@/components/Button";
 import { modalCoordinator } from "@/lib/modal-coordinator";
+import { useProfessionGate } from "@/profession/use-profession-gate";
 
 import { AnnouncementBody, AnnouncementHeading, hasAnnouncementLink } from "./AnnouncementContent";
 
@@ -31,7 +32,9 @@ function useAppForeground(): boolean {
  * «رسائل ريحان» popup (plan D2 + popup rules), mounted once in the signed-in
  * layout. Every unread message pops up, one at a time, oldest first:
  *   - only after the list has loaded, never on the messages screen;
- *   - never on top of another modal / sheet (or while one is settling);
+ *   - never on top of another modal / sheet (or while one is settling), and
+ *     not while «وش أقرب وصف لك؟» is wanted or may still open (web: the
+ *     first-run dialogs claim the screen first);
  *   - closing it any way (حسناً, back, backdrop) marks it read optimistically
  *     → the cached list flips, the bell drops, the next one pops;
  *   - its link marks it read, closes it, then opens the page.
@@ -45,9 +48,10 @@ export function AnnouncementPopupHost() {
   const { data } = useAnnouncements();
   const markRead = useMarkAnnouncementsRead();
   const [linkOpen, setLinkOpen] = useState(false);
+  const professionHold = useProfessionGate().hold;
 
   const nextId = data ? (unreadOldestFirst(data.items)[0]?.announcement_id ?? null) : null;
-  const wanted = nextId !== null && !onMessages && foreground && !linkOpen;
+  const wanted = nextId !== null && !onMessages && foreground && !linkOpen && !professionHold;
 
   // The message picked for presentation. It stays picked while the sheet
   // slides away (its content must not vanish mid-animation); it hides as
